@@ -294,10 +294,19 @@ public static class ArcanumRuntimeSettings
                 && !string.IsNullOrWhiteSpace(integration.Provider)
                 && !string.IsNullOrWhiteSpace(integration.Model));
 
+        string? providerName = integration.Provider;
+
+        if (providerName is not null
+            && ProviderResolver.TryResolveProviderByName(settings, providerName, out ProviderSettings? provider)
+            && provider is not null)
+        {
+            providerName = provider.Name;
+        }
+
         return defaults with
         {
             Enabled = enabled,
-            Provider = integration.Provider,
+            Provider = providerName,
             Model = integration.Model,
             Dimensions = integration.Dimensions,
             SessionSearchEnabled = features.SessionSearch,

@@ -563,7 +563,8 @@ public static class ApiBootstrapper
             sp.GetRequiredService<IProviderApiKeyResolver>(),
             sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Familiars.IFamiliarProcessRunner>(),
             sp.GetRequiredService<ILoggerFactory>(),
-            sp.GetRequiredService<PromptCacheConfigurationEpoch>()));
+            sp.GetRequiredService<PromptCacheConfigurationEpoch>(),
+            sp.GetRequiredService<RetroDownfall.Arcanum.Core.Weave.Tapestry.ITapestryProviderValidator>()));
 
         services.AddSingleton(sp => new LongRestConfigurationEpoch(sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
             sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantProcessBootIdentity>().BootId));

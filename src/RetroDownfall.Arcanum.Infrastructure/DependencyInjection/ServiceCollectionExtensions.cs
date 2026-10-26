@@ -1375,6 +1375,8 @@ public static class ServiceCollectionExtensions
         // unconditionally is free on the hot path. Registered after GrimoireDatabaseHostedService so
         // The Weave's schema is guaranteed ready before the first sweep.
         services.AddScoped<ITapestrySummarizer, TapestrySummarizer>();
+        services.AddSingleton<ITapestryProviderValidator, TapestryProviderValidator>();
+        services.AddSingleton<ITapestryClusterer, RetroDownfall.Arcanum.Core.Weave.Tapestry.Raptor.RaptorClusterer>();
 
         // One record of failed builds for the whole process, because the weaver that consults it is
         // created per sweep.

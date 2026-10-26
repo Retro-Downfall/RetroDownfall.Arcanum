@@ -14,7 +14,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
-public sealed class ModelCallExecutorTests
+public sealed partial class ModelCallExecutorTests
 {
     [SkippableTheory]
     [InlineData(false)]

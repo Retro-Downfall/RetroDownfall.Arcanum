@@ -6496,15 +6496,8 @@ public sealed partial class WizardIntelligenceProvider(
     /// directory name, and session-scoped trees report their kind — neither leaks a host path or a
     /// session identifier into the model's context.
     /// </summary>
-    private static string DescribeTapestryScope(TapestryRetrievedNode node) => node.ScopeKind switch
-    {
-        TapestryScopeKind.Workspace =>
-            $"workspace {Path.GetFileName(node.ScopeId.TrimEnd(Path.DirectorySeparatorChar, '/'))}",
-
-        TapestryScopeKind.SessionAttachment => "session attachments",
-
-        _ => "session history",
-    };
+    private static string DescribeTapestryScope(TapestryRetrievedNode node) =>
+        TapestryScope.DescribeForModel(node.ScopeKind, node.ScopeId);
 
     /// <summary>
     /// Projects retrieved Tapestry nodes for the context preview, which publishes no turn ledger to admit them

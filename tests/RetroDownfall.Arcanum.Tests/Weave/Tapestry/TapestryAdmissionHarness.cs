@@ -49,6 +49,10 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
             BeforeWorkLeaseDisposalAsync = () => new ValueTask(StepAsync("lease-dispose", CancellationToken.None)),
         };
 
+        Configuration.Integrations.Embeddings.Provider = "test-provider";
+
+        Configuration.Integrations.Embeddings.Model = "test-embedding";
+
         Persistence = new Store(this);
 
         ServiceCollection services = new();
@@ -63,7 +67,7 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
             new Summarizer(this),
             new TapestryBuildBackoff(),
             TimeProvider.System,
-            NullLogger<TapestryWeaver>.Instance));
+            NullLogger<TapestryWeaver>.Instance, new RetroDownfall.Arcanum.Core.Weave.Tapestry.Raptor.RaptorClusterer()));
 
         _provider = services.BuildServiceProvider();
 
@@ -82,6 +86,8 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
         Enabled = true,
         TapestryEnabled = true,
         Dimensions = 64,
+        Provider = "test-provider",
+        Model = "test-embedding",
         Tapestry = new TapestryEmbeddingSettings(),
     };
 
@@ -168,22 +174,48 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
         public Task<string> BeginGraphGenerationAsync(TapestryBuildSnapshot snapshot, TapestryGenerationRecipe recipe, DateTimeOffset startedAt, CancellationToken cancellationToken) =>
             BeginGenerationAsync(snapshot.Scope, recipe.AlgorithmVersion, recipe.SettingsFingerprint, recipe.SummaryModel, recipe.SummaryRecipeVersion, recipe.EmbeddingDimension, snapshot.Corpus.Fingerprint, startedAt, cancellationToken);
 
+        private readonly Dictionary<string, TapestryNode> _nodes = [];
+
+        private readonly List<TapestryGraphEdge> _edges = [];
+
         public async Task AppendGraphCheckpointAsync(TapestryGraphCheckpoint checkpoint, CancellationToken cancellationToken)
         {
-            await harness.StepAsync("append-summary", cancellationToken);
+            Assert.False(checkpoint.LegacySingleParent);
 
-            await harness.StepAsync("parents", cancellationToken);
+            await harness.StepAsync(checkpoint.Nodes[0].Node.NodeKind == TapestryNodeKind.Leaf ? "append-leaves" : "append-summary", cancellationToken);
+
+            if (checkpoint.Edges.Count > 0) await harness.StepAsync("parents", cancellationToken);
+
+            foreach (TapestryNodeWrite write in checkpoint.Nodes) _nodes.Add(write.Node.NodeId, write.Node);
+
+            _edges.AddRange(checkpoint.Edges);
         }
 
-        public Task<Result> PublishGenerationAsync(TapestryPublishRequest request, CancellationToken cancellationToken) => throw new NotImplementedException();
+        public async Task<Result> PublishGenerationAsync(TapestryPublishRequest request, CancellationToken cancellationToken)
+        {
+            TapestryNode[] nodes = _nodes.Values.Where(node => node.GenerationId == request.GenerationId).ToArray();
 
-        public Task<IReadOnlyList<string>> GetRootIdsAsync(string generationId, CancellationToken cancellationToken) => throw new NotImplementedException();
+            IReadOnlyList<string> roots = await GetRootIdsAsync(request.GenerationId, cancellationToken);
+
+            await PublishGenerationAsync(request.GenerationId, nodes.Max(static node => node.Layer) + 1, nodes.Length, roots.Count, request.TerminalReason, request.CompletedAt, cancellationToken);
+
+            return Result.Success();
+        }
+
+        public Task<IReadOnlyList<string>> GetRootIdsAsync(string generationId, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<string>>(_nodes.Values.Where(node => node.GenerationId == generationId && !_edges.Any(edge => edge.ChildNodeId == node.NodeId)).Select(static node => node.NodeId).ToArray());
 
         public Task<IReadOnlyList<string>> GetChildIdsAsync(string generationId, IReadOnlyList<string> parentIds, CancellationToken cancellationToken) => throw new NotImplementedException();
 
         public Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> GetAncestorIdsAsync(string generationId, IReadOnlyList<string> nodeIds, CancellationToken cancellationToken) => throw new NotImplementedException();
 
-        public Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> GetDescendantLeafIdsAsync(string generationId, IReadOnlyList<string> nodeIds, CancellationToken cancellationToken) => throw new NotImplementedException();
+        public Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> GetDescendantLeafIdsAsync(string generationId, IReadOnlyList<string> nodeIds, CancellationToken cancellationToken)
+        {
+            IReadOnlyList<string> Leaves(string id) => _nodes[id].NodeKind == TapestryNodeKind.Leaf
+                ? [id] : _edges.Where(edge => edge.ParentNodeId == id).SelectMany(edge => Leaves(edge.ChildNodeId)).Distinct(StringComparer.Ordinal).ToArray();
+
+            return Task.FromResult<IReadOnlyDictionary<string, IReadOnlyList<string>>>(nodeIds.ToDictionary(static id => id, Leaves));
+        }
 
         internal IReadOnlyList<TapestryScope> Scopes { get; set; } = [First];
 
@@ -206,14 +238,14 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
         {
             await harness.StepAsync("leaves:" + scope.Id, cancellationToken);
 
-            return new(2, TapestryHash.OfCorpus([("a", "hash-a-" + Corpus), ("b", "hash-b-" + Corpus)]), ExceedsCeiling: false);
+            return new(12, TapestryHash.OfCorpus(Enumerable.Range(0, 12).Select(index => ($"leaf-{index:D2}", $"hash-{index:D2}-" + Corpus)).ToArray()), ExceedsCeiling: false);
         }
 
         public async IAsyncEnumerable<IReadOnlyList<TapestryLeafSource>> EnumerateLeafPagesAsync(TapestryScope scope, int expectedDimensions, [EnumeratorCancellation] CancellationToken cancellationToken)
         {
             await harness.StepAsync("leaves:" + scope.Id, cancellationToken);
 
-            yield return [new("a", "a.cs", Corpus + " alpha", "hash-a-" + Corpus, null), new("b", "b.cs", Corpus + " beta", "hash-b-" + Corpus, null)];
+            yield return Enumerable.Range(0, 12).Select(index => new TapestryLeafSource($"leaf-{index:D2}", $"{index}.cs", Corpus + $" source {index}", $"hash-{index:D2}-" + Corpus, null)).ToArray();
         }
 
         public Task<TapestryGeneration?> GetCurrentGenerationAsync(TapestryScope scope, CancellationToken cancellationToken) =>
@@ -306,7 +338,7 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
 
         vector[0] = 1;
 
-        return new Embedding<float>(vector);
+        return new Embedding<float>(vector) { AdditionalProperties = new() { [EmbeddingProvenance.MetadataKey] = new EmbeddingProvenance("test-provider", "test-embedding") } };
     }
 
     private sealed class Embeddings(TapestryAdmissionHarness harness) : IWeaveService
@@ -332,6 +364,8 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
 
     private sealed class Summarizer(TapestryAdmissionHarness harness) : ITapestrySummarizer
     {
+        public TapestrySummaryPreparation Prepare(TapestrySummaryRequest request) => new("test-provider", "summary-model", "test-recipe", TapestryHash.OfParts(request.ChildTexts));
+
         public string? ResolveSummaryModel() => "summary-model";
 
         public bool FitsOneRequest(TapestrySummaryRequest request) => true;

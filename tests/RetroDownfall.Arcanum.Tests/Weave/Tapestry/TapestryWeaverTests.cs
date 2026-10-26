@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Weave.Tapestry.Raptor;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Data.Sqlite;
@@ -25,7 +27,7 @@ namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 /// </summary>
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
-public sealed class TapestryWeaverTests : IAsyncLifetime
+public sealed partial class TapestryWeaverTests : IAsyncLifetime
 {
     // Must be at or above ArcanumSettingClamps.EmbeddingsDimensions' floor (64): the weaver clamps
     // the configured dimension, and a narrower test vector would be quarantined as a mismatch.
@@ -79,8 +81,11 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
     private readonly TapestryBuildBackoff _backoff = new();
 
+    private Task SeedSummaryCorpusAsync() => SeedChunksAsync(Enumerable.Range(0, 24)
+        .Select(i => ($"c{i:D2}", $"file{i}.cs", $"content body number {i}")).ToArray());
+
     private TapestryWeaver CreateWeaver() =>
-        new(_store!, _weave!, _summarizer!, _backoff, TimeProvider.System, _logger);
+        new(_store!, _weave!, _summarizer!, _backoff, TimeProvider.System, _logger, new RaptorClusterer());
 
     /// <summary>Surfaces the weaver's own diagnostics in assertion messages so a build failure is legible.</summary>
     private sealed class CapturingLogger : Microsoft.Extensions.Logging.ILogger<TapestryWeaver>
@@ -142,7 +147,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
             _ = await command.ExecuteNonQueryAsync();
         });
 
-        TapestryWeaver weaver = new(interleaved, _weave!, _summarizer!, _backoff, TimeProvider.System, _logger);
+        TapestryWeaver weaver = new(interleaved, _weave!, _summarizer!, _backoff, TimeProvider.System, _logger, new RaptorClusterer());
 
         TapestryWeaveOutcome outcome = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
 
@@ -156,13 +161,13 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task SummaryWrites_UseAtomicGraphCheckpointAndPreserveLegacyTraversal()
+    public async Task SummaryWrites_UseAtomicGraphCheckpointAndLeaveLegacyParentsUnset()
     {
-        await SeedChunksAsync(("c00", "a.cs", "alpha body"), ("c01", "b.cs", "bravo body"), ("c02", "c.cs", "charlie body"));
+        await SeedSummaryCorpusAsync();
 
         BeginHookTapestryStore tracked = new(_store!, () => Task.CompletedTask);
 
-        TapestryWeaver weaver = new(tracked, _weave!, _summarizer!, _backoff, TimeProvider.System, _logger);
+        TapestryWeaver weaver = new(tracked, _weave!, _summarizer!, _backoff, TimeProvider.System, _logger, new RaptorClusterer());
 
         TapestryWeaveOutcome outcome = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
 
@@ -176,7 +181,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         IReadOnlyList<TapestryNode> leaves = await _store.GetLayerNodesAsync(generation.GenerationId, 0, CancellationToken.None);
 
-        Assert.All(leaves, leaf => Assert.NotNull(leaf.ParentNodeId));
+        Assert.All(leaves, leaf => Assert.Null(leaf.ParentNodeId));
     }
 
     [SkippableFact]
@@ -400,7 +405,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await SeedTenChunksAsync(this);
+        await SeedSummaryCorpusAsync();
 
         using CancellationTokenSource cancellation = new();
 
@@ -424,7 +429,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await SeedTenChunksAsync(this);
+        await SeedSummaryCorpusAsync();
 
         TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(Scope, Settings(), CancellationToken.None);
 
@@ -432,7 +437,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         Assert.True(outcome.LayerCount >= 2, $"expected a summary layer, got {outcome.LayerCount}");
 
-        Assert.True(outcome.NodeCount > 10, $"expected summaries above 10 leaves, got {outcome.NodeCount}");
+        Assert.True(outcome.NodeCount > 24, $"expected summaries above 24 leaves, got {outcome.NodeCount}");
 
         Assert.True(outcome.SummaryCallsMade > 0);
 
@@ -440,7 +445,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         Assert.Equal(TapestryGenerationStatus.Complete, current.Status);
 
-        Assert.Equal(10, (await _store.GetLayerNodesAsync(current.GenerationId, 0, CancellationToken.None)).Count);
+        Assert.Equal(24, (await _store.GetLayerNodesAsync(current.GenerationId, 0, CancellationToken.None)).Count);
 
         Assert.NotEmpty(await _store.GetLayerNodesAsync(current.GenerationId, 1, CancellationToken.None));
     }
@@ -450,7 +455,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await SeedTenChunksAsync(this);
+        await SeedSummaryCorpusAsync();
 
         _ = await CreateWeaver().WeaveAsync(Scope, Settings(), CancellationToken.None);
 
@@ -461,9 +466,13 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
             0,
             CancellationToken.None);
 
-        // Hard membership in v1: each child has exactly one parent per generation, and no leaf is
-        // orphaned unless it is itself a terminal root.
-        Assert.All(leaves, leaf => Assert.NotNull(leaf.ParentNodeId));
+        var ancestors = await _store.GetAncestorIdsAsync(current.GenerationId, leaves.Select(leaf => leaf.NodeId).ToArray(), CancellationToken.None);
+
+        Assert.All(leaves, leaf => Assert.Null(leaf.ParentNodeId));
+
+        var roots = await _store.GetRootIdsAsync(current.GenerationId, CancellationToken.None);
+
+        Assert.All(leaves, leaf => Assert.True(ancestors[leaf.NodeId].Count > 0 || roots.Contains(leaf.NodeId)));
     }
 
     [SkippableFact]
@@ -621,7 +630,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await SeedTenChunksAsync(this);
+        await SeedSummaryCorpusAsync();
 
         TapestryWeaver weaver = CreateWeaver();
 
@@ -660,7 +669,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await SeedTenChunksAsync(this);
+        await SeedSummaryCorpusAsync();
 
         TapestryWeaver weaver = CreateWeaver();
 
@@ -669,6 +678,8 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         string firstGeneration = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!.GenerationId;
 
         _summarizer!.ResetCounters();
+
+        _weave!.Provenance = new(provider, model);
 
         TapestryWeaveOutcome changed = await weaver.WeaveAsync(
             Scope,
@@ -701,7 +712,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await SeedTenChunksAsync(this);
+        await SeedSummaryCorpusAsync();
 
         TapestryWeaver weaver = CreateWeaver();
 
@@ -777,7 +788,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         await using System.Data.Common.DbCommand command = connection.CreateCommand();
 
-        command.CommandText = "SELECT COUNT(*) FROM tapestry_nodes WHERE ParentNodeId = @parent";
+        command.CommandText = "SELECT COUNT(*) FROM tapestry_edges WHERE ParentNodeId = @parent";
 
         AddParameter(command, "@parent", parentNodeId);
 
@@ -793,7 +804,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         _weave!.ConstantVector = UnitVector();
 
         await SeedChunksAsync(
-            [.. Enumerable.Range(0, 9).Select(index => ($"c{index:D2}", "same.cs", $"identical body {index}"))]);
+            [.. Enumerable.Range(0, 24).Select(index => ($"c{index:D2}", "same.cs", $"identical body {index}"))]);
 
         TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(
             Scope,
@@ -811,9 +822,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         Assert.NotEmpty(summaries);
 
-        Assert.Contains(
-            summaries,
-            static node => node.PartitionReason == TapestryPartitionReason.IdenticalVectorPartition);
+        Assert.True(await CountAsync("SELECT COUNT(*) FROM tapestry_edges WHERE MembershipReason LIKE '%DegeneratePartition%' OR MembershipReason LIKE '%NonContractingPartition%'") > 0);
     }
 
     [SkippableFact]
@@ -828,7 +837,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         _weave!.ConstantVector = UnitVector();
 
         await SeedChunksAsync(
-            [.. Enumerable.Range(0, 9).Select(index => ($"c{index:D2}", "same.cs", $"identical body {index}"))]);
+            [.. Enumerable.Range(0, 24).Select(index => ($"c{index:D2}", "same.cs", $"identical body {index}"))]);
 
         TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(
             Scope,
@@ -854,7 +863,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         // primary key and fail the whole generation — permanently, since the corpus fingerprint never
         // changes, re-billing every summary computed before the collision on every sweep.
         await SeedChunksAsync(
-            [.. Enumerable.Range(0, 8).Select(index => ($"c{index:D2}", "same.cs", "identical body"))]);
+            [.. Enumerable.Range(0, 24).Select(index => ($"c{index:D2}", "same.cs", "identical body"))]);
 
         TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(
             Scope,
@@ -905,7 +914,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await SeedTenChunksAsync(this);
+        await SeedSummaryCorpusAsync();
 
         TapestryWeaver weaver = CreateWeaver();
 
@@ -939,11 +948,11 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await SeedTenChunksAsync(this);
+        await SeedSummaryCorpusAsync();
 
         FakeTimeProvider clock = new();
 
-        TapestryWeaver weaver = new(_store!, _weave!, _summarizer!, _backoff, clock, _logger);
+        TapestryWeaver weaver = new(_store!, _weave!, _summarizer!, _backoff, clock, _logger, new RaptorClusterer());
 
         _summarizer!.FailOnCallNumber = 3;
 
@@ -978,9 +987,9 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await SeedTenChunksAsync(this);
+        await SeedSummaryCorpusAsync();
 
-        TapestryWeaver weaver = new(_store!, _weave!, _summarizer!, _backoff, new FakeTimeProvider(), _logger);
+        TapestryWeaver weaver = new(_store!, _weave!, _summarizer!, _backoff, new FakeTimeProvider(), _logger, new RaptorClusterer());
 
         _summarizer!.FailEverySummary = true;
 
@@ -1011,7 +1020,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         await SeedTenChunksAsync(this);
 
-        TapestryWeaver weaver = new(_store!, _weave!, _summarizer!, _backoff, new FakeTimeProvider(), _logger);
+        TapestryWeaver weaver = new(_store!, _weave!, _summarizer!, _backoff, new FakeTimeProvider(), _logger, new RaptorClusterer());
 
         _weave!.Available = false;
 
@@ -1110,17 +1119,21 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         // would instead hand every leaf from the omission onward its neighbour's vector, and those
         // wrong-but-well-formed vectors pass the quarantine check and are persisted as this
         // generation's leaf embeddings — poisoning clustering, retrieval, and summary provenance.
+        int observedInputs = 0;
+
         TapestryWeaver weaver = new(
             _store!,
-            ShortAnsweringEmbeddingGeneratorFactory.CreateWeaveService(),
+            ShortAnsweringEmbeddingGeneratorFactory.CreateWeaveService(tapestryValidator: new ShapeTestValidator(), observedInputs: count => observedInputs = count),
             _summarizer!,
             _backoff,
             TimeProvider.System,
-            _logger);
+            _logger, new RaptorClusterer());
 
         TapestryWeaveOutcome outcome = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
 
-        Assert.Equal(TapestryWeaveStatus.EmbeddingUnavailable, outcome.Status);
+        Assert.Equal(TapestryWeaveStatus.Failed, outcome.Status);
+
+        Assert.Equal(10, observedInputs);
 
         Assert.Null(await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None));
 
@@ -1132,7 +1145,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await SeedTenChunksAsync(this);
+        await SeedSummaryCorpusAsync();
 
         using CancellationTokenSource cancellation = new();
 
@@ -1157,7 +1170,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         Assert.True(outcome.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {outcome.Status}. Log:\n{_logger}");
 
-        Assert.Equal(TapestryTerminalReason.LeafOnly, outcome.TerminalReason);
+        Assert.Equal(TapestryTerminalReason.SmallLayer, outcome.TerminalReason);
 
         Assert.Equal(1, outcome.LayerCount);
 
@@ -1209,7 +1222,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         await SeedChunksAsync(
             [
                 ("huge", "big.cs", "a gigantic excerpt that no summary request could ever hold"),
-                .. Enumerable.Range(0, 8).Select(index => ($"c{index:D2}", "f.cs", $"ordinary body {index}")),
+                .. Enumerable.Range(0, 24).Select(index => ($"c{index:D2}", "f.cs", $"ordinary body {index}")),
             ]);
 
         TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(
@@ -1221,7 +1234,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         TapestryGeneration current = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
 
-        Assert.Equal(9, (await _store.GetLayerNodesAsync(current.GenerationId, 0, CancellationToken.None)).Count);
+        Assert.Equal(25, (await _store.GetLayerNodesAsync(current.GenerationId, 0, CancellationToken.None)).Count);
 
         Assert.NotEmpty(await _store.GetLayerNodesAsync(current.GenerationId, 1, CancellationToken.None));
     }
@@ -1236,39 +1249,27 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        // Three leaves pointing almost the same way fill one cluster to the child-count bound of three,
-        // so the orthogonal fourth has no sibling with room to be merged into and stays a singleton.
-        _weave!.VectorsByText["alpha body"] = Direction(0, (2, 0.01f));
+        await SeedChunksAsync(Enumerable.Range(0, 13).Select(i => ($"c{i:D2}", "f.cs", $"body {i}")).ToArray());
 
-        _weave.VectorsByText["bravo body"] = Direction(0, (3, 0.01f));
+        var weaver = new TapestryWeaver(_store!, _weave!, _summarizer!, _backoff, TimeProvider.System, _logger, new FixedWidthClusterer(3));
 
-        _weave.VectorsByText["charlie body"] = Direction(0, (4, 0.01f));
+        TapestryWeaveOutcome outcome = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
 
-        _weave.VectorsByText["outlier body"] = Direction(1);
-
-        await SeedChunksAsync(
-            ("c00", "a.cs", "alpha body"),
-            ("c01", "b.cs", "bravo body"),
-            ("c02", "c.cs", "charlie body"),
-            ("c03", "d.cs", "outlier body"));
-
-        TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(
-            Scope,
-            Settings(target: 2, maxChildren: 3),
-            CancellationToken.None);
-
-        Assert.True(outcome.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {outcome.Status}. Log:\n{_logger}");
+        Assert.Equal(TapestryWeaveStatus.Woven, outcome.Status);
 
         Assert.DoesNotContain(1, _summarizer!.SummarizedChildCounts);
 
-        // The outlier is still part of the tree: the root claims it beside the cluster's summary.
-        TapestryGeneration current = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
+        Assert.Equal(4, outcome.SummaryCallsMade);
 
-        IReadOnlyList<TapestryNode> leaves = await _store.GetLayerNodesAsync(current.GenerationId, 0, CancellationToken.None);
+        var current = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
 
-        Assert.Equal(4, leaves.Count);
+        var roots = await _store.GetRootIdsAsync(current.GenerationId, CancellationToken.None);
 
-        Assert.All(leaves, leaf => Assert.NotNull(leaf.ParentNodeId));
+        var leaves = await _store.GetLayerNodesAsync(current.GenerationId, 0, CancellationToken.None);
+
+        Assert.Equal(13, leaves.Count);
+
+        Assert.Contains(leaves.Single(leaf => leaf.SourceId == "c12").NodeId, roots);
     }
 
     private static float[] Direction(int axis, params (int Axis, float Weight)[] others)
@@ -1286,7 +1287,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task WeaveAsync_MergingAnUndersizedClusterNeverCrossesTheTokenBound()
+    public async Task WeaveAsync_RepartitioningNeverCrossesTheTokenBound()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -1300,7 +1301,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         await SeedChunksAsync(
             [
                 ("huge", "big.cs", "a gigantic excerpt that no summary request could ever hold"),
-                .. Enumerable.Range(0, 8).Select(index => ($"c{index:D2}", "f.cs", $"ordinary body {index}")),
+                .. Enumerable.Range(0, 24).Select(index => ($"c{index:D2}", "f.cs", $"ordinary body {index}")),
             ]);
 
         TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(
@@ -1323,7 +1324,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await SeedTenChunksAsync(this);
+        await SeedSummaryCorpusAsync();
 
         using CancellationTokenSource stopping = new();
 
@@ -1359,7 +1360,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
             _store!,
             () => DeleteChunkAsync("c03"));
 
-        TapestryWeaver weaver = new(store, _weave!, _summarizer!, _backoff, TimeProvider.System, _logger);
+        TapestryWeaver weaver = new(store, _weave!, _summarizer!, _backoff, TimeProvider.System, _logger, new RaptorClusterer());
 
         TapestryWeaveOutcome outcome = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
 
@@ -1419,14 +1420,17 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         public Task AppendGraphCheckpointAsync(TapestryGraphCheckpoint checkpoint, CancellationToken cancellationToken)
         {
-            AtomicSummaryWrites++;
+            AtomicSummaryWrites += checkpoint.Nodes.Count(node => node.Node.NodeKind == TapestryNodeKind.Summary);
 
-            Assert.True(checkpoint.LegacySingleParent);
+            Assert.False(checkpoint.LegacySingleParent);
 
             return inner.AppendGraphCheckpointAsync(checkpoint, cancellationToken);
         }
 
-        public Task<Result> PublishGenerationAsync(TapestryPublishRequest request, CancellationToken cancellationToken) => inner.PublishGenerationAsync(request, cancellationToken);
+        public Func<TapestryPublishRequest, CancellationToken, Task<Result>>? OnPublish { get; init; }
+
+        public Task<Result> PublishGenerationAsync(TapestryPublishRequest request, CancellationToken cancellationToken) =>
+            OnPublish is null ? inner.PublishGenerationAsync(request, cancellationToken) : OnPublish(request, cancellationToken);
 
         public Task<IReadOnlyList<string>> GetRootIdsAsync(string generationId, CancellationToken cancellationToken) => inner.GetRootIdsAsync(generationId, cancellationToken);
 
@@ -1558,112 +1562,15 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
             inner.CountPublishedNodesAsync(sessionId, cancellationToken);
     }
 
-    /// <summary>
-    /// The undersized-cluster merge ranks siblings by <see cref="TapestryWeaver.MergeSimilarity"/> over
-    /// unit vectors (DESIGN §21.11), so which sibling a singleton joins is decided by that function alone.
-    /// </summary>
-    /// <remarks>
-    /// The orphan sits exactly between two clusters under the real cosine (orthogonal to both), so the
-    /// only thing that can send it to the second cluster is the injected similarity. Every vector is three
-    /// times its direction, so a similarity handed raw embeddings instead of unit vectors is caught too.
-    /// A merge that went back to a lane-width cosine would never call the injected function and would
-    /// break the tie by stable id instead, into the first cluster.
-    /// </remarks>
-    [SkippableFact]
-    public async Task WeaveAsync_MergesAnUndersizedClusterByTheUnitVectorSimilarityItIsGiven()
+    private sealed class ShapeTestValidator : ITapestryProviderValidator
     {
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        _weave!.VectorsByText["a1 body"] = Scaled(3f, Direction(0, (5, 0.01f)));
-
-        _weave.VectorsByText["a2 body"] = Scaled(3f, Direction(0, (6, 0.01f)));
-
-        _weave.VectorsByText["b1 body"] = Scaled(3f, Direction(1, (5, 0.01f)));
-
-        _weave.VectorsByText["b2 body"] = Scaled(3f, Direction(1, (6, 0.01f)));
-
-        _weave.VectorsByText["orphan body"] = Scaled(3f, Direction(2));
-
-        await SeedChunksAsync(
-            ("a1", "a1.cs", "a1 body"),
-            ("a2", "a2.cs", "a2 body"),
-            ("b1", "b1.cs", "b1 body"),
-            ("b2", "b2.cs", "b2 body"),
-            ("orphan", "o.cs", "orphan body"));
-
-        List<(double LeftNorm, double RightNorm)> norms = [];
-
-        TapestryWeaver weaver = new(_store!, _weave, _summarizer!, _backoff, TimeProvider.System, _logger)
-        {
-            MergeSimilarity = (left, right) =>
-            {
-                norms.Add((Norm(left), Norm(right)));
-
-                // Prefers the cluster on axis 1, which the real cosine cannot tell from the one on axis 0.
-                return right[1] > 0.5f ? 0.9d : 0.1d;
-            },
-        };
-
-        TapestryWeaveOutcome outcome = await weaver.WeaveAsync(
-            Scope,
-            Settings(target: 2, maxChildren: 3),
-            CancellationToken.None);
-
-        Assert.True(outcome.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {outcome.Status}. Log:\n{_logger}");
-
-        Assert.NotEmpty(norms);
-
-        Assert.All(norms, pair =>
-        {
-            Assert.Equal(1d, pair.LeftNorm, 5);
-
-            Assert.Equal(1d, pair.RightNorm, 5);
-        });
-
-        TapestryGeneration current = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
-
-        IReadOnlyList<TapestryNode> leaves = await _store.GetLayerNodesAsync(current.GenerationId, 0, CancellationToken.None);
-
-        string? ParentOf(string chunkId) => leaves.Single(leaf => leaf.SourceId == chunkId).ParentNodeId;
-
-        Assert.Equal(ParentOf("b1"), ParentOf("orphan"));
-
-        Assert.Equal(ParentOf("b1"), ParentOf("b2"));
-
-        Assert.NotEqual(ParentOf("a1"), ParentOf("orphan"));
+        public Task<Result> ValidateAsync(string provider, string model, bool embedding, CancellationToken token) => Task.FromResult(Result.Success());
     }
 
-    /// <summary>Unless a test replaces it, the merge compares siblings with the scalar cosine clustering uses.</summary>
-    [SkippableFact]
-    public void MergeSimilarity_defaults_to_the_scalar_double_accumulated_direction_cosine()
-    {
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        Assert.Equal<Func<float[], float[], double>>(
-            SphericalKMeans.DirectionCosine,
-            CreateWeaver().MergeSimilarity);
-    }
-
-    private static float[] Scaled(float factor, float[] vector) => [.. vector.Select(component => component * factor)];
-
-    private static double Norm(float[] vector)
-    {
-        double sum = 0;
-
-        foreach (float component in vector)
-        {
-            sum += (double)component * component;
-        }
-
-        return Math.Sqrt(sum);
-    }
-
-    /// <summary>
-    /// A deterministic stand-in for The Weave: content-derived vectors so the same corpus always
-    /// yields the same directions, with switches for the degradation paths.
-    /// </summary>
     private sealed class FakeWeaveService : IWeaveService
     {
+        public EmbeddingProvenance? Provenance { get; set; } = new("local-embeddings", "embed-a");
+
         public bool Available { get; set; } = true;
 
         public float[]? ConstantVector { get; set; }
@@ -1678,7 +1585,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken) =>
             Task.FromResult(
                 Available
-                    ? Result<Embedding<float>>.Success(new Embedding<float>(Vector(text)))
+                    ? Result<Embedding<float>>.Success(CreateEmbedding(text))
                     : Result<Embedding<float>>.Failure(new Error(
                         ErrorCodes.Embeddings.ProviderUnavailable,
                         "unavailable")));
@@ -1695,13 +1602,24 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
             }
 
             return Task.FromResult(Result<Embedding<float>[]>.Success(
-                [.. texts.Select(text => new Embedding<float>(Vector(text)))]));
+                [.. texts.Select(text => CreateEmbedding(text))]));
         }
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(
             string text,
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<(string Chunk, int Offset)[]>.Success([(text, 0)]));
+
+        public Dictionary<string, float[]> ProducedVectors { get; } = new(StringComparer.Ordinal);
+
+        private Embedding<float> CreateEmbedding(string text)
+        {
+            float[] vector = Vector(text);
+
+            ProducedVectors[text] = [.. vector];
+
+            return new(vector) { AdditionalProperties = new() { [EmbeddingProvenance.MetadataKey] = Provenance } };
+        }
 
         private float[] Vector(string text)
         {
@@ -1763,6 +1681,8 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         public bool FailEverySummary { get; set; }
 
+        public string? SummaryTextOverride { get; set; }
+
         /// <summary>The one-based call that fails, once; every other call succeeds.</summary>
         public int? FailOnCallNumber { get; set; }
 
@@ -1796,6 +1716,12 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         public Action? OnFitEstimate { get; set; }
 
         public string? ResolveSummaryModel() => Model;
+
+        public TapestrySummaryPreparation? Prepare(TapestrySummaryRequest request) => Model is null ? null
+            : new("fake-summary-provider", Model, "fake-ordered-summary-v1",
+                TapestryHash.OfParts([request.ScopeKind.ToString(), TapestryHash.OfContent(request.ScopeLabel),
+                    request.Layer.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    .. request.ChildTexts.Select(TapestryHash.OfContent)]));
 
         public bool FitsOneRequest(TapestrySummaryRequest request)
         {
@@ -1849,7 +1775,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
                         ErrorCodes.Embeddings.ProviderUnavailable,
                         "summary model unavailable"))
                     : Result<string>.Success(
-                        $"summary of {request.ChildTexts.Count} item(s): "
+                        SummaryTextOverride ?? $"summary of {request.ChildTexts.Count} item(s): "
                         + string.Join(" | ", request.ChildTexts.Select(static text =>
                             text.Length <= 24 ? text : text[..24]))));
         }

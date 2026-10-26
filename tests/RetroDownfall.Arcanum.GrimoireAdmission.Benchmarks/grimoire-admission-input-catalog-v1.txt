@@ -579,6 +579,7 @@ R	src/RetroDownfall.Arcanum.Core/Tower/TestPromptRequest.cs
 R	src/RetroDownfall.Arcanum.Core/Tower/UpdateCampaignRequest.cs
 R	src/RetroDownfall.Arcanum.Core/Wards/WardDto.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/DivinationResult.cs
+R	src/RetroDownfall.Arcanum.Core/Weave/EmbeddingProvenance.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/IDivinationService.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/IMemoryScopeResolver.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/ISagaCurationService.cs
@@ -603,6 +604,7 @@ R	src/RetroDownfall.Arcanum.Core/Weave/SagaUseCoordinate.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/SemanticContextChunk.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/SessionAttachmentRetrievalContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/ITapestryClusterer.cs
+R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/ITapestryProviderValidator.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/ITapestryStore.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/ITapestrySummarizer.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorAlgorithmManifest.cs
@@ -2427,7 +2429,9 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentRetrievalServi
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentTextExtractor.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SpellWeaveCache.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryBuildBackoff.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryBuildContext.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryBuildPlanner.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryProviderValidator.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryStore.Graph.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryStore.Publication.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryStore.Retrieval.cs

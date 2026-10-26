@@ -18,7 +18,7 @@ namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 /// fence, the headless-request flags and the failure mapping are each pinned by an assertion that a
 /// mutation of that behaviour would break.
 /// </remarks>
-public sealed class TapestrySummarizerTests
+public sealed partial class TapestrySummarizerTests
 {
     /// <summary><c>Tapestry:MaxSummaryTokens</c>'s code-owned default, which the reservations scale from.</summary>
     private const int MaxSummaryTokens = 512;

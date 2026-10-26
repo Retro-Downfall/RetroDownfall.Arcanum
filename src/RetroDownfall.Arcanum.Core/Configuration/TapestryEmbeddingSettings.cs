@@ -3,7 +3,7 @@ using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// The Tapestry — hierarchical (RAPTOR-style) memory woven over The Weave. Only relevant when
+/// The Tapestry — recursive RAPTOR memory woven over The Weave. Only relevant when
 /// <c>Arcanum:Features:Tapestry</c> is enabled; enabling it also derives
 /// <see cref="EmbeddingSettings.Enabled"/>.
 ///
@@ -11,13 +11,11 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 /// <b>code-owned mechanic</b>, following §21.3: tree-shaping bounds, rebuild cadence, and retrieval
 /// slice sizes protect one clustering computation, one provider request, or one prompt injection —
 /// they are not public user restrictions and the generation builder keeps working through
-/// checkpoints until a tree is complete or cancelled. The clustering algorithm id, seed derivation,
-/// tie rules, convergence policy, and hard one-parent membership are versioned behavior in
-/// <see cref="SphericalKMeans"/>, not knobs at all.</para>
+/// checkpoints until a graph is complete or explicitly refused. Algorithm, seeds, soft membership,
+/// convergence and numeric work limits belong to the versioned RAPTOR manifest, not public knobs.</para>
 /// </summary>
 public sealed record TapestryEmbeddingSettings
 {
-
     /// <summary>
     /// Maximum number of summary layers above the leaves. Reaching it terminates the tree with an
     /// explicit multi-root terminal layer rather than pretending a single root exists. Default
@@ -26,21 +24,21 @@ public sealed record TapestryEmbeddingSettings
     public int MaxTreeDepth { get; set; } = 5;
 
     /// <summary>
-    /// Target children per summary node, from which each layer's <c>k</c> is derived deterministically
-    /// as <c>ceil(n / target)</c>. Default <c>8</c>; clamped 2–64 at runtime.
+    /// Historical spherical settings-fingerprint input. Retained for legacy validation; the RAPTOR
+    /// builder does not use it to select components or shape summaries.
     /// </summary>
     public int TargetChildrenPerSummary { get; set; } = 8;
 
     /// <summary>
-    /// Hard child-count bound for one summary node. K-Means does not guarantee balanced clusters, so
+    /// Hard child-count bound for one summary node. Soft mixture membership need not be balanced, so
     /// an oversized cluster is deterministically repartitioned — never truncated. Default <c>24</c>;
     /// clamped 2–256 at runtime.
     /// </summary>
     public int MaxChildrenPerSummary { get; set; } = 24;
 
     /// <summary>
-    /// Upper bound on <c>k</c> for one layer, bounding one clustering computation's centroid
-    /// allocation. Default <c>256</c>; clamped 2–4,096 at runtime.
+    /// Historical spherical settings-fingerprint input. RAPTOR component selection is governed by
+    /// its versioned BIC recipe; this retained value cannot steer it.
     /// </summary>
     public int MaxClustersPerLayer { get; set; } = 256;
 
@@ -101,5 +99,4 @@ public sealed record TapestryEmbeddingSettings
 
     /// <inheritdoc cref="WorkspaceTreesEnabled"/>
     public bool SessionTreesEnabled { get; set; } = true;
-
 }

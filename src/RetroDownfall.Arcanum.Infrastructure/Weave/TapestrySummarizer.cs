@@ -46,10 +46,26 @@ internal sealed class TapestrySummarizer(
         Reply with the summary prose only — no preamble, no headings, no markdown fences.
         """;
 
-    public string? ResolveSummaryModel()
-    {
-        ArcanumSettings settings = options.CurrentValue;
+    public TapestrySummaryPreparation? Prepare(TapestrySummaryRequest request) => Prepare(request, options.CurrentValue);
 
+    private static TapestrySummaryPreparation? Prepare(TapestrySummaryRequest request, ArcanumSettings settings)
+    {
+        string? selected = ResolveSummaryModel(settings);
+
+        if (selected is null || !ProviderResolver.TryResolveProviderForModel(settings, selected,
+            out ProviderSettings? provider, out string model) || provider is null) return null;
+
+        return new(provider.Name, model, RecipeFingerprint(settings),
+            TapestryHash.OfParts([SystemPrompt, BuildUserPrompt(request)]));
+    }
+
+    internal static string RecipeFingerprint(ArcanumSettings settings) => TapestryHash.OfParts(
+        ["raptor-summary-prompt-v1", SystemPrompt, ReservedOutputTokens(settings).ToString(System.Globalization.CultureInfo.InvariantCulture)]);
+
+    public string? ResolveSummaryModel() => ResolveSummaryModel(options.CurrentValue);
+
+    private static string? ResolveSummaryModel(ArcanumSettings settings)
+    {
         string? configured = settings.ResolveEmbeddings().Tapestry.SummaryModel;
 
         if (!string.IsNullOrWhiteSpace(configured))
@@ -73,7 +89,7 @@ internal sealed class TapestrySummarizer(
 
         ArcanumSettings settings = options.CurrentValue;
 
-        string? model = ResolveSummaryModel();
+        string? model = ResolveSummaryModel(settings);
 
         if (model is null
             || !ProviderResolver.TryResolveProviderForModel(
@@ -114,13 +130,20 @@ internal sealed class TapestrySummarizer(
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        string? model = ResolveSummaryModel();
+        ArcanumSettings settings = options.CurrentValue;
 
-        if (model is null)
+        TapestrySummaryPreparation? prepared = Prepare(request, settings);
+
+        if (prepared is null)
         {
-            return Result<string>.Failure(new Error(
-                ErrorCodes.Embeddings.FeatureDisabled,
+            return Result<string>.Failure(new Error(ErrorCodes.Embeddings.FeatureDisabled,
                 "No summary model is configured for The Tapestry."));
+        }
+
+        if (TapestryBuildContext.Current?.SummaryPreparation is { } expected && prepared != expected)
+        {
+            return Result<string>.Failure(new Error(ErrorCodes.Hub.InvalidAdmission,
+                "The prepared Tapestry summary changed before dispatch."));
         }
 
         List<CoreChatMessage> messages =
@@ -137,13 +160,13 @@ internal sealed class TapestrySummarizer(
         // are added before it — and DisableAllTools advertises and invokes none at all.
         PingRequest ping = new(
             Prompt: string.Empty,
-            Model: model,
+            Model: ResolveSummaryModel(settings),
             WorkingDirectory: string.Empty,
             UnattendedMode: true,
             DisableMcpTools: true,
             StatelessMessages: messages,
             SkipSpellRouting: true,
-            MaxOutputTokens: ReservedOutputTokens(options.CurrentValue),
+            MaxOutputTokens: ReservedOutputTokens(settings),
             DisableAllTools: true);
 
         Result<PromptTurnResult> result;
@@ -208,7 +231,7 @@ internal sealed class TapestrySummarizer(
 
         builder.Append("Corpus: ").Append(request.ScopeKind.ToString()).AppendLine();
 
-        builder.Append("Scope: ").AppendLine(request.ScopeLabel);
+        builder.Append("Scope: ").AppendLine(TapestryScope.DescribeForModel(request.ScopeKind, request.ScopeLabel));
 
         builder.Append("Layer: ").Append(request.Layer).AppendLine();
 

@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 using System.ClientModel;
 using System.Diagnostics;
 using System.Net.Http;
@@ -9,6 +10,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
@@ -24,8 +26,16 @@ public sealed class WeaveService(
     IEmbeddingGeneratorFactory generatorFactory,
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
     IServiceScopeFactory scopeFactory,
-    ILogger<WeaveService> logger) : IWeaveService
+    ILogger<WeaveService> logger,
+    ITapestryProviderValidator? tapestryValidator) : IWeaveService
 {
+    /// <summary>Existing ordinary-only construction; an active Tapestry observation still fails closed.</summary>
+    public WeaveService(IEmbeddingGeneratorFactory generatorFactory, IOptionsMonitor<ArcanumSettings> optionsMonitor,
+        IServiceScopeFactory scopeFactory, ILogger<WeaveService> logger)
+        : this(generatorFactory, optionsMonitor, scopeFactory, logger, null)
+    {
+    }
+
     /// <summary>
     /// Computed fresh on every access from <see cref="IOptionsMonitor{ArcanumSettings}.CurrentValue"/> —
     /// no <c>OnChange</c> registration (avoids leak/fragility risk); cheap, since the monitor holds a
@@ -93,7 +103,7 @@ public sealed class WeaveService(
             for (int i = 0; i < count; i++)
             {
                 string text = texts[offset + i];
-                batch.Add(text.Length > chunkSizeChars
+                batch.Add(TapestryBuildContext.Current is null && text.Length > chunkSizeChars
                     ? text[..Utf8Truncation.SafeCharSliceLength(text, chunkSizeChars)]
                     : text);
             }
@@ -204,6 +214,10 @@ public sealed class WeaveService(
             accountingStatus = InferenceRunStatus.Completed;
             return Result<Embedding<float>[]>.Success([.. results]);
         }
+        catch (TapestryProviderRefusalException ex)
+        {
+            return Result<Embedding<float>[]>.Failure(ex.Error);
+        }
         catch (ClientResultException ex) when (IsPayloadOrRequestSizeError(ex.Status))
         {
             // OpenAI-SDK-shaped providers (OpenAI, DeepSeek, most self-hosted OpenAI-compatible
@@ -289,6 +303,17 @@ public sealed class WeaveService(
         using EmbeddingGeneratorLease lease = await generatorFactory
             .ResolveGeneratorAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        if (TapestryBuildContext.Current is not null)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Result validation = tapestryValidator is not null && lease.Provenance is { } actual
+                ? await tapestryValidator.ValidateAsync(actual.Provider, actual.Model, true, cancellationToken).ConfigureAwait(false)
+                : Result.Failure(new Error(ErrorCodes.Hub.InvalidAdmission, "The Tapestry embedding has no current source and model proof."));
+
+            if (validation.IsFailure) throw new TapestryProviderRefusalException(validation.Error);
+        }
 
         GeneratedEmbeddings<Embedding<float>> generated = await lease.Generator
             .GenerateAsync(batch, options: null, cancellationToken)

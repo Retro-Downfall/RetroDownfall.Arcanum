@@ -65,6 +65,10 @@ public enum TapestryTerminalReason
 
     /// <summary>The corpus was small enough that the leaf layer is also the terminal layer.</summary>
     LeafOnly,
+
+    SmallLayer,
+
+    NonContracting,
 }
 
 /// <summary>
@@ -118,6 +122,21 @@ public enum TapestryRetrievalMode
 /// </remarks>
 public readonly record struct TapestryScope(TapestryScopeKind Kind, string Id)
 {
+    /// <summary>A model-facing label, never the storage identity or an absolute host path.</summary>
+    public static string DescribeForModel(TapestryScopeKind kind, string scopeId)
+    {
+        if (kind == TapestryScopeKind.SessionAttachment) return "session attachments";
+
+        if (kind != TapestryScopeKind.Workspace) return "session history";
+
+        string normalized = scopeId.Replace('\\', '/').TrimEnd('/');
+
+        string leaf = normalized[(normalized.LastIndexOf('/') + 1)..];
+
+        return leaf.Length == 0 || leaf is "." or ".." || leaf.EndsWith(':')
+            ? "workspace" : $"workspace {leaf}";
+    }
+
     /// <summary>The Session history scope: the uppercase dashed spelling <c>Entries.SessionId</c> holds.</summary>
     public static TapestryScope ForSession(Guid sessionId) =>
         new(TapestryScopeKind.Session, sessionId.ToString("D").ToUpperInvariant());
@@ -289,6 +308,10 @@ public enum TapestryWeaveStatus
     /// from the corpus as it now is.
     /// </summary>
     CorpusChanged,
+
+    FeatureDisabled,
+
+    WorkLimit,
 }
 
 /// <summary>The result of one scope's weave attempt, including what the build actually spent.</summary>
