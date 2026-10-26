@@ -18,7 +18,7 @@ public sealed class CommandCenterModelChoiceTests
     ];
 
     [Fact]
-    internal void A_listed_model_takes_the_provider_casing_and_names_the_provider()
+    internal void A_listed_model_takes_the_provider_casing_without_promising_its_route()
     {
         ModelChoiceDecision decision = CommandCenterModelChoice.Decide(
             [Provider("compat", AiProviderKind.OpenAICompatible, ["gpt-4o"])],
@@ -33,16 +33,16 @@ public sealed class CommandCenterModelChoiceTests
 
         Assert.Equal("compat", decision.ProviderName);
 
-        Assert.Equal("Model set to gpt-4o (compat) for this session.", decision.Message);
+        Assert.Equal("Model set to gpt-4o for this session. The host chooses the provider from its configuration.", decision.Message);
     }
 
     /// <summary>The drop-down confirms a selection in the same words <c>/model</c> does.</summary>
     [Fact]
-    internal void The_confirmation_names_the_model_and_its_provider()
+    internal void The_confirmation_names_the_model_and_leaves_routing_to_the_host()
     {
         Assert.Equal(
-            "Model set to gemma4:e4b (Ollama) for this session.",
-            CommandCenterModelChoice.Confirmation("gemma4:e4b", "Ollama"));
+            "Model set to gemma4:e4b for this session. The host chooses the provider from its configuration.",
+            CommandCenterModelChoice.Confirmation("gemma4:e4b"));
     }
 
     /// <summary>
@@ -66,7 +66,7 @@ public sealed class CommandCenterModelChoiceTests
         Assert.Equal("claude-sub", decision.ProviderName);
 
         Assert.Equal(
-            "Model set to opus (claude-sub, hidden from model lists) for this session.",
+            "Model set to opus for this session. The host chooses the provider from its configuration. It is hidden from model lists.",
             decision.Message);
     }
 

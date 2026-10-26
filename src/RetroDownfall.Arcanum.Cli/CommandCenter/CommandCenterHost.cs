@@ -1741,10 +1741,10 @@ internal sealed class CommandCenterHost(
         {
             state.Model = selected.Model;
 
-            // The same words `/model <name>` uses for a listed model: every row here is one.
+            // A model id selects no provider; routing remains with the host.
             state.Log.Append(
                 SessionLogEntryKind.Status,
-                CommandCenterModelChoice.Confirmation(selected.Model, selected.ProviderName));
+                CommandCenterModelChoice.Confirmation(selected.Model));
         }
 
         CloseOverlayAndFocusInput(state, window, app);

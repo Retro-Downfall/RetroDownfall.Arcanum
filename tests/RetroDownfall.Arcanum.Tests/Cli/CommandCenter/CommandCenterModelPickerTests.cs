@@ -47,11 +47,10 @@ public sealed class CommandCenterModelPickerTests
     }
 
     /// <summary>
-    /// The same id on two providers is genuinely two routes; collapsing them would hide which one a
-    /// selection picks.
+    /// A request chooses a model id only; duplicate listings describe providers, not separate choices.
     /// </summary>
     [Fact]
-    public void The_same_model_on_two_providers_is_offered_twice()
+    public void The_same_model_on_two_providers_is_offered_once_with_both_listing_names()
     {
         ModelInfoDto[] duplicated =
         [
@@ -61,7 +60,7 @@ public sealed class CommandCenterModelPickerTests
 
         IReadOnlyList<ModelPickerItem> items = CommandCenterModelPicker.Build(duplicated);
 
-        Assert.Equal(["one", "two"], items.Select(static item => item.ProviderName));
+        Assert.Equal("one, two", Assert.Single(items).ProviderNames);
     }
 
     /// <summary>
@@ -185,11 +184,11 @@ public sealed class CommandCenterModelPickerTests
     }
 
     /// <summary>
-    /// The drop-down confirms a selection the way <c>/model</c> does, naming the provider, so the
+    /// The drop-down confirms a selection the way <c>/model</c> does, leaving provider routing to the host, while the
     /// selected row resolves to the whole item rather than only its model id.
     /// </summary>
     [Fact]
-    public void A_selected_row_resolves_to_its_model_and_provider()
+    public void A_selected_row_resolves_to_its_model_and_listing_providers()
     {
         IReadOnlyList<ModelPickerItem> items = CommandCenterModelPicker.Build(Models);
 
@@ -198,8 +197,8 @@ public sealed class CommandCenterModelPickerTests
         Assert.Equal(new ModelPickerItem("claude-sonnet", "ClaudeCode-subscription"), item);
 
         Assert.Equal(
-            "Model set to claude-sonnet (ClaudeCode-subscription) for this session.",
-            CommandCenterModelChoice.Confirmation(item!.Model, item.ProviderName));
+            "Model set to claude-sonnet for this session. The host chooses the provider from its configuration.",
+            CommandCenterModelChoice.Confirmation(item!.Model));
     }
 
     [Theory]
