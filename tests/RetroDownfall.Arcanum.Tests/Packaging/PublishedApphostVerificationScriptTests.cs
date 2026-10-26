@@ -838,6 +838,8 @@ public sealed class PublishedApphostVerificationScriptTests
 
                 printf 'published-executable=%s\n' "${ARCANUM_PUBLISHED_EXECUTABLE:-}" >> "${FAKE_DOTNET_LOG:?}"
                 printf 'ollama-image=%s\n' "${ARCANUM_OLLAMA_QUALIFICATION_IMAGE:-}" >> "${FAKE_DOTNET_LOG:?}"
+                printf 'ollama-text-model=%s\n' "${ARCANUM_OLLAMA_QUALIFICATION_MODEL:-}" >> "${FAKE_DOTNET_LOG:?}"
+                printf 'ollama-vision-model=%s\n' "${ARCANUM_OLLAMA_QUALIFICATION_VISION_MODEL:-}" >> "${FAKE_DOTNET_LOG:?}"
 
                 printf 'perplexity-mode=%s\n' "${ARCANUM_OLLAMA_QUALIFICATION_PERPLEXITY:-}" >> "${FAKE_DOTNET_LOG:?}"
                 printf 'perplexity-reference=%s\n' "${ARCANUM_OLLAMA_QUALIFICATION_PERPLEXITY_KEY_VARIABLE:-}" >> "${FAKE_DOTNET_LOG:?}"

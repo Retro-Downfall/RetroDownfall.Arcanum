@@ -313,6 +313,14 @@ internal sealed class LongRestQualificationGrimoire
         return (nodes, edges);
     }
 
+    /// <summary>Reads only finalized assistant reply model identities, excluding tool wrappers, in persisted turn order.</summary>
+    public Task<IReadOnlyList<string?>> ReadReplyModelsAsync(Guid sessionId, CancellationToken cancellationToken) =>
+        QueryAsync(
+            "SELECT ModelUsed FROM Entries WHERE SessionId = @session AND Role = 2 AND ToolName IS NULL AND ToolCallId IS NULL ORDER BY Sequence, Id;",
+            static reader => reader.IsDBNull(0) ? null : reader.GetString(0),
+            cancellationToken,
+            ("@session", GrimoireEntitySql.Format(sessionId)));
+
     private async Task<object?> ScalarAsync(
         string sql,
         CancellationToken cancellationToken,

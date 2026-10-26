@@ -27,6 +27,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
     private const string ModelVariable = "ARCANUM_OLLAMA_QUALIFICATION_MODEL";
 
+    private const string VisionModelVariable = "ARCANUM_OLLAMA_QUALIFICATION_VISION_MODEL";
+
     private const string EndpointVariable = "ARCANUM_OLLAMA_QUALIFICATION_ENDPOINT";
 
     private const string ProviderKeyVariable = "ARCANUM_OLLAMA_QUALIFICATION_PROVIDER_KEY";
@@ -115,8 +117,11 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
         string executable = RequireEnvironmentPath(PublishedExecutableVariable);
         string sourceImage = RequireEnvironmentPath(ImageVariable);
-        string model = global::System.Environment.GetEnvironmentVariable(ModelVariable)?.Trim()
-            ?? DefaultModel;
+        var models = ResolveModelRoles(
+            global::System.Environment.GetEnvironmentVariable(ModelVariable),
+            global::System.Environment.GetEnvironmentVariable(VisionModelVariable));
+        string model = models.Text;
+        string visionModel = models.Vision;
         Uri endpoint = ValidateLocalOllamaEndpoint(
             global::System.Environment.GetEnvironmentVariable(EndpointVariable)
             ?? DefaultEndpoint);
@@ -139,6 +144,11 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
         AssertNativeAotPublish(executable);
         AssertStopSignImage(sourceImage);
         await AssertModelIsInstalledAsync(endpoint, model);
+
+        if (!string.Equals(model, visionModel, StringComparison.Ordinal))
+        {
+            await AssertModelIsInstalledAsync(endpoint, visionModel);
+        }
 
         PublishedTestProcessIsolation isolation = PublishedTestProcessIsolation.Create("ollama-aot");
         string testHome = isolation.TestHome;
@@ -200,7 +210,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
                 hostPort,
                 endpoint,
                 model,
-                perplexity);
+                perplexity,
+                visionModel);
 
             TestEnvironment environment = new(isolation, workspace, perplexityKey);
 
@@ -555,7 +566,7 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
                 "--attachment",
                 imageId.ToString("D"),
                 "--model",
-                model,
+                visionModel,
                 "--temperature",
                 "0",
                 "--max-tokens",
@@ -586,6 +597,15 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
                 beforeRestartRows);
 
             await RunNativeMemoryRecallAsync(api, hostPort, masterApiKey, model, workspace, sessionId);
+
+            using CancellationTokenSource modelReadDeadline = new(TimeSpan.FromSeconds(45));
+
+            LongRestQualificationGrimoire modelEvidence = await LongRestQualificationGrimoire.OpenAsync(
+                configurationDirectory, modelReadDeadline.Token);
+
+            Assert.True(ReplyModelsMatch(await modelEvidence.ReadReplyModelsAsync(sessionId, modelReadDeadline.Token),
+                model, visionModel, perplexity),
+                "Persisted assistant replies must record the exact text/vision roles in turn order.");
 
             _ = await AssertPersistedTimestampEncodingAsync(configurationDirectory);
 
@@ -1085,14 +1105,39 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
         return NormalizeModelAnswer(assistant.GetProperty("content").GetString() ?? string.Empty);
     }
 
+    internal static bool ReplyModelsMatch(IReadOnlyList<string?> models, string text, string vision, bool perplexity)
+    {
+        string[] expected = perplexity ? [text, text, text, vision, text] : [text, text, vision, text];
+
+        return models.SequenceEqual(expected);
+    }
+
+    internal static (string Text, string Vision) ResolveModelRoles(string? textModel, string? visionModel)
+    {
+        string text = textModel?.Trim() ?? DefaultModel;
+
+        string vision = visionModel?.Trim() ?? text;
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(text, nameof(textModel));
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(vision, nameof(visionModel));
+
+        return (text, vision);
+    }
+
     internal static async Task WriteConfigurationAsync(
         string path,
         string workspace,
         int hostPort,
         Uri endpoint,
         string model,
-        bool perplexity = false)
+        bool perplexity = false,
+        string? visionModel = null)
     {
+        var roles = ResolveModelRoles(model, visionModel);
+
+        bool shared = string.Equals(roles.Text, roles.Vision, StringComparison.Ordinal);
+
         ArcanumConfigurationFile configuration = new()
         {
             Arcanum = new ArcanumSettings
@@ -1102,7 +1147,7 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
                     Port = hostPort,
                     ListenAny = false,
                 },
-                DefaultModel = model,
+                DefaultModel = roles.Text,
                 Providers =
                 [
                     new ProviderSettings
@@ -1111,7 +1156,10 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
                         Type = AiProviderKind.OpenAICompatible,
                         Endpoint = endpoint.AbsoluteUri,
                         CredentialEnvironmentVariable = ProviderKeyVariable,
-                        Models = [new ModelEntry(model, SupportsVision: true, SupportsTools: true)],
+                        Models = shared
+                            ? [new ModelEntry(roles.Text, SupportsVision: true, SupportsTools: true)]
+                            : [new ModelEntry(roles.Text, SupportsVision: false, SupportsTools: true),
+                               new ModelEntry(roles.Vision, SupportsVision: true, SupportsTools: true)],
                         ContextWindowLimit = 131_072,
                     },
                 ],

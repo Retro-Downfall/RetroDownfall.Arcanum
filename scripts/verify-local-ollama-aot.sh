@@ -10,6 +10,8 @@ CONFIGURATION=Release
 EXECUTABLE=""
 IMAGE=""
 MODEL="gemma4:e4b"
+TEXT_MODEL=""
+VISION_MODEL=""
 ENDPOINT="http://127.0.0.1:11434/v1/"
 PERPLEXITY=0
 PERPLEXITY_KEY_VARIABLE="ARCANUM_PERPLEXITY_API_KEY"
@@ -22,7 +24,9 @@ Usage: verify-local-ollama-aot.sh --executable <published-apphost> --image <png>
 Local qualification options:
   --executable <path>    Existing Native AOT Arcanum apphost. This wrapper never publishes it.
   --image <path>         The qualified stop-sign PNG (exact SHA-256 is checked).
-  --model <tag>          Installed Ollama vision model with tools (default: gemma4:e4b).
+  --model <tag>          Fallback installed model for both roles (default: gemma4:e4b).
+  --text-model <tag>     Override only the text/search/recall role, regardless of argument order.
+  --vision-model <tag>   Override only the image-turn role, regardless of argument order.
   --endpoint <uri>       Literal-loopback Ollama /v1 endpoint (default: http://127.0.0.1:11434/v1/).
   --perplexity          Also require a live Perplexity search and parsed citation recall (paid network).
   --perplexity-key-variable <name> Credential environment-variable name, never a key value.
@@ -51,8 +55,23 @@ while [[ $# -gt 0 ]]; do
       IMAGE="${2:?--image requires a path}"
       shift 2
       ;;
-    --model)
-      MODEL="${2:?--model requires a tag}"
+    --model | --text-model | --vision-model)
+      if [[ $# -lt 2 || "$2" == --* || "$2" == "-h" ]]; then
+        echo "error: $1 requires a tag" >&2
+        exit 2
+      fi
+
+      if [[ ! "$2" =~ [^[:space:]] ]]; then
+        echo "error: $1 must not be blank" >&2
+        exit 2
+      fi
+
+      case "$1" in
+        --model) MODEL="$2" ;;
+        --text-model) TEXT_MODEL="$2" ;;
+        --vision-model) VISION_MODEL="$2" ;;
+      esac
+
       shift 2
       ;;
     --endpoint)
@@ -82,6 +101,9 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+TEXT_MODEL="${TEXT_MODEL:-$MODEL}"
+VISION_MODEL="${VISION_MODEL:-$MODEL}"
 
 if [[ "${GITHUB_ACTIONS:-}" =~ ^([Tt][Rr][Uu][Ee]|1)$ ]]; then
   echo "error: real-model qualification is local-only and cannot run in GitHub Actions" >&2
@@ -179,11 +201,6 @@ if [[ "$IMAGE_SHA256" != "$EXPECTED_IMAGE_SHA256" ]]; then
   exit 2
 fi
 
-if [[ -z "$MODEL" ]]; then
-  echo "error: --model must not be empty" >&2
-  exit 2
-fi
-
 if [[ ! "$ENDPOINT" =~ ^http://(127\.0\.0\.1|\[::1\]):[0-9]+/v1/?$ ]]; then
   echo "error: --endpoint must be an HTTP /v1 URI on literal loopback" >&2
   exit 2
@@ -272,7 +289,8 @@ ARCANUM_OLLAMA_QUALIFICATION_PERPLEXITY="$PERPLEXITY" \
 ARCANUM_OLLAMA_QUALIFICATION_PERPLEXITY_KEY_VARIABLE="$PERPLEXITY_KEY_VARIABLE" \
 ARCANUM_PUBLISHED_EXECUTABLE="$EXECUTABLE_FOR_TEST" \
 ARCANUM_OLLAMA_QUALIFICATION_IMAGE="$IMAGE_FOR_TEST" \
-ARCANUM_OLLAMA_QUALIFICATION_MODEL="$MODEL" \
+ARCANUM_OLLAMA_QUALIFICATION_MODEL="$TEXT_MODEL" \
+ARCANUM_OLLAMA_QUALIFICATION_VISION_MODEL="$VISION_MODEL" \
 ARCANUM_OLLAMA_QUALIFICATION_ENDPOINT="$ENDPOINT" \
 ARCANUM_OLLAMA_QUALIFICATION_RECEIPT="$QUALIFICATION_RECEIPT_FOR_TEST" \
 dotnet test "$TEST_PROJECT" \
