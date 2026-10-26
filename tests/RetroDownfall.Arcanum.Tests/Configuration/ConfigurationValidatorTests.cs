@@ -12,6 +12,59 @@ public sealed class ConfigurationValidatorTests
     private readonly ConfigurationValidator _validator = new();
 
     [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public void Guardrail_topic_regex_validation_names_the_invalid_index_without_policy_text(bool allowed, bool enabled)
+    {
+        const string privatePattern = "(private-policy-sentinel";
+
+        ArcanumSettings settings = new()
+        {
+            Features = new() { Guardrails = enabled },
+            Security = new()
+            {
+                Guardrails = new()
+                {
+                    AllowedTopics = allowed ? ["weather", privatePattern] : [],
+                    BlockedTopics = allowed ? [] : ["weather", privatePattern],
+                },
+            },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        string pointer = allowed ? "security.guardrails.allowedTopics[1]" : "security.guardrails.blockedTopics[1]";
+
+        ConfigurationValidationError error = Assert.Single(result.Error.Details!, item => item.Pointer == pointer);
+
+        Assert.Contains("regular expression", error.Detail, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(privatePattern, error.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Guardrail_topic_regex_validation_accepts_runtime_syntax_and_ignored_empty_entries()
+    {
+        ArcanumSettings settings = new()
+        {
+            Security = new()
+            {
+                Guardrails = new()
+                {
+                    AllowedTopics = ["^weather$", "(?i:rain)", null!, " "],
+                    BlockedTopics = ["password\\s*=", "", null!],
+                },
+            },
+        };
+
+        Assert.True(_validator.Validate(settings).IsSuccess);
+    }
+
+    [Theory]
     [InlineData(true, 0, true)]
     [InlineData(false, 0, false)]
     [InlineData(true, 10, false)]

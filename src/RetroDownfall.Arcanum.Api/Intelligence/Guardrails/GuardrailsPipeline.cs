@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
@@ -32,6 +33,9 @@ public sealed partial class GuardrailsPipeline(
     IGuardrailAuditLogger auditLogger,
     ILogger<GuardrailsPipeline> logger)
 {
+    // A retired settings snapshot and its bounded field/index warning set can be collected together.
+    private readonly ConditionalWeakTable<ArcanumSettings, ConcurrentDictionary<string, byte>> _invalidTopicWarnings = new();
+
     /// <summary>
     /// One PII detector: the violation type it reports, the caller-facing description, and the
     /// compiled pattern. Internal so a test can substitute a pattern with a tiny match budget.
@@ -89,7 +93,9 @@ public sealed partial class GuardrailsPipeline(
         CancellationToken cancellationToken,
         GuardrailAuditContext? auditContext = null)
     {
-        GuardrailsSettings settings = optionsMonitor.CurrentValue.ResolveGuardrails();
+        ArcanumSettings configuration = optionsMonitor.CurrentValue;
+
+        GuardrailsSettings settings = configuration.ResolveGuardrails();
 
         if (!settings.Enabled || messages is null or { Count: 0 }
             || !messages.Any(static message => IsRole(message, "user")))
@@ -99,7 +105,7 @@ public sealed partial class GuardrailsPipeline(
 
         string text = ConcatenateMessageText(messages);
 
-        List<GuardrailsViolation> violations = ScanInput(text, settings);
+        List<GuardrailsViolation> violations = ScanInput(text, settings, configuration);
 
         if (violations.Count == 0)
         {
@@ -132,14 +138,16 @@ public sealed partial class GuardrailsPipeline(
         CancellationToken cancellationToken,
         GuardrailAuditContext? auditContext = null)
     {
-        GuardrailsSettings settings = optionsMonitor.CurrentValue.ResolveGuardrails();
+        ArcanumSettings configuration = optionsMonitor.CurrentValue;
+
+        GuardrailsSettings settings = configuration.ResolveGuardrails();
 
         if (!settings.Enabled || string.IsNullOrEmpty(text))
         {
             return Result<GuardrailsResult>.Success(GuardrailsResult.Allowed);
         }
 
-        List<GuardrailsViolation> violations = ScanOutput(text, settings);
+        List<GuardrailsViolation> violations = ScanOutput(text, settings, configuration);
 
         if (violations.Count == 0)
         {
@@ -204,7 +212,7 @@ public sealed partial class GuardrailsPipeline(
     private static bool IsRole(CoreChatMessage message, string role) =>
         string.Equals(message.Role, role, StringComparison.OrdinalIgnoreCase);
 
-    private List<GuardrailsViolation> ScanInput(string text, GuardrailsSettings settings)
+    private List<GuardrailsViolation> ScanInput(string text, GuardrailsSettings settings, ArcanumSettings configuration)
     {
         List<GuardrailsViolation> violations = [];
 
@@ -218,12 +226,12 @@ public sealed partial class GuardrailsPipeline(
             AddToxicityViolations(violations, text, blocklist);
         }
 
-        AddTopicViolations(violations, text, settings, stageIsInput: true);
+        AddTopicViolations(violations, text, settings, configuration, stageIsInput: true);
 
         return violations;
     }
 
-    private List<GuardrailsViolation> ScanOutput(string text, GuardrailsSettings settings)
+    private List<GuardrailsViolation> ScanOutput(string text, GuardrailsSettings settings, ArcanumSettings configuration)
     {
         List<GuardrailsViolation> violations = [];
 
@@ -232,7 +240,7 @@ public sealed partial class GuardrailsPipeline(
             AddToxicityViolations(violations, text, blocklist);
         }
 
-        AddTopicViolations(violations, text, settings, stageIsInput: false);
+        AddTopicViolations(violations, text, settings, configuration, stageIsInput: false);
 
         return violations;
     }
@@ -310,6 +318,7 @@ public sealed partial class GuardrailsPipeline(
         List<GuardrailsViolation> violations,
         string text,
         GuardrailsSettings settings,
+        ArcanumSettings configuration,
         bool stageIsInput)
     {
         // Allowed-topics only apply to input — an output can be any topic not explicitly blocked.
@@ -317,11 +326,13 @@ public sealed partial class GuardrailsPipeline(
         {
             bool matchedAny = false;
 
-            foreach (string pattern in allowed)
+            for (int index = 0; index < allowed.Length; index++)
             {
+                string pointer = $"security.guardrails.allowedTopics[{index.ToString(CultureInfo.InvariantCulture)}]";
+
                 // Undetermined stays unmatched here, which is already the fail-closed direction for
                 // an allow list.
-                if (MatchTopic(pattern, text, out string? matched) == PatternMatch.Matched)
+                if (MatchTopic(allowed[index], text, configuration, pointer, out _) == PatternMatch.Matched)
                 {
                     matchedAny = true;
 
@@ -340,9 +351,11 @@ public sealed partial class GuardrailsPipeline(
 
         if (settings.BlockedTopics is { Length: > 0 } blocked)
         {
-            foreach (string pattern in blocked)
+            for (int index = 0; index < blocked.Length; index++)
             {
-                switch (MatchTopic(pattern, text, out string? matched))
+                string pointer = $"security.guardrails.blockedTopics[{index.ToString(CultureInfo.InvariantCulture)}]";
+
+                switch (MatchTopic(blocked[index], text, configuration, pointer, out string? matched))
                 {
                     case PatternMatch.Matched:
                         violations.Add(new GuardrailsViolation(
@@ -383,7 +396,7 @@ public sealed partial class GuardrailsPipeline(
         Undetermined,
     }
 
-    private PatternMatch MatchTopic(string pattern, string text, out string? matched)
+    private PatternMatch MatchTopic(string pattern, string text, ArcanumSettings configuration, string pointer, out string? matched)
     {
         matched = null;
 
@@ -398,16 +411,21 @@ public sealed partial class GuardrailsPipeline(
         {
             regex = GetTopicRegex(pattern);
         }
-        catch (ArgumentException ex)
+        catch (ArgumentException)
         {
-            // An operator typo is a configuration mistake, not an attack surface: the pattern never
-            // matches anything, so skipping it is the same answer at every call site.
-            logger.LogWarning(ex, "Guardrails topic pattern '{Pattern}' is invalid; skipped.", pattern);
+            ConcurrentDictionary<string, byte> warnings = _invalidTopicWarnings.GetValue(configuration, static _ => new());
+
+            if (warnings.TryAdd(pointer, 0))
+            {
+                logger.LogWarning(
+                    "Guardrails configuration {ConfigurationPath} contains an invalid regular expression and was skipped. Correct the pattern and run arcanum config validate.",
+                    pointer);
+            }
 
             return PatternMatch.NoMatch;
         }
 
-        return MatchPattern(regex, text, $"topic '{pattern}'", out matched);
+        return MatchPattern(regex, text, pointer, out matched);
     }
 
     /// <summary>
@@ -431,9 +449,9 @@ public sealed partial class GuardrailsPipeline(
                 }
             }
         }
-        catch (RegexMatchTimeoutException ex)
+        catch (RegexMatchTimeoutException)
         {
-            logger.LogWarning(ex, "Guardrails pattern {Pattern} exceeded its match budget; the result is undetermined.", label);
+            logger.LogWarning("Guardrails pattern {Pattern} exceeded its match budget; the result is undetermined.", label);
 
             return PatternMatch.Undetermined;
         }
@@ -568,6 +586,13 @@ public sealed partial class GuardrailsPipeline(
             return new Error(
                 ErrorCodes.Guardrails.Blocked,
                 "Input rejected: the content could not be scanned for personally identifiable information within its time budget.");
+        }
+
+        if (string.Equals(violation.Type, TypeTopicAllowed, StringComparison.Ordinal))
+        {
+            return new Error(
+                ErrorCodes.Guardrails.Blocked,
+                "Input rejected: content did not match any allowed topic. Use an allowed topic or review security.guardrails.allowedTopics.");
         }
 
         return violation.Type.StartsWith("pii-", StringComparison.Ordinal)
