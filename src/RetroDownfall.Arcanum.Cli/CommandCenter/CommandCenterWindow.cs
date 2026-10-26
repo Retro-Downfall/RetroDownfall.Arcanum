@@ -45,6 +45,10 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
     private bool _overlayHumanPrompt;
 
+    private IReadOnlyList<string>? _overlayProseLines;
+
+    private int _overlayProseWrapWidth;
+
     private IReadOnlyList<string> _humanPromptLines = [];
 
     private int _humanPromptWrapWidth;
@@ -948,6 +952,8 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         _overlayKind = kind;
         _overlayHumanPrompt = false;
+        _overlayProseLines = showFilter || kind == CommandCenterOverlayKind.CommandPalette ? null : lines;
+        _overlayProseWrapWidth = 0;
         OverlayAnswer.Visible = false;
         try
         {
@@ -969,31 +975,14 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         OverlayFilter.Visible = showFilter;
         OverlayFilter.Text = string.Empty;
 
-        // Size width from raw content, then wrap long lines so height expands and text stays readable.
-        int longest = 0;
-        foreach (string line in lines)
-        {
-            int cells = TerminalCellMetrics.MeasureWidth(line);
-            if (cells > longest)
-            {
-                longest = cells;
-            }
-        }
-
-        int overlayW = OverlayLayout.MeasureWidth(_cols, longest);
-        int innerWidth = Math.Max(8, overlayW - 2);
-        IReadOnlyList<string> displayLines = showFilter || kind == CommandCenterOverlayKind.CommandPalette
-            ? lines
-            : OverlayLayout.WrapLines(lines, innerWidth);
-
         if (kind == CommandCenterOverlayKind.CommandPalette)
         {
-            SetPickerRows(displayLines, displayLines.Count > 0 ? 0 : -1);
+            SetPickerRows(lines, lines.Count > 0 ? 0 : -1);
         }
         else
         {
             _overlayLines.Clear();
-            foreach (string line in displayLines)
+            foreach (string line in lines)
             {
                 _overlayLines.Add(line);
             }
@@ -1019,7 +1008,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             OverlayBody.Visible = true;
             OverlayBody.Y = 0;
             OverlayBody.Height = Dim.Fill();
-            OverlayBody.Text = string.Join('\n', displayLines);
+            OverlayBody.Text = string.Join('\n', lines);
         }
 
         // Recompute frame to content height before focusing (half-screen default is too tall for confirms).
@@ -1057,6 +1046,8 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         _overlayKind = CommandCenterOverlayKind.HumanPrompt;
         _overlayHumanPrompt = true;
+        _overlayProseLines = null;
+        _overlayProseWrapWidth = 0;
         _overlayShowFilter = false;
         OverlayPane.Title = "Mage asks";
         OverlayPane.Visible = true;
@@ -1163,6 +1154,8 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         _overlayShowFilter = false;
         _overlayHumanPrompt = false;
+        _overlayProseLines = null;
+        _overlayProseWrapWidth = 0;
         _humanPromptLines = [];
         _humanPromptWrapWidth = 0;
         _overlayLines.Clear();
@@ -1175,6 +1168,10 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
     private void SetPickerRows(IReadOnlyList<string> rows, int selectedIndex)
     {
         _pickerRows = rows;
+
+        _overlayProseLines = null;
+
+        _overlayProseWrapWidth = 0;
 
         _overlayLines.Clear();
 
@@ -1332,6 +1329,8 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
     {
         _overlayKind = CommandCenterOverlayKind.SessionPicker;
         _overlayHumanPrompt = false;
+        _overlayProseLines = null;
+        _overlayProseWrapWidth = 0;
         OverlayAnswer.Visible = false;
         try
         {
@@ -2022,9 +2021,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         Footer.Height = footerH;
 
         int longestOverlay = 0;
-        foreach (string line in _overlayHumanPrompt ? _humanPromptLines : _overlayLines)
+        foreach (string line in _overlayHumanPrompt ? _humanPromptLines : _overlayProseLines ?? _overlayLines)
         {
-            int cells = _overlayHumanPrompt ? TerminalCellMetrics.MeasureWidth(line) : line.Length;
+            int cells = TerminalCellMetrics.MeasureWidth(line);
 
             if (cells > longestOverlay)
             {
@@ -2033,6 +2032,31 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         }
 
         int overlayW = OverlayLayout.MeasureWidth(_cols, longestOverlay);
+
+        // Keep complete sanitized prose so narrowing and widening both reflow from the source.
+        // Picker rows retain their one-to-one action mapping and are never wrapped here.
+        int proseWidth = Math.Max(8, overlayW - 2);
+
+        if (_overlayProseLines is not null && proseWidth != _overlayProseWrapWidth)
+        {
+            int selected = OverlayList.SelectedItem ?? 0;
+
+            _overlayProseWrapWidth = proseWidth;
+
+            _overlayLines.Clear();
+
+            foreach (string line in OverlayLayout.WrapLines(_overlayProseLines, proseWidth))
+            {
+                _overlayLines.Add(line);
+            }
+
+            OverlayList.SelectedItem = Math.Clamp(selected, 0, Math.Max(0, _overlayLines.Count - 1));
+
+            if (OverlayBody.Visible)
+            {
+                OverlayBody.Text = string.Join('\n', _overlayLines);
+            }
+        }
 
         // The question viewport reserves one column for its scrollbar in addition to the frame.
         // Reflow from the complete sanitized text when the terminal width changes.
