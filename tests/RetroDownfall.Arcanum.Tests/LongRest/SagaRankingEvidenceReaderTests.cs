@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -30,6 +31,497 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 public sealed class SagaRankingEvidenceReaderTests
 {
     private static readonly CovenantDigest Digest = new(new byte[32]);
+
+    [SkippableFact]
+    public async Task Repeated_listing_status_and_recall_reuse_unchanged_retained_evidence()
+    {
+        await using Harness h = await Harness.CreateAsync();
+
+        h.Saga.Options.CurrentValue.Features.LongRest = true;
+
+        for (int index = 0; index < 12; index++)
+        {
+            MemoryEvaluationSourceCoordinate source = await h.InsertAsync();
+
+            await h.ReportAsync([source], MemoryEvaluationOutcome.Harm);
+        }
+
+        SagaMemoryStore store = new(h.Saga.Context, h.Saga.VectorAccelerator, h.Saga.Options,
+            MemoryErasureTestKeys.Isolated(), timeProvider: new Instant(h.AsOf));
+
+        var first = await store.ListAsync(null, null, MemoryScope.Installation, 3, 0, CancellationToken.None);
+
+        Assert.Equal(3, first.Length);
+
+        using SqliteStatementTrace trace = new(h.Connection);
+
+        var second = await store.ListAsync(null, null, MemoryScope.Installation, 3, 3, CancellationToken.None);
+
+        Assert.Equal(3, second.Length);
+
+        Assert.Empty(first.Select(memory => memory.Id).Intersect(second.Select(memory => memory.Id)));
+
+        Assert.Equal(12, (await store.ReadRankingStatusAsync(MemoryScope.Installation, null, CancellationToken.None))!.NegativeCreditVersionCount);
+
+        Assert.Single(await h.SearchAsync(0.5f));
+
+        Assert.DoesNotContain(trace.Statements, statement => statement.Contains("SELECT RegistrationJson", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(trace.Statements, statement => statement.StartsWith("SELECT Content FROM saga_memories", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task A_malformed_future_clock_in_optional_evidence_cannot_break_ordinary_recall()
+    {
+        await using Harness h = await Harness.CreateAsync();
+
+        MemoryEvaluationSourceCoordinate source = await h.InsertAsync();
+
+        await h.ReportAsync([source]);
+
+        MemoryEvaluationStoredEvidence corrupt = await h.ReportAsync([source]);
+
+        await h.ExecuteAsync("DROP TRIGGER memory_evaluation_reports_guard_update");
+
+        await h.ExecuteAsync("UPDATE memory_evaluation_reports SET CompletedAtUtc = '9999-99-99T00:00:00.0000000Z' WHERE EvaluationId = $id",
+            ("$id", corrupt.Registration.EvaluationId.ToString("N")));
+
+        Assert.Equal(1, Assert.Single(await h.ReadAsync()).Value.BenefitCount);
+    }
+
+    [SkippableFact]
+    public async Task Warm_campaign_evidence_rechecks_owner_binding_after_revocation()
+    {
+        await using Harness h = await Harness.CreateAsync();
+
+        Guid session = await h.Saga.SessionBoundToNewCampaignAsync();
+
+        MemoryEvaluationSourceCoordinate source = await h.InsertAsync(session);
+
+        await h.ReportAsync([source]);
+
+        await h.CommitUseAsync(source);
+
+        Assert.Equal(1, Assert.Single(await h.ReadAsync()).Value.SuccessfulUseCount);
+
+        await h.ExecuteAsync("DROP TRIGGER session_campaign_bindings_guard_delete");
+
+        await h.ExecuteAsync("DELETE FROM session_campaign_bindings WHERE SessionId = $id",
+            ("$id", session.ToString("D").ToUpperInvariant()));
+
+        Assert.Empty(await h.ReadAsync());
+    }
+
+    [SkippableFact]
+    public async Task Reopening_a_connection_rechecks_changes_committed_while_it_was_closed()
+    {
+        await using Harness h = await Harness.CreateAsync();
+
+        MemoryEvaluationSourceCoordinate source = await h.InsertAsync();
+
+        await h.ReportAsync([source]);
+
+        Assert.Single(await h.ReadAsync());
+
+        await using ArcanumDbContext sibling = h.Saga.CreateSiblingContext();
+
+        await sibling.Database.OpenConnectionAsync();
+
+        SqliteConnection writer = (SqliteConnection)sibling.Database.GetDbConnection();
+
+        await h.Connection.CloseAsync();
+
+        await using (SqliteCommand command = writer.CreateCommand())
+        {
+            command.CommandText = "UPDATE saga_memories SET Content = 'changed while closed' WHERE Id = $id";
+
+            command.Parameters.AddWithValue("$id", source.SubjectId);
+
+            Assert.Equal(1, await command.ExecuteNonQueryAsync());
+        }
+
+        await h.Connection.OpenAsync();
+
+        Assert.Empty(await h.ReadAsync());
+    }
+
+    [SkippableFact]
+    public async Task Separate_pooled_connection_leases_reuse_the_same_committed_cut()
+    {
+        await using Harness h = await Harness.CreateAsync();
+
+        MemoryEvaluationSourceCoordinate source = await h.InsertAsync();
+
+        await h.ReportAsync([source]);
+
+        string connectionString = new SqliteConnectionStringBuilder(h.Connection.ConnectionString) { Pooling = true }.ToString();
+
+        await using SqliteConnection first = new(connectionString);
+
+        await first.OpenAsync();
+
+        var originalHandle = first.Handle;
+
+        Assert.Single(await SagaRankingEvidenceReader.InSnapshotAsync(first,
+            () => SagaRankingEvidenceReader.ReadAsync(first, h.AsOf, CancellationToken.None), CancellationToken.None));
+
+        await first.CloseAsync();
+
+        await using SqliteConnection second = new(connectionString);
+
+        try
+        {
+            await second.OpenAsync();
+
+            Assert.Same(originalHandle, second.Handle);
+
+            using SqliteStatementTrace trace = new(second);
+
+            Assert.Single(await SagaRankingEvidenceReader.InSnapshotAsync(second,
+                () => SagaRankingEvidenceReader.ReadAsync(second, h.AsOf.AddTicks(1), CancellationToken.None), CancellationToken.None));
+
+            Assert.DoesNotContain(trace.Statements, statement => statement.Contains("SELECT RegistrationJson", StringComparison.Ordinal));
+        }
+        finally
+        {
+            await second.CloseAsync();
+
+            SqliteConnection.ClearPool(second);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Disabled_ranking_does_not_probe_or_cache_evidence_stamps()
+    {
+        await using Harness h = await Harness.CreateAsync();
+
+        await h.InsertAsync();
+
+        using SqliteStatementTrace trace = new(h.Connection);
+
+        Assert.Single(await h.Saga.Store.ListAsync(null, null, MemoryScope.Installation, 3, 0, CancellationToken.None));
+
+        Assert.DoesNotContain(trace.Statements, statement => statement.Contains("pragma_data_version", StringComparison.Ordinal));
+    }
+
+    [SkippableTheory]
+    [InlineData(false, 1)]
+    [InlineData(true, 0)]
+    public async Task Missing_optional_evidence_tables_preserve_the_uncached_fail_closed_answer(bool missingAnnals, int expected)
+    {
+        await using Harness h = await Harness.CreateAsync();
+
+        MemoryEvaluationSourceCoordinate source = await h.InsertAsync();
+
+        await h.ReportAsync([source]);
+
+        await h.ExecuteAsync("PRAGMA foreign_keys = OFF");
+
+        await h.ExecuteAsync(missingAnnals ? "DROP TABLE annal_versions" : "DROP TABLE saga_committed_uses");
+
+        Assert.Equal(expected, (await h.ReadAsync()).Count);
+    }
+
+    [SkippableTheory]
+    [InlineData("content")]
+    [InlineData("sensitivity")]
+    [InlineData("retirement")]
+    [InlineData("version")]
+    [InlineData("dataset")]
+    [InlineData("report")]
+    [InlineData("source-digest")]
+    [InlineData("annal-sensitivity")]
+    public async Task Warm_evidence_never_survives_a_source_or_authority_change(string mutation)
+    {
+        await using Harness h = await Harness.CreateAsync();
+
+        MemoryEvaluationSourceCoordinate source = await h.InsertAsync();
+
+        MemoryEvaluationStoredEvidence report = await h.ReportAsync([source]);
+
+        Assert.Single(await h.ReadAsync());
+
+        switch (mutation)
+        {
+            case "content":
+                await h.ExecuteAsync("UPDATE saga_memories SET Content = 'changed' WHERE Id = $id", ("$id", source.SubjectId));
+                break;
+            case "sensitivity":
+                await h.Saga.LabelSensitiveAsync(Guid.Parse(source.SubjectId));
+                break;
+            case "retirement":
+                await h.ExecuteAsync("UPDATE saga_memories SET RetiredAtUtc = $at WHERE Id = $id",
+                    ("$at", UtcInstantText.Format(h.AsOf)), ("$id", source.SubjectId));
+                break;
+            case "version":
+                Assert.Equal(SagaCurationOutcomeKind.Applied, (await h.Saga.Store.CorrectAsync(source.SubjectId,
+                    source.ContentDigest.Bytes, "corrected", Vector(), h.AsOf, CancellationToken.None)).Kind);
+                break;
+            case "dataset":
+                await h.ExecuteAsync("UPDATE covenant_state SET DatasetGeneration = $dataset WHERE StateKey = 1",
+                    ("$dataset", Guid.NewGuid().ToByteArray()));
+                break;
+            case "report":
+                Require(await h.Store.DeleteAsync(new(report.Registration.EvaluationId, report.ReportDigest!.Value, true), CancellationToken.None));
+                break;
+            case "source-digest":
+                await h.ExecuteAsync("DROP TRIGGER annal_versions_guard_update");
+                await h.ExecuteAsync("UPDATE annal_versions SET ContentHash = zeroblob(32) WHERE VersionId = $id", ("$id", source.VersionId));
+                break;
+            case "annal-sensitivity":
+                await h.ExecuteAsync("DROP TRIGGER annal_versions_guard_update");
+                await h.ExecuteAsync("UPDATE annal_versions SET SensitivityCode = 1 WHERE VersionId = $id", ("$id", source.VersionId));
+                break;
+        }
+
+        Assert.Empty(await h.ReadAsync());
+    }
+
+    [SkippableFact]
+    public async Task Warm_evidence_observes_new_reports_uses_and_erased_use_entries()
+    {
+        await using Harness h = await Harness.CreateAsync();
+
+        MemoryEvaluationSourceCoordinate source = await h.InsertAsync();
+
+        Assert.Empty(await h.ReadAsync());
+
+        await h.ReportAsync([source]);
+
+        Assert.Equal(0, Assert.Single(await h.ReadAsync()).Value.SuccessfulUseCount);
+
+        Guid assistant = await h.CommitUseAsync(source);
+
+        Assert.Equal(1, Assert.Single(await h.ReadAsync()).Value.SuccessfulUseCount);
+
+        await h.ExecuteAsync("PRAGMA foreign_keys = OFF");
+
+        await h.ExecuteAsync("DELETE FROM Entries WHERE Id = $id", ("$id", assistant.ToString("D").ToUpperInvariant()));
+
+        Assert.Equal(0, Assert.Single(await h.ReadAsync()).Value.SuccessfulUseCount);
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Cached_evidence_obeys_completion_and_exclusive_validity_edges_and_backward_time(bool damagedProjection)
+    {
+        await using Harness h = await Harness.CreateAsync();
+
+        MemoryEvaluationSourceCoordinate source = await h.InsertAsync();
+
+        DateTimeOffset until = h.AsOf.AddSeconds(1);
+
+        source = source with { ValidToUtc = until };
+
+        await h.ExecuteAsync("DROP TRIGGER annal_versions_guard_update");
+
+        await h.ExecuteAsync("UPDATE annal_versions SET ValidToUtc = $at WHERE VersionId = $id",
+            ("$at", UtcInstantText.Format(until)), ("$id", source.VersionId));
+
+        MemoryEvaluationStoredEvidence report = await h.ReportAsync([source]);
+
+        DateTimeOffset completed = report.Report!.CompletedAtUtc;
+
+        if (damagedProjection)
+        {
+            await h.ExecuteAsync("DROP TRIGGER memory_evaluation_sources_guard_update");
+
+            await h.ExecuteAsync("UPDATE memory_evaluation_sources SET VersionId = 'damaged-projection', StoreCode = 1 WHERE EvaluationId = $id",
+                ("$id", report.Registration.EvaluationId.ToString("N")));
+        }
+
+        Assert.Empty(await h.ReadAtAsync(completed.AddTicks(-1)));
+
+        Assert.Equal(1, Assert.Single(await h.ReadAtAsync(completed)).Value.BenefitCount);
+
+        using (SqliteStatementTrace trace = new(h.Connection))
+        {
+            Assert.Single(await h.ReadAtAsync(until.AddTicks(-1)));
+
+            Assert.DoesNotContain(trace.Statements, statement => statement.Contains("SELECT RegistrationJson", StringComparison.Ordinal));
+        }
+
+        Assert.Empty(await h.ReadAtAsync(until));
+
+        Assert.Single(await h.ReadAtAsync(until.AddTicks(-1)));
+
+        Assert.Empty(await h.ReadAtAsync(completed.AddTicks(-1)));
+    }
+
+    [SkippableFact]
+    public async Task Cached_use_count_changes_at_the_exact_finalization_instant()
+    {
+        await using Harness h = await Harness.CreateAsync();
+
+        MemoryEvaluationSourceCoordinate source = await h.InsertAsync();
+
+        await h.ReportAsync([source]);
+
+        Guid assistant = await h.CommitUseAsync(source);
+
+        await h.ExecuteAsync("DROP TRIGGER assistant_entry_finalizations_guard_update");
+
+        await h.ExecuteAsync("UPDATE assistant_entry_finalizations SET FinalizedAtUtc = $at WHERE AssistantEntryId = $id",
+            ("$at", UtcInstantText.Format(h.AsOf)), ("$id", assistant.ToString("D").ToUpperInvariant()));
+
+        Assert.Equal(0, Assert.Single(await h.ReadAtAsync(h.AsOf.AddTicks(-1))).Value.SuccessfulUseCount);
+
+        Assert.Equal(1, Assert.Single(await h.ReadAtAsync(h.AsOf)).Value.SuccessfulUseCount);
+
+        Assert.Equal(0, Assert.Single(await h.ReadAtAsync(h.AsOf.AddTicks(-1))).Value.SuccessfulUseCount);
+    }
+
+    [SkippableFact]
+    public async Task Raw_transaction_changes_and_rollback_cannot_publish_evidence()
+    {
+        await using Harness h = await Harness.CreateAsync();
+
+        MemoryEvaluationSourceCoordinate source = await h.InsertAsync();
+
+        await h.ReportAsync([source]);
+
+        Assert.Single(await h.ReadAsync());
+
+        await h.ExecuteAsync("BEGIN DEFERRED");
+
+        await h.ExecuteAsync("UPDATE saga_memories SET Content = 'uncommitted' WHERE Id = $id", ("$id", source.SubjectId));
+
+        Assert.Empty(await h.ReadAsync());
+
+        await h.ExecuteAsync("ROLLBACK");
+
+        Assert.Single(await h.ReadAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Failed_or_cancelled_read_scopes_discard_their_pending_cut(bool cancel)
+    {
+        await using Harness h = await Harness.CreateAsync();
+
+        MemoryEvaluationSourceCoordinate source = await h.InsertAsync();
+
+        await h.ReportAsync([source]);
+
+        using CancellationTokenSource cancellation = new();
+
+        Exception error = await Assert.ThrowsAnyAsync<Exception>(() => SagaRankingEvidenceReader.InSnapshotAsync<int>(h.Connection, async () =>
+        {
+            Assert.Single(await SagaRankingEvidenceReader.ReadAsync(h.Connection, h.AsOf, CancellationToken.None));
+
+            if (cancel)
+            {
+                cancellation.Cancel();
+
+                return 1;
+            }
+
+            throw new InvalidOperationException("Read scope failed.");
+        }, cancellation.Token));
+
+        if (cancel)
+        {
+            Assert.IsAssignableFrom<OperationCanceledException>(error);
+        }
+        else
+        {
+            Assert.IsType<InvalidOperationException>(error);
+        }
+
+        using SqliteStatementTrace trace = new(h.Connection);
+
+        Assert.Single(await h.ReadAsync());
+
+        Assert.Contains(trace.Statements, statement => statement.Contains("SELECT RegistrationJson", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task Independent_installations_cannot_reuse_another_handles_evidence()
+    {
+        await using Harness first = await Harness.CreateAsync();
+
+        await using Harness second = await Harness.CreateAsync();
+
+        MemoryEvaluationSourceCoordinate source = await first.InsertAsync();
+
+        await first.ReportAsync([source]);
+
+        Assert.Single(await first.ReadAsync());
+
+        Assert.Empty(await second.ReadAsync());
+
+        Assert.Single(await first.ReadAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData("before-pin")]
+    [InlineData("after-pin")]
+    [InlineData("before-commit")]
+    public async Task A_WAL_writer_racing_the_snapshot_never_labels_old_evidence_with_a_new_stamp(string boundary)
+    {
+        await using Harness h = await Harness.CreateAsync();
+
+        MemoryEvaluationSourceCoordinate source = await h.InsertAsync();
+
+        await h.ReportAsync([source]);
+
+        Assert.Single(await h.ReadAsync());
+
+        await using ArcanumDbContext sibling = h.Saga.CreateSiblingContext();
+
+        await sibling.Database.OpenConnectionAsync();
+
+        SqliteConnection writer = (SqliteConnection)sibling.Database.GetDbConnection();
+
+        bool inside = false;
+
+        bool written = false;
+
+        SQLitePCL.raw.sqlite3_trace(h.Connection.Handle, (SQLitePCL.strdelegate_trace)((_, statement) =>
+        {
+            if (statement.StartsWith("BEGIN DEFERRED", StringComparison.Ordinal))
+            {
+                inside = true;
+            }
+
+            bool atBoundary = boundary switch
+            {
+                "before-pin" => inside && statement.StartsWith("SELECT SchemaVersion", StringComparison.Ordinal),
+                "after-pin" => inside && statement.StartsWith("SELECT (SELECT schema_version", StringComparison.Ordinal),
+                _ => statement.StartsWith("COMMIT", StringComparison.Ordinal),
+            };
+
+            if (!written && atBoundary)
+            {
+                written = true;
+
+                using SqliteCommand command = writer.CreateCommand();
+
+                command.CommandText = "UPDATE saga_memories SET Content = 'changed by sibling' WHERE Id = $id";
+
+                command.Parameters.AddWithValue("$id", source.SubjectId);
+
+                Assert.Equal(1, command.ExecuteNonQuery());
+            }
+        }), null);
+
+        try
+        {
+            var raced = await h.ReadAsync();
+
+            Assert.True(written);
+
+            Assert.Equal(boundary == "before-pin" ? 0 : 1, raced.Count);
+        }
+        finally
+        {
+            SQLitePCL.raw.sqlite3_trace(h.Connection.Handle, (SQLitePCL.strdelegate_trace)null!, null);
+        }
+
+        Assert.Empty(await h.ReadAsync());
+    }
 
     [SkippableTheory]
     [InlineData(MemoryEvaluationOutcome.Benefit, 1, 0, 0)]
@@ -475,8 +967,11 @@ public sealed class SagaRankingEvidenceReaderTests
 
         internal static async Task<Harness> CreateAsync() => new(await SagaStoreHarness.CreateAsync(annalsEnabled: true));
 
-        internal Task<IReadOnlyDictionary<string, SagaRankingEvidence>> ReadAsync() =>
-            SagaRankingEvidenceReader.ReadAsync(Connection, AsOf, CancellationToken.None);
+        internal Task<IReadOnlyDictionary<string, SagaRankingEvidence>> ReadAsync() => ReadAtAsync(AsOf);
+
+        internal Task<IReadOnlyDictionary<string, SagaRankingEvidence>> ReadAtAsync(DateTimeOffset asOf) =>
+            SagaRankingEvidenceReader.InSnapshotAsync(Connection,
+                () => SagaRankingEvidenceReader.ReadAsync(Connection, asOf, CancellationToken.None), CancellationToken.None);
 
         internal async Task<DivinationResult[]> SearchAsync(float threshold)
         {

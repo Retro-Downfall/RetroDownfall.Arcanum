@@ -1190,12 +1190,12 @@ internal sealed partial class SagaMemoryStore(
         {
             DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-            return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection, async () =>
+            return await SagaRankingEvidenceReader.InSnapshotAsync(connection, async () =>
             {
                 bool longRest = await LongRestRecallSql.AvailableAsync(connection, cancellationToken).ConfigureAwait(false);
 
                 return await read(connection, longRest).ConfigureAwait(false);
-            }, cancellationToken).ConfigureAwait(false);
+            }, cancellationToken, enabled: options.CurrentValue.Features.LongRest).ConfigureAwait(false);
         }, cancellationToken);
 
     private static SagaMemoryDto ReadMemory(DbDataReader reader, SagaRankingReader ranking)

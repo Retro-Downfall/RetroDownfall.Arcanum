@@ -1,4 +1,6 @@
+using System.Collections.Frozen;
 using System.Data.Common;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 
 using Microsoft.Data.Sqlite;
@@ -7,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
+using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
@@ -19,7 +22,180 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 /// </summary>
 internal static class SagaRankingEvidenceReader
 {
+    private static readonly ConditionalWeakTable<SQLitePCL.sqlite3, EvidenceSlot> Slots = new();
+
+    /// <summary>Owns a read snapshot, keeping only evidence proved unchanged through its commit.</summary>
+    internal static async Task<T> InSnapshotAsync<T>(DbConnection connection, Func<Task<T>> read, CancellationToken ct, bool enabled = true)
+    {
+        if (!enabled || connection is not SqliteConnection sqlite)
+        {
+            return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection, read, ct).ConfigureAwait(false);
+        }
+
+        if (MemoryErasureEvidence.InTransaction(sqlite))
+        {
+            return await read().ConfigureAwait(false);
+        }
+
+        EvidenceSlot slot = Slots.GetOrCreateValue(sqlite.Handle!);
+
+        ChangeStamp before = await ReadStampAsync(sqlite, ct).ConfigureAwait(false);
+
+        try
+        {
+            T result = await GrimoireCoreSchemaVersion.InSnapshotAsync(connection, async () =>
+            {
+                // This actual table read pins the database snapshot before the connection-local stamp.
+                _ = await GrimoireCoreSchemaVersion.ReadAsync(connection, ct).ConfigureAwait(false);
+
+                ChangeStamp pinned = await ReadStampAsync(sqlite, ct).ConfigureAwait(false);
+
+                slot.Scope = before == pinned ? pinned : null;
+
+                return await read().ConfigureAwait(false);
+            }, ct).ConfigureAwait(false);
+
+            ChangeStamp after = await ReadStampAsync(sqlite, ct).ConfigureAwait(false);
+
+            slot.Cached = before == after ? slot.Pending ?? slot.Cached : null;
+
+            return result;
+        }
+        catch
+        {
+            slot.Cached = null;
+
+            throw;
+        }
+        finally
+        {
+            slot.Scope = null;
+
+            slot.Pending = null;
+        }
+    }
+
+    private sealed class EvidenceSlot
+    {
+        internal ChangeStamp? Scope { get; set; }
+
+        internal EvidenceCut? Cached { get; set; }
+
+        internal EvidenceCut? Pending { get; set; }
+    }
+
+    private sealed record ChangeStamp(long Schema, long Data, long Writes);
+
+    private sealed record EvidenceCut(ChangeStamp Stamp, Guid Dataset, DateTimeOffset From, DateTimeOffset? Until,
+        IReadOnlyDictionary<string, SagaRankingEvidence> Evidence);
+
+    private static async Task<ChangeStamp> ReadStampAsync(SqliteConnection connection, CancellationToken ct)
+    {
+        await using SqliteCommand command = Command(connection,
+            "SELECT (SELECT schema_version FROM pragma_schema_version), (SELECT data_version FROM pragma_data_version), total_changes();");
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+        return await reader.ReadAsync(ct).ConfigureAwait(false)
+            ? new(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2))
+            : throw new InvalidDataException("The ranking evidence change stamp is unavailable.");
+    }
+
     internal static async Task<IReadOnlyDictionary<string, SagaRankingEvidence>> ReadAsync(
+        DbConnection connection,
+        DateTimeOffset asOfUtc,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (connection is not SqliteConnection sqlite || !Slots.TryGetValue(sqlite.Handle!, out EvidenceSlot? slot)
+            || slot.Scope is not { } scope || !MemoryErasureEvidence.InTransaction(sqlite)
+            || scope != await ReadStampAsync(sqlite, cancellationToken).ConfigureAwait(false)
+            || !await HasTableAsync(sqlite, "covenant_state", cancellationToken).ConfigureAwait(false))
+        {
+            return await ReadUncachedAsync(connection, asOfUtc, cancellationToken).ConfigureAwait(false);
+        }
+
+        await using SqliteCommand state = Command(sqlite, "SELECT DatasetGeneration FROM covenant_state WHERE StateKey = 1;");
+
+        if (await state.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not byte[] bytes
+            || bytes.Length != 16 || new Guid(bytes) == Guid.Empty)
+        {
+            return new Dictionary<string, SagaRankingEvidence>(0);
+        }
+
+        Guid dataset = new(bytes);
+
+        if ((slot.Pending ?? slot.Cached) is { } cached && cached.Stamp == scope && cached.Dataset == dataset
+            && asOfUtc >= cached.From && (cached.Until is null || asOfUtc < cached.Until))
+        {
+            return cached.Evidence;
+        }
+
+        IReadOnlyDictionary<string, SagaRankingEvidence> evidence = (await ReadUncachedAsync(connection, asOfUtc, cancellationToken)
+            .ConfigureAwait(false)).ToFrozenDictionary(StringComparer.Ordinal);
+
+        DateTimeOffset? until = asOfUtc;
+
+        try
+        {
+            until = await NextBoundaryAsync(sqlite, evidence.Keys, asOfUtc, cancellationToken).ConfigureAwait(false);
+        }
+        catch (SqliteException)
+        {
+            // The optional cache cannot strengthen the uncached reader's catalog requirements.
+            // Missing/damaged optional tables disable reuse; the validated answer stays unchanged.
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        slot.Pending = new(scope, dataset, asOfUtc, until, evidence);
+
+        return evidence;
+    }
+
+    private static async Task<DateTimeOffset?> NextBoundaryAsync(
+        SqliteConnection connection, IEnumerable<string> versions, DateTimeOffset asOf, CancellationToken ct)
+    {
+        // Future reports are quota-bounded. A validated source's start/recording cannot follow its
+        // report completion, so absent evidence can first become eligible only at a future completion.
+        // Source/use edges must follow validated coordinates, never potentially damaged SQL projections.
+        string selectedVersions = JsonSerializer.Serialize(versions.ToArray(), GrimoireJsonContext.Default.StringArray);
+
+        await using SqliteCommand command = Command(connection, """
+            WITH sources AS (
+                SELECT value AS VersionId FROM json_each($versions)
+            ), edges(instant) AS (
+                SELECT CompletedAtUtc FROM memory_evaluation_reports
+                UNION ALL
+                SELECT version.ValidFromUtc FROM sources source
+                    JOIN annal_versions version ON version.VersionId = source.VersionId
+                UNION ALL
+                SELECT version.ValidToUtc FROM sources source
+                    JOIN annal_versions version ON version.VersionId = source.VersionId
+                UNION ALL
+                SELECT version.RecordedAtUtc FROM sources source
+                    JOIN annal_versions version ON version.VersionId = source.VersionId
+                UNION ALL
+                SELECT final.FinalizedAtUtc FROM sources source
+                    JOIN saga_committed_uses used ON used.VersionId = source.VersionId
+                    JOIN assistant_entry_finalizations final ON final.AssistantEntryId = used.AssistantEntryId
+            )
+            SELECT min(instant) FROM edges WHERE instant > $asOf;
+            """, ("$versions", selectedVersions));
+
+        UtcInstantSql.AddParameter(command, "$asOf", asOf);
+
+        object? boundary = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+
+        // Damaged optional evidence is ignored by the uncached reader. An unparseable edge must
+        // disable reuse, not turn that isolated damage into a failure of ordinary Saga recall.
+        return boundary is null or DBNull ? null
+            : boundary is string instant && UtcInstantText.TryParse(instant, out DateTimeOffset parsed) && parsed > asOf
+                ? parsed : asOf;
+    }
+
+    private static async Task<IReadOnlyDictionary<string, SagaRankingEvidence>> ReadUncachedAsync(
         DbConnection connection,
         DateTimeOffset asOfUtc,
         CancellationToken cancellationToken)
