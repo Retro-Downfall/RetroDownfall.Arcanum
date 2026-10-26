@@ -178,18 +178,40 @@ public sealed class CommandCenterAttachmentDriftMonitorReliabilityTests
 
         fixture.Rows = count => [Fixture.Attachment(false) with { IndexingStatus = count < 3 ? SessionAttachmentIndexStatus.Pending : SessionAttachmentIndexStatus.Indexed }];
 
+        TaskCompletionSource releaseFailure = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        fixture.BeforeResponse = (count, token) => count == 2 ? releaseFailure.Task.WaitAsync(token) : Task.CompletedTask;
+
         fixture.Start();
 
-        await fixture.UntilAsync(() => fixture.Requests.Count == 2);
+        try
+        {
+            await fixture.UntilAsync(() => fixture.Requests.Count == 2);
 
-        await fixture.DriveAsync();
+            // Sending the failure request does not mean its response has been observed.
+            await fixture.DriveAsync();
 
-        Assert.Equal(3, fixture.Requests.Count);
+            Assert.Equal(2, fixture.Requests.Count);
 
-        Assert.Equal(SessionAttachmentIndexStatus.Indexed, Assert.Single(fixture.State.SessionAttachments).IndexingStatus);
+            releaseFailure.TrySetResult();
 
-        Assert.All(fixture.Requests.Zip(fixture.Requests.Skip(1)), static pair =>
-            Assert.True(pair.Second - pair.First >= TimeSpan.TicksPerSecond));
+            await fixture.UntilAsync(() => fixture.Requests.Count >= 3
+                && fixture.State.SessionAttachments.Any(static row => row.IndexingStatus == SessionAttachmentIndexStatus.Indexed));
+
+            // Once Indexed is admitted, further manual-clock progress must not keep polling.
+            await fixture.DriveAsync();
+
+            Assert.Equal(3, fixture.Requests.Count);
+
+            Assert.Equal(SessionAttachmentIndexStatus.Indexed, Assert.Single(fixture.State.SessionAttachments).IndexingStatus);
+
+            Assert.All(fixture.Requests.Zip(fixture.Requests.Skip(1)), static pair =>
+                Assert.True(pair.Second - pair.First >= TimeSpan.TicksPerSecond));
+        }
+        finally
+        {
+            releaseFailure.TrySetResult();
+        }
     }
 
     [Theory]
