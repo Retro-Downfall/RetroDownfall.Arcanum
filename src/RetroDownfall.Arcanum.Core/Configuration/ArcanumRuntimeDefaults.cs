@@ -470,6 +470,10 @@ public static class ArcanumRuntimeSettings
         {
             Enabled = features.Guardrails,
             DetectPii = policy.DetectPii,
+            DetectEmail = policy.DetectEmail,
+            DetectPhone = policy.DetectPhone,
+            DetectSsn = policy.DetectSsn,
+            DetectCreditCard = policy.DetectCreditCard,
             BlockToxicity = policy.BlockToxicity,
             ToxicityBlocklist = policy.ToxicityBlocklist ?? [],
             AllowedTopics = policy.AllowedTopics ?? [],

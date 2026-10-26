@@ -8770,7 +8770,7 @@ public sealed partial class WizardIntelligenceProvider(
 
     /// <summary>
     /// Runs the guardrails input filter (Tier 3 Phase 4) when a <see cref="GuardrailsPipeline"/> is
-    /// injected. Stateless turns scan <see cref="PingRequest.StatelessMessages"/>; stateful turns
+    /// injected. Stateless transcripts select the latest user group in the pipeline; stateful turns
     /// synthesize a single user message from <see cref="PingRequest.Prompt"/>. A <see langword="null"/>
     /// pipeline (tests that don't opt in) is a no-op success — matching every other disabled-feature
     /// convention in Arcanum.

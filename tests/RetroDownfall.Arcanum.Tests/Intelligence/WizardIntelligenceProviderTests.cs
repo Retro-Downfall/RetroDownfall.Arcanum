@@ -426,6 +426,50 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.Equal(0, chat.BufferedCallCount);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Guardrails_CurrentTurn_HistoricalPiiDoesNotBlockCanonicalWizard(bool stream)
+    {
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("Clean answer");
+
+        chat.EnqueueStreamTokens("Clean answer");
+
+        ArcanumSettings settings = ConfigureGuardrails(DefaultSettings(), enabled: true, detectPii: true);
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, guardrailsPipeline: CreateGuardrailsPipeline(settings));
+
+        PingRequest request = BaseRequest() with
+        {
+            Prompt = string.Empty,
+            StatelessMessages = [new("user", "alice@example.com"), new("assistant", "123-45-6789"), new("tool", "4111111111111111"), new("user", "epoch 1729800000; continue")],
+            SkipSpellRouting = true,
+            DisableMcpTools = true,
+        };
+
+        if (stream)
+        {
+            List<IntelligenceEvent> events = [];
+
+            await foreach (IntelligenceEvent frame in wizard.StreamPromptAsync(request, InvocationContexts.AttendedSession(), CancellationToken.None))
+            {
+                events.Add(frame);
+            }
+
+            Assert.DoesNotContain(events, frame => frame.Type == IntelligenceEventType.Error);
+
+            Assert.Contains(events, frame => frame.Type == IntelligenceEventType.Token);
+        }
+        else
+        {
+            Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(request, InvocationContexts.AttendedSession(), CancellationToken.None);
+
+            Assert.True(result.IsSuccess, result.Error.Message);
+        }
+    }
+
     [Fact]
     public async Task Guardrails_Streaming_BufferedToxicity_DeliversNoTokenBeforeFilter()
     {

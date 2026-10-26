@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
@@ -285,7 +286,9 @@ internal static partial class OpenAiV1Endpoints
             (string errorType, string errorCode) = MapPublicOpenAiError(result.Error.Code);
 
             return JsonError(
-                ResolvePublicInferenceFailureMessage(result.Error.Code),
+                result.Error.Code == ErrorCodes.Guardrails.PiiDetected
+                    ? GuardrailsPipeline.PublicPiiMessage(result.Error.Message)
+                    : ResolvePublicInferenceFailureMessage(result.Error.Code),
                 errorType,
                 code: errorCode,
                 param: null,

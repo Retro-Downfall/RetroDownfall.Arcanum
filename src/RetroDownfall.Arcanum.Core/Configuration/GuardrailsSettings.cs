@@ -22,6 +22,14 @@ public sealed record GuardrailsSettings
     /// </summary>
     public bool DetectPii { get; set; } = true;
 
+    public bool DetectEmail { get; set; } = true;
+
+    public bool DetectPhone { get; set; } = true;
+
+    public bool DetectSsn { get; set; } = true;
+
+    public bool DetectCreditCard { get; set; } = true;
+
     /// <summary>
     /// When <see langword="true"/>, input or output containing any <see cref="ToxicityBlocklist"/>
     /// keyword is rejected with <c>Guardrails.Blocked</c>. Default <see langword="false"/> — an empty

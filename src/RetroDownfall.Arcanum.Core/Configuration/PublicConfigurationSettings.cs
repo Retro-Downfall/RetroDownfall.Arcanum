@@ -387,6 +387,14 @@ public sealed record GuardrailsPolicySettings
 {
     public bool DetectPii { get; set; } = true;
 
+    public bool DetectEmail { get; set; } = true;
+
+    public bool DetectPhone { get; set; } = true;
+
+    public bool DetectSsn { get; set; } = true;
+
+    public bool DetectCreditCard { get; set; } = true;
+
     public bool BlockToxicity { get; set; }
 
     public string[] ToxicityBlocklist { get; set; } = [];

@@ -1,3 +1,9 @@
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
+using System.Text.Json;
+using RetroDownfall.Arcanum.Core.Serialization;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
@@ -562,6 +568,196 @@ public sealed class GuardrailsPipelineTests
         Assert.Equal(["pii-email", "pii-ssn"], audit.Records.Select(record => record.ViolationType).Order(StringComparer.Ordinal).ToArray());
     }
 
+    [Theory]
+    [InlineData("epoch 1729800000")]
+    [InlineData("created_at_ms=1729800000123")]
+    [InlineData("order 4000123456789012 shipped")]
+    [InlineData("build number 20261024123456")]
+    [InlineData("0000000000000000")]
+    [InlineData("999941111111111111119999")]
+    [InlineData("９4111111111111111９")]
+    [InlineData("94111 1111 1111 11119")]
+    [InlineData("9123-45-67890")]
+    [InlineData("９123-45-6789９")]
+    [InlineData("9555-123-45678")]
+    [InlineData("９555-123-4567９")]
+    [InlineData("+1234567890123456")]
+    [InlineData("9999 4111 1111 1111 1111 9999")]
+    public async Task CurrentTurnPii_AmbiguousNumbersAndEmbeddedSubstrings_AreAllowed(string text)
+    {
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with { Enabled = true });
+
+        Result<GuardrailsResult> result = await pipeline.FilterInputAsync([new CoreChatMessage("user", text)], CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+    }
+
+    [Theory]
+    [InlineData("alice@example.com", "pii-email")]
+    [InlineData("(123-45-6789)", "pii-ssn")]
+    [InlineData("card=4111111111111111;", "pii-credit-card")]
+    [InlineData("card=4222222222222;", "pii-credit-card")]
+    [InlineData("card=4000000000000000006;", "pii-credit-card")]
+    [InlineData("invalid 4000123456789012, valid 4111-1111-1111-1111", "pii-credit-card")]
+    [InlineData("phone=(555)1234567;", "pii-phone")]
+    [InlineData("phone=555.123.4567;", "pii-phone")]
+    [InlineData("phone=+442079460958;", "pii-phone")]
+    [InlineData("phone=+44 20 7946 0958;", "pii-phone")]
+    public async Task CurrentTurnPii_PositiveControls_NameCategoryAndRemedyWithoutContent(string text, string category)
+    {
+        FakeGuardrailAuditLogger audit = new();
+
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with { Enabled = true }, audit);
+
+        Result<GuardrailsResult> result = await pipeline.FilterInputAsync([new CoreChatMessage("user", text)], CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Guardrails.PiiDetected, result.Error.Code);
+
+        Assert.Contains(category, result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("Redact", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(text, result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains(audit.Records, record => record.ViolationType == category);
+    }
+
+    [Fact]
+    public async Task CurrentTurnPii_HistoricalMessages_DoNotPoisonCleanUser()
+    {
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with { Enabled = true });
+
+        Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
+            [new("user", "alice@example.com"), new("assistant", "123-45-6789"), new("tool", "4111111111111111"), new("user", "Continue please")],
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Theory]
+    [InlineData("assistant")]
+    [InlineData("tool")]
+    [InlineData("system")]
+    public async Task CurrentTurnPii_TrailingRoleFrames_DoNotHideLatestUser(string trailingRole)
+    {
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with { Enabled = true });
+
+        Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
+            [new("assistant", "Old answer"), new("USER", "alice@example.com"), new(trailingRole, "Continue")],
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+    }
+
+    [Fact]
+    public async Task CurrentTurnPii_TextPartsAndEarlierCurrentUsers_AreScanned()
+    {
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with { Enabled = true });
+
+        Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
+            [new("assistant", "Old answer"), new("user", "Fallback", ContentParts: [new("text", "alice@example.com", null, null)]), new("system", "Frame"), new("user", "Continue")],
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+    }
+
+    [Theory]
+    [InlineData("detectEmail", "alice@example.com", "123-45-6789")]
+    [InlineData("detectPhone", "555-123-4567", "alice@example.com")]
+    [InlineData("detectSsn", "123-45-6789", "alice@example.com")]
+    [InlineData("detectCreditCard", "4111111111111111", "alice@example.com")]
+    public async Task CurrentTurnPii_DetectorSwitch_RoundTripsAndOnlyDisablesSelectedDetector(string key, string allowed, string blocked)
+    {
+        string json = "{\"features\":{\"guardrails\":true},\"security\":{\"guardrails\":{\"" + key + "\":false}}}";
+
+        ArcanumSettings settings = JsonSerializer.Deserialize(json, ConfigurationJsonContext.Default.ArcanumSettings)!;
+
+        string roundTrip = JsonSerializer.Serialize(settings, ConfigurationJsonContext.Default.ArcanumSettings);
+
+        using JsonDocument document = JsonDocument.Parse(roundTrip);
+
+        Assert.False(document.RootElement.GetProperty("security").GetProperty("guardrails").GetProperty(key).GetBoolean());
+
+        GuardrailsPipeline pipeline = new(new TestOptionsMonitor<ArcanumSettings>(settings), new FakeGuardrailAuditLogger(), NullLogger<GuardrailsPipeline>.Instance);
+
+        Assert.True((await pipeline.FilterInputAsync([new("user", allowed)], CancellationToken.None)).IsSuccess);
+
+        Assert.True((await pipeline.FilterInputAsync([new("user", blocked)], CancellationToken.None)).IsFailure);
+
+        settings.Security.Guardrails.DetectPii = false;
+
+        Assert.True((await pipeline.FilterInputAsync([new("user", blocked)], CancellationToken.None)).IsSuccess);
+    }
+
+    [Theory]
+    [InlineData("provider-secret alice@example.com /Users/private/file")]
+    [InlineData("Input rejected (pii-email): malicious injected text")]
+    public void CurrentTurnPii_OpenAiUnknownMessage_DoesNotExposeUntrustedText(string message)
+    {
+        OpenAiErrorDetail result = OpenAiStreamErrorMapper.Map(new Error(ErrorCodes.Guardrails.PiiDetected, message));
+
+        Assert.DoesNotContain(message, result.Message, StringComparison.Ordinal);
+
+        Assert.Contains("Redact personal information", result.Message, StringComparison.Ordinal);
+
+        Assert.Equal("content_filter", result.Code);
+    }
+
+    [Fact]
+    public void CurrentTurnPii_SourceGeneratedBinder_PreservesIndependentSwitchesAndDefaults()
+    {
+        IConfigurationRoot configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Arcanum:Features:Guardrails"] = "true",
+            ["Arcanum:Security:Guardrails:DetectEmail"] = "false",
+            ["Arcanum:Security:Guardrails:DetectPhone"] = "false",
+            ["Arcanum:Security:Guardrails:DetectSsn"] = "false",
+            ["Arcanum:Security:Guardrails:DetectCreditCard"] = "false",
+        }).Build();
+
+        ServiceCollection services = new();
+
+        services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        GuardrailsSettings resolved = provider.GetRequiredService<IOptions<ArcanumSettings>>().Value.ResolveGuardrails();
+
+        Assert.True(resolved.Enabled);
+
+        Assert.True(resolved.DetectPii);
+
+        Assert.False(resolved.DetectEmail);
+
+        Assert.False(resolved.DetectPhone);
+
+        Assert.False(resolved.DetectSsn);
+
+        Assert.False(resolved.DetectCreditCard);
+
+        GuardrailsSettings defaults = new ArcanumSettings().ResolveGuardrails();
+
+        Assert.False(defaults.Enabled);
+
+        Assert.True(defaults.DetectPii && defaults.DetectEmail && defaults.DetectPhone && defaults.DetectSsn && defaults.DetectCreditCard);
+    }
+
+    [Fact]
+    public async Task CurrentTurnPii_NoUserGroup_DoesNotApplyInputTopicGateToEmptyHistory()
+    {
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with
+        {
+            Enabled = true,
+            AllowedTopics = ["weather"],
+        });
+
+        Result<GuardrailsResult> result = await pipeline.FilterInputAsync([new("assistant", "alice@example.com"), new("tool", "123-45-6789")], CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+    }
+
     private static GuardrailsPipeline CreatePipeline(
         GuardrailsSettings guardrails,
         IGuardrailAuditLogger? audit = null,
@@ -575,6 +771,10 @@ public sealed class GuardrailsPipelineTests
                 Guardrails = new GuardrailsPolicySettings
                 {
                     DetectPii = guardrails.DetectPii,
+                    DetectEmail = guardrails.DetectEmail,
+                    DetectPhone = guardrails.DetectPhone,
+                    DetectSsn = guardrails.DetectSsn,
+                    DetectCreditCard = guardrails.DetectCreditCard,
                     BlockToxicity = guardrails.BlockToxicity,
                     ToxicityBlocklist = guardrails.ToxicityBlocklist,
                     AllowedTopics = guardrails.AllowedTopics,
