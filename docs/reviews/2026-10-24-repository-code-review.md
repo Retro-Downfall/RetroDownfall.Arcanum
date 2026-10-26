@@ -3827,3 +3827,18 @@ Independently approved RV-057 candidate `5e53796c4325b2fe96ed6358aba548029f453fa
 Initial behavioral RED exposed scan plans and 48,640,720 allocated bytes; the corrected 20,004-row fixture allocates 10,259,120 bytes. Deliberate regression reproduced four failures with five compatibility controls, followed by exact restored source checks. Affected verification passed 482 tests, catalog/package verification passed 150, and post-prerequisite verification passed 88; these filters overlap. The independent reviewer rebuilt and passed 52 focused checks, verified all reported log hashes, complete closure framing, snapshot consumers, index coverage, schema transitions and catalog shape. Builds have zero warnings/errors.
 
 The reviewed, locally integrated count is **65 of 272 (23.9%)**: 3 Critical, 51 Important, 11 Minor. **207 remain open**: 25 Important and 182 Minor. The prior combined run remains failed as recorded; a newer combined run and all final qualification/delivery gates are still required. RV-056 manifest storage remains separately open.
+
+### Connection and owner-recovery diagnostics checkpoint — 2026-10-25
+
+Independently approved RV075 `b5aa51409ba278f88fc358204b8f6d1dc7d73954` and RV076 `4ea1dc02e3db05f2e978139ad80a0e50635bfe77` are integrated in runtime candidate `cd02c2223bb24066e9222d084ae07f1c7e8a7a65`.
+
+| Finding | Outcome | Evidence |
+| --- | --- | --- |
+| RV-075 | fixed `b5aa5140` | Closed typed metadata preserves useful SQLite/runtime failure details without exception content. Genuine faults propagate through nine inspected consumers and real API/health requests without being called maintenance. Real started/unstarted API and v1 pipeline tests preserve response/cache behavior. Separate cancellation defects in health and native initialization are repaired. Worker480 passes/1 Windows-only skip; independent reviewer259 passes/1 Windows-only skip; filters overlap. Mutation16 regressions, exact restored source hashes and zero-warning build verified. |
+| RV-076 | fixed `4ea1dc02` | Retry/cancel explain authenticated ownership and conditional same-operation recovery while preserving CAS and terminal outcomes. Manual reconcile adds a separate nullable Int64 count using one parameterized aggregate; null is unmeasured, read errors are visible. Generic execution discovery still excludes owner-bound rows before pagination. Worker and independent reviewer each passed280 tests without skips; mutation12 regressions, exact restoration and zero-warning build verified. Acquisition inventory now537. |
+
+The reviewed, locally integrated count is **67 of272 (24.6%)**:3 Critical,53 Important,11 Minor. **205 remain open**:23 Important,182 Minor.
+
+The prior65-finding candidate46535159 built with zero warnings and completed combined Arcanum verification with4641 passes,1 failure and14 skips. The failure was missing encryption-key state during the temporary test-host startup for LexiconInspectionQueryBudgetTests; an isolated rerun passed5 checks, so investigation remains open. That combined run is not green and Forge was not reached. Its logs and manifest remain preserved. Full final qualification and delivery are outstanding.
+
+The user additionally requires full native FTS5 and real RAPTOR. These feature expansions are tracked separately from the original register; FTS5 will also resolve RV072 after implementation and independent review. No closure credit is taken for pending feature work.
