@@ -130,6 +130,50 @@ public sealed class OperationCommandTests
         Assert.DoesNotContain('\u009b', result.Output);
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("--plain")]
+    [InlineData("--json")]
+    public async Task Reconcile_reports_owner_recovery_and_action_without_changing_exit_semantics(string? outputOption)
+    {
+        RecordingHandler handler = new([])
+        {
+            ResponseJson = """
+                {"data":{"examined":0,"claimed":0,"completed":0,"failed":0,"abandoned":0,"requiresAttention":0,"skipped":0,"ownerRecoveryRequired":2},"isSuccess":true,"error":null}
+                """,
+        };
+        string[] args = ["operation", "reconcile"];
+        if (outputOption is not null)
+        {
+            args = [.. args, outputOption];
+        }
+
+        CliTestResult result = await RunCommand(handler, args, 240);
+        Assert.Equal(0, result.ExitCode);
+        string output = ReadOutput(result, outputOption);
+        output = string.Join(' ', output.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        Assert.Contains("owner recovery required 2", output, StringComparison.Ordinal);
+        Assert.Contains("Resolve the recorded blocker", output, StringComparison.Ordinal);
+        Assert.Contains("restart the host", output, StringComparison.Ordinal);
+        Assert.Contains("arcanum operation show <id>", output, StringComparison.Ordinal);
+        Assert.Equal("/api/operations/reconcile", Assert.Single(handler.Requests).RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task Reconcile_accepts_an_older_host_summary_without_owner_recovery_count()
+    {
+        RecordingHandler handler = new([])
+        {
+            ResponseJson = """
+                {"data":{"examined":1,"claimed":1,"completed":0,"failed":0,"abandoned":0,"requiresAttention":1,"skipped":0},"isSuccess":true,"error":null}
+                """,
+        };
+        CliTestResult result = await RunCommand(handler, ["operation", "reconcile", "--plain"], 240);
+        Assert.Equal(2, result.ExitCode);
+        Assert.Contains("attention 1", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("restart the host", result.Output, StringComparison.Ordinal);
+    }
+
     private static LongRunningOperationDto Operation() => new(
         Guid.Parse(OperationId),
         LongRunningOperationKinds.DataRetentionMutation,
@@ -200,6 +244,8 @@ public sealed class OperationCommandTests
     {
         public int Width { get; set; } = 80;
 
+        public string? ResponseJson { get; init; }
+
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -216,7 +262,7 @@ public sealed class OperationCommandTests
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new ByteArrayContent(json),
+                Content = ResponseJson is null ? new ByteArrayContent(json) : new StringContent(ResponseJson),
             });
         }
     }

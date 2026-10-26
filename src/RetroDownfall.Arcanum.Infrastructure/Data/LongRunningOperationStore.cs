@@ -24,6 +24,7 @@ internal sealed partial class LongRunningOperationStore(
     ICovenantConnectionDrain? covenantDrain = null)
     : ILongRunningOperationStore,
       ILongRunningOperationGenericRecoveryDiscovery,
+      ILongRunningOperationOwnerRecoveryDiagnostics,
       ILongRunningOperationClassifiedRecoveryLeaseAcquisition,
       ILongRunningOperationMaintenanceLeaseAdoption,
       ILongRunningOperationSameOwnerLeaseResumption,
@@ -1283,6 +1284,42 @@ internal sealed partial class LongRunningOperationStore(
                 Add(cmd, "@attention", (int)LongRunningOperationState.ReconciliationRequired);
                 Add(cmd, "@cancelling", (int)LongRunningOperationState.Cancelling);
                 Add(cmd, "@now", Format(utcNow));
+            },
+            cancellationToken);
+
+    public Task<long> CountOwnerRecoveryRequiredAsync(
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default) =>
+        SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+                await using DbCommand cmd = connection.CreateCommand();
+                cmd.CommandText =
+                    $"""
+                    SELECT COUNT(*) FROM "LongRunningOperations"
+                    WHERE (("Kind" = @retentionMutation AND "CheckpointVersion" = @mutationOwnerVersion)
+                        OR ("Kind" = @retentionFactory AND "CheckpointVersion" = @factoryOwnerVersion))
+                      AND ("State" IN (@running, @waiting, @cancelling)
+                        OR ("State" = @pending AND "AttemptCount" > 0)
+                        OR {StartupRecoveredAttentionPredicate})
+                      AND ("LeaseExpiresAt" IS NULL OR "LeaseExpiresAt" <= @now)
+                    """;
+                Add(cmd, "@retentionMutation", LongRunningOperationKinds.DataRetentionMutation);
+                Add(cmd, "@retentionFactory", LongRunningOperationKinds.DataRetentionFactoryReset);
+                Add(cmd, "@mutationOwnerVersion", CovenantOfflineTransitionLaunchV4.CurrentVersion);
+                Add(cmd, "@factoryOwnerVersion", DataRetentionFactoryTransitionLaunchV2.CurrentVersion);
+                Add(cmd, "@running", (int)LongRunningOperationState.Running);
+                Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);
+                Add(cmd, "@cancelling", (int)LongRunningOperationState.Cancelling);
+                Add(cmd, "@pending", (int)LongRunningOperationState.Pending);
+                Add(cmd, "@now", Format(utcNow));
+                foreach ((string name, string value) in StartupRecoveredAttentionParameters())
+                {
+                    Add(cmd, name, value);
+                }
+
+                return (long)(await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
             },
             cancellationToken);
 

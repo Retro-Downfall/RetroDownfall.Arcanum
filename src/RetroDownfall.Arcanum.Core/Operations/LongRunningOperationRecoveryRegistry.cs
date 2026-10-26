@@ -267,6 +267,13 @@ public static class LongRunningOperationRecoveryRegistry
     public static LongRunningOperationRecoveryDescriptor? Find(string kind) =>
         Matrix.TryGetValue(kind, out LongRunningOperationRecoveryDescriptor? descriptor) ? descriptor : null;
 
+    public const string OwnerRecoveryGuidance =
+        "This operation is owned by an authenticated offline transition; generic retry, cancel, and reconcile cannot resume it. "
+        + "Admission stays closed until recovery proves safe reopening. Inspect 'arcanum operation show <id>'. "
+        + "Resolve the recorded blocker, then restart the host so authenticated "
+        + "recovery can re-adopt the same operation, and re-check 'arcanum operation show <id>'. "
+        + "Restarting does not repair an unresolved blocker or missing recovery evidence. Do not start a second reset or factory erasure.";
+
     /// <summary>
     /// Selects public-safe repair guidance from the operation's recorded recovery class. Checkpoint
     /// versions identify an offline erasure launch even when its terminal code is absent or generic.
@@ -282,7 +289,14 @@ public static class LongRunningOperationRecoveryRegistry
         bool offlineLaunch = (operation.Kind == LongRunningOperationKinds.DataRetentionMutation && operation.CheckpointVersion == 4)
             || (operation.Kind == LongRunningOperationKinds.DataRetentionFactoryReset && operation.CheckpointVersion == 2);
 
-        if (retentionErasure && (offlineLaunch || operation.TerminalErrorCode?.StartsWith("Covenant.", StringComparison.Ordinal) == true))
+        if (offlineLaunch)
+        {
+            return operation.State is LongRunningOperationState.Completed or LongRunningOperationState.Failed or LongRunningOperationState.Abandoned
+                ? "This authenticated offline transition has a terminal outcome. Generic retry and cancel cannot replay it. Inspect 'arcanum operation show <id>' for its recorded outcome."
+                : OwnerRecoveryGuidance;
+        }
+
+        if (retentionErasure && operation.TerminalErrorCode?.StartsWith("Covenant.", StringComparison.Ordinal) == true)
         {
             return "Inspect 'arcanum operation list --state ReconciliationRequired' and 'arcanum operation show <id>'. "
                 + "Admission stays closed on purpose until erasure recovery proves safe reopening. "

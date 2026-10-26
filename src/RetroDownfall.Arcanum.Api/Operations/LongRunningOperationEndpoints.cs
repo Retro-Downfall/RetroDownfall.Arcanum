@@ -87,6 +87,18 @@ internal static class LongRunningOperationEndpoints
                     ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
             }
 
+            LongRunningRecoveryAdmissionDecision admission =
+                LongRunningOperationRecoveryAdmission.Classify(operation, ownerEvidence: null);
+            if (admission.Kind is LongRunningRecoveryAdmissionKind.OwnerBoundAwaitingExactOwner)
+            {
+                return Error<LongRunningOperationDto>(
+                    httpContext,
+                    StatusCodes.Status409Conflict,
+                    ErrorCodes.Operation.StateConflict,
+                    LongRunningOperationRecoveryRegistry.GetManualRepairGuidance(operation),
+                    ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
+            }
+
             bool changed = await store.RequestCancellationAsync(
                 id,
                 operation.Revision,
@@ -138,7 +150,7 @@ internal static class LongRunningOperationEndpoints
                     httpContext,
                     StatusCodes.Status409Conflict,
                     ErrorCodes.Operation.StateConflict,
-                    "Only Failed, Abandoned, or ReconciliationRequired operations can be retried.",
+                    LongRunningOperationRecoveryRegistry.GetManualRepairGuidance(operation),
                     ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
             }
 
@@ -174,6 +186,7 @@ internal static class LongRunningOperationEndpoints
 
         apiGroup.MapPost("/operations/reconcile", async (
             LongRunningOperationReconciler reconciler,
+            ILongRunningOperationOwnerRecoveryDiagnostics ownerRecoveryDiagnostics,
             LongRunningOperationReconciliationStatus status,
             TimeProvider timeProvider,
             HttpContext httpContext,
@@ -186,6 +199,11 @@ internal static class LongRunningOperationEndpoints
                 maxOperations: 500,
                 maxConcurrency: 4,
                 cancellationToken).ConfigureAwait(false);
+            summary = summary with
+            {
+                OwnerRecoveryRequired = await ownerRecoveryDiagnostics
+                    .CountOwnerRecoveryRequiredAsync(timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false),
+            };
             status.Record(now, summary);
             return Success(
                 httpContext,
