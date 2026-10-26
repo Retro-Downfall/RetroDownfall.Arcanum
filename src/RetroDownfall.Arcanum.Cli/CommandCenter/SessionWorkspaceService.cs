@@ -814,8 +814,12 @@ internal sealed class SessionWorkspaceService(
                             string callId = entry.ToolCallId.Trim();
                             if (!liveCalls.Contains(callId))
                             {
-                                if (PersistedToolInteraction.TryParseToolResult(entry.Content, out string result))
+                                bool bracketResult = PersistedToolInteraction.TryParseToolResult(entry.Content, out string result);
+                                if (bracketResult || kind == SessionLogEntryKind.Tool)
                                 {
+                                    // A tool/function row is a result even when its payload is JSON.
+                                    // Its verified call ID, never the most recent same-named call, owns it.
+                                    result = bracketResult ? result : entry.Content ?? string.Empty;
                                     if (entry.Role.Contains("error", StringComparison.OrdinalIgnoreCase)
                                         || result.Contains("[Tool error:", StringComparison.OrdinalIgnoreCase))
                                     {
@@ -826,9 +830,14 @@ internal sealed class SessionWorkspaceService(
                                         _ = state.Incantations.UpsertResult(callId, entry.ToolName, result);
                                     }
                                 }
-                                else
+                                else if (PersistedToolInteraction.TryParseToolCall(entry.Content, out string parsedName, out string? parsedArguments))
                                 {
-                                    IngestHistoryTool(state.Incantations, entry with { ToolCallId = callId });
+                                    string name = string.IsNullOrWhiteSpace(entry.ToolName) ? parsedName : entry.ToolName;
+                                    _ = state.Incantations.UpsertCall(callId, name, parsedArguments);
+                                }
+                                else if (kind == SessionLogEntryKind.Assistant)
+                                {
+                                    _ = state.Incantations.UpsertCall(callId, entry.ToolName, entry.Content);
                                 }
                             }
                         }

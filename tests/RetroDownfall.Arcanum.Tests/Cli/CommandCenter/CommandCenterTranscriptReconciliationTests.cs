@@ -313,6 +313,33 @@ public sealed class CommandCenterTranscriptReconciliationTests
         Assert.False(harness.Window.FollowTail);
     }
 
+    [Theory]
+    [InlineData("tool", "plain result for A", false)]
+    [InlineData("function", "function result for A", false)]
+    [InlineData("tool", "{\"value\":\"JSON result for A\"}", false)]
+    [InlineData("tool", "[Tool error: failed result for A]", true)]
+    public async Task Structured_result_completes_its_verified_call_even_when_a_later_same_named_call_is_pending(
+        string resultRole,
+        string resultContent,
+        bool failed)
+    {
+        await using Harness harness = new();
+        EntryDto callA = harness.Entry("assistant", "{}") with { ToolCallId = "call-A", ToolName = "read_file" };
+        EntryDto callB = harness.Entry("assistant", "{}") with { ToolCallId = "call-B", ToolName = "read_file" };
+        EntryDto resultA = harness.Entry(resultRole, resultContent) with { ToolCallId = "call-A", ToolName = "read_file" };
+        // The API supplies newest first; authoritative chronology is call A, call B, result A.
+        harness.Http.Entries = [harness.Entry("assistant", "answer"), resultA, callB, callA];
+        await harness.SubmitAsync();
+        IncantationRecord a = Assert.Single(harness.State.Incantations.Snapshot(), entry => entry.CallId == "call-A");
+        IncantationRecord b = Assert.Single(harness.State.Incantations.Snapshot(), entry => entry.CallId == "call-B");
+        Assert.Equal(failed ? IncantationState.Failed : IncantationState.Succeeded, a.State);
+        Assert.Equal(resultContent, failed ? a.ErrorText : a.ResultText);
+        Assert.Equal(IncantationState.Pending, b.State);
+        Assert.Null(b.ResultText);
+        Assert.Null(b.ErrorText);
+        Assert.Equal(2, harness.State.Incantations.Snapshot().Count);
+    }
+
     private sealed class Harness : IAsyncDisposable
     {
         private readonly ServiceProvider _provider;
