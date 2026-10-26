@@ -75,7 +75,11 @@ public sealed class WeaveService(
     {
         // Disabled-path (no generator resolution, no HTTP call, no exception): checked first, before
         // anything else in this method runs.
-        if (!IsAvailable)
+        ArcanumSettings operationSettings = optionsMonitor.CurrentValue;
+
+        EmbeddingSettings embeddings = operationSettings.ResolveEmbeddings();
+
+        if (!embeddings.Enabled || string.IsNullOrWhiteSpace(embeddings.Provider) || string.IsNullOrWhiteSpace(embeddings.Model))
         {
             return Result<Embedding<float>[]>.Failure(new Error(
                 ErrorCodes.Embeddings.FeatureDisabled,
@@ -87,7 +91,7 @@ public sealed class WeaveService(
             return Result<Embedding<float>[]>.Success([]);
         }
 
-        EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
+        EmbeddingProvenance expectedIdentity = new(embeddings.Provider, embeddings.Model);
 
         int batchSize = ArcanumSettingClamps.EmbeddingsBatchSize(embeddings.BatchSize);
 
@@ -112,7 +116,8 @@ public sealed class WeaveService(
         }
 
         long totalApproxTokens = EstimateApproximateTokens(sanitizedBatches.SelectMany(static batch => batch));
-        PricingSettings pricingSettings = optionsMonitor.CurrentValue.ResolvePricing();
+        PricingSettings pricingSettings = operationSettings.ResolvePricing();
+
         ModelPricingEntry pricing = pricingSettings.ResolveForModel(embeddings.Model);
 
         string provider = embeddings.Provider ?? "unknown";
@@ -170,14 +175,22 @@ public sealed class WeaveService(
         List<Embedding<float>> results = new(texts.Count);
         InferenceRunStatus accountingStatus = InferenceRunStatus.Failed;
 
+        EmbeddingAttempt? attempt = null;
+
         try
         {
             // Sequential, not parallel — avoids overwhelming local providers (e.g. Ollama).
             foreach (List<string> batch in sanitizedBatches)
             {
+                attempt = new EmbeddingAttempt();
+
                 Embedding<float>[] batchEmbeddings = await EmbedOneBatchAsync(
                     batch,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    attempt,
+                    expectedIdentity).ConfigureAwait(false);
+
+                attempt.Stage = "accounting";
 
                 await accounting.RecordUsageAsync(
                         turnRunWriter,
@@ -193,19 +206,19 @@ public sealed class WeaveService(
                         CancellationToken.None)
                     .ConfigureAwait(false);
 
+                attempt.Stage = "generate";
+
                 // The provider answered, so the batch is billed whatever its shape is; the spend is
                 // ledgered above before the shape can fail the call. The service promises one vector
                 // per input, in order, so every consumer can index positionally without re-checking.
                 if (batchEmbeddings.Length != batch.Count)
                 {
-                    logger.LogWarning(
-                        "Embedding provider returned {ActualCount} vector(s) for {ExpectedCount} input(s); the batch is treated as failed.",
-                        batchEmbeddings.Length,
-                        batch.Count);
+                    EmbeddingFailure mismatch = new("cardinality_mismatch",
+                        "The embedding provider returned a different number of vectors than inputs. Verify integrations.embeddings.model and provider compatibility; run 'arcanum doctor'.", null);
 
-                    return Result<Embedding<float>[]>.Failure(new Error(
-                        ErrorCodes.Embeddings.ProviderUnavailable,
-                        "The embedding provider returned a different number of vectors than inputs. See server logs for detail."));
+                    LogEmbeddingFailure(mismatch, attempt, embeddings, accounting, "none", batchEmbeddings.Length, batch.Count);
+
+                    return Result<Embedding<float>[]>.Failure(new Error(ErrorCodes.Embeddings.ProviderUnavailable, mismatch.Message));
                 }
 
                 results.AddRange(batchEmbeddings);
@@ -218,39 +231,13 @@ public sealed class WeaveService(
         {
             return Result<Embedding<float>[]>.Failure(ex.Error);
         }
-        catch (ClientResultException ex) when (IsPayloadOrRequestSizeError(ex.Status))
-        {
-            // OpenAI-SDK-shaped providers (OpenAI, DeepSeek, most self-hosted OpenAI-compatible
-            // servers) surface HTTP error responses as ClientResultException, not HttpRequestException.
-            logger.LogWarning(
-                ex,
-                "Embedding provider rejected a batch already bounded by code-owned chunk/batch limits (HTTP {StatusCode}).",
-                ex.Status);
-
-            return Result<Embedding<float>[]>.Failure(new Error(
-                ErrorCodes.Embeddings.ProviderUnavailable,
-                "The embedding provider rejected the request as too large. See server logs for detail."));
-        }
-        catch (HttpRequestException ex) when (IsPayloadOrRequestSizeError((int?)ex.StatusCode ?? 0))
-        {
-            // Defense-in-depth for providers/transports that surface a raw HttpRequestException with a
-            // populated StatusCode instead of the SDK's ClientResultException.
-            logger.LogWarning(
-                ex,
-                "Embedding provider rejected a batch already bounded by code-owned chunk/batch limits (HTTP {StatusCode}).",
-                ex.StatusCode);
-
-            return Result<Embedding<float>[]>.Failure(new Error(
-                ErrorCodes.Embeddings.ProviderUnavailable,
-                "The embedding provider rejected the request as too large. See server logs for detail."));
-        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogWarning(ex, "Embedding provider call failed; The Weave will be treated as unavailable for this request.");
+            EmbeddingFailure failure = DescribeEmbeddingFailure(ex, attempt?.Stage);
 
-            return Result<Embedding<float>[]>.Failure(new Error(
-                ErrorCodes.Embeddings.ProviderUnavailable,
-                "The embedding provider is unavailable. See server logs for detail."));
+            LogEmbeddingFailure(failure, attempt, embeddings, accounting, ex.GetType().FullName ?? "unknown");
+
+            return Result<Embedding<float>[]>.Failure(new Error(ErrorCodes.Embeddings.ProviderUnavailable, failure.Message));
         }
         finally
         {
@@ -291,22 +278,106 @@ public sealed class WeaveService(
         return total;
     }
 
-    /// <summary>
-    /// <c>413 Payload Too Large</c> is the status upstream OpenAI-compatible providers use to reject an
-    /// oversized embedding batch. A <c>400 Bad Request</c> is deliberately not here: it covers any
-    /// malformed request (bad model name, rejected input), and reporting it as "too large" sends the
-    /// operator to shrink chunk sizes for a problem that has nothing to do with size.
-    /// </summary>
-    private static bool IsPayloadOrRequestSizeError(int statusCode) =>
-        statusCode is 413;
+    private sealed class EmbeddingAttempt
+    {
+        internal string Stage { get; set; } = "resolve";
+
+        internal EmbeddingProvenance? Provenance { get; set; }
+    }
+
+    private sealed class EmbeddingIdentityChangedException : Exception;
+
+    private sealed record EmbeddingFailure(string Reason, string Message, int? HttpStatus);
+
+    private static EmbeddingFailure DescribeEmbeddingFailure(Exception failure, string? stage)
+    {
+        if (failure is EmbeddingIdentityChangedException)
+        {
+            return new("embedding_identity_changed", "The embedding identity changed before a provider call; no further batch was sent. Earlier batches may already be billed. Verify the embedding configuration before starting another operation; run 'arcanum doctor'.", null);
+        }
+
+        if (stage == "accounting")
+        {
+            return new("accounting_write_failed", "Embedding usage could not be recorded. Check local storage availability and run 'arcanum doctor'.", null);
+        }
+
+        int? status = failure switch
+        {
+            ClientResultException client when client.Status is >= 100 and <= 599 => client.Status,
+            HttpRequestException http when (int?)http.StatusCode is >= 100 and <= 599 => (int?)http.StatusCode,
+            _ => null,
+        };
+
+        string suffix = status is { } known ? FormattableString.Invariant($" (HTTP {known})") : string.Empty;
+
+        if (stage == "resolve")
+        {
+            return status switch
+            {
+                401 => new("credentials_rejected", $"Embedding generator resolution was refused because credentials were rejected{suffix}. Verify provider credentials and credential-store access; run 'arcanum doctor'.", status),
+                403 => new("permission_refused", $"Embedding generator resolution was refused permission{suffix}. Verify provider/model access and configuration; run 'arcanum doctor'.", status),
+                404 => new("model_not_found", $"The embedding model or provider configuration was not found{suffix}. Verify integrations.embeddings.provider and integrations.embeddings.model; run 'arcanum doctor'.", status),
+                413 => new("request_too_large", $"The embedding generator request was too large{suffix}. Verify provider limits and configuration; run 'arcanum doctor'.", status),
+                _ => new("provider_unavailable", $"The embedding generator is unavailable{suffix}. Verify integrations.embeddings.provider, integrations.embeddings.model and provider configuration; run 'arcanum doctor'.", status),
+            };
+        }
+
+        return status switch
+        {
+            401 => new("credentials_rejected", $"The embedding provider rejected the configured credentials{suffix}. Verify provider credential configuration; run 'arcanum doctor'.", status),
+            403 => new("permission_refused", $"The embedding provider refused permission{suffix}. Verify provider and model access; run 'arcanum doctor'.", status),
+            404 => new("model_not_found", $"The embedding model or embeddings endpoint was not found{suffix}. Verify integrations.embeddings.model and provider configuration; run 'arcanum doctor'.", status),
+            413 => new("request_too_large", $"The embedding provider rejected the bounded request as too large{suffix}. Send fewer or smaller inputs, or select a provider/model with sufficient limits; run 'arcanum doctor'.", status),
+            _ => new("provider_unavailable", $"The embedding provider is unavailable for this request{suffix}. Verify integrations.embeddings.provider, integrations.embeddings.model and provider availability; run 'arcanum doctor'.", status),
+        };
+    }
+
+    private void LogEmbeddingFailure(EmbeddingFailure failure, EmbeddingAttempt? attempt, EmbeddingSettings configured,
+        TurnAccountingHandle accounting, string exceptionType, int? actualCount = null, int? expectedCount = null)
+    {
+        logger.LogWarning(
+            "Embedding operation failed ({Reason}, stage {Stage}, provider {Provider}, model {Model}, provenance {Provenance}, configured provider {ConfiguredProvider}, configured model {ConfiguredModel}, HTTP {HttpStatus}, exception type {ExceptionType}, run {RunId}, reservation {ReservationId}, vectors {ActualCount}/{ExpectedCount}). {Remedy}",
+            failure.Reason,
+            attempt?.Stage ?? "unknown",
+            SafeEmbeddingIdentifier(attempt?.Provenance?.Provider),
+            SafeEmbeddingIdentifier(attempt?.Provenance?.Model),
+            attempt?.Provenance is null ? "unknown" : "resolved_lease",
+            SafeEmbeddingIdentifier(configured.Provider),
+            SafeEmbeddingIdentifier(configured.Model),
+            failure.HttpStatus,
+            exceptionType,
+            accounting.RunId,
+            accounting.ReservationId,
+            actualCount,
+            expectedCount,
+            failure.Message);
+    }
+
+    private static string SafeEmbeddingIdentifier(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return "unknown";
+
+        if (value.Length > 128 || !char.IsAsciiLetterOrDigit(value[0]) || value.Contains("..", StringComparison.Ordinal)) return "redacted";
+
+        foreach (char character in value)
+        {
+            if (!char.IsAsciiLetterOrDigit(character) && character is not ('.' or '_' or '-' or ':')) return "redacted";
+        }
+
+        return value;
+    }
 
     private async Task<Embedding<float>[]> EmbedOneBatchAsync(
         List<string> batch,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        EmbeddingAttempt attempt,
+        EmbeddingProvenance expectedIdentity)
     {
         using EmbeddingGeneratorLease lease = await generatorFactory
             .ResolveGeneratorAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        attempt.Provenance = lease.Provenance;
 
         if (TapestryBuildContext.Current is not null)
         {
@@ -318,6 +389,17 @@ public sealed class WeaveService(
 
             if (validation.IsFailure) throw new TapestryProviderRefusalException(validation.Error);
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        attempt.Stage = "identity";
+
+        if (lease.Provenance is { } resolved && !string.Equals(resolved.Identity, expectedIdentity.Identity, StringComparison.Ordinal))
+        {
+            throw new EmbeddingIdentityChangedException();
+        }
+
+        attempt.Stage = "generate";
 
         GeneratedEmbeddings<Embedding<float>> generated = await lease.Generator
             .GenerateAsync(batch, options: null, cancellationToken)

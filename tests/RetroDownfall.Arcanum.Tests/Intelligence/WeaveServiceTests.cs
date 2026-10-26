@@ -4,6 +4,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -752,12 +753,13 @@ public sealed partial class WeaveServiceTests
 
     private static WeaveService CreateService(
         ArcanumSettings settings,
-        FakeEmbeddingGeneratorFactory? factory = null,
+        IEmbeddingGeneratorFactory? factory = null,
         ITurnRunWriter? writer = null,
         IBudgetReservationService? reservations = null,
         Func<IServiceScopeFactory, IServiceScopeFactory>? decorateScopes = null,
         RetroDownfall.Arcanum.Core.Weave.Tapestry.ITapestryProviderValidator? tapestryValidator = null,
-        ILogger<WeaveService>? logger = null)
+        ILogger<WeaveService>? logger = null,
+        IOptionsMonitor<ArcanumSettings>? options = null)
     {
         ServiceCollection collection = new();
 
@@ -777,7 +779,7 @@ public sealed partial class WeaveServiceTests
 
         return new(
             factory ?? new FakeEmbeddingGeneratorFactory(),
-            new TestOptionsMonitor<ArcanumSettings>(settings),
+            options ?? new TestOptionsMonitor<ArcanumSettings>(settings),
             decorateScopes is null ? scopes : decorateScopes(scopes),
             logger ?? NullLogger<WeaveService>.Instance, tapestryValidator);
     }
@@ -841,6 +843,7 @@ public sealed partial class WeaveServiceTests
         public Guid RunId { get; } = Guid.NewGuid();
 
         public Exception? CompleteException { get; init; }
+        public Exception? RecordException { get; init; }
         public int CompleteCalls { get; private set; }
 
         public Task<Guid> StartRunAsync(
@@ -865,6 +868,8 @@ public sealed partial class WeaveServiceTests
             BillableOperationRecord operation,
             CancellationToken cancellationToken = default)
         {
+            if (RecordException is not null) return Task.FromException<Guid>(RecordException);
+
             Operations.Add(operation);
             return Task.FromResult(Guid.NewGuid());
         }
@@ -880,6 +885,7 @@ public sealed partial class WeaveServiceTests
         public decimal? ReconciledUsd { get; private set; }
 
         public int ReconcileCount { get; private set; }
+        public int ReleaseCount { get; private set; }
 
         public Task<Result<BudgetReservation>> ReserveAsync(
             BudgetReservationRequest request,
@@ -915,8 +921,12 @@ public sealed partial class WeaveServiceTests
 
         public Task ReleaseAsync(
             Guid reservationId,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
+            CancellationToken cancellationToken = default)
+        {
+            ReleaseCount++;
+
+            return Task.CompletedTask;
+        }
 
         public Task<decimal> GetTodayCommittedSpendAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(0m);
@@ -947,6 +957,9 @@ public sealed partial class WeaveServiceTests
         public FakeEmbeddingGenerator Generator { get; } = new();
 
         public EmbeddingProvenance? Provenance { get; set; }
+        public Exception? ResolveException { get; set; }
+        public Action? BeforeResolve { get; set; }
+        public Func<int, EmbeddingProvenance?>? ResolveProvenance { get; set; }
 
         public int ResolveCount { get; private set; }
 
@@ -957,8 +970,11 @@ public sealed partial class WeaveServiceTests
             ResolveCount++;
 
             ResolveCancellationToken = cancellationToken;
+            BeforeResolve?.Invoke();
 
-            return Task.FromResult(new EmbeddingGeneratorLease(Generator, ownsGenerator: false, Provenance));
+            if (ResolveException is not null) return Task.FromException<EmbeddingGeneratorLease>(ResolveException);
+
+            return Task.FromResult(new EmbeddingGeneratorLease(Generator, ownsGenerator: false, ResolveProvenance is null ? Provenance : ResolveProvenance(ResolveCount)));
         }
     }
 

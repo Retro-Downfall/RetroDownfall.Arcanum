@@ -13,6 +13,8 @@ public sealed partial class WeaveServiceTests
     {
         ArcanumSettings settings = EnabledSettings();
 
+        settings.Integrations.Embeddings.Model = "original-model";
+
         EmbeddingProvenance resolved = new("local", "original-model");
 
         FakeEmbeddingGeneratorFactory factory = new() { Provenance = resolved };

@@ -1135,6 +1135,8 @@ public sealed partial class TapestryWeaverTests : IAsyncLifetime
 
         Assert.Equal(10, observedInputs);
 
+        Assert.Equal(0, _summarizer!.CallCount);
+
         Assert.Null(await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None));
 
         Assert.Equal(0, await _store.ReconcileGenerationsAsync(CancellationToken.None));

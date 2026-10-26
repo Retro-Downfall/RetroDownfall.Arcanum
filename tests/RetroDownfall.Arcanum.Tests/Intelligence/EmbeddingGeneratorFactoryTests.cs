@@ -16,10 +16,10 @@ public sealed partial class EmbeddingGeneratorFactoryTests : IDisposable
             System.Environment.GetEnvironmentVariable(CredentialVariable);
         System.Environment.SetEnvironmentVariable(CredentialVariable, null);
     }
+
     [Fact]
     public async Task ResolveGeneratorAsync_EmbeddingsDisabled_Throws()
     {
-
         EmbeddingGeneratorFactory factory = CreateFactory(new ArcanumSettings
         {
             Features = new FeatureSettings { Embeddings = false },
@@ -29,13 +29,11 @@ public sealed partial class EmbeddingGeneratorFactoryTests : IDisposable
             () => factory.ResolveGeneratorAsync(CancellationToken.None));
 
         Assert.Contains("disabled", ex.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ResolveGeneratorAsync_MissingProviderOrModel_Throws()
     {
-
         EmbeddingGeneratorFactory factory = CreateFactory(new ArcanumSettings
         {
             Features = new FeatureSettings { Embeddings = true },
@@ -47,13 +45,11 @@ public sealed partial class EmbeddingGeneratorFactoryTests : IDisposable
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => factory.ResolveGeneratorAsync(CancellationToken.None));
-
     }
 
     [Fact]
     public async Task ResolveGeneratorAsync_UnknownProviderName_Throws()
     {
-
         ArcanumSettings settings = new()
         {
             Features = new FeatureSettings { Embeddings = true },
@@ -77,13 +73,11 @@ public sealed partial class EmbeddingGeneratorFactoryTests : IDisposable
             () => factory.ResolveGeneratorAsync(CancellationToken.None));
 
         Assert.Contains("missing", ex.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task ResolveGeneratorAsync_OllamaViaOpenAiCompatibleProvider_ReturnsLease()
     {
-
         // Ollama has no bespoke embedding integration — it is routed through the same
         // OpenAI-compatible EmbeddingClient path as any other AiProviderKind.OpenAICompatible provider.
         ArcanumSettings settings = new()
@@ -108,7 +102,6 @@ public sealed partial class EmbeddingGeneratorFactoryTests : IDisposable
         using EmbeddingGeneratorLease lease = await factory.ResolveGeneratorAsync(CancellationToken.None);
 
         Assert.NotNull(lease.Generator);
-
     }
 
     [Fact]
@@ -138,13 +131,11 @@ public sealed partial class EmbeddingGeneratorFactoryTests : IDisposable
         using EmbeddingGeneratorLease lease = await factory.ResolveGeneratorAsync(CancellationToken.None);
 
         Assert.NotNull(lease.Generator);
-
     }
 
     [Fact]
     public async Task ResolveGeneratorAsync_CachesGeneratorByProviderAndModel()
     {
-
         ArcanumSettings settings = new()
         {
             Features = new FeatureSettings { Embeddings = true },
@@ -169,13 +160,11 @@ public sealed partial class EmbeddingGeneratorFactoryTests : IDisposable
         using EmbeddingGeneratorLease second = await factory.ResolveGeneratorAsync(CancellationToken.None);
 
         Assert.Same(first.Generator, second.Generator);
-
     }
 
     [Fact]
     public async Task ResolveGeneratorAsync_EndpointChangedViaHotReload_BuildsNewGenerator()
     {
-
         MutableOptionsMonitor<ArcanumSettings> monitor = new(new ArcanumSettings
         {
             Features = new FeatureSettings { Embeddings = true },
@@ -211,7 +200,11 @@ public sealed partial class EmbeddingGeneratorFactoryTests : IDisposable
         using EmbeddingGeneratorLease second = await factory.ResolveGeneratorAsync(CancellationToken.None);
 
         Assert.NotSame(first.Generator, second.Generator);
+        Assert.Equal(first.Provenance, second.Provenance);
 
+        Assert.Equal("compat", second.Provenance?.Provider);
+
+        Assert.Equal("text-embedding-3-small", second.Provenance?.Model);
     }
 
     [Fact]
@@ -246,14 +239,16 @@ public sealed partial class EmbeddingGeneratorFactoryTests : IDisposable
         using EmbeddingGeneratorLease second = await factory.ResolveGeneratorAsync(CancellationToken.None);
 
         Assert.NotSame(first.Generator, second.Generator);
+        Assert.Equal(first.Provenance, second.Provenance);
 
+        Assert.Equal("compat", second.Provenance?.Provider);
+
+        Assert.Equal("text-embedding-3-small", second.Provenance?.Model);
     }
 
     private static EmbeddingGeneratorFactory CreateFactory(ArcanumSettings settings)
     {
-
         return CreateFactoryWithMonitor(new TestOptionsMonitor<ArcanumSettings>(settings));
-
     }
 
     private static EmbeddingGeneratorFactory CreateFactoryWithMonitor(
@@ -262,7 +257,6 @@ public sealed partial class EmbeddingGeneratorFactoryTests : IDisposable
         return new EmbeddingGeneratorFactory(
             new FakeHttpClientFactory(),
             monitor);
-
     }
 
     public void Dispose()
@@ -275,7 +269,6 @@ public sealed partial class EmbeddingGeneratorFactoryTests : IDisposable
     /// <summary>Simulates <c>IOptionsMonitor&lt;T&gt;.CurrentValue</c> changing across calls (hot-reload), unlike the fixed-snapshot <see cref="TestOptionsMonitor{T}"/>.</summary>
     private sealed class MutableOptionsMonitor<T>(T current) : Microsoft.Extensions.Options.IOptionsMonitor<T>
     {
-
         public T CurrentValue { get; set; } = current;
 
         public T Get(string? name) => CurrentValue;
@@ -284,20 +277,14 @@ public sealed partial class EmbeddingGeneratorFactoryTests : IDisposable
 
         private sealed class NoopDisposable : IDisposable
         {
-
             public void Dispose()
             {
             }
-
         }
-
     }
 
     private sealed class FakeHttpClientFactory : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) => new();
-
     }
-
 }
