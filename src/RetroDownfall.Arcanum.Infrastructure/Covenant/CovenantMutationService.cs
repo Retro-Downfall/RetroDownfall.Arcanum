@@ -293,6 +293,31 @@ internal sealed partial class CovenantMutationService(
             targetVersionId,
             targetRenderedHash);
 
+        Result<CovenantMutationIntent> intent = BuildOperatorIntent(
+            scope, normalizedKey, lane, mutationId, expectedRevision, reactivate, compiled, body);
+
+        if (intent.IsFailure)
+        {
+            return intent.Error;
+        }
+
+        Result capacity = await ValidatePreflightCapacityAsync(intent.Value, readLease, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (capacity.IsFailure)
+        {
+            return capacity.Error;
+        }
+
+        CovenantHeadItem? currentHead = lane == CovenantLane.Confirmed
+            ? detail.Value.ConfirmedHead
+            : detail.Value.ProposedHead;
+
+        if (CovenantMutationLifecycle.Refusal(intent.Value, currentHead?.Lifecycle) is { } lifecycleError)
+        {
+            return lifecycleError;
+        }
+
         // The body repeats these timestamps and the commit path requires the two to agree byte for
         // byte, so the instant is stated rather than read a second time inside the codec.
         Result<string> token = codec.Encode(
@@ -324,6 +349,66 @@ internal sealed partial class CovenantMutationService(
             issuedAt,
             expiresAt,
             token.Value);
+    }
+
+    private static Result<CovenantMutationIntent> BuildOperatorIntent(
+        CovenantOperationScope scope,
+        string normalizedKey,
+        CovenantLane lane,
+        Guid mutationId,
+        long expectedRevision,
+        bool reactivate,
+        CovenantCompiledContent? compiled,
+        CovenantOperatorPreflightBody body) =>
+        compiled is null
+            ? CovenantOperatorMutationFactory.Retire(
+                mutationId, scope, normalizedKey, normalizedKey, lane, expectedRevision,
+                Binding(body), body.Digest())
+            : CovenantOperatorMutationFactory.Set(
+                mutationId, scope, compiled, expectedRevision, reactivate,
+                Binding(body), body.Digest());
+
+    private async ValueTask<Result> ValidatePreflightCapacityAsync(
+        CovenantMutationIntent intent,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken)
+    {
+        CovenantQuotaDemand demand = CovenantQuotaDemand.ForBatch([intent]);
+
+        Result<CovenantQuotaSnapshot> scope = await store.ReadQuotaSnapshotAsync(
+            intent.Target.Scope, demand.TouchedKeys, readLease, cancellationToken).ConfigureAwait(false);
+
+        if (scope.IsFailure)
+        {
+            return scope.Error;
+        }
+
+        if (CovenantScopeCapacity.Refusal(scope.Value, demand) is { } scopeError)
+        {
+            return scopeError;
+        }
+
+        foreach (CovenantSectionDemand section in demand.Sections)
+        {
+            Result<CovenantSectionOccupancy> retained = await store.ReadSectionOccupancyAsync(
+                new(intent.Target.Scope, section.Lane, section.TouchedKeys), readLease, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (retained.IsFailure)
+            {
+                return retained.Error;
+            }
+
+            if (CovenantSectionCapacity.Refusal(
+                CovenantSectionCapacity.Placement(intent.Target.Scope.Kind, section.Lane),
+                retained.Value, section) is { } sectionError)
+            {
+                return new Error(sectionError.Code,
+                    sectionError.Message + " Retire or shorten another entry in this Section, or shorten this replacement, then prepare again.");
+            }
+        }
+
+        return Result.Success();
     }
 
     /// <summary>
@@ -459,24 +544,8 @@ internal sealed partial class CovenantMutationService(
                 "Operator authority changed after this mutation was prepared.");
         }
 
-        Result<CovenantMutationIntent> intent = compiled is null
-            ? CovenantOperatorMutationFactory.Retire(
-                mutationId,
-                scope,
-                normalizedKey,
-                normalizedKey,
-                lane,
-                expectedRevision,
-                Binding(body.Value),
-                body.Value.Digest())
-            : CovenantOperatorMutationFactory.Set(
-                mutationId,
-                scope,
-                compiled,
-                expectedRevision,
-                reactivate,
-                Binding(body.Value),
-                body.Value.Digest());
+        Result<CovenantMutationIntent> intent = BuildOperatorIntent(
+            scope, normalizedKey, lane, mutationId, expectedRevision, reactivate, compiled, body.Value);
 
         if (intent.IsFailure)
         {

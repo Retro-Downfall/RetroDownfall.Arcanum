@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Core.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -36,6 +38,232 @@ public sealed class CovenantMutationServiceTests
     private const string Installation = "3F6C1A20-77B4-4E19-9C2D-8A5E0B14D763";
 
     private static readonly Guid DatasetGeneration = Guid.Parse("5B2E9C41-08D3-4A7F-B6E5-2C1908FA4D77");
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Preflight_refuses_section_capacity_for_set_and_correction(bool correction)
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await SeedPreflightHeadsAsync(fixture,
+            ("preference.one", new string('a', 1100)),
+            ("preference.two", new string('b', 1100)),
+            ("preference.three", new string('c', 1100)),
+            ("preference.target", "small"));
+
+        CovenantMutationService service = Service(fixture);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantInstallationReadLease read = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        Result<CovenantDetail> detail = await fixture.Store.ReadDetailAsync(
+            new(CovenantOperationScope.Global, "preference.target"), read, Token);
+
+        CovenantHeadItem head = Assert.IsType<CovenantHeadItem>(detail.Value.ConfirmedHead);
+
+        Result<CovenantMutationPreflightDto> result = correction
+            ? await service.PrepareCorrectAsync(new(
+                CovenantScope.Global, null, "preference.target", new string('d', 1100),
+                head.VersionId, CovenantLane.Confirmed, 1,
+                Convert.ToHexString(head.RenderedHash!.Value.Bytes), Guid.NewGuid()), read, Token)
+            : await service.PrepareSetAsync(new(
+                CovenantScope.Global, null, "preference.target", new string('d', 1100),
+                1, Guid.NewGuid(), false), read, Token);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, result.Error.Code);
+
+        Assert.Contains("retire", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("shorten", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(4, await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_versions;"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Preflight_retired_set_requires_explicit_reactivation(bool reactivate)
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await SeedPreflightHeadsAsync(fixture, ("preference.retired", "Old preference."));
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> retired = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            await CovenantMutationFixture.LiveBatchAsync(fixture, Token,
+                CovenantMutationFixture.OperatorRetire(CovenantOperationScope.Global,
+                    "preference.retired", CovenantLane.Confirmed, 1, 1)), Token);
+
+        Assert.True(retired.IsSuccess);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantInstallationReadLease read = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        Result<CovenantMutationPreflightDto> result = await Service(fixture).PrepareSetAsync(new(
+            CovenantScope.Global, null, "preference.retired", "New preference.", 2,
+            Guid.NewGuid(), reactivate), read, Token);
+
+        Assert.Equal(reactivate, result.IsSuccess);
+
+        if (!reactivate)
+        {
+            Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, result.Error.Code);
+
+            Assert.Contains("--reactivate", result.Error.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(2, await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_versions;"));
+    }
+
+    [Fact]
+    public async Task Preflight_refuses_retirement_of_a_missing_head()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantInstallationReadLease read = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        Result<CovenantMutationPreflightDto> result = await Service(fixture).PrepareRetireAsync(new(
+            CovenantScope.Global, null, "preference.missing", CovenantLane.Confirmed,
+            1, Guid.NewGuid()), read, Token);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.LifecycleConflict, result.Error.Code);
+
+        Assert.Equal(0, await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_versions;"));
+    }
+
+    [Fact]
+    public async Task Preflight_replacement_excludes_the_current_head_from_section_capacity()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await SeedPreflightHeadsAsync(fixture,
+            ("preference.one", new string('a', 1100)),
+            ("preference.two", new string('b', 1100)),
+            ("preference.three", new string('c', 1100)));
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantInstallationReadLease read = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        Result<CovenantMutationPreflightDto> result = await Service(fixture).PrepareSetAsync(new(
+            CovenantScope.Global, null, "preference.one", new string('z', 1099),
+            1, Guid.NewGuid(), false), read, Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(3, await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_versions;"));
+    }
+
+    [Fact]
+    public async Task Preflight_refuses_scope_capacity_even_when_the_section_is_empty()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await using (Microsoft.Data.Sqlite.SqliteCommand command = fixture.Connection.CreateCommand())
+        {
+            command.CommandText = """
+                WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < $count)
+                INSERT INTO covenant_mutation_receipts (
+                    MutationId, RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest, MutationKindCode,
+                    ScopeCode, CampaignId, TargetIdentityDigest, LaneCode, OutcomeCode, ResultingVersionId,
+                    ResultingLaneRevision, ResponseReceiptDigest, SourceTurnId, CommittedAtUtc, EntryId)
+                SELECT lower(hex(randomblob(16))), zeroblob(32), zeroblob(32), zeroblob(32), 1,
+                       1, NULL, zeroblob(32), 1, 2, NULL,
+                       NULL, zeroblob(32), NULL, $committed, NULL
+                FROM n;
+                """;
+
+            command.Parameters.AddWithValue("$count", CovenantLimits.MaxMutationReceiptsPerScope);
+
+            command.Parameters.AddWithValue("$committed", UtcInstantText.Format(CovenantMutationFixture.CommitTime));
+
+            await command.ExecuteNonQueryAsync(Token);
+        }
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantInstallationReadLease read = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        Result<CovenantMutationPreflightDto> result = await Service(fixture).PrepareSetAsync(new(
+            CovenantScope.Global, null, "preference.new", "Small preference.",
+            0, Guid.NewGuid(), false), read, Token);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, result.Error.Code);
+
+        Assert.Contains("mutation receipts", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(CovenantLimits.MaxMutationReceiptsPerScope,
+            await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_mutation_receipts;"));
+    }
+
+    [Fact]
+    public async Task Preflight_does_not_bypass_commit_capacity_when_another_key_fills_the_section()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await SeedPreflightHeadsAsync(fixture,
+            ("preference.one", new string('a', 1100)),
+            ("preference.two", new string('b', 1100)),
+            ("preference.three", new string('c', 1100)),
+            ("preference.target", "small"));
+
+        CovenantMutationService service = Service(fixture);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        Guid mutationId = Guid.NewGuid();
+
+        string token;
+
+        await using (CovenantInstallationReadLease read = (await gate.AcquireInstallationReadAsync(Token)).Value)
+        {
+            Result<CovenantMutationPreflightDto> prepared = await service.PrepareSetAsync(new(
+                CovenantScope.Global, null, "preference.target", new string('d', 500),
+                1, mutationId, false), read, Token);
+
+            Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : null);
+
+            token = prepared.Value.PreflightToken;
+        }
+
+        await SeedPreflightHeadsAsync(fixture, ("preference.concurrent", new string('e', 500)));
+
+        await using CovenantWriteLease write = (await gate.AcquireWriteAsync(CovenantOperationScope.Global, Token)).Value;
+
+        Result<CovenantMutationResultDto> result = await service.SetAsync(new(
+            CovenantScope.Global, null, "preference.target", new string('d', 500),
+            1, mutationId, false, token), write, Token);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, result.Error.Code);
+
+        Assert.Equal(5, await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_versions;"));
+    }
+
+    private static async Task SeedPreflightHeadsAsync(
+        CovenantCanonicalFixture fixture,
+        params (string Key, string Content)[] heads)
+    {
+        CovenantMutationIntent[] intents = heads.Select(head => CovenantMutationFixture.OperatorSet(
+            CovenantOperationScope.Global, head.Key, head.Content, 0, 0)).ToArray();
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> result = await CovenantMutationFixture.ApplyAsync(
+            fixture, await CovenantMutationFixture.LiveBatchAsync(fixture, Token, intents), Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+    }
 
     [Fact]
     public async Task A_prepared_set_commits_and_becomes_the_confirmed_head()
