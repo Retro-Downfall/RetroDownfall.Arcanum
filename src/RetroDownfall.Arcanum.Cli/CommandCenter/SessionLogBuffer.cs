@@ -529,9 +529,11 @@ internal sealed class SessionLogBuffer
 
             int sliceEnd = window.EndIndex;
 
-            // Prefer breaking on whitespace within the window.
+            // Include the first cell boundary beyond the window: a word that exactly fills
+            // the line must not leave its separator at the start of the next line.
             int breakAt = -1;
-            for (int i = sliceEnd - 1; i > index; i--)
+
+            for (int i = sliceEnd; i > index; i--)
             {
                 if (char.IsWhiteSpace(line[i]))
                 {

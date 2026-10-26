@@ -13,20 +13,18 @@ internal static class PersistedToolInteraction
     {
         ArgumentNullException.ThrowIfNull(entry);
 
-        if (!string.IsNullOrWhiteSpace(entry.ToolName))
-        {
-            return true;
-        }
-
         SessionLogEntryKind kind = SessionLogBuffer.MapEntryRole(entry.Role);
+
         if (kind == SessionLogEntryKind.Tool)
         {
             return true;
         }
 
-        string content = (entry.Content ?? string.Empty).TrimStart();
-        return content.StartsWith("[ToolCall:", StringComparison.OrdinalIgnoreCase)
-            || content.StartsWith("[ToolResult:", StringComparison.OrdinalIgnoreCase);
+        return (string.Equals(entry.Role, "assistant", StringComparison.OrdinalIgnoreCase)
+                && (!string.IsNullOrEmpty(entry.ToolName)
+                    || (entry.Content?.StartsWith("[ToolCall:", StringComparison.Ordinal) ?? false)))
+            || (string.Equals(entry.Role, "system", StringComparison.OrdinalIgnoreCase)
+                && (entry.Content?.StartsWith("[ToolResult:", StringComparison.Ordinal) ?? false));
     }
 
     public static bool TryParseToolCall(string? content, out string toolName, out string? arguments)
