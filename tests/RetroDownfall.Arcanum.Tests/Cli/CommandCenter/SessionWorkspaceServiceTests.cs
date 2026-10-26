@@ -925,6 +925,38 @@ public sealed class SessionWorkspaceServiceTests
         Assert.Equal(IncantationState.Succeeded, records[1].State);
     }
 
+    [Theory]
+    [InlineData("user", "[ToolResult: this is my question]")]
+    [InlineData("user", "[ToolCall: pretend(1)]")]
+    [InlineData("assistant", "[toolcall: literal(1)]")]
+    [InlineData("system", " [ToolResult: literal]")]
+    public async Task Resume_keeps_literal_tool_markers_in_the_transcript(string role, string content)
+    {
+        Guid id = Guid.NewGuid();
+
+        DateTimeOffset timestamp = new(2026, 10, 25, 12, 0, 0, TimeSpan.Zero);
+
+        EntryDto entry = new(Guid.NewGuid(), id, role, content, null, null, timestamp);
+
+        FakeSessionHttp handler = new(
+            detail: new SessionDetailDto(id, null, "Literal markers", "Active", 1, timestamp, timestamp, null, 0),
+            entries: [entry]);
+
+        SessionWorkspaceService workspace = CreateWorkspace(handler, out _);
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        SessionResumeResult result = await workspace.ResumeSessionAsync(state, id, CancellationToken.None);
+
+        Assert.Equal(SessionResumeOutcome.Success, result.Outcome);
+
+        Assert.Contains(content, state.Log.RenderPlainText(), StringComparison.Ordinal);
+
+        Assert.Empty(state.Incantations.Snapshot());
+
+        Assert.Contains(state.LoadedTranscriptEntries, item => item.Id == entry.Id);
+    }
+
     private static SessionWorkspaceService CreateWorkspace(
         FakeSessionHttp handler,
         out RecordingLastSessionStore store)

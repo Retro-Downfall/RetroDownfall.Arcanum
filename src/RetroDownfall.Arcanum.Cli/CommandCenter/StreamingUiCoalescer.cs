@@ -99,8 +99,8 @@ internal sealed class StreamingUiCoalescer : IAsyncDisposable
     /// <summary>
     /// Flushes any pending tokens after a cancellation. This flush is what puts the cut-off text on the
     /// screen, and it runs because the turn's token was cancelled, so no token may be allowed to abandon
-    /// it: it takes none, and the write is made on <see cref="CancellationToken.None"/> (the UI channel is
-    /// unbounded, so it completes at once).
+    /// it: it takes none. The host's unbounded UI channel accepts the refresh immediately while open;
+    /// after UI shutdown the final snapshot is retained without attempting an asynchronous write.
     /// </summary>
     public ValueTask FlushCancelledAsync() =>
         FlushPendingAsync(CancellationToken.None);
@@ -222,11 +222,18 @@ internal sealed class StreamingUiCoalescer : IAsyncDisposable
         }
     }
 
-    private async ValueTask FlushCoreAsync(CancellationToken cancellationToken)
+    private ValueTask FlushCoreAsync(CancellationToken cancellationToken)
     {
         _beforeFlush?.Invoke();
+
         FlushCount++;
-        await _ui.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog), cancellationToken)
-            .ConfigureAwait(false);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // The host's UI channel is unbounded. False means its consumer has shut down;
+        // the final snapshot still matters, but no refresh can be delivered after exit.
+        _ = _ui.TryWrite(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog));
+
+        return ValueTask.CompletedTask;
     }
 }
