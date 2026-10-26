@@ -74,7 +74,7 @@ public enum SagaRetrievalEligibility
 public sealed record SagaMemoryLifecycle(DateTimeOffset? RetiredAtUtc, DateTimeOffset? PinnedAtUtc);
 
 /// <summary>One memory's row, its curation lifecycle, and whether it still has an embedding, read together.</summary>
-public sealed record SagaMemoryCurationRow(SagaMemoryDto Memory, SagaMemoryLifecycle Lifecycle, bool HasEmbedding);
+public sealed record SagaMemoryCurationRow(SagaMemoryDto Memory, SagaMemoryLifecycle Lifecycle, bool HasEmbedding, SagaMemoryPosition? SearchPosition = null);
 
 /// <summary>
 /// The one place a Saga memory's <see cref="SagaRetrievalEligibility"/> is decided.

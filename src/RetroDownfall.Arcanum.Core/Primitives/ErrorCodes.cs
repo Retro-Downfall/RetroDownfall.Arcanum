@@ -6,6 +6,11 @@ namespace RetroDownfall.Arcanum.Core.Primitives;
 /// </summary>
 public static class ErrorCodes
 {
+    public static class MemorySearch
+    {
+        public const string IndexUnavailable = "MemorySearch.IndexUnavailable";
+    }
+
     public static class MemoryDelegation
     {
         public const string InvalidGrant = "MemoryDelegation.InvalidGrant";

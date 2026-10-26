@@ -59,6 +59,14 @@ internal static partial class CliCommandTree
             Description = "Optional workspace ID; omit to search every indexed workspace.",
         };
 
+        Option<string?> continuation = new("--continuation") { Description = "Continue an unfinished literal memory search with the same query and selectors." };
+
+        Option<int?> searchLimit = new("--limit") { Description = "Maximum results in this page, between 1 and 10000." };
+
+        search.Add(continuation);
+
+        search.Add(searchLimit);
+
         search.Add(query);
 
         search.Add(scope);
@@ -74,7 +82,9 @@ internal static partial class CliCommandTree
                     pr.GetValue(scope),
                     ActiveSession(sp, pr.GetValue(searchSession)),
                     pr.GetValue(workspace),
-                    ct).ConfigureAwait(false));
+                    ct,
+                    pr.GetValue(continuation),
+                    pr.GetValue(searchLimit)).ConfigureAwait(false));
 
         Argument<string?> explainSession = OptionalMemorySessionArgument();
 

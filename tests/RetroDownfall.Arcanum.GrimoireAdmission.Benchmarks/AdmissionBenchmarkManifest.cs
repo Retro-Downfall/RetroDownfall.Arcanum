@@ -16,7 +16,7 @@ internal sealed record AdmissionBenchmarkManifest(
     string InputCatalogShapeDigest,
     string[] SourceDifferenceAllowlist)
 {
-    private const string ExactInputCatalogShapeDigest = "08a98a8b356c4922cdfcb53daa8c4192d0d24abd9b385ba6fe4b7bca62c5b118";
+    private const string ExactInputCatalogShapeDigest = "1a867c2430d89a71ab05e801dda67b8c554c487a8a7abc1076130c504899545d";
 
     private static readonly string[] ExactAllowlist =
     [

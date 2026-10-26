@@ -150,6 +150,26 @@ internal sealed partial class LexiconService
         }, cancellationToken);
     }
 
+    public Task<Result<LexiconInspectionResult<LexiconSearchRow[]>>> SearchInspectionPageAsync(
+        string? query, int limit, LexiconSearchPosition? after, ICovenantSnapshotReadLease? readLease,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+
+        return InInspectionSnapshotAsync<LexiconSearchRow[]>(readLease, requiredScope: null, async connection =>
+        {
+            List<LexiconSearchRow> rows = [];
+
+            LexiconSearchPosition? position = null;
+
+            bool protectedContent = await StreamInspectionAsync(connection, query, limit, readLease,
+                entry => rows.Add(new(entry, position!)), cancellationToken, after: after,
+                remember: value => position = value).ConfigureAwait(false);
+
+            return new LexiconInspectionResult<LexiconSearchRow[]>([.. rows], protectedContent);
+        }, cancellationToken);
+    }
+
     public Task<Result<LexiconInspectionResult<LexiconInspectionCounts>>> CountInspectionAsync(
         ICovenantSnapshotReadLease? readLease, CancellationToken cancellationToken = default) =>
         InInspectionSnapshotAsync(readLease, requiredScope: null, async connection =>

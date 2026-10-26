@@ -3,7 +3,9 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -52,7 +54,19 @@ public sealed class BackupRestoreStagedDrainTests
         MemoryErasureRestoreHarness.ArchivedInstallation archive = await harness.CreateArchiveAtAsync(
             "core-eleven",
             MemoryErasureRestoreHarness.CoreElevenCanonicalFive(),
-            SeedArchivedMemoryAsync);
+            async connection =>
+            {
+                await SeedArchivedMemoryAsync(connection);
+
+                await using SqliteCommand searchable = connection.CreateCommand();
+
+                searchable.CommandText = """
+                    INSERT INTO workspace_file_chunks(ChunkId,WorkspacePath,RelativePath,ChunkIndex,Content,CharOffset,CharLength,FileLastWriteTime,IndexedAt)
+                    VALUES('restore-search-source','/fake/restored-workspace','restored.cs',0,'restoreliteral-vxq',0,18,'2026-01-01T00:00:00.0000000Z','2026-01-01T00:00:00.0000000Z');
+                    """;
+
+                _ = await searchable.ExecuteNonQueryAsync(Token);
+            });
 
         BackupRestoreResult result = await RestoreAsync(harness.CreateRestoreService(), archive.ArchivePath);
 
@@ -72,13 +86,34 @@ public sealed class BackupRestoreStagedDrainTests
 
         // The drain carried the archive's own rows to head; it did not lose them on the way.
         Assert.Equal(1L, await ScalarAsync(restored, $"SELECT COUNT(*) FROM saga_memories WHERE Id = '{ArchivedMemoryId}'"));
+
+        // The real staged restore drains Core28's new derived owner from the old encrypted archive.
+        var searched = await NativeMemorySearchReader.ReadAsync(restored, "restoreliteral-vxq", MemorySearchScope.Workspace,
+            null, null, new(3), 20, Token);
+
+        Assert.True(searched.IsSuccess, searched.IsFailure ? searched.Error.Message : null);
+
+        Assert.Equal("restore-search-source", Assert.Single(searched.Value.Hits).Result.SourceId);
+
+        await using SqliteConnection writable = await BackupRestoreDatabaseWorker.OpenAsync(
+            harness.DatabasePath, archive.GrimoireSecret, readOnly: false, Token);
+
+        await using SqliteCommand remove = writable.CreateCommand();
+
+        remove.CommandText = "DELETE FROM workspace_file_chunks WHERE ChunkId='restore-search-source';";
+
+        _ = await remove.ExecuteNonQueryAsync(Token);
+
+        Assert.Equal(0L, await ScalarAsync(restored, "SELECT count(*) FROM memory_search_documents WHERE Corpus=3 AND SourceId='restore-search-source'"));
+
+        Assert.Equal(0L, await ScalarAsync(restored, "SELECT count(*) FROM memory_search_fts WHERE memory_search_fts MATCH 'vxq'"));
     }
 
     /// <summary>
     /// The drain follows every tier, not only Core: an archive whose canonical tier also stops at a sweep
     /// can only reach that sweep once Core is at head. Core crosses the version-12 identity sweep
     /// and the version-16 Campaign frontier sweep, then the version-18 Long Rest source identities
-    /// before the canonical sweep, so this one-memory fixture takes four passes.
+    /// before the canonical sweep; Core28 adds the native-search projection sweep, taking five passes.
     /// </summary>
     [SkippableFact]
     public async Task An_archive_with_sweeps_pending_in_two_tiers_is_drained_through_both()
@@ -116,7 +151,7 @@ public sealed class BackupRestoreStagedDrainTests
         Assert.Equal(1L, await ScalarAsync(restored,
             $"SELECT COUNT(*) FROM long_rest_sources WHERE MemoryId = '{ArchivedMemoryId}' AND MutationEpoch = 1"));
 
-        Assert.Contains(result.Phases, static p => p.Phase == BackupRestorePhase.Migrate && p.Detail.StartsWith("Drained staged schema transitions: 4 passes,", StringComparison.Ordinal));
+        Assert.Contains(result.Phases, static p => p.Phase == BackupRestorePhase.Migrate && p.Detail.StartsWith("Drained staged schema transitions: 5 passes,", StringComparison.Ordinal));
     }
 
     [SkippableFact]
@@ -291,12 +326,13 @@ public sealed class BackupRestoreStagedDrainTests
 
         Assert.Equal(Unjoinable, issue.Code);
 
-        // A stall is named by the tier health it left behind, not by an exception.
-        Assert.EndsWith("Diagnostics: TransitionIncomplete", issue.Message, StringComparison.Ordinal);
-
-        Assert.True(stalled!.Batches > 0, "The pending sweep was attempted before the pass was judged stalled.");
+        // The unchanged runner rejects a zero-progress batch before convergence can repeat it.
+        // Prove this is that intended boundary, with the destination untouched, before its category.
+        Assert.Equal(1, stalled!.Batches);
 
         Assert.Equal(before, await harness.LiveDatabaseDigestAsync());
+
+        Assert.EndsWith("Diagnostics: InvalidOperationException", issue.Message, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -712,10 +748,11 @@ public sealed class BackupRestoreStagedDrainTests
 
         // Three passes exhaust the synthetic version-12 sweep. Core16 adds one empty Campaign
         // frontier batch/pass; Core18 adds one source-identity batch/pass for the real archived memory.
+        // Core28 adds one pass with four empty native-corpus projection batches.
         Assert.Contains(
             result.Phases,
             static p => p.Phase == BackupRestorePhase.Migrate
-                && p.Detail == $"Drained staged schema transitions: 5 passes, {total + 2} batches, {total + 1} rows.");
+                && p.Detail == $"Drained staged schema transitions: 6 passes, {total + 6} batches, {total + 1} rows.");
     }
 
     /// <summary>

@@ -402,13 +402,17 @@ internal sealed partial class SagaMemoryStore(
             cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<SagaMemoryCurationRow[]> ListCurationRowsAsync(
-        string? query,
-        Guid? sessionId,
-        MemoryScope scope,
-        int limit,
-        int offset,
-        CancellationToken cancellationToken)
+    public Task<SagaMemoryCurationRow[]> ListCurationRowsAsync(
+        string? query, Guid? sessionId, MemoryScope scope, int limit, int offset, CancellationToken cancellationToken) =>
+        ReadCurationRowsAsync(query, sessionId, scope, limit, offset, null, cancellationToken);
+
+    public Task<SagaMemoryCurationRow[]> ListCurationRowsAsync(
+        string? query, Guid? sessionId, MemoryScope scope, int limit, SagaMemoryPosition? after, CancellationToken cancellationToken) =>
+        ReadCurationRowsAsync(query, sessionId, scope, limit, 0, after, cancellationToken);
+
+    private async Task<SagaMemoryCurationRow[]> ReadCurationRowsAsync(
+        string? query, Guid? sessionId, MemoryScope scope, int limit, int offset,
+        SagaMemoryPosition? after, CancellationToken cancellationToken)
     {
         return await ReadLongRestSnapshotAsync(
             async (connection, longRest) =>
@@ -418,7 +422,7 @@ internal sealed partial class SagaMemoryStore(
 
                 await using DbCommand cmd = connection.CreateCommand();
 
-                BuildListCommand(cmd, query, sessionId, scope, limit, offset, includeEmbeddingProbe: true, longRest);
+                BuildListCommand(cmd, query, sessionId, scope, limit, offset, includeEmbeddingProbe: true, longRest, after: after);
 
                 List<SagaMemoryCurationRow> results = [];
 
@@ -433,7 +437,8 @@ internal sealed partial class SagaMemoryStore(
                     results.Add(new SagaMemoryCurationRow(
                         memory,
                         new SagaMemoryLifecycle(memory.RetiredAtUtc, memory.PinnedAtUtc),
-                        hasEmbedding));
+                        hasEmbedding,
+                        new SagaMemoryPosition(reader.GetString(2), reader.GetString(0))));
                 }
 
                 return results.ToArray();
@@ -582,7 +587,8 @@ internal sealed partial class SagaMemoryStore(
         int offset,
         bool includeEmbeddingProbe,
         bool longRest,
-        bool cleanRecall = false)
+        bool cleanRecall = false,
+        SagaMemoryPosition? after = null)
     {
         StringBuilder sql = new(
             """
@@ -714,6 +720,15 @@ internal sealed partial class SagaMemoryStore(
                          OR (clean_deleted.OwnerKindCode = 1 AND EXISTS(SELECT 1 FROM "Sessions" clean_source_session
                              WHERE lower(replace(clean_source_session."Id", '-', '')) = lower(replace(m.SessionId, '-', '')) AND clean_source_session.CampaignId = clean_deleted.OwnerId)))
                 """);
+        }
+
+        if (after is not null)
+        {
+            sql.Append(" AND (m.CreatedAt,m.Id)<(@afterTime,@afterId)");
+
+            AddParameter(cmd, "@afterTime", after.CreatedAt);
+
+            AddParameter(cmd, "@afterId", after.Id);
         }
 
         // The identity breaks a tie, so the order is total and is the one ListPositionsAfterAsync walks. A

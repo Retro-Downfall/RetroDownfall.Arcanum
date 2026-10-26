@@ -126,7 +126,8 @@ public sealed record MemorySearchRequest(
     MemorySearchScope Scope = MemorySearchScope.All,
     Guid? SessionId = null,
     string? WorkspaceId = null,
-    int? Limit = null);
+    int? Limit = null,
+    string? Continuation = null);
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<MemorySearchActionKind>))]
 public enum MemorySearchActionKind
@@ -178,14 +179,16 @@ public sealed record MemorySearchScopeStatusDto(
     int Count,
     bool HasMore);
 
-/// <param name="Scopes">One entry per scope actually consulted, in the order they were consulted.</param>
-/// <param name="HasMore">True when any consulted scope was truncated; the caller may raise <c>limit</c>.</param>
+/// <param name="Scopes">One status per requested scope in phase order, including exhausted earlier and unvisited later phases.</param>
+/// <param name="HasMore">True when work or matches remain; use the continuation with the same query/selectors. Limit may change.</param>
 public sealed record MemorySearchResponse(
     string Query,
     MemorySearchScope Scope,
     MemorySearchResultDto[] Results,
     MemorySearchScopeStatusDto[]? Scopes = null,
-    bool HasMore = false);
+    bool HasMore = false,
+    string? Continuation = null,
+    MemorySearchTruncationReason? TruncationReason = null);
 
 public sealed record MemoryEligibilityDto(
     string Name,

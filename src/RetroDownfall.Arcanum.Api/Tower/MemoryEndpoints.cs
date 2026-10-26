@@ -83,8 +83,6 @@ internal static class MemoryEndpoints
     {
         private long _used;
 
-        private bool _stoppedEarly;
-
         internal bool Exhausted => _used >= SearchResultByteBudget;
 
         /// <summary>Charges <paramref name="content"/>; true means the budget is now spent and the scope must stop.</summary>
@@ -97,19 +95,7 @@ internal static class MemoryEndpoints
                 return false;
             }
 
-            _stoppedEarly = true;
-
             return true;
-        }
-
-        /// <summary>Whether the scope just searched stopped on the budget; reading it starts the next scope clean.</summary>
-        internal bool TakeStoppedEarly()
-        {
-            bool stopped = _stoppedEarly;
-
-            _stoppedEarly = false;
-
-            return stopped;
         }
     }
 
@@ -574,186 +560,173 @@ internal static class MemoryEndpoints
 
         string query = request.Query.Trim();
 
-        // One budget for the whole request, not one per scope: a per-scope ceiling would still let
-        // scope=all return five times the bound. Each scope is asked only for what the budget has
-        // left, so a one-character query can never materialize more than the budget's worth of rows.
-        // A caller-supplied limit narrows that budget; it can never widen it.
+        MemoryScope effectiveScope = await ResolveScopeAsync(request.SessionId, context).ConfigureAwait(false);
+
+        string binding = MemorySearchContinuationCodec.Binding(query, request, workspace?.Path, effectiveScope);
+
+        MemorySearchPosition position = new(0);
+
+        if (request.Continuation is not null
+            && (!MemorySearchContinuationCodec.TryRead(request.Continuation, binding, out position)
+                || !MemorySearchContinuationCodec.AppliesTo(request.Scope, position.Phase)))
+        {
+            return Results.Json(ApiResponse<MemorySearchResponse>.FromResult(
+                Result<MemorySearchResponse>.Failure(new Error(ErrorCodes.Validation.InvalidBody, "The memory search continuation is invalid for this request.")), TraceId(context)),
+                ArcanumJsonContext.Default.ApiResponseMemorySearchResponse, statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (request.Scope == MemorySearchScope.Saga && position.Phase < 4) position = new(4);
+
+        if (request.Scope == MemorySearchScope.Lexicon && position.Phase < 5) position = new(5);
+
         int budget = request.Limit ?? SearchResultLimit;
 
         List<MemorySearchResultDto> results = [];
 
-        List<MemorySearchScopeStatusDto> scopes = [];
-
         ResultByteBudget bytes = new();
 
-        if (Includes(request.Scope, MemorySearchScope.Session))
+        MemorySearchTruncationReason? reason = null;
+
+        if (position.Phase < 4)
         {
-            int slice = OpenSlice(MemorySearchScope.Session, results, budget, scopes, bytes);
+            Result<NativeMemorySearchPage> read = await NativeMemorySearchReader.ReadAsync(connection, query, request.Scope,
+                request.SessionId, workspace, position, budget, context.RequestAborted).ConfigureAwait(false);
 
-            if (slice > 0)
+            if (read.IsFailure)
             {
-                await SearchSessionAsync(
-                    connection,
-                    query,
-                    request.SessionId,
-                    results,
-                    slice + 1,
-                    bytes,
-                    context.RequestAborted).ConfigureAwait(false);
-
-                CloseSlice(MemorySearchScope.Session, results, budget, slice, scopes, bytes);
+                return Results.Json(ApiResponse<MemorySearchResponse>.FromResult(Result<MemorySearchResponse>.Failure(read.Error), TraceId(context)),
+                    ArcanumJsonContext.Default.ApiResponseMemorySearchResponse, statusCode: StatusCodes.Status503ServiceUnavailable);
             }
+
+            NativeMemorySearchPage page = read.Value;
+
+            foreach (NativeMemorySearchHit hit in page.Hits)
+            {
+                results.Add(hit.Result);
+
+                _ = bytes.Charge(hit.Result.Content);
+            }
+
+            if (Includes(request.Scope, MemorySearchScope.Session) && position.Phase < 2)
+            {
+                await GrimoireScopedConsumerTestSeam.PauseAsync("MemoryEndpoints.SearchSessionAsync",
+                    GrimoireScopedConsumerFinalUseKind.ReaderMaterialized, results.Count, context.RequestAborted).ConfigureAwait(false);
+            }
+
+            position = page.Position;
+
+            reason = page.Reason;
         }
 
-        if (Includes(request.Scope, MemorySearchScope.Attachments))
+        if (reason is null && position.Phase <= 4)
         {
-            int slice = OpenSlice(MemorySearchScope.Attachments, results, budget, scopes, bytes);
-
-            if (slice > 0)
+            if (Includes(request.Scope, MemorySearchScope.Saga))
             {
-                await SearchAttachmentsAsync(
-                    connection,
-                    query,
-                    request.SessionId,
-                    results,
-                    slice + 1,
-                    bytes,
-                    context.RequestAborted).ConfigureAwait(false);
+                int before = results.Count;
 
-                CloseSlice(MemorySearchScope.Attachments, results, budget, slice, scopes, bytes);
-            }
-        }
-
-        if (Includes(request.Scope, MemorySearchScope.Workspace))
-        {
-            int slice = OpenSlice(MemorySearchScope.Workspace, results, budget, scopes, bytes);
-
-            if (slice > 0)
-            {
-                await SearchWorkspaceAsync(
-                    connection,
-                    query,
-                    workspace,
-                    results,
-                    slice + 1,
-                    bytes,
-                    context.RequestAborted).ConfigureAwait(false);
-
-                CloseSlice(MemorySearchScope.Workspace, results, budget, slice, scopes, bytes);
-            }
-        }
-
-        if (Includes(request.Scope, MemorySearchScope.Saga))
-        {
-            int slice = OpenSlice(MemorySearchScope.Saga, results, budget, scopes, bytes);
-
-            if (slice > 0)
-            {
-                await SearchSagaAsync(
-                    sagaStore,
-                    query,
-                    request.SessionId,
-                    await ResolveScopeAsync(request.SessionId, context).ConfigureAwait(false),
-                    results,
-                    slice + 1,
-                    bytes,
-                    context.RequestAborted).ConfigureAwait(false);
-
-                CloseSlice(MemorySearchScope.Saga, results, budget, slice, scopes, bytes);
-            }
-        }
-
-        if (Includes(request.Scope, MemorySearchScope.Lexicon))
-        {
-            int slice = OpenSlice(MemorySearchScope.Lexicon, results, budget, scopes, bytes);
-
-            if (slice > 0)
-            {
-                return await RespondToLexiconInspectionAsync(lexicon, context, entries =>
+                if (before >= budget || bytes.Exhausted)
                 {
-                    AddLexiconMatches(entries, query, results, slice + 1, bytes);
+                    reason = bytes.Exhausted ? MemorySearchTruncationReason.ContentBytes : MemorySearchTruncationReason.ResultLimit;
+                }
+                else
+                {
+                    List<SagaMemoryPosition> positions = [];
 
-                    CloseSlice(MemorySearchScope.Lexicon, results, budget, slice, scopes, bytes);
+                    await SearchSagaAsync(sagaStore, query, request.SessionId, effectiveScope, results,
+                        budget - before + 1, bytes, context.RequestAborted,
+                        position.Id is null ? null : new(position.Time!, position.Id), positions.Add).ConfigureAwait(false);
 
-                    return new MemorySearchResponse(query, request.Scope, [.. results], [.. scopes],
-                        scopes.Exists(static scope => scope.HasMore));
-                }, ArcanumJsonContext.Default.ApiResponseMemorySearchResponse, query, slice + 1).ConfigureAwait(false);
+                    if (results.Count > budget)
+                    {
+                        results.RemoveRange(budget, results.Count - budget);
+
+                        reason = MemorySearchTruncationReason.ResultLimit;
+                    }
+                    else if (bytes.Exhausted) reason = MemorySearchTruncationReason.ContentBytes;
+
+                    int kept = results.Count - before;
+
+                    if (kept > 0)
+                    {
+                        SagaMemoryPosition last = positions[kept - 1];
+
+                        position = new(4, last.CreatedAt, Id: last.Id);
+                    }
+                }
+            }
+
+            if (reason is null) position = new(5);
+        }
+
+        MemorySearchResponse Payload()
+        {
+            List<MemorySearchScopeStatusDto> statuses = [];
+
+            foreach (MemorySearchScope candidate in new[] { MemorySearchScope.Session, MemorySearchScope.Attachments, MemorySearchScope.Workspace, MemorySearchScope.Saga, MemorySearchScope.Lexicon })
+            {
+                if (!Includes(request.Scope, candidate)) continue;
+
+                int phase = candidate switch { MemorySearchScope.Session => 1, MemorySearchScope.Attachments => 2, MemorySearchScope.Workspace => 3, MemorySearchScope.Saga => 4, _ => 5 };
+
+                statuses.Add(new(candidate, results.Count(hit => hit.Scope == candidate), reason is not null && phase >= position.Phase));
+            }
+
+            return new(query, request.Scope, [.. results], [.. statuses], reason is not null,
+                reason is null ? null : MemorySearchContinuationCodec.Write(binding, position), reason);
+        }
+
+        if (reason is null && position.Phase <= 5 && Includes(request.Scope, MemorySearchScope.Lexicon))
+        {
+            int left = budget - results.Count;
+
+            if (left <= 0 || bytes.Exhausted)
+            {
+                reason = bytes.Exhausted ? MemorySearchTruncationReason.ContentBytes : MemorySearchTruncationReason.ResultLimit;
+            }
+            else
+            {
+                LexiconSearchPosition? after = position.Id is null ? null : new("", position.Tier!, position.Id);
+
+                return await RespondToLexiconReadAsync(context, null,
+                    lease => lexicon.SearchInspectionPageAsync(query, left + 1, after, lease, context.RequestAborted),
+                    rows =>
+                    {
+                        int taken = 0;
+
+                        foreach (LexiconSearchRow row in rows)
+                        {
+                            if (taken >= left)
+                            {
+                                reason = MemorySearchTruncationReason.ResultLimit;
+
+                                break;
+                            }
+
+                            int before = results.Count;
+
+                            AddLexiconMatches([row.Entry], query, results, 1, bytes);
+
+                            taken += results.Count - before;
+
+                            position = new(5, Id: row.Position.Id, Tier: row.Position.ScopeKey);
+
+                            if (bytes.Exhausted)
+                            {
+                                reason = MemorySearchTruncationReason.ContentBytes;
+
+                                break;
+                            }
+                        }
+
+                        if (reason is null) position = new(6);
+
+                        return Task.FromResult(Result<MemorySearchResponse>.Success(Payload()));
+                    }, ArcanumJsonContext.Default.ApiResponseMemorySearchResponse).ConfigureAwait(false);
             }
         }
 
-        MemorySearchResponse payload = new(
-            query,
-            request.Scope,
-            [.. results],
-            [.. scopes],
-            scopes.Exists(static scope => scope.HasMore));
-
-        return Results.Json(
-            ApiResponse<MemorySearchResponse>.FromResult(
-                Result<MemorySearchResponse>.Success(payload),
-                TraceId(context)),
+        return Results.Json(ApiResponse<MemorySearchResponse>.FromResult(Result<MemorySearchResponse>.Success(Payload()), TraceId(context)),
             ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
-    }
-
-    /// <summary>
-    /// How many rows this scope may still contribute. Zero means an earlier scope consumed the whole
-    /// budget: the scope is recorded as starved with <c>hasMore</c>, because "not consulted" and
-    /// "consulted and empty" are different answers and a caller raising <c>limit</c> needs to tell them
-    /// apart.
-    /// </summary>
-    private static int OpenSlice(
-        MemorySearchScope scope,
-        List<MemorySearchResultDto> results,
-        int budget,
-        List<MemorySearchScopeStatusDto> scopes,
-        ResultByteBudget bytes)
-    {
-        // A spent byte budget starves the scope exactly as a spent row budget does.
-        int slice = bytes.Exhausted ? 0 : budget - results.Count;
-
-        if (slice <= 0)
-        {
-            scopes.Add(new MemorySearchScopeStatusDto(scope, 0, HasMore: true));
-        }
-
-        return slice;
-    }
-
-    /// <summary>
-    /// Each scope is asked for one row beyond its slice, so an overflowing scope is distinguishable
-    /// from one that happened to fill its slice exactly. The extra row is trimmed here and never
-    /// reaches the caller.
-    /// </summary>
-    /// <remarks>
-    /// The trimmed row's content stays charged to the byte budget. That charge cannot starve a later
-    /// scope: a trimmed row exists only when this scope filled its whole slice, which leaves the row
-    /// budget at zero, so every later scope is already reported starved by rows whatever the bytes say.
-    /// Keeping the charge keeps the byte budget monotonic, which is what lets a spent budget, and the
-    /// stopped-early flag it raises, stay spent.
-    /// </remarks>
-    private static void CloseSlice(
-        MemorySearchScope scope,
-        List<MemorySearchResultDto> results,
-        int budget,
-        int slice,
-        List<MemorySearchScopeStatusDto> scopes,
-        ResultByteBudget bytes)
-    {
-        int produced = results.Count - (budget - slice);
-
-        bool overflowed = produced > slice;
-
-        // Read whether or not the scope overflowed, so the flag never outlives the scope that raised it.
-        bool stoppedEarly = bytes.TakeStoppedEarly();
-
-        if (overflowed)
-        {
-            results.RemoveRange(budget, results.Count - budget);
-
-            produced = slice;
-        }
-
-        scopes.Add(new MemorySearchScopeStatusDto(scope, produced, overflowed || stoppedEarly));
     }
 
     private static async Task<IResult> HandleLexiconListAsync(
@@ -1235,185 +1208,6 @@ internal static class MemoryEndpoints
             or MemorySearchScope.Lexicon
             or MemorySearchScope.All;
 
-    private static async Task SearchSessionAsync(
-        DbConnection connection,
-        string query,
-        Guid? sessionId,
-        List<MemorySearchResultDto> results,
-        int limit,
-        ResultByteBudget bytes,
-        CancellationToken cancellationToken)
-    {
-        await using DbCommand command = connection.CreateCommand();
-
-        command.CommandText =
-            $"""
-            SELECT e.Id, e.SessionId, e.Content, e.Role, COALESCE(s.Title, '')
-            FROM Entries e
-            INNER JOIN Sessions s ON s.Id = e.SessionId
-            WHERE instr(lower(e.Content), lower(@query)) > 0
-            {(sessionId is null ? string.Empty : "AND e.SessionId = @canonicalSessionId")}
-            ORDER BY e.CreatedAt DESC, e.Sequence DESC
-            LIMIT @limit
-            """;
-
-        AddParameter(command, "@query", query);
-
-        AddParameter(command, "@limit", limit);
-
-        AddSessionParameter(command, sessionId);
-
-        await using DbDataReader reader = await command
-            .ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        int taken = 0;
-
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            string title = reader.GetString(4);
-
-            string content = reader.GetString(2);
-
-            results.Add(new MemorySearchResultDto(
-                MemorySearchScope.Session,
-                $"Session entry ({(MessageRole)reader.GetInt32(3)})",
-                content,
-                $"Session {(title.Length == 0 ? reader.GetString(1) : title)}, entry {reader.GetString(0)}",
-                SessionRetention,
-                reader.GetString(0)));
-
-            taken++;
-
-            if (bytes.Charge(content))
-            {
-                break;
-            }
-        }
-
-        await reader.DisposeAsync().ConfigureAwait(false);
-
-        if (bytes.Exhausted)
-        {
-            return;
-        }
-
-        // The entry scan and the summary scan share this scope's slice of the budget; entries are the
-        // narrower, more specific hit, so they are read first and the summaries take what is left.
-        int summaryLimit = limit - taken;
-
-        if (summaryLimit <= 0)
-        {
-            return;
-        }
-
-        await using DbCommand summaries = connection.CreateCommand();
-
-        summaries.CommandText =
-            $"""
-            SELECT Id, COALESCE(Title, ''), Summary
-            FROM Sessions
-            WHERE Summary IS NOT NULL
-              AND instr(lower(Summary), lower(@query)) > 0
-              {(sessionId is null ? string.Empty : "AND Id = @canonicalSessionId")}
-            ORDER BY UpdatedAt DESC
-            LIMIT @limit
-            """;
-
-        AddParameter(summaries, "@query", query);
-
-        AddParameter(summaries, "@limit", summaryLimit);
-
-        AddSessionParameter(summaries, sessionId);
-
-        await using DbDataReader summaryReader = await summaries
-            .ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        while (await summaryReader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            string id = summaryReader.GetString(0);
-
-            string title = summaryReader.GetString(1);
-
-            string summary = summaryReader.GetString(2);
-
-            results.Add(new MemorySearchResultDto(
-                MemorySearchScope.Session,
-                "Session Summary",
-                summary,
-                $"Session {(title.Length == 0 ? id : title)}, Summary field",
-                SessionRetention,
-                id));
-
-            if (bytes.Charge(summary))
-            {
-                break;
-            }
-        }
-
-        await GrimoireScopedConsumerTestSeam
-            .PauseAsync(
-                "MemoryEndpoints.SearchSessionAsync",
-                GrimoireScopedConsumerFinalUseKind.ReaderMaterialized,
-                results.Count,
-                cancellationToken)
-            .ConfigureAwait(false);
-    }
-
-    private static async Task SearchAttachmentsAsync(
-        DbConnection connection,
-        string query,
-        Guid? sessionId,
-        List<MemorySearchResultDto> results,
-        int limit,
-        ResultByteBudget bytes,
-        CancellationToken cancellationToken)
-    {
-        await using DbCommand command = connection.CreateCommand();
-
-        command.CommandText =
-            $"""
-            SELECT ChunkId, SessionId, AttachmentId, LogicalKey, Version, OriginalFileName,
-                   ChunkIndex, Content, ContentSha256
-            FROM session_attachment_chunks
-            WHERE (instr(lower(Content), lower(@query)) > 0
-                   OR instr(lower(OriginalFileName), lower(@query)) > 0
-                   OR instr(lower(LogicalKey), lower(@query)) > 0)
-              {(sessionId is null ? string.Empty : "AND SessionId = @sessionId")}
-            ORDER BY IndexedAt DESC, ChunkIndex
-            LIMIT @limit
-            """;
-
-        AddParameter(command, "@query", query);
-
-        AddParameter(command, "@limit", limit);
-
-        AddSessionParameter(command, sessionId);
-
-        await using DbDataReader reader = await command
-            .ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            string content = reader.GetString(7);
-
-            results.Add(new MemorySearchResultDto(
-                MemorySearchScope.Attachments,
-                $"{reader.GetString(5)} chunk {reader.GetInt32(6)}",
-                content,
-                $"Session {reader.GetString(1)}, attachment {reader.GetString(2)}, logical key {reader.GetString(3)}, version {reader.GetInt32(4)}, content hash {reader.GetString(8)}",
-                AttachmentIndexRetention,
-                reader.GetString(0)));
-
-            if (bytes.Charge(content))
-            {
-                break;
-            }
-        }
-    }
-
     private static async Task<(string Path, string Label)?> ResolveSearchWorkspaceAsync(
         DbConnection connection,
         string workspaceId,
@@ -1440,64 +1234,6 @@ internal static class MemoryEndpoints
             : null;
     }
 
-    private static async Task SearchWorkspaceAsync(
-        DbConnection connection,
-        string query,
-        (string Path, string Label)? workspace,
-        List<MemorySearchResultDto> results,
-        int limit,
-        ResultByteBudget bytes,
-        CancellationToken cancellationToken)
-    {
-        string? workspacePath = workspace?.Path;
-
-        await using DbCommand command = connection.CreateCommand();
-
-        command.CommandText =
-            $"""
-            SELECT ChunkId, WorkspacePath, RelativePath, ChunkIndex, Content, StartLine, EndLine
-            FROM workspace_file_chunks
-            WHERE (instr(lower(Content), lower(@query)) > 0
-                   OR instr(lower(RelativePath), lower(@query)) > 0)
-              {(workspacePath is null ? string.Empty : "AND WorkspacePath = @workspacePath")}
-            ORDER BY IndexedAt DESC, RelativePath, ChunkIndex
-            LIMIT @limit
-            """;
-
-        AddParameter(command, "@query", query);
-
-        AddParameter(command, "@limit", limit);
-
-        if (workspacePath is not null)
-        {
-            AddParameter(command, "@workspacePath", workspacePath);
-        }
-
-        await using DbDataReader reader = await command
-            .ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            string label = workspace?.Label ?? "indexed workspace";
-
-            string content = reader.GetString(4);
-
-            results.Add(new MemorySearchResultDto(
-                MemorySearchScope.Workspace,
-                $"{reader.GetString(2)} lines {reader.GetInt32(5)}-{reader.GetInt32(6)}",
-                content,
-                $"Workspace {label}, relative file {reader.GetString(2)}, chunk {reader.GetInt32(3)}",
-                WorkspaceRetention,
-                reader.GetString(0)));
-
-            if (bytes.Charge(content))
-            {
-                break;
-            }
-        }
-    }
-
     private static async Task SearchSagaAsync(
         ISagaMemoryStore store,
         string query,
@@ -1506,7 +1242,9 @@ internal static class MemoryEndpoints
         List<MemorySearchResultDto> results,
         int limit,
         ResultByteBudget bytes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SagaMemoryPosition? after = null,
+        Action<SagaMemoryPosition>? remember = null)
     {
         MemoryCampaignScopeDto reported = MemoryCampaignScopeReport.Describe(scope);
 
@@ -1519,7 +1257,7 @@ internal static class MemoryEndpoints
                 sessionId,
                 scope,
                 limit,
-                0,
+                after,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -1585,6 +1323,8 @@ internal static class MemoryEndpoints
                 SagaLifecycle: row.Lifecycle,
                 SagaEligibility: SagaRetrievalEligibilityClassifier.Classify(row, scope.IsEnforced),
                         SagaRanking: row.Memory.Ranking));
+
+            remember?.Invoke(row.SearchPosition ?? new SagaMemoryPosition(UtcInstantText.Format(memory.CreatedAt), memory.Id));
 
             if (bytes.Charge(memory.Content))
             {

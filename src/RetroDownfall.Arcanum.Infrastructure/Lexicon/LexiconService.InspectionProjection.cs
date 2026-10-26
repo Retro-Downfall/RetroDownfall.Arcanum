@@ -141,7 +141,8 @@ internal sealed partial class LexiconService
 
     private async Task<bool> StreamInspectionAsync(
         DbConnection connection, string? query, int? limit, ICovenantSnapshotReadLease? lease,
-        Action<LexiconEntryDto> accept, CancellationToken cancellationToken, bool? protectedOnlyCuration = null)
+        Action<LexiconEntryDto> accept, CancellationToken cancellationToken, bool? protectedOnlyCuration = null,
+        LexiconSearchPosition? after = null, Action<LexiconSearchPosition>? remember = null)
     {
         bool curation = protectedOnlyCuration ?? await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
 
@@ -168,6 +169,37 @@ internal sealed partial class LexiconService
 
         RequireIntegrity(Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) == 0);
 
+        if (after is not null)
+        {
+            // A name may be protected canonical content. Resolve it only after the complete
+            // inspection authority and structural checks, in this same snapshot; the client
+            // cursor carries only the opaque identity and the bound scope key.
+            await using DbCommand boundary = connection.CreateCommand();
+
+            boundary.CommandText = """
+                SELECT e.Name,e.ScopeCampaignId FROM lexicon_entries e
+                WHERE e.Id=@boundaryId AND (@boundaryQuery IS NULL
+                    OR arcanum_ordinal_contains(e.Name,@boundaryQuery)
+                    OR arcanum_ordinal_contains(e.Type,@boundaryQuery)
+                    OR EXISTS(SELECT 1 FROM json_each(e.FactsJson) f WHERE arcanum_ordinal_contains(f.value,@boundaryQuery)))
+                """;
+
+            AddParameter(boundary, "@boundaryId", after.Id);
+
+            AddParameter(boundary, "@boundaryQuery", string.IsNullOrWhiteSpace(query) ? DBNull.Value : query.Trim());
+
+            await using DbDataReader boundaryReader = await boundary.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!await boundaryReader.ReadAsync(cancellationToken).ConfigureAwait(false)
+                || !string.Equals(boundaryReader.GetString(1), after.ScopeKey, StringComparison.Ordinal))
+            {
+                throw new InspectionException(new Error(ErrorCodes.Validation.InvalidQuery,
+                    "The memory search continuation boundary changed; restart the search."));
+            }
+
+            after = new(boundaryReader.GetString(0), boundaryReader.GetString(1), after.Id);
+        }
+
         // Selection is bounded before canonical projection. The deterministic scalar retains .NET
         // OrdinalIgnoreCase, including Unicode, and json_each keeps fact boundaries significant.
         command.CommandText = $"""
@@ -178,6 +210,8 @@ internal sealed partial class LexiconService
                     AND (@query IS NULL OR arcanum_ordinal_contains(e.Name, @query)
                     OR arcanum_ordinal_contains(e.Type, @query)
                     OR EXISTS(SELECT 1 FROM json_each(e.FactsJson) f WHERE arcanum_ordinal_contains(f.value, @query)))
+                    AND (@afterName IS NULL OR e.Name COLLATE NOCASE > @afterName COLLATE NOCASE
+                        OR (e.Name COLLATE NOCASE = @afterName COLLATE NOCASE AND (e.ScopeCampaignId,e.Id)>(@afterScope,@afterId)))
                 ORDER BY e.Name COLLATE NOCASE, e.ScopeCampaignId, e.Id LIMIT @limit
             )
             SELECT e.Id, e.Name, e.Type, e.FactsJson, e.UpdatedAt, e.ScopeCampaignId,
@@ -197,6 +231,12 @@ internal sealed partial class LexiconService
         AddParameter(command, "@query", string.IsNullOrWhiteSpace(query) ? DBNull.Value : query.Trim());
 
         AddParameter(command, "@limit", limit ?? -1);
+
+        AddParameter(command, "@afterName", after?.Name is { } name ? name : DBNull.Value);
+
+        AddParameter(command, "@afterScope", after?.ScopeKey ?? "");
+
+        AddParameter(command, "@afterId", after?.Id ?? "");
 
         await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
@@ -225,6 +265,8 @@ internal sealed partial class LexiconService
 
                 RequireIntegrity(head.ContentHash!.AsSpan().SequenceEqual(digest));
             }
+
+            remember?.Invoke(new(row.Entry.Name, reader.GetString(5), reader.GetString(0)));
 
             accept(row.Entry);
         }
