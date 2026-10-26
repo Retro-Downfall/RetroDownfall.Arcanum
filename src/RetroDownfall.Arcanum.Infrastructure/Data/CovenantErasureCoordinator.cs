@@ -412,10 +412,14 @@ internal sealed record CovenantErasureCheckpointState(
         Guid operationId,
         CovenantExclusiveRecoveryOwner owner,
         CovenantResetPhase phase,
-        CovenantCanonicalDatasetTransition dataset) =>
-        owner.OperationId == operationId
-        && CovenantResetPhaseMachine.IsDeclared(phase)
-        && dataset.IsCoherent
+        CovenantCanonicalDatasetTransition dataset)
+    {
+        if (owner.OperationId != operationId)
+        {
+            return Unresumable(CovenantStartupFailureReason.WrongOperation);
+        }
+
+        return CovenantResetPhaseMachine.IsDeclared(phase) && dataset.IsCoherent
             ? Result<CovenantErasureCheckpointState>.Success(
                 new CovenantErasureCheckpointState(
                     owner.OperationId,
@@ -424,12 +428,16 @@ internal sealed record CovenantErasureCheckpointState(
                     phase,
                     dataset))
             : Unresumable();
+    }
 
-    private static Result<CovenantErasureCheckpointState> Unresumable() =>
+    private static Result<CovenantErasureCheckpointState> Unresumable(CovenantStartupFailureReason? reason = null) =>
         Result<CovenantErasureCheckpointState>.Failure(
             new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
-                "This Covenant erasure checkpoint cannot be resumed by this build."));
+                "This Covenant erasure checkpoint cannot be resumed by this build.")
+            {
+                CovenantStartupFailure = reason is { } refusal ? new(refusal) : null,
+            });
 }
 
 /// <summary>

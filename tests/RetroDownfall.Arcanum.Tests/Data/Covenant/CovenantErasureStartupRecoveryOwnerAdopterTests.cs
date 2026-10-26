@@ -218,9 +218,8 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
     /// A launch whose own identity fields disagree with the plan is refused without echoing content.
     /// </summary>
     /// <remarks>
-    /// The three cases are the three ways a payload can decode as a launch and still be the wrong
-    /// one: an exclusive operation this kind never launches, a digest that is not a canonical effect,
-    /// and a target tuple whose members were transposed. The last is the subtle one — every transposed
+    /// Both launch kinds refuse wrong exclusive operations and mismatched operation IDs distinctly
+    /// from unreadable JSON, noncanonical digests and transposed target tuples. The last is the subtle one — every transposed
     /// target is still some source plus one, so a rule that compared the tuples as sets would admit a
     /// launch that later verified a replaced family against the wrong counter.
     ///
@@ -230,17 +229,23 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
     /// </remarks>
     [SkippableTheory]
 
-    [InlineData(0)]
-
-    [InlineData(1)]
-
-    [InlineData(2)]
-    public async Task Malformed_current_payload_identity_refuses_content_free(int malformedPart)
+    [InlineData(0, LongRunningOperationKinds.DataRetentionMutation)]
+    [InlineData(1, LongRunningOperationKinds.DataRetentionMutation)]
+    [InlineData(2, LongRunningOperationKinds.DataRetentionMutation)]
+    [InlineData(3, LongRunningOperationKinds.DataRetentionMutation)]
+    [InlineData(4, LongRunningOperationKinds.DataRetentionMutation)]
+    [InlineData(0, LongRunningOperationKinds.DataRetentionFactoryReset)]
+    [InlineData(1, LongRunningOperationKinds.DataRetentionFactoryReset)]
+    [InlineData(2, LongRunningOperationKinds.DataRetentionFactoryReset)]
+    [InlineData(3, LongRunningOperationKinds.DataRetentionFactoryReset)]
+    [InlineData(4, LongRunningOperationKinds.DataRetentionFactoryReset)]
+    public async Task Malformed_current_payload_identity_refuses_content_free(int malformedPart, string kind)
     {
         RequireSqlCipher();
 
-        CovenantExclusiveRecoveryOwner owner = await SeedCurrentAsync(
-            LongRunningOperationKinds.DataRetentionMutation);
+        CovenantExclusiveRecoveryOwner owner = await SeedCurrentAsync(kind);
+
+        Guid payloadOperationId = malformedPart == 3 ? Guid.NewGuid() : owner.OperationId;
 
         string digest = malformedPart == 1
             ? "xyz"
@@ -248,7 +253,7 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
 
         CovenantExclusiveOperation operation = malformedPart == 0
             ? CovenantExclusiveOperation.SchemaRepair
-            : CovenantExclusiveOperation.CovenantReset;
+            : owner.Operation;
 
         CovenantOfflineTransitionEpochsV1 target = malformedPart == 2
             ? new CovenantOfflineTransitionEpochsV1(
@@ -257,10 +262,10 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
                 SourceEpochs.EnvelopeKeyEpoch + 1)
             : TargetEpochs;
 
-        byte[] payload = CovenantRecoveryCheckpointCodec.Encode(
-            new CovenantOfflineTransitionLaunchV4(
+        byte[] payload = kind == LongRunningOperationKinds.DataRetentionMutation
+            ? CovenantRecoveryCheckpointCodec.Encode(new CovenantOfflineTransitionLaunchV4(
                 CovenantOfflineTransitionLaunchV4.CurrentVersion,
-                owner.OperationId,
+                payloadOperationId,
                 LongRunningOperationKinds.DataRetentionMutation,
                 nameof(LongRunningOperationRecoveryPolicy.ReconcileAndComplete),
                 operation,
@@ -269,19 +274,53 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
                 TargetGeneration,
                 SourceEpochs,
                 target,
+                StartingRevision: 0))
+            : CovenantRecoveryCheckpointCodec.Encode(new DataRetentionFactoryTransitionLaunchV2(
+                DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+                payloadOperationId,
+                LongRunningOperationKinds.DataRetentionFactoryReset,
+                nameof(LongRunningOperationRecoveryPolicy.RestartIdempotently),
+                operation,
+                digest,
+                SourceGeneration,
+                TargetGeneration,
+                SourceEpochs,
+                target,
                 StartingRevision: 0));
+
+        if (malformedPart == 4)
+        {
+            payload = "{private-payload-canary"u8.ToArray();
+        }
 
         await ExecuteAsync(
             "UPDATE \"LongRunningOperations\" SET \"CheckpointPayload\" = @payload;",
             ("@payload", payload));
 
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
         Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> adopted = await new
-            CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperationGateFixture.CreateGate())
+            CovenantErasureStartupRecoveryOwnerAdopter(gate)
             .AdoptBeforeReadinessAsync(Connection, CancellationToken.None);
 
         Assert.True(adopted.IsFailure);
 
+        Assert.Equal(
+            malformedPart is 0 or 3 ? CovenantStartupFailureReason.WrongOperation : CovenantStartupFailureReason.UnreadableCheckpoint,
+            adopted.Error.CovenantStartupFailure?.Reason);
+
+        Assert.Equal(owner.OperationId, adopted.Error.CovenantStartupFailure?.OperationId);
+
+        Assert.True((await gate.ResumeExclusiveAsync(owner, CancellationToken.None)).IsFailure);
+
         Assert.DoesNotContain("xyz", adopted.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("private-payload-canary", adopted.Error.Message, StringComparison.Ordinal);
+
+        if (malformedPart == 3)
+        {
+            Assert.DoesNotContain(payloadOperationId.ToString("N"), adopted.Error.Message, StringComparison.Ordinal);
+        }
     }
 
     /// <summary>

@@ -135,7 +135,6 @@ public sealed class CovenantErasureCheckpointStateTests
     [Fact]
     public void A_reset_journal_naming_another_operation_is_refused()
     {
-
         Result<CovenantErasureCheckpointState> projected =
             CovenantErasureCheckpointState.FromMutationCheckpoint(
                 OtherOperationId,
@@ -147,12 +146,14 @@ public sealed class CovenantErasureCheckpointStateTests
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, projected.Error.Code);
 
+        Assert.Equal(CovenantStartupFailureReason.WrongOperation, projected.Error.CovenantStartupFailure?.Reason);
+
+        Assert.Null(projected.Error.CovenantStartupFailure?.OperationId);
     }
 
     [Fact]
     public void A_factory_journal_naming_another_operation_is_refused()
     {
-
         Result<CovenantErasureCheckpointState> projected =
             CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
                 OtherOperationId,
@@ -163,6 +164,9 @@ public sealed class CovenantErasureCheckpointStateTests
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, projected.Error.Code);
 
+        Assert.Equal(CovenantStartupFailureReason.WrongOperation, projected.Error.CovenantStartupFailure?.Reason);
+
+        Assert.Null(projected.Error.CovenantStartupFailure?.OperationId);
     }
 
     /// <summary>

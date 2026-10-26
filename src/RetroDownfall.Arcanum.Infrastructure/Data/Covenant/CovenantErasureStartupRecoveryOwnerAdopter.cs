@@ -335,8 +335,16 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
             ? CovenantExclusiveOperation.CovenantReset
             : CovenantExclusiveOperation.HealthyCatalogFactoryErasure;
 
-        if (checkpoint.IsFailure
-            || !CovenantResetPhaseMachine.IsDeclared(checkpoint.Value.Phase))
+        if (checkpoint.IsFailure)
+        {
+            return Refusal(
+                checkpoint.Error.CovenantStartupFailure?.Reason == CovenantStartupFailureReason.WrongOperation
+                    ? CovenantStartupFailureReason.WrongOperation
+                    : CovenantStartupFailureReason.UnreadableCheckpoint,
+                operationId);
+        }
+
+        if (!CovenantResetPhaseMachine.IsDeclared(checkpoint.Value.Phase))
         {
             return Refusal(CovenantStartupFailureReason.UnreadableCheckpoint, operationId);
         }
