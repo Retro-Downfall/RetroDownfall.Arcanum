@@ -121,7 +121,6 @@ public static class ArcanumRuntimeSettings
             EnableLexiconSystem = features.Lexicon,
             EnableArchiveSearch = features.ArchiveSearch,
             EnableCampaignRollups = features.CampaignRollups,
-            EnableContextCompression = true,
             TolerateToolFailures = true,
             UseFastModelForSpellRouting = true,
         };

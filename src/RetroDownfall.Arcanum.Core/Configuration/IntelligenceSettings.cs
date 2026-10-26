@@ -42,8 +42,6 @@ public sealed record IntelligenceSettings
 
     public int ContextWindowCompressionThreshold { get; set; } = 85;
 
-    public bool EnableContextCompression { get; set; } = true;
-
     /// <summary>
     /// Hard cap (bytes) on captured <c>stdout</c> and <c>stderr</c> for in-process MCP
     /// <c>execute_command</c> and the <c>run_spell_script</c> hub tool. Output beyond this is
@@ -64,8 +62,9 @@ public sealed record IntelligenceSettings
     public bool TolerateToolFailures { get; set; } = true;
 
     /// <summary>
-    /// Minimum history-message count before the explicit/manual compact operation tokenizes and
-    /// prunes entries. Live provider-call admission always measures the materialized context.
+    /// Minimum history-message count before the explicit/manual compact operation prunes entries.
+    /// Explicit compaction still measures smaller contexts; live provider-call admission always
+    /// measures the materialized context.
     /// </summary>
     public int CompressionPreflightMinMessages { get; set; } = 6;
 
