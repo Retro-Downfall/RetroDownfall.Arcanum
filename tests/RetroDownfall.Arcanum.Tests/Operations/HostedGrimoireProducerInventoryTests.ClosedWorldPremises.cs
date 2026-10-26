@@ -987,6 +987,32 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.DoesNotContain(additional.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_PREMISE_VIOLATED");
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DocumentClockFrequencyOverrideIsTraversedOrRefusedRatherThanHidden(bool baseReceiver)
+    {
+        string body = baseReceiver
+            ? "System.TimeProvider clock = new EffectClock(); _ = clock.TimestampFrequency;"
+            : "_ = new EffectClock().TimestampFrequency;";
+
+        const string helper =
+            "internal sealed class EffectClock : System.TimeProvider { public override long TimestampFrequency { get { global::System.IO.File.Delete(\"clock-frequency-effect\"); return 1; } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(body, helper));
+
+        if (baseReceiver)
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic =>
+                diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail == "System.TimeProvider.TimestampFrequency");
+        }
+        else
+        {
+            Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete");
+        }
+    }
+
     [Fact]
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionAttachmentExtractionRetainsItsExactAdmittedLifetime()

@@ -205,9 +205,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         SessionAttachmentRecord healthy = await PersistAsync(sessionId, "healthy text after a document deadline");
 
+        ManualTimerTimeProvider clock = new();
+
         StalledDocumentExtractor extractor = new();
 
-        SessionAttachmentDocumentExtractionHost comprehension = new(extractor.ExtractAsync, TimeSpan.FromMilliseconds(100));
+        SessionAttachmentDocumentExtractionHost comprehension = new(extractor.ExtractAsync, TimeSpan.FromMilliseconds(100), timeProvider: clock);
 
         TaskCompletionSource<bool> healthyCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -240,6 +242,15 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         try
         {
+            await extractor.Started.WaitAsync(TimeSpan.FromSeconds(10));
+
+            // The service invokes the host asynchronously: entry can precede the parse wait arming its timer.
+            using CancellationTokenSource timerReady = new(TimeSpan.FromSeconds(10));
+
+            await clock.WaitForTimerCountAsync(2, timerReady.Token);
+
+            clock.Advance(TimeSpan.FromMilliseconds(100));
+
             await healthyCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
             Assert.True(extractor.Started.IsCompletedSuccessfully);

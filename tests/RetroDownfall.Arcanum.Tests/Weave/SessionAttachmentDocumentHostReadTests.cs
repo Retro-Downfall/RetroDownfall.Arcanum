@@ -4,6 +4,8 @@ using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Weave;
 
 /// <summary>
@@ -345,6 +347,8 @@ public sealed class SessionAttachmentDocumentHostReadTests
     [Fact]
     public async Task ParseInProcessAsync_Overrun_KeepsTheSlotPastItsCallerAndQuarantinesTheFamilyUntilTheParseEnds()
     {
+        ManualTimerTimeProvider clock = new();
+
         using ManualResetEventSlim release = new(false);
 
         TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -372,7 +376,7 @@ public sealed class SessionAttachmentDocumentHostReadTests
 
                 return ValueTask.CompletedTask;
             },
-            TimeSpan.FromMilliseconds(100));
+            TimeSpan.FromMilliseconds(100), timeProvider: clock);
 
         try
         {
@@ -380,10 +384,16 @@ public sealed class SessionAttachmentDocumentHostReadTests
 
             using (SessionAttachmentDocumentSnapshot snapshot = await ReadAsync(host))
             {
-                overran = await host.ParseInProcessAsync(snapshot, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
-            }
+                Task<SessionAttachmentExtractionResult> parsing = host.ParseInProcessAsync(snapshot, CancellationToken.None);
 
-            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+                Assert.False(parsing.IsCompleted);
+
+                clock.Advance(TimeSpan.FromMilliseconds(100));
+
+                overran = await parsing.WaitAsync(TimeSpan.FromSeconds(5));
+            }
 
             AssertFailed("Document extraction exceeded its deadline.", overran);
 
@@ -432,6 +442,8 @@ public sealed class SessionAttachmentDocumentHostReadTests
     [Fact]
     public async Task ParseInProcessAsync_OverrunReleasesACallerAlreadyQueuedForTheSlot()
     {
+        ManualTimerTimeProvider clock = new();
+
         byte[] poison = "ARCCOMP1\npoison"u8.ToArray();
 
         using ManualResetEventSlim release = new(false);
@@ -453,17 +465,14 @@ public sealed class SessionAttachmentDocumentHostReadTests
                 return new ComprehensionTextContainerExtractor().ExtractAsync(bytes, output, cancellationToken);
             },
             TimeSpan.FromMilliseconds(200),
-            slotWait: TimeSpan.FromSeconds(20));
+            slotWait: TimeSpan.FromSeconds(20), timeProvider: clock);
 
         try
         {
-            Task<SessionAttachmentExtractionResult> overrunning = Task.Run(async () =>
-            {
-                using SessionAttachmentDocumentSnapshot snapshot = await host.ReadSnapshotAsync(
-                    _ => Task.FromResult<ReadOnlyMemory<byte>>(poison), poison.Length, 1024, CancellationToken.None, waitForSlot: false);
+            using SessionAttachmentDocumentSnapshot snapshot = await host.ReadSnapshotAsync(
+                _ => Task.FromResult<ReadOnlyMemory<byte>>(poison), poison.Length, 1024, CancellationToken.None, waitForSlot: false);
 
-                return await host.ParseInProcessAsync(snapshot, CancellationToken.None);
-            });
+            Task<SessionAttachmentExtractionResult> overrunning = host.ParseInProcessAsync(snapshot, CancellationToken.None);
 
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -481,6 +490,10 @@ public sealed class SessionAttachmentDocumentHostReadTests
                 1024,
                 CancellationToken.None,
                 waitForSlot: true);
+
+            Assert.False(queued.IsCompleted);
+
+            clock.Advance(TimeSpan.FromMilliseconds(200));
 
             AssertFailed("Document extraction exceeded its deadline.", await overrunning.WaitAsync(TimeSpan.FromSeconds(5)));
 

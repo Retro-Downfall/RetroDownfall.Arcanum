@@ -18,6 +18,8 @@ public sealed class ManualTimerTimeProvider : TimeProvider
 
     private readonly TaskCompletionSource _firstTimer = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    private TaskCompletionSource _timerCreated = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private TimeSpan _now;
 
     /// <summary>Completes when the first timer is created.</summary>
@@ -46,6 +48,37 @@ public sealed class ManualTimerTimeProvider : TimeProvider
         }
     }
 
+    /// <summary>Waits until a read or parse has actually armed the expected timer, without advancing time.</summary>
+    public async Task WaitForTimerCountAsync(int count, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            Task created;
+
+            lock (_gate)
+            {
+                if (_timers.Count >= count)
+                {
+                    return;
+                }
+
+                created = _timerCreated.Task;
+            }
+
+            await created.WaitAsync(cancellationToken);
+        }
+    }
+
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+    public override long GetTimestamp()
+    {
+        lock (_gate)
+        {
+            return _now.Ticks;
+        }
+    }
+
     public override ITimer CreateTimer(
         TimerCallback callback,
         object? state,
@@ -54,12 +87,20 @@ public sealed class ManualTimerTimeProvider : TimeProvider
     {
         ManualTimer timer = new(this, callback, state);
 
+        TaskCompletionSource created;
+
         lock (_gate)
         {
             _timers.Add(timer);
 
             timer.Schedule(_now, dueTime, period);
+
+            created = _timerCreated;
+
+            _timerCreated = new(TaskCreationOptions.RunContinuationsAsynchronously);
         }
+
+        created.TrySetResult();
 
         _firstTimer.TrySetResult();
 
