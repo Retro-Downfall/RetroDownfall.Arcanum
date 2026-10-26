@@ -43,6 +43,7 @@ public sealed class LexiconCurationArchitectureTests
 
     public static TheoryData<string, string, int, string> Projections => new()
     {
+        { Service, "HasEligibleEntriesAsync", 0, "1" },
         { Service, "FillExactMatchesAsync", 0, EntryColumns },
         { Service, "FillFtsMatchesViaMatchAsync", 0, EntryColumns },
         { Service, "FillFtsMatchesViaLikeAsync", 0, EntryColumns },
@@ -294,6 +295,7 @@ public sealed class LexiconCurationArchitectureTests
     {
         foreach ((string path, string method) in new (string, string)[]
         {
+            (Service, "HasEligibleEntriesAsync"),
             (Service, "MatchEntitiesCoreAsync"), (Service, "GetByNameAsync"), (Service, "GetByNameInScopeAsync"),
             (Annals, "GetVersionsAsync"), (Annals, "GetLexiconFactProvenanceAsync"),
             ("RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Pruning.cs", "AddLexiconCandidatesAsync"),
@@ -321,7 +323,7 @@ public sealed class LexiconCurationArchitectureTests
     {
         Dictionary<string, string[]> expected = new(StringComparer.Ordinal)
         {
-            ["RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs"] = ["MatchEntitiesAsync"],
+            ["RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs"] = ["HasEligibleEntriesAsync", "MatchEntitiesAsync"],
             ["RetroDownfall.Arcanum.Infrastructure/Daemons/UnseenServantDaemonJob.cs"] = ["GetByNameAsync"],
             ["RetroDownfall.Arcanum.Infrastructure/Memory/MemoryRecallCandidateReader.cs"] = ["MatchCleanEntitiesAsync"],
             ["RetroDownfall.Arcanum.Infrastructure/Mcp/InternalTools/ArcanumInternalToolServer.LexiconTools.cs"] = ["DeleteByNameAsync", "FindAgentDeletionTargetAsync", "FindAllLifecycleIdentityForDeletionAsync", "UpsertAsync", "UpsertAsync"],
