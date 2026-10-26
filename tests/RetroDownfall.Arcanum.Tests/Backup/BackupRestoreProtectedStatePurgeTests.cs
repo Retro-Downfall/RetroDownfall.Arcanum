@@ -82,6 +82,72 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
 
     private CovenantSchemaScratchDatabase _staged = null!;
 
+    [Fact]
+    public async Task Staged_restore_purges_shared_Campaign_provenance_after_the_last_protected_root()
+    {
+        const string campaign = "11111111-1111-4111-8111-111111111111";
+
+        const string manifest = "22222222-2222-4222-8222-222222222222";
+
+        const string session = "33333333-3333-4333-8333-333333333333";
+
+        const string contribution = "44444444-4444-4444-8444-444444444444";
+
+        await _staged.InstallCoreObjectsAsync(["session_campaign_bindings"], CancellationToken.None);
+
+        foreach (var item in RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog.CoreObjects
+            .Where(item => item.Name.StartsWith("campaign_", StringComparison.Ordinal)))
+        {
+            await _staged.ExecuteAsync(item.Sql, CancellationToken.None);
+        }
+
+        await SeedAuthorityAsync(CovenantHostToolsState.Clean);
+
+        await _staged.ExecuteAsync($"""
+            INSERT INTO Campaigns(Id,Name,NameLower,Path,Type,Settings,CreatedAt,UpdatedAt)
+            VALUES('{campaign}','campaign','campaign','/test',0,char(123)||char(125),'2026-10-01T00:00:00Z','2026-10-01T00:00:00Z');
+            INSERT INTO Sessions(Id,CampaignId,CreatedAt,UpdatedAt) VALUES('{session}','{campaign}','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z');
+            INSERT INTO session_campaign_bindings(SessionId,BindingKindCode,CampaignId,BoundAtUtc) VALUES('{session}',2,'{campaign}','2026-10-01T00:00:00Z');
+            INSERT INTO campaign_contribution_artifacts(ArtifactId,CampaignId,SessionId,Revision,Content,ContentDigest,SensitivityCode,SensitivityDigest,SourceManifestDigest,SourceGeneration,SummarizedThroughSequence,CreatedAtUtc)
+            VALUES('{contribution}','{campaign}','{session}',1,'protected source',zeroblob(32),1,zeroblob(32),zeroblob(32),0,1,'2026-10-01T00:00:00Z');
+            INSERT INTO campaign_rollup_manifests(ManifestId,LineageId,Ordinal,CampaignId,HashFormatCode,PriorManifestDigest,SourceManifestDigest,SourceCount,AddedSourceCount)
+            VALUES('{manifest}','{manifest}',1,'{campaign}',1,zeroblob(32),zeroblob(32),1,1);
+            INSERT INTO campaign_rollup_manifest_sources(ManifestId,LineageId,CampaignId,SessionId,ContributionArtifactId,ContributionRevision,ContentDigest,SensitivityDigest,SummarizedThroughSequence)
+            VALUES('{manifest}','{manifest}','{campaign}','{session}','{contribution}',1,zeroblob(32),zeroblob(32),1);
+            """, CancellationToken.None);
+
+        await SeedLabelAsync(Guid.NewGuid().ToString("D").ToUpperInvariant(), contribution, SensitiveArtifactKind.CampaignContribution, session);
+
+        for (int revision = 1; revision <= 2; revision++)
+        {
+            string artifact = Guid.NewGuid().ToString("D").ToUpperInvariant();
+
+            await _staged.ExecuteAsync($"""
+                INSERT INTO campaign_rollup_artifacts(ArtifactId,CampaignId,Revision,Content,ContentDigest,SensitivityCode,SensitivityDigest,SourceManifestDigest,SourceGeneration,SourceCount,CreatedAtUtc,ManifestId)
+                VALUES('{artifact}','{campaign}',{revision},'protected summary',zeroblob(32),1,zeroblob(32),zeroblob(32),0,1,'2026-10-01T00:00:00Z','{manifest}');
+                """, CancellationToken.None);
+
+            await SeedLabelAsync(Guid.NewGuid().ToString("D").ToUpperInvariant(), artifact, SensitiveArtifactKind.CampaignRollup, null);
+        }
+
+        await using SqliteTransaction transaction = _staged.Connection.BeginTransaction();
+
+        Result<BackupRestoreProtectedStatePurgeReceipt> purged = await BackupRestoreProtectedStatePurger.PurgeStagedAsync(
+            _staged.Connection, transaction, CovenantSqliteConnectionInitializer.Instance, TimeProvider.System, CancellationToken.None);
+
+        Assert.True(purged.IsSuccess, purged.Error.Message);
+
+        Assert.Equal(3UL, purged.Value.RemovedArtifacts);
+
+        Assert.Equal(0, await CountInAsync(transaction, "campaign_rollup_artifacts"));
+
+        Assert.Equal(0, await CountInAsync(transaction, "campaign_rollup_manifests"));
+
+        Assert.Equal(0, await CountInAsync(transaction, "campaign_rollup_manifest_sources"));
+
+        await transaction.CommitAsync();
+    }
+
     public async Task InitializeAsync()
     {
         _staged = await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);

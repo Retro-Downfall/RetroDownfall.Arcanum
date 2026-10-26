@@ -126,9 +126,14 @@ internal sealed partial class CampaignRollupStore
     {
         await RequireCampaignAsync(connection, transaction, campaignId, ct).ConfigureAwait(false);
 
-        await EnsureStateAsync(connection, transaction, campaignId, null, ct).ConfigureAwait(false);
+        State? state = await ReadStateAsync(connection, transaction, campaignId, false, ct).ConfigureAwait(false);
 
-        State state = (await ReadStateAsync(connection, transaction, campaignId, false, ct).ConfigureAwait(false))!;
+        if (state is null)
+        {
+            await EnsureStateAsync(connection, transaction, campaignId, null, ct).ConfigureAwait(false);
+
+            state = (await ReadStateAsync(connection, transaction, campaignId, false, ct).ConfigureAwait(false))!;
+        }
 
         CampaignRollupArtifact? previous = state.ArtifactId is { } previousId && !state.RefoldRequired
             ? await ReadArtifactAsync(connection, transaction, previousId, false, authority, ct).ConfigureAwait(false)
@@ -141,12 +146,14 @@ internal sealed partial class CampaignRollupStore
             SELECT s.CurrentArtifactId
             FROM campaign_contribution_state s
             WHERE s.CampaignId = $campaign AND s.CurrentArtifactId IS NOT NULL AND s.RefoldRequired = 0
-                AND ($previous IS NULL OR NOT EXISTS (SELECT 1 FROM campaign_rollup_sources consumed
+                AND ($previous IS NULL OR NOT EXISTS (SELECT 1 FROM campaign_rollup_source_membership consumed
                     WHERE consumed.RollupArtifactId = $previous AND consumed.SessionId = s.SessionId))
             ORDER BY s.SessionId LIMIT $limit;
             """, ("$campaign", Format(campaignId)), ("$previous", previous is null ? null : Format(previous.ArtifactId)),
             ("$limit", MetadataPageSize + 1)))
         {
+            await CampaignRollupSourceStorage.ResolveMembershipAsync(command, ct).ConfigureAwait(false);
+
             await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
 
             while (await reader.ReadAsync(ct).ConfigureAwait(false))

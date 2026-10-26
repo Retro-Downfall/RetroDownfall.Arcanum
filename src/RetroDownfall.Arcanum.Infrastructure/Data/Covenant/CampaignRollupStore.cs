@@ -41,7 +41,7 @@ internal sealed partial class CampaignRollupStore(
 
     public Task<Result<CampaignRollupInput?>> PrepareRollupAsync(Guid campaignId,
         ICovenantSnapshotReadLease? authority, CancellationToken cancellationToken) =>
-        WithinAsync(true, (connection, transaction) => PrepareRollupWithinAsync(
+        WithinAsync(false, (connection, transaction) => PrepareRollupWithinAsync(
             connection, transaction, campaignId, authority, cancellationToken), cancellationToken);
 
     public Task<Result<CampaignRollupArtifact>> PublishContributionAsync(CampaignContributionInput input, string content,
@@ -100,7 +100,7 @@ internal sealed partial class CampaignRollupStore(
 
     public Task<Result<CampaignRollupArtifact>> PublishRollupAsync(CampaignRollupInput input, string content,
         CampaignMaintenancePublication? publication, ICovenantSnapshotReadLease? authority, CancellationToken cancellationToken) =>
-        WithinAsync(true, async (connection, transaction) =>
+        WithinAsync(false, async (connection, transaction) =>
         {
             RequireOutput(content);
 
@@ -120,39 +120,50 @@ internal sealed partial class CampaignRollupStore(
                 sourceSessionId: null, current.ExpectedRevision, current.SourceGeneration, current.SourceManifestDigest,
                 current.Sensitivity, cancellationToken).ConfigureAwait(false);
 
-            (CovenantDigest manifest, long count) = await FullSourceManifestAsync(connection, transaction,
-                current.CampaignId, current.Previous?.ArtifactId, current.Contributions, cancellationToken).ConfigureAwait(false);
+            bool shared = await CampaignRollupSourceStorage.IsInstalledAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+
+            Segment? segment = shared
+                ? await AppendSharedManifestAsync(connection, transaction, current, cancellationToken).ConfigureAwait(false)
+                : null;
+
+            (CovenantDigest manifest, long count) = segment is null
+                ? await FullSourceManifestAsync(connection, transaction, current.CampaignId, current.Previous?.ArtifactId,
+                    current.Contributions, cancellationToken).ConfigureAwait(false)
+                : (segment.Digest, segment.Count);
 
             CampaignRollupArtifact output = NewArtifact(current.CampaignId, null, current.ExpectedRevision + 1,
                 content, current.Sensitivity, current.Provenance, current.SourceGeneration, manifest, 0, count);
 
-            await InsertArtifactAsync(connection, transaction, output, publication, cancellationToken).ConfigureAwait(false);
+            await InsertArtifactAsync(connection, transaction, output, publication, cancellationToken, segment?.Id).ConfigureAwait(false);
 
-            if (current.Previous is { } previous)
+            if (!shared)
             {
-                _ = await ExecuteAsync(connection, transaction,
-                    """
-                    INSERT INTO campaign_rollup_sources (RollupArtifactId, SessionId, CampaignId, RollupRevision,
-                        ContributionArtifactId, ContributionRevision, ContentDigest, SensitivityDigest, SummarizedThroughSequence)
-                    SELECT $artifact, SessionId, CampaignId, $revision, ContributionArtifactId, ContributionRevision,
-                        ContentDigest, SensitivityDigest, SummarizedThroughSequence
-                    FROM campaign_rollup_sources WHERE RollupArtifactId = $previous;
-                    """, cancellationToken, ("$artifact", Format(output.ArtifactId)), ("$revision", output.Revision),
-                    ("$previous", Format(previous.ArtifactId))).ConfigureAwait(false);
-            }
+                if (current.Previous is { } previous)
+                {
+                    _ = await ExecuteAsync(connection, transaction,
+                        """
+                        INSERT INTO campaign_rollup_sources (RollupArtifactId, SessionId, CampaignId, RollupRevision,
+                            ContributionArtifactId, ContributionRevision, ContentDigest, SensitivityDigest, SummarizedThroughSequence)
+                        SELECT $artifact, SessionId, CampaignId, $revision, ContributionArtifactId, ContributionRevision,
+                            ContentDigest, SensitivityDigest, SummarizedThroughSequence
+                        FROM campaign_rollup_sources WHERE RollupArtifactId = $previous;
+                        """, cancellationToken, ("$artifact", Format(output.ArtifactId)), ("$revision", output.Revision),
+                        ("$previous", Format(previous.ArtifactId))).ConfigureAwait(false);
+                }
 
-            foreach (CampaignRollupArtifact contribution in current.Contributions)
-            {
-                _ = await ExecuteAsync(connection, transaction,
-                    """
-                    INSERT INTO campaign_rollup_sources (RollupArtifactId, SessionId, CampaignId, RollupRevision,
-                        ContributionArtifactId, ContributionRevision, ContentDigest, SensitivityDigest, SummarizedThroughSequence)
-                    VALUES ($artifact, $session, $campaign, $revision, $contribution, $contributionRevision,
-                        $contentDigest, $sensitivityDigest, $through);
-                    """, cancellationToken, ("$artifact", Format(output.ArtifactId)), ("$session", Format(contribution.SessionId!.Value)),
-                    ("$campaign", Format(output.CampaignId)), ("$revision", output.Revision), ("$contribution", Format(contribution.ArtifactId)),
-                    ("$contributionRevision", contribution.Revision), ("$contentDigest", contribution.ContentDigest.Bytes),
-                    ("$sensitivityDigest", contribution.SensitivityDigest.Bytes), ("$through", contribution.SummarizedThroughSequence)).ConfigureAwait(false);
+                foreach (CampaignRollupArtifact contribution in current.Contributions)
+                {
+                    _ = await ExecuteAsync(connection, transaction,
+                        """
+                        INSERT INTO campaign_rollup_sources (RollupArtifactId, SessionId, CampaignId, RollupRevision,
+                            ContributionArtifactId, ContributionRevision, ContentDigest, SensitivityDigest, SummarizedThroughSequence)
+                        VALUES ($artifact, $session, $campaign, $revision, $contribution, $contributionRevision,
+                            $contentDigest, $sensitivityDigest, $through);
+                        """, cancellationToken, ("$artifact", Format(output.ArtifactId)), ("$session", Format(contribution.SessionId!.Value)),
+                        ("$campaign", Format(output.CampaignId)), ("$revision", output.Revision), ("$contribution", Format(contribution.ArtifactId)),
+                        ("$contributionRevision", contribution.Revision), ("$contentDigest", contribution.ContentDigest.Bytes),
+                        ("$sensitivityDigest", contribution.SensitivityDigest.Bytes), ("$through", contribution.SummarizedThroughSequence)).ConfigureAwait(false);
+                }
             }
 
             await LabelAsync(connection, transaction, output, publication, cancellationToken).ConfigureAwait(false);
@@ -296,7 +307,7 @@ internal sealed partial class CampaignRollupStore(
 
             return refusal.Error;
         }
-        catch (Exception exception) when (exception is FormatException or OverflowException or ArgumentException)
+        catch (Exception exception) when (exception is FormatException or OverflowException or ArgumentException or InvalidDataException)
         {
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 

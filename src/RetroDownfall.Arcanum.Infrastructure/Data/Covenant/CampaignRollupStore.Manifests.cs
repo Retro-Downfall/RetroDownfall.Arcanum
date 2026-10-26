@@ -16,6 +16,15 @@ internal sealed partial class CampaignRollupStore
     private async Task VerifySourcesAsync(SqliteConnection connection, SqliteTransaction transaction,
         Metadata rollup, GenerationProvenance provenance, ICovenantSnapshotReadLease? authority, CancellationToken ct)
     {
+        Segment? root = await ReadRootAsync(connection, transaction, rollup.ArtifactId, ct).ConfigureAwait(false);
+
+        if (root is not null)
+        {
+            await VerifySharedSourcesAsync(connection, transaction, rollup, root, provenance, authority, ct).ConfigureAwait(false);
+
+            return;
+        }
+
         using Manifest hash = new("Arcanum.CampaignRollup.Sources.v1\0");
 
         hash.Guid(rollup.CampaignId);
@@ -34,30 +43,12 @@ internal sealed partial class CampaignRollupStore
 
             foreach (Source source in page)
             {
-                Metadata contribution = await ReadMetadataAsync(connection, transaction, source.ArtifactId, true, ct).ConfigureAwait(false)
-                    ?? throw Refuse(Stale("A retained Campaign source revision no longer exists."));
-
-                State? state = await ReadStateAsync(connection, transaction, source.SessionId, true, ct).ConfigureAwait(false);
-
-                Guid? canonical = await ReadCanonicalCampaignAsync(connection, transaction, source.SessionId, ct).ConfigureAwait(false);
-
-                if (source.CampaignId != rollup.CampaignId || contribution.CampaignId != rollup.CampaignId
-                    || contribution.SessionId != source.SessionId || state?.ArtifactId != contribution.ArtifactId || state.RefoldRequired
-                    || source.Revision != contribution.Revision || source.Revision != state.Revision
-                    || source.ContentDigest != contribution.ContentDigest || source.SensitivityDigest != contribution.SensitivityDigest
-                    || source.ThroughSequence != contribution.ThroughSequence || source.ThroughSequence != state.ThroughSequence
-                    || canonical != rollup.CampaignId)
-                {
-                    throw Refuse(Stale("A Campaign publication's consumed contribution no longer matches its exact current source."));
-                }
-
-                await RevalidateAsync(authority, rollup.CampaignId, contribution.Sensitivity, ct).ConfigureAwait(false);
-
-                ArtifactSensitivityLabel? label = await VerifyArtifactLabelAsync(connection, transaction, contribution, ct).ConfigureAwait(false);
+                (Metadata contribution, GenerationProvenance sourceProvenance) = await VerifySourceAsync(
+                    connection, transaction, rollup.CampaignId, source, authority, ct).ConfigureAwait(false);
 
                 sensitivity = ContentSensitivityAlgebra.Maximum(sensitivity, contribution.Sensitivity);
 
-                actualProvenance = actualProvenance.Merge(label?.Provenance ?? CleanProvenance);
+                actualProvenance = actualProvenance.Merge(sourceProvenance);
 
                 AppendSource(hash, contribution);
 
@@ -150,12 +141,16 @@ internal sealed partial class CampaignRollupStore
     }
 
     private static async Task<List<Source>> ReadSourcePageAsync(SqliteConnection connection,
-        SqliteTransaction transaction, Guid artifactId, string? after, CancellationToken ct)
+        SqliteTransaction transaction, Guid artifactId, string? after, CancellationToken ct, bool shared = false)
     {
+        string table = shared ? "campaign_rollup_manifest_sources" : "campaign_rollup_sources";
+
+        string key = shared ? "ManifestId" : "RollupArtifactId";
+
         await using SqliteCommand command = Command(connection, transaction,
-            """
+            $"""
             SELECT SessionId, CampaignId, ContributionArtifactId, ContributionRevision, ContentDigest, SensitivityDigest, SummarizedThroughSequence
-            FROM campaign_rollup_sources WHERE RollupArtifactId = $artifact AND ($after IS NULL OR SessionId > $after)
+            FROM {table} WHERE {key} = $artifact AND ($after IS NULL OR SessionId > $after)
             ORDER BY SessionId LIMIT $limit;
             """, ("$artifact", Format(artifactId)), ("$after", after), ("$limit", MetadataPageSize));
 

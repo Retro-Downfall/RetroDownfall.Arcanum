@@ -119,10 +119,12 @@ internal sealed partial class DataRetentionService
         command.CommandText = sessions
             ? kind == SensitiveArtifactKind.CampaignContribution
                 ? "SELECT SessionId FROM campaign_contribution_artifacts WHERE ArtifactId = @id;"
-                : "SELECT DISTINCT SessionId FROM campaign_rollup_sources WHERE RollupArtifactId = @id;"
-            : "SELECT DISTINCT RollupArtifactId FROM campaign_rollup_sources WHERE ContributionArtifactId = @id;";
+                : "SELECT DISTINCT SessionId FROM campaign_rollup_source_membership WHERE RollupArtifactId = @id;"
+            : "SELECT DISTINCT RollupArtifactId FROM campaign_rollup_source_membership WHERE ContributionArtifactId = @id;";
 
         Add(command, "@id", artifactId.ToString("D").ToUpperInvariant());
+
+        await CampaignRollupSourceStorage.ResolveMembershipAsync(command, cancellationToken).ConfigureAwait(false);
 
         List<Guid> ids = [];
 

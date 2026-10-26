@@ -37,7 +37,9 @@ internal sealed partial class DataRetentionService
         new("campaign_rollup_state", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
         new("campaign_maintenance_checkpoints", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
         new("campaign_rollup_sources", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
+        new("campaign_rollup_manifest_sources", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
         new("campaign_rollup_artifacts", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Physical),
+        new("campaign_rollup_manifests", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
         new("campaign_contribution_state", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
         new("campaign_contribution_artifacts", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Physical),
 
@@ -125,7 +127,9 @@ internal sealed partial class DataRetentionService
         new("campaign_rollup_state", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
         new("campaign_maintenance_checkpoints", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
         new("campaign_rollup_sources", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
+        new("campaign_rollup_manifest_sources", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
         new("campaign_rollup_artifacts", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Physical),
+        new("campaign_rollup_manifests", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
         new("campaign_contribution_state", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
         new("campaign_contribution_artifacts", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Physical),
 
@@ -1043,6 +1047,7 @@ internal sealed partial class DataRetentionService
         using CovenantSqliteAuthorizationScope? retention =
             table.Table is "Sessions" or "campaign_rollup_state" or "campaign_maintenance_checkpoints"
                 or "campaign_rollup_sources" or "campaign_rollup_artifacts"
+                or "campaign_rollup_manifest_sources" or "campaign_rollup_manifests"
                 or "campaign_contribution_state" or "campaign_contribution_artifacts"
                 ? CovenantSqliteConnectionInitializer.Instance.Authorize(
                     (SqliteConnection)connection,

@@ -187,7 +187,7 @@ public sealed class CampaignMaintenanceCheckpointStoreTests
 
         Assert.Equal(1L, await ScalarAsync(fixture, "SELECT COUNT(*) FROM campaign_rollup_artifacts;"));
 
-        Assert.Equal(1L, await ScalarAsync(fixture, "SELECT COUNT(*) FROM campaign_rollup_sources;"));
+        Assert.Equal(1L, await ScalarAsync(fixture, "SELECT (SELECT COUNT(*) FROM campaign_rollup_sources) + (SELECT COUNT(*) FROM campaign_rollup_manifest_sources);"));
 
         CampaignMaintenanceAttempt replay = (await checkpoints.PrepareAttemptAsync(identity, Digest(8), CancellationToken.None)).Value;
 
@@ -238,7 +238,7 @@ public sealed class CampaignMaintenanceCheckpointStoreTests
 
         Assert.Equal(0L, await ScalarAsync(fixture, "SELECT COUNT(*) FROM campaign_rollup_artifacts;"));
 
-        Assert.Equal(0L, await ScalarAsync(fixture, "SELECT COUNT(*) FROM campaign_rollup_sources;"));
+        Assert.Equal(0L, await ScalarAsync(fixture, "SELECT (SELECT COUNT(*) FROM campaign_rollup_sources) + (SELECT COUNT(*) FROM campaign_rollup_manifest_sources);"));
 
         Assert.Equal(0L, await ScalarAsync(fixture, "SELECT Revision FROM campaign_rollup_state;"));
 

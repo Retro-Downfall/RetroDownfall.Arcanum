@@ -16,6 +16,347 @@ public sealed class CampaignRollupStoreTests
     internal static readonly Guid SessionA = Guid.Parse("CEE41654-6492-4AC7-9CF5-D28983198540");
 
     [Fact]
+    public async Task Successive_folds_retain_linear_source_storage_and_exact_historical_revisions()
+    {
+        await using StoreFixture fixture = await StoreFixture.CreateAsync();
+
+        const int sessions = 12;
+
+        List<CampaignRollupArtifact> retained = [];
+
+        for (int index = 0; index < sessions; index++)
+        {
+            Guid session = index == 0 ? SessionA : Guid.NewGuid();
+
+            if (index > 0)
+            {
+                await fixture.AddSessionAsync(session, "decision");
+            }
+
+            Result<CampaignContributionInput?> prepared = await fixture.Store.PrepareContributionAsync(session, null, null, CancellationToken.None);
+
+            Assert.True(prepared.IsSuccess, prepared.Error.Message);
+
+            Result<CampaignRollupArtifact> contribution = await fixture.Store.PublishContributionAsync(prepared.Value!, "decision", null, null, CancellationToken.None);
+
+            Assert.True(contribution.IsSuccess, contribution.Error.Message);
+
+            Result<CampaignRollupInput?> fold = await fixture.Store.PrepareRollupAsync(Campaign, null, CancellationToken.None);
+
+            Assert.True(fold.IsSuccess, fold.Error.Message);
+
+            Result<CampaignRollupArtifact> published = await fixture.Store.PublishRollupAsync(fold.Value!, "Campaign decision", null, null, CancellationToken.None);
+
+            Assert.True(published.IsSuccess, published.Error.Message);
+
+            Assert.Equal(index + 1, published.Value.SourceCount);
+
+            retained.Add(published.Value);
+        }
+
+        Assert.Equal(sessions, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_artifacts;"));
+
+        foreach (CampaignRollupArtifact artifact in retained)
+        {
+            Result validated = await fixture.Store.ValidateAsync(artifact, null, CancellationToken.None);
+
+            Assert.True(validated.IsSuccess, validated.Error.Message);
+        }
+
+        long storedSources = await fixture.CountAsync("SELECT (SELECT COUNT(*) FROM campaign_rollup_sources) + (SELECT COUNT(*) FROM campaign_rollup_manifest_sources);");
+
+        Assert.True(storedSources <= sessions, $"{sessions} one-Session folds retained {storedSources} source rows; provenance must grow linearly.");
+    }
+
+    [Fact]
+    public async Task Erasing_an_early_contribution_removes_every_consuming_root_and_shared_physical_source()
+    {
+        await using StoreFixture fixture = await StoreFixture.CreateAsync();
+
+        CampaignRollupArtifact first = await fixture.PublishCampaignAsync("first summary");
+
+        CampaignRollupArtifact second = await PublishNextSessionAsync(fixture);
+
+        CampaignRollupArtifact third = await PublishNextSessionAsync(fixture);
+
+        using IDisposable authorization = CovenantSqliteConnectionInitializer.Instance.Authorize(fixture.Connection,
+            CovenantSqliteAuthorizationKind.SessionRetention);
+
+        await using SqliteTransaction transaction = fixture.Connection.BeginTransaction();
+
+        await using SqliteCommand source = fixture.Connection.CreateCommand();
+
+        source.Transaction = transaction;
+
+        source.CommandText = "SELECT ArtifactId FROM campaign_contribution_artifacts WHERE SessionId = $session;";
+
+        source.Parameters.AddWithValue("$session", SessionA.ToString("D").ToUpperInvariant());
+
+        Guid contribution = Guid.Parse((string)(await source.ExecuteScalarAsync())!);
+
+        Assert.Equal(10, await CampaignSummaryLifecycle.CountArtifactClosureAsync(fixture.Connection, transaction,
+            SensitiveArtifactKind.CampaignContribution, contribution, CancellationToken.None));
+
+        await CampaignSummaryLifecycle.PurgeArtifactAsync(fixture.Connection, transaction,
+            SensitiveArtifactKind.CampaignContribution, contribution, CancellationToken.None);
+
+        await transaction.CommitAsync();
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_artifacts;"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_manifests;"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_manifest_sources;"));
+
+        foreach (CampaignRollupArtifact artifact in new[] { first, second, third })
+        {
+            Assert.True((await fixture.Store.ValidateAsync(artifact, null, CancellationToken.None)).IsFailure);
+        }
+    }
+
+    [Fact]
+    public async Task Deleting_an_intermediate_summary_preserves_successor_provenance_without_its_content()
+    {
+        await using StoreFixture fixture = await StoreFixture.CreateAsync();
+
+        CampaignRollupArtifact first = await fixture.PublishCampaignAsync("first summary");
+
+        CampaignRollupArtifact second = await PublishNextSessionAsync(fixture);
+
+        CampaignRollupArtifact third = await PublishNextSessionAsync(fixture);
+
+        using IDisposable authorization = CovenantSqliteConnectionInitializer.Instance.Authorize(fixture.Connection,
+            CovenantSqliteAuthorizationKind.SessionRetention);
+
+        await using (SqliteTransaction transaction = fixture.Connection.BeginTransaction())
+        {
+            await CampaignSummaryLifecycle.PurgeArtifactAsync(fixture.Connection, transaction,
+                SensitiveArtifactKind.CampaignRollup, second.ArtifactId, CancellationToken.None);
+
+            await transaction.CommitAsync();
+        }
+
+        Assert.Equal(2, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_artifacts;"));
+
+        Assert.True((await fixture.Store.ValidateAsync(second, null, CancellationToken.None)).IsFailure);
+
+        Assert.True((await fixture.Store.ValidateAsync(first, null, CancellationToken.None)).IsSuccess);
+
+        Assert.True((await fixture.Store.ValidateAsync(third, null, CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(3, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_manifest_sources;"));
+    }
+
+    internal static async Task<CampaignRollupArtifact> PublishNextSessionAsync(StoreFixture fixture)
+    {
+        Guid session = Guid.NewGuid();
+
+        await fixture.AddSessionAsync(session, "next decision");
+
+        Result<CampaignContributionInput?> prepared = await fixture.Store.PrepareContributionAsync(session, null, null, CancellationToken.None);
+
+        Assert.True(prepared.IsSuccess, prepared.Error.Message);
+
+        Assert.True((await fixture.Store.PublishContributionAsync(prepared.Value!, "next decision", null, null, CancellationToken.None)).IsSuccess);
+
+        Result<CampaignRollupInput?> fold = await fixture.Store.PrepareRollupAsync(Campaign, null, CancellationToken.None);
+
+        Assert.True(fold.IsSuccess, fold.Error.Message);
+
+        Result<CampaignRollupArtifact> publication = await fixture.Store.PublishRollupAsync(fold.Value!, "next summary", null, null, CancellationToken.None);
+
+        Assert.True(publication.IsSuccess, publication.Error.Message);
+
+        return publication.Value;
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task A_concurrent_source_commit_during_read_validation_refuses_snapshot_promotion_without_partial_publication(bool legacy, bool protectedChange)
+    {
+        await using StoreFixture fixture = await StoreFixture.CreateAsync(legacy);
+
+        await fixture.ExecuteAsync("PRAGMA journal_mode = WAL;");
+
+        fixture.Connection.DefaultTimeout = 1;
+
+        await fixture.PublishCampaignAsync("first summary");
+
+        Guid next = Guid.NewGuid();
+
+        await fixture.AddSessionAsync(next, "next decision");
+
+        CampaignContributionInput contribution = (await fixture.Store.PrepareContributionAsync(next, null, null, CancellationToken.None)).Value!;
+
+        Assert.True((await fixture.Store.PublishContributionAsync(contribution, "next decision", null, null, CancellationToken.None)).IsSuccess);
+
+        CampaignRollupInput prepared = (await fixture.Store.PrepareRollupAsync(Campaign, null, CancellationToken.None)).Value!;
+
+        await using SqliteConnection peer = new(fixture.Connection.ConnectionString);
+
+        await peer.OpenAsync();
+
+        peer.DefaultTimeout = 1;
+
+        await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(peer, CovenantSqliteConnectionMode.ReadWrite, CancellationToken.None);
+
+        bool attempted = false;
+
+        Exception? blockedWriter = null;
+
+        SQLitePCL.raw.sqlite3_trace(fixture.Connection.Handle, (object? _, string sql) =>
+        {
+            if (attempted || !sql.Contains("SELECT SessionId, CampaignId, ContributionArtifactId", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            attempted = true;
+
+            try
+            {
+                if (protectedChange)
+                {
+                    Result<LabeledArtifactWriteReceipt> label = new ArtifactSensitivityLedger(new FixedCovenantConnectionSource(peer))
+                        .LabelAsync(new DerivedArtifactWrite(SensitiveArtifactKind.AssistantEntry,
+                            Guid.Parse("20601337-085E-4095-9BC0-9D34B70B48E8"), SessionA, Campaign, null, 0,
+                            DerivedArtifactContentDigest.ForText("Choose SQLite"), ContentSensitivity.CovenantDerived,
+                            GenerationProvenance.CreateExact([Guid.NewGuid()])), CancellationToken.None).GetAwaiter().GetResult();
+
+                    if (label.IsFailure)
+                    {
+                        throw new InvalidOperationException(label.Error.Message);
+                    }
+
+                    return;
+                }
+
+                using SqliteCommand writer = peer.CreateCommand();
+
+                writer.CommandTimeout = 1;
+
+                writer.CommandText = "UPDATE Entries SET Content = 'changed during validation' WHERE SessionId = $session;";
+
+                writer.Parameters.AddWithValue("$session", SessionA.ToString("D").ToUpperInvariant());
+
+                writer.ExecuteNonQuery();
+            }
+            catch (Exception exception)
+            {
+                blockedWriter = exception;
+            }
+        }, null);
+
+        Result<CampaignRollupArtifact> publication;
+
+        try
+        {
+            publication = await fixture.Store.PublishRollupAsync(prepared, "paid result", null, null, CancellationToken.None);
+        }
+        finally
+        {
+            SQLitePCL.raw.sqlite3_trace(fixture.Connection.Handle, (SQLitePCL.strdelegate_trace)null!, null);
+        }
+
+        Assert.True(attempted);
+
+        Assert.Null(blockedWriter);
+
+        Assert.True(publication.IsFailure);
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_artifacts;"));
+
+        if (legacy)
+        {
+            Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_sources;"));
+        }
+        else
+        {
+            Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_manifests;"));
+
+            Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_manifest_sources;"));
+        }
+
+        Assert.Null((await fixture.Store.ReadCurrentAsync(Campaign, null, CancellationToken.None)).Value);
+    }
+
+    [Fact]
+    public async Task A_legacy_prefix_is_imported_once_without_rewriting_its_retained_digest_or_summary()
+    {
+        await using StoreFixture fixture = await StoreFixture.CreateAsync(legacy: true);
+
+        CampaignRollupArtifact legacy = await fixture.PublishCampaignAsync("legacy summary");
+
+        await PublishNextSessionAsync(fixture);
+
+        CampaignRollupArtifact currentLegacy = (await fixture.Store.ReadCurrentAsync(Campaign, null, CancellationToken.None)).Value!;
+
+        Assert.Equal(3, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_sources;"));
+
+        foreach (GrimoireSchemaTransitionStatementResource statement in GrimoireSchemaCatalog.TransitionStatements
+            .Where(item => item.TransactionTier == GrimoireSchemaTransactionTier.Core && item.ToVersion == 25))
+        {
+            await fixture.ExecuteAsync(statement.Sql);
+        }
+
+        CampaignRollupArtifact firstShared = await PublishNextSessionAsync(fixture);
+
+        CampaignRollupArtifact secondShared = await PublishNextSessionAsync(fixture);
+
+        Assert.Equal(3, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_sources;"));
+
+        Assert.Equal(4, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_manifest_sources;"));
+
+        Assert.Equal(3, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_manifests;"));
+
+        foreach (CampaignRollupArtifact artifact in new[] { legacy, currentLegacy, firstShared, secondShared })
+        {
+            Result validated = await fixture.Store.ValidateAsync(artifact, null, CancellationToken.None);
+
+            Assert.True(validated.IsSuccess, validated.Error.Message);
+        }
+
+        using IDisposable authorization = CovenantSqliteConnectionInitializer.Instance.Authorize(fixture.Connection,
+            CovenantSqliteAuthorizationKind.SessionRetention);
+
+        await using (SqliteTransaction transaction = fixture.Connection.BeginTransaction())
+        {
+            await CampaignSummaryLifecycle.PurgeArtifactAsync(fixture.Connection, transaction,
+                SensitiveArtifactKind.CampaignRollup, currentLegacy.ArtifactId, CancellationToken.None);
+
+            await transaction.CommitAsync();
+        }
+
+        Assert.True((await fixture.Store.ValidateAsync(secondShared, null, CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(4, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_manifest_sources;"));
+    }
+
+    [Fact]
+    public async Task A_shared_root_cannot_acquire_a_second_unverified_legacy_manifest()
+    {
+        await using StoreFixture fixture = await StoreFixture.CreateAsync();
+
+        CampaignRollupArtifact root = await fixture.PublishCampaignAsync("summary");
+
+        SqliteException refused = await Assert.ThrowsAsync<SqliteException>(() => fixture.ExecuteAsync($"""
+            INSERT INTO campaign_rollup_sources(RollupArtifactId,SessionId,CampaignId,RollupRevision,
+                ContributionArtifactId,ContributionRevision,ContentDigest,SensitivityDigest,SummarizedThroughSequence)
+            SELECT '{root.ArtifactId.ToString("D").ToUpperInvariant()}',SessionId,CampaignId,1,ArtifactId,Revision,
+                ContentDigest,SensitivityDigest,SummarizedThroughSequence FROM campaign_contribution_artifacts;
+            """));
+
+        Assert.Equal(19, refused.SqliteErrorCode);
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_sources;"));
+
+        Assert.True((await fixture.Store.ValidateAsync(root, null, CancellationToken.None)).IsSuccess);
+    }
+
+    [Fact]
     public async Task A_short_session_contributes_and_another_session_reads_its_Campaign_decisions()
     {
         await using StoreFixture fixture = await StoreFixture.CreateAsync();
@@ -558,7 +899,7 @@ public sealed class CampaignRollupStoreTests
 
         internal CampaignRollupStore Store { get; } = new(new FixedCovenantConnectionSource(database.Connection), CovenantSqliteConnectionInitializer.Instance);
 
-        internal static async Task<StoreFixture> CreateAsync()
+        internal static async Task<StoreFixture> CreateAsync(bool legacy = false)
         {
             CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
 
@@ -567,9 +908,9 @@ public sealed class CampaignRollupStoreTests
                 .. CovenantSchemaScratchDatabase.ArtifactSensitivityDeleteGuardObjects, "artifact_sensitivity_guard_update",
             ], CancellationToken.None);
 
-            foreach (GrimoireSchemaObject item in GrimoireSchemaCatalog.CoreObjects.Where(item => item.Name.StartsWith("campaign_", StringComparison.Ordinal)))
+            foreach (GrimoireSchemaObject item in (legacy ? CoreSchemaVersionTwentyFourFixture.Objects : GrimoireSchemaCatalog.CoreObjects).Where(item => item.Name.StartsWith("campaign_", StringComparison.Ordinal)))
             {
-                await database.InstallCoreObjectsAsync([item.Name], CancellationToken.None);
+                await database.ExecuteAsync(item.Sql, CancellationToken.None);
             }
 
             foreach (GrimoireSchemaObject item in GrimoireSchemaCatalog.CoreObjects.Where(item => item.Name.Contains("campaign_contribution", StringComparison.Ordinal) && !item.Name.StartsWith("campaign_", StringComparison.Ordinal)))

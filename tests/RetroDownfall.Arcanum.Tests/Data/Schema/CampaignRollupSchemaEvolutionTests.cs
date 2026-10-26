@@ -19,6 +19,37 @@ public sealed class CampaignRollupSchemaEvolutionTests
     private const string Contribution = "EEEEEEEE-5555-4555-8555-EEEEEEEEEEEE";
 
     [Fact]
+    public async Task Core24_evolves_to_shared_manifests_without_rewriting_legacy_sources_or_fingerprints()
+    {
+        Assert.Equal(CoreSchemaVersionTwentyFourFixture.PublishedFingerprint, CoreSchemaVersionTwentyFourFixture.Fingerprint);
+
+        Assert.Equal(CoreSchemaVersionTwentyFourFixture.PublishedFingerprint,
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core).SourceDefinitionFingerprintFor(24));
+
+        await using SqliteConnection evolved = await OpenAsync();
+
+        await using SqliteConnection fresh = await OpenAsync();
+
+        await GrimoireSchemaTestInstaller.InstallAsync(evolved, CoreSchemaVersionTwentyFourFixture.ChainSet(), 1536, CancellationToken.None);
+
+        await SeedPublishedCampaignAsync(evolved);
+
+        await InstallHeadAsync(evolved, shared: true);
+
+        await InstallHeadAsync(fresh, shared: true);
+
+        Assert.Equal(await DefinitionsAsync(fresh), await DefinitionsAsync(evolved));
+
+        Assert.Equal(1, await ScalarAsync(evolved, "SELECT COUNT(*) FROM campaign_rollup_sources;"));
+
+        Assert.Equal(1, await ScalarAsync(evolved, "SELECT COUNT(*) FROM campaign_rollup_artifacts WHERE ManifestId IS NULL AND SourceManifestDigest = zeroblob(32);"));
+
+        Assert.Equal(0, await ScalarAsync(evolved, "SELECT COUNT(*) FROM campaign_rollup_manifests;"));
+
+        Assert.Equal(0, await ScalarAsync(evolved, "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
+    }
+
+    [Fact]
     public void The_core_catalog_installs_revisioned_campaign_sources_and_claim_checkpoints()
     {
         string[] required =
@@ -404,9 +435,9 @@ public sealed class CampaignRollupSchemaEvolutionTests
         return new Guid(digest[..16]);
     }
 
-    internal static async Task InstallHeadAsync(SqliteConnection connection)
+    internal static async Task InstallHeadAsync(SqliteConnection connection, bool shared = false)
     {
-        GrimoireSchemaVersionChainSet chains = CoreSchemaVersionSixteenFixture.ChainSet();
+        GrimoireSchemaVersionChainSet chains = shared ? GrimoireSchemaVersionChains.Default : CoreSchemaVersionSixteenFixture.ChainSet();
 
         GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create(chains);
 
@@ -438,7 +469,7 @@ public sealed class CampaignRollupSchemaEvolutionTests
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, installed.Core.Health);
 
-        Assert.Equal(16, installed.Core.SchemaVersion);
+        Assert.Equal(shared ? 25 : 16, installed.Core.SchemaVersion);
     }
 
     private static Task<SqliteConnection> OpenAsync() =>

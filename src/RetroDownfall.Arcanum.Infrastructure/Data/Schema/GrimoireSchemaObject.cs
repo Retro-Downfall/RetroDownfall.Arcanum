@@ -49,8 +49,8 @@ internal enum GrimoireSchemaTransactionTier
 /// and before the triggers that write to them.</item>
 /// <item><see cref="Triggers"/> — the only objects that reference both a table and an FTS5 virtual
 /// table, so they come last.</item>
-/// <item><see cref="Views"/> — read-only diagnostic views, installed last so they can inventory
-/// the completed tier without joining any runtime write or query path.</item>
+/// <item><see cref="Views"/> — read-only views, installed last. Inventory views are diagnostic only;
+/// Campaign source membership is an indexed logical projection over legacy and shared provenance.</item>
 /// </list>
 ///
 /// The retired <c>Accelerators</c> category is gone: it existed for dynamically loaded <c>vec0</c>

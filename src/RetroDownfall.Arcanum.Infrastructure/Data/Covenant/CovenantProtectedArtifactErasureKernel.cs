@@ -36,7 +36,8 @@ internal sealed record CovenantArtifactPurgeTarget(
     int? RequiredFromCoreVersion = null,
     string? AdditionalPredicate = null,
     string? RowIdentity = null,
-    bool LongRestNode = false)
+    bool LongRestNode = false,
+    bool CampaignManifestNode = false)
 {
     /// <summary>This target's delete, keyed by an already-normalised parameter.</summary>
     internal string DeleteBy(string parameter) => $"DELETE FROM {Table} WHERE {Predicate(parameter)};";
@@ -50,7 +51,7 @@ internal sealed record CovenantArtifactPurgeTarget(
 
     private string Predicate(string parameter)
     {
-        string keyed = LongRestNode ? LongRestLifecycle.Predicate(Table, parameter) : AnnalStore is { } store
+        string keyed = CampaignManifestNode ? CampaignRollupSourceStorage.PurgePredicate(Table, parameter) : LongRestNode ? LongRestLifecycle.Predicate(Table, parameter) : AnnalStore is { } store
             ? AnnalsErasurePlan.ForSubjectQuery(
                 store,
                 $"SELECT SubjectId FROM annal_claims WHERE {CovenantIdentitySql.Keyed("SubjectId", parameter)}")
@@ -152,6 +153,8 @@ internal static class CovenantArtifactPurgePlans
             SensitiveArtifactKind.CampaignRollup,
             [
                 new CovenantArtifactPurgeTarget("campaign_rollup_sources", "RollupArtifactId", RowIdentity: "RollupArtifactId || ':' || SessionId"),
+                new CovenantArtifactPurgeTarget("campaign_rollup_manifest_sources", "ManifestId", RowIdentity: "ManifestId || ':' || SessionId", CampaignManifestNode: true),
+                new CovenantArtifactPurgeTarget("campaign_rollup_manifests", "ManifestId", CampaignManifestNode: true),
                 new CovenantArtifactPurgeTarget("campaign_maintenance_checkpoints", "OutputArtifactId", AdditionalPredicate: "OutputArtifactKindCode = 14", RowIdentity: "ClaimId || ':' || StepCode || ':' || hex(InputManifestDigest)"),
             ],
             new CovenantArtifactPurgeTarget("campaign_rollup_artifacts", "ArtifactId"),

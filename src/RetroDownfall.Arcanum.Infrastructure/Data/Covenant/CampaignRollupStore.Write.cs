@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 internal sealed partial class CampaignRollupStore
 {
     private static async Task InsertArtifactAsync(SqliteConnection connection, SqliteTransaction transaction,
-        CampaignRollupArtifact artifact, CampaignMaintenancePublication? publication, CancellationToken ct)
+        CampaignRollupArtifact artifact, CampaignMaintenancePublication? publication, CancellationToken ct, Guid? manifestId = null)
     {
         bool contribution = artifact.SessionId.HasValue;
 
@@ -31,6 +31,12 @@ internal sealed partial class CampaignRollupStore
                 $manifest, $generation, $count, $now, $receipt);
             """;
 
+        if (manifestId is not null)
+        {
+            sql = sql.Replace("ProducingMaintenanceReceiptDigest)", "ProducingMaintenanceReceiptDigest, ManifestId)", StringComparison.Ordinal)
+                .Replace("$receipt);", "$receipt, $manifestId);", StringComparison.Ordinal);
+        }
+
         _ = await ExecuteAsync(connection, transaction, sql, ct,
             ("$id", Format(artifact.ArtifactId)), ("$campaign", Format(artifact.CampaignId)),
             ("$session", artifact.SessionId is { } sessionId ? Format(sessionId) : null),
@@ -39,7 +45,7 @@ internal sealed partial class CampaignRollupStore
             ("$manifest", artifact.SourceManifestDigest.Bytes), ("$generation", artifact.SourceGeneration),
             ("$through", artifact.SummarizedThroughSequence), ("$count", artifact.SourceCount),
             ("$now", UtcInstantText.Format(DateTimeOffset.UtcNow)),
-            ("$receipt", publication?.DisclosureReceiptDigest.Bytes)).ConfigureAwait(false);
+            ("$receipt", publication?.DisclosureReceiptDigest.Bytes), ("$manifestId", manifestId is { } root ? Format(root) : null)).ConfigureAwait(false);
     }
 
     private static async Task LabelAsync(SqliteConnection connection, SqliteTransaction transaction,
