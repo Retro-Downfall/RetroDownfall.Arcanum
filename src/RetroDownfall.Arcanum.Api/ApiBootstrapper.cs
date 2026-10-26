@@ -582,6 +582,8 @@ public static class ApiBootstrapper
 
         services.AddScoped<ICampaignRollupProviderClientFactory, CampaignRollupProviderClientFactory>();
 
+        services.AddSingleton<CampaignRollupDeferralWarnings>();
+
         services.AddScoped<ICampaignRollupMaintenance, CampaignRollupMaintenance>();
 
         services.AddScoped<CampaignRollupTurnPreparer>();
