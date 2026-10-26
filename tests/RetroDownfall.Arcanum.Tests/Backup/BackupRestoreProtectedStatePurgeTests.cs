@@ -25,7 +25,7 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 /// destination's host-tools taint or its joined disclosure counts would turn an honest nonrevocable
 /// record into a clean one, which is the one thing no erasure path may do (§10.15).</para>
 /// </remarks>
-public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
+public sealed partial class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
 {
     private static readonly string[] CoreObjects =
     [
@@ -1168,14 +1168,14 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
             labelSessionId);
     }
 
-    private Task SeedTapestryGenerationAsync(string scopeKind, string scopeId, string generationId) =>
+    private Task SeedTapestryGenerationAsync(string scopeKind, string scopeId, string generationId, string status = "Complete") =>
         _staged.ExecuteAsync(
             $"""
              INSERT INTO tapestry_generations
                  (GenerationId, ScopeKind, ScopeId, Status, AlgorithmVersion, SettingsFingerprint,
                   SummaryRecipeVersion, EmbeddingDimension, CorpusFingerprint, LayerCount, NodeCount,
                   RootNodeCount, TerminalReason, StartedAt, CompletedAt)
-             VALUES ('{generationId}', '{scopeKind}', '{scopeId}', 'Complete', 'algorithm', 'settings',
+             VALUES ('{generationId}', '{scopeKind}', '{scopeId}', '{status}', 'algorithm', 'settings',
                      'recipe', 1, 'corpus', 1, 1, 1, 'LeafOnly', '{Iso()}', '{Iso()}');
              INSERT INTO tapestry_nodes
                  (NodeId, GenerationId, ScopeKind, ScopeId, Layer, ParentScopeKey, NodeKind, SourceLabel,

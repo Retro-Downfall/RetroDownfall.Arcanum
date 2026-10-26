@@ -92,16 +92,16 @@ public sealed class EmbeddingsResetService(
     ];
 
     /// <summary>
-    /// The Tapestry's trees are derived data, so this scope drops exactly the <c>tapestry_*</c> tables
-    /// and nothing else — the leaf corpora it was woven from stay indexed and the next background
-    /// sweep rebuilds every tree from them.
+    /// Removes graph generations and their children, leaving source corpora, source-owned leaf hashes
+    /// and monotonic scope revisions intact. The next sweep rebuilds the trees from those sources.
     /// </summary>
     private static readonly IReadOnlyList<string> TapestryTables =
     [
         "tapestry_node_embeddings_vec",
+        "tapestry_generations",
+        "tapestry_edges",
         "tapestry_node_embeddings",
         "tapestry_nodes",
-        "tapestry_generations",
     ];
 
     /// <summary>
@@ -488,11 +488,37 @@ public sealed class EmbeddingsResetService(
                         cancellationToken).ConfigureAwait(false);
                 }
 
+                // Published graph children are immutable. Delete the generation owner first and let
+                // its foreign keys remove them. Capture their counts before any cascade, in this same
+                // transaction, so the result describes the rows removed rather than later zero counts.
+                Dictionary<string, int> graphCounts = new(StringComparer.Ordinal);
+
+                if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Tapestry)
+                {
+                    foreach (string table in TapestryTables)
+                    {
+                        if (table.EndsWith("_vec", StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+
+                        await using DbCommand count = connection.CreateCommand();
+
+                        count.Transaction = transaction;
+
+                        count.CommandText = $"""SELECT COUNT(*) FROM "{table}" """;
+
+                        graphCounts[table] = checked(Convert.ToInt32(
+                            await count.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                            System.Globalization.CultureInfo.InvariantCulture));
+                    }
+                }
+
                 foreach (string table in targets)
                 {
                     int rows = await DeleteFromTableAsync(connection, transaction, table, cancellationToken).ConfigureAwait(false);
 
-                    deleted[table] = rows;
+                    deleted[table] = graphCounts.TryGetValue(table, out int graphRows) ? graphRows : rows;
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
