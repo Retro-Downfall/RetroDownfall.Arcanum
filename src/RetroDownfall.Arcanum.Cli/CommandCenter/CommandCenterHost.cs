@@ -1096,24 +1096,20 @@ internal sealed class CommandCenterHost(
                 break;
 
             case CommandCenterAction.LoadOlderSessionPage:
-                await LoadSessionPageCoreAsync(
+                await RunGatedAsync(
                         state,
-                        window,
-                        app,
                         ui,
-                        older: true,
-                        cancellationToken: linked.Token)
+                        linked.Token,
+                        () => LoadSessionPageCoreAsync(state, window, app, ui, older: true, linked.Token))
                     .ConfigureAwait(false);
                 break;
 
             case CommandCenterAction.LoadNewerSessionPage:
-                await LoadSessionPageCoreAsync(
+                await RunGatedAsync(
                         state,
-                        window,
-                        app,
                         ui,
-                        older: false,
-                        cancellationToken: linked.Token)
+                        linked.Token,
+                        () => LoadSessionPageCoreAsync(state, window, app, ui, older: false, linked.Token))
                     .ConfigureAwait(false);
                 break;
 
@@ -1190,24 +1186,20 @@ internal sealed class CommandCenterHost(
                 break;
 
             case CommandCenterAction.LoadOlderTranscriptPage:
-                await LoadTranscriptPageCoreAsync(
+                await RunGatedAsync(
                         state,
-                        window,
-                        app,
                         ui,
-                        older: true,
-                        cancellationToken: linked.Token)
+                        linked.Token,
+                        () => LoadTranscriptPageCoreAsync(state, window, app, ui, older: true, linked.Token))
                     .ConfigureAwait(false);
                 break;
 
             case CommandCenterAction.LoadNewerTranscriptPage:
-                await LoadTranscriptPageCoreAsync(
+                await RunGatedAsync(
                         state,
-                        window,
-                        app,
                         ui,
-                        older: false,
-                        cancellationToken: linked.Token)
+                        linked.Token,
+                        () => LoadTranscriptPageCoreAsync(state, window, app, ui, older: false, linked.Token))
                     .ConfigureAwait(false);
                 break;
 
@@ -2301,7 +2293,38 @@ internal sealed class CommandCenterHost(
             return;
         }
 
-        if (!state.TryBeginTurn())
+        if (!_actionGate.Wait(0))
+        {
+            state.FooterHint = "A session action is still in progress. Send again when it finishes.";
+            ui.TryWrite(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshFooter));
+            return;
+        }
+
+        CancellationTokenSource? turnCts = null;
+        bool admitted = false;
+        try
+        {
+            admitted = state.TryBeginTurn();
+            if (admitted)
+            {
+                try
+                {
+                    turnCts = CancellationTokenSource.CreateLinkedTokenSource(linked.Token);
+                    state.TurnCts = turnCts;
+                }
+                catch
+                {
+                    state.EndTurn(turnCts);
+                    throw;
+                }
+            }
+        }
+        finally
+        {
+            _actionGate.Release();
+        }
+
+        if (!admitted)
         {
             // Admission denied — preserve composer text and staged attachments.
             state.Log.Append(SessionLogEntryKind.Status, "Already generating — Ctrl+C to cancel.");
@@ -2310,20 +2333,18 @@ internal sealed class CommandCenterHost(
             return;
         }
 
-        app.Invoke(() => window.ClearComposer());
-
-        CancellationTokenSource? turnCts = null;
         try
         {
-            turnCts = CancellationTokenSource.CreateLinkedTokenSource(linked.Token);
-            state.TurnCts = turnCts;
+            app.Invoke(() => window.ClearComposer());
             await chatRunner
-                .RunTurnAsync(payload, state, ui, turnCts.Token)
+                .RunTurnAsync(payload, state, ui, turnCts!.Token)
                 .ConfigureAwait(false);
 
             attachmentDriftMonitor.RequestRefresh();
 
-            await sessionWorkspace.RefreshSessionsAsync(state, linked.Token).ConfigureAwait(false);
+            await RunGatedAsync(state, ui, linked.Token,
+                    () => sessionWorkspace.RefreshSessionsAsync(state, linked.Token))
+                .ConfigureAwait(false);
             await ui.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshAll), linked.Token)
                 .ConfigureAwait(false);
         }
@@ -2336,22 +2357,16 @@ internal sealed class CommandCenterHost(
         }
         finally
         {
-            state.EndTurn();
-
-            // Host owns TurnCts: capture → null → dispose. Ctrl+C / ChatRunner never dispose.
-            CancellationTokenSource? captured = state.TurnCts;
-            state.TurnCts = null;
-            captured?.Dispose();
-            if (turnCts is not null && !ReferenceEquals(turnCts, captured))
-            {
-                turnCts.Dispose();
-            }
+            state.EndTurn(turnCts);
 
             app.Invoke(() =>
             {
                 window.ApplyState(state, forceFollowTail: true);
-                window.FocusInput();
-                state.FocusRegion = CommandCenterFocusRegion.Composer;
+                if (state.Overlay == CommandCenterOverlayKind.None
+                    && state.FocusRegion == CommandCenterFocusRegion.Composer)
+                {
+                    window.FocusInput();
+                }
             });
         }
     }
