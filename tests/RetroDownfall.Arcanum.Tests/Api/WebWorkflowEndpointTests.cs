@@ -1513,6 +1513,303 @@ public sealed class WebWorkflowEndpointTests
         Assert.DoesNotContain("[9]", summaries);
     }
 
+    [SkippableTheory]
+    [InlineData(ErrorCodes.WebResearch.Timeout)]
+    [InlineData(ErrorCodes.WebResearch.BotProtected)]
+    [InlineData(ErrorCodes.WebResearch.UnsupportedContent)]
+    [InlineData(ErrorCodes.WebResearch.JavaScriptRequired)]
+    [InlineData(ErrorCodes.WebResearch.RedirectLimitExceeded)]
+    [InlineData(ErrorCodes.WebResearch.ResponseTooLarge)]
+    [InlineData(ErrorCodes.WebResearch.SsrfBlocked)]
+    [InlineData("private-provider-secret")]
+    public async Task Research_unread_source_is_excluded_with_safe_host_outcome(string code)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        const string failedUrl = "https://user:credential@bad.test/private-path?token=secret#fragment";
+        StubWebProvider provider = new()
+        {
+            SearchResults = [new WebSearchResult("Discovery [1] [2] [3]", [new(1, failedUrl, "Unread"), new(2, "https://good.test/read", "Read"), new(3, "https://late.test/unread", "Also unread")], new())],
+            ReadResults = new()
+            {
+                [failedUrl] = Result<WebReadResult>.Failure(new Error(code, "private-provider-message")),
+                ["https://late.test/unread"] = Result<WebReadResult>.Failure(new Error(code, "private-provider-message")),
+            },
+        };
+        StubIntelligence intelligence = new();
+        await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence);
+        using HttpResponseMessage response = await factory.CreateAuthenticatedClient().PostAsJsonAsync(
+            "/api/web/research", new WebResearchWorkflowRequest { Question = "What changed?", SourceTarget = 3 }, ArcanumJsonContext.Default.WebResearchWorkflowRequest);
+        WebResearchStreamFrame[] frames = ParseResearchFrames(await response.Content.ReadAsStringAsync()).ToArray();
+        WebResearchWorkflowResult result = Assert.IsType<WebResearchWorkflowResult>(frames.Last().Result);
+        WebWorkflowCitation citation = Assert.Single(result.Citations);
+        Assert.Equal(1, citation.Index);
+        Assert.Equal("https://good.test/read", citation.Url);
+        Assert.DoesNotContain(failedUrl, intelligence.Request!.Prompt);
+        Assert.DoesNotContain("Source [2]", intelligence.Request.Prompt);
+        string stage = code == ErrorCodes.WebResearch.SsrfBlocked ? "source_denied" : "source_unreadable";
+        WebResearchStreamFrame outcome = Assert.Single(frames, frame => frame.Stage == stage && frame.Message!.Contains("bad.test", StringComparison.Ordinal));
+        Assert.Equal(code == "private-provider-secret" ? ErrorCodes.WebResearch.ProviderUnavailable : code, outcome.Code);
+        string diagnostics = string.Join("\n", frames.Select(frame => frame.Message));
+        Assert.DoesNotContain("credential", diagnostics);
+        Assert.DoesNotContain("private-path", diagnostics);
+        Assert.DoesNotContain("secret", diagnostics);
+        Assert.DoesNotContain("fragment", diagnostics);
+        Assert.DoesNotContain("private-provider-message", diagnostics);
+        Assert.Single(frames, frame => frame.Stage == "rendering");
+    }
+
+    [SkippableTheory]
+    [InlineData("\u200d")]
+    [InlineData("\u0301")]
+    [InlineData("expanded-host")]
+    [InlineData("long-host")]
+    public async Task Research_invalid_idn_is_unreadable_without_losing_valid_evidence(string invalidLabel)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        invalidLabel = invalidLabel switch
+        {
+            "expanded-host" => string.Join('.', Enumerable.Repeat(new string('ü', 40), 6)),
+            "long-host" => string.Join('.', Enumerable.Repeat(new string('a', 49), 5)),
+            _ => invalidLabel,
+        };
+
+        // Match the production search provider's accepted AbsoluteUri serialization.
+        string invalidUrl = new Uri($"https://{invalidLabel}.test/private?token=secret#fragment").AbsoluteUri;
+
+        StubWebProvider provider = new()
+        {
+            SearchResults = [new WebSearchResult("Discovery", [new(1, invalidUrl, "Invalid"), new(2, "https://good.test/read", "Read"), new(3, invalidUrl + "later", "Invalid later")], new())],
+        };
+
+        StubIntelligence intelligence = new();
+
+        await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence);
+
+        using HttpResponseMessage response = await factory.CreateAuthenticatedClient().PostAsJsonAsync(
+            "/api/web/research", new WebResearchWorkflowRequest { Question = "What changed?", SourceTarget = 3 }, ArcanumJsonContext.Default.WebResearchWorkflowRequest);
+
+        WebResearchStreamFrame[] frames = ParseResearchFrames(await response.Content.ReadAsStringAsync()).ToArray();
+
+        Assert.DoesNotContain(frames, frame => frame.Type == WebResearchStreamFrameType.Error);
+
+        WebResearchWorkflowResult result = Assert.IsType<WebResearchWorkflowResult>(frames.Last().Result);
+
+        Assert.Equal("Synthesized answer [1].", result.Answer);
+
+        WebWorkflowCitation citation = Assert.Single(result.Citations);
+
+        Assert.Equal(1, citation.Index);
+
+        Assert.Equal("https://good.test/read", citation.Url);
+
+        Assert.Equal(["https://good.test/read"], provider.ReadUrls);
+
+        Assert.Contains("Source [1]", intelligence.Request!.Prompt);
+
+        Assert.DoesNotContain("Source [2]", intelligence.Request.Prompt);
+
+        Assert.DoesNotContain(invalidUrl, intelligence.Request.Prompt);
+
+        WebResearchStreamFrame[] outcomes = frames.Where(frame => frame.Stage == "source_unreadable").ToArray();
+
+        Assert.Equal(2, outcomes.Length);
+
+        Assert.All(outcomes, outcome =>
+        {
+            Assert.Equal(ErrorCodes.WebResearch.InvalidUrl, outcome.Code);
+
+            Assert.InRange(outcome.Message!.Length, 1, 400);
+        });
+
+        string diagnostics = string.Join("\n", frames.Select(frame => frame.Message));
+
+        Assert.DoesNotContain(invalidLabel, diagnostics, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("private", diagnostics);
+
+        Assert.DoesNotContain("secret", diagnostics);
+
+        Assert.DoesNotContain("fragment", diagnostics);
+    }
+
+    [SkippableTheory]
+    [InlineData(16, ErrorCodes.WebResearch.Timeout)]
+    [InlineData(1_000, ErrorCodes.WebResearch.SsrfBlocked)]
+    [InlineData(0, ErrorCodes.WebResearch.Timeout)]
+    public async Task Research_canonical_host_diagnostics_are_zone_free_and_bounded(int zoneLength, string code)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string scopedUrl = zoneLength == 0
+            ? "https://bücher.test/private?token=secret#fragment"
+            : $"https://[fe80::1%25credential-marker{new string('s', zoneLength)}]/private?token=secret#fragment";
+
+        StubWebProvider provider = new()
+        {
+            SearchResults = [new WebSearchResult("Discovery", [new(1, scopedUrl, "Scoped address"), new(2, "https://good.test/read", "Read")], new())],
+            ReadResults = new() { [scopedUrl] = Result<WebReadResult>.Failure(new Error(code, "private-provider-message")) },
+        };
+
+        StubIntelligence intelligence = new();
+
+        await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence);
+
+        using HttpResponseMessage response = await factory.CreateAuthenticatedClient().PostAsJsonAsync(
+            "/api/web/research", new WebResearchWorkflowRequest { Question = "What changed?", SourceTarget = 2 }, ArcanumJsonContext.Default.WebResearchWorkflowRequest);
+
+        WebResearchStreamFrame[] frames = ParseResearchFrames(await response.Content.ReadAsStringAsync()).ToArray();
+
+        Assert.Equal(WebResearchStreamFrameType.Result, frames.Last().Type);
+
+        Assert.Single(frames.Last().Result!.Citations);
+
+        Assert.Equal([scopedUrl, "https://good.test/read"], provider.ReadUrls);
+
+        WebResearchStreamFrame outcome = Assert.Single(frames, frame => frame.Code == code);
+
+        Assert.Equal(code == ErrorCodes.WebResearch.SsrfBlocked ? "source_denied" : "source_unreadable", outcome.Stage);
+
+        Assert.Contains(zoneLength == 0 ? "(xn--bcher-kva.test)" : "(fe80::1)", outcome.Message);
+
+        Assert.InRange(outcome.Message!.Length, 1, 400);
+
+        string diagnostics = string.Join("\n", frames.Select(frame => frame.Message));
+
+        Assert.DoesNotContain("credential-marker", diagnostics);
+
+        Assert.DoesNotContain("private", diagnostics);
+
+        Assert.DoesNotContain("secret", diagnostics);
+
+        Assert.DoesNotContain("fragment", diagnostics);
+    }
+
+    [SkippableTheory]
+    [InlineData("empty")]
+    [InlineData("whitespace")]
+    [InlineData("no-reader")]
+    [InlineData("missing-reader")]
+    public async Task Research_without_readable_pages_discloses_evidence_limit(string failure)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        StubWebProvider provider = new()
+        {
+            ReadMarkdown = failure == "whitespace" ? " \t\r\n" : "",
+            RegisterReader = failure != "missing-reader",
+            SupportedCapabilities = failure == "no-reader" ? WebResearchCapabilities.Search : WebResearchCapabilities.Search | WebResearchCapabilities.ReadUrl,
+        };
+        StubIntelligence intelligence = new();
+        await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence);
+        using HttpResponseMessage response = await factory.CreateAuthenticatedClient().PostAsJsonAsync(
+            "/api/web/research", new WebResearchWorkflowRequest { Question = "What changed?", SourceTarget = 1 }, ArcanumJsonContext.Default.WebResearchWorkflowRequest);
+        WebResearchStreamFrame[] frames = ParseResearchFrames(await response.Content.ReadAsStringAsync()).ToArray();
+        Assert.Empty(frames.Last().Result!.Citations);
+        Assert.DoesNotContain("Source [1]", intelligence.Request!.Prompt);
+        Assert.Contains("No source pages were read", intelligence.Request.Prompt);
+        Assert.Contains(frames, frame => frame.Stage == "source_unreadable" && frame.Message!.Contains("example.test", StringComparison.Ordinal));
+        Assert.Contains(frames, frame => frame.Stage == "evidence_limited");
+        Assert.DoesNotContain(frames, frame => frame.Stage == "rendering");
+        Assert.Equal(failure is "no-reader" or "missing-reader" ? 0 : 1, provider.ReadCalls);
+    }
+
+    [SkippableTheory]
+    [InlineData("length", false, true)]
+    [InlineData("stop", true, true)]
+    [InlineData("stop", false, false)]
+    public async Task Research_preserves_synthesis_completion_and_search_cost_semantics(string finishReason, bool searchTruncated, bool expectedTruncated)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        StubWebProvider provider = new()
+        {
+            SearchResults = [new WebSearchResult("Discovery", [new(1, "https://good.test/read", "Read")], new WebResearchUsage(PromptTokens: 2, CompletionTokens: 3, TotalTokens: 5, SearchQueries: 1, CostUsd: 0.02m), Truncated: searchTruncated)],
+        };
+        StubIntelligence intelligence = new()
+        {
+            Response = new PromptTurnResult("Answer", new ChatCompletionUsage(7, 11, 18), FinishReason: finishReason) { Warnings = ["Structured output could not be guaranteed."] },
+        };
+        await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence);
+        using HttpResponseMessage response = await factory.CreateAuthenticatedClient().PostAsJsonAsync(
+            "/api/web/research", new WebResearchWorkflowRequest { Question = "What changed?", SourceTarget = 1, Model = "vision-model" }, ArcanumJsonContext.Default.WebResearchWorkflowRequest);
+        string ndjson = await response.Content.ReadAsStringAsync();
+        WebResearchStreamFrame[] frames = ParseResearchFrames(ndjson).ToArray();
+        WebResearchWorkflowResult result = frames.Last().Result!;
+        Assert.Equal(expectedTruncated, result.Truncated);
+        Assert.Equal(9, result.Usage.PromptTokens);
+        Assert.Equal(14, result.Usage.CompletionTokens);
+        Assert.Equal(23, result.Usage.TotalTokens);
+        Assert.Equal(0.02m, result.Usage.CostUsd);
+        using JsonDocument terminal = JsonDocument.Parse(ndjson.Split('\n', StringSplitOptions.RemoveEmptyEntries).Last());
+        JsonElement payload = terminal.RootElement.GetProperty("result");
+        Assert.Equal(finishReason, payload.GetProperty("finishReason").GetString());
+        Assert.Contains(payload.GetProperty("warnings").EnumerateArray(), item => item.GetString() == "Structured output could not be guaranteed.");
+        Assert.Contains(frames, frame => frame.Stage == "synthesis_warning" && frame.Message == "Structured output could not be guaranteed.");
+        Assert.Equal(finishReason == "length", frames.Any(frame => frame.Stage == "synthesis_warning" && frame.Message!.Contains("--token-budget", StringComparison.Ordinal)));
+        Assert.Null(result.Model);
+    }
+
+    [SkippableFact]
+    public async Task Research_reports_resolved_synthesis_model_instead_of_requested_alias()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        PromptTurnResult synthesis = new("Answer", null) { ModelUsed = "resolved-model-v2" };
+        StubIntelligence intelligence = new() { Response = synthesis };
+        await using ArcanumWebApplicationFactory factory = Factory(new StubWebProvider(), intelligence);
+        using HttpResponseMessage response = await factory.CreateAuthenticatedClient().PostAsJsonAsync(
+            "/api/web/research", new WebResearchWorkflowRequest { Question = "What changed?", SourceTarget = 1, Model = "vision-model" }, ArcanumJsonContext.Default.WebResearchWorkflowRequest);
+        WebResearchWorkflowResult result = ParseResearchFrames(await response.Content.ReadAsStringAsync()).Last().Result!;
+        Assert.Equal("resolved-model-v2", result.Model);
+    }
+
+    [SkippableFact]
+    public async Task Research_renumbers_citations_after_metadata_uses_all_body_space()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        StubWebProvider provider = new()
+        {
+            SearchResults = [new WebSearchResult("Discovery", [new(1, "https://metadata.test", new string('t', 120_000)), new(2, "https://evidence.test", "Read")], new())],
+        };
+        StubIntelligence intelligence = new();
+        await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence);
+        using HttpResponseMessage response = await factory.CreateAuthenticatedClient().PostAsJsonAsync(
+            "/api/web/research", new WebResearchWorkflowRequest { Question = "What changed?", SourceTarget = 2 }, ArcanumJsonContext.Default.WebResearchWorkflowRequest);
+        WebWorkflowCitation[] citations = ParseResearchFrames(await response.Content.ReadAsStringAsync()).Last().Result!.Citations;
+        // A count failure must not dump a large untrusted title into test diagnostics.
+        Assert.Single(citations.Select(static citation => citation.Index));
+        WebWorkflowCitation citation = citations[0];
+        Assert.Equal(1, citation.Index);
+        Assert.Equal("https://evidence.test", citation.Url);
+        Assert.DoesNotContain("https://metadata.test", intelligence.Request!.Prompt);
+        Assert.Contains("Source [1]", intelligence.Request.Prompt);
+        Assert.DoesNotContain("Source [2]", intelligence.Request.Prompt);
+        Assert.Contains("Rendered evidence.", intelligence.Request.Prompt);
+    }
+
+    [SkippableFact]
+    public async Task Research_propagates_caller_cancellation_during_source_read_without_synthesis()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        using CancellationTokenSource caller = new();
+        StubIntelligence intelligence = new();
+        StubWebProvider provider = new()
+        {
+            BeforeRead = token => { caller.Cancel(); token.ThrowIfCancellationRequested(); },
+        };
+        await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence);
+        using IServiceScope scope = factory.Services.CreateScope();
+        WebResearchWorkflowService service = scope.ServiceProvider.GetRequiredService<WebResearchWorkflowService>();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (WebResearchStreamFrame frame in service.ResearchAsync(new WebResearchWorkflowRequest { Question = "facts", SourceTarget = 1 }, caller.Token))
+            {
+                Assert.NotEqual(WebResearchStreamFrameType.Result, frame.Type);
+                Assert.NotEqual("source_unreadable", frame.Stage);
+            }
+        });
+        Assert.Equal(1, provider.ReadCalls);
+        Assert.Null(intelligence.Request);
+    }
+
     private static IEnumerable<WebResearchStreamFrame> ParseResearchFrames(string ndjson) =>
         ndjson.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(static line => JsonSerializer.Deserialize(line, ArcanumJsonContext.Default.WebResearchStreamFrame)!);
@@ -1868,12 +2165,18 @@ public sealed class WebWorkflowEndpointTests
     }
 
     private sealed class StubCatalog(
-        IWebResearchProvider provider) : IWebResearchProviderCatalog
+        StubWebProvider provider) : IWebResearchProviderCatalog
     {
         public bool TryGetProvider(
             string providerName,
             [NotNullWhen(true)] out IWebResearchProvider? resolved)
         {
+            if (providerName == WebResearchProviderNames.LocalHttp && !provider.RegisterReader)
+            {
+                resolved = null;
+                return false;
+            }
+
             resolved = provider;
 
             return true;
@@ -1882,6 +2185,8 @@ public sealed class WebWorkflowEndpointTests
 
     private sealed class StubWebProvider : IWebResearchProvider
     {
+        public bool RegisterReader { get; init; } = true;
+
         public int ChangingCitationRounds { get; init; }
 
         public string SearchAnswer { get; init; } = "Search summary [1].";
@@ -1899,9 +2204,11 @@ public sealed class WebWorkflowEndpointTests
 
         public string ProviderName => WebResearchProviderNames.Perplexity;
 
-        public WebResearchCapabilities Capabilities =>
-            WebResearchCapabilities.Search
-            | WebResearchCapabilities.ReadUrl;
+        public WebResearchCapabilities SupportedCapabilities { get; init; } = WebResearchCapabilities.Search | WebResearchCapabilities.ReadUrl;
+
+        public WebResearchCapabilities Capabilities => SupportedCapabilities;
+
+        public Dictionary<string, Result<WebReadResult>> ReadResults { get; init; } = [];
 
         public Task<Result<WebSearchResult>> SearchAsync(
             string query,
@@ -1946,6 +2253,8 @@ public sealed class WebWorkflowEndpointTests
 
         public WebReadOptions? LastReadOptions { get; private set; }
 
+        public Action<CancellationToken>? BeforeRead { get; init; }
+
         /// <summary>Markdown returned per read, or null for the default single-line body.</summary>
         public string? ReadMarkdown { get; init; }
 
@@ -1959,6 +2268,13 @@ public sealed class WebWorkflowEndpointTests
             ReadUrls.Add(url);
 
             LastReadOptions = options;
+
+            BeforeRead?.Invoke(cancellationToken);
+
+            if (ReadResults.TryGetValue(url, out Result<WebReadResult>? scripted))
+            {
+                return Task.FromResult(scripted);
+            }
 
             return Task.FromResult(
                 Result<WebReadResult>.Success(
@@ -2039,6 +2355,8 @@ public sealed class WebWorkflowEndpointTests
 
     private sealed class StubIntelligence : IArcanumIntelligenceProvider
     {
+        public PromptTurnResult? Response { get; init; }
+
         public PingRequest? Request { get; private set; }
 
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
@@ -2051,7 +2369,7 @@ public sealed class WebWorkflowEndpointTests
 
             return Task.FromResult(
                 Result<PromptTurnResult>.Success(
-                    new PromptTurnResult(
+                    Response ?? new PromptTurnResult(
                         "Synthesized answer [1].",
                         new ChatCompletionUsage(20, 10, 30))));
         }

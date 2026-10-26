@@ -8,6 +8,9 @@ public sealed record PromptTurnResult(
     List<PromptToolCall>? ToolCalls = null,
     string? FinishReason = null)
 {
+    /// <summary>The canonical model on the successful inference lease, when known.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? ModelUsed { get; init; }
 
     public IReadOnlyList<string> Warnings { get; init; } = [];
 
@@ -17,7 +20,6 @@ public sealed record PromptTurnResult(
     public Core.Covenant.ProviderCallSensitivity? Sensitivity { get; init; }
 
     public bool PreserveProviderToolCallIds { get; init; }
-
 }
 
 /// <summary>

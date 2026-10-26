@@ -225,6 +225,8 @@ public sealed class WebWorkflowCommands(
 
         WebResearchWorkflowResult? result = null;
 
+        HashSet<string> reportedWarnings = new(StringComparer.Ordinal);
+
         await foreach (WebResearchStreamFrame frame in apiClient
             .ResearchWebAsync(
                 new WebResearchWorkflowRequest
@@ -287,6 +289,11 @@ public sealed class WebWorkflowCommands(
                     if (!string.IsNullOrWhiteSpace(frame.Message))
                     {
                         dispatcher.WriteDiagnostic(frame.Message);
+
+                        if (frame.Stage == "synthesis_warning")
+                        {
+                            reportedWarnings.Add(frame.Message);
+                        }
                     }
 
                     break;
@@ -322,6 +329,14 @@ public sealed class WebWorkflowCommands(
                 CliStreamTransportHint.Append(ArcanumApiClient.StreamEmptyResultMessage));
 
             return 1;
+        }
+
+        foreach (string warning in result.Warnings ?? [])
+        {
+            if (!string.IsNullOrWhiteSpace(warning) && reportedWarnings.Add(warning))
+            {
+                dispatcher.WriteDiagnostic(warning);
+            }
         }
 
         string markdown = FormatAnswer(result.Answer, result.Citations);

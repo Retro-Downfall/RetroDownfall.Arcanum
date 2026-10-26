@@ -206,6 +206,22 @@ public sealed class WebResearchContractTests
         Assert.Equal([1, 2], prompt.EmittedSourceIndexes);
     }
 
+    [Fact]
+    public void Synthesis_prompt_cites_only_body_evidence_and_renumbers_after_metadata_overflow()
+    {
+        WebResearchWorkflowService.SynthesisPrompt prompt = WebResearchWorkflowService.BuildSynthesisPrompt(
+            "facts", [],
+            [
+                new(1, "https://unread.test", new string('t', 4_000), "never-emitted-body"),
+                new(2, "https://read.test", "Read", "actual-page-evidence"),
+            ], 1_000);
+        Assert.Equal([2], prompt.EmittedSourceIndexes);
+        Assert.DoesNotContain("https://unread.test", prompt.Text);
+        Assert.Contains("Source [1]", prompt.Text);
+        Assert.DoesNotContain("Source [2]", prompt.Text);
+        Assert.Contains("actual-page-evidence", prompt.Text);
+    }
+
     private static int CountOccurrences(string haystack, string needle)
     {
         int count = 0;

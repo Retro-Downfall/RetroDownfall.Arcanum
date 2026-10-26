@@ -9,7 +9,6 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
 /// </summary>
 internal sealed class BufferedTurnProjection
 {
-
     private RunCompleted? _completed;
 
     private RunFailed? _failed;
@@ -49,6 +48,7 @@ internal sealed class BufferedTurnProjection
                 _completed.ToolCalls?.ToList(),
                 _completed.FinishReason)
             {
+                ModelUsed = _completed.ModelUsed,
                 Warnings = _completed.Warnings,
                 Reasoning = _completed.Reasoning,
                 Sensitivity = _completed.Sensitivity,
@@ -73,5 +73,4 @@ internal sealed class BufferedTurnProjection
         return Result<PromptTurnResult>.Failure(
             new Error(ErrorCodes.Hub.Error, "Turn ended without a terminal event."));
     }
-
 }

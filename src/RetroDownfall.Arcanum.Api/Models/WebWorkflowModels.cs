@@ -6,7 +6,6 @@ namespace RetroDownfall.Arcanum.Api.Models;
 
 public sealed record WebSearchWorkflowRequest
 {
-
     public string Query { get; init; } = string.Empty;
 
     public int ResultCount { get; init; } = 5;
@@ -18,23 +17,19 @@ public sealed record WebSearchWorkflowRequest
     public string[] ExcludeDomains { get; init; } = [];
 
     public Guid? AttachToSessionId { get; init; }
-
 }
 
 public sealed record WebBrowseWorkflowRequest
 {
-
     public string Url { get; init; } = string.Empty;
 
     public string RenderMode { get; init; } = "static";
 
     public Guid? AttachToSessionId { get; init; }
-
 }
 
 public sealed record WebResearchWorkflowRequest
 {
-
     public string Question { get; init; } = string.Empty;
 
     public int? SourceTarget { get; init; }
@@ -72,12 +67,10 @@ public sealed record WebResearchWorkflowRequest
     public float? FrequencyPenalty { get; init; }
 
     public bool UnattendedMode { get; init; }
-
 }
 
 public sealed record WebWorkflowCitation
 {
-
     public int Index { get; init; }
 
     public string Url { get; init; } = string.Empty;
@@ -85,21 +78,17 @@ public sealed record WebWorkflowCitation
     public string? Title { get; init; }
 
     public string? PublishedDate { get; init; }
-
 }
 
 public sealed record WebWorkflowLink
 {
-
     public string Text { get; init; } = string.Empty;
 
     public string Url { get; init; } = string.Empty;
-
 }
 
 public sealed record WebWorkflowUsage
 {
-
     public long PromptTokens { get; init; }
 
     public long CompletionTokens { get; init; }
@@ -109,12 +98,10 @@ public sealed record WebWorkflowUsage
     public int SearchQueries { get; init; }
 
     public decimal? CostUsd { get; init; }
-
 }
 
 public sealed record WebSearchWorkflowResult
 {
-
     public string Answer { get; init; } = string.Empty;
 
     public WebWorkflowCitation[] Citations { get; init; } = [];
@@ -136,12 +123,10 @@ public sealed record WebSearchWorkflowResult
     /// no attachment was requested or it succeeded and <c>AttachmentId</c> names it.
     /// </summary>
     public string? AttachmentError { get; init; }
-
 }
 
 public sealed record WebBrowseWorkflowResult
 {
-
     public string? Title { get; init; }
 
     public string Markdown { get; init; } = string.Empty;
@@ -165,23 +150,25 @@ public sealed record WebBrowseWorkflowResult
     /// no attachment was requested or it succeeded and <c>AttachmentId</c> names it.
     /// </summary>
     public string? AttachmentError { get; init; }
-
 }
 
 public sealed record WebResearchWorkflowResult
 {
-
     public string Answer { get; init; } = string.Empty;
 
     public WebWorkflowCitation[] Citations { get; init; } = [];
 
     public string Provider { get; init; } = string.Empty;
 
-    public string Model { get; init; } = string.Empty;
+    public string? Model { get; init; }
 
     public Guid? SessionId { get; init; }
 
     public bool Truncated { get; init; }
+
+    public string? FinishReason { get; init; }
+
+    public string[] Warnings { get; init; } = [];
 
     public WebWorkflowUsage Usage { get; init; } = new();
 
@@ -193,14 +180,12 @@ public sealed record WebResearchWorkflowResult
     /// frame ahead of this one. A copy on the result would be a field no code path can populate.
     /// </summary>
     public Guid? AttachmentId { get; init; }
-
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<WebResearchStreamFrameType>))]
 
 public enum WebResearchStreamFrameType
 {
-
     Limits,
 
     Progress,
@@ -208,12 +193,10 @@ public enum WebResearchStreamFrameType
     Result,
 
     Error,
-
 }
 
 public sealed record WebResearchStreamFrame
 {
-
     public WebResearchStreamFrameType Type { get; init; }
 
     public string? Stage { get; init; }
@@ -223,5 +206,4 @@ public sealed record WebResearchStreamFrame
     public string? Code { get; init; }
 
     public WebResearchWorkflowResult? Result { get; init; }
-
 }

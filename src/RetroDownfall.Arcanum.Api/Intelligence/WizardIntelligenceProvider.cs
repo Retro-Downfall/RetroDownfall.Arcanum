@@ -300,6 +300,7 @@ public sealed partial class WizardIntelligenceProvider(
                         request.Request.SessionId,
                         StructuredOutputWarning: turn.Warnings.Count > 0)
                     {
+                        ModelUsed = turn.ModelUsed,
                         Reasoning = turn.Reasoning,
                         Sensitivity = turn.Sensitivity,
                     },
@@ -4790,6 +4791,7 @@ public sealed partial class WizardIntelligenceProvider(
                         observedToolCalls?.ToList(),
                         streamFinishReason ?? "stop")
                     {
+                        ModelUsed = targetModel,
                         Warnings = streamWarnings,
                         Reasoning = clientReasoningSegments,
                         Sensitivity = covenantScope?.DerivedSensitivity,

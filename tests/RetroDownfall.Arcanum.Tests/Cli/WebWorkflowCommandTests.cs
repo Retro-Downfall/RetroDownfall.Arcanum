@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 using System.Net;
 
 using System.Text;
@@ -590,6 +592,32 @@ public sealed class WebWorkflowCommandTests
         finally
         {
             File.Delete(path);
+        }
+    }
+
+    [Theory]
+    [InlineData("markdown", false)]
+    [InlineData("markdown", true)]
+    [InlineData("json", false)]
+    public void Research_completion_warnings_are_reported_once_and_retained_in_json(string format, bool progressWarned)
+    {
+        string progress = progressWarned ? "{\"type\":\"progress\",\"stage\":\"synthesis_warning\",\"message\":\"Increase --token-budget.\"}\n" : "";
+        RecordingHandler handler = new(_ => NdjsonResponse(progress + """
+            {"type":"result","result":{"answer":"Partial answer","citations":[],"provider":"perplexity","model":"resolved-model","truncated":true,"finishReason":"length","warnings":["Increase --token-budget."],"usage":{"totalTokens":42,"searchQueries":2}}}
+            """));
+        CliTestResult result = RunCommand(handler, ["research", "Question", "--format", format]);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(1, result.Error.Split("Increase --token-budget.", StringSplitOptions.None).Length - 1);
+        Assert.Contains("Partial answer", result.Output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument document = JsonDocument.Parse(result.Output);
+            Assert.Equal("length", document.RootElement.GetProperty("finishReason").GetString());
+            Assert.Equal("Increase --token-budget.", Assert.Single(document.RootElement.GetProperty("warnings").EnumerateArray()).GetString());
+        }
+        else
+        {
+            Assert.DoesNotContain("--token-budget", result.Output, StringComparison.Ordinal);
         }
     }
 
