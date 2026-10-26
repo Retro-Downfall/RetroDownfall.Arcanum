@@ -4196,3 +4196,16 @@ Actual RAPTOR remains **8 of 12 stages integrated**, with typed DAG retrieval Ta
 The independently reviewed harness candidate `c2e935e3d14b8fbb5cc047944d90fa1374df97d6` is integrated as `25a76e4a77bc7619b3921b3041b6ee0787aa0262`, tested tree `b0641719557905c332e25ce35513a2eda6562758`. It preserves legacy `--model`, adds independent `--text-model` and `--vision-model` overrides, validates role configuration and adds passive persisted reply-model verification to the future opted-in run. The combined tree passed **449 offline tests with no failures/skips**, a normal zero-warning build, both house modes, Roslyn, shellcheck, Bash syntax and diff checks. No product source or source-catalog entries changed. Exact evidence: `/private/tmp/arcanum-integrated-wave39-qualification.json`.
 
 This additional work earns no original finding credit: **126/272 remain integrated, all3 Critical/all76 Important/47 Minor;146 Minor remain**. PDF qualification preparation and embedding coverage assessment are still pending. No live provider, local installation or model operation occurred. The required full final CI gate and subsequent pause before installing or running live Ollama/embedding remain in force.
+
+
+### 2026-10-26 checkpoint — 127 original findings integrated
+
+**127 of 272 findings (46.7%) are independently reviewed and integrated:** 3 Critical, 76 Important and 48 Minor. **145 remain:** 0 Important and 145 Minor. 0 further original findings have approved candidates awaiting integration: none.
+
+RV-105 is integrated after independent review of `681701e38f3f1f5a992fa9716f94b24785b4bc0f`. Semantic spell-routing degradation now emits an actionable Warning once per closed reason and shared monitored configuration epoch, including across concurrent request scopes. The captured epoch survives in-flight configuration replacement. Cache diagnostics retain closed reasons and safe exception types without raw exceptions or arbitrary error codes. Existing routing, cache policy and billing invocation counts remain unchanged; RV-127 is not included.
+
+All incoming C# matches the approved candidate. Combined checks include complete changed router/cache and Wizard consumers, actual DI/constructor/source guards, and the newer accounting controls.
+
+The exact runtime commit is `5cdb4870dd3ca019589843a0e20c262b86537538`, tested tree `f7fc3d50b7ce3eaa5b84110b19710fb06caace9f`. **910 distinct tests passed with zero failures and 0 explicitly recorded Windows-only skips**, plus a normal zero-warning build, both house formatting modes, explicit Roslyn verification and diff checks. Evidence: `/private/tmp/arcanum-integrated-wave40-qualification.json` and commit receipt. No production paths were added or removed by this integration; the existing exact source catalog is preserved.
+
+Actual RAPTOR remains **8 of 12 stages integrated**, with typed DAG retrieval Task9 under independent review. Full native FTS5 grammar is integrated. RV-030 literal-memory search and all-scope continuation are integrated with Core28. Final whole-suite, coverage, hosted/capsule, Native AOT/shipping/native provenance and full CI qualification remain pending. After those pass, the user-required pause precedes installation and any live Ollama or embedding qualification. Main and the original Claude review branch are preserved.
