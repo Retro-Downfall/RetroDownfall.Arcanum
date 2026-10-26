@@ -26,6 +26,10 @@ using RetroDownfall.Arcanum.Core.Tower;
 
 using RetroDownfall.Arcanum.Core.Weave;
 
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
+
+using RetroDownfall.Arcanum.Core.Weave.Tapestry.Raptor;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Lexicon;
@@ -203,6 +207,48 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
         Assert.Equal(
             Legacy(sessionId),
             await ScalarStringAsync("SELECT RetrievalScope FROM session_attachment_chunks LIMIT 1"));
+
+        TapestryStore tapestry = new(_db!, new WeaveIndexAvailability());
+
+        TapestryScope scope = TapestryScope.ForSessionAttachment(sessionId);
+
+        Assert.Contains(scope, await tapestry.DiscoverScopesAsync(false, true, false, CancellationToken.None));
+
+        TapestryBuildSnapshot snapshot = await tapestry.ReadBuildSnapshotAsync(scope, CancellationToken.None);
+
+        Assert.True(snapshot.Corpus.LeafCount > 0);
+
+        TapestryGenerationRecipe recipe = new(RaptorAlgorithmManifest.Version, "settings", "summary", TapestryHash.SummaryRecipeVersion,
+            Dimensions, TapestryHash.OfEmbeddingModel("fixture", "constant"));
+
+        string generation = await tapestry.BeginGraphGenerationAsync(snapshot, recipe, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        List<TapestryNodeWrite> nodes = [];
+
+        await foreach (IReadOnlyList<TapestryLeafSource> page in tapestry.EnumerateLeafPagesAsync(scope, Dimensions, CancellationToken.None))
+        {
+            foreach (TapestryLeafSource leaf in page)
+            {
+                nodes.Add(new(new(generation + leaf.SourceId, generation, scope.Kind, scope.Id, 0, TapestryNodeKind.Leaf, null,
+                    TapestryLeafSourceKind.SessionAttachmentChunk, leaf.SourceId, leaf.Label, null, leaf.ContentHash, null,
+                    1, 0, TapestryPartitionReason.None, Dimensions, DateTimeOffset.UtcNow), Assert.IsType<float[]>(leaf.ExistingEmbedding)));
+            }
+        }
+
+        await tapestry.AppendGraphCheckpointAsync(new(generation, nodes, []), CancellationToken.None);
+
+        Assert.True((await tapestry.PublishGenerationAsync(new(generation, snapshot, recipe, TapestryTerminalReason.LeafOnly, DateTimeOffset.UtcNow), CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(nodes.Count, await tapestry.CountPublishedNodesAsync(sessionId, CancellationToken.None));
+
+        Assert.Single(await tapestry.GetScopeStatusesAsync(sessionId, CancellationToken.None));
+
+        Result<TapestryGenerationAccess> lookup = await tapestry.GetRetrievableGenerationAsync(scope, new(recipe.EmbeddingIdentity!, Dimensions), CancellationToken.None);
+
+        Assert.True(lookup.IsSuccess);
+
+        Assert.Equal(nodes.Count, (await tapestry.HydrateRetrievedNodesAsync(lookup.Value,
+            nodes.Select(node => (node.Node.NodeId, 1f)).ToArray(), TapestryRetrievalMode.CollapsedTree, CancellationToken.None)).Count);
     }
 
     /// <summary>

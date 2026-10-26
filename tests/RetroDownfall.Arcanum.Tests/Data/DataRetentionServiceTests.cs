@@ -2929,7 +2929,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Equal(
-            5,
+            6,
             plan.Items
                 .Where(static item => item.DataClass == RetentionDataClass.Tapestry)
                 .Sum(static item => item.DerivedRecords));

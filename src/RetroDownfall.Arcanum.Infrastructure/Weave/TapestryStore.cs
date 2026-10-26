@@ -17,11 +17,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// <c>tapestry_*</c> tables is in the compiled EF model (they are declared in <c>Data/Schema/Tables/</c>).
 ///
 /// <para>The generation lifecycle is the correctness core: builds stage into a <c>Building</c> row,
-/// <see cref="PublishGenerationAsync"/> flips exactly one scope's current generation inside a single
+/// <see cref="PublishGenerationAsync(TapestryPublishRequest, CancellationToken)"/> flips exactly one scope's current generation inside a single
 /// transaction, and <see cref="ReconcileGenerationsAsync"/> removes anything that is not the current
 /// complete generation after a restart or cancellation.</para>
 /// </summary>
-internal sealed class TapestryStore(
+internal sealed partial class TapestryStore(
     ArcanumDbContext db,
     WeaveIndexAvailability availability) : ITapestryStore
 {
@@ -618,34 +618,20 @@ internal sealed class TapestryStore(
         return leaves;
     }
 
-    public async Task<TapestryGeneration?> GetCurrentGenerationAsync(
-        TapestryScope scope,
-        CancellationToken cancellationToken)
-    {
-        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+    // This compatibility lookup describes a build/status candidate; it does not prove query-model identity.
+    public Task<TapestryGeneration?> GetCurrentGenerationAsync(TapestryScope scope, CancellationToken cancellationToken) =>
+        SqliteBusyRetry.ExecuteAsync(async () =>
+        {
+            DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-        await using DbCommand command = connection.CreateCommand();
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
-        command.CommandText =
-            $"""
-            SELECT {GenerationColumns}
-            FROM "tapestry_generations" g
-            WHERE "ScopeKind" = @scopeKind AND "ScopeId" = @scopeId AND "Status" = 'Complete'
-              AND {DocumentFreeGenerationPredicate}
-            ORDER BY "CompletedAt" DESC
-            LIMIT 1
-            """;
+            TapestryGeneration? generation = await ReadCurrentGenerationAsync(connection, transaction, scope, cancellationToken).ConfigureAwait(false);
 
-        AddParameter(command, "@scopeKind", scope.Kind.ToString());
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-        AddParameter(command, "@scopeId", scope.Id);
-
-        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-            ? ReadGeneration(reader)
-            : null;
-    }
+            return generation;
+        }, cancellationToken);
 
     public Task<string> BeginGenerationAsync(
         TapestryScope scope,
@@ -665,7 +651,13 @@ internal sealed class TapestryStore(
             {
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
+                await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+                (long corpusRevision, long invalidationRevision) = await ReadRevisionsAsync(connection, transaction, scope, cancellationToken).ConfigureAwait(false);
+
                 await using DbCommand command = connection.CreateCommand();
+
+                command.Transaction = transaction;
 
                 command.CommandText =
                     """
@@ -673,10 +665,10 @@ internal sealed class TapestryStore(
                         ("GenerationId", "ScopeKind", "ScopeId", "Status", "AlgorithmVersion",
                          "SettingsFingerprint", "SummaryModel", "SummaryRecipeVersion",
                          "EmbeddingDimension", "CorpusFingerprint", "LayerCount", "NodeCount",
-                         "RootNodeCount", "TerminalReason", "StartedAt", "CompletedAt")
+                         "RootNodeCount", "TerminalReason", "StartedAt", "CompletedAt", "SourceRevision", "ValidatedInvalidationRevision")
                     VALUES (@generationId, @scopeKind, @scopeId, 'Building', @algorithmVersion,
                             @settingsFingerprint, @summaryModel, @summaryRecipeVersion,
-                            @embeddingDimension, @corpusFingerprint, 0, 0, 0, NULL, @startedAt, NULL)
+                            @embeddingDimension, @corpusFingerprint, 0, 0, 0, NULL, @startedAt, NULL, @revision, @invalidation)
                     """;
 
                 AddParameter(command, "@generationId", generationId);
@@ -699,7 +691,13 @@ internal sealed class TapestryStore(
 
                 AddParameter(command, "@startedAt", Iso(startedAt));
 
+                AddParameter(command, "@revision", corpusRevision);
+
+                AddParameter(command, "@invalidation", invalidationRevision);
+
                 _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 return generationId;
             },
@@ -895,89 +893,42 @@ internal sealed class TapestryStore(
             cancellationToken);
     }
 
-    public Task PublishGenerationAsync(
+    public async Task PublishGenerationAsync(
         string generationId,
         int layerCount,
         int nodeCount,
         int rootNodeCount,
         TapestryTerminalReason terminalReason,
         DateTimeOffset completedAt,
-        CancellationToken cancellationToken) =>
-        SqliteBusyRetry.ExecuteAsync(
-            async () =>
-            {
-                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        CancellationToken cancellationToken)
+    {
+        // The old builder's counts are advisory. Publication computes and validates actual coverage.
+        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-                // Supersede-then-complete inside one transaction is the atomic current-generation
-                // switch: a reader either sees the old complete generation or the new one, never both
-                // and never neither.
-                await using DbTransaction transaction = await connection
-                    .BeginTransactionAsync(cancellationToken)
-                    .ConfigureAwait(false);
+        TapestryGeneration generation;
 
-                await using (DbCommand supersede = connection.CreateCommand())
-                {
-                    supersede.Transaction = transaction;
+        TapestryBuildSnapshot snapshot;
 
-                    supersede.CommandText =
-                        """
-                        UPDATE "tapestry_generations" SET "Status" = 'Superseded'
-                        WHERE "Status" = 'Complete'
-                          AND ("ScopeKind", "ScopeId") = (
-                              SELECT "ScopeKind", "ScopeId" FROM "tapestry_generations"
-                              WHERE "GenerationId" = @generationId)
-                        """;
+        await using (DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false))
+        {
+            generation = await ReadGraphGenerationAsync(connection, transaction, generationId, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("Tapestry generation does not exist.");
 
-                    AddParameter(supersede, "@generationId", generationId);
+            snapshot = await ReadBuildSnapshotAsync(connection, transaction, new(generation.ScopeKind, generation.ScopeId), cancellationToken).ConfigureAwait(false);
 
-                    _ = await supersede.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
 
-                await using (DbCommand publish = connection.CreateCommand())
-                {
-                    publish.Transaction = transaction;
+        TapestryGenerationRecipe recipe = new(generation.AlgorithmVersion, generation.SettingsFingerprint, generation.SummaryModel,
+            generation.SummaryRecipeVersion, generation.EmbeddingDimension, generation.EmbeddingIdentity);
 
-                    publish.CommandText =
-                        """
-                        UPDATE "tapestry_generations"
-                        SET "Status" = 'Complete',
-                            "LayerCount" = @layerCount,
-                            "NodeCount" = @nodeCount,
-                            "RootNodeCount" = @rootNodeCount,
-                            "TerminalReason" = @terminalReason,
-                            "CompletedAt" = @completedAt
-                        WHERE "GenerationId" = @generationId AND "Status" = 'Building'
-                        """;
+        Result result = await PublishGenerationAsync(new(generationId, snapshot, recipe, terminalReason, completedAt), cancellationToken).ConfigureAwait(false);
 
-                    AddParameter(publish, "@layerCount", layerCount);
-
-                    AddParameter(publish, "@nodeCount", nodeCount);
-
-                    AddParameter(publish, "@rootNodeCount", rootNodeCount);
-
-                    AddParameter(publish, "@terminalReason", terminalReason.ToString());
-
-                    AddParameter(publish, "@completedAt", Iso(completedAt));
-
-                    AddParameter(publish, "@generationId", generationId);
-
-                    // The switch is only atomic if it can tell that it did not happen. A generation that
-                    // is not Building — already published, abandoned, or never begun — matches no row
-                    // here, and the supersede above has already run in this transaction: committing would
-                    // retire the scope's current generation and promote nothing. Throwing before the commit
-                    // rolls the supersede back with it, so the current generation stays current.
-                    int published = await publish.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-                    if (published != 1)
-                    {
-                        throw new InvalidOperationException(
-                            $"Tapestry generation {generationId} could not be published: it is not a Building generation, so nothing was switched.");
-                    }
-                }
-
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            },
-            cancellationToken);
+        if (result.IsFailure)
+        {
+            throw new InvalidOperationException(result.Error.Code);
+        }
+    }
 
     public Task AbandonGenerationAsync(string generationId, CancellationToken cancellationToken) =>
         SqliteBusyRetry.ExecuteAsync(
@@ -1072,6 +1023,58 @@ internal sealed class TapestryStore(
             $"\"ScopeKind\" = 'Session' AND {CovenantIdentitySql.Keyed("\"ScopeId\"", "@sessionKey")}",
             command => AddParameter(command, "@sessionKey", sessionKey),
             cancellationToken);
+    }
+
+    private const string RetentionScopePredicate = "ScopeKind IN ('Session','SessionAttachment') AND (@entries=1 OR ScopeKind='SessionAttachment') AND lower(replace(ScopeId,'-',''))=@sessionKey";
+
+    internal static async Task<long> ReadRetentionGraphRowsAsync(DbConnection connection, DbTransaction? transaction,
+        Guid sessionId, bool includeEntries, CancellationToken cancellationToken)
+    {
+        await using DbCommand count = connection.CreateCommand();
+
+        count.Transaction = transaction;
+
+        count.CommandText = $"""
+            WITH generations AS (SELECT GenerationId FROM tapestry_generations WHERE {RetentionScopePredicate}),
+            nodes AS (SELECT NodeId FROM tapestry_nodes WHERE GenerationId IN (SELECT GenerationId FROM generations))
+            SELECT (SELECT COUNT(*) FROM generations) + (SELECT COUNT(*) FROM nodes)
+                 + (SELECT COUNT(*) FROM tapestry_edges WHERE GenerationId IN (SELECT GenerationId FROM generations))
+                 + (SELECT COUNT(*) FROM tapestry_node_embeddings WHERE NodeId IN (SELECT NodeId FROM nodes))
+            """;
+
+        AddParameter(count, "@entries", includeEntries ? 1 : 0);
+
+        AddParameter(count, "@sessionKey", sessionId.ToString("N"));
+
+        long rows = Convert.ToInt64(await count.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
+
+        if (await SagaVectorMirror.ClassifyAsync(connection, transaction, TapestryStorageKeys.VectorTable, cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable)
+        {
+            count.CommandText = $"""
+                SELECT COUNT(*) FROM tapestry_node_embeddings_vec WHERE NodeId IN (
+                    SELECT NodeId FROM tapestry_nodes WHERE GenerationId IN (
+                        SELECT GenerationId FROM tapestry_generations WHERE {RetentionScopePredicate}))
+                """;
+
+            rows += Convert.ToInt64(await count.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
+        }
+
+        return rows;
+    }
+
+    internal static async Task<long> DeleteRetentionGraphsAsync(DbConnection connection, DbTransaction transaction,
+        Guid sessionId, bool includeEntries, CancellationToken cancellationToken)
+    {
+        long rows = await ReadRetentionGraphRowsAsync(connection, transaction, sessionId, includeEntries, cancellationToken).ConfigureAwait(false);
+
+        _ = await DeleteGenerationsAsync(connection, transaction, RetentionScopePredicate, command =>
+        {
+            AddParameter(command, "@entries", includeEntries ? 1 : 0);
+
+            AddParameter(command, "@sessionKey", sessionId.ToString("N"));
+        }, cancellationToken).ConfigureAwait(false);
+
+        return rows;
     }
 
     /// <summary>
@@ -1197,6 +1200,13 @@ internal sealed class TapestryStore(
         string childMembershipHash,
         CancellationToken cancellationToken)
     {
+        TapestryGeneration? generation = await GetCurrentGenerationAsync(scope, cancellationToken).ConfigureAwait(false);
+
+        if (generation is null)
+        {
+            return null;
+        }
+
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand command = connection.CreateCommand();
@@ -1210,6 +1220,8 @@ internal sealed class TapestryStore(
             WHERE g."ScopeKind" = @scopeKind
               AND g."ScopeId" = @scopeId
               AND g."Status" = 'Complete'
+              AND g."GenerationId" = @generationId
+              AND g.ValidatedInvalidationRevision=COALESCE((SELECT InvalidationRevision FROM tapestry_scope_revisions r WHERE r.ScopeKind=g.ScopeKind AND r.ScopeId=g.ScopeId),0)
               AND {DocumentFreeGenerationPredicate}
               AND n."NodeKind" = 'Summary'
               AND n."ChildMembershipHash" = @membershipHash
@@ -1223,6 +1235,8 @@ internal sealed class TapestryStore(
 
         AddParameter(command, "@membershipHash", childMembershipHash);
 
+        AddParameter(command, "@generationId", generation.GenerationId);
+
         await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
@@ -1232,229 +1246,6 @@ internal sealed class TapestryStore(
                 reader.GetString(1),
                 EmbeddingBlobCodec.Decode((byte[])reader[2]))
             : null;
-    }
-
-    public async Task<IReadOnlyList<TapestryRetrievedNode>> HydrateRetrievedNodesAsync(
-        TapestryGeneration generation,
-        IReadOnlyList<(string NodeId, float Similarity)> hits,
-        TapestryRetrievalMode mode,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(generation);
-
-        ArgumentNullException.ThrowIfNull(hits);
-
-        if (hits.Count == 0)
-        {
-            return [];
-        }
-
-        string[] nodeIds = [.. hits.Select(static hit => hit.NodeId)];
-
-        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-        if (generation.ScopeKind == TapestryScopeKind.SessionAttachment)
-        {
-            // A captured generation can outlive its lookup. Refuse every node when a known document
-            // leaf contaminates the generation: a mixed summary cannot be safely split into sources.
-            // Missing ordinary-text sources retain their existing stale-leaf behavior.
-            await using DbCommand documentGuard = connection.CreateCommand();
-
-            documentGuard.CommandText =
-                $"""
-                SELECT 1 FROM "tapestry_generations" g
-                WHERE g."GenerationId" = @generationId
-                  AND EXISTS ({DocumentGenerationLeaves})
-                LIMIT 1
-                """;
-
-            AddParameter(documentGuard, "@generationId", generation.GenerationId);
-
-            if (await documentGuard.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null)
-            {
-                return [];
-            }
-        }
-
-        Dictionary<string, HydratedNode> hydrated = new(StringComparer.Ordinal);
-
-        await using (DbCommand command = connection.CreateCommand())
-        {
-            // Leaf content is resolved from its corpus row rather than duplicated onto the node, so
-            // the join target depends on the generation's scope kind. Summary content lives on the
-            // node itself and needs no join.
-            //
-            // The attachment join repeats LeafCorpus's scope predicate: a superseded
-            // attachment version keeps its rows and its bytes and only loses RetrievalScope, so the
-            // stale-leaf hash guard below cannot see it. Without the predicate a version the operator
-            // has already replaced would be injected as turn context. The predicate belongs in the ON
-            // clause, not the WHERE: a summary node has no SourceId and must still hydrate.
-            string leafJoin = generation.ScopeKind switch
-            {
-                TapestryScopeKind.Workspace =>
-                    """LEFT JOIN "workspace_file_chunks" s ON s."ChunkId" = n."SourceId" """,
-
-                TapestryScopeKind.SessionAttachment =>
-                    """
-                    LEFT JOIN "session_attachment_chunks" s
-                        ON s."ChunkId" = n."SourceId" AND s."RetrievalScope" IS NOT NULL
-                    """,
-
-                _ => """LEFT JOIN "Entries" s ON s."Id" = n."SourceId" """,
-            };
-
-            command.CommandText =
-                $"""
-                SELECT n."NodeId", n."Layer", n."NodeKind", n."SourceLabel", n."ContentHash",
-                       n."DescendantLeafCount", n."ParentNodeId", n."Content", s."Content"
-                FROM "tapestry_nodes" n
-                {leafJoin}
-                WHERE n."GenerationId" = @generationId
-                  AND n."NodeId" IN ({BindIdList(command, nodeIds)})
-                """;
-
-            AddParameter(command, "@generationId", generation.GenerationId);
-
-            await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                bool isSummary = string.Equals(reader.GetString(2), nameof(TapestryNodeKind.Summary), StringComparison.Ordinal);
-
-                string? content = isSummary
-                    ? reader.IsDBNull(7) ? null : reader.GetString(7)
-                    : reader.IsDBNull(8) ? null : reader.GetString(8);
-
-                if (content is null)
-                {
-                    continue;
-                }
-
-                string recordedHash = reader.GetString(4);
-
-                // A leaf references a live corpus row. If that row changed after this generation was
-                // published, the recorded hash no longer describes what we would inject — drop the
-                // leaf rather than present stale content under a hash that no longer matches. The
-                // corpus fingerprint change will rebuild the tree shortly.
-                if (!isSummary
-                    && !string.Equals(TapestryHash.OfContent(content), recordedHash, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                hydrated[reader.GetString(0)] = new HydratedNode(
-                    reader.GetInt32(1),
-                    isSummary ? TapestryNodeKind.Summary : TapestryNodeKind.Leaf,
-                    reader.GetString(3),
-                    content,
-                    recordedHash,
-                    reader.GetInt32(5),
-                    reader.IsDBNull(6) ? null : reader.GetString(6));
-            }
-        }
-
-        IReadOnlyDictionary<string, IReadOnlyList<string>> ancestors = await LoadAncestorsAsync(
-            connection,
-            generation.GenerationId,
-            [.. hydrated.Keys],
-            cancellationToken).ConfigureAwait(false);
-
-        List<TapestryRetrievedNode> results = [];
-
-        foreach ((string nodeId, float similarity) in hits)
-        {
-            if (!hydrated.TryGetValue(nodeId, out HydratedNode? node))
-            {
-                continue;
-            }
-
-            results.Add(new TapestryRetrievedNode(
-                nodeId,
-                generation.GenerationId,
-                generation.ScopeKind,
-                generation.ScopeId,
-                node.Layer,
-                node.NodeKind,
-                node.SourceLabel,
-                node.Content,
-                node.ContentHash,
-                node.DescendantLeafCount,
-                similarity,
-                mode,
-                ancestors.TryGetValue(nodeId, out IReadOnlyList<string>? chain) ? chain : []));
-        }
-
-        return results;
-    }
-
-    /// <summary>
-    /// Walks each node's parent chain in one recursive CTE. Lineage is what makes ancestor/descendant
-    /// overlap detectable: a summary and one of its descendants have different content and different
-    /// hashes, so the shared ledger's exact-content dedupe cannot see the redundancy.
-    /// </summary>
-    private static async Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> LoadAncestorsAsync(
-        DbConnection connection,
-        string generationId,
-        IReadOnlyList<string> nodeIds,
-        CancellationToken cancellationToken)
-    {
-        Dictionary<string, IReadOnlyList<string>> ancestors = new(StringComparer.Ordinal);
-
-        if (nodeIds.Count == 0)
-        {
-            return ancestors;
-        }
-
-        await using DbCommand command = connection.CreateCommand();
-
-        command.CommandText =
-            $"""
-            WITH RECURSIVE lineage("Origin", "AncestorId", "Depth") AS (
-                SELECT n."NodeId", n."ParentNodeId", 1
-                FROM "tapestry_nodes" n
-                WHERE n."GenerationId" = @generationId
-                  AND n."ParentNodeId" IS NOT NULL
-                  AND n."NodeId" IN ({BindIdList(command, nodeIds)})
-                UNION ALL
-                SELECT l."Origin", p."ParentNodeId", l."Depth" + 1
-                FROM lineage l
-                INNER JOIN "tapestry_nodes" p ON p."NodeId" = l."AncestorId"
-                WHERE p."ParentNodeId" IS NOT NULL AND l."Depth" < 64
-            )
-            SELECT "Origin", "AncestorId" FROM lineage ORDER BY "Origin", "Depth"
-            """;
-
-        AddParameter(command, "@generationId", generationId);
-
-        Dictionary<string, List<string>> chains = new(StringComparer.Ordinal);
-
-        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            if (reader.IsDBNull(1))
-            {
-                continue;
-            }
-
-            string origin = reader.GetString(0);
-
-            if (!chains.TryGetValue(origin, out List<string>? chain))
-            {
-                chain = [];
-
-                chains[origin] = chain;
-            }
-
-            chain.Add(reader.GetString(1));
-        }
-
-        foreach ((string origin, List<string> chain) in chains)
-        {
-            ancestors[origin] = chain;
-        }
-
-        return ancestors;
     }
 
     public async Task<int> GetTerminalLayerAsync(string generationId, CancellationToken cancellationToken)
@@ -1571,7 +1362,8 @@ internal sealed class TapestryStore(
         """
         "GenerationId", "ScopeKind", "ScopeId", "Status", "AlgorithmVersion", "SettingsFingerprint",
         "SummaryModel", "SummaryRecipeVersion", "EmbeddingDimension", "CorpusFingerprint",
-        "LayerCount", "NodeCount", "RootNodeCount", "TerminalReason", "StartedAt", "CompletedAt"
+        "LayerCount", "NodeCount", "RootNodeCount", "TerminalReason", "StartedAt", "CompletedAt",
+        "SourceRevision", "ValidatedInvalidationRevision", "EmbeddingIdentity"
         """;
 
     private const string NodeColumns =
@@ -1598,7 +1390,10 @@ internal sealed class TapestryStore(
             reader.GetInt32(12),
             reader.IsDBNull(13) ? null : ParseEnum(reader.GetString(13), TapestryTerminalReason.LeafOnly),
             ParseTimestamp(reader.GetString(14)),
-            reader.IsDBNull(15) ? null : ParseTimestamp(reader.GetString(15)));
+            reader.IsDBNull(15) ? null : ParseTimestamp(reader.GetString(15)),
+            reader.GetInt64(16),
+            reader.IsDBNull(17) ? null : reader.GetInt64(17),
+            reader.IsDBNull(18) ? null : reader.GetString(18));
 
     private static TapestryNode ReadNode(DbDataReader reader) =>
         new(

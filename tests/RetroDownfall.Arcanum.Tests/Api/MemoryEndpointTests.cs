@@ -1021,12 +1021,9 @@ public sealed partial class MemoryEndpointTests
     /// the spelling its own writer keyed it by.
     /// </summary>
     /// <remarks>
-    /// <c>tapestry_generations.ScopeId</c> is filled from the corpus the sweep read, and the two Session
-    /// corpora spell one Session differently: <c>Entries.SessionId</c> is uppercase dashed and
-    /// <c>session_attachment_chunks.SessionId</c> is lowercase. One bound parameter can match only one of
-    /// them, so the count reported the other kind's nodes as absent. The generations are published
-    /// through the store, keyed by the spelling each corpus carries, and the status route is asked for
-    /// the Session by its ordinary lowercase identity.
+    /// Entries and SessionAttachments use uppercase dashed owner ids, while the attachment index
+    /// writer deliberately stores chunk SessionId as lowercase. Seed that exact source distinction,
+    /// publish through the store, and ask the status route using the lowercase HTTP identity.
     /// </remarks>
     [SkippableFact]
     public async Task A_session_status_counts_the_published_tapestry_nodes_of_both_scope_kinds()
@@ -1054,11 +1051,11 @@ public sealed partial class MemoryEndpointTests
             ITapestryStore store = scope.ServiceProvider.GetRequiredService<ITapestryStore>();
 
             await PublishOneNodeAsync(
-                store,
+                db, store,
                 new TapestryScope(TapestryScopeKind.Session, sessionId.ToString("D").ToUpperInvariant()));
 
             await PublishOneNodeAsync(
-                store,
+                db, store,
                 new TapestryScope(TapestryScopeKind.SessionAttachment, sessionId.ToString("D")));
         }
 
@@ -1082,8 +1079,33 @@ public sealed partial class MemoryEndpointTests
         Assert.Equal(2, tapestry.Count);
     }
 
-    private static async Task PublishOneNodeAsync(ITapestryStore store, TapestryScope scope)
+    private static async Task PublishOneNodeAsync(ArcanumDbContext db, ITapestryStore store, TapestryScope scope)
     {
+        await db.Database.OpenConnectionAsync();
+
+        SqliteConnection connection = (SqliteConnection)db.Database.GetDbConnection();
+
+        string sourceId = Guid.NewGuid().ToString("D").ToUpperInvariant();
+
+        if (scope.Kind == TapestryScopeKind.Session)
+        {
+            await ExecuteAsync(connection, """
+                INSERT INTO Entries(Id,SessionId,Role,Content,ModelUsed,CreatedAt,Sequence)
+                VALUES(@source,@scope,0,'body','model','2026-01-01T00:00:00.0000000Z',0)
+                """, ("@source", sourceId), ("@scope", scope.Id));
+        }
+        else
+        {
+            await ExecuteAsync(connection, """
+                INSERT INTO SessionAttachments(Id,SessionId,State,LogicalKey,OriginalFileName,Version,RelativePath,ContentSha256,MimeType,ByteLength,Kind,CreatedAt)
+                VALUES(@source,upper(@scope),'Bound',@source,'a.txt',1,'a.txt','hash','text/plain',4,'Text','2026-01-01T00:00:00.0000000Z');
+                INSERT INTO session_attachment_chunks(ChunkId,SessionId,AttachmentId,LogicalKey,Version,OriginalFileName,MimeType,ContentSha256,ChunkIndex,CharacterStart,CharacterEnd,StartLine,EndLine,Content,EmbeddingDimension,ExtractedAt,IndexedAt,RetrievalScope)
+                VALUES(@source,@scope,@source,@source,1,'a.txt','text/plain','hash',0,0,4,1,1,'body',8,'2026-01-01T00:00:00.0000000Z','2026-01-01T00:00:00.0000000Z',@scope)
+                """, ("@source", sourceId), ("@scope", scope.Id));
+        }
+
+        TapestryBuildSnapshot snapshot = await store.ReadBuildSnapshotAsync(scope, CancellationToken.None);
+
         string generationId = await store.BeginGenerationAsync(
             scope,
             SphericalKMeans.AlgorithmVersion,
@@ -1091,7 +1113,7 @@ public sealed partial class MemoryEndpointTests
             "model",
             TapestryHash.SummaryRecipeVersion,
             8,
-            "corpus",
+            snapshot.Corpus.Fingerprint,
             DateTimeOffset.UtcNow,
             CancellationToken.None);
 
@@ -1109,7 +1131,7 @@ public sealed partial class MemoryEndpointTests
                         scope.Kind == TapestryScopeKind.Session
                             ? TapestryLeafSourceKind.Entry
                             : TapestryLeafSourceKind.SessionAttachmentChunk,
-                        "source",
+                        sourceId,
                         "label",
                         null,
                         TapestryHash.OfContent("body"),
@@ -1119,7 +1141,7 @@ public sealed partial class MemoryEndpointTests
                         TapestryPartitionReason.None,
                         8,
                         DateTimeOffset.UtcNow),
-                    new float[8]),
+                    [1f, 0f, 0f, 0f, 0f, 0f, 0f, 0f]),
             ],
             CancellationToken.None);
 

@@ -21,7 +21,7 @@ namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 /// </summary>
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
-public sealed class TapestryStoreTests : IAsyncLifetime
+public sealed partial class TapestryStoreTests : IAsyncLifetime
 {
     private const int TestDimensions = 8;
 
@@ -70,17 +70,26 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         return result;
     }
 
-    private Task<string> BeginAsync(string corpusFingerprint = "corpus-1") =>
-        _store!.BeginGenerationAsync(
-            WorkspaceScope,
-            SphericalKMeans.AlgorithmVersion,
-            "settings-1",
-            "fast",
-            TapestryHash.SummaryRecipeVersion,
-            TestDimensions,
-            corpusFingerprint,
-            DateTimeOffset.UtcNow,
-            CancellationToken.None);
+    private static readonly TapestryRetrievalIdentity QueryIdentity = new(TapestryHash.OfEmbeddingModel("test-provider", "test-model"), TestDimensions, new(5, 8, 24, 256, 512));
+
+    private static readonly string SettingsFingerprint = TapestryHash.OfSettings(5, 8, 24, 256, 512, TestDimensions, QueryIdentity.EmbeddingIdentity);
+
+    private static TapestryGenerationAccess Access(TapestryGeneration generation) => new(generation, QueryIdentity);
+
+    private async Task<string> BeginAsync()
+    {
+        TapestryBuildSnapshot snapshot = await _store!.ReadBuildSnapshotAsync(WorkspaceScope, CancellationToken.None);
+
+        if (snapshot.Corpus.LeafCount == 0)
+        {
+            await SeedWorkspaceChunkAsync("c1", "alpha");
+
+            snapshot = await _store.ReadBuildSnapshotAsync(WorkspaceScope, CancellationToken.None);
+        }
+
+        return await _store.BeginGenerationAsync(WorkspaceScope, SphericalKMeans.AlgorithmVersion, SettingsFingerprint,
+            "fast", TapestryHash.SummaryRecipeVersion, TestDimensions, snapshot.Corpus.Fingerprint, DateTimeOffset.UtcNow, CancellationToken.None);
+    }
 
     private static TapestryNodeWrite Leaf(
         string generationId,
@@ -319,7 +328,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        string first = await BeginAsync("corpus-1");
+        string first = await BeginAsync();
 
         await _store!.AppendNodesAsync([Leaf(first, "n1", "c1", "alpha")], CancellationToken.None);
 
@@ -332,7 +341,9 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             DateTimeOffset.UtcNow,
             CancellationToken.None);
 
-        string second = await BeginAsync("corpus-2");
+        await SeedWorkspaceChunkAsync("c1", "beta");
+
+        string second = await BeginAsync();
 
         await _store.AppendNodesAsync([Leaf(second, "n2", "c1", "beta")], CancellationToken.None);
 
@@ -349,7 +360,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
 
         Assert.Equal(second, current!.GenerationId);
 
-        Assert.Equal("corpus-2", current.CorpusFingerprint);
+        Assert.Equal(TapestryHash.OfCorpus([("c1", TapestryHash.OfContent("beta"))]), current.CorpusFingerprint);
     }
 
     /// <summary>
@@ -363,7 +374,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        string published = await BeginAsync("corpus-1");
+        string published = await BeginAsync();
 
         await _store!.AppendNodesAsync([Leaf(published, "n1", "c1", "alpha")], CancellationToken.None);
 
@@ -390,7 +401,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         Assert.Equal(published, (await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None))?.GenerationId);
 
         // A generation that was abandoned and no longer exists.
-        string abandoned = await BeginAsync("corpus-2");
+        string abandoned = await BeginAsync();
 
         await _store.AbandonGenerationAsync(abandoned, CancellationToken.None);
 
@@ -412,7 +423,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        string published = await BeginAsync("corpus-1");
+        string published = await BeginAsync();
 
         await _store!.AppendNodesAsync([Leaf(published, "n1", "c1", "alpha")], CancellationToken.None);
 
@@ -425,7 +436,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             DateTimeOffset.UtcNow,
             CancellationToken.None);
 
-        string failed = await BeginAsync("corpus-2");
+        string failed = await BeginAsync();
 
         await _store.AppendNodesAsync([Leaf(failed, "n2", "c1", "beta")], CancellationToken.None);
 
@@ -467,7 +478,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        string published = await BeginAsync("corpus-1");
+        string published = await BeginAsync();
 
         await _store!.AppendNodesAsync([Leaf(published, "n1", "c1", "alpha")], CancellationToken.None);
 
@@ -480,7 +491,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             DateTimeOffset.UtcNow,
             CancellationToken.None);
 
-        string interrupted = await BeginAsync("corpus-2");
+        string interrupted = await BeginAsync();
 
         await _store.AppendNodesAsync([Leaf(interrupted, "n2", "c1", "beta")], CancellationToken.None);
 
@@ -507,7 +518,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        string published = await BeginAsync("corpus-1");
+        string published = await BeginAsync();
 
         await _store!.AppendNodesAsync([Leaf(published, "n1", "c1", "alpha")], CancellationToken.None);
 
@@ -520,7 +531,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             DateTimeOffset.UtcNow,
             CancellationToken.None);
 
-        string interrupted = await BeginAsync("corpus-2");
+        string interrupted = await BeginAsync();
 
         await _store.AppendNodesAsync([Leaf(interrupted, "n2", "c1", "beta")], CancellationToken.None);
 
@@ -551,7 +562,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        string interrupted = await BeginAsync("corpus-2");
+        string interrupted = await BeginAsync();
 
         await _store!.AppendNodesAsync([Leaf(interrupted, "n2", "c1", "beta")], CancellationToken.None);
 
@@ -609,8 +620,10 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             "embedding-model");
 
         await _store!.AppendNodesAsync(
-            [Summary(generationId, "s1", "the summary", membership, 2)],
+            [Leaf(generationId, "n1", "c1", "alpha"), Summary(generationId, "s1", "the summary", membership, 1)],
             CancellationToken.None);
+
+        await _store.SetParentAsync(generationId, "s1", ["n1"], CancellationToken.None);
 
         await _store.PublishGenerationAsync(
             generationId,
@@ -663,7 +676,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         TapestryGeneration current = (await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None))!;
 
         IReadOnlyList<TapestryRetrievedNode> hydrated = await _store.HydrateRetrievedNodesAsync(
-            current,
+            Access(current),
             [("n1", 0.9f)],
             TapestryRetrievalMode.CollapsedTree,
             CancellationToken.None);
@@ -699,12 +712,14 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             DateTimeOffset.UtcNow,
             CancellationToken.None);
 
-        await SeedWorkspaceChunkAsync("c1", "edited out from under the tree");
-
         TapestryGeneration current = (await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None))!;
 
+        await SeedWorkspaceChunkAsync("c1", "edited out from under the tree");
+
+        Assert.Null(await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None));
+
         IReadOnlyList<TapestryRetrievedNode> hydrated = await _store.HydrateRetrievedNodesAsync(
-            current,
+            Access(current),
             [("n1", 0.9f)],
             TapestryRetrievalMode.CollapsedTree,
             CancellationToken.None);
@@ -813,7 +828,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             scope, ("text-chunk", "ordinary text"), ("document-chunk", "document secret"));
 
         Assert.Empty(await _store!.HydrateRetrievedNodesAsync(
-            captured,
+            Access(captured),
             [("attachment-leaf-0", 0.9f), ("attachment-summary", 0.8f)],
             TapestryRetrievalMode.CollapsedTree,
             CancellationToken.None));
@@ -846,8 +861,16 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         await _store.SetParentAsync(
             generationId, summary.Node.NodeId, [.. leaves.Select(static leaf => leaf.Node.NodeId)], CancellationToken.None);
 
-        await _store.PublishGenerationAsync(
-            generationId, 2, leaves.Length + 1, 1, TapestryTerminalReason.SingleRoot, now, CancellationToken.None);
+        await using (System.Data.Common.DbCommand historical = _db!.Database.GetDbConnection().CreateCommand())
+        {
+            historical.CommandText = "UPDATE tapestry_generations SET Status='Complete',LayerCount=2,NodeCount=@nodes,RootNodeCount=1 WHERE GenerationId=@id";
+
+            _ = historical.Parameters.Add(new Microsoft.Data.Sqlite.SqliteParameter("@nodes", leaves.Length + 1));
+
+            _ = historical.Parameters.Add(new Microsoft.Data.Sqlite.SqliteParameter("@id", generationId));
+
+            _ = await historical.ExecuteNonQueryAsync();
+        }
 
         return new TapestryGeneration(
             generationId, scope.Kind, scope.Id, TapestryGenerationStatus.Complete, SphericalKMeans.AlgorithmVersion,
@@ -873,11 +896,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         string generationId = await _store!.BeginGenerationAsync(
             attachmentScope,
             SphericalKMeans.AlgorithmVersion,
-            "settings-1",
+            SettingsFingerprint,
             "fast",
             TapestryHash.SummaryRecipeVersion,
             TestDimensions,
-            "corpus-1",
+            (await _store.ReadBuildSnapshotAsync(attachmentScope, CancellationToken.None)).Corpus.Fingerprint,
             DateTimeOffset.UtcNow,
             CancellationToken.None);
 
@@ -927,7 +950,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         await RetireAttachmentChunkAsync(ChunkId);
 
         IReadOnlyList<TapestryRetrievedNode> hydrated = await _store.HydrateRetrievedNodesAsync(
-            current,
+            Access(current),
             [("n1", 0.9f)],
             TapestryRetrievalMode.CollapsedTree,
             CancellationToken.None);
@@ -976,7 +999,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         TapestryGeneration current = (await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None))!;
 
         IReadOnlyList<TapestryRetrievedNode> hydrated = await _store.HydrateRetrievedNodesAsync(
-            current,
+            Access(current),
             [("n1", 0.9f)],
             TapestryRetrievalMode.CollapsedTree,
             CancellationToken.None);
@@ -1133,13 +1156,14 @@ public sealed class TapestryStoreTests : IAsyncLifetime
                 "fast",
                 TapestryHash.SummaryRecipeVersion,
                 TestDimensions,
-                "corpus-1",
+                (await _store.ReadBuildSnapshotAsync(scope, CancellationToken.None)).Corpus.Fingerprint,
                 DateTimeOffset.UtcNow,
                 CancellationToken.None);
 
-            await _store.AppendNodesAsync(
-                [LeafIn(scope, generationId, $"node-{scope.Kind}", $"source-{scope.Kind}", "body")],
-                CancellationToken.None);
+            await foreach (IReadOnlyList<TapestryLeafSource> page in _store.EnumerateLeafPagesAsync(scope, TestDimensions, CancellationToken.None))
+            {
+                await _store.AppendNodesAsync([.. page.Select(leaf => LeafIn(scope, generationId, $"node-{scope.Kind}", leaf.SourceId, leaf.Content))], CancellationToken.None);
+            }
 
             await _store.PublishGenerationAsync(
                 generationId,
@@ -1366,6 +1390,8 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             ],
             CancellationToken.None);
 
+        await _store.SetParentAsync(generationId, "s1", ["n1"], CancellationToken.None);
+
         Assert.Empty(await _store.GetScopeStatusesAsync(null, CancellationToken.None));
 
         Assert.Equal(0, await _store.CountPublishedNodesAsync(null, CancellationToken.None));
@@ -1435,14 +1461,20 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             DateTimeOffset.UtcNow,
             CancellationToken.None);
 
-        // The workspace scope was never backed by workspace_file_chunks rows, so it is exactly the
-        // shape of a scope whose source data has been deleted.
+        await using (System.Data.Common.DbCommand remove = _db!.Database.GetDbConnection().CreateCommand())
+        {
+            remove.CommandText = "DELETE FROM workspace_file_chunks WHERE WorkspacePath='/repo'";
+
+            _ = await remove.ExecuteNonQueryAsync();
+        }
+
+        // Source deletion invalidates lookup immediately; reconciliation still preserves paid rows until pruning.
         Assert.Empty(await _store.DiscoverScopesAsync(true, true, true, CancellationToken.None));
 
         // Reconciliation is not enough on its own: the generation is Complete, so it is preserved.
         Assert.Equal(0, await _store.ReconcileGenerationsAsync(CancellationToken.None));
 
-        Assert.NotNull(await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None));
+        Assert.Null(await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None));
 
         int pruned = await _store.PruneRemovedScopesAsync(true, true, true, CancellationToken.None);
 

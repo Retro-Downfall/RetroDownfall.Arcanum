@@ -22,7 +22,7 @@ public sealed partial class TapestryDagSchemaEvolutionTests
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentySixFixture.ChainSet(), 64, CancellationToken.None);
 
         await ExecuteAsync(connection, Generation("g", "/scope") + Node("leaf", "g", 0, "Leaf")
             + Node("a", "g", 1, "Summary") + Node("b", "g", 2, "Summary") + Node("root", "g", 3, "Summary"));
@@ -53,7 +53,7 @@ public sealed partial class TapestryDagSchemaEvolutionTests
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentySixFixture.ChainSet(), 64, CancellationToken.None);
 
         await ExecuteAsync(connection, Generation("g", "/scope") + Node("leaf", "g", 0, "Leaf")
             + "INSERT INTO tapestry_node_embeddings VALUES('leaf',x'00000000',64); UPDATE tapestry_generations SET Status='Complete' WHERE GenerationId='g';");
@@ -72,7 +72,7 @@ public sealed partial class TapestryDagSchemaEvolutionTests
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentySixFixture.ChainSet(), 64, CancellationToken.None);
 
         await ExecuteAsync(connection, Generation("g", "/scope") + Generation("other-g", "/other")
             + Node("leaf", "g", 0, "Leaf") + Node("other", "other-g", 1, "Summary", "/other"));
@@ -102,7 +102,7 @@ public sealed partial class TapestryDagSchemaEvolutionTests
             + Generation("scope", "/scope") + Node("wrong-scope", "scope", 0, "Leaf", "/other")
             + "UPDATE tapestry_generations SET Status='Complete' WHERE GenerationId='valid';");
 
-        GrimoireSchemaInstallResult result = await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
+        GrimoireSchemaInstallResult result = await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentySixFixture.ChainSet(), 64, CancellationToken.None);
 
         Assert.True(result.Core.IsHealthy, result.Core.DiagnosticCode);
 
@@ -130,7 +130,7 @@ public sealed partial class TapestryDagSchemaEvolutionTests
 
         await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentyFiveFixture.ChainSet(), 64, CancellationToken.None);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentySixFixture.ChainSet(), 64, CancellationToken.None);
 
         await ExecuteAsync(connection, Generation("g", "/scope") + Node("leaf", "g", 0, "Leaf")
             + Node("a", "g", 1, "Summary") + Node("b", "g", 2, "Summary")
@@ -160,7 +160,7 @@ public sealed partial class TapestryDagSchemaEvolutionTests
             await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentyFiveFixture.ChainSet(), 64, CancellationToken.None);
         }
 
-        await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentySixFixture.ChainSet(), 64, CancellationToken.None);
 
         await ExecuteAsync(connection, Generation("g", "/scope") + Generation("next", "/scope")
             + Node("a", "g", 1, "Summary") + Node("leaf", "g", 0, "Leaf", parent: "'a'")
@@ -212,7 +212,7 @@ public sealed partial class TapestryDagSchemaEvolutionTests
             await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentyFiveFixture.ChainSet(), 64, CancellationToken.None);
         }
 
-        await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentySixFixture.ChainSet(), 64, CancellationToken.None);
 
         await ExecuteAsync(connection, Generation("g", "/scope") + Node("a", "g", 1, "Summary")
             + Node("leaf", "g", 0, "Leaf", parent: "'a'"));
@@ -254,7 +254,7 @@ public sealed partial class TapestryDagSchemaEvolutionTests
             + "CREATE TABLE tapestry_node_embeddings_vec (NodeId TEXT PRIMARY KEY, Embedding BLOB NOT NULL);"
             + "INSERT INTO tapestry_node_embeddings_vec SELECT NodeId,Embedding FROM tapestry_node_embeddings;");
 
-        await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentySixFixture.ChainSet(), 64, CancellationToken.None);
 
         Assert.Equal(1L, await ScalarAsync(connection, "SELECT COUNT(*) FROM tapestry_node_embeddings_vec"));
 
@@ -282,7 +282,7 @@ public sealed partial class TapestryDagSchemaEvolutionTests
             + "'CREATE VIRTUAL TABLE tapestry_node_embeddings_vec USING vec0(NodeId TEXT PRIMARY KEY, Embedding FLOAT[64])');"
             + "PRAGMA writable_schema=RESET;");
 
-        GrimoireSchemaInstallResult result = await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
+        GrimoireSchemaInstallResult result = await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentySixFixture.ChainSet(), 64, CancellationToken.None);
 
         Assert.True(result.Core.IsHealthy, result.Core.DiagnosticCode);
 

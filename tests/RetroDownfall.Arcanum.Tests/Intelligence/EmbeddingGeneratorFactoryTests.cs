@@ -5,7 +5,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 [Collection("ProcessEnvironment")]
-public sealed class EmbeddingGeneratorFactoryTests : IDisposable
+public sealed partial class EmbeddingGeneratorFactoryTests : IDisposable
 {
     private const string CredentialVariable = "ARCANUM_TEST_EMBEDDING_PROVIDER_KEY";
     private readonly string? _originalCredential;

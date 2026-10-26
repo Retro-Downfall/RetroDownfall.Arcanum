@@ -299,6 +299,18 @@ public sealed class WeaveService(
         for (int i = 0; i < generated.Count; i++)
         {
             embeddings[i] = generated[i];
+
+            // Provider metadata cannot assert first-party provenance. Only this resolved lease can.
+            if (lease.Provenance is { } provenance)
+            {
+                embeddings[i].AdditionalProperties ??= new();
+
+                embeddings[i].AdditionalProperties![EmbeddingProvenance.MetadataKey] = provenance;
+            }
+            else
+            {
+                _ = embeddings[i].AdditionalProperties?.Remove(EmbeddingProvenance.MetadataKey);
+            }
         }
 
         return embeddings;

@@ -6174,7 +6174,7 @@ public sealed partial class WizardIntelligenceProvider(
     /// feature is disabled, no generation is published, the query embedding is unavailable, or
     /// Divination fails — the turn proceeds with an unchanged system prompt (§21.4).
     /// </summary>
-    private async Task<TapestryRetrievedNode[]?> RetrieveTapestryContextAsync(
+    internal async Task<TapestryRetrievedNode[]?> RetrieveTapestryContextAsync(
         PingRequest request,
         Embedding<float>? queryEmbedding,
         CancellationToken cancellationToken)
@@ -6193,6 +6193,21 @@ public sealed partial class WizardIntelligenceProvider(
         {
             TapestryEmbeddingSettings tapestry = embeddings.Tapestry ?? new TapestryEmbeddingSettings();
 
+            if (embedding.AdditionalProperties is null
+                || !embedding.AdditionalProperties.TryGetValue(EmbeddingProvenance.MetadataKey, out object? value)
+                || value is not EmbeddingProvenance provenance)
+            {
+                return null;
+            }
+
+            int target = ArcanumSettingClamps.EmbeddingsTapestryTargetChildrenPerSummary(tapestry.TargetChildrenPerSummary);
+
+            TapestryRetrievalIdentity identity = new(provenance.Identity, embedding.Vector.Length,
+                new(ArcanumSettingClamps.EmbeddingsTapestryMaxTreeDepth(tapestry.MaxTreeDepth), target,
+                    Math.Max(target, ArcanumSettingClamps.EmbeddingsTapestryMaxChildrenPerSummary(tapestry.MaxChildrenPerSummary)),
+                    ArcanumSettingClamps.EmbeddingsTapestryMaxClustersPerLayer(tapestry.MaxClustersPerLayer),
+                    ArcanumSettingClamps.EmbeddingsTapestryMaxSummaryTokens(tapestry.MaxSummaryTokens)));
+
             List<TapestryScope> scopes = BuildTapestryScopes(request, tapestry, workspaceIndexingService);
 
             if (scopes.Count == 0)
@@ -6209,14 +6224,16 @@ public sealed partial class WizardIntelligenceProvider(
 
             foreach (TapestryScope scope in scopes)
             {
-                TapestryGeneration? generation = await tapestryStore
-                    .GetCurrentGenerationAsync(scope, cancellationToken)
+                Result<TapestryGenerationAccess> lookup = await tapestryStore
+                    .GetRetrievableGenerationAsync(scope, identity, cancellationToken)
                     .ConfigureAwait(false);
 
-                if (generation is null)
+                if (lookup.IsFailure)
                 {
                     continue;
                 }
+
+                TapestryGeneration generation = lookup.Value.Generation;
 
                 IReadOnlyList<(string NodeId, float Similarity)> hits =
                     tapestry.RetrievalMode == TapestryRetrievalMode.TreeTraversal
@@ -6240,7 +6257,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                 candidates.AddRange(
                     await tapestryStore.HydrateRetrievedNodesAsync(
-                        generation,
+                        lookup.Value,
                         hits,
                         tapestry.RetrievalMode,
                         cancellationToken).ConfigureAwait(false));

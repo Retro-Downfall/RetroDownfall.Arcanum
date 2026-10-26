@@ -11,7 +11,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
-public sealed class WeaveServiceTests
+public sealed partial class WeaveServiceTests
 {
     [Fact]
     public void IsAvailable_Disabled_ReturnsFalse()
@@ -872,6 +872,8 @@ public sealed class WeaveServiceTests
     {
         public FakeEmbeddingGenerator Generator { get; } = new();
 
+        public EmbeddingProvenance? Provenance { get; set; }
+
         public int ResolveCount { get; private set; }
 
         public CancellationToken ResolveCancellationToken { get; private set; }
@@ -882,7 +884,7 @@ public sealed class WeaveServiceTests
 
             ResolveCancellationToken = cancellationToken;
 
-            return Task.FromResult(new EmbeddingGeneratorLease(Generator, ownsGenerator: false));
+            return Task.FromResult(new EmbeddingGeneratorLease(Generator, ownsGenerator: false, Provenance));
         }
     }
 
@@ -895,6 +897,8 @@ public sealed class WeaveServiceTests
         public TimeSpan? DelayOnGenerate { get; set; }
 
         public Action? BeforeGenerate { get; set; }
+
+        public EmbeddingProvenance? ProviderProvenance { get; set; }
 
         public int? ThrowOnCallNumber { get; set; }
 
@@ -939,7 +943,10 @@ public sealed class WeaveServiceTests
 
             for (int i = 0; i < vectorCount; i++)
             {
-                result.Add(new Embedding<float>(new float[] { 1f, 0f, 0f }));
+                result.Add(new Embedding<float>(new float[] { 1f, 0f, 0f })
+                {
+                    AdditionalProperties = new() { [EmbeddingProvenance.MetadataKey] = ProviderProvenance },
+                });
             }
 
             return result;
