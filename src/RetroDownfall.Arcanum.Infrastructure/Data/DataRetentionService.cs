@@ -534,7 +534,8 @@ internal sealed partial class DataRetentionService(
                 "OS credential and Data Protection stores",
                 "Registered workspaces outside the Arcanum data root",
             ],
-            covenant) with { MemoryErasure = memoryErasure };
+            covenant) with
+        { MemoryErasure = memoryErasure };
     }
 
     /// <summary>
@@ -1965,7 +1966,8 @@ internal sealed partial class DataRetentionService(
             }
 
             Result planningLeaseReleased = await TryDisposeCovenantPlanningLeaseAsync(
-                planningLease).ConfigureAwait(false);
+                planningLease,
+                operation.Id).ConfigureAwait(false);
 
             planningLease = null;
 
@@ -2006,14 +2008,14 @@ internal sealed partial class DataRetentionService(
                 return await FailCovenantResetAsync(
                     committed,
                     ownerId,
-                    CovenantResetFailure(erased.Value.BlockingErrorCode),
+                    CovenantResetFailure(operation.Id, erased.Value),
                     LongRunningOperationState.Failed).ConfigureAwait(false);
             }
 
             if (erased.Value.Disposition is CovenantExclusiveLeaseDisposition.KeepClosed)
             {
                 return Result<DataRetentionApplyResult>.Failure(
-                    CovenantResetFailure(erased.Value.BlockingErrorCode));
+                    CovenantResetFailure(operation.Id, erased.Value));
             }
 
             if (erased.Value.Disposition is not CovenantExclusiveLeaseDisposition.CommitAndReopen)
@@ -2021,7 +2023,7 @@ internal sealed partial class DataRetentionService(
                 return await FailCovenantResetAsync(
                     committed,
                     ownerId,
-                    CovenantResetFailure(erased.Value.BlockingErrorCode),
+                    CovenantResetFailure(operation.Id, erased.Value),
                     LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
             }
 
@@ -2052,8 +2054,11 @@ internal sealed partial class DataRetentionService(
         catch (Exception ex)
         {
             logger.LogError(
-                ex,
-                "Direct Covenant reset failed unexpectedly after durable operation admission.");
+                "Direct Covenant reset failed unexpectedly at {DiagnosticStage} for durable operation "
+                + "{OperationId} ({ExceptionType}).",
+                "UnexpectedFailure",
+                operation?.Id,
+                ex.GetType().Name);
 
             if (operation is null || string.IsNullOrWhiteSpace(ownerId))
             {
@@ -2066,7 +2071,7 @@ internal sealed partial class DataRetentionService(
         {
             if (planningLease is not null)
             {
-                _ = await TryDisposeCovenantPlanningLeaseAsync(planningLease).ConfigureAwait(false);
+                _ = await TryDisposeCovenantPlanningLeaseAsync(planningLease, operation?.Id).ConfigureAwait(false);
             }
         }
     }
@@ -2209,16 +2214,19 @@ internal sealed partial class DataRetentionService(
         catch (Exception ex)
         {
             logger.LogWarning(
-                ex,
-                "Covenant reset operation {OperationId} could not classify its durable effect boundary.",
-                operation.Id);
+                "Covenant reset operation {OperationId} could not classify its durable effect boundary "
+                + "at {DiagnosticStage} ({ExceptionType}).",
+                operation.Id,
+                "EffectClassification",
+                ex.GetType().Name);
 
             return Result<DataRetentionApplyResult>.Failure(failure);
         }
     }
 
     private async Task<Result> TryDisposeCovenantPlanningLeaseAsync(
-        ICovenantSnapshotReadLease planningLease)
+        ICovenantSnapshotReadLease planningLease,
+        Guid? operationId = null)
     {
         try
         {
@@ -2229,8 +2237,11 @@ internal sealed partial class DataRetentionService(
         catch (Exception ex)
         {
             logger.LogWarning(
-                ex,
-                "The direct Covenant reset planning lease could not be released cleanly.");
+                "The Covenant erasure planning lease could not be released cleanly at {DiagnosticStage} "
+                + "for durable operation {OperationId} ({ExceptionType}).",
+                "PlanningLeaseRelease",
+                operationId,
+                ex.GetType().Name);
 
             return Result.Failure(CovenantMaintenanceFailure());
         }
@@ -2297,20 +2308,50 @@ internal sealed partial class DataRetentionService(
         catch (Exception ex)
         {
             logger.LogWarning(
-                ex,
-                "Covenant reset operation {OperationId} could not finalize after committed reopen.",
-                operationId);
+                "Covenant reset operation {OperationId} could not finalize after committed reopen "
+                + "at {DiagnosticStage} ({ExceptionType}).",
+                operationId,
+                "CommittedFinalization",
+                ex.GetType().Name);
 
             return Result.Failure(CovenantMaintenanceFailure());
         }
     }
 
-    private static Error CovenantResetFailure(string? errorCode) =>
-        new(
-            string.IsNullOrWhiteSpace(errorCode)
+    private static Error CovenantResetFailure(Guid operationId, CovenantErasureCompletion completion)
+    {
+        string canonical = completion.CanonicalResetApplied ? "confirmed" : "not confirmed";
+
+        string local = completion.LocalSecureErasureComplete ? "confirmed" : "not confirmed";
+
+        string admission = completion.Disposition switch
+        {
+            CovenantExclusiveLeaseDisposition.CommitAndReopen => "Admission reopened after verified commit.",
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen => "Admission reopened after verified rollback.",
+            CovenantExclusiveLeaseDisposition.KeepClosed => "Admission stays closed.",
+            _ => "Admission reopening is not confirmed.",
+        };
+
+        string effect = completion.Disposition is CovenantExclusiveLeaseDisposition.RollbackAndReopen
+            ? "Nothing was erased; rollback was verified. "
+            : "Unconfirmed erasure does not establish that no data was erased. ";
+
+        string remedy = completion.Disposition is CovenantExclusiveLeaseDisposition.RollbackAndReopen
+            ? completion.BlockingErrorCode == ErrorCodes.Grimoire.WorkDrainTimeout
+                ? "Ordinary work did not finish within the drain window. Retry when the host is idle."
+                : "Resolve the reported blocker before retrying."
+            : "Do not start a second erasure until this operation's outcome is resolved.";
+
+        return new Error(
+            string.IsNullOrWhiteSpace(completion.BlockingErrorCode)
                 ? ErrorCodes.Covenant.MaintenanceFailed
-                : errorCode,
-            "The Covenant reset did not reach a committed reopen disposition.");
+                : completion.BlockingErrorCode,
+            $"Covenant erasure operation {operationId} requires attention. "
+            + $"Canonical erasure: {canonical}. Local secure erasure: {local}. "
+            + effect
+            + $"{admission} Run arcanum operation show {operationId}. {remedy} "
+            + "External disclosures are not revoked by local erasure.");
+    }
 
     /// <summary>
     /// Surrenders a cancelled apply's lease to <see cref="LongRunningOperationState.ReconciliationRequired"/>,

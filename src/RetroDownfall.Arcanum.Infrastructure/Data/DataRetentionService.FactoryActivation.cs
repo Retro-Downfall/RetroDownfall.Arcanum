@@ -396,7 +396,8 @@ internal sealed partial class DataRetentionService
             }
 
             Result planningLeaseReleased = await TryDisposeCovenantPlanningLeaseAsync(
-                installationLease).ConfigureAwait(false);
+                installationLease,
+                operation.Id).ConfigureAwait(false);
 
             planningLease = null;
 
@@ -482,14 +483,14 @@ internal sealed partial class DataRetentionService
                 return await FailCovenantResetAsync(
                     committed,
                     ownerId,
-                    CovenantResetFailure(erased.Value.BlockingErrorCode),
+                    CovenantResetFailure(operation.Id, erased.Value),
                     LongRunningOperationState.Failed).ConfigureAwait(false);
             }
 
             if (erased.Value.Disposition is CovenantExclusiveLeaseDisposition.KeepClosed)
             {
                 return Result<DataRetentionApplyResult>.Failure(
-                    CovenantResetFailure(erased.Value.BlockingErrorCode));
+                    CovenantResetFailure(operation.Id, erased.Value));
             }
 
             if (erased.Value.Disposition is not CovenantExclusiveLeaseDisposition.CommitAndReopen
@@ -498,7 +499,7 @@ internal sealed partial class DataRetentionService
                 return await FailCovenantResetAsync(
                     committed,
                     ownerId,
-                    CovenantResetFailure(erased.Value.BlockingErrorCode),
+                    CovenantResetFailure(operation.Id, erased.Value),
                     LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
             }
 
@@ -549,7 +550,7 @@ internal sealed partial class DataRetentionService
         {
             if (planningLease is not null)
             {
-                _ = await TryDisposeCovenantPlanningLeaseAsync(planningLease).ConfigureAwait(false);
+                _ = await TryDisposeCovenantPlanningLeaseAsync(planningLease, operation?.Id).ConfigureAwait(false);
             }
 
             _ = await CloseFactoryServiceConnectionAsync().ConfigureAwait(false);

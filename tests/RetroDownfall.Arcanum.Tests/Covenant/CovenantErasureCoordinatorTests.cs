@@ -2,7 +2,6 @@ using System.Data.Common;
 using System.Reflection;
 
 using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -99,6 +98,69 @@ public sealed class CovenantErasureCoordinatorTests
         "publish",
         "reopen-writer",
     ];
+
+    [Theory]
+    [InlineData(CovenantResetPhase.CanonicalApplied)]
+    [InlineData(CovenantResetPhase.ManagedArtifactsProcessed)]
+    [InlineData(CovenantResetPhase.SidecarsVerified)]
+    public async Task Unexpected_erasure_failures_log_operation_phase_and_exception_type_only(
+        CovenantResetPhase stop)
+    {
+        CoordinatorHarness harness = new(faultSeam: (boundary, phase, _) =>
+            boundary == CovenantErasureFaultBoundary.AfterPhaseEffect && phase == stop
+                ? Task.FromException<Result>(new IOException("PRIVATE-path-and-content-sentinel"))
+                : Task.FromResult(Result.Success()));
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsSuccess);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.KeepClosed, completion.Value.Disposition);
+
+        Assert.False(await harness.AdmissionIsOpenAsync());
+
+        TestLogEntry diagnostic = Assert.Single(harness.Diagnostics.Entries,
+            entry => entry.Message.Contains("ExecutionFailed", StringComparison.Ordinal));
+
+        Assert.Contains(OperationId.ToString(), diagnostic.Message);
+
+        Assert.Contains(nameof(IOException), diagnostic.Message);
+
+        Assert.Contains("phase", diagnostic.Message);
+
+        Assert.All(harness.Diagnostics.Entries, entry =>
+        {
+            Assert.Null(entry.Exception);
+
+            Assert.DoesNotContain("PRIVATE-path-and-content-sentinel", entry.Message);
+        });
+    }
+
+    [Fact]
+    public async Task Interrupted_Grimoire_closure_logs_exception_type_without_private_exception_content()
+    {
+        CoordinatorHarness harness = new(afterGrimoireStageTwoDrain: _ =>
+            ValueTask.FromException(new IOException("PRIVATE-path-and-content-sentinel")));
+
+        Result<CovenantErasureCompletion> completion = await harness.RunAsync(CovenantResetPhase.InventoryPrepared);
+
+        Assert.True(completion.IsSuccess);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.KeepClosed, completion.Value.Disposition);
+
+        TestLogEntry diagnostic = Assert.Single(harness.Diagnostics.Entries,
+            entry => entry.Message.Contains("interrupted while closing Grimoire", StringComparison.Ordinal));
+
+        Assert.Null(diagnostic.Exception);
+
+        Assert.Contains(nameof(IOException), diagnostic.Message);
+
+        Assert.Contains(OperationId.ToString(), diagnostic.Message);
+
+        Assert.Contains(nameof(CovenantResetPhase.InventoryPrepared), diagnostic.Message);
+
+        Assert.DoesNotContain("PRIVATE-path-and-content-sentinel", diagnostic.Message);
+    }
 
     [Fact]
     public async Task Factory_continuation_runs_after_its_durable_boundary_and_before_handle_proof()
@@ -1122,6 +1184,21 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.False(await harness.GrimoireAdmissionIsOpenAsync());
 
         Assert.True(File.Exists(harness.Phases.JournalPath));
+
+        TestLogEntry diagnostic = Assert.Single(harness.Diagnostics.Entries,
+            entry => entry.Message.Contains("WriterRestartRefused", StringComparison.Ordinal));
+
+        Assert.Contains(OperationId.ToString(), diagnostic.Message);
+
+        Assert.Contains(nameof(CovenantResetPhase.ReopenedVerified), diagnostic.Message);
+
+        Assert.Contains(ErrorCodes.Covenant.MaintenanceFailed, diagnostic.Message);
+
+        Assert.Contains("canonical erasure confirmed: True", diagnostic.Message);
+
+        Assert.Contains("local secure erasure confirmed: True", diagnostic.Message);
+
+        Assert.Null(diagnostic.Exception);
     }
 
     [Fact]
@@ -2018,6 +2095,13 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
 
         Assert.True(File.Exists(harness.Phases.JournalPath));
+
+        TestLogEntry diagnostic = Assert.Single(harness.Diagnostics.Entries,
+            entry => entry.Message.Contains("TerminalIntentUnavailable", StringComparison.Ordinal));
+
+        Assert.Contains(OperationId.ToString(), diagnostic.Message);
+
+        Assert.Contains("park", diagnostic.Message);
     }
 
     [Theory]
@@ -2892,6 +2976,8 @@ public sealed class CovenantErasureCoordinatorTests
 
         internal RecordingErasureTransition Transition { get; }
 
+        internal TestCapturingLogger<CovenantErasureCoordinator> Diagnostics { get; } = new();
+
         internal RecordingDisclosureWriterLifecycle DisclosureWriter { get; }
 
         internal StubInventorySource Inventory { get; }
@@ -3150,7 +3236,7 @@ public sealed class CovenantErasureCoordinatorTests
                 new GrimoireOfflineTransitionDatabaseReconciler(Store, TimeProvider.System),
                 Ownership,
                 TimeProvider.System,
-                NullLogger<CovenantErasureCoordinator>.Instance,
+                Diagnostics,
                 _faultSeam,
                 _terminalSuffixFaultSeam);
 
@@ -3206,7 +3292,7 @@ public sealed class CovenantErasureCoordinatorTests
                 new GrimoireOfflineTransitionDatabaseReconciler(Store, TimeProvider.System),
                 Ownership,
                 TimeProvider.System,
-                NullLogger<CovenantErasureCoordinator>.Instance,
+                Diagnostics,
                 _faultSeam);
 
             return await coordinator.RunAsync(
