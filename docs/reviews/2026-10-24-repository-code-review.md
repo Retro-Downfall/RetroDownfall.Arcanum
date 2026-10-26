@@ -4163,3 +4163,16 @@ RV-090 now reports the actual protected maintenance operation ID and a closed, s
 The exact runtime commit is `1974e38ea1bda37839321b55e90c756f702a0f45`, tested tree `f05e5843e66456f7b2bc834f36f24b28a0c3bdff`. **2204 distinct tests passed with zero failures/skips**, plus a normal zero-warning build, both house formatting modes, explicit Roslyn verification and diff checks. Evidence: `/private/tmp/arcanum-integrated-wave36-qualification.json` and commit receipt. Original source paths/catalog are unchanged; prior controlled catalog qualification remains applicable.
 
 Actual RAPTOR remains **8 of 12 stages integrated**, with typed DAG retrieval Task9 implementing. Full native FTS5 grammar is integrated; RV-030 literal-memory search/continuation owns Core28 and remains open. Final whole-suite, coverage, hosted/capsule, Native AOT/shipping/native provenance and live qualification remain pending. Main and the original Claude review branch are preserved.
+
+
+### 2026-10-26 checkpoint — 125 original findings integrated
+
+**125 of 272 findings (46.0%) are independently reviewed and integrated:** 3 Critical, 76 Important and 46 Minor. **147 remain:** 0 Important and 147 Minor. 1 further original findings have approved candidates awaiting integration: RV-113.
+
+RV-030 is integrated after independent review of candidate `6dd9fd1e78c1f0db800b12864308c865df90ccd8`. Native trigram-assisted literal search now supports bounded scan pages and opaque continuation across the four content corpora, while Saga and Lexicon retain their owning-store authority checks. Core28 adds synchronized search projections, resumable backfill, secure token deletion and encrypted old-archive restore coverage. Tests cover literal/native-folding parity, sparse candidate completeness, pagination and lookahead, write conflicts, restore and query-plan work. Documented limits remain: no cross-request snapshot or strict native CPU/I/O bound, and one oversized row may exceed a byte budget.
+
+The combined source preserves the newer CompactionOutcome JSON registration and reconciles the exact source catalog; all other incoming C# matches the approved candidate. The last original Important finding is now closed.
+
+The exact runtime commit is `e7741c46bcb25d70cd48fea591461c31b37cb210`, tested tree `f215a22bb754b6abd57dea0f64a55bbe0e04bcad`. **6993 distinct tests passed with zero failures and 3 explicitly recorded Windows-only skips**, plus a normal zero-warning build, both house formatting modes, explicit Roslyn verification and diff checks. Evidence: `/private/tmp/arcanum-integrated-wave37-qualification.json` and commit receipt. The reconciled catalog contains 2571 paths / 911 SQL files / 548 acquisition sites, checked against this combined tree.
+
+Actual RAPTOR remains **8 of 12 stages integrated**, with typed DAG retrieval Task9 under independent review. Full native FTS5 grammar is integrated. RV-030 literal-memory search and all-scope continuation are integrated with Core28. Final whole-suite, coverage, hosted/capsule, Native AOT/shipping/native provenance and full CI qualification remain pending. After those pass, the user-required pause precedes installation and any live Ollama or embedding qualification. Main and the original Claude review branch are preserved.
