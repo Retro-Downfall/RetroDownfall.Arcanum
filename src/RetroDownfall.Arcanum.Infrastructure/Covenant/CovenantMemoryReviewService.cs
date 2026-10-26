@@ -53,17 +53,20 @@ internal sealed class CovenantMemoryReviewService(
     /// </summary>
     internal string? NoOpOutcomeSpellingForTesting { get; init; }
 
+    private const string RefreshReview = "Run arcanum memory covenant review list again.";
+
     private static readonly Error InvalidToken = new(
         ErrorCodes.MemoryReview.InvalidToken,
-        "The memory-review token is invalid, expired, stale, or bound to another queue.");
+        "The memory-review token is invalid, expired, stale, or bound to another queue. " + RefreshReview);
 
     private static readonly Error StaleObservation = new(
         ErrorCodes.MemoryReview.StaleObservation,
-        "A reviewed Covenant version or its review position changed before this operation could commit.");
+        "A reviewed Covenant version or its review position changed before this operation could commit. "
+        + "Any apply in this scope and lane invalidates its other observations, cursors, and prepared plans. " + RefreshReview);
 
     private static readonly Error UnseenObservation = new(
         ErrorCodes.MemoryReview.UnseenObservation,
-        "A review decision did not identify an event observed in this exact Covenant queue.");
+        "A review decision did not identify an event observed in this exact Covenant queue. " + RefreshReview);
 
     private static readonly Error IntegrityFailure = new(
         ErrorCodes.MemoryReview.IntegrityFailure,
@@ -124,7 +127,7 @@ internal sealed class CovenantMemoryReviewService(
 
         if (decodedCursor is { IsFailure: true } invalidCursor)
         {
-            return invalidCursor.Error;
+            return InvalidToken;
         }
 
         SqliteConnection connection = await connections
@@ -229,6 +232,8 @@ internal sealed class CovenantMemoryReviewService(
 
         CovenantReviewItemDto[] items = new CovenantReviewItemDto[rows.Count];
 
+        DateTimeOffset? expiresAtUtc = null;
+
         for (int index = 0; index < rows.Count; index++)
         {
             CovenantReviewEvent row = rows[index];
@@ -254,13 +259,15 @@ internal sealed class CovenantMemoryReviewService(
                     lower,
                     upper,
                     checked((ulong)row.Sequence),
-                    VersionIdentity(row.VersionId)));
+                    VersionIdentity(row.VersionId)), out DateTimeOffset observationExpiresAtUtc);
 
             if (observation.IsFailure)
             {
                 await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
                 return observation.Error;
             }
+
+            expiresAtUtc = Earlier(expiresAtUtc, observationExpiresAtUtc);
 
             items[index] = ReviewItem(row, sources, observation.Value);
         }
@@ -280,13 +287,15 @@ internal sealed class CovenantMemoryReviewService(
                     lower,
                     upper,
                     checked((ulong)last.Sequence),
-                    VersionIdentity(last.VersionId)));
+                    VersionIdentity(last.VersionId)), out DateTimeOffset cursorExpiresAtUtc);
 
             if (issued.IsFailure)
             {
                 await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
                 return issued.Error;
             }
+
+            expiresAtUtc = Earlier(expiresAtUtc, cursorExpiresAtUtc);
 
             nextCursor = issued.Value;
         }
@@ -306,7 +315,8 @@ internal sealed class CovenantMemoryReviewService(
             marker.ReviewedThroughSequence,
             checked((long)upper),
             nextCursor,
-            truncated);
+            truncated,
+            expiresAtUtc);
     }
 
     public async ValueTask<Result<MemoryReviewBulkPlanDto>> PrepareAsync(
@@ -328,7 +338,7 @@ internal sealed class CovenantMemoryReviewService(
         {
             return new Error(
                 ErrorCodes.Validation.InvalidBody,
-                "A Covenant correction authors the Confirmed lane; Proposed content must be retired or confirmed separately.");
+                "A Covenant correction authors the Confirmed lane; Confirm only acknowledges review. To promote Proposed content, use arcanum memory covenant set.");
         }
 
         Result lease = await ValidateReadLeaseAsync(
@@ -344,7 +354,7 @@ internal sealed class CovenantMemoryReviewService(
 
         MemoryReviewDigest scopeDigest = ScopeDigest(request.Scope, request.CampaignId, request.Lane);
 
-        Result<MemoryReviewObservationTokenFacts[]> decoded = DecodeObservations(request, scopeDigest);
+        Result<MemoryReviewObservationTokenFacts[]> decoded = DecodeObservations(request, scopeDigest, out DateTimeOffset observationDeadline);
 
         if (decoded.IsFailure)
         {
@@ -416,7 +426,7 @@ internal sealed class CovenantMemoryReviewService(
             if (refusal is { } error)
             {
                 await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                return error;
+                return DecisionError(error, index, observed.EventSequence);
             }
 
             items[index] = PlanItem(row!) with
@@ -443,7 +453,7 @@ internal sealed class CovenantMemoryReviewService(
                 first.MarkerRevision,
                 first.FrozenLowerEventSequence,
                 first.FrozenUpperEventSequence,
-                requestDigest));
+                requestDigest), out DateTimeOffset planExpiresAtUtc);
 
         if (preparedToken.IsFailure)
         {
@@ -459,7 +469,7 @@ internal sealed class CovenantMemoryReviewService(
             return currentLease.Error;
         }
 
-        DateTimeOffset issuedAt = timeProvider.GetUtcNow();
+        DateTimeOffset issuedAt = planExpiresAtUtc - MemoryReviewLimits.TokenLifetime;
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -469,7 +479,7 @@ internal sealed class CovenantMemoryReviewService(
             request.Action,
             items,
             issuedAt,
-            issuedAt + MemoryReviewLimits.TokenLifetime,
+            Earlier(observationDeadline, planExpiresAtUtc),
             preparedToken.Value);
     }
 
@@ -548,7 +558,7 @@ internal sealed class CovenantMemoryReviewService(
         {
             return new Error(
                 ErrorCodes.Validation.InvalidBody,
-                "A Covenant correction authors the Confirmed lane; Proposed content must be retired or confirmed separately.");
+                "A Covenant correction authors the Confirmed lane; Confirm only acknowledges review. To promote Proposed content, use arcanum memory covenant set.");
         }
 
         Result lease = await ValidateWriteLeaseAsync(
@@ -596,12 +606,13 @@ internal sealed class CovenantMemoryReviewService(
 
         if (decodedPlan.IsFailure)
         {
-            return decodedPlan.Error;
+            return InvalidToken;
         }
 
         Result<MemoryReviewObservationTokenFacts[]> decodedObservations = DecodeObservations(
             preparedRequest,
-            scopeDigest);
+            scopeDigest,
+            out _);
 
         if (decodedObservations.IsFailure)
         {
@@ -737,7 +748,7 @@ internal sealed class CovenantMemoryReviewService(
             if (refusal is { } error)
             {
                 await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                return error;
+                return DecisionError(error, index, observed.EventSequence);
             }
 
             targets[index] = row!;
@@ -764,7 +775,7 @@ internal sealed class CovenantMemoryReviewService(
             if (decision.IsFailure)
             {
                 await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                return decision.Error;
+                return DecisionError(decision.Error, index, observations[index].EventSequence);
             }
 
             applied[index] = decision.Value;
@@ -887,8 +898,11 @@ internal sealed class CovenantMemoryReviewService(
 
     private Result<MemoryReviewObservationTokenFacts[]> DecodeObservations(
         CovenantReviewBulkPrepareRequest request,
-        MemoryReviewDigest scopeDigest)
+        MemoryReviewDigest scopeDigest,
+        out DateTimeOffset expiresAtUtc)
     {
+        expiresAtUtc = DateTimeOffset.MaxValue;
+
         MemoryReviewObservationTokenFacts[] observations =
             new MemoryReviewObservationTokenFacts[request.Decisions.Length];
 
@@ -899,12 +913,14 @@ internal sealed class CovenantMemoryReviewService(
         for (int index = 0; index < request.Decisions.Length; index++)
         {
             Result<MemoryReviewObservationTokenFacts> decoded = tokenCodec.ReadObservation(
-                request.Decisions[index].ObservationToken);
+                request.Decisions[index].ObservationToken, out DateTimeOffset observationExpiresAtUtc);
 
             if (decoded.IsFailure)
             {
-                return decoded.Error;
+                return DecisionError(InvalidToken, index);
             }
+
+            expiresAtUtc = Earlier(expiresAtUtc, observationExpiresAtUtc);
 
             MemoryReviewObservationTokenFacts observed = decoded.Value;
 
@@ -913,7 +929,7 @@ internal sealed class CovenantMemoryReviewService(
                 || first is not null && !SameWindow(first, observed)
                 || !exactVersions.Add((observed.EventSequence, observed.VersionIdentity)))
             {
-                return InvalidToken;
+                return DecisionError(InvalidToken, index, observed.EventSequence);
             }
 
             first ??= observed;
@@ -922,6 +938,17 @@ internal sealed class CovenantMemoryReviewService(
 
         return observations;
     }
+
+    private static DateTimeOffset Earlier(DateTimeOffset? current, DateTimeOffset candidate) =>
+        current is { } deadline && deadline < candidate ? deadline : candidate;
+
+    private static Error DecisionError(Error error, int index, ulong? eventSequence = null) =>
+        error with
+        {
+            Message = eventSequence is { } sequence
+                ? FormattableString.Invariant($"Review decision #{index + 1} (event {sequence}): {error.Message}")
+                : FormattableString.Invariant($"Review decision #{index + 1}: {error.Message}"),
+        };
 
     private Error? ValidateObservedTarget(
         MemoryReviewAction action,
@@ -955,9 +982,9 @@ internal sealed class CovenantMemoryReviewService(
             {
                 _ = compiler.Compile(row.Key, decision.ReplacementContent!);
             }
-            catch (ArgumentException invalid)
+            catch (ArgumentException)
             {
-                return new Error(ErrorCodes.Validation.InvalidBody, invalid.Message);
+                return new Error(ErrorCodes.Validation.InvalidBody, "The replacement content cannot be compiled as Covenant content. Check its size and remove invalid Unicode or format characters, then correct this decision.");
             }
         }
 
@@ -1510,117 +1537,121 @@ internal sealed class CovenantMemoryReviewService(
                 break;
 
             case MemoryReviewAction.Correct:
-            {
-                CovenantCompiledContent compiled;
-
-                try
                 {
-                    compiled = compiler.Compile(target.Key, request.Decisions[ordinal].ReplacementContent!);
-                }
-                catch (ArgumentException invalid)
-                {
-                    return new Error(ErrorCodes.Validation.InvalidBody, invalid.Message);
-                }
+                    CovenantCompiledContent compiled;
 
-                Result<CovenantMutationReceipt> mutation = await ApplyMutationAsync(
-                    transaction,
-                    erasureGate,
-                    state,
-                    lease,
-                    request,
-                    requestDigest,
-                    ordinal,
-                    target,
-                    compiled,
-                    committedAt,
-                    cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        compiled = compiler.Compile(target.Key, request.Decisions[ordinal].ReplacementContent!);
+                    }
+                    catch (ArgumentException)
+                    {
+                        return new Error(ErrorCodes.Validation.InvalidBody, "The replacement content cannot be compiled as Covenant content. Check its size and remove invalid Unicode or format characters, then correct this decision.");
+                    }
 
-                if (mutation.IsFailure)
-                {
-                    return mutation.Error;
-                }
-
-                resultingVersionId = mutation.Value.ResultingVersionId;
-
-                outcome = Outcome(request.Action, mutation.Value.Outcome);
-
-                if (mutation.Value.Outcome == CovenantMutationOutcome.Applied
-                    && resultingVersionId is null)
-                {
-                    return IntegrityFailure;
-                }
-
-                if (mutation.Value.Kind is CovenantMutationKind.OperatorSet && !mutation.Value.Replayed)
-                {
-                    releasedErasureFingerprint = await MemoryErasureFingerprintRelease.ReleaseForOperatorWriteAsync(
-                        transaction.Connection,
-                        transaction.Transaction,
-                        MemoryReviewStore.Covenant,
-                        MemoryErasureIdentity.ForCovenant(target.Scope, target.CampaignId, target.Key),
-                        erasureGate.Key,
+                    Result<CovenantMutationReceipt> mutation = await ApplyMutationAsync(
+                        transaction,
+                        erasureGate,
+                        state,
+                        lease,
+                        request,
+                        requestDigest,
+                        ordinal,
+                        target,
+                        compiled,
+                        committedAt,
                         cancellationToken).ConfigureAwait(false);
-                }
 
-                if (resultingVersionId is { } correctedVersion)
-                {
-                    autoAcknowledgedEventSequence = await ReadReviewEventSequenceAsync(
-                        transaction.Connection,
-                        transaction.Transaction,
-                        correctedVersion,
-                        cancellationToken).ConfigureAwait(false);
-                }
+                    if (mutation.IsFailure)
+                    {
+                        return mutation.Error;
+                    }
 
-                break;
-            }
+                    resultingVersionId = mutation.Value.ResultingVersionId;
+
+                    outcome = Outcome(request.Action, mutation.Value.Outcome);
+
+                    if (mutation.Value.Outcome == CovenantMutationOutcome.Applied
+                        && resultingVersionId is null)
+                    {
+                        return IntegrityFailure;
+                    }
+
+                    if (mutation.Value.Kind is CovenantMutationKind.OperatorSet && !mutation.Value.Replayed)
+                    {
+                        releasedErasureFingerprint = await MemoryErasureFingerprintRelease.ReleaseForOperatorWriteAsync(
+                            transaction.Connection,
+                            transaction.Transaction,
+                            MemoryReviewStore.Covenant,
+                            MemoryErasureIdentity.ForCovenant(target.Scope, target.CampaignId, target.Key),
+                            erasureGate.Key,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
+                    if (resultingVersionId is { } correctedVersion)
+                    {
+                        autoAcknowledgedEventSequence = await ReadReviewEventSequenceAsync(
+                            transaction.Connection,
+                            transaction.Transaction,
+                            correctedVersion,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
+                    break;
+                }
 
             case MemoryReviewAction.Retire:
-            {
-                Result<CovenantMutationReceipt> mutation = await ApplyMutationAsync(
-                    transaction,
-                    erasureGate,
-                    state,
-                    lease,
-                    request,
-                    requestDigest,
-                    ordinal,
-                    target,
-                    compiled: null,
-                    committedAt,
-                    cancellationToken).ConfigureAwait(false);
-
-                if (mutation.IsFailure)
                 {
-                    return mutation.Error;
-                }
+                    Result<CovenantMutationReceipt> mutation = await ApplyMutationAsync(
+                        transaction,
+                        erasureGate,
+                        state,
+                        lease,
+                        request,
+                        requestDigest,
+                        ordinal,
+                        target,
+                        compiled: null,
+                        committedAt,
+                        cancellationToken).ConfigureAwait(false);
 
-                resultingVersionId = mutation.Value.ResultingVersionId;
-                outcome = Outcome(request.Action, mutation.Value.Outcome);
-                break;
-            }
+                    if (mutation.IsFailure)
+                    {
+                        return mutation.Error;
+                    }
+
+                    resultingVersionId = mutation.Value.ResultingVersionId;
+
+                    outcome = Outcome(request.Action, mutation.Value.Outcome);
+
+                    break;
+                }
 
             case MemoryReviewAction.Pin:
             case MemoryReviewAction.Unpin:
-            {
-                Result<CovenantCurationReceipt> curation = await ApplyCurationAsync(
-                    transaction,
-                    state,
-                    lease,
-                    request,
-                    requestDigest,
-                    ordinal,
-                    target,
-                    committedAt,
-                    cancellationToken).ConfigureAwait(false);
-
-                if (curation.IsFailure)
                 {
-                    return curation.Error;
-                }
+                    Result<CovenantCurationReceipt> curation = await ApplyCurationAsync(
+                        transaction,
+                        state,
+                        lease,
+                        request,
+                        requestDigest,
+                        ordinal,
+                        target,
+                        committedAt,
+                        cancellationToken).ConfigureAwait(false);
 
-                resultingVersionId = curation.Value.ResultingVersionId;
-                outcome = Outcome(request.Action, curation.Value.Outcome);
-                break;
-            }
+                    if (curation.IsFailure)
+                    {
+                        return curation.Error;
+                    }
+
+                    resultingVersionId = curation.Value.ResultingVersionId;
+
+                    outcome = Outcome(request.Action, curation.Value.Outcome);
+
+                    break;
+                }
 
             default:
                 return new Error(

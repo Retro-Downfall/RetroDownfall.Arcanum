@@ -426,6 +426,13 @@ public sealed partial class MemoryCommands
             dispatcher.WritePayload($"  observation: {item.ObservationToken}");
         }
 
+        if (page.ExpiresAtUtc is { } expiresAtUtc)
+        {
+            dispatcher.WritePayload($"Observation and cursor tokens expire by {expiresAtUtc:u} (five minutes from issuance).");
+
+            dispatcher.WritePayload("A host process restart or any apply in this scope and lane invalidates its other tokens. Run arcanum memory covenant review list again.");
+        }
+
         WriteReviewPageFooter(page.Items.Length, page.ReviewedThroughEventSequence, page.FrozenThroughEventSequence, page.NextCursor);
     }
 

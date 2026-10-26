@@ -57,8 +57,13 @@ internal sealed class MemoryReviewTokenCodec(TimeProvider timeProvider) : IMemor
     private readonly TimeProvider _timeProvider =
         timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
 
-    public Result<string> IssueCursor(MemoryReviewCursorTokenFacts facts)
+    public Result<string> IssueCursor(MemoryReviewCursorTokenFacts facts) =>
+        IssueCursor(facts, out _);
+
+    public Result<string> IssueCursor(MemoryReviewCursorTokenFacts facts, out DateTimeOffset expiresAtUtc)
     {
+        expiresAtUtc = default;
+
         if (facts is null || !ValidCommon(
                 facts.Store,
                 facts.CanonicalScopeDigest,
@@ -82,7 +87,7 @@ internal sealed class MemoryReviewTokenCodec(TimeProvider timeProvider) : IMemor
             WriteUInt64(payload, ref offset, facts.KeysetEventSequence);
 
             WriteDigest(payload, ref offset, facts.KeysetVersionIdentity);
-        });
+        }, out expiresAtUtc);
     }
 
     public Result<MemoryReviewCursorTokenFacts> ReadCursor(string token)
@@ -119,8 +124,13 @@ internal sealed class MemoryReviewTokenCodec(TimeProvider timeProvider) : IMemor
             : InvalidToken;
     }
 
-    public Result<string> IssueObservation(MemoryReviewObservationTokenFacts facts)
+    public Result<string> IssueObservation(MemoryReviewObservationTokenFacts facts) =>
+        IssueObservation(facts, out _);
+
+    public Result<string> IssueObservation(MemoryReviewObservationTokenFacts facts, out DateTimeOffset expiresAtUtc)
     {
+        expiresAtUtc = default;
+
         if (facts is null || !ValidCommon(
                 facts.Store,
                 facts.CanonicalScopeDigest,
@@ -141,12 +151,15 @@ internal sealed class MemoryReviewTokenCodec(TimeProvider timeProvider) : IMemor
             WriteUInt64(payload, ref offset, facts.EventSequence);
 
             WriteDigest(payload, ref offset, facts.VersionIdentity);
-        });
+        }, out expiresAtUtc);
     }
 
-    public Result<MemoryReviewObservationTokenFacts> ReadObservation(string token)
+    public Result<MemoryReviewObservationTokenFacts> ReadObservation(string token) =>
+        ReadObservation(token, out _);
+
+    public Result<MemoryReviewObservationTokenFacts> ReadObservation(string token, out DateTimeOffset expiresAtUtc)
     {
-        Result<byte[]> read = Read(token, TokenPurpose.Observation, ObservationPayloadBytes);
+        Result<byte[]> read = Read(token, TokenPurpose.Observation, ObservationPayloadBytes, out expiresAtUtc);
 
         if (read.IsFailure)
         {
@@ -178,8 +191,13 @@ internal sealed class MemoryReviewTokenCodec(TimeProvider timeProvider) : IMemor
             : InvalidToken;
     }
 
-    public Result<string> IssuePreparedPlan(MemoryReviewPreparedPlanTokenFacts facts)
+    public Result<string> IssuePreparedPlan(MemoryReviewPreparedPlanTokenFacts facts) =>
+        IssuePreparedPlan(facts, out _);
+
+    public Result<string> IssuePreparedPlan(MemoryReviewPreparedPlanTokenFacts facts, out DateTimeOffset expiresAtUtc)
     {
+        expiresAtUtc = default;
+
         if (facts is null || !ValidCommon(
                 facts.Store,
                 facts.CanonicalScopeDigest,
@@ -197,7 +215,7 @@ internal sealed class MemoryReviewTokenCodec(TimeProvider timeProvider) : IMemor
                 facts.MarkerRevision, facts.FrozenLowerEventSequence, facts.FrozenUpperEventSequence);
 
             WriteDigest(payload, ref offset, facts.OrderedRequestDigest);
-        });
+        }, out expiresAtUtc);
     }
 
     public Result<MemoryReviewPreparedPlanTokenFacts> ReadPreparedPlan(string token)
@@ -408,7 +426,10 @@ internal sealed class MemoryReviewTokenCodec(TimeProvider timeProvider) : IMemor
             : new MemoryErasureIssuedToken(issued.Value, issuedAt, issuedAt + MemoryReviewLimits.TokenLifetime);
     }
 
-    private Result<string> Issue(TokenPurpose purpose, int payloadBytes, SpanWriter writePayload)
+    private Result<string> Issue(TokenPurpose purpose, int payloadBytes, SpanWriter writePayload) =>
+        Issue(purpose, payloadBytes, writePayload, out _);
+
+    private Result<string> Issue(TokenPurpose purpose, int payloadBytes, SpanWriter writePayload, out DateTimeOffset expiresAtUtc)
     {
         int unsignedBytes = HeaderBytes + payloadBytes;
 
@@ -420,7 +441,11 @@ internal sealed class MemoryReviewTokenCodec(TimeProvider timeProvider) : IMemor
 
         unsigned[1] = (byte)purpose;
 
+        DateTimeOffset issuedAtUtc = _timeProvider.GetUtcNow();
+
         long issuedAt = _timeProvider.GetTimestamp();
+
+        expiresAtUtc = issuedAtUtc + MemoryReviewLimits.TokenLifetime;
 
         long expiresAt = checked(issuedAt + LifetimeTimestampUnits());
 
@@ -437,8 +462,13 @@ internal sealed class MemoryReviewTokenCodec(TimeProvider timeProvider) : IMemor
         return encoded.Length <= MemoryReviewLimits.MaxTokenCharacters ? encoded : InvalidFacts;
     }
 
-    private Result<byte[]> Read(string token, TokenPurpose purpose, int payloadBytes)
+    private Result<byte[]> Read(string token, TokenPurpose purpose, int payloadBytes) =>
+        Read(token, purpose, payloadBytes, out _);
+
+    private Result<byte[]> Read(string token, TokenPurpose purpose, int payloadBytes, out DateTimeOffset expiresAtUtc)
     {
+        expiresAtUtc = default;
+
         int expectedBytes = HeaderBytes + payloadBytes + TagBytes;
 
         if (string.IsNullOrEmpty(token) || token.Length > MemoryReviewLimits.MaxTokenCharacters)
@@ -475,6 +505,8 @@ internal sealed class MemoryReviewTokenCodec(TimeProvider timeProvider) : IMemor
 
         long expiresAt = BinaryPrimitives.ReadInt64BigEndian(unsigned[10..18]);
 
+        DateTimeOffset utcNow = _timeProvider.GetUtcNow();
+
         long now = _timeProvider.GetTimestamp();
 
         if (unsigned[0] != FormatVersion
@@ -485,6 +517,8 @@ internal sealed class MemoryReviewTokenCodec(TimeProvider timeProvider) : IMemor
         {
             return InvalidToken;
         }
+
+        expiresAtUtc = utcNow + _timeProvider.GetElapsedTime(now, expiresAt);
 
         return unsigned[HeaderBytes..].ToArray();
     }

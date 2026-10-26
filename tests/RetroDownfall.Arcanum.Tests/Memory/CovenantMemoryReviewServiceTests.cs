@@ -1868,6 +1868,447 @@ public sealed class CovenantMemoryReviewServiceTests
             "SELECT ReviewedThroughSequence FROM covenant_review_markers;"));
     }
 
+    [Fact]
+    public async Task Review_page_reports_earliest_actual_token_expiry_when_issuance_advances_the_clock()
+    {
+        FakeTimeProvider time = new();
+
+        time.SetUtcNow(DateTimeOffset.Parse("2026-10-26T12:00:00Z"));
+
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync(time: time, tokenTime: new AdvancingTokenClock(time));
+
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        for (int index = 0; index < 3; index++)
+        {
+            _ = await runtime.Fixture.SeedHeadAsync(CovenantScope.Campaign, CampaignOne, $"expiry.{index}",
+                CovenantLane.Confirmed, CovenantOperation.Set, "short", Token);
+        }
+
+        await using CovenantReadLease lease = runtime.ReadLease();
+
+        CovenantReviewPageDto page = (await runtime.Service.ListAsync(
+            new CovenantReviewListRequest(CovenantScope.Campaign, CampaignOne, CovenantLane.Confirmed, 2, null), lease, Token)).Value;
+
+        using System.Text.Json.JsonDocument json = System.Text.Json.JsonDocument.Parse(
+            System.Text.Json.JsonSerializer.Serialize(page, RetroDownfall.Arcanum.Api.Serialization.ArcanumJsonContext.Default.CovenantReviewPageDto));
+
+        Assert.True(json.RootElement.TryGetProperty("expiresAtUtc", out System.Text.Json.JsonElement expires),
+            "The list must disclose the actual earliest observation or cursor expiry.");
+
+        Assert.Equal(DateTimeOffset.Parse("2026-10-26T12:05:00Z"), expires.GetDateTimeOffset());
+
+        Assert.NotNull(page.NextCursor);
+
+        time.Advance(TimeSpan.FromMinutes(5) - TimeSpan.FromSeconds(3));
+
+        Assert.True(runtime.Codec.ReadObservation(page.Items[0].ObservationToken).IsFailure);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task One_superseded_decision_of_fifty_names_its_ordinal_and_event_without_partial_apply(bool apply)
+    {
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync();
+
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        SeededHead? original = null;
+
+        for (int index = 0; index < 50; index++)
+        {
+            SeededHead seeded = await runtime.Fixture.SeedHeadAsync(CovenantScope.Campaign, CampaignOne, $"item.{index}",
+                CovenantLane.Confirmed, CovenantOperation.Set, "short", Token);
+
+            if (index == 24)
+            {
+                original = seeded;
+            }
+        }
+
+        await using CovenantReadLease listLease = runtime.ReadLease();
+
+        CovenantReviewPageDto page = (await runtime.Service.ListAsync(
+            new CovenantReviewListRequest(CovenantScope.Campaign, CampaignOne, CovenantLane.Confirmed, 50, null), listLease, Token)).Value;
+
+        CovenantReviewBulkPrepareRequest request = new(Guid.CreateVersion7(), CovenantScope.Campaign, CampaignOne,
+            CovenantLane.Confirmed, MemoryReviewAction.Confirm,
+            [.. page.Items.Select(item => new CovenantReviewDecision(item.ObservationToken, null))]);
+
+        await using CovenantReadLease prepareLease = runtime.ReadLease();
+
+        MemoryReviewBulkPlanDto plan = (await runtime.Service.PrepareAsync(request, prepareLease, Token)).Value;
+
+        _ = await runtime.Fixture.SeedHeadAsync(CovenantScope.Campaign, CampaignOne, "item.24", CovenantLane.Confirmed,
+            CovenantOperation.Set, "changed", Token, entryId: original!.Value.EntryId, laneRevision: 2, predecessorVersionId: original.Value.VersionId);
+
+        Error error;
+
+        if (apply)
+        {
+            await using CovenantWriteLease writeLease = runtime.WriteLease();
+
+            Result<MemoryReviewBulkResultDto> result = await runtime.Service.ApplyAsync(
+                new CovenantReviewBulkApplyRequest(request, plan.PreparedPlanToken), writeLease, Token);
+
+            Assert.True(result.IsFailure);
+
+            error = result.Error;
+        }
+        else
+        {
+            Result<MemoryReviewBulkPlanDto> result = await runtime.Service.PrepareAsync(request, prepareLease, Token);
+
+            Assert.True(result.IsFailure);
+
+            error = result.Error;
+        }
+
+        Assert.Equal(ErrorCodes.MemoryReview.StaleObservation, error.Code);
+
+        Assert.Contains($"decision #26 (event {page.Items[25].EventSequence})", error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("Run arcanum memory covenant review list again", error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(0L, await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM covenant_review_decision_receipts;"));
+    }
+
+    [Theory]
+    [InlineData("malformed")]
+    [InlineData("expired")]
+    [InlineData("wrong-purpose")]
+    public async Task Invalid_observation_names_only_the_decision_and_tells_the_operator_to_refresh(string kind)
+    {
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync();
+
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        for (int index = 0; index < 2; index++)
+        {
+            _ = await runtime.Fixture.SeedHeadAsync(CovenantScope.Campaign, CampaignOne, $"token.{index}",
+                CovenantLane.Confirmed, CovenantOperation.Set, "short", Token);
+        }
+
+        await using CovenantReadLease lease = runtime.ReadLease();
+
+        CovenantReviewPageDto page = (await runtime.Service.ListAsync(
+            new CovenantReviewListRequest(CovenantScope.Campaign, CampaignOne, CovenantLane.Confirmed, 1, null), lease, Token)).Value;
+
+        string observation = kind switch
+        {
+            "malformed" => "private-untrusted-input!",
+            "wrong-purpose" => page.NextCursor!,
+            _ => page.Items[0].ObservationToken,
+        };
+
+        if (kind == "expired")
+        {
+            runtime.Time.Advance(TimeSpan.FromMinutes(5));
+        }
+
+        Result<MemoryReviewBulkPlanDto> refused = await runtime.Service.PrepareAsync(
+            new CovenantReviewBulkPrepareRequest(Guid.CreateVersion7(), CovenantScope.Campaign, CampaignOne,
+                CovenantLane.Confirmed, MemoryReviewAction.Confirm, [new CovenantReviewDecision(observation, null)]), lease, Token);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Contains("decision #1", refused.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("(event", refused.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("private-untrusted-input", refused.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("Run arcanum memory covenant review list again", refused.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Prepared_deadline_does_not_renew_the_observations_it_requires()
+    {
+        FakeTimeProvider time = new();
+
+        time.SetUtcNow(DateTimeOffset.Parse("2026-10-26T12:00:00Z"));
+
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync(time: time, tokenTime: new AdvancingTokenClock(time));
+
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        _ = await runtime.Fixture.SeedHeadAsync(CovenantScope.Campaign, CampaignOne, "plan.expiry",
+            CovenantLane.Confirmed, CovenantOperation.Set, "short", Token);
+
+        await using CovenantReadLease lease = runtime.ReadLease();
+
+        CovenantReviewPageDto page = (await runtime.Service.ListAsync(
+            new CovenantReviewListRequest(CovenantScope.Campaign, CampaignOne, CovenantLane.Confirmed, 50, null), lease, Token)).Value;
+
+        time.Advance(TimeSpan.FromMinutes(4));
+
+        CovenantReviewBulkPrepareRequest request = new(Guid.CreateVersion7(), CovenantScope.Campaign, CampaignOne,
+            CovenantLane.Confirmed, MemoryReviewAction.Confirm, [new CovenantReviewDecision(page.Items[0].ObservationToken, null)]);
+
+        MemoryReviewBulkPlanDto plan = (await runtime.Service.PrepareAsync(request, lease, Token)).Value;
+
+        Assert.Equal(DateTimeOffset.Parse("2026-10-26T12:05:00Z"), plan.ExpiresAtUtc);
+
+        Assert.Equal(DateTimeOffset.Parse("2026-10-26T12:04:02Z"), plan.IssuedAtUtc);
+
+        time.Advance(TimeSpan.FromMinutes(1));
+
+        await using CovenantWriteLease writeLease = runtime.WriteLease();
+
+        Result<MemoryReviewBulkResultDto> refused = await runtime.Service.ApplyAsync(new CovenantReviewBulkApplyRequest(request, plan.PreparedPlanToken), writeLease, Token);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Contains("Run arcanum memory covenant review list again", refused.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Prepared_deadline_includes_an_earlier_expiring_second_observation_from_the_same_window()
+    {
+        FakeTimeProvider time = new();
+
+        time.SetUtcNow(DateTimeOffset.Parse("2026-10-26T12:00:00Z"));
+
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync(time: time);
+
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        for (int index = 0; index < 2; index++)
+        {
+            _ = await runtime.Fixture.SeedHeadAsync(CovenantScope.Campaign, CampaignOne, $"plan.expiry.{index}",
+                CovenantLane.Confirmed, CovenantOperation.Set, "short", Token);
+        }
+
+        await using CovenantReadLease lease = runtime.ReadLease();
+
+        CovenantReviewListRequest list = new(CovenantScope.Campaign, CampaignOne, CovenantLane.Confirmed, 50, null);
+
+        CovenantReviewPageDto earlier = (await runtime.Service.ListAsync(list, lease, Token)).Value;
+
+        time.Advance(TimeSpan.FromMinutes(2));
+
+        CovenantReviewPageDto later = (await runtime.Service.ListAsync(list, lease, Token)).Value;
+
+        Assert.Equal(earlier.FrozenThroughEventSequence, later.FrozenThroughEventSequence);
+
+        CovenantReviewBulkPrepareRequest request = new(Guid.CreateVersion7(), CovenantScope.Campaign, CampaignOne,
+            CovenantLane.Confirmed, MemoryReviewAction.Confirm,
+            [
+                new CovenantReviewDecision(later.Items[0].ObservationToken, null),
+                new CovenantReviewDecision(earlier.Items[1].ObservationToken, null),
+            ]);
+
+        MemoryReviewBulkPlanDto plan = (await runtime.Service.PrepareAsync(request, lease, Token)).Value;
+
+        Assert.Equal(DateTimeOffset.Parse("2026-10-26T12:02:00Z"), plan.IssuedAtUtc);
+
+        Assert.Equal(DateTimeOffset.Parse("2026-10-26T12:05:00Z"), plan.ExpiresAtUtc);
+
+        time.Advance(TimeSpan.FromMinutes(3));
+
+        Assert.True(runtime.Codec.ReadObservation(request.Decisions[0].ObservationToken).IsSuccess);
+
+        Assert.True(runtime.Codec.ReadPreparedPlan(plan.PreparedPlanToken).IsSuccess);
+
+        await using CovenantWriteLease writeLease = runtime.WriteLease();
+
+        Result<MemoryReviewBulkResultDto> refused = await runtime.Service.ApplyAsync(new(request, plan.PreparedPlanToken), writeLease, Token);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.MemoryReview.InvalidToken, refused.Error.Code);
+
+        Assert.Contains("decision #2", refused.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(0L, await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM covenant_review_decision_receipts;"));
+    }
+
+    [Fact]
+    public async Task Invalid_correction_names_the_second_decision_and_does_not_echo_private_content_or_exception_details()
+    {
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync();
+
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        for (int index = 0; index < 3; index++)
+        {
+            _ = await runtime.Fixture.SeedHeadAsync(CovenantScope.Campaign, CampaignOne, $"correct.{index}",
+                CovenantLane.Confirmed, CovenantOperation.Set, "short", Token);
+        }
+
+        await using CovenantReadLease lease = runtime.ReadLease();
+
+        CovenantReviewPageDto page = (await runtime.Service.ListAsync(
+            new CovenantReviewListRequest(CovenantScope.Campaign, CampaignOne, CovenantLane.Confirmed, 50, null), lease, Token)).Value;
+
+        CovenantReviewDecision[] decisions = [.. page.Items.Select((item, index) => new CovenantReviewDecision(
+            item.ObservationToken, index == 1 ? "private-content\u200b" : "replacement"))];
+
+        Result<MemoryReviewBulkPlanDto> refused = await runtime.Service.PrepareAsync(
+            new CovenantReviewBulkPrepareRequest(Guid.CreateVersion7(), CovenantScope.Campaign, CampaignOne,
+                CovenantLane.Confirmed, MemoryReviewAction.Correct, decisions), lease, Token);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.Validation.InvalidBody, refused.Error.Code);
+
+        Assert.Contains($"decision #2 (event {page.Items[1].EventSequence})", refused.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("Parameter", refused.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("private-content", refused.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("replacement content", refused.Error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("malformed")]
+    [InlineData("expired")]
+    [InlineData("wrong-purpose")]
+    public async Task Cursor_refusal_tells_the_operator_to_refresh(string kind)
+    {
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync();
+
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        for (int index = 0; index < 2; index++)
+        {
+            _ = await runtime.Fixture.SeedHeadAsync(CovenantScope.Campaign, CampaignOne, $"cursor.{index}",
+                CovenantLane.Confirmed, CovenantOperation.Set, "short", Token);
+        }
+
+        await using CovenantReadLease lease = runtime.ReadLease();
+
+        CovenantReviewListRequest request = new(CovenantScope.Campaign, CampaignOne, CovenantLane.Confirmed, 1, null);
+
+        CovenantReviewPageDto page = (await runtime.Service.ListAsync(request, lease, Token)).Value;
+
+        string cursor = kind switch
+        {
+            "malformed" => "private-invalid-cursor!",
+            "wrong-purpose" => page.Items[0].ObservationToken,
+            _ => page.NextCursor!,
+        };
+
+        if (kind == "expired")
+        {
+            runtime.Time.Advance(TimeSpan.FromMinutes(5));
+        }
+
+        Result<CovenantReviewPageDto> refused = await runtime.Service.ListAsync(request with { Cursor = cursor }, lease, Token);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Contains("Run arcanum memory covenant review list again", refused.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("private-invalid", refused.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Different_actions_require_fresh_observations_after_the_first_apply_and_refresh_succeeds()
+    {
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync();
+
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        for (int index = 0; index < 2; index++)
+        {
+            _ = await runtime.Fixture.SeedHeadAsync(CovenantScope.Campaign, CampaignOne, $"actions.{index}",
+                CovenantLane.Proposed, CovenantOperation.Set, "short", Token, origin: CovenantOrigin.AgentProposed);
+        }
+
+        await using CovenantReadLease lease = runtime.ReadLease();
+
+        CovenantReviewListRequest list = new(CovenantScope.Campaign, CampaignOne, CovenantLane.Proposed, 50, null);
+
+        CovenantReviewPageDto page = (await runtime.Service.ListAsync(list, lease, Token)).Value;
+
+        CovenantReviewBulkPrepareRequest retire = new(Guid.CreateVersion7(), CovenantScope.Campaign, CampaignOne,
+            CovenantLane.Proposed, MemoryReviewAction.Retire, [new CovenantReviewDecision(page.Items[0].ObservationToken, null)]);
+
+        CovenantReviewBulkPrepareRequest confirm = retire with
+        {
+            RequestId = Guid.CreateVersion7(),
+            Action = MemoryReviewAction.Confirm,
+            Decisions = [new CovenantReviewDecision(page.Items[1].ObservationToken, null)],
+        };
+
+        MemoryReviewBulkPlanDto retirePlan = (await runtime.Service.PrepareAsync(retire, lease, Token)).Value;
+
+        MemoryReviewBulkPlanDto confirmPlan = (await runtime.Service.PrepareAsync(confirm, lease, Token)).Value;
+
+        await using CovenantWriteLease writeLease = runtime.WriteLease();
+
+        Result<MemoryReviewBulkResultDto> retired = await runtime.Service.ApplyAsync(new(retire, retirePlan.PreparedPlanToken), writeLease, Token);
+
+        Assert.True(retired.IsSuccess, retired.Error.Message);
+
+        Result<MemoryReviewBulkResultDto> staleApply = await runtime.Service.ApplyAsync(new(confirm, confirmPlan.PreparedPlanToken), writeLease, Token);
+
+        Result<MemoryReviewBulkPlanDto> stalePrepare = await runtime.Service.PrepareAsync(confirm, lease, Token);
+
+        foreach (Error error in new[] { staleApply.Error, stalePrepare.Error })
+        {
+            Assert.Equal(ErrorCodes.MemoryReview.StaleObservation, error.Code);
+
+            Assert.Contains("Any apply in this scope and lane invalidates", error.Message, StringComparison.Ordinal);
+
+            Assert.Contains("Run arcanum memory covenant review list again", error.Message, StringComparison.Ordinal);
+        }
+
+        CovenantReviewPageDto refreshed = (await runtime.Service.ListAsync(list, lease, Token)).Value;
+
+        CovenantReviewItemDto remaining = Assert.Single(refreshed.Items, item => item.VersionId == page.Items[1].VersionId);
+
+        confirm = confirm with { Decisions = [new CovenantReviewDecision(remaining.ObservationToken, null)] };
+
+        MemoryReviewBulkPlanDto freshPlan = (await runtime.Service.PrepareAsync(confirm, lease, Token)).Value;
+
+        Result<MemoryReviewBulkResultDto> confirmed = await runtime.Service.ApplyAsync(new(confirm, freshPlan.PreparedPlanToken), writeLease, Token);
+
+        Assert.True(confirmed.IsSuccess, confirmed.Error.Message);
+
+        Assert.Equal("Confirmed", Assert.Single(confirmed.Value.Items).Outcome);
+
+        Assert.Equal(0L, await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM covenant_heads WHERE LaneCode = 1;"));
+    }
+
+    [Fact]
+    public async Task Empty_review_page_has_no_token_deadline()
+    {
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync();
+
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        await using CovenantReadLease lease = runtime.ReadLease();
+
+        CovenantReviewPageDto page = (await runtime.Service.ListAsync(
+            new CovenantReviewListRequest(CovenantScope.Campaign, CampaignOne, CovenantLane.Confirmed, 50, null), lease, Token)).Value;
+
+        Assert.Empty(page.Items);
+
+        Assert.Null(page.NextCursor);
+
+        Assert.Null(page.ExpiresAtUtc);
+    }
+
+    private sealed class AdvancingTokenClock(FakeTimeProvider time) : TimeProvider
+    {
+        public override long TimestampFrequency => time.TimestampFrequency;
+
+        public override DateTimeOffset GetUtcNow() => time.GetUtcNow();
+
+        public override long GetTimestamp()
+        {
+            long timestamp = time.GetTimestamp();
+
+            time.Advance(TimeSpan.FromSeconds(1));
+
+            return timestamp;
+        }
+    }
+
     private static CovenantDigest Digest(byte value)
     {
         byte[] bytes = new byte[CovenantLimits.DigestBytes];
@@ -1938,14 +2379,16 @@ public sealed class CovenantMemoryReviewServiceTests
             bool withErasureEvidence = false,
             TimeSpan? busyRetryDeadline = null,
             Func<TimeSpan, CancellationToken, Task>? busyRetryDelay = null,
-            string? noOpOutcomeSpelling = null)
+            string? noOpOutcomeSpelling = null,
+            FakeTimeProvider? time = null,
+            TimeProvider? tokenTime = null)
         {
             CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(
                 Token,
                 withErasureEvidence: withErasureEvidence);
             Guid dataset = await fixture.ReadDatasetGenerationAsync(Token);
-            FakeTimeProvider time = new();
-            MemoryReviewTokenCodec codec = new(time);
+            time ??= new FakeTimeProvider();
+            MemoryReviewTokenCodec codec = new(tokenTime ?? time);
             TestCapturingLogger<CovenantMemoryReviewService> logger = new();
 
             CovenantMemoryReviewService service = BuildService(

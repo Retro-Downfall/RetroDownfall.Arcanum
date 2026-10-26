@@ -468,6 +468,49 @@ public sealed class MemoryReviewContractTests
         AssertInvalid(request.Validate());
     }
 
+    [Theory]
+    [InlineData("empty")]
+    [InlineData("duplicate")]
+    [InlineData("missing-replacement")]
+    public void Covenant_request_shape_refusals_identify_the_decision_without_trusting_an_event(string kind)
+    {
+        CovenantReviewBulkPrepareRequest request = new(RequestId, CovenantScope.Global, null,
+            CovenantLane.Confirmed, MemoryReviewAction.Correct,
+            [new CovenantReviewDecision("first", "valid"), new CovenantReviewDecision(
+                kind == "empty" ? " " : kind == "duplicate" ? "first" : "second",
+                kind == "missing-replacement" ? null : "valid")]);
+
+        Result refused = request.Validate();
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Contains("decision #2", refused.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("(event", refused.Error.Message, StringComparison.Ordinal);
+
+        if (kind != "missing-replacement")
+        {
+            Assert.Contains("Run arcanum memory covenant review list again", refused.Error.Message, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Covenant_cursor_and_plan_shape_refusals_tell_the_operator_to_refresh(bool plan)
+    {
+        CovenantReviewBulkPrepareRequest prepared = new(RequestId, CovenantScope.Global, null,
+            CovenantLane.Confirmed, MemoryReviewAction.Confirm, [new CovenantReviewDecision("observation", null)]);
+
+        Result refused = plan
+            ? new CovenantReviewBulkApplyRequest(prepared, " ").Validate()
+            : new CovenantReviewListRequest(CovenantScope.Global, null, CovenantLane.Confirmed, 25, " ").Validate();
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Contains("Run arcanum memory covenant review list again", refused.Error.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Apply_repeats_the_exact_prepared_request_and_requires_its_token()
     {
