@@ -260,6 +260,50 @@ public sealed class CommandCenterSessionConcurrencyTests
         h.State.EndTurn();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Closing_ui_during_a_turn_does_not_fault_submit_or_leak_turn_ownership(bool cancelInvocation)
+    {
+        TaskCompletionSource entered = NewSignal();
+        TaskCompletionSource release = NewSignal();
+        using Handler handler = new(async (request, token) =>
+        {
+            if (request.RequestUri!.AbsolutePath.Contains("intelligence", StringComparison.Ordinal))
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(token);
+            }
+
+            return DefaultResponse(request);
+        });
+        await using Harness h = new(handler);
+        Task turn = h.Submit("finishing during exit");
+        await entered.Task.WaitAsync(HangGuard);
+        h.Ui.Writer.TryComplete();
+        if (cancelInvocation) h.Cancellation.Cancel();
+        release.TrySetResult();
+        await turn.WaitAsync(HangGuard);
+        Assert.False(h.State.Generating);
+        Assert.Null(h.State.TurnCts);
+        Assert.DoesNotContain(h.Logger.Entries, static entry => entry.Level >= Microsoft.Extensions.Logging.LogLevel.Error);
+    }
+
+    [Fact]
+    public async Task Duplicate_submit_after_ui_closes_is_still_a_nonthrowing_refusal()
+    {
+        using Handler handler = new((request, _) => Task.FromResult(DefaultResponse(request)));
+        await using Harness h = new(handler);
+        Assert.True(h.State.TryBeginTurn());
+        h.Window.Input.Text = "keep this";
+        h.Ui.Writer.TryComplete();
+        await h.Submit("keep this").WaitAsync(HangGuard);
+        Assert.Empty(handler.Paths);
+        Assert.Equal("keep this", h.Window.Input.Text);
+        Assert.True(h.State.Generating);
+        h.State.EndTurn();
+    }
+
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private static HttpResponseMessage Json<T>(T value, JsonTypeInfo<T> type) => new(HttpStatusCode.OK)
@@ -299,12 +343,16 @@ public sealed class CommandCenterSessionConcurrencyTests
         internal CommandCenterWindow Window { get; } = new();
         internal IApplication App { get; } = Application.Create().Init("ansi");
         internal CommandCenterHost Host { get; }
+
+        internal TestCapturingLogger<CommandCenterHost> Logger { get; } = new();
         internal SessionWorkspaceService Workspace => _provider.GetRequiredService<SessionWorkspaceService>();
 
         internal Harness(Handler handler)
         {
             ServiceCollection services = new();
             CliApplicationFactory.ConfigureCliServices(services, new ConfigurationManager());
+            services.RemoveAll<Microsoft.Extensions.Logging.ILogger<CommandCenterHost>>();
+            services.AddSingleton<Microsoft.Extensions.Logging.ILogger<CommandCenterHost>>(Logger);
             services.RemoveAll<ArcanumApiClient>();
             services.AddSingleton(new ArcanumApiClient(new Factory(handler), ArcanumApiCredentialLeaseTestFactory.Create("test-key")));
             services.RemoveAll<ILastSessionStore>();

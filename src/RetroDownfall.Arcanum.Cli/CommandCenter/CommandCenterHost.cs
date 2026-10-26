@@ -2328,8 +2328,7 @@ internal sealed class CommandCenterHost(
         {
             // Admission denied — preserve composer text and staged attachments.
             state.Log.Append(SessionLogEntryKind.Status, "Already generating — Ctrl+C to cancel.");
-            await ui.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog), linked.Token)
-                .ConfigureAwait(false);
+            _ = ui.TryWrite(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog));
             return;
         }
 
@@ -2345,15 +2344,17 @@ internal sealed class CommandCenterHost(
             await RunGatedAsync(state, ui, linked.Token,
                     () => sessionWorkspace.RefreshSessionsAsync(state, linked.Token))
                 .ConfigureAwait(false);
-            await ui.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshAll), linked.Token)
-                .ConfigureAwait(false);
+            _ = ui.TryWrite(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshAll));
+        }
+        catch (OperationCanceledException) when (linked.IsCancellationRequested)
+        {
+            // Ordinary invocation shutdown may cancel the post-turn session refresh.
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Command Center submit failed.");
             state.Log.Append(SessionLogEntryKind.Error, ex.Message);
-            await ui.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog), CancellationToken.None)
-                .ConfigureAwait(false);
+            _ = ui.TryWrite(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog));
         }
         finally
         {
