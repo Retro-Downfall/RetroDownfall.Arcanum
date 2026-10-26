@@ -678,9 +678,15 @@ internal sealed class SessionWorkspaceService(
     public async Task<bool> PersistBoundSessionAsync(
         CommandCenterState state,
         Guid sessionId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        (Guid? SessionId, long Revision)? expectedBinding = null)
     {
         ArgumentNullException.ThrowIfNull(state);
+
+        if (expectedBinding is { } sourceVisit && state.AttachmentBinding != sourceVisit)
+        {
+            return false;
+        }
 
         ArcanumClientMutationResult<CliContextDocument> persisted =
             await lastSessionStore
@@ -706,24 +712,152 @@ internal sealed class SessionWorkspaceService(
             return false;
         }
 
-        state.SelectedSessionId = sessionId;
-
-        if (state.SessionId != sessionId)
+        lock (state.AttachmentProjectionGate)
         {
-            state.ApplySessionMeta(sessionId, state.SessionTitle, state.SessionStatus, state.SessionEntryCount);
-        }
+            if (expectedBinding is { } expected && state.AttachmentBinding != expected)
+            {
+                return false;
+            }
 
-        if (string.IsNullOrWhiteSpace(state.SessionTitle))
-        {
-            state.SessionTitle = "Untitled";
-        }
+            state.SelectedSessionId = sessionId;
 
-        if (string.IsNullOrWhiteSpace(state.SessionStatus))
-        {
-            state.SessionStatus = "Active";
+            if (state.SessionId != sessionId)
+            {
+                state.ApplySessionMeta(sessionId, state.SessionTitle, state.SessionStatus, state.SessionEntryCount);
+            }
+
+            if (string.IsNullOrWhiteSpace(state.SessionTitle))
+            {
+                state.SessionTitle = "Untitled";
+            }
+
+            if (string.IsNullOrWhiteSpace(state.SessionStatus))
+            {
+                state.SessionStatus = "Active";
+            }
         }
 
         return true;
+    }
+
+    internal const string TranscriptRecoveryMessage =
+        "Live output retained. Load the newest transcript page or use /resume for persisted entry selection.";
+
+    /// <summary>Admits a bounded durable snapshot only for the turn's accepted Session visit.</summary>
+    public async Task ReconcileCompletedTurnAsync(
+        CommandCenterState state,
+        TurnTranscriptReceipt receipt,
+        Func<bool> preserveTranscriptPage,
+        CancellationToken cancellationToken)
+    {
+        if (!receipt.DurableResult || receipt.Binding.SessionId is not { } sessionId
+            || state.AttachmentBinding != receipt.Binding)
+        {
+            return;
+        }
+
+        try
+        {
+            Result<SessionDetailDto> detailResult = await apiClient
+                .GetSessionAsync(sessionId, cancellationToken).ConfigureAwait(false);
+            if (!detailResult.IsSuccess || detailResult.Value is not { } detail || detail.Id != sessionId)
+            {
+                state.Log.Append(SessionLogEntryKind.Status, TranscriptRecoveryMessage);
+                return;
+            }
+
+            Result<EntryDto[]> entriesResult = await apiClient.GetSessionEntriesAsync(
+                sessionId, offset: 0, limit: CommandCenterState.TranscriptPageSize + 1,
+                cancellationToken).ConfigureAwait(false);
+            if (!entriesResult.IsSuccess || entriesResult.Value is not { } descending
+                || descending.Any(entry => entry.SessionId != sessionId || entry.Id == Guid.Empty)
+                || descending.Select(entry => entry.Id).Distinct().Count() != descending.Length)
+            {
+                state.Log.Append(SessionLogEntryKind.Status, TranscriptRecoveryMessage);
+                return;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (state.AttachmentProjectionGate)
+            {
+                if (state.AttachmentBinding != receipt.Binding)
+                {
+                    return;
+                }
+
+                state.ApplySessionMeta(sessionId, detail.Title, detail.Status, detail.EntryCount, detail.ForkedFromSessionId);
+                if (state.HasNewerTranscriptEntries || preserveTranscriptPage())
+                {
+                    // Keep the operator's historical page or scrolled selection anchored.
+                    // The explicit newest-page action obtains durable IDs when they want to leave it.
+                    state.HasNewerTranscriptEntries = true;
+                    return;
+                }
+
+                EntryDto[] chronological = descending.Take(CommandCenterState.TranscriptPageSize).Reverse().ToArray();
+                List<(SessionLogEntryKind Kind, string Text, Guid? SourceEntryId)> mapped = [];
+                HashSet<string> liveCalls = state.Incantations.Snapshot().Select(record => record.CallId).ToHashSet(StringComparer.Ordinal);
+                foreach (EntryDto entry in chronological)
+                {
+                    if (SessionLogBuffer.IsEphemeralReasoningRole(entry.Role))
+                    {
+                        continue;
+                    }
+
+                    SessionLogEntryKind kind = SessionLogBuffer.MapEntryRole(entry.Role);
+                    if (PersistedToolInteraction.IsToolInteraction(entry) || kind == SessionLogEntryKind.Tool)
+                    {
+                        // Legacy bracket pairs have no durable call identity. Explicit resume owns
+                        // their presentation; automatic refresh cannot match them to a live call.
+                        if (!string.IsNullOrWhiteSpace(entry.ToolCallId))
+                        {
+                            string callId = entry.ToolCallId.Trim();
+                            if (!liveCalls.Contains(callId))
+                            {
+                                bool bracketResult = PersistedToolInteraction.TryParseToolResult(entry.Content, out string result);
+                                if (bracketResult || kind == SessionLogEntryKind.Tool)
+                                {
+                                    // A tool/function row is a result even when its payload is JSON.
+                                    // Its verified call ID, never the most recent same-named call, owns it.
+                                    result = bracketResult ? result : entry.Content ?? string.Empty;
+                                    if (entry.Role.Contains("error", StringComparison.OrdinalIgnoreCase)
+                                        || result.Contains("[Tool error:", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        _ = state.Incantations.UpsertError(callId, entry.ToolName, result);
+                                    }
+                                    else
+                                    {
+                                        _ = state.Incantations.UpsertResult(callId, entry.ToolName, result);
+                                    }
+                                }
+                                else if (PersistedToolInteraction.TryParseToolCall(entry.Content, out string parsedName, out string? parsedArguments))
+                                {
+                                    string name = string.IsNullOrWhiteSpace(entry.ToolName) ? parsedName : entry.ToolName;
+                                    _ = state.Incantations.UpsertCall(callId, name, parsedArguments);
+                                }
+                                else if (kind == SessionLogEntryKind.Assistant)
+                                {
+                                    _ = state.Incantations.UpsertCall(callId, entry.ToolName, entry.Content);
+                                }
+                            }
+                        }
+
+                        continue;
+                    }
+
+                    mapped.Add((kind, FormatEntryContent(entry), entry.Id));
+                }
+
+                state.LoadedTranscriptEntries = chronological;
+                state.HasOlderTranscriptEntries = descending.Length > CommandCenterState.TranscriptPageSize;
+                state.Log.ReconcileApiHistory(mapped, receipt.ProvisionalEntryIds, state.HasOlderTranscriptEntries);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogDebug("Post-turn transcript refresh failed for {SessionId}; exception type {ExceptionType}.", sessionId, ex.GetType().Name);
+            state.Log.Append(SessionLogEntryKind.Status, TranscriptRecoveryMessage);
+        }
     }
 
     private static void ApplyTranscriptPage(

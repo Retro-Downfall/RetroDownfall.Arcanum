@@ -13,6 +13,12 @@ using RetroDownfall.Arcanum.Core.Tower;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
+/// <summary>Local evidence for the Host's authenticated post-turn snapshot read.</summary>
+internal sealed record TurnTranscriptReceipt(
+    bool DurableResult,
+    (Guid? SessionId, long Revision) Binding,
+    IReadOnlyList<Guid> ProvisionalEntryIds);
+
 /// <summary>
 /// Streams a chat turn via <see cref="ArcanumApiClient"/>. Does not call <c>ChatCommand</c>.
 /// Updates flow through <see cref="CommandCenterState"/> and a UI channel — never mutate Terminal.Gui views here.
@@ -31,7 +37,7 @@ internal sealed class CommandCenterChatRunner(
     internal AttachmentBuildDelegate BuildAttachmentsAsync { get; set; } =
         CommandCenterTurnAttachmentBuilder.BuildAsync;
 
-    public async Task RunTurnAsync(
+    public async Task<TurnTranscriptReceipt> RunTurnAsync(
         string prompt,
         CommandCenterState state,
         ChannelWriter<CommandCenterUiUpdate> uiUpdates,
@@ -60,6 +66,9 @@ internal sealed class CommandCenterChatRunner(
         bool cancelled = false;
         bool sawError = false;
         bool sawResult = false;
+        bool bindingAccepted = true;
+        (Guid? SessionId, long Revision) binding = state.AttachmentBinding;
+        List<Guid> provisionalEntryIds = [];
 
         void SnapshotStreamingText()
         {
@@ -114,12 +123,13 @@ internal sealed class CommandCenterChatRunner(
                 ? null
                 : staged.References.ToList();
 
-            state.Log.Append(SessionLogEntryKind.User, attachments.Prompt);
+            provisionalEntryIds.Add(state.Log.Append(SessionLogEntryKind.User, attachments.Prompt).Id);
             SessionLogEntry assistantLine = state.Log.Append(
                 SessionLogEntryKind.Assistant,
                 string.Empty,
                 streaming: true);
             assistantEntry = assistantLine;
+            provisionalEntryIds.Add(assistantLine.Id);
             await uiUpdates.WriteAsync(
                     new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshAll),
                     cancellationToken)
@@ -323,12 +333,19 @@ internal sealed class CommandCenterChatRunner(
                     case IntelligenceEventType.ConversationBound:
                         if (evt.Data is not null && Guid.TryParse(evt.Data, out Guid bound))
                         {
-                            _ = await sessionWorkspace
+                            bool accepted = await sessionWorkspace
                                 .PersistBoundSessionAsync(
                                     state,
                                     bound,
-                                    cancellationToken)
+                                    cancellationToken,
+                                    binding)
                                 .ConfigureAwait(false);
+
+                            bindingAccepted &= accepted;
+                            if (accepted)
+                            {
+                                binding = (bound, binding.Revision + (binding.SessionId == bound ? 0 : 1));
+                            }
 
                             await uiUpdates.WriteAsync(
                                     new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshHeader),
@@ -387,6 +404,7 @@ internal sealed class CommandCenterChatRunner(
         }
         catch (Exception ex)
         {
+            sawError = true;
             logger.LogError(ex, "Command Center chat turn failed.");
             _ = humanPromptCoordinator.TryCloseActive(
                 HumanPromptCloseReason.Expired,
@@ -449,6 +467,14 @@ internal sealed class CommandCenterChatRunner(
                 // Channel may be completed on exit.
             }
         }
+
+        bool durable = sawResult && !cancelled && !sawError && bindingAccepted;
+        if (!durable)
+        {
+            state.Log.Append(SessionLogEntryKind.Status, SessionWorkspaceService.TranscriptRecoveryMessage);
+        }
+
+        return new TurnTranscriptReceipt(durable, binding, provisionalEntryIds);
     }
 
     private async Task HandleWardedAsync(

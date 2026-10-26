@@ -60,7 +60,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
     /// </summary>
     private CommandCenterOverlayKind _overlayKind = CommandCenterOverlayKind.None;
 
-    private bool _followTail = true;
+    private volatile bool _followTail = true;
 
     private bool _incantationsFollowTail = true;
 

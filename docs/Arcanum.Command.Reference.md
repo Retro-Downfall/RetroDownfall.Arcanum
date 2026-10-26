@@ -219,6 +219,7 @@ One registry defines every slash command, its help text, and the canonical repla
 | `/fork` | Fork the complete active session and open the branch. |
 | `/fork confirm` | Confirm the pending fork with its original source, cutoff, and alternative intent; a changed selected attachment set requires confirmation again. |
 | `/fork alternative` | Fork before the user prompt preceding the selected answer, then submit that prompt once to regenerate. |
+
 | `/fork at [<entry-id>]` | Fork through the supplied or selected transcript entry. |
 | `/branch parent`, `/branch child` | Open the visible parent or newest child branch of the current Session. A New Session has no branch to navigate. |
 | `/attach <path>` | Stage a local text file or image for the next turn. Neither `/attach` nor `@path` stages a Comprehension document (`.docx`, `.xlsx`, `.pptx`, `.odt`, `.ods`, `.odp`, `.vsdx`, their macro-enabled variants, `.pdf`, or `.arccomp`) as text: the file stays unstaged, and the status line says to store it with `arcanum attachment add <path>` and reference it with `arcanum run --attachment <id>` or `/attachments add <name>`. |
@@ -235,6 +236,8 @@ One registry defines every slash command, its help text, and the canonical repla
 | `/ward allow <id>` | Explicitly allow one retained active compatibility Ward. |
 | `/ward deny <id>` | Explicitly deny one retained active compatibility Ward. |
 | `/exit`, `/quit` | Leave Command Center. |
+
+After a successful completed live turn, Command Center refreshes persisted entry IDs and the current Session count, so the new answer can be selected for `/fork at` or `/fork alternative` without resuming first. An older page or scrolled selection stays in place; use the newest-page action to see the latest persisted answer. Cancelled, interrupted, failed or locally unbound turns keep their provisional output and diagnostics. Use `/resume` or load the newest page to recover persisted selection after the host finishes cleanup; Command Center does not infer entry identity from displayed text.
 
 Once the host creates a fork, a later failure to load or save the selected branch names its created id and gives the exact `/resume <id>` command. The source stays selected until opening succeeds. Command Center refreshes the Session list when the caller remains active; a failed refresh does not replace the original recovery guidance. Cancellation still propagates and retains the known branch id in the transcript. No recovery step creates another fork.
 

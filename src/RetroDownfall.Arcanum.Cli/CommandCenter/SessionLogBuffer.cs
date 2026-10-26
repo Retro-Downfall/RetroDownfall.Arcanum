@@ -221,6 +221,42 @@ internal sealed class SessionLogBuffer
             entries.Select(static entry => (entry.Kind, entry.Text, (Guid?)null)).ToArray(),
             showOlderMessagesMarker);
 
+    /// <summary>Keeps existing durable anchors and local diagnostics, replacing only this turn's provisional rows.</summary>
+    public void ReconcileApiHistory(
+        IReadOnlyList<(SessionLogEntryKind Kind, string Text, Guid? SourceEntryId)> entries,
+        IReadOnlyList<Guid> provisionalEntryIds,
+        bool showOlderMessagesMarker)
+    {
+        lock (_gate)
+        {
+            Dictionary<Guid, SessionLogEntry> existing = _entries
+                .Where(entry => entry.SourceEntryId.HasValue)
+                .ToDictionary(entry => entry.SourceEntryId!.Value);
+            HashSet<Guid> provisional = provisionalEntryIds.ToHashSet();
+            List<SessionLogEntry> locals = _entries.Where(entry => entry.SourceEntryId is null
+                && !provisional.Contains(entry.Id)
+                && entry.Text is not OlderMessagesMarker and not NewerMessagesMarker and not EmptySessionMessage).ToList();
+            _entries.Clear();
+            if (showOlderMessagesMarker)
+            {
+                _entries.Add(new SessionLogEntry(SessionLogEntryKind.Status, OlderMessagesMarker));
+            }
+
+            foreach ((SessionLogEntryKind kind, string text, Guid? id) in entries)
+            {
+                SessionLogEntry entry = id is { } source && existing.TryGetValue(source, out SessionLogEntry? prior)
+                    ? prior
+                    : new SessionLogEntry(kind, SanitizeAndClamp(kind, text), sourceEntryId: id);
+                entry.Text = SanitizeAndClamp(kind, text);
+                _entries.Add(entry);
+            }
+
+            _entries.AddRange(locals);
+            TrimUnlocked();
+            PruneWrapCacheUnlocked();
+        }
+    }
+
     public void ReplaceWithApiHistory(
         IReadOnlyList<(SessionLogEntryKind Kind, string Text, Guid? SourceEntryId)> entries,
         bool showOlderMessagesMarker,
