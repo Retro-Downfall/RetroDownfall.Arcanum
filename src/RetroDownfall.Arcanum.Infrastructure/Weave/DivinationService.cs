@@ -75,9 +75,9 @@ internal sealed class DivinationService(
                 // Eligibility is part of candidate selection, before the heap ranks and takes K.
                 // A vector accelerator cannot express this exact-head predicate, so Saga always uses
                 // the managed source-of-truth path regardless of the optional accelerator flag.
-                return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection,
+                return await SagaRankingEvidenceReader.InSnapshotAsync(connection,
                     () => SearchManagedSagaAsync(connection, primaryKeyColumn, embeddingColumn,
-                        queryVector, maxResults, similarityThreshold, cancellationToken), cancellationToken)
+                        queryVector, maxResults, similarityThreshold, cancellationToken), cancellationToken, enabled: RankingEnabled)
                     .ConfigureAwait(false);
             }
 
@@ -144,10 +144,10 @@ internal sealed class DivinationService(
 
             if (IsSaga(blobTableName))
             {
-                return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection,
+                return await SagaRankingEvidenceReader.InSnapshotAsync(connection,
                     () => SearchManagedScopedAsync(connection, blobTableName, primaryKeyColumn, embeddingColumn,
                         scopeTableName, scopeJoinColumn, scopeFilterColumn, scopeFilterValue,
-                        queryVector, maxResults, similarityThreshold, cancellationToken), cancellationToken)
+                        queryVector, maxResults, similarityThreshold, cancellationToken), cancellationToken, enabled: RankingEnabled)
                     .ConfigureAwait(false);
             }
 
@@ -212,10 +212,10 @@ internal sealed class DivinationService(
 
             if (IsSaga(blobTableName))
             {
-                return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection,
+                return await SagaRankingEvidenceReader.InSnapshotAsync(connection,
                     () => SearchManagedCampaignScopedAsync(connection, blobTableName, primaryKeyColumn,
                         embeddingColumn, scope, queryEmbedding.Vector.ToArray(), maxResults,
-                        similarityThreshold, cancellationToken), cancellationToken).ConfigureAwait(false);
+                        similarityThreshold, cancellationToken), cancellationToken, enabled: RankingEnabled).ConfigureAwait(false);
             }
 
             return await SearchManagedCampaignScopedAsync(
