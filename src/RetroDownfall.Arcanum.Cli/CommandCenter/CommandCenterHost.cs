@@ -31,8 +31,12 @@ internal sealed class CommandCenterHost(
 
     CommandCenterAttachmentDriftMonitor attachmentDriftMonitor,
 
+    TimeProvider timeProvider,
+
     ILogger<CommandCenterHost> logger) : ICommandCenterHost
 {
+    private readonly TimeProvider _shutdownClock = timeProvider;
+
     public const string NoCommandCenterEnvVar = "ARCANUM_NO_COMMAND_CENTER";
 
     /// <summary>
@@ -788,10 +792,14 @@ internal sealed class CommandCenterHost(
             return;
         }
 
+        // Normal UI exit has already cancelled the run token. Give owned-host cleanup its own
+        // short budget, including authentication, response headers and the response body.
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(5), _shutdownClock);
+
         try
         {
             Result<bool> quit = await apiClient
-                .QuitServerAsync(CancellationToken.None)
+                .QuitServerAsync(deadline.Token)
                 .ConfigureAwait(false);
 
             if (quit.IsFailure)
@@ -800,6 +808,11 @@ internal sealed class CommandCenterHost(
                     "Could not stop the auto-launched Arcanum host: {ErrorCode}.",
                     quit.Error.Code);
             }
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+        {
+            logger.LogWarning(
+                "Could not confirm the auto-launched Arcanum host stopped within 5 seconds; continuing Command Center exit.");
         }
         catch (Exception ex)
         {
