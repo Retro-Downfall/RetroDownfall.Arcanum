@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Tower;
 
 namespace RetroDownfall.Arcanum.Tests.Packaging;
 
+[Collection("ProcessEnvironment")]
 public sealed class LocalPdfQualificationEvidenceTests
 {
     private static readonly Guid Session = Guid.Parse("11111111-1111-1111-1111-111111111111");

@@ -14,6 +14,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
 using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -43,8 +44,6 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
     private readonly bool _ownsProfile;
 
     private readonly FakeIntelligenceProvider _fakeIntelligence = new();
-
-    private readonly TestApiKeySecretStore _secretStore = new(TestApiKey);
 
     private readonly Dictionary<string, string?> _originalEnvironment = new();
 
@@ -193,9 +192,22 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
                 _ = services.Remove(pidFileService);
             }
 
+            // This shared fixture owns route/metadata tests, not background batch execution.
+            // A poller outlives its test and can write through a later fixture's ambient paths
+            // using this host's encryption key. Dedicated worker tests drive the retained singleton.
+            ServiceDescriptor? batchPoller = services.SingleOrDefault(static descriptor =>
+                descriptor.ServiceType == typeof(IHostedService)
+                && descriptor.ImplementationFactory?.Method.ReturnType
+                    == typeof(InstallationResetRecoveryAwareHostedService<BatchProcessingService>));
+
+            if (batchPoller is not null)
+            {
+                _ = services.Remove(batchPoller);
+            }
+
             services.RemoveAll<ISecretStore>();
 
-            services.AddSingleton<ISecretStore>(_secretStore);
+            services.AddSingleton<ISecretStore>(_profile.SecretStore);
 
             services.RemoveAll<IOsCredentialStore>();
 

@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace RetroDownfall.Arcanum.Tests.Packaging;
 
+[Collection("ProcessEnvironment")]
 public sealed class LocalOllamaModelRoleQualificationContractTests
 {
     [Theory]
@@ -278,7 +279,14 @@ public sealed class LocalOllamaModelRoleQualificationContractTests
         var installed = method.DescendantNodes().OfType<InvocationExpressionSyntax>()
             .Where(item => item.Expression.ToString() == "AssertModelIsInstalledAsync").ToArray();
 
-        Assert.Equal(new[] { "model", "visionModel" }, installed.Select(item => item.ArgumentList.Arguments[1].Expression.ToString()));
+        Assert.Equal(new[] { "model", "visionModel", "pdfOptions.Model" }, installed.Select(item => item.ArgumentList.Arguments[1].Expression.ToString()));
+
+        Assert.Equal("pdfOptions is not null", Assert.Single(installed[2].Ancestors().OfType<IfStatementSyntax>()).Condition.ToString());
+
+        int firstLaunch = method.DescendantNodes().OfType<InvocationExpressionSyntax>()
+            .Where(item => item.Expression.ToString() == "PublishedHost.Start").Min(item => item.SpanStart);
+
+        Assert.All(installed, call => Assert.True(call.SpanStart < firstLaunch));
 
         Assert.All(installed, call => Assert.True(call.SpanStart > optIn));
 
