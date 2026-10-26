@@ -6,14 +6,18 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// <remarks>
 /// Unlike a head object this need not be <c>CREATE ... IF NOT EXISTS</c>. A step's statements commit
 /// in one transaction with the journal write that records the step, so a step either fully applies or
-/// leaves nothing behind, and nothing re-runs a committed step. <c>ALTER TABLE ... ADD COLUMN</c>,
-/// which has no idempotent form, is therefore legal here and is not legal in the head tree.
+/// leaves nothing behind, and nothing re-runs a committed step.
+/// <paramref name="RequiredPlainVectorMirror"/> restricts optional mirror cleanup to an existing
+/// ordinary table; the installer classifies it in the same transaction without opening virtual tables.
+/// <c>ALTER TABLE ... ADD COLUMN</c>, which has no idempotent form, is therefore legal here and is not
+/// legal in the head tree.
 /// </remarks>
 internal sealed record GrimoireSchemaTransitionStatement(
     string ResourcePath,
     int Ordinal,
     string Name,
-    string Sql);
+    string Sql,
+    string? RequiredPlainVectorMirror = null);
 
 /// <summary>
 /// One ordered move from an installed version to the next, and the sweep it depends on.

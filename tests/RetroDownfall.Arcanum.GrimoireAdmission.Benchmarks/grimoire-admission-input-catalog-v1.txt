@@ -1510,6 +1510,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V26/030_add_E
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V26/040_node_identity.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V26/050_scope_revisions.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V26/060_edges.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V26/065_remove_corrupt_legacy_vector_mirrors.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V26/070_remove_corrupt_legacy_generations.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V26/080_legacy_edges.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V26/090_legacy_scope_revisions.sql

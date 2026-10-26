@@ -468,6 +468,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "node_identity",
                 "scope_revisions",
                 "edges",
+                "remove_corrupt_legacy_vector_mirrors",
                 "remove_corrupt_legacy_generations",
                 "legacy_edges",
                 "legacy_scope_revisions",

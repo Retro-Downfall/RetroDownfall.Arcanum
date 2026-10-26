@@ -16,6 +16,8 @@ public sealed partial class TapestryDagSchemaEvolutionTests
 
         GrimoireSchemaVersionStep step = Assert.Single(core.Steps, item => item.ToVersion == 26);
 
+        Assert.Equal(23, step.Statements.Count);
+
         foreach (GrimoireSchemaTransitionStatement stop in step.Statements)
         {
             using var file = EvolutionScratchDatabase.Create();
@@ -24,7 +26,10 @@ public sealed partial class TapestryDagSchemaEvolutionTests
 
             await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentyFiveFixture.ChainSet(), 64, CancellationToken.None);
 
-            await ExecuteAsync(connection, Generation("bad", "/scope") + Node("bad-leaf", "bad", 0, "Leaf", parent: "'missing'"));
+            await ExecuteAsync(connection, Generation("valid", "/scope") + Node("kept", "valid", 0, "Leaf")
+                + Generation("bad", "/scope") + Node("bad-leaf", "bad", 0, "Leaf", parent: "'missing'")
+                + "CREATE TABLE tapestry_node_embeddings_vec (NodeId TEXT PRIMARY KEY, Embedding BLOB NOT NULL);"
+                + "INSERT INTO tapestry_node_embeddings_vec VALUES('bad-leaf',x'01020304'),('kept',x'05060708');");
 
             string before = await CatalogAsync(connection);
 
@@ -68,7 +73,17 @@ public sealed partial class TapestryDagSchemaEvolutionTests
 
             Assert.Equal(1L, await ScalarAsync(connection, "SELECT COUNT(*) FROM tapestry_nodes WHERE NodeId='bad-leaf'"));
 
+            Assert.Equal("01020304", await ScalarAsync(connection, "SELECT hex(Embedding) FROM tapestry_node_embeddings_vec WHERE NodeId='bad-leaf'"));
+
+            Assert.Equal("05060708", await ScalarAsync(connection, "SELECT hex(Embedding) FROM tapestry_node_embeddings_vec WHERE NodeId='kept'"));
+
+            Assert.Equal(2L, await ScalarAsync(connection, "SELECT COUNT(*) FROM tapestry_node_embeddings_vec"));
+
             await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
+
+            Assert.Equal(1L, await ScalarAsync(connection, "SELECT COUNT(*) FROM tapestry_node_embeddings_vec"));
+
+            Assert.Equal("05060708", await ScalarAsync(connection, "SELECT hex(Embedding) FROM tapestry_node_embeddings_vec WHERE NodeId='kept'"));
 
             Assert.Equal(26L, await ScalarAsync(connection, "SELECT SchemaVersion FROM grimoire_feature_schemas WHERE FamilyCode=0 AND TransactionTierCode=0"));
         }

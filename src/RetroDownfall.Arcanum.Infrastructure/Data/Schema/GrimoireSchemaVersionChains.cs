@@ -437,7 +437,10 @@ internal static class GrimoireSchemaVersionChains
                         statement.ResourcePath,
                         statement.Ordinal,
                         statement.Name,
-                        statement.Sql)),
+                        statement.Sql,
+                        statement.ResourcePath == "Transitions.V26.065_remove_corrupt_legacy_vector_mirrors"
+                            ? "tapestry_node_embeddings_vec"
+                            : null)),
             ];
 
             if (!SourcePins.TryGetValue((headManifest.TransactionTier, toVersion), out string? pin))
