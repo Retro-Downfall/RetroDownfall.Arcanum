@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -529,26 +530,56 @@ internal sealed class SessionLogBuffer
 
             int sliceEnd = window.EndIndex;
 
-            // Include the first cell boundary beyond the window: a word that exactly fills
-            // the line must not leave its separator at the start of the next line.
+            // Inspect complete text elements, including the first one beyond the fitted window.
+            // Only wholly whitespace elements are separators; a space with a mark remains content.
             int breakAt = -1;
 
-            for (int i = sliceEnd; i > index; i--)
+            int breakEnd = -1;
+
+            int whitespaceStart = -1;
+
+            for (int i = index; i <= sliceEnd;)
             {
-                if (char.IsWhiteSpace(line[i]))
+                int elementLength = StringInfo.GetNextTextElementLength(line, i);
+
+                if (line.AsSpan(i, elementLength).Trim().IsEmpty)
                 {
-                    breakAt = i;
-                    break;
+                    if (whitespaceStart < 0)
+                    {
+                        whitespaceStart = i;
+                    }
+
+                    if (i > index)
+                    {
+                        breakAt = whitespaceStart;
+
+                        breakEnd = i + elementLength;
+                    }
                 }
+                else
+                {
+                    whitespaceStart = -1;
+                }
+
+                i += elementLength;
             }
 
-            if (breakAt > index)
+            if (breakAt >= index)
             {
-                yield return line[index..breakAt].TrimEnd();
-                index = breakAt + 1;
-                while (index < line.Length && char.IsWhiteSpace(line[index]))
+                yield return line[index..breakAt];
+
+                index = breakEnd;
+
+                while (index < line.Length)
                 {
-                    index++;
+                    int elementLength = StringInfo.GetNextTextElementLength(line, index);
+
+                    if (!line.AsSpan(index, elementLength).Trim().IsEmpty)
+                    {
+                        break;
+                    }
+
+                    index += elementLength;
                 }
             }
             else
