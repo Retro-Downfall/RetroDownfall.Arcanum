@@ -1,8 +1,6 @@
 using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
 using System.Buffers;
 
-using System.Diagnostics.CodeAnalysis;
-
 using System.Globalization;
 
 using System.Runtime.CompilerServices;
@@ -645,7 +643,8 @@ public sealed class ToolExecutionPipeline(
             additionalContext,
             applyPatchContext?.ReceiptHandled == true,
             wardedExecution.Denied,
-            attachmentRefresh) { Sensitivity = wardedExecution.Sensitivity };
+            attachmentRefresh)
+        { Sensitivity = wardedExecution.Sensitivity };
     }
 
     private sealed record RefreshPostProcess(
@@ -1339,7 +1338,8 @@ public sealed class ToolExecutionPipeline(
         return new WardedToolExecutionResult(
             directResult,
             BufferedWardEventsOrEmpty(wardEvents),
-            directDenied) { Sensitivity = sensitivity };
+            directDenied)
+        { Sensitivity = sensitivity };
     }
 
     private async Task RecordUngatedWardResolutionAsync(
@@ -1966,290 +1966,267 @@ public sealed class ToolExecutionPipeline(
         switch (toolName.ToLowerInvariant())
         {
             case "execute_command":
-            {
-                string cwd = workspaceRoot;
-
-                if (TryGetJsonStringProperty(argsRoot, "workingDirectory", out string? relativeCwd)
-                    && !string.IsNullOrWhiteSpace(relativeCwd))
                 {
-                    if (!TryResolvePathUnderWorkspace(workspaceRoot, relativeCwd, out string? resolvedCwd))
+                    string cwd = workspaceRoot;
+
+                    if (TryGetJsonStringProperty(argsRoot, "workingDirectory", out string? relativeCwd)
+                        && !string.IsNullOrWhiteSpace(relativeCwd))
+                    {
+                        if (!TryResolvePathUnderWorkspace(workspaceRoot, relativeCwd, out string? resolvedCwd))
+                        {
+                            _ = verdicts.Observe(
+                                await sanctumGuard.ValidatePathAsync(
+                                    campaignId,
+                                    AnchorToWorkspaceRoot(workspaceRoot, relativeCwd),
+                                    "working directory",
+                                    toolName,
+                                    cancellationToken).ConfigureAwait(false));
+
+                            return;
+                        }
+
+                        cwd = resolvedCwd;
+                    }
+
+                    _ = verdicts.Observe(
+                        await sanctumGuard
+                            .ValidatePathAsync(campaignId, cwd, "working directory", toolName, cancellationToken)
+                            .ConfigureAwait(false));
+
+                    break;
+                }
+
+            case ToolRiskClassifier.SearchWorkspaceToolName:
+                {
+                    if (!TryGetJsonStringProperty(argsRoot, "root", out string? relativeRoot)
+                        || string.IsNullOrWhiteSpace(relativeRoot))
+                    {
+                        break;
+                    }
+
+                    if (!TryResolveSearchRootUnderWorkspace(
+                            workspaceRoot,
+                            relativeRoot,
+                            out string? absoluteRoot))
                     {
                         _ = verdicts.Observe(
                             await sanctumGuard.ValidatePathAsync(
                                 campaignId,
-                                AnchorToWorkspaceRoot(workspaceRoot, relativeCwd),
-                                "working directory",
+                                AnchorToWorkspaceRoot(workspaceRoot, relativeRoot),
+                                "search root",
                                 toolName,
                                 cancellationToken).ConfigureAwait(false));
 
                         return;
                     }
 
-                    cwd = resolvedCwd;
-                }
+                    _ = verdicts.Observe(
+                        await sanctumGuard
+                            .ValidatePathAsync(
+                                campaignId,
+                                absoluteRoot,
+                                "search root",
+                                toolName,
+                                cancellationToken)
+                            .ConfigureAwait(false));
 
-                _ = verdicts.Observe(
-                    await sanctumGuard
-                        .ValidatePathAsync(campaignId, cwd, "working directory", toolName, cancellationToken)
-                        .ConfigureAwait(false));
-
-                break;
-            }
-
-            case ToolRiskClassifier.SearchWorkspaceToolName:
-            {
-                if (!TryGetJsonStringProperty(argsRoot, "root", out string? relativeRoot)
-                    || string.IsNullOrWhiteSpace(relativeRoot))
-                {
                     break;
                 }
 
-                if (!TryResolveSearchRootUnderWorkspace(
-                        workspaceRoot,
-                        relativeRoot,
-                        out string? absoluteRoot))
-                {
-                    _ = verdicts.Observe(
-                        await sanctumGuard.ValidatePathAsync(
-                            campaignId,
-                            AnchorToWorkspaceRoot(workspaceRoot, relativeRoot),
-                            "search root",
-                            toolName,
-                            cancellationToken).ConfigureAwait(false));
-
-                    return;
-                }
-
-                _ = verdicts.Observe(
-                    await sanctumGuard
-                        .ValidatePathAsync(
-                            campaignId,
-                            absoluteRoot,
-                            "search root",
-                            toolName,
-                            cancellationToken)
-                        .ConfigureAwait(false));
-
-                break;
-            }
-
             case ToolRiskClassifier.ApplyPatchToolName:
-            {
-                WorkspacePatchSettings patchSettings =
-                    settings.Value.ResolveCodingTools().Patch;
-
-                if (!TryParseApplyPatchManifest(
-                        argsRoot,
-                        patchSettings,
-                        cancellationToken,
-                        out UnifiedDiffManifest? manifest))
                 {
-                    _ = verdicts.Observe(UnparsablePatchDenial(campaignId, toolName));
+                    WorkspacePatchSettings patchSettings =
+                        settings.Value.ResolveCodingTools().Patch;
 
-                    return;
-                }
+                    UnifiedDiffParseResult parsed = ParseApplyPatchManifest(argsRoot, patchSettings, cancellationToken);
 
-                foreach (string relativePath in manifest.NormalizedPaths)
-                {
-                    if (!WorkspaceRelativePath.TryResolve(
-                            workspaceRoot,
-                            relativePath,
-                            out string? absolutePath,
-                            out _))
+                    if (!parsed.Success || parsed.Manifest is null)
                     {
-                        if (verdicts.Observe(
-                                await sanctumGuard.ValidatePathAsync(
-                                    campaignId,
-                                    AnchorToWorkspaceRoot(workspaceRoot, relativePath),
-                                    "patch path",
-                                    toolName,
-                                    cancellationToken).ConfigureAwait(false)))
+                        _ = verdicts.Observe(UnparsablePatchDenial(parsed));
+
+                        return;
+                    }
+
+                    foreach (string relativePath in parsed.Manifest.NormalizedPaths)
+                    {
+                        if (!WorkspaceRelativePath.TryResolve(
+                                workspaceRoot,
+                                relativePath,
+                                out string? absolutePath,
+                                out _))
+                        {
+                            if (verdicts.Observe(
+                                    await sanctumGuard.ValidatePathAsync(
+                                        campaignId,
+                                        AnchorToWorkspaceRoot(workspaceRoot, relativePath),
+                                        "patch path",
+                                        toolName,
+                                        cancellationToken).ConfigureAwait(false)))
+                            {
+                                return;
+                            }
+
+                            continue;
+                        }
+
+                        SanctumResult pathResult = await sanctumGuard
+                            .ValidatePathAsync(
+                                campaignId,
+                                absolutePath,
+                                "patch path",
+                                toolName,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+
+                        if (verdicts.Observe(pathResult))
                         {
                             return;
                         }
-
-                        continue;
                     }
 
-                    SanctumResult pathResult = await sanctumGuard
-                        .ValidatePathAsync(
-                            campaignId,
-                            absolutePath,
-                            "patch path",
-                            toolName,
-                            cancellationToken)
-                        .ConfigureAwait(false);
-
-                    if (verdicts.Observe(pathResult))
-                    {
-                        return;
-                    }
+                    break;
                 }
-
-                break;
-            }
 
             case "write_file":
             case "replace_text_block":
             case "read_file_chunk":
             case "list_directory":
-            {
-                if (!TryGetJsonStringProperty(argsRoot, "relativePath", out string? relativePath)
-                    || string.IsNullOrWhiteSpace(relativePath))
                 {
+                    if (!TryGetJsonStringProperty(argsRoot, "relativePath", out string? relativePath)
+                        || string.IsNullOrWhiteSpace(relativePath))
+                    {
+                        break;
+                    }
+
+                    string pathOperation = string.Equals(toolName, "list_directory", StringComparison.OrdinalIgnoreCase)
+                        ? "directory path"
+                        : "file path";
+
+                    if (!TryResolvePathUnderWorkspace(workspaceRoot, relativePath, out string? absolutePath))
+                    {
+                        _ = verdicts.Observe(
+                            await sanctumGuard.ValidatePathAsync(
+                                campaignId,
+                                AnchorToWorkspaceRoot(workspaceRoot, relativePath),
+                                pathOperation,
+                                toolName,
+                                cancellationToken).ConfigureAwait(false));
+
+                        return;
+                    }
+
+                    _ = verdicts.Observe(
+                        await sanctumGuard
+                            .ValidatePathAsync(campaignId, absolutePath, pathOperation, toolName, cancellationToken)
+                            .ConfigureAwait(false));
+
                     break;
                 }
-
-                string pathOperation = string.Equals(toolName, "list_directory", StringComparison.OrdinalIgnoreCase)
-                    ? "directory path"
-                    : "file path";
-
-                if (!TryResolvePathUnderWorkspace(workspaceRoot, relativePath, out string? absolutePath))
-                {
-                    _ = verdicts.Observe(
-                        await sanctumGuard.ValidatePathAsync(
-                            campaignId,
-                            AnchorToWorkspaceRoot(workspaceRoot, relativePath),
-                            pathOperation,
-                            toolName,
-                            cancellationToken).ConfigureAwait(false));
-
-                    return;
-                }
-
-                _ = verdicts.Observe(
-                    await sanctumGuard
-                        .ValidatePathAsync(campaignId, absolutePath, pathOperation, toolName, cancellationToken)
-                        .ConfigureAwait(false));
-
-                break;
-            }
 
             case "run_spell_script":
-            {
-                // W3.5: validate the script path under EVERY candidate root the tool will resolve
-                // against (active spell + Arcane Resonance dependencies), not just the active spell's
-                // scripts root — a script that exists only under a resonant dependency was previously
-                // executed without Sanctum pre-validating its path.
-                if (spellScriptRoots.Count == 0)
                 {
+                    // W3.5: validate the script path under EVERY candidate root the tool will resolve
+                    // against (active spell + Arcane Resonance dependencies), not just the active spell's
+                    // scripts root — a script that exists only under a resonant dependency was previously
+                    // executed without Sanctum pre-validating its path.
+                    if (spellScriptRoots.Count == 0)
+                    {
+                        break;
+                    }
+
+                    if (!TryGetJsonStringProperty(argsRoot, "script_name", out string? scriptName)
+                        || string.IsNullOrWhiteSpace(scriptName))
+                    {
+                        break;
+                    }
+
+                    scriptName = scriptName.Trim();
+
+                    bool isPlainFileName = string.Equals(Path.GetFileName(scriptName), scriptName, StringComparison.Ordinal);
+
+                    foreach (string scriptsRoot in spellScriptRoots)
+                    {
+                        string candidate = Path.GetFullPath(Path.Combine(scriptsRoot, scriptName));
+
+                        SanctumResult scriptResult = await sanctumGuard
+                            .ValidatePathAsync(campaignId, candidate, "script path", toolName, cancellationToken)
+                            .ConfigureAwait(false);
+
+                        if (verdicts.Observe(scriptResult))
+                        {
+                            return;
+                        }
+
+                        if (!isPlainFileName)
+                        {
+                            continue;
+                        }
+
+                        SanctumResult scriptsRootResult = await sanctumGuard
+                            .ValidatePathAsync(campaignId, scriptsRoot, "working directory", toolName, cancellationToken)
+                            .ConfigureAwait(false);
+
+                        if (verdicts.Observe(scriptsRootResult))
+                        {
+                            return;
+                        }
+                    }
+
                     break;
                 }
-
-                if (!TryGetJsonStringProperty(argsRoot, "script_name", out string? scriptName)
-                    || string.IsNullOrWhiteSpace(scriptName))
-                {
-                    break;
-                }
-
-                scriptName = scriptName.Trim();
-
-                bool isPlainFileName = string.Equals(Path.GetFileName(scriptName), scriptName, StringComparison.Ordinal);
-
-                foreach (string scriptsRoot in spellScriptRoots)
-                {
-                    string candidate = Path.GetFullPath(Path.Combine(scriptsRoot, scriptName));
-
-                    SanctumResult scriptResult = await sanctumGuard
-                        .ValidatePathAsync(campaignId, candidate, "script path", toolName, cancellationToken)
-                        .ConfigureAwait(false);
-
-                    if (verdicts.Observe(scriptResult))
-                    {
-                        return;
-                    }
-
-                    if (!isPlainFileName)
-                    {
-                        continue;
-                    }
-
-                    SanctumResult scriptsRootResult = await sanctumGuard
-                        .ValidatePathAsync(campaignId, scriptsRoot, "working directory", toolName, cancellationToken)
-                        .ConfigureAwait(false);
-
-                    if (verdicts.Observe(scriptsRootResult))
-                    {
-                        return;
-                    }
-                }
-
-                break;
-            }
 
             case "browse_web":
             case "read_url":
-            {
-                if (!TryGetJsonStringProperty(argsRoot, "url", out string? targetUrl)
-                    || string.IsNullOrWhiteSpace(targetUrl))
                 {
+                    if (!TryGetJsonStringProperty(argsRoot, "url", out string? targetUrl)
+                        || string.IsNullOrWhiteSpace(targetUrl))
+                    {
+                        break;
+                    }
+
+                    _ = verdicts.Observe(
+                        await sanctumGuard
+                            .ValidateNetworkAsync(campaignId, targetUrl, toolName, cancellationToken)
+                            .ConfigureAwait(false));
+
                     break;
                 }
-
-                _ = verdicts.Observe(
-                    await sanctumGuard
-                        .ValidateNetworkAsync(campaignId, targetUrl, toolName, cancellationToken)
-                        .ConfigureAwait(false));
-
-                break;
-            }
         }
     }
 
     /// <summary>
-    /// The refusal for a patch whose touched paths cannot be listed. There is no policy to evaluate them against, which is the
-    /// guard-could-not-evaluate refusal that no mode overrides, not a policy breach an audit-only Sanctum records and waves through.
+    /// An invalid patch cannot identify the paths to check. Refuse it in every mode without inventing a policy breach;
+    /// the model must repair its arguments before the same policy can evaluate those paths.
     /// </summary>
-    internal static SanctumResult UnparsablePatchDenial(string campaignId, string toolName) =>
+    internal static SanctumResult UnparsablePatchDenial(UnifiedDiffParseResult parsed) =>
         new()
         {
             Allowed = false,
-            DenyReason = "apply_patch target paths could not be validated within the active policy limits.",
-            DenialKind = SanctumDenialKind.PolicyUnavailable,
-            Breach = new SanctumBreach
-            {
-                BreachId = Guid.NewGuid().ToString("N"),
-                CampaignId = campaignId,
-                ToolName = toolName,
-                BreachType = "PatchPathPreflight",
-                Detail = "The patch manifest could not be parsed for complete path validation.",
-                Timestamp = DateTimeOffset.UtcNow,
-            },
+            DenyReason = $"{parsed.Code}: {parsed.Message}",
+            DenialKind = SanctumDenialKind.InvalidArguments,
         };
 
     /// <summary>
     /// Pure apply-patch preflight seam. It consumes only model arguments and operator limits;
     /// no workspace root or filesystem service is available to this method.
     /// </summary>
-    internal static bool TryParseApplyPatchManifest(
+    internal static UnifiedDiffParseResult ParseApplyPatchManifest(
         JsonElement arguments,
         WorkspacePatchSettings settings,
-        CancellationToken cancellationToken,
-        [NotNullWhen(true)] out UnifiedDiffManifest? manifest)
+        CancellationToken cancellationToken)
     {
-        manifest = null;
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (arguments.ValueKind != JsonValueKind.Object
-            || !arguments.TryGetProperty(
-                "patch",
-                out JsonElement patchElement)
+            || !arguments.TryGetProperty("patch", out JsonElement patchElement)
             || patchElement.ValueKind != JsonValueKind.String)
         {
-            return false;
+            return new UnifiedDiffParseResult(false, null, "invalid_patch", "patch must be a string containing a unified diff.");
         }
 
-        WorkspacePatchSettings normalizedSettings =
-            ArcanumSettingClamps.NormalizeWorkspacePatchSettings(
-                settings);
+        WorkspacePatchSettings normalizedSettings = ArcanumSettingClamps.NormalizeWorkspacePatchSettings(settings);
 
-        UnifiedDiffParseResult parsed = UnifiedDiffParser.Parse(
-            patchElement.GetString(),
-            normalizedSettings,
-            cancellationToken);
-
-        manifest = parsed.Manifest;
-
-        return parsed.Success && manifest is not null;
+        return UnifiedDiffParser.Parse(patchElement.GetString(), normalizedSettings, cancellationToken);
     }
 
     /// <summary>
@@ -2388,8 +2365,13 @@ public sealed class ToolExecutionPipeline(
 
         string reason = result.DenyReason ?? "This operation is not permitted in the current Sanctum.";
 
-        return $"The Sanctum Guard has blocked this action: {breachType} — {reason}.\n"
-            + "The Dungeon Master must update the Sanctum config to allow this operation.";
+        return result.DenialKind switch
+        {
+            SanctumDenialKind.InvalidArguments => $"apply_patch request is invalid: {reason}\nCorrect the patch arguments and retry.",
+            SanctumDenialKind.PolicyUnavailable => $"The Sanctum Guard has blocked this action: {breachType} — {reason}\nAsk the operator to restore the Campaign and its readable Sanctum configuration before retrying.",
+            SanctumDenialKind.AuditRecordFailed => $"The Sanctum Guard has blocked this action: {breachType} — {reason}\nAsk the operator to restore Grimoire storage availability before retrying.",
+            _ => $"The Sanctum Guard has blocked this action: {breachType} — {reason}\nChoose an operation allowed by the current policy, or ask the operator to review the Sanctum configuration.",
+        };
     }
 
     private static async Task EmitWardEventAsync(

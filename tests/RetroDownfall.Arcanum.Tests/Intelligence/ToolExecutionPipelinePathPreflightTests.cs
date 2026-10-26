@@ -153,13 +153,14 @@ public sealed class ToolExecutionPipelinePathPreflightTests
                 dryRun = false,
             }, AdHocJson.Options);
 
-        bool parsed = ToolExecutionPipeline.TryParseApplyPatchManifest(
+        var parsed = ToolExecutionPipeline.ParseApplyPatchManifest(
             arguments,
             new WorkspacePatchSettings(),
-            CancellationToken.None,
-            out var manifest);
+            CancellationToken.None);
 
-        Assert.True(parsed);
+        var manifest = parsed.Manifest;
+
+        Assert.True(parsed.Success);
         Assert.NotNull(manifest);
         Assert.Equal(
             ["missing-old.txt", "missing-new.txt"],
@@ -188,13 +189,14 @@ public sealed class ToolExecutionPipelinePathPreflightTests
             RecoveryTimeoutMilliseconds = int.MaxValue,
         };
 
-        bool parsed = ToolExecutionPipeline.TryParseApplyPatchManifest(
+        var parsed = ToolExecutionPipeline.ParseApplyPatchManifest(
             arguments,
             settings,
-            CancellationToken.None,
-            out var manifest);
+            CancellationToken.None);
 
-        Assert.True(parsed);
+        var manifest = parsed.Manifest;
+
+        Assert.True(parsed.Success);
         Assert.NotNull(manifest);
         Assert.Equal(["new.txt"], manifest.NormalizedPaths);
     }
@@ -218,11 +220,10 @@ public sealed class ToolExecutionPipelinePathPreflightTests
         cancellation.Cancel();
 
         Assert.Throws<OperationCanceledException>(
-            () => ToolExecutionPipeline.TryParseApplyPatchManifest(
+            () => ToolExecutionPipeline.ParseApplyPatchManifest(
                 arguments,
                 new WorkspacePatchSettings(),
-                cancellation.Token,
-                out _));
+                cancellation.Token));
     }
 
     [Fact]

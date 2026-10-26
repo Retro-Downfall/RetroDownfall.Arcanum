@@ -179,20 +179,22 @@ public sealed class ToolExecutionPipelineSanctumAuditOnlyTests : IDisposable
         Assert.Equal("PathEscape", Assert.Single(harness.Breaches.Records).BreachType);
     }
 
-    // A patch whose touched paths cannot be listed has no policy to be judged against; an audit-only Sanctum has no row to rely on, so it
-    // is refused in both modes rather than waved through as a breach.
+    // A patch whose touched paths cannot be listed must be repaired before the guard can evaluate it.
+    // Both modes refuse the malformed arguments without inventing a policy breach.
     [Theory]
     [InlineData(SanctumMode.Strict)]
     [InlineData(SanctumMode.AuditOnly)]
     public void A_patch_whose_paths_cannot_be_listed_is_refused_in_both_modes(SanctumMode mode)
     {
-        SanctumResult denial = ToolExecutionPipeline.UnparsablePatchDenial("campaign", "apply_patch");
+        SanctumResult denial = ToolExecutionPipeline.UnparsablePatchDenial(new(false, null, "invalid_patch", "The unified diff is empty."));
 
         Assert.False(denial.Allowed);
 
         Assert.False(SanctumEnforcement.AllowsContinuation(denial, mode));
 
-        Assert.Equal("PatchPathPreflight", denial.Breach!.BreachType);
+        Assert.Null(denial.Breach);
+
+        Assert.Equal(SanctumDenialKind.InvalidArguments, denial.DenialKind);
     }
 
     public void Dispose() =>
@@ -219,14 +221,14 @@ public sealed class ToolExecutionPipelineSanctumAuditOnlyTests : IDisposable
         SanctumPipelineHarness harness,
         SanctumMode mode,
         IReadOnlyList<string>? spellScriptRoots = null) => new()
-    {
-        Campaign = harness.Campaign,
-        CampaignId = harness.CampaignId,
-        WorkspaceRoot = harness.WorkspaceRoot,
-        SanctumEnabled = true,
-        SanctumMode = mode,
-        SpellScriptRoots = spellScriptRoots ?? [],
-    };
+        {
+            Campaign = harness.Campaign,
+            CampaignId = harness.CampaignId,
+            WorkspaceRoot = harness.WorkspaceRoot,
+            SanctumEnabled = true,
+            SanctumMode = mode,
+            SpellScriptRoots = spellScriptRoots ?? [],
+        };
 
     private static FakeDnsResolver Dns()
     {

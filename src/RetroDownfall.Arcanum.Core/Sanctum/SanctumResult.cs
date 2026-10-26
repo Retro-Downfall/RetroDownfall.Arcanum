@@ -38,4 +38,10 @@ public enum SanctumDenialKind
     /// control, so an unrecorded breach is refused in every mode rather than allowed on a log line alone.
     /// </summary>
     AuditRecordFailed,
+
+    /// <summary>
+    /// The tool arguments cannot identify an operation the guard can evaluate. Every mode refuses;
+    /// the caller must repair the arguments, and no policy breach is invented.
+    /// </summary>
+    InvalidArguments,
 }

@@ -14,7 +14,8 @@ public static class SanctumEnforcement
     /// all (<see cref="SanctumDenialKind.PolicyUnavailable"/>) or could not record the breach (<see cref="SanctumDenialKind.AuditRecordFailed"/>)
     /// there is no audit control left to rely on, so every mode refuses. The initial target of <c>read_url</c> and its legacy alias, the
     /// preflight of every other governed tool call and the attachment source read ask this one question; a redirect hop and a research
-    /// citation are refused in every mode, and so never ask it.
+    /// citation are refused in every mode, and so never ask it. Invalid tool arguments
+    /// (<see cref="SanctumDenialKind.InvalidArguments"/>) also refuse in every mode until repaired.
     /// </summary>
     public static bool AllowsContinuation(SanctumResult result, SanctumMode mode)
     {
