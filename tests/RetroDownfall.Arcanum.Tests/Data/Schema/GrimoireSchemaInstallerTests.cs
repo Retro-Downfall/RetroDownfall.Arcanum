@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 using SQLitePCL;
 
@@ -7,6 +8,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 
@@ -680,6 +683,108 @@ public sealed class GrimoireSchemaInstallerTests
         surviving.CommandText = """SELECT COUNT(*) FROM "entry_embeddings" WHERE "Dim" = 8;""";
 
         Assert.Equal(1L, (long)(await surviving.ExecuteScalarAsync(CancellationToken.None))!);
+    }
+
+    [Theory]
+    [InlineData("lexicon_fts")]
+    [InlineData("entry_embeddings")]
+    [InlineData("saga_memory_embeddings")]
+    public async Task Post_install_probe_failures_keep_diagnostics_content_free_and_tiers_healthy(string source)
+    {
+        const string canary = "private_post_install_canary";
+
+        await using SqliteConnection connection = await InstallAsync();
+
+        string shadow = source == "lexicon_fts"
+            ? """
+                CREATE TEMP VIEW lexicon_fts AS SELECT 1 AS lexicon_fts;
+                CREATE TEMP TRIGGER fail_lexicon_cleanup INSTEAD OF INSERT ON lexicon_fts
+                BEGIN SELECT RAISE(ABORT, 'private_post_install_canary'); END;
+                """
+            : $"CREATE TEMP VIEW {source} AS SELECT Dim FROM {canary};";
+
+        TestCapturingLogger<GrimoireSchemaInstaller> log = new();
+
+        GrimoireSchemaInstaller installer = new(
+            new GrimoireSchemaManifestInspector(GrimoireSchemaTierOwnershipRegistry.CreateDefault()),
+            new GrimoireSchemaDataInitializers(
+            [
+                new CoreGrimoireSchemaDataInitializer(),
+                new CovenantCanonicalSchemaDataInitializer(),
+                new ProbeShadowInitializer(shadow),
+            ]),
+            GrimoireSchemaVersionChains.Default,
+            TimeProvider.System,
+            log);
+
+        GrimoireSchemaInstallResult result = await installer.InstallAsync(
+            connection, Dimensions, GrimoireSchemaTestInstaller.CreateContext(), CancellationToken.None);
+
+        Assert.True(result.Core.IsHealthy);
+
+        Assert.True(result.CovenantCanonical.IsHealthy);
+
+        Assert.True(result.CovenantAccelerator.IsHealthy);
+
+        SqliteException failure = await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(connection,
+            source == "lexicon_fts"
+                ? "INSERT INTO lexicon_fts(lexicon_fts) VALUES ('delete-all');"
+                : $"SELECT Dim FROM {source};"));
+
+        Assert.Contains(canary, failure.Message, StringComparison.Ordinal);
+
+        TestLogEntry warning = Assert.Single(log.Entries, entry => entry.Level == LogLevel.Warning);
+
+        Assert.Null(warning.Exception);
+
+        Assert.Contains(ErrorCodes.Grimoire.Schema.SqliteFailure, warning.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(canary, warning.Message, StringComparison.Ordinal);
+
+        await ExecuteAsync(connection, $"DROP VIEW temp.{source};");
+
+        int warnings = log.Entries.Count;
+
+        GrimoireSchemaInstallResult recovered = await installer.InstallAsync(
+            connection, Dimensions, GrimoireSchemaTestInstaller.CreateContext(), CancellationToken.None);
+
+        Assert.True(recovered.Core.IsHealthy);
+
+        Assert.Equal(warnings, log.Entries.Count);
+    }
+
+    private sealed class ProbeShadowInitializer(string shadow) : IGrimoireSchemaDataInitializer
+    {
+        private bool _injected;
+
+        public GrimoireSchemaTransactionTier TransactionTier => GrimoireSchemaTransactionTier.CovenantAccelerator;
+
+        public async Task InitializeAsync(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            GrimoireSchemaInitializationContext context,
+            CancellationToken cancellationToken)
+        {
+            await new CovenantAcceleratorSchemaDataInitializer().InitializeAsync(
+                connection, transaction, context, cancellationToken);
+
+            if (_injected)
+            {
+                return;
+            }
+
+            // Shadow only after all main-schema DDL has run, so the real post-install probe is
+            // the failing operation. TEMP objects do not alter the inspected main catalog.
+            await using SqliteCommand command = connection.CreateCommand();
+
+            command.Transaction = transaction;
+
+            command.CommandText = shadow;
+
+            _ = await command.ExecuteNonQueryAsync(cancellationToken);
+
+            _injected = true;
+        }
     }
 
     private static async Task<SqliteConnection> InstallAsync()

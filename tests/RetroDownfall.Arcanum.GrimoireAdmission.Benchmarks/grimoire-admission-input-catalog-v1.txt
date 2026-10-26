@@ -396,6 +396,7 @@ R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerState.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/McpServerTransport.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/McpWorkspaceConfigChangedException.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/McpWorkspaceTrustPreview.cs
+R	src/RetroDownfall.Arcanum.Core/Memory/GrimoireSchemaTransitionStatus.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/IMemoryErasureAdministration.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/IMemoryErasureKeyProvider.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/IMemoryErasureRelease.cs
@@ -1893,6 +1894,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollection
 R	src/RetroDownfall.Arcanum.Infrastructure/Diagnostics/ConfigurationDiagnostics.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Diagnostics/CredentialDiagnostics.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Diagnostics/GrimoireDiagnostics.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Diagnostics/GrimoireSchemaTransitionDiagnostics.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Diagnostics/OperationDiagnostics.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Diagnostics/PathDiagnostics.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Diagnostics/PermissionDiagnostics.cs

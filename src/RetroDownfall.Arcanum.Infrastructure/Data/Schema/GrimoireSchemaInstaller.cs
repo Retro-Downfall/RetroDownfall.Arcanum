@@ -2,6 +2,8 @@ using System.Globalization;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 /// <summary>
@@ -173,12 +175,12 @@ internal sealed class GrimoireSchemaInstaller(
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             // The whole point of the tier boundary. Whatever went wrong is confined to this
-            // capability, and the exception is logged rather than surfaced, because the public
-            // result carries only a closed content-free code.
+            // capability. Both the diagnostic and public result carry only closed codes; an
+            // exception can include private schema names, values, or paths.
             logger?.LogWarning(
-                exception,
-                "The {Tier} schema tier failed to install; that capability is unavailable for this process.",
-                tier);
+                "The {Tier} schema tier failed to install ({Code}); that capability is unavailable for this process.",
+                tier,
+                GrimoireSchemaFailureCode.FromException(exception));
 
             return Failed(manifest, GrimoireSchemaTierHealth.Unavailable);
         }
@@ -624,7 +626,7 @@ internal sealed class GrimoireSchemaInstaller(
     /// Reads the two metadata fields that decide what may happen next, or null when nothing is
     /// recorded.
     /// </summary>
-    private static async Task<GrimoireSchemaRecordedTier?> ReadRecordedTierAsync(
+    internal static async Task<GrimoireSchemaRecordedTier?> ReadRecordedTierAsync(
         SqliteConnection connection,
         GrimoireSchemaVersionChain chain,
         CancellationToken cancellationToken)
@@ -877,8 +879,8 @@ internal sealed class GrimoireSchemaInstaller(
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger?.LogWarning(
-                ex,
-                "The Lexicon FTS rebuild after schema install failed; search may be incomplete until the next rebuild.");
+                "The Lexicon FTS rebuild after schema install failed ({Code}); search may be incomplete until the next rebuild.",
+                GrimoireSchemaFailureCode.FromException(ex));
         }
     }
 
@@ -933,11 +935,29 @@ internal sealed class GrimoireSchemaInstaller(
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger?.LogWarning(
-                ex,
-                "The embedding dimension probe for {TableName} failed; skipping the dimension-mismatch check.",
-                tableName);
+                "The embedding dimension probe for {TableName} failed ({Code}); skipping the dimension-mismatch check.",
+                tableName,
+                GrimoireSchemaFailureCode.FromException(ex));
         }
     }
+}
+
+/// <summary>Maps schema failures to closed diagnostics without inspecting exception content.</summary>
+internal static class GrimoireSchemaFailureCode
+{
+    internal static string FromException(Exception exception) => exception switch
+    {
+        SqliteException { SqliteErrorCode: 5 or 6 } => ErrorCodes.Grimoire.Schema.Busy,
+        SqliteException { SqliteErrorCode: 13 } => ErrorCodes.Grimoire.Schema.DiskFull,
+        SqliteException { SqliteErrorCode: 10 or 14 } => ErrorCodes.Grimoire.Schema.StorageUnavailable,
+        SqliteException { SqliteErrorCode: 11 or 26 } => ErrorCodes.Grimoire.Schema.CorruptDatabase,
+        SqliteException => ErrorCodes.Grimoire.Schema.SqliteFailure,
+        UnauthorizedAccessException => ErrorCodes.Grimoire.Schema.AccessDenied,
+        IOException => ErrorCodes.Grimoire.Schema.StorageUnavailable,
+        GrimoireSchemaRefusedException => ErrorCodes.Grimoire.Schema.TransitionUnresumable,
+        InvalidOperationException => ErrorCodes.Grimoire.Schema.InvariantViolation,
+        _ => ErrorCodes.Grimoire.Schema.TransitionPassFailed,
+    };
 }
 
 /// <summary>

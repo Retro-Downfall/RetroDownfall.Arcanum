@@ -20,7 +20,7 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// changes nothing without an explicit, confirmed <c>--apply</c>.
 /// </summary>
 [Collection("GlobalConsole")]
-public sealed class DoctorDiagnosticsCommandTests : IDisposable
+public sealed partial class DoctorDiagnosticsCommandTests : IDisposable
 {
     private readonly string _testHome =
         Path.Combine(Path.GetTempPath(), "arcanum-tests", $"doctor-diag-{Guid.NewGuid():N}");
@@ -51,6 +51,21 @@ public sealed class DoctorDiagnosticsCommandTests : IDisposable
         SetEnvironment("DOTNET_ENVIRONMENT", "Testing");
 
         SetEnvironment("ARCANUM_TEST_HOME", _testHome);
+    }
+
+    [Fact]
+    public async Task Schema_transition_selector_is_available_without_starting_a_host()
+    {
+        CliTestResult result = await CliTestHarness.RunAsync(
+            BuildServices(), ["doctor", "--json", "--only", "grimoire.schema_transition"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        DoctorCheck check = Assert.Single(Deserialize(result.Output).Checks);
+
+        Assert.Equal("grimoire.schema_transition", check.Id);
+
+        Assert.Equal(DoctorOutcome.Skipped, check.Outcome);
     }
 
     [Fact]

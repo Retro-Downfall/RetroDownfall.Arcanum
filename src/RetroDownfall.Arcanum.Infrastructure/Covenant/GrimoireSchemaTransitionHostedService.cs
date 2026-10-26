@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 
@@ -34,7 +35,9 @@ internal sealed class GrimoireSchemaTransitionHostedService(
     ILogger<GrimoireSchemaTransitionHostedService> logger) : BackgroundService
 {
     /// <summary>How long a pass waits before the next one while a run is still advancing.</summary>
-    internal static readonly TimeSpan Interval = TimeSpan.FromSeconds(15);
+    internal static readonly TimeSpan Interval = TimeSpan.FromMilliseconds(500);
+
+    internal static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(15);
 
     /// <summary>How long it waits when nothing is in flight, which is the ordinary state.</summary>
     internal static readonly TimeSpan IdleInterval = TimeSpan.FromMinutes(5);
@@ -43,11 +46,11 @@ internal sealed class GrimoireSchemaTransitionHostedService(
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            bool advanced = false;
+            TimeSpan delay = RetryInterval;
 
             try
             {
-                advanced = await RunOnceAsync(stoppingToken).ConfigureAwait(false);
+                delay = await RunPassAsync(stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -55,12 +58,13 @@ internal sealed class GrimoireSchemaTransitionHostedService(
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "A Grimoire schema transition pass failed before it could report a result.");
+                logger.LogError("A Grimoire schema transition pass failed before it could report a result ({Code}); retrying.",
+                    GrimoireSchemaFailureCode.FromException(ex));
             }
 
             try
             {
-                await Task.Delay(advanced ? Interval : IdleInterval, timeProvider, stoppingToken)
+                await Task.Delay(delay, timeProvider, stoppingToken)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -73,13 +77,16 @@ internal sealed class GrimoireSchemaTransitionHostedService(
     /// <summary>
     /// Runs one bounded schema-transition pass when ordinary Grimoire work is admitted.
     /// </summary>
-    internal async Task<bool> RunOnceAsync(CancellationToken cancellationToken)
+    internal async Task<bool> RunOnceAsync(CancellationToken cancellationToken) =>
+        await RunPassAsync(cancellationToken).ConfigureAwait(false) == Interval;
+
+    private async Task<TimeSpan> RunPassAsync(CancellationToken cancellationToken)
     {
         if (!admissionGate.TryAcquireWorkLease(
                 GrimoireWorkKind.GrimoireSchemaTransition,
                 out IGrimoireWorkLease? admitted))
         {
-            return false;
+            return RetryInterval;
         }
 
         await using IGrimoireWorkLease lease = admitted!;
@@ -94,21 +101,25 @@ internal sealed class GrimoireSchemaTransitionHostedService(
         if (outcome.IsFailure)
         {
             logger.LogWarning(
-                "A Grimoire schema transition pass reported {Error}.",
-                outcome.Error.Message);
+                "A Grimoire schema transition pass reported {Code}.",
+                outcome.Error.Code);
 
-            return false;
+            return RetryInterval;
         }
 
         if (outcome.Value.Advanced)
         {
             logger.LogInformation(
                 "A Grimoire schema transition pass advanced {Runs} run(s) through {Batches} batch(es) and {Rows} row(s).",
-                outcome.Value.RunsSeen,
+                outcome.Value.RunsAdvanced,
                 outcome.Value.BatchesRun,
                 outcome.Value.RowsProcessed);
         }
 
-        return outcome.Value.Advanced;
+        return outcome.Value.Deferred
+            ? RetryInterval
+            : outcome.Value.Advanced
+                ? Interval
+                : outcome.Value.RunsPending > 0 ? RetryInterval : IdleInterval;
     }
 }

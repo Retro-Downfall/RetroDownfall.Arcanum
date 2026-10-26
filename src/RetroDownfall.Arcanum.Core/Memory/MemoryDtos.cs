@@ -51,7 +51,9 @@ public sealed record MemoryStatusDto(
     CovenantStatusDto? Covenant = null,
     MemoryCampaignScopeDto? CampaignScope = null,
     MemoryCampaignSummaryDto? CampaignSummary = null,
-    SagaRankingStatusDto? SagaRanking = null);
+    SagaRankingStatusDto? SagaRanking = null,
+    GrimoireSchemaTransitionStatusDto? SchemaTransitions = null,
+    bool StoreCensusAvailable = true);
 
 /// <summary>A complete content-free census of clean Saga rows in the selected Session and resolved memory scope.</summary>
 /// <remarks>

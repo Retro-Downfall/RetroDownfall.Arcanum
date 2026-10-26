@@ -63,6 +63,8 @@ public static class DoctorDiagnosticsRegistration
 
         services.AddTransient<IDoctorCheck, GrimoireForeignKeyCheck>();
 
+        services.AddTransient<IDoctorCheck, GrimoireSchemaTransitionCheck>();
+
         // Durable work, read locally so a crashed host does not hide it.
         services.AddTransient<IDoctorCheck, DurableOperationRepairCheck>();
 

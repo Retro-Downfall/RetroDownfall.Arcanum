@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Security;
@@ -87,7 +88,9 @@ internal static class GrimoireSchemaTestInstaller
     /// the registry from the shipped manifests instead would report every object the chain adds as
     /// unexpected, and the tempting wrong fix at that point is to weaken the inspector.
     /// </remarks>
-    internal static GrimoireSchemaInstaller Create(GrimoireSchemaVersionChainSet chains) =>
+    internal static GrimoireSchemaInstaller Create(
+        GrimoireSchemaVersionChainSet chains,
+        ILogger<GrimoireSchemaInstaller>? logger = null) =>
         new(
             new GrimoireSchemaManifestInspector(GrimoireSchemaTierOwnershipRegistry.ForChains(chains)),
             new GrimoireSchemaDataInitializers(
@@ -97,7 +100,8 @@ internal static class GrimoireSchemaTestInstaller
                 new CovenantAcceleratorSchemaDataInitializer(),
             ]),
             chains,
-            TimeProvider.System);
+            TimeProvider.System,
+            logger);
 
     /// <summary>
     /// The installation-local facts the three tier initializers run against.

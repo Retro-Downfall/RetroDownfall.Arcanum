@@ -60,6 +60,30 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
     public void Dispose() => AnsiConsole.Console = _priorConsole;
 
     [Fact]
+    public async Task Pending_schema_progress_names_the_sweep_without_claiming_empty_memory_stores()
+    {
+        RecordingDispatcher dispatcher = await StatusAsync(null,
+            new GrimoireSchemaTransitionStatusDto(true,
+            [new GrimoireSchemaTransitionRunDto("Core", 8, 8, 25,
+                "core-utc-instant-canonicalization", 4096, "Grimoire.Schema.DiskFull",
+                new DateTimeOffset(2026, 10, 26, 0, 0, 0, TimeSpan.Zero))]));
+
+        string text = string.Join("\n", dispatcher.Payloads);
+
+        Assert.Contains("were not counted", text, StringComparison.Ordinal);
+
+        Assert.Contains("core-utc-instant-canonicalization", text, StringComparison.Ordinal);
+
+        Assert.Contains("4096 committed rows", text, StringComparison.Ordinal);
+
+        Assert.Contains("Grimoire.Schema.DiskFull", text, StringComparison.Ordinal);
+
+        Assert.Contains("2026-10-26", text, StringComparison.Ordinal);
+
+        Assert.Contains("arcanum doctor --only grimoire.schema_transition", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task The_counts_the_server_measured_are_the_counts_the_operator_reads()
     {
         RecordingDispatcher dispatcher = await StatusAsync(Covenant(
@@ -176,7 +200,7 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
             "Retained until retired.",
             DegradationCode: null);
 
-    private static async Task<RecordingDispatcher> StatusAsync(CovenantStatusDto? covenant)
+    private static async Task<RecordingDispatcher> StatusAsync(CovenantStatusDto? covenant, GrimoireSchemaTransitionStatusDto? transitions = null)
     {
         ServiceCollection services = new();
 
@@ -184,7 +208,7 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
 
         CliApplicationFactory.ConfigureCliServices(services, configuration);
 
-        services.AddSingleton<IHttpClientFactory>(new SingleHandlerFactory(new StatusHandler(covenant)));
+        services.AddSingleton<IHttpClientFactory>(new SingleHandlerFactory(new StatusHandler(covenant, transitions)));
 
         services.AddSingleton<ISecretStore>(new FixedSecretStore());
 
@@ -209,7 +233,7 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
         return dispatcher;
     }
 
-    private sealed class StatusHandler(CovenantStatusDto? covenant) : HttpMessageHandler
+    private sealed class StatusHandler(CovenantStatusDto? covenant, GrimoireSchemaTransitionStatusDto? transitions) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -220,7 +244,7 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
                     JsonSerializer.Serialize(
                         ApiResponse<MemoryStatusDto>.FromResult(
                             Result<MemoryStatusDto>.Success(
-                                new MemoryStatusDto(null, null, [], covenant))),
+                                new MemoryStatusDto(null, null, [], covenant, SchemaTransitions: transitions, StoreCensusAvailable: transitions is null))),
                         ArcanumJsonContext.Default.ApiResponseMemoryStatusDto),
                     Encoding.UTF8,
                     "application/json"),
