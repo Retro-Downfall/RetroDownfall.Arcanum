@@ -4152,3 +4152,14 @@ The review verified six genuine RED cases with four controls, ten focused GREEN 
 The exact runtime commit is `93adf675510ff5eb20428ca1c4d05cb9d5317910`, tested tree `3eded15beef124753e9aa448eee6083e6c3d9fb6`. **1711 distinct tests passed with zero failures/skips**, plus a normal zero-warning build, both house formatting modes, explicit Roslyn verification and diff checks. Evidence: `/private/tmp/arcanum-integrated-wave35-qualification.json` and commit receipt. Original source paths/catalog are unchanged; prior controlled catalog qualification remains applicable.
 
 Actual RAPTOR remains **8 of 12 stages integrated**, with typed DAG retrieval Task9 implementing. Full native FTS5 grammar is integrated; RV-030 literal-memory search/continuation owns Core28 and remains open. Final whole-suite, coverage, hosted/capsule, Native AOT/shipping/native provenance and live qualification remain pending. Main and the original Claude review branch are preserved.
+
+
+### 2026-10-26 checkpoint — 124 original findings integrated
+
+**124 of 272 findings (45.6%) are independently reviewed and integrated:** 3 Critical, 75 Important and 46 Minor. **148 remain:** 1 Important and 147 Minor. 0 further original findings have approved candidates awaiting integration: none.
+
+RV-090 now reports the actual protected maintenance operation ID and a closed, safe recovery reason, with concrete operation-inspection and recovery guidance while preserving the existing refusal and authority behavior. RV-101 provides useful bounded caller-input diagnostics only when authenticated caller provenance, the original feature, current authority and the local diagnostic reason remain valid; arbitrary lower-layer failures and semantic authority refusals retain constant protected responses. No global error mapping or public payload changes were introduced. Both candidates passed independent review, and every integrated C# file is byte-identical to the approved candidate.
+
+The exact runtime commit is `1974e38ea1bda37839321b55e90c756f702a0f45`, tested tree `f05e5843e66456f7b2bc834f36f24b28a0c3bdff`. **2204 distinct tests passed with zero failures/skips**, plus a normal zero-warning build, both house formatting modes, explicit Roslyn verification and diff checks. Evidence: `/private/tmp/arcanum-integrated-wave36-qualification.json` and commit receipt. Original source paths/catalog are unchanged; prior controlled catalog qualification remains applicable.
+
+Actual RAPTOR remains **8 of 12 stages integrated**, with typed DAG retrieval Task9 implementing. Full native FTS5 grammar is integrated; RV-030 literal-memory search/continuation owns Core28 and remains open. Final whole-suite, coverage, hosted/capsule, Native AOT/shipping/native provenance and live qualification remain pending. Main and the original Claude review branch are preserved.
