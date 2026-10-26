@@ -13,7 +13,10 @@ internal abstract record TurnEvent(TurnEventCorrelation Correlation)
 
 internal sealed record RunStarted(TurnEventCorrelation Correlation) : TurnEvent(Correlation);
 
-internal sealed record TurnStatusChanged(TurnEventCorrelation Correlation, string Message) : TurnEvent(Correlation);
+internal sealed record TurnStatusChanged(TurnEventCorrelation Correlation, string Message) : TurnEvent(Correlation)
+{
+    internal StreamDeliveryAcknowledgement? DeliveryAcknowledgement { get; init; }
+}
 
 internal sealed record SessionBound(TurnEventCorrelation Correlation, Guid SessionId) : TurnEvent(Correlation);
 

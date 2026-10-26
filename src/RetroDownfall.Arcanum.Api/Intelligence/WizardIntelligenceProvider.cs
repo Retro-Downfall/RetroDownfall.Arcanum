@@ -390,7 +390,10 @@ public sealed partial class WizardIntelligenceProvider(
             switch (frame.Type)
             {
                 case IntelligenceEventType.Status:
-                    yield return new TurnStatusChanged(correlation, frame.Message);
+                    yield return new TurnStatusChanged(correlation, frame.Message)
+                    {
+                        DeliveryAcknowledgement = frame.DeliveryAcknowledgement,
+                    };
 
                     yield break;
 
@@ -1788,15 +1791,10 @@ public sealed partial class WizardIntelligenceProvider(
                     && !preparation.IsCompleted
                     && await Task.WhenAny(preparation, preparationProgress.ProtectedMaintenanceStarted).ConfigureAwait(false) != preparation)
                 {
-                    try
+                    yield return new IntelligenceEvent(IntelligenceEventType.Status, "Finishing protected memory maintenance...")
                     {
-                        yield return new IntelligenceEvent(IntelligenceEventType.Status, "Finishing protected memory maintenance...");
-                    }
-                    finally
-                    {
-                        // The client has been told (or has gone away): the held protected request may now begin.
-                        preparationProgress.AcknowledgeProtectedMaintenance();
-                    }
+                        DeliveryAcknowledgement = new(preparationProgress.AcknowledgeProtectedMaintenance),
+                    };
                 }
 
                 Result<CampaignRollupTurnSnapshot?> prepared = await preparation.ConfigureAwait(false);
