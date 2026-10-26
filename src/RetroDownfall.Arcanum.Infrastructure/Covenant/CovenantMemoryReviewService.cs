@@ -1537,117 +1537,121 @@ internal sealed class CovenantMemoryReviewService(
                 break;
 
             case MemoryReviewAction.Correct:
-            {
-                CovenantCompiledContent compiled;
-
-                try
                 {
-                    compiled = compiler.Compile(target.Key, request.Decisions[ordinal].ReplacementContent!);
-                }
-                catch (ArgumentException)
-                {
-                    return new Error(ErrorCodes.Validation.InvalidBody, "The replacement content cannot be compiled as Covenant content. Check its size and remove invalid Unicode or format characters, then correct this decision.");
-                }
+                    CovenantCompiledContent compiled;
 
-                Result<CovenantMutationReceipt> mutation = await ApplyMutationAsync(
-                    transaction,
-                    erasureGate,
-                    state,
-                    lease,
-                    request,
-                    requestDigest,
-                    ordinal,
-                    target,
-                    compiled,
-                    committedAt,
-                    cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        compiled = compiler.Compile(target.Key, request.Decisions[ordinal].ReplacementContent!);
+                    }
+                    catch (ArgumentException)
+                    {
+                        return new Error(ErrorCodes.Validation.InvalidBody, "The replacement content cannot be compiled as Covenant content. Check its size and remove invalid Unicode or format characters, then correct this decision.");
+                    }
 
-                if (mutation.IsFailure)
-                {
-                    return mutation.Error;
-                }
-
-                resultingVersionId = mutation.Value.ResultingVersionId;
-
-                outcome = Outcome(request.Action, mutation.Value.Outcome);
-
-                if (mutation.Value.Outcome == CovenantMutationOutcome.Applied
-                    && resultingVersionId is null)
-                {
-                    return IntegrityFailure;
-                }
-
-                if (mutation.Value.Kind is CovenantMutationKind.OperatorSet && !mutation.Value.Replayed)
-                {
-                    releasedErasureFingerprint = await MemoryErasureFingerprintRelease.ReleaseForOperatorWriteAsync(
-                        transaction.Connection,
-                        transaction.Transaction,
-                        MemoryReviewStore.Covenant,
-                        MemoryErasureIdentity.ForCovenant(target.Scope, target.CampaignId, target.Key),
-                        erasureGate.Key,
+                    Result<CovenantMutationReceipt> mutation = await ApplyMutationAsync(
+                        transaction,
+                        erasureGate,
+                        state,
+                        lease,
+                        request,
+                        requestDigest,
+                        ordinal,
+                        target,
+                        compiled,
+                        committedAt,
                         cancellationToken).ConfigureAwait(false);
-                }
 
-                if (resultingVersionId is { } correctedVersion)
-                {
-                    autoAcknowledgedEventSequence = await ReadReviewEventSequenceAsync(
-                        transaction.Connection,
-                        transaction.Transaction,
-                        correctedVersion,
-                        cancellationToken).ConfigureAwait(false);
-                }
+                    if (mutation.IsFailure)
+                    {
+                        return mutation.Error;
+                    }
 
-                break;
-            }
+                    resultingVersionId = mutation.Value.ResultingVersionId;
+
+                    outcome = Outcome(request.Action, mutation.Value.Outcome);
+
+                    if (mutation.Value.Outcome == CovenantMutationOutcome.Applied
+                        && resultingVersionId is null)
+                    {
+                        return IntegrityFailure;
+                    }
+
+                    if (mutation.Value.Kind is CovenantMutationKind.OperatorSet && !mutation.Value.Replayed)
+                    {
+                        releasedErasureFingerprint = await MemoryErasureFingerprintRelease.ReleaseForOperatorWriteAsync(
+                            transaction.Connection,
+                            transaction.Transaction,
+                            MemoryReviewStore.Covenant,
+                            MemoryErasureIdentity.ForCovenant(target.Scope, target.CampaignId, target.Key),
+                            erasureGate.Key,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
+                    if (resultingVersionId is { } correctedVersion)
+                    {
+                        autoAcknowledgedEventSequence = await ReadReviewEventSequenceAsync(
+                            transaction.Connection,
+                            transaction.Transaction,
+                            correctedVersion,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+
+                    break;
+                }
 
             case MemoryReviewAction.Retire:
-            {
-                Result<CovenantMutationReceipt> mutation = await ApplyMutationAsync(
-                    transaction,
-                    erasureGate,
-                    state,
-                    lease,
-                    request,
-                    requestDigest,
-                    ordinal,
-                    target,
-                    compiled: null,
-                    committedAt,
-                    cancellationToken).ConfigureAwait(false);
-
-                if (mutation.IsFailure)
                 {
-                    return mutation.Error;
-                }
+                    Result<CovenantMutationReceipt> mutation = await ApplyMutationAsync(
+                        transaction,
+                        erasureGate,
+                        state,
+                        lease,
+                        request,
+                        requestDigest,
+                        ordinal,
+                        target,
+                        compiled: null,
+                        committedAt,
+                        cancellationToken).ConfigureAwait(false);
 
-                resultingVersionId = mutation.Value.ResultingVersionId;
-                outcome = Outcome(request.Action, mutation.Value.Outcome);
-                break;
-            }
+                    if (mutation.IsFailure)
+                    {
+                        return mutation.Error;
+                    }
+
+                    resultingVersionId = mutation.Value.ResultingVersionId;
+
+                    outcome = Outcome(request.Action, mutation.Value.Outcome);
+
+                    break;
+                }
 
             case MemoryReviewAction.Pin:
             case MemoryReviewAction.Unpin:
-            {
-                Result<CovenantCurationReceipt> curation = await ApplyCurationAsync(
-                    transaction,
-                    state,
-                    lease,
-                    request,
-                    requestDigest,
-                    ordinal,
-                    target,
-                    committedAt,
-                    cancellationToken).ConfigureAwait(false);
-
-                if (curation.IsFailure)
                 {
-                    return curation.Error;
-                }
+                    Result<CovenantCurationReceipt> curation = await ApplyCurationAsync(
+                        transaction,
+                        state,
+                        lease,
+                        request,
+                        requestDigest,
+                        ordinal,
+                        target,
+                        committedAt,
+                        cancellationToken).ConfigureAwait(false);
 
-                resultingVersionId = curation.Value.ResultingVersionId;
-                outcome = Outcome(request.Action, curation.Value.Outcome);
-                break;
-            }
+                    if (curation.IsFailure)
+                    {
+                        return curation.Error;
+                    }
+
+                    resultingVersionId = curation.Value.ResultingVersionId;
+
+                    outcome = Outcome(request.Action, curation.Value.Outcome);
+
+                    break;
+                }
 
             default:
                 return new Error(
