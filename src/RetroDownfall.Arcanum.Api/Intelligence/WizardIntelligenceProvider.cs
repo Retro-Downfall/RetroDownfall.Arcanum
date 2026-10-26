@@ -36,6 +36,7 @@ using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Memory;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Intelligence.MemoryRecall;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -389,7 +390,10 @@ public sealed partial class WizardIntelligenceProvider(
             switch (frame.Type)
             {
                 case IntelligenceEventType.Status:
-                    yield return new TurnStatusChanged(correlation, frame.Message);
+                    yield return new TurnStatusChanged(correlation, frame.Message)
+                    {
+                        DeliveryAcknowledgement = frame.DeliveryAcknowledgement,
+                    };
 
                     yield break;
 
@@ -1206,6 +1210,9 @@ public sealed partial class WizardIntelligenceProvider(
         // Built once for the whole logical run and shared by every candidate (DESIGN §10.7.2).
         TurnContextSeed streamSeed = new();
 
+        // Suppress exact informational repeats only across attempts, never genuine progress within one attempt.
+        Dictionary<string, int> informationalOrigins = new(StringComparer.Ordinal);
+
         try
         {
             for (int attemptIndex = 0; attemptIndex < streamCandidates.Count; attemptIndex++)
@@ -1276,11 +1283,11 @@ public sealed partial class WizardIntelligenceProvider(
                     yield break;
                 }
 
-                ChatClientLease lease = candidateLease!;
+                using ChatClientLease lease = candidateLease!;
 
                 StreamFailureClassification classification = new();
 
-                IAsyncEnumerator<IntelligenceEvent> enumerator = RunInferenceAttemptAsync(
+                await using IAsyncEnumerator<IntelligenceEvent> enumerator = RunInferenceAttemptAsync(
                     lease,
                     request,
                     invocationContext,
@@ -1304,10 +1311,6 @@ public sealed partial class WizardIntelligenceProvider(
                 }
                 catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
                 {
-                    await enumerator.DisposeAsync().ConfigureAwait(false);
-
-                    lease.Dispose();
-
                     throw;
                 }
                 catch (Exception ex)
@@ -1335,10 +1338,6 @@ public sealed partial class WizardIntelligenceProvider(
                         streamCandidates.Count,
                         moveNextFailure.GetType().FullName);
 
-                    await enumerator.DisposeAsync().ConfigureAwait(false);
-
-                    lease.Dispose();
-
                     if (retryableMoveFailure)
                     {
                         continue;
@@ -1354,10 +1353,6 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (!hasFirst)
                 {
-                    await enumerator.DisposeAsync().ConfigureAwait(false);
-
-                    lease.Dispose();
-
                     yield break;
                 }
 
@@ -1366,15 +1361,20 @@ public sealed partial class WizardIntelligenceProvider(
                 // Pre-commit events (Status / SessionBound / ConversationBound / Context) must not close
                 // the fallback window (ADR 0004: commit from ModelCallUpdate / tool proposal / empty
                 // success — tracked on classification.ProviderCommitted).
-                List<IntelligenceEvent> preCommitBuffer = [];
-
                 IntelligenceEvent? commitGateEvent = firstEvent;
 
                 while (commitGateEvent is not null
                        && !classification.ProviderCommitted
                        && IsPreCommitStreamingEvent(commitGateEvent))
                 {
-                    preCommitBuffer.Add(commitGateEvent);
+                    string identity = JsonSerializer.Serialize(commitGateEvent, ArcanumJsonContext.Default.IntelligenceEvent);
+
+                    if (!informationalOrigins.TryGetValue(identity, out int origin) || origin == attemptIndex)
+                    {
+                        informationalOrigins.TryAdd(identity, attemptIndex);
+
+                        yield return commitGateEvent;
+                    }
 
                     bool movedPre;
 
@@ -1384,10 +1384,6 @@ public sealed partial class WizardIntelligenceProvider(
                     }
                     catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
                     {
-                        await enumerator.DisposeAsync().ConfigureAwait(false);
-
-                        lease.Dispose();
-
                         throw;
                     }
                     catch (Exception ex)
@@ -1423,18 +1419,9 @@ public sealed partial class WizardIntelligenceProvider(
                         streamCandidates.Count,
                         moveNextFailure.GetType().FullName);
 
-                    await enumerator.DisposeAsync().ConfigureAwait(false);
-
-                    lease.Dispose();
-
                     if (retryableMoveFailure)
                     {
                         continue;
-                    }
-
-                    foreach (IntelligenceEvent buffered in preCommitBuffer)
-                    {
-                        yield return buffered;
                     }
 
                     yield return ErrorFrame(new Error(
@@ -1468,58 +1455,40 @@ public sealed partial class WizardIntelligenceProvider(
                         attemptIndex + 1,
                         streamCandidates.Count);
 
-                    await enumerator.DisposeAsync().ConfigureAwait(false);
-
-                    lease.Dispose();
-
                     continue;
                 }
 
                 Exception? midStreamFailure = null;
 
-                try
+                if (gateEvent is not null)
                 {
-                    foreach (IntelligenceEvent buffered in preCommitBuffer)
-                    {
-                        yield return buffered;
-                    }
-
-                    if (gateEvent is not null)
-                    {
-                        yield return gateEvent;
-                    }
-
-                    while (true)
-                    {
-                        bool moved;
-
-                        try
-                        {
-                            moved = await enumerator.MoveNextAsync().ConfigureAwait(false);
-                        }
-                        catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
-                        {
-                            throw;
-                        }
-                        catch (Exception ex)
-                        {
-                            midStreamFailure = ex;
-                            break;
-                        }
-
-                        if (!moved)
-                        {
-                            break;
-                        }
-
-                        yield return enumerator.Current;
-                    }
+                    yield return gateEvent;
                 }
-                finally
-                {
-                    await enumerator.DisposeAsync().ConfigureAwait(false);
 
-                    lease.Dispose();
+                while (true)
+                {
+                    bool moved;
+
+                    try
+                    {
+                        moved = await enumerator.MoveNextAsync().ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        midStreamFailure = ex;
+                        break;
+                    }
+
+                    if (!moved)
+                    {
+                        break;
+                    }
+
+                    yield return enumerator.Current;
                 }
 
                 if (midStreamFailure is not null)
@@ -1822,15 +1791,10 @@ public sealed partial class WizardIntelligenceProvider(
                     && !preparation.IsCompleted
                     && await Task.WhenAny(preparation, preparationProgress.ProtectedMaintenanceStarted).ConfigureAwait(false) != preparation)
                 {
-                    try
+                    yield return new IntelligenceEvent(IntelligenceEventType.Status, "Finishing protected memory maintenance...")
                     {
-                        yield return new IntelligenceEvent(IntelligenceEventType.Status, "Finishing protected memory maintenance...");
-                    }
-                    finally
-                    {
-                        // The client has been told (or has gone away): the held protected request may now begin.
-                        preparationProgress.AcknowledgeProtectedMaintenance();
-                    }
+                        DeliveryAcknowledgement = new(preparationProgress.AcknowledgeProtectedMaintenance),
+                    };
                 }
 
                 Result<CampaignRollupTurnSnapshot?> prepared = await preparation.ConfigureAwait(false);

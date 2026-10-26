@@ -5,6 +5,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -19,6 +20,159 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 [Collection("ProcessGlobalSeam")]
 public sealed class InferenceExecuteWriterTests
 {
+    [Theory]
+    [InlineData("success")]
+    [InlineData("disconnect")]
+    [InlineData("replay")]
+    [InlineData("cancel")]
+    public async Task Delivery_acknowledgement_requires_successful_flush_including_replay_drain(string outcome)
+    {
+        DeliverySource source = new();
+
+        DeliveryIntelligenceProvider intelligence = new(source);
+
+        using CancellationTokenSource cancellation = new(TimeSpan.FromSeconds(30));
+
+        await using DeliveryFlushStream body = new(outcome is "disconnect" or "replay");
+
+        DefaultHttpContext context = new();
+
+        context.Response.Body = body;
+
+        context.RequestAborted = cancellation.Token;
+
+        if (outcome == "replay")
+        {
+            context.Request.Headers.Append("Idempotency-Key", "receipt-replay");
+        }
+
+        Task writing = InferenceExecuteWriter.WriteStreamAsync(context, intelligence, new("prompt"), cancellation.Token,
+            heartbeatInterval: TimeSpan.Zero);
+
+        try
+        {
+            await body.Entered.Task.WaitAsync(cancellation.Token);
+
+            Assert.Equal(0, source.Acknowledgements);
+
+            if (outcome == "cancel")
+            {
+                await cancellation.CancelAsync();
+            }
+
+            body.Release.TrySetResult();
+
+            await writing;
+
+            Assert.Equal(outcome == "success" ? 2 : 0, source.Acknowledgements);
+
+            string wire = Encoding.UTF8.GetString(body.ToArray());
+
+            Assert.DoesNotContain("acknowledgement", wire, StringComparison.OrdinalIgnoreCase);
+
+            Assert.DoesNotContain("callback", wire, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            body.Release.TrySetResult();
+
+            await cancellation.CancelAsync();
+
+            await writing;
+        }
+    }
+
+    [Theory]
+    [InlineData("advance")]
+    [InlineData("abandon")]
+    [InlineData("cancel")]
+    public async Task Delivery_acknowledgement_for_plain_consumers_requires_advancing_after_receipt(string outcome)
+    {
+        DeliverySource source = new();
+
+        DeliveryIntelligenceProvider intelligence = new(source);
+
+        using CancellationTokenSource cancellation = new(TimeSpan.FromSeconds(30));
+
+        await using IAsyncEnumerator<IntelligenceEvent> reader = intelligence.StreamPromptAsync(
+            new("prompt"), ArcanumInvocationContext.None, cancellation.Token).GetAsyncEnumerator(cancellation.Token);
+
+        Assert.True(await reader.MoveNextAsync());
+
+        Assert.Equal(0, source.Acknowledgements);
+
+        if (outcome == "advance")
+        {
+            Assert.True(await reader.MoveNextAsync());
+
+            Assert.Equal(1, source.Acknowledgements);
+        }
+        else if (outcome == "cancel")
+        {
+            await cancellation.CancelAsync();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reader.MoveNextAsync().AsTask());
+        }
+
+        await reader.DisposeAsync();
+
+        Assert.Equal(outcome == "advance" ? 1 : 0, source.Acknowledgements);
+    }
+
+    private sealed class DeliverySource : ITurnEventSource
+    {
+        internal int Acknowledgements;
+
+        public async IAsyncEnumerable<TurnEvent> RunTurnAsync(TurnExecutionRequest request,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken executionToken)
+        {
+            for (int index = 0; index < 2; index++)
+            {
+                executionToken.ThrowIfCancellationRequested();
+
+                yield return new TurnStatusChanged(new(Guid.NewGuid(), index, DateTimeOffset.UtcNow), "progress")
+                {
+                    DeliveryAcknowledgement = new(() => Interlocked.Increment(ref Acknowledgements)),
+                };
+            }
+
+            await Task.CompletedTask;
+        }
+    }
+
+    private sealed class DeliveryIntelligenceProvider(DeliverySource source) : IArcanumIntelligenceProvider
+    {
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken, InferenceAuditContext? auditContext = null) => throw new NotSupportedException();
+
+        public IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(PingRequest request, ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken, InferenceAuditContext? auditContext = null) =>
+            new TurnExecutionCoordinator(source).ExecuteIntelligenceStreamAsync(request, invocationContext, cancellationToken, auditContext);
+    }
+
+    private sealed class DeliveryFlushStream(bool fail) : MemoryStream
+    {
+        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async Task FlushAsync(CancellationToken cancellationToken)
+        {
+            Entered.TrySetResult();
+
+            await Release.Task.WaitAsync(cancellationToken);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (fail)
+            {
+                throw new IOException("response flush disconnected");
+            }
+
+            await base.FlushAsync(cancellationToken);
+        }
+    }
+
     [Fact]
     public async Task WriteStreamAsync_StreamExceptionDuringErrorFrameWrite_DoesNotPropagate()
     {

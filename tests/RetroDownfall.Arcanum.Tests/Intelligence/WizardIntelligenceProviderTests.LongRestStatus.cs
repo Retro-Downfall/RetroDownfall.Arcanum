@@ -1,4 +1,9 @@
+using Microsoft.AspNetCore.Http;
+using RetroDownfall.Arcanum.Api.Tower;
+using System.Text;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Infrastructure.Resilience;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
@@ -36,7 +41,8 @@ public sealed partial class WizardIntelligenceProviderTests
         WizardIntelligenceProvider wizard = CreateWizard(chat, f.Options.CurrentValue,
             new FakeGrimoireRepository { Session = new Session { Id = h.Request.SessionId!.Value } }, db: f.H.Saga.Context,
             ordinaryConnections: FixtureOrdinaryConnectionFactory.For(f.H.Saga.Context), campaignRollups: h.Preparer,
-            claimedBeginStore: h.Begin, claims: h.Claims, turnCommitter: h.Repository);
+            claimedBeginStore: h.Begin, claims: h.Claims, turnCommitter: h.Repository,
+            healthTracker: new ProviderHealthTracker(NullLogger<ProviderHealthTracker>.Instance));
 
         ArcanumInvocationContext invocation = ArcanumInvocationContext.Create(f.Invocation.Surface, f.Scope,
             f.Invocation.Attendance, f.Invocation.ContextPolicy, ToolPolicy.NoTools, f.Invocation.ReadAuthorityEpoch).Value;
@@ -66,6 +72,114 @@ public sealed partial class WizardIntelligenceProviderTests
         Assert.True(firstToken < 0 || statusIndex < firstToken);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LongRestStatus_undelivered_notice_holds_paid_work_until_the_existing_timeout(bool nativeWriter)
+    {
+        await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: false);
+
+        await Task7ParkAsync(f);
+
+        await using Task7ProtectedPreparation h = await Task7ProtectedPreparation.CreateAsync(f);
+
+        Task7SuccessfulMaintenanceResponses(f, h);
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("{\"entities\":[]}");
+
+        chat.EnqueueText("answer after protected maintenance");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, f.Options.CurrentValue,
+            new FakeGrimoireRepository { Session = new Session { Id = h.Request.SessionId!.Value } }, db: f.H.Saga.Context,
+            ordinaryConnections: FixtureOrdinaryConnectionFactory.For(f.H.Saga.Context), campaignRollups: h.Preparer,
+            claimedBeginStore: h.Begin, claims: h.Claims, turnCommitter: h.Repository,
+            healthTracker: new ProviderHealthTracker(NullLogger<ProviderHealthTracker>.Instance));
+
+        ArcanumInvocationContext invocation = ArcanumInvocationContext.Create(f.Invocation.Surface, f.Scope,
+            f.Invocation.Attendance, f.Invocation.ContextPolicy, ToolPolicy.NoTools, f.Invocation.ReadAuthorityEpoch).Value;
+
+        using CancellationTokenSource watchdog = new(TimeSpan.FromSeconds(30));
+
+        await using HeldMaintenanceFlush body = new();
+
+        Task? writing = null;
+
+        IAsyncEnumerator<IntelligenceEvent>? reader = null;
+
+        try
+        {
+            if (nativeWriter)
+            {
+                DefaultHttpContext context = new();
+
+                context.RequestServices = h.Services;
+
+                context.Response.Body = body;
+
+                writing = InferenceExecuteWriter.WriteStreamAsync(context, wizard, h.Request, watchdog.Token,
+                    campaign: f.Scope, heartbeatInterval: TimeSpan.Zero);
+
+                await body.FlushEntered.Task.WaitAsync(watchdog.Token);
+            }
+            else
+            {
+                reader = wizard.StreamPromptAsync(h.Request, invocation, watchdog.Token).GetAsyncEnumerator(watchdog.Token);
+
+                Assert.True(await reader.MoveNextAsync());
+
+                Assert.Equal(IntelligenceEventType.Status, reader.Current.Type);
+
+                Assert.NotEqual(ProtectedMaintenanceStatus, reader.Current.Message);
+            }
+
+            // Neither the public reader nor the response flush can advance. Observe the first real
+            // capability request: only the existing five-second escape may release maintenance here.
+            await h.Maintenance.CapabilityEntered.Task.WaitAsync(watchdog.Token);
+
+            TimeSpan held = System.Diagnostics.Stopwatch.GetElapsedTime(
+                h.Coordinator.ProtectedRequestReturned, h.Maintenance.FirstCapability);
+
+            Assert.True(held >= TimeSpan.FromSeconds(4.5), $"protected work began after {held} while delivery was held");
+        }
+        finally
+        {
+            body.Release.TrySetResult();
+
+            await watchdog.CancelAsync();
+
+            if (reader is not null)
+            {
+                await reader.DisposeAsync();
+            }
+
+            if (writing is not null)
+            {
+                await writing;
+            }
+        }
+    }
+
+    private sealed class HeldMaintenanceFlush : MemoryStream
+    {
+        internal TaskCompletionSource FlushEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async Task FlushAsync(CancellationToken cancellationToken)
+        {
+            if (Encoding.UTF8.GetString(ToArray()).Contains(ProtectedMaintenanceStatus, StringComparison.Ordinal))
+            {
+                FlushEntered.TrySetResult();
+
+                await Release.Task.WaitAsync(cancellationToken);
+            }
+
+            await base.FlushAsync(cancellationToken);
+        }
+    }
+
     // The announcement exists for a client that is streaming. A buffered turn has no client waiting on a stream, so it neither emits the
     // event to its buffered sinks nor holds the preparer for an acknowledgement.
     [Fact]
@@ -88,7 +202,8 @@ public sealed partial class WizardIntelligenceProviderTests
         WizardIntelligenceProvider wizard = CreateWizard(chat, f.Options.CurrentValue,
             new FakeGrimoireRepository { Session = new Session { Id = h.Request.SessionId!.Value } }, db: f.H.Saga.Context,
             ordinaryConnections: FixtureOrdinaryConnectionFactory.For(f.H.Saga.Context), campaignRollups: h.Preparer,
-            claimedBeginStore: h.Begin, claims: h.Claims, turnCommitter: h.Repository);
+            claimedBeginStore: h.Begin, claims: h.Claims, turnCommitter: h.Repository,
+            healthTracker: new ProviderHealthTracker(NullLogger<ProviderHealthTracker>.Instance));
 
         ArcanumInvocationContext invocation = ArcanumInvocationContext.Create(f.Invocation.Surface, f.Scope,
             f.Invocation.Attendance, f.Invocation.ContextPolicy, ToolPolicy.NoTools, f.Invocation.ReadAuthorityEpoch).Value;
@@ -144,7 +259,8 @@ public sealed partial class WizardIntelligenceProviderTests
         WizardIntelligenceProvider wizard = CreateWizard(chat, f.Options.CurrentValue,
             new FakeGrimoireRepository { Session = new Session { Id = h.Request.SessionId!.Value } }, db: f.H.Saga.Context,
             ordinaryConnections: FixtureOrdinaryConnectionFactory.For(f.H.Saga.Context), campaignRollups: h.Preparer,
-            claimedBeginStore: h.Begin, claims: h.Claims, turnCommitter: h.Repository);
+            claimedBeginStore: h.Begin, claims: h.Claims, turnCommitter: h.Repository,
+            healthTracker: new ProviderHealthTracker(NullLogger<ProviderHealthTracker>.Instance));
 
         ArcanumInvocationContext invocation = ArcanumInvocationContext.Create(f.Invocation.Surface, f.Scope,
             f.Invocation.Attendance, f.Invocation.ContextPolicy, ToolPolicy.NoTools, f.Invocation.ReadAuthorityEpoch).Value;

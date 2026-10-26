@@ -119,6 +119,13 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
             await foreach (IntelligenceEvent frame in transport.Reader.ReadAllAsync(executionToken).ConfigureAwait(false))
             {
                 yield return frame;
+
+                // A plain async-enumerable consumer has processed the yielded frame when it asks
+                // for the next one. HTTP writers claim this callback themselves before writing.
+                // Abandonment skips this continuation and must never count as acknowledgement.
+                executionToken.ThrowIfCancellationRequested();
+
+                frame.DeliveryAcknowledgement?.Claim()?.Invoke();
             }
 
             drained = true;

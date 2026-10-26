@@ -692,6 +692,7 @@ public sealed partial class WizardIntelligenceProviderTests
                 .AddSingleton<ISessionTurnClaimLookup>(h.Claims)
                 .AddSingleton<ISessionTurnClaimReplayStore>(h.Repository)
                 .AddSingleton<ICovenantAuthoritySnapshotProvider>(new CovenantAuthoritySnapshotProvider(f.Runtime))
+                .AddSingleton<IOperatorAuthorityContextIssuer, OperatorAuthorityContextIssuer>()
                 .AddSingleton<ILongRestSweepCoordinator>(h.Coordinator)
                 .AddSingleton<ILongRestMaintenance>(h.Maintenance)
                 .AddSingleton<ILongRestConfigurationProvider>(f.Epoch)
@@ -770,6 +771,8 @@ public sealed partial class WizardIntelligenceProviderTests
         /// <summary>The <see cref="System.Diagnostics.Stopwatch.GetTimestamp"/> of the first capability request, or 0 when there was none.</summary>
         internal long FirstCapability;
 
+        internal TaskCompletionSource CapabilityEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public Task<Result<LongRestMaintenanceCapability>> CreateCapabilityAsync(Guid operation, ArcanumInvocationContext invocation,
             SessionTurnClaimLease claim, CanonicalCampaignContext scope, CovenantTurnLease lease, CancellationToken ct)
         {
@@ -778,6 +781,8 @@ public sealed partial class WizardIntelligenceProviderTests
             if (FirstCapability == 0)
             {
                 FirstCapability = System.Diagnostics.Stopwatch.GetTimestamp();
+
+                CapabilityEntered.TrySetResult();
             }
 
             return inner.CreateCapabilityAsync(operation, invocation, claim, scope, lease, ct);

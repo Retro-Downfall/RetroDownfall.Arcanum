@@ -56,6 +56,10 @@ public sealed record IntelligenceEvent(
     [JsonIgnore]
     public RetroDownfall.Arcanum.Core.Primitives.ContextOverflowDetails? ContextOverflow { get; init; }
 
+    /// <summary>Single-use in-process delivery handoff; never part of the wire contract.</summary>
+    [JsonIgnore]
+    internal StreamDeliveryAcknowledgement? DeliveryAcknowledgement { get; init; }
+
     public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 
@@ -83,3 +87,14 @@ public sealed record AttachmentRefreshEvent(
     string ContentSha256,
     long ByteLength,
     DateTimeOffset SourceFreshnessTimestamp);
+
+/// <summary>
+/// Transfers responsibility for acknowledging delivery to the final consumer. Queue insertion is
+/// not delivery. A transport claims the callback before writing and invokes it only after flushing.
+/// </summary>
+internal sealed class StreamDeliveryAcknowledgement(Action acknowledge)
+{
+    private Action? _acknowledge = acknowledge;
+
+    internal Action? Claim() => Interlocked.Exchange(ref _acknowledge, null);
+}

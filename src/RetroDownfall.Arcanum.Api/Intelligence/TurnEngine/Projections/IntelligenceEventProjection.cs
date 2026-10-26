@@ -51,7 +51,10 @@ internal sealed class IntelligenceEventProjection
         {
             TurnStatusChanged status =>
             [
-                new IntelligenceEvent(IntelligenceEventType.Status, status.Message),
+                new IntelligenceEvent(IntelligenceEventType.Status, status.Message)
+                {
+                    DeliveryAcknowledgement = status.DeliveryAcknowledgement,
+                },
             ],
 
             SessionBound bound =>

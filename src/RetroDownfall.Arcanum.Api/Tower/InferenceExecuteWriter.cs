@@ -215,6 +215,10 @@ internal static class InferenceExecuteWriter
                 interval,
                 ct).ConfigureAwait(false))
             {
+                // Claim before the source can resume. A failed flush or replay-only drain must
+                // not let the public iterator's ordinary-consumer continuation acknowledge it.
+                Action? acknowledgeDelivery = tick?.DeliveryAcknowledgement?.Claim();
+
                 if (clientGone)
                 {
                     // Continue-then-replay: drain remaining events without writing.
@@ -279,6 +283,8 @@ internal static class InferenceExecuteWriter
                     await httpContext.Response.Body.FlushAsync(ct).ConfigureAwait(false);
 
                     responseStarted = true;
+
+                    acknowledgeDelivery?.Invoke();
                 }
                 catch (Exception writeEx) when (ClientDisconnect.IsClientDisconnect(writeEx, httpContext))
                 {
