@@ -9,6 +9,14 @@
 - **No finding has been checked by a second reader.** The planned skeptic stage did not run. Each finding carries its reviewer's evidence; those marked `probe` quote a probe, deliberate break or measurement the reviewer ran, and the probe code is in `docs/reviews/2026-10-24-review-reports/`. Treat every finding as a hypothesis until its red test fails on `ac0d2d8e`. A finding whose red test cannot be made to fail is not fixed; it is recorded as refuted in the remediation record (below) with the evidence.
 - **What the owner wants done with it:** execute the phases with test-driven development, then merge to `general-enhancements` and `main` and push. The owner fixes Minors; they are not deferred.
 
+## Current remediation checkpoint — 2026-10-25
+
+The original remediation count is 83/272 integrated (3 Critical, 66 Important, 14 Minor), with 189 open (10 Important, 179 Minor). Actual RAPTOR has 5/12 reviewed and integrated stages through `a8b4cb3466fee54d2aa0792697a0aea72905c2d1`; production Tapestry has not switched. Additional required Covenant publisher logging is integrated in `5a2cc2e`, and the complete nullable-default inventory now passes without exclusions in wave15's568 distinct affected tests and zero-warning build. Exact tree, commands and evidence are in `/private/tmp/arcanum-integrated-wave15-manifest.json`.
+
+Stage6 worker `raptor_dag_schema` is executing `codex/raptor-dag-schema` from `a8b4cb34`, with Core26 reserved and Core25/RV056 frozen as its predecessor. Owner rulings permit whole-generation cleanup of legacy corrupt derived data and require owner-first reset compatibility. Stage6 is not yet reviewed or integrated. Incomplete/WorkLimit remains a refused build; later production composition must preserve the previous valid generation/back off without paid calls or publication for that plan.
+
+RV033 worker `saga_ranking_evidence` is executing a no-schema snapshot-safe evidence cache from `85e1344d` on `codex/review-saga-ranking-evidence`, with 40 worker-reported TDD GREEN cases. RV026 root remains uncommitted with 42 focused GREEN cases, mutation groups 3 + 1 + 1 + 8 killed, and final held-test-strengthening rerun pending. Both remain open without independent review/integration credit. Historical review and qualification entries below retain their original scope and dates.
+
 ## Working rules
 
 1. **Branches.** Work on a branch per task (or per phase for the Minor wave) cut from `claude/codebase-review-2026-10`, or from `general-enhancements` if that branch has moved past it; merge each back with `git merge --no-ff`. `main` is not touched until the final delivery step. One plain git command per shell call in this repository's agent tooling; `rg` needs a `RIPGREP_CONFIG_PATH=` prefix.
