@@ -380,6 +380,55 @@ public sealed class MemoryReviewCommandTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Covenant_review_list_discloses_server_expiry_in_plain_and_json_output(bool json)
+    {
+        RecordingHandler handler = new(new MemoryReviewBulkPlanDto(MemoryReviewStore.Covenant, Guid.NewGuid(),
+            MemoryReviewAction.Confirm, [], default, default, "unused"))
+        {
+            PageJson = """
+                {"isSuccess":true,"data":{"items":[],"reviewedThroughEventSequence":0,"frozenThroughEventSequence":2,"nextCursor":"cursor","truncated":true,"expiresAtUtc":"2026-10-26T12:05:00Z"},"error":null}
+                """,
+        };
+
+        CliInvocationOptions options = new(Json: json, Plain: !json, Yes: false);
+
+        StringWriter output = new();
+
+        StringWriter error = new();
+
+        MemoryCommands commands = new(new ArcanumApiClient(new SingleHandlerFactory(handler),
+            ArcanumApiCredentialLeaseTestFactory.Create(FixedSecretStore.Key)), null!,
+            new ConsoleDispatcher(output, error, options), new FixedConfirmation(false), Options.Create(new ArcanumSettings()), null!);
+
+        using IDisposable invocation = CliInvocationContext.Push(options);
+
+        int exitCode = await commands.CovenantReviewList(null, "confirmed", 25, null, CancellationToken.None);
+
+        Assert.True(exitCode == 0, error.ToString());
+
+        if (json)
+        {
+            using JsonDocument document = JsonDocument.Parse(output.ToString());
+
+            Assert.True(document.RootElement.TryGetProperty("expiresAtUtc", out JsonElement expires), "JSON must preserve the server deadline.");
+
+            Assert.Equal(DateTimeOffset.Parse("2026-10-26T12:05:00Z"), expires.GetDateTimeOffset());
+        }
+        else
+        {
+            Assert.Contains("2026-10-26 12:05:00Z", output.ToString(), StringComparison.Ordinal);
+
+            Assert.Contains("five minutes", output.ToString(), StringComparison.OrdinalIgnoreCase);
+
+            Assert.Contains("process restart", output.ToString(), StringComparison.OrdinalIgnoreCase);
+
+            Assert.Contains("Run arcanum memory covenant review list again", output.ToString(), StringComparison.Ordinal);
+        }
+    }
+
     [Fact]
     public async Task Invalid_json_review_lane_writes_one_error_document()
     {
@@ -650,6 +699,8 @@ public sealed class MemoryReviewCommandTests
     {
         public List<string> Paths { get; } = [];
 
+        public string? PageJson { get; init; }
+
         /// <summary>What an apply answers with; without one, every route answers with the plan.</summary>
         public MemoryReviewBulkResultDto? Applied { get; init; }
 
@@ -661,6 +712,14 @@ public sealed class MemoryReviewCommandTests
             CancellationToken cancellationToken)
         {
             Paths.Add(request.RequestUri!.AbsolutePath);
+
+            if (PageJson is { } page)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(page, System.Text.Encoding.UTF8, "application/json"),
+                });
+            }
 
             if (Refusal is { } refusal)
             {

@@ -55,7 +55,7 @@ public sealed record CovenantReviewListRequest(
 {
     public Result Validate() => MemoryReviewContractValidation.First(
         MemoryReviewContractValidation.ValidateCovenantScope(Scope, CampaignId, Lane),
-        MemoryReviewContractValidation.ValidatePage(Limit, Cursor));
+        MemoryReviewContractValidation.ValidatePage(Limit, Cursor, reviewListCommand: "arcanum memory covenant review list"));
 }
 
 public sealed record SagaReviewDecision(
@@ -137,7 +137,8 @@ public sealed record CovenantReviewBulkPrepareRequest(
             Action,
             Decisions,
             static decision => decision?.ObservationToken,
-            static decision => !string.IsNullOrWhiteSpace(decision?.ReplacementContent)));
+            static decision => !string.IsNullOrWhiteSpace(decision?.ReplacementContent),
+            reviewListCommand: "arcanum memory covenant review list"));
 }
 
 public sealed record SagaReviewBulkApplyRequest(
@@ -170,7 +171,7 @@ public sealed record CovenantReviewBulkApplyRequest(
         Request is null
             ? MemoryReviewContractValidation.Invalid("A prepared Covenant review request is required.")
             : Request.Validate(),
-        MemoryReviewContractValidation.ValidateToken(PreparedPlanToken, "prepared review plan"));
+        MemoryReviewContractValidation.ValidateToken(PreparedPlanToken, "prepared review plan", reviewListCommand: "arcanum memory covenant review list"));
 }
 
 public sealed record SagaReviewItemDto(
@@ -236,12 +237,15 @@ public sealed record CovenantReviewItemDto(
     CovenantSourceDto[] Sources,
     string ObservationToken);
 
+/// <summary>A review page whose deadline is the earliest expiry of its issued observations and cursor.</summary>
+/// <param name="ExpiresAtUtc">Null only when the page issued no tokens.</param>
 public sealed record CovenantReviewPageDto(
     CovenantReviewItemDto[] Items,
     long ReviewedThroughEventSequence,
     long FrozenThroughEventSequence,
     string? NextCursor,
-    bool Truncated);
+    bool Truncated,
+    DateTimeOffset? ExpiresAtUtc = null);
 
 /// <summary>One exact target of a prepared bulk review.</summary>
 /// <param name="ReleasesErasureFingerprint">
@@ -389,7 +393,7 @@ internal static class MemoryReviewContractValidation
             : Invalid("A Covenant review request requires one exact scope and one recognized lane.");
     }
 
-    internal static Result ValidatePage(int limit, string? cursor)
+    internal static Result ValidatePage(int limit, string? cursor, string? reviewListCommand = null)
     {
         if (limit is < 1 or > MemoryReviewLimits.MaxPageSize)
         {
@@ -399,7 +403,7 @@ internal static class MemoryReviewContractValidation
         return cursor is null
             || (!string.IsNullOrWhiteSpace(cursor) && cursor.Length <= MemoryReviewLimits.MaxTokenCharacters)
             ? Result.Success()
-            : Invalid("A memory review cursor is malformed or over its bound.");
+            : Invalid("A memory review cursor is malformed or over its bound." + RefreshGuidance(reviewListCommand));
     }
 
     internal static Result ValidateRequest<TDecision>(
@@ -426,7 +430,8 @@ internal static class MemoryReviewContractValidation
         MemoryReviewAction action,
         TDecision[]? decisions,
         Func<TDecision, string?> tokenOf,
-        Func<TDecision, bool> hasReplacement)
+        Func<TDecision, bool> hasReplacement,
+        string? reviewListCommand = null)
     {
         if (decisions is null)
         {
@@ -435,37 +440,49 @@ internal static class MemoryReviewContractValidation
 
         HashSet<string> observations = new(StringComparer.Ordinal);
 
-        foreach (TDecision decision in decisions)
+        for (int index = 0; index < decisions.Length; index++)
         {
+            TDecision decision = decisions[index];
+
             string? token = decision is null ? null : tokenOf(decision);
 
             Result validatedToken = ValidateToken(token, "review observation");
 
             if (validatedToken.IsFailure)
             {
-                return validatedToken;
+                return DecisionRefusal(validatedToken.Error, index, reviewListCommand, refresh: true);
             }
 
             if (!observations.Add(token!))
             {
-                return Invalid("A memory review batch cannot name one observation more than once.");
+                return DecisionRefusal(Invalid("A memory review batch cannot name one observation more than once."), index, reviewListCommand, refresh: true);
             }
 
             bool replacement = hasReplacement(decision);
 
             if ((action == MemoryReviewAction.Correct) != replacement)
             {
-                return Invalid(action == MemoryReviewAction.Correct
+                return DecisionRefusal(Invalid(action == MemoryReviewAction.Correct
                     ? "Every correction decision requires replacement content."
-                    : "Only a correction decision may carry replacement content.");
+                    : "Only a correction decision may carry replacement content."), index, reviewListCommand, refresh: false);
             }
         }
 
         return Result.Success();
     }
 
-    internal static Result ValidateToken(string? token, string name) =>
+    private static Error DecisionRefusal(Error error, int index, string? reviewListCommand, bool refresh) =>
+        reviewListCommand is null ? error : error with
+        {
+            Message = FormattableString.Invariant($"Review decision #{index + 1}: {error.Message}")
+                + (refresh ? RefreshGuidance(reviewListCommand) : string.Empty),
+        };
+
+    private static string RefreshGuidance(string? reviewListCommand) =>
+        reviewListCommand is null ? string.Empty : $" Run {reviewListCommand} again.";
+
+    internal static Result ValidateToken(string? token, string name, string? reviewListCommand = null) =>
         !string.IsNullOrWhiteSpace(token) && token.Length <= MemoryReviewLimits.MaxTokenCharacters
             ? Result.Success()
-            : Invalid($"A bounded {name} token is required.");
+            : Invalid($"A bounded {name} token is required." + RefreshGuidance(reviewListCommand));
 }
