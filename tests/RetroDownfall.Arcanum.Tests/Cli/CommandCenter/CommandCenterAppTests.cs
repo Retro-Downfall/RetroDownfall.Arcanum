@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using Microsoft.Extensions.Logging.Abstractions;
+using Terminal.Gui.App;
 
 using RetroDownfall.Arcanum.Cli.CommandCenter;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -14,6 +16,105 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 /// </summary>
 public sealed class CommandCenterAppTests : IAsyncLifetime
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Partial_initialization_failure_disposes_the_app_and_restores_terminal_modes(bool disposalThrows)
+    {
+        using IApplication application = Application.Create();
+
+        List<string> order = [];
+
+        CommandCenterApp app = new(NullLogger<CommandCenterApp>.Instance, () => application,
+            actual =>
+            {
+                Assert.Same(application, actual);
+
+                order.Add("init");
+
+                throw new InvalidOperationException("initialization failed after touching terminal modes");
+            },
+            actual =>
+            {
+                Assert.Same(application, actual);
+
+                order.Add("dispose");
+
+                if (disposalThrows)
+                {
+                    throw new IOException("dispose failed");
+                }
+            },
+            () => order.Add("restore"));
+
+        bool bodyCalled = false;
+
+        int result = app.Run((_, _) => { bodyCalled = true; return 0; });
+
+        Assert.Equal(CommandCenterApp.StartFailed, result);
+
+        Assert.False(bodyCalled);
+
+        Assert.Equal(new[] { "init", "dispose", "restore" }, order);
+    }
+
+    [Fact]
+    public void Factory_failure_before_initialization_does_not_restore_untouched_terminal_modes()
+    {
+        List<string> order = [];
+
+        CommandCenterApp app = new(NullLogger<CommandCenterApp>.Instance,
+            () => throw new InvalidOperationException("factory failure"),
+            _ => order.Add("init"), _ => order.Add("dispose"), () => order.Add("restore"));
+
+        Assert.Equal(CommandCenterApp.StartFailed, app.Run((_, _) => throw new InvalidOperationException("unexpected body")));
+
+        Assert.Empty(order);
+    }
+
+    [Theory]
+    [InlineData(false, false, 17)]
+    [InlineData(false, true, 17)]
+    [InlineData(true, false, CommandCenterApp.CrashedAfterStart)]
+    [InlineData(true, true, CommandCenterApp.CrashedAfterStart)]
+    public void Started_exit_preserves_result_and_attempts_both_cleanup_steps(bool bodyThrows, bool disposalThrows, int expected)
+    {
+        using IApplication application = Application.Create();
+
+        List<string> order = [];
+
+        CommandCenterApp app = new(NullLogger<CommandCenterApp>.Instance, () => application,
+            _ => order.Add("init"),
+            _ =>
+            {
+                order.Add("dispose");
+
+                if (disposalThrows)
+                {
+                    throw new IOException("dispose failed");
+                }
+            },
+            () => order.Add("restore"));
+
+        int result = app.Run((actual, _) =>
+        {
+            Assert.Same(application, actual);
+
+            order.Add("body");
+
+            if (bodyThrows)
+            {
+                throw new InvalidOperationException("body failed");
+            }
+
+            return 17;
+        });
+
+        Assert.Equal(expected, result);
+
+        Assert.Equal(new[] { "init", "body", "dispose", "restore" }, order);
+    }
+
     /// <summary>
     /// Runs PowerShell once, outside every test's deadline and stopwatch, so no test measures its cold start. A
     /// no-op wherever the children are POSIX tools.
