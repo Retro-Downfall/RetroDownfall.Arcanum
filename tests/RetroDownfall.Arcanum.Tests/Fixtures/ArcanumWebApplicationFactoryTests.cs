@@ -446,6 +446,42 @@ public sealed class ArcanumWebApplicationFactoryTests
         Assert.Equal(expected, ArcanumPaths.SecretStoreDirectory);
     }
 
+    [SkippableFact]
+    public async Task Delayed_host_start_uses_its_own_profile_instead_of_the_most_recent_factory()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory delayed = new();
+
+        await using ArcanumWebApplicationFactory newer = new();
+
+        string foreignFiles = Path.Combine(newer.TempHome, ".config", "arcanum", "files");
+
+        Directory.CreateDirectory(foreignFiles);
+
+        string foreignBlob = Path.Combine(foreignFiles, "unrelated-encrypted-blob");
+
+        byte[] sentinel = "ARCABLOB-foreign-test-profile"u8.ToArray();
+
+        await File.WriteAllBytesAsync(foreignBlob, sentinel);
+
+        // The later constructor changes process-global test paths. Starting the earlier host must
+        // bind its own profile; it must not inventory a different profile's encrypted artifacts.
+        Assert.Equal(Path.Combine(newer.TempHome, ".config", "arcanum"), ArcanumPaths.GrimoireDirectory);
+
+        using HttpClient client = delayed.CreateAuthenticatedClient();
+
+        using IServiceScope scope = delayed.Services.CreateScope();
+
+        IEncryptedBlobPresenceInspector inspector = scope.ServiceProvider.GetRequiredService<IEncryptedBlobPresenceInspector>();
+
+        Assert.Equal(EncryptedBlobPresence.Absent, inspector.Inspect());
+
+        Assert.Equal(sentinel, await File.ReadAllBytesAsync(foreignBlob));
+
+        Assert.Equal(Path.Combine(delayed.TempHome, ".config", "arcanum"), ArcanumPaths.GrimoireDirectory);
+    }
+
     [Fact]
     public void Every_factory_test_that_mutates_process_environment_is_serialized()
     {

@@ -374,6 +374,11 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
     protected override IHost CreateHost(IHostBuilder builder)
     {
+        // A factory can be constructed long before its host is first requested. Another serialized
+        // fixture may have changed the ambient test profile meanwhile; bind this host's own profile
+        // again before the entry point composes path-based services or inventories encrypted blobs.
+        ApplyIsolatedUserProfile();
+
         bool initialSeedClaimed = _profile.ClaimInitialSeed();
 
         if (initialSeedClaimed)
