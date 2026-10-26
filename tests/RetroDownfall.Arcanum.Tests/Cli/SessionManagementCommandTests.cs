@@ -463,6 +463,44 @@ public sealed class SessionManagementCommandTests
         Assert.Equal(entry.Id, document.RootElement.GetProperty("id").GetGuid());
     }
 
+    [Theory]
+    [InlineData("TooFewMessages", "minimum", "")]
+    [InlineData("NotNeeded", "threshold", "")]
+    [InlineData("OnlyPinnedRemain", "pinned", "")]
+    [InlineData("TooFewMessages", "minimum", "--plain")]
+    [InlineData("NotNeeded", "threshold", "--plain")]
+    [InlineData("OnlyPinnedRemain", "pinned", "--plain")]
+    [InlineData("TooFewMessages", "minimum", "--json")]
+    [InlineData("NotNeeded", "threshold", "--json")]
+    [InlineData("OnlyPinnedRemain", "pinned", "--json")]
+    public void Session_compact_explains_no_op_outcomes(string outcome, string guidance, string mode)
+    {
+        Guid sessionId = Guid.NewGuid();
+        string body = $$$"""{"isSuccess":true,"data":{"tokensBefore":100,"tokensAfter":100,"entriesRemoved":0,"outcome":"{{{outcome}}}"}}""";
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body),
+        });
+        string[] command = ["session", "compact", sessionId.ToString("D")];
+        CliTestResult result = RunCommand(handler, mode.Length == 0 ? command : [mode, .. command]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        if (mode == "--json")
+        {
+            using JsonDocument document = JsonDocument.Parse(result.Output);
+
+            Assert.Equal(outcome, document.RootElement.GetProperty("outcome").GetString());
+            Assert.Equal(100, document.RootElement.GetProperty("tokensBefore").GetInt32());
+        }
+        else
+        {
+            Assert.Contains(guidance, result.Output, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("0 entries removed", result.Output, StringComparison.Ordinal);
+            Assert.Contains("100", result.Output, StringComparison.Ordinal);
+        }
+    }
+
     /// <summary>
     /// A compaction that stopped early says so in the terminal, with the count it really removed.
     /// </summary>

@@ -13,20 +13,16 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class SessionMemoryManagementEndpointTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public SessionMemoryManagementEndpointTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableFact]
     public async Task DeleteSessionEntry_returns_400_when_memory_management_disabled()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory disabledFactory = new()
@@ -53,13 +49,11 @@ public sealed class SessionMemoryManagementEndpointTests
         Assert.False(body!.IsSuccess);
 
         Assert.Equal(ErrorCodes.Session.MemoryManagementDisabled, body.Error?.Code);
-
     }
 
     [SkippableFact]
     public async Task PinSessionEntry_returns_400_when_memory_management_disabled()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory disabledFactory = new()
@@ -87,13 +81,11 @@ public sealed class SessionMemoryManagementEndpointTests
         Assert.False(body!.IsSuccess);
 
         Assert.Equal(ErrorCodes.Session.MemoryManagementDisabled, body.Error?.Code);
-
     }
 
     [SkippableFact]
     public async Task CompactSession_returns_400_when_memory_management_disabled()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory disabledFactory = new()
@@ -121,13 +113,11 @@ public sealed class SessionMemoryManagementEndpointTests
         Assert.False(body!.IsSuccess);
 
         Assert.Equal(ErrorCodes.Session.MemoryManagementDisabled, body.Error?.Code);
-
     }
 
     [SkippableFact]
     public async Task PinSessionEntry_and_UnpinSessionEntry_round_trip()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory enabledFactory = CreateEnabledFactory();
@@ -162,13 +152,11 @@ public sealed class SessionMemoryManagementEndpointTests
         EntryDto[] afterUnpin = await GetSessionEntriesAsync(client, sessionId);
 
         Assert.Contains(afterUnpin, e => e.Id == entryId && !e.IsPinned);
-
     }
 
     [SkippableFact]
     public async Task DeleteSessionEntry_removes_entry()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory enabledFactory = CreateEnabledFactory();
@@ -185,13 +173,11 @@ public sealed class SessionMemoryManagementEndpointTests
         EntryDto[] entries = await GetSessionEntriesAsync(client, sessionId);
 
         Assert.DoesNotContain(entries, e => e.Id == entryId);
-
     }
 
     [SkippableFact]
     public async Task CompactSession_returns_success_for_empty_session()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory enabledFactory = CreateEnabledFactory();
@@ -215,12 +201,35 @@ public sealed class SessionMemoryManagementEndpointTests
         Assert.True(body!.IsSuccess);
 
         Assert.NotNull(body.Data);
+    }
 
+    [SkippableFact]
+    public async Task CompactSession_short_context_returns_measured_tokens_and_reason()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory enabledFactory = CreateEnabledFactory();
+        HttpClient client = enabledFactory.CreateAuthenticatedClient();
+        (Guid sessionId, Guid entryId) = await CreateSessionAndAppendEntryAsync(client);
+
+        HttpResponseMessage response = await client.PostAsync($"/api/sessions/{sessionId:D}/compact", null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+        ApiResponse<CompactResult>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseCompactResult);
+        CompactResult result = Assert.IsType<CompactResult>(body?.Data);
+
+        Assert.True(result.TokensBefore > 0);
+        Assert.Equal(result.TokensBefore, result.TokensAfter);
+        Assert.Equal(0, result.EntriesRemoved);
+        Assert.Equal(CompactionOutcome.TooFewMessages, result.Outcome);
+        Assert.Null(result.StoppedBy);
+        Assert.Contains(await GetSessionEntriesAsync(client, sessionId), entry => entry.Id == entryId);
     }
 
     private static ArcanumWebApplicationFactory CreateEnabledFactory()
     {
-
         return new ArcanumWebApplicationFactory
         {
             SettingsOverride = settings => settings with
@@ -228,12 +237,10 @@ public sealed class SessionMemoryManagementEndpointTests
                 Features = settings.Features with { MemoryManagement = true },
             },
         };
-
     }
 
     private static async Task<Guid> CreateSessionAsync(HttpClient client)
     {
-
         CreateSessionRequest request = new(CampaignId: null, Title: "memory management test");
 
         string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.CreateSessionRequest);
@@ -257,23 +264,19 @@ public sealed class SessionMemoryManagementEndpointTests
         Assert.NotNull(body.Data);
 
         return body.Data.Id;
-
     }
 
     private static async Task<(Guid SessionId, Guid EntryId)> CreateSessionAndAppendEntryAsync(HttpClient client)
     {
-
         Guid sessionId = await CreateSessionAsync(client);
 
         Guid entryId = await AppendEntryAsync(client, sessionId);
 
         return (sessionId, entryId);
-
     }
 
     private static async Task<Guid> AppendEntryAsync(HttpClient client, Guid sessionId)
     {
-
         AppendEntryRequest request = new(
             Role: MessageRole.User,
             Content: "entry for memory management test",
@@ -298,12 +301,10 @@ public sealed class SessionMemoryManagementEndpointTests
         Assert.NotNull(body.Data);
 
         return body.Data.Id;
-
     }
 
     private static async Task<EntryDto[]> GetSessionEntriesAsync(HttpClient client, Guid sessionId)
     {
-
         HttpResponseMessage response = await client.GetAsync($"/api/sessions/{sessionId:D}/entries");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -321,7 +322,5 @@ public sealed class SessionMemoryManagementEndpointTests
         Assert.NotNull(body.Data);
 
         return body.Data;
-
     }
-
 }

@@ -146,6 +146,7 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 [JsonSerializable(typeof(ModelTokenizationProfileType))]
 
 // Sessions — memory management (Milestone H — Context and Memory)
+[JsonSerializable(typeof(CompactionOutcome))]
 [JsonSerializable(typeof(CompactResult))]
 [JsonSerializable(typeof(ApiResponse<CompactResult>))]
 [JsonSerializable(typeof(ApiResponse<EntryDto[]>))]

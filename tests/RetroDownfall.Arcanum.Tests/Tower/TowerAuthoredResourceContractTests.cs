@@ -23,7 +23,6 @@ namespace RetroDownfall.Arcanum.Tests.Tower;
 /// </remarks>
 public sealed class TowerAuthoredResourceContractTests
 {
-
     private const string TowerNamespace = "RetroDownfall.Arcanum.Core.Tower";
 
     private const string RetiredNamespace = "RetroDownfall.Arcanum.Core.TheForge";
@@ -153,6 +152,8 @@ public sealed class TowerAuthoredResourceContractTests
 
         typeof(CompactResult),
 
+        typeof(CompactionOutcome),
+
         typeof(SessionEntryCountDto),
 
         typeof(SessionAttachmentDto),
@@ -176,7 +177,6 @@ public sealed class TowerAuthoredResourceContractTests
         typeof(TestPromptRequest),
 
         typeof(UpdateCampaignRequest),
-
     ];
 
     /// <summary>
@@ -189,27 +189,21 @@ public sealed class TowerAuthoredResourceContractTests
 
     public static TheoryData<Type> AuthoredResourceTypeData()
     {
-
         TheoryData<Type> data = [];
 
         foreach (Type type in AuthoredResourceTypes)
         {
-
             data.Add(type);
-
         }
 
         return data;
-
     }
 
     [Theory]
     [MemberData(nameof(AuthoredResourceTypeData))]
     public void Authored_resource_type_declares_the_tower_namespace(Type type)
     {
-
         Assert.Equal(TowerNamespace, type.Namespace);
-
     }
 
     /// <summary>
@@ -219,7 +213,6 @@ public sealed class TowerAuthoredResourceContractTests
     [Fact]
     public void Core_declares_no_type_in_the_retired_namespace()
     {
-
         string[] strays = typeof(Campaign).Assembly
             .GetTypes()
             .Where(static type => type.Namespace is string ns
@@ -230,7 +223,6 @@ public sealed class TowerAuthoredResourceContractTests
             .ToArray();
 
         Assert.Empty(strays);
-
     }
 
     /// <summary>
@@ -241,7 +233,6 @@ public sealed class TowerAuthoredResourceContractTests
     [Fact]
     public void No_core_type_is_named_for_the_desktop_application()
     {
-
         string[] offenders = typeof(Campaign).Assembly
             .GetTypes()
             .Where(static type => !type.Name.StartsWith('<'))
@@ -251,7 +242,6 @@ public sealed class TowerAuthoredResourceContractTests
             .ToArray();
 
         Assert.Empty(offenders);
-
     }
 
     /// <summary>
@@ -261,7 +251,6 @@ public sealed class TowerAuthoredResourceContractTests
     [Fact]
     public void Campaign_export_bundle_is_byte_identical_through_both_registered_contexts()
     {
-
         CampaignExportDto bundle = FixtureBundle();
 
         Assert.Equal(
@@ -271,7 +260,6 @@ public sealed class TowerAuthoredResourceContractTests
         Assert.Equal(
             ExpectedCampaignBundleJson,
             JsonSerializer.Serialize(bundle, ArcanumJsonContext.Default.CampaignExportDto));
-
     }
 
     /// <summary>
@@ -281,7 +269,6 @@ public sealed class TowerAuthoredResourceContractTests
     [Fact]
     public void Campaign_import_accepts_a_bundle_written_before_the_move()
     {
-
         CampaignImportRequest? request = JsonSerializer.Deserialize(
             $$"""{"strategy":"merge","payload":{{ExpectedCampaignBundleJson}}}""",
             ArcanumJsonContext.Default.CampaignImportRequest);
@@ -303,12 +290,10 @@ public sealed class TowerAuthoredResourceContractTests
         Assert.Equal(3, payload.Exclusions?.CovenantEntryCount);
 
         Assert.Equal(4, payload.Exclusions?.TaintedArtifactCount);
-
     }
 
     private static CampaignExportDto FixtureBundle()
     {
-
         CampaignSettings settings = new(
             DefaultModel: "gpt-4o",
             ModelMap: new Dictionary<string, string> { ["fast"] = "gpt-4o-mini" },
@@ -349,7 +334,5 @@ public sealed class TowerAuthoredResourceContractTests
             Guid.Parse("11111111-1111-1111-1111-111111111111"));
 
         return new CampaignExportDto(campaign, [spell], [prompt], new CampaignExportExclusionsDto(3, 4));
-
     }
-
 }

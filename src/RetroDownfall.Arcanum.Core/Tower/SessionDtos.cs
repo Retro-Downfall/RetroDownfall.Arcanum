@@ -124,15 +124,48 @@ public sealed record SessionExportPayload(
 /// <param name="TokensAfter">The context size measured after whatever compaction removed.</param>
 /// <param name="EntriesRemoved">The Entries that are gone, including ones removed before a stop.</param>
 /// <param name="StoppedBy">
-/// The typed error code of the refused erasure that ended compaction early, or null when it ran to
-/// completion. A stop leaves the rest of the selected Entries in place, so the count above is what the
+/// The typed error code of the refused erasure that ended compaction early, or null when no protected
+/// erasure refusal stopped it. A stop leaves the rest of the selected Entries in place, so the count above is what the
 /// Session lost and the code is why it lost no more.
 /// </param>
+/// <param name="Outcome">Why compaction changed or retained the loaded context; null for older hosts.</param>
 public sealed record CompactResult(
     int TokensBefore,
     int TokensAfter,
     int EntriesRemoved,
-    string? StoppedBy = null);
+    string? StoppedBy = null,
+    CompactionOutcome? Outcome = null)
+{
+    /// <summary>Fixed operator guidance shared by the CLI and Forge; older hosts omit the outcome.</summary>
+    public string? GetOutcomeGuidance() => Outcome switch
+    {
+        CompactionOutcome.TooFewMessages =>
+            "The context has fewer than the minimum messages required for compaction. Continue the session before compacting again.",
+
+        CompactionOutcome.NotNeeded =>
+            "Context is already within the compaction threshold.",
+
+        CompactionOutcome.OnlyPinnedRemain =>
+            "Context remains above the compaction threshold because only pinned entries remain. Review their pins or start a new session.",
+
+        _ => null,
+    };
+}
+
+/// <summary>The observed result of compaction, separate from a protected erasure refusal code.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<CompactionOutcome>))]
+public enum CompactionOutcome
+{
+    Compacted,
+
+    NotNeeded,
+
+    TooFewMessages,
+
+    OnlyPinnedRemain,
+
+    Stopped,
+}
 
 public sealed record SessionEntryCountDto(int Count);
 

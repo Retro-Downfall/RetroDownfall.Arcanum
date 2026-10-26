@@ -1,4 +1,6 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
+using RetroDownfall.TheForge.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -635,6 +637,30 @@ public class TomeViewModelTests
         Assert.Equal("pin limit reached", viewModel.MemoryStatusText);
 
         Assert.Contains(foundryFloor.Lines, static line => line.Contains("pin limit reached"));
+    }
+
+    [Theory]
+    [InlineData("TooFewMessages", "minimum")]
+    [InlineData("NotNeeded", "threshold")]
+    [InlineData("OnlyPinnedRemain", "pinned")]
+    public async Task Compact_explains_no_op_outcomes(string outcome, string guidance)
+    {
+        string body = $$"""{"tokensBefore":100,"tokensAfter":100,"entriesRemoved":0,"outcome":"{{outcome}}"}""";
+        CompactResult compact = JsonSerializer.Deserialize(body, TheForgeJsonContext.Default.CompactResult)!;
+        FakeTomeDataSource dataSource = new()
+        {
+            Session = NewSession(),
+            CompactResult = new DataSourceResult<CompactResult>(compact, true, null, null),
+        };
+        TomeViewModel viewModel = CreateViewModel(dataSource);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+        await viewModel.CompactAsync(CancellationToken.None);
+
+        Assert.True(dataSource.CompactCalled);
+        Assert.Contains(guidance, viewModel.MemoryStatusText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("0 entries removed", viewModel.MemoryStatusText, StringComparison.Ordinal);
+        Assert.Contains("100", viewModel.MemoryStatusText, StringComparison.Ordinal);
     }
 
     [Fact]
