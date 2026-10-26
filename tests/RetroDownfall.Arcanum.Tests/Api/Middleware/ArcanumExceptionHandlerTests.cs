@@ -19,6 +19,59 @@ namespace RetroDownfall.Arcanum.Tests.Api.Middleware;
 
 public sealed class ArcanumExceptionHandlerTests
 {
+    [Theory]
+    [InlineData("/api/memory/status", false)]
+    [InlineData("/v1/chat/completions", false)]
+    [InlineData("/api/memory/status", true)]
+    [InlineData("/v1/chat/completions", true)]
+    public async Task Connection_failure_is_safe_503_and_never_maintenance(string path, bool responseStarted)
+    {
+        const string sentinel = "PRIVATE-path-passphrase-message-SENTINEL";
+
+        RecordingLogger logger = new();
+
+        ArcanumExceptionHandler handler = new(logger);
+
+        DefaultHttpContext context = CreateHttpContext(responseStarted);
+
+        context.Request.Path = path;
+
+        Error error = new(sentinel, sentinel)
+        {
+            ConnectionFailure = new(GrimoireConnectionFailureStage.Open, GrimoireConnectionFailureKind.Sqlite, 14, 526),
+        };
+
+        bool handled = await handler.TryHandleAsync(context, new GrimoireConnectionUnavailableException(error), CancellationToken.None);
+
+        Assert.True(handled);
+
+        Assert.All(logger.Entries, entry =>
+        {
+            Assert.Null(entry.Exception);
+
+            Assert.DoesNotContain(sentinel, entry.Message, StringComparison.Ordinal);
+        });
+
+        if (responseStarted)
+        {
+            Assert.Empty(ReadBody(context));
+
+            return;
+        }
+
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, context.Response.StatusCode);
+
+        string body = ReadBody(context);
+
+        Assert.Contains(path.StartsWith("/v1", StringComparison.Ordinal) ? "grimoire_unavailable" : ErrorCodes.Covenant.Unavailable, body, StringComparison.Ordinal);
+
+        Assert.Contains("526", body, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("maintenance", body, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(sentinel, body, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task TryHandleAsync_V1Path_WithResponseStarted_ReturnsFalse()
     {

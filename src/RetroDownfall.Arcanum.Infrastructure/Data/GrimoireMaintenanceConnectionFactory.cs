@@ -1,6 +1,7 @@
 using System.Data;
 
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -18,10 +19,13 @@ internal sealed class GrimoireMaintenanceConnectionFactory
 
     private readonly ISqliteNativeRuntime _nativeRuntime;
 
+    private readonly ILogger<GrimoireMaintenanceConnectionFactory> _logger;
+
     public GrimoireMaintenanceConnectionFactory(
         IGrimoireDbPassphraseSource passphraseSource,
         ICovenantSqliteConnectionInitializer initializer,
-        ISqliteNativeRuntime nativeRuntime)
+        ISqliteNativeRuntime nativeRuntime,
+        ILogger<GrimoireMaintenanceConnectionFactory> logger)
     {
         ArgumentNullException.ThrowIfNull(passphraseSource);
 
@@ -34,6 +38,10 @@ internal sealed class GrimoireMaintenanceConnectionFactory
         _initializer = initializer;
 
         _nativeRuntime = nativeRuntime;
+
+        ArgumentNullException.ThrowIfNull(logger);
+
+        _logger = logger;
     }
 
     /// <summary>Opens the closed period's connection for the one transaction that empties the Covenant family.</summary>
@@ -175,11 +183,17 @@ internal sealed class GrimoireMaintenanceConnectionFactory
         {
             _nativeRuntime.Initialize();
         }
-        catch (Exception)
+        catch (OperationCanceledException)
         {
             ReportNotOpened(handle);
 
-            return Refused("The journal maintenance native runtime is unavailable.");
+            throw;
+        }
+        catch (Exception failed)
+        {
+            ReportNotOpened(handle);
+
+            return GrimoireConnectionFailure.Create(failed, GrimoireConnectionFailureStage.NativeRuntime, _logger, "Maintenance", capability.Mode.ToString(), purpose.ToString());
         }
 
         SqliteConnection? connection = null;
@@ -214,7 +228,7 @@ internal sealed class GrimoireMaintenanceConnectionFactory
 
             throw;
         }
-        catch (Exception)
+        catch (Exception failed)
         {
             if (connection is not null)
             {
@@ -223,7 +237,7 @@ internal sealed class GrimoireMaintenanceConnectionFactory
 
             ReportNotOpened(handle);
 
-            return Refused("The journal maintenance provider could not be constructed.");
+            return GrimoireConnectionFailure.Create(failed, GrimoireConnectionFailureStage.ProviderConstruction, _logger, "Maintenance", capability.Mode.ToString(), purpose.ToString());
         }
 
         Result started = handle.ReportOpenStarted();
@@ -237,9 +251,13 @@ internal sealed class GrimoireMaintenanceConnectionFactory
             return Refused("The journal maintenance open could not start.");
         }
 
+        GrimoireConnectionFailureStage stage = GrimoireConnectionFailureStage.Open;
+
         try
         {
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+            stage = GrimoireConnectionFailureStage.Initialization;
 
             await _initializer.InitializeAsync(
                     connection,
@@ -255,13 +273,13 @@ internal sealed class GrimoireMaintenanceConnectionFactory
 
             throw;
         }
-        catch (Exception)
+        catch (Exception failed)
         {
             await CloseAndDisposeAsync(connection).ConfigureAwait(false);
 
             ReportPhysicallyClosed(handle);
 
-            return Refused("The journal maintenance connection could not be opened and initialized.");
+            return GrimoireConnectionFailure.Create(failed, stage, _logger, "Maintenance", capability.Mode.ToString(), purpose.ToString());
         }
 
         return Result<IGrimoireMaintenanceConnectionLease>.Success(new Lease(connection, handle));

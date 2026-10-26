@@ -9,6 +9,28 @@ namespace RetroDownfall.Arcanum.Tests.Primitives;
 public sealed class ResultTests
 {
     [Fact]
+    public void ConnectionFailureMetadata_is_value_compared_ignored_and_closed()
+    {
+        GrimoireConnectionFailureDetails detail = new(GrimoireConnectionFailureStage.Open, GrimoireConnectionFailureKind.Sqlite, 14, 526);
+
+        Error error = Error.None with { ConnectionFailure = detail };
+
+        Assert.False(error.IsNone);
+
+        Assert.NotEqual(Error.None, error);
+
+        Assert.Equal(error, Error.None with { ConnectionFailure = detail });
+
+        Assert.NotEqual(error, error with { ConnectionFailure = detail with { SqliteErrorCode = 26 } });
+
+        Assert.Equal(JsonSerializer.Serialize(Error.None, ArcanumJsonContext.Default.Error),
+            JsonSerializer.Serialize(error, ArcanumJsonContext.Default.Error));
+
+        Assert.Equal("Grimoire connection failed: Exception.",
+            new GrimoireConnectionFailureDetails((GrimoireConnectionFailureStage)999, (GrimoireConnectionFailureKind)999).ToPublicMessage());
+    }
+
+    [Fact]
     public void ContextOverflowMetadata_IsValueComparedAndNeverSerialized()
     {
         ContextOverflowDetails overflow = new("provider", "model", 9000, 1024, 10024, 8192);

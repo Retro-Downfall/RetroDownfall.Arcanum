@@ -106,7 +106,7 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
         }
         catch (Exception failed) when (failed is not OperationCanceledException)
         {
-            return Refused("The ordinary Grimoire native runtime is unavailable.");
+            return GrimoireConnectionFailure.Create(failed, GrimoireConnectionFailureStage.NativeRuntime, _logger, "Scoped", mode.ToString());
         }
 
         IGrimoireOrdinaryConnectionRegistration registration;
@@ -119,9 +119,9 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
         {
             return MaintenanceUnavailable();
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException failed)
         {
-            return Refused("Ordinary Grimoire connection admission is unavailable.");
+            return GrimoireConnectionFailure.Create(failed, GrimoireConnectionFailureStage.Admission, _logger, "Scoped", mode.ToString());
         }
 
         try
@@ -136,17 +136,18 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
 
             throw;
         }
-        catch (Exception)
+        catch (Exception failed)
         {
             await TerminalizeOpenFailureAsync(connection, registration).ConfigureAwait(false);
 
-            return Refused("The ordinary Grimoire connection could not be opened.");
+            return GrimoireConnectionFailure.Create(failed, GrimoireConnectionFailureStage.Open, _logger, "Scoped", mode.ToString());
         }
 
         Result admitted = await CompleteNativeOpenAsync(
             connection,
             registration,
             mode,
+            "Scoped",
             cancellationToken).ConfigureAwait(false);
 
         if (admitted.IsFailure)
@@ -214,7 +215,7 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
         }
         catch (Exception failed) when (failed is not OperationCanceledException)
         {
-            return Refused("The ordinary Grimoire native runtime is unavailable.");
+            return GrimoireConnectionFailure.Create(failed, GrimoireConnectionFailureStage.NativeRuntime, _logger, kind.ToString(), mode.ToString());
         }
 
         _testSeam.BeforeProviderConstruction();
@@ -233,11 +234,11 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
 
             return MaintenanceUnavailable();
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException failed)
         {
             await connection.DisposeAsync().ConfigureAwait(false);
 
-            return Refused("Ordinary Grimoire connection admission is unavailable.");
+            return GrimoireConnectionFailure.Create(failed, GrimoireConnectionFailureStage.Admission, _logger, kind.ToString(), mode.ToString());
         }
 
         try
@@ -254,13 +255,13 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
 
             throw;
         }
-        catch (Exception)
+        catch (Exception failed)
         {
             await TerminalizeOpenFailureAsync(connection, registration).ConfigureAwait(false);
 
             await connection.DisposeAsync().ConfigureAwait(false);
 
-            return Refused("The ordinary Grimoire connection could not be opened.");
+            return GrimoireConnectionFailure.Create(failed, GrimoireConnectionFailureStage.Open, _logger, kind.ToString(), mode.ToString());
         }
 
         Result admitted;
@@ -271,6 +272,7 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
                 connection,
                 registration,
                 mode,
+                kind.ToString(),
                 cancellationToken).ConfigureAwait(false);
         }
         catch
@@ -295,6 +297,7 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
         SqliteConnection connection,
         IGrimoireOrdinaryConnectionRegistration registration,
         CovenantSqliteConnectionMode mode,
+        string kind,
         CancellationToken cancellationToken)
     {
         Result revalidated = registration.RevalidateAfterNativeOpen();
@@ -321,15 +324,13 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
 
             throw;
         }
-        catch (Exception)
+        catch (Exception failed)
         {
             await CloseClearAndRefuseAsync(connection, registration).ConfigureAwait(false);
 
             registration.Dispose();
 
-            return new Error(
-                ErrorCodes.Covenant.Unavailable,
-                "The ordinary Grimoire connection could not be initialized.");
+            return GrimoireConnectionFailure.Create(failed, GrimoireConnectionFailureStage.Initialization, _logger, kind, mode.ToString());
         }
 
         Result opened = registration.MarkOpened();
@@ -432,9 +433,12 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
             // Resolution is compensating work; it must not replace the failure being propagated. It is not silent
             // either: an unresolved ticket is what makes a later stage-two close wait out its opening timeout, and
             // this is the only trace that connects that timeout to this open.
-            _logger.LogWarning(
+            _ = GrimoireConnectionFailure.Create(
                 failed,
-                "A refused ordinary Grimoire open could not resolve its admission ticket; a later stage-two close may wait out its opening timeout.");
+                GrimoireConnectionFailureStage.TicketResolution,
+                _logger,
+                "Ordinary",
+                "Unknown");
         }
     }
 
@@ -577,5 +581,45 @@ internal sealed class NoOpGrimoireOrdinaryConnectionFactoryTestSeam
 
     public void AfterExactPoolClear(SqliteConnection connection)
     {
+    }
+}
+
+/// <summary>Constructs safe diagnostics at the fault boundary without retaining the exception.</summary>
+internal static class GrimoireConnectionFailure
+{
+    internal static Error Create(
+        Exception failure,
+        GrimoireConnectionFailureStage stage,
+        ILogger logger,
+        string kind,
+        string mode,
+        string purpose = "Ordinary")
+    {
+        GrimoireConnectionFailureDetails details = new(
+            stage,
+            failure switch
+            {
+                SqliteException => GrimoireConnectionFailureKind.Sqlite,
+                SqliteNativeRuntimeUnavailableException => GrimoireConnectionFailureKind.NativeRuntime,
+                UnauthorizedAccessException => GrimoireConnectionFailureKind.UnauthorizedAccess,
+                IOException => GrimoireConnectionFailureKind.IO,
+                ArgumentException => GrimoireConnectionFailureKind.Argument,
+                InvalidOperationException => GrimoireConnectionFailureKind.InvalidOperation,
+                _ => GrimoireConnectionFailureKind.Other,
+            },
+            (failure as SqliteException)?.SqliteErrorCode,
+            (failure as SqliteException)?.SqliteExtendedErrorCode);
+
+        string message = details.ToPublicMessage();
+
+        logger.LogWarning(
+            "{Diagnostic} Kind={Kind} Mode={Mode} Purpose={Purpose} ExceptionType={ExceptionType}",
+            message,
+            kind,
+            mode,
+            purpose,
+            failure.GetType().Name);
+
+        return new Error(ErrorCodes.Covenant.Unavailable, message) { ConnectionFailure = details };
     }
 }

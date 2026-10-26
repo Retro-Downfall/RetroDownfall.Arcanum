@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
@@ -35,7 +36,6 @@ namespace RetroDownfall.Arcanum.Tests.Api.Middleware;
 /// </remarks>
 public sealed class GrimoireRequestAdmissionTests
 {
-
     private const string ApiKey = "admission-key";
 
     private static readonly TimeSpan OpeningTimeout = TimeSpan.FromSeconds(1);
@@ -49,7 +49,6 @@ public sealed class GrimoireRequestAdmissionTests
     [InlineData("/V1/probe")]
     public async Task A_protected_request_is_refused_before_its_endpoint_runs(string path)
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         host.CloseAdmission();
@@ -59,7 +58,6 @@ public sealed class GrimoireRequestAdmissionTests
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
 
         Assert.Equal(0, host.EndpointRuns);
-
     }
 
     /// <summary>
@@ -79,7 +77,6 @@ public sealed class GrimoireRequestAdmissionTests
     [InlineData("/v1x")]
     public async Task A_path_outside_the_two_prefixes_is_never_refused(string path)
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         host.CloseAdmission();
@@ -89,7 +86,6 @@ public sealed class GrimoireRequestAdmissionTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         Assert.Equal(1, host.EndpointRuns);
-
     }
 
     /// <summary>
@@ -101,10 +97,45 @@ public sealed class GrimoireRequestAdmissionTests
     /// that caller both that <c>/api</c> is a real prefix and that this installation is under
     /// maintenance. It also runs no endpoint, so there is nothing for admission to prevent.
     /// </remarks>
+    [Theory]
+    [InlineData("/api", false)]
+    [InlineData("/v1", false)]
+    [InlineData("/api", true)]
+    [InlineData("/v1", true)]
+    public async Task Storage_failure_pipeline_preserves_started_response_and_content_free_logs(string prefix, bool started)
+    {
+        await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
+
+        using HttpResponseMessage response = await host.GetAsync(prefix + "/storage-failure?started=" + started);
+
+        string body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(started ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        if (started)
+        {
+            Assert.Equal("prefix", body);
+        }
+        else
+        {
+            Assert.Contains(prefix == "/v1" ? "grimoire_unavailable" : ErrorCodes.Covenant.Unavailable, body, StringComparison.Ordinal);
+
+            Assert.Equal("no-store, private", response.Headers.CacheControl?.ToString());
+        }
+
+        Assert.DoesNotContain("PRIVATE-storage-SENTINEL", body, StringComparison.Ordinal);
+
+        Assert.All(host.Logs.Entries, entry =>
+        {
+            Assert.Null(entry.Exception);
+
+            Assert.DoesNotContain("storage-failure", entry.Message, StringComparison.Ordinal);
+        });
+    }
+
     [Fact]
     public async Task A_path_that_matched_no_endpoint_is_still_a_not_found()
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         host.CloseAdmission();
@@ -112,13 +143,11 @@ public sealed class GrimoireRequestAdmissionTests
         using HttpResponseMessage response = await host.GetAsync("/api/nothing-is-mapped-here");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-
     }
 
     [Fact]
     public async Task A_wrong_method_is_still_a_method_not_allowed()
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         host.CloseAdmission();
@@ -126,7 +155,6 @@ public sealed class GrimoireRequestAdmissionTests
         using HttpResponseMessage response = await host.PostAsync("/api/probe");
 
         Assert.Equal(HttpStatusCode.MethodNotAllowed, response.StatusCode);
-
     }
 
     /// <summary>
@@ -139,7 +167,6 @@ public sealed class GrimoireRequestAdmissionTests
     [Fact]
     public async Task A_bad_key_is_still_unauthorized_and_never_a_maintenance_refusal()
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         host.CloseAdmission();
@@ -149,7 +176,6 @@ public sealed class GrimoireRequestAdmissionTests
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
 
         Assert.Equal(0, host.EndpointRuns);
-
     }
 
     /// <summary>
@@ -158,7 +184,6 @@ public sealed class GrimoireRequestAdmissionTests
     [Fact]
     public async Task An_anonymous_route_under_api_is_still_refused()
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         host.CloseAdmission();
@@ -168,13 +193,11 @@ public sealed class GrimoireRequestAdmissionTests
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
 
         Assert.Equal(0, host.EndpointRuns);
-
     }
 
     [Fact]
     public async Task An_exempt_route_runs_while_admission_is_closed()
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         host.CloseAdmission();
@@ -184,13 +207,11 @@ public sealed class GrimoireRequestAdmissionTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         Assert.Equal(1, host.EndpointRuns);
-
     }
 
     [Fact]
     public async Task An_ordinary_gate_admits_the_request_and_the_endpoint_runs()
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         using HttpResponseMessage response = await host.GetAsync("/api/probe");
@@ -198,13 +219,11 @@ public sealed class GrimoireRequestAdmissionTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         Assert.Equal(1, host.EndpointRuns);
-
     }
 
     [Fact]
     public async Task The_api_refusal_is_the_documented_envelope()
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         host.CloseAdmission();
@@ -222,13 +241,11 @@ public sealed class GrimoireRequestAdmissionTests
         Assert.Equal(ErrorCodes.Grimoire.MaintenanceUnavailable, body.Error?.Code);
 
         Assert.Equal("no-store, private", response.Headers.CacheControl?.ToString());
-
     }
 
     [Fact]
     public async Task The_v1_refusal_is_the_documented_openai_envelope()
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         host.CloseAdmission();
@@ -242,7 +259,6 @@ public sealed class GrimoireRequestAdmissionTests
         Assert.NotNull(body);
 
         Assert.Equal("service_unavailable", body.Error.Type);
-
     }
 
     /// <summary>
@@ -257,7 +273,6 @@ public sealed class GrimoireRequestAdmissionTests
     [Fact]
     public async Task The_lease_outlives_every_other_scoped_disposable()
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         using HttpResponseMessage response = await host.GetAsync("/api/sentinel");
@@ -265,7 +280,6 @@ public sealed class GrimoireRequestAdmissionTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         Assert.True(await host.LeaseHeldAtSentinelDisposalAsync());
-
     }
 
     /// <summary>
@@ -280,7 +294,6 @@ public sealed class GrimoireRequestAdmissionTests
     [Fact]
     public async Task An_in_flight_refusal_carries_the_same_envelope_and_headers_on_the_wire()
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         using HttpResponseMessage response = await host.GetAsync("/api/throws");
@@ -300,7 +313,6 @@ public sealed class GrimoireRequestAdmissionTests
         Assert.Equal("no-cache", response.Headers.Pragma.ToString());
 
         Assert.Null(response.Headers.ETag);
-
     }
 
     /// <summary>
@@ -320,7 +332,6 @@ public sealed class GrimoireRequestAdmissionTests
     [Fact]
     public async Task An_admitted_request_can_still_open_the_grimoire_once_closing_begins()
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         using HttpResponseMessage response = await host.GetAsync("/api/lifetime");
@@ -332,7 +343,6 @@ public sealed class GrimoireRequestAdmissionTests
         Assert.True(
             host.OrdinaryOpenSucceededWhileClosing,
             "the admitted request had no live ordinary lifetime once the gate began closing");
-
     }
 
     /// <summary>
@@ -358,7 +368,6 @@ public sealed class GrimoireRequestAdmissionTests
         string path,
         bool expectedQuiesceable)
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         using HttpResponseMessage response = await host.GetAsync(path);
@@ -366,7 +375,6 @@ public sealed class GrimoireRequestAdmissionTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         Assert.Equal(expectedQuiesceable, host.AdmittedQuiesceable);
-
     }
 
     /// <summary>
@@ -387,7 +395,6 @@ public sealed class GrimoireRequestAdmissionTests
         string path,
         bool expectedRevoked)
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -409,7 +416,6 @@ public sealed class GrimoireRequestAdmissionTests
         using HttpResponseMessage response = await pending;
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
     }
 
     /// <summary>
@@ -425,7 +431,6 @@ public sealed class GrimoireRequestAdmissionTests
     [Fact]
     public async Task A_transition_begun_while_a_watcher_is_connected_now_drains()
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -448,7 +453,6 @@ public sealed class GrimoireRequestAdmissionTests
         using HttpResponseMessage response = await watcher.WaitAsync(BoundedWait);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
     }
 
     /// <summary>
@@ -463,7 +467,6 @@ public sealed class GrimoireRequestAdmissionTests
     [Fact]
     public async Task A_transition_begun_while_a_billable_stream_is_open_still_times_out()
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -490,7 +493,6 @@ public sealed class GrimoireRequestAdmissionTests
         using HttpResponseMessage response = await billable.WaitAsync(BoundedWait);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
     }
 
     /// <summary>
@@ -499,7 +501,6 @@ public sealed class GrimoireRequestAdmissionTests
     [Fact]
     public async Task A_closing_gate_waits_for_an_already_admitted_request()
     {
-
         await using AdmissionProbeHost host = await AdmissionProbeHost.StartAsync();
 
         TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -529,7 +530,6 @@ public sealed class GrimoireRequestAdmissionTests
         Result drained = await drain.WaitAsync(BoundedWait);
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
-
     }
 
     /// <summary>
@@ -537,7 +537,6 @@ public sealed class GrimoireRequestAdmissionTests
     /// </summary>
     private sealed class AdmissionProbeHost : IAsyncDisposable
     {
-
         private readonly WebApplication _app;
 
         private TaskCompletionSource? _entered;
@@ -561,16 +560,18 @@ public sealed class GrimoireRequestAdmissionTests
         /// </remarks>
         private readonly CancellationTokenSource _teardown = new();
 
-        private AdmissionProbeHost(WebApplication app, GrimoireConnectionAdmissionGate admission)
+        private AdmissionProbeHost(WebApplication app, GrimoireConnectionAdmissionGate admission, MaintenanceHostLogCapture logs)
         {
-
             _app = app;
+
+            Logs = logs;
 
             Admission = admission;
 
             Client = app.GetTestClient();
-
         }
+
+        internal MaintenanceHostLogCapture Logs { get; }
 
         internal GrimoireConnectionAdmissionGate Admission { get; }
 
@@ -606,10 +607,15 @@ public sealed class GrimoireRequestAdmissionTests
 
         internal static async Task<AdmissionProbeHost> StartAsync()
         {
-
             WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
 
             builder.WebHost.UseTestServer();
+
+            MaintenanceHostLogCapture logs = new();
+
+            builder.Logging.ClearProviders();
+
+            builder.Logging.AddProvider(logs);
 
             GrimoireConnectionAdmissionGate admission = new(
                 TimeProvider.System,
@@ -667,55 +673,58 @@ public sealed class GrimoireRequestAdmissionTests
             // Admitted, then the gate closes under it and the endpoint reaches SQLite anyway.
             _ = api.MapGet("/throws", IResult () =>
             {
-
                 _ = host!.Ran();
 
                 throw new GrimoireMaintenanceUnavailableException();
-
             });
+
+            foreach (RouteGroupBuilder group in new[] { api, v1 })
+            {
+                _ = group.MapGet("/storage-failure", async (HttpContext context) =>
+                {
+                    if (context.Request.Query["started"] == "True")
+                    {
+                        await context.Response.WriteAsync("prefix");
+
+                        await context.Response.Body.FlushAsync();
+                    }
+
+                    throw new GrimoireConnectionUnavailableException(new Error(ErrorCodes.Covenant.Unavailable, "PRIVATE-storage-SENTINEL"));
+                });
+            }
 
             _ = api.MapGet("/lifetime", async () =>
             {
-
                 await using IGrimoireClosingOwner closing = host!.BeginClosing();
 
                 using SqliteConnection connection = new();
 
                 try
                 {
-
                     using IGrimoireConnectionOpenTicket ticket = admission.AcquireOrdinaryOpen(connection);
 
                     ticket.MarkFailed();
 
                     host.RecordOrdinaryOpenWhileClosing(succeeded: true);
-
                 }
                 catch (GrimoireMaintenanceUnavailableException)
                 {
-
                     host.RecordOrdinaryOpenWhileClosing(succeeded: false);
-
                 }
 
                 return host.Ran();
-
             });
 
             _ = api.MapGet("/gated", async () =>
             {
-
                 host!._entered?.TrySetResult();
 
                 if (host._release is not null)
                 {
-
                     await host._release.Task.ConfigureAwait(false);
-
                 }
 
                 return host.Ran();
-
             });
 
             // The three marked shapes. Each captures the lease the admission stage took and then
@@ -772,19 +781,16 @@ public sealed class GrimoireRequestAdmissionTests
 
             await app.StartAsync();
 
-            host = new AdmissionProbeHost(app, admission);
+            host = new AdmissionProbeHost(app, admission, logs);
 
             return host;
-
         }
 
         internal IResult Ran()
         {
-
             _ = Interlocked.Increment(ref _endpointRuns);
 
             return Results.Ok();
-
         }
 
         /// <summary>
@@ -810,7 +816,6 @@ public sealed class GrimoireRequestAdmissionTests
             HttpContext context,
             GrimoireRequestAdmissionScope admission)
         {
-
             _admittedLease = admission.Lease;
 
             AdmittedQuiesceable = admission.Lease?.Kind == GrimoireRequestKind.QuiesceableStream;
@@ -825,24 +830,18 @@ public sealed class GrimoireRequestAdmissionTests
 
             try
             {
-
                 await Task.Delay(Timeout.Infinite, ending.Token).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException)
             {
-
                 // Revoked, which is this stand-in's whole ending.
-
             }
 
             return Ran();
-
         }
 
         internal async Task<IResult> CaptureAndParkAsync(GrimoireRequestAdmissionScope admission)
         {
-
             _admittedLease = admission.Lease;
 
             AdmittedQuiesceable = admission.Lease?.Kind == GrimoireRequestKind.QuiesceableStream;
@@ -851,13 +850,10 @@ public sealed class GrimoireRequestAdmissionTests
 
             if (_release is not null)
             {
-
                 await _release.Task.ConfigureAwait(false);
-
             }
 
             return Ran();
-
         }
 
         internal void CloseAdmission() => _ = BeginClosing();
@@ -867,7 +863,6 @@ public sealed class GrimoireRequestAdmissionTests
 
         internal IGrimoireClosingOwner BeginClosing()
         {
-
             Result<IGrimoireClosingOwner> begun = Admission.BeginOrResumeExclusive(
                 new CovenantExclusiveRecoveryOwner(
                     Guid.Parse("00000000-0000-0000-0000-000000000251"),
@@ -877,16 +872,13 @@ public sealed class GrimoireRequestAdmissionTests
             Assert.True(begun.IsSuccess, begun.IsFailure ? begun.Error.Message : null);
 
             return begun.Value;
-
         }
 
         internal void Gate(TaskCompletionSource entered, TaskCompletionSource? release)
         {
-
             _entered = entered;
 
             _release = release;
-
         }
 
         internal void RecordSentinelDisposal(bool leaseHeld) =>
@@ -894,61 +886,48 @@ public sealed class GrimoireRequestAdmissionTests
 
         internal async Task<bool> LeaseHeldAtSentinelDisposalAsync()
         {
-
             // The request scope is disposed once the server is finished with the request, which is
             // not the moment the client's response task completed.
             for (int attempt = 0; attempt < 200; attempt++)
             {
-
                 int observed = Volatile.Read(ref _leaseHeldAtSentinelDisposal);
 
                 if (observed >= 0)
                 {
-
                     return observed == 1;
-
                 }
 
                 await Task.Delay(5);
-
             }
 
             Assert.Fail("the request scope was never disposed");
 
             return false;
-
         }
 
         internal async Task<HttpResponseMessage> GetAsync(string path, string? key = ApiKey)
         {
-
             using HttpRequestMessage request = new(HttpMethod.Get, path);
 
             if (key is not null)
             {
-
                 request.Headers.Add(ArcanumApiHeaders.ApiKey, key);
-
             }
 
             return await Client.SendAsync(request);
-
         }
 
         internal async Task<HttpResponseMessage> PostAsync(string path)
         {
-
             using HttpRequestMessage request = new(HttpMethod.Post, path);
 
             request.Headers.Add(ArcanumApiHeaders.ApiKey, ApiKey);
 
             return await Client.SendAsync(request);
-
         }
 
         public async ValueTask DisposeAsync()
         {
-
             await _teardown.CancelAsync();
 
             _teardown.Dispose();
@@ -958,9 +937,7 @@ public sealed class GrimoireRequestAdmissionTests
             await _app.StopAsync();
 
             await _app.DisposeAsync();
-
         }
-
     }
 
     /// <summary>
@@ -970,21 +947,16 @@ public sealed class GrimoireRequestAdmissionTests
         GrimoireRequestAdmissionScope admission,
         Action<bool> onDisposed) : IAsyncDisposable
     {
-
         public ValueTask DisposeAsync()
         {
-
             onDisposed(admission.Lease is not null);
 
             return ValueTask.CompletedTask;
-
         }
-
     }
 
     private sealed class StubSecretStore(string apiKey) : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(apiKey);
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -995,12 +967,10 @@ public sealed class GrimoireRequestAdmissionTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
 
     private sealed class NoOpConnectionDrain : ICovenantConnectionDrain
     {
-
         public IDisposable Register(SqliteConnection connection) => new Registration();
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection) => Result.Success();
@@ -1010,13 +980,9 @@ public sealed class GrimoireRequestAdmissionTests
 
         private sealed class Registration : IDisposable
         {
-
             public void Dispose()
             {
             }
-
         }
-
     }
-
 }

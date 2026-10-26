@@ -235,7 +235,7 @@ internal static class SessionDivinationEndpoints
 
         if (acquired.IsFailure)
         {
-            throw new GrimoireMaintenanceUnavailableException();
+            throw GrimoireConnectionUnavailableException.FromError(acquired.Error);
         }
 
         await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;

@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal interface ICovenantConnectionSource
 {
-
     ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken);
 
     /// <summary>
@@ -33,7 +32,6 @@ internal interface ICovenantConnectionSource
     /// opened, and the operator would have no way to reopen it.
     /// </remarks>
     ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -47,7 +45,6 @@ internal interface ICovenantConnectionSource
 /// </remarks>
 internal sealed class CovenantConnectionSource : ICovenantConnectionSource, IDisposable
 {
-
     private readonly ArcanumDbContext _db;
 
     private readonly IGrimoireOrdinaryConnectionFactory _connections;
@@ -62,7 +59,6 @@ internal sealed class CovenantConnectionSource : ICovenantConnectionSource, IDis
         ArcanumDbContext db,
         IGrimoireOrdinaryConnectionFactory connections)
     {
-
         ArgumentNullException.ThrowIfNull(db);
 
         ArgumentNullException.ThrowIfNull(connections);
@@ -70,47 +66,37 @@ internal sealed class CovenantConnectionSource : ICovenantConnectionSource, IDis
         _db = db;
 
         _connections = connections;
-
     }
 
     /// <summary>Releases this scope's handle from the process-wide Covenant drain.</summary>
     public void Dispose()
     {
-
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
-
             return;
-
         }
 
         Interlocked.Exchange(ref _lease, null)?.Dispose();
 
         _leaseGate.Dispose();
-
     }
 
     public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
     {
-
         // The one choke point every canonical read and write passes through, and therefore the one
         // place that can honestly latch "this process has held Covenant material".
         CovenantProcessResidence.MarkOpened();
 
         return GetOpenCoreConnectionAsync(cancellationToken);
-
     }
 
     public async ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken)
     {
-
         IGrimoireOrdinaryConnectionLease? retained = Volatile.Read(ref _lease);
 
         if (retained is not null)
         {
-
             return RequireExactProviderConnection(retained.Connection);
-
         }
 
         SqliteConnection connection = RequireExactProviderConnection(
@@ -128,23 +114,18 @@ internal sealed class CovenantConnectionSource : ICovenantConnectionSource, IDis
         // is.
         if (connection.State is System.Data.ConnectionState.Open)
         {
-
             return connection;
-
         }
 
         await _leaseGate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
-
             retained = _lease;
 
             if (retained is not null)
             {
-
                 return RequireExactProviderConnection(retained.Connection);
-
             }
 
             Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
@@ -156,9 +137,7 @@ internal sealed class CovenantConnectionSource : ICovenantConnectionSource, IDis
 
             if (acquired.IsFailure)
             {
-
-                throw new GrimoireMaintenanceUnavailableException();
-
+                throw GrimoireConnectionUnavailableException.FromError(acquired.Error);
             }
 
             IGrimoireOrdinaryConnectionLease acquiredLease = acquired.Value;
@@ -167,49 +146,36 @@ internal sealed class CovenantConnectionSource : ICovenantConnectionSource, IDis
 
             try
             {
-
                 acquiredConnection = RequireExactProviderConnection(
                     acquiredLease.Connection);
-
             }
             catch
             {
-
                 await acquiredLease.DisposeAsync().ConfigureAwait(false);
 
                 throw;
-
             }
 
             _lease = acquiredLease;
 
             return acquiredConnection;
-
         }
         finally
         {
-
             _leaseGate.Release();
-
         }
-
     }
 
     private static SqliteConnection RequireExactProviderConnection(
         DbConnection connection)
     {
-
         if (connection is not SqliteConnection sqlite
             || sqlite.GetType() != typeof(SqliteConnection))
         {
-
             throw new InvalidOperationException(
                 "The Covenant canonical tier requires an exact SQLCipher provider connection.");
-
         }
 
         return sqlite;
-
     }
-
 }

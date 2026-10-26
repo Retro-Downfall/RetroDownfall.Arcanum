@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Api.Health;
 /// </summary>
 public sealed class GrimoireLivenessProbe(IServiceScopeFactory scopeFactory) : IGrimoireLivenessProbe
 {
-
     internal static readonly TimeSpan DefaultCacheTtl = TimeSpan.FromSeconds(3);
 
     internal static readonly TimeSpan DefaultProbeTimeout = TimeSpan.FromSeconds(2);
@@ -106,7 +105,7 @@ public sealed class GrimoireLivenessProbe(IServiceScopeFactory scopeFactory) : I
 
             if (acquired.IsFailure)
             {
-                throw new GrimoireMaintenanceUnavailableException();
+                throw GrimoireConnectionUnavailableException.FromError(acquired.Error);
             }
 
             await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;
@@ -140,10 +139,13 @@ public sealed class GrimoireLivenessProbe(IServiceScopeFactory scopeFactory) : I
         {
             return (false, "Grimoire live probe timed out.");
         }
-        catch (Exception ex)
+        catch (GrimoireConnectionUnavailableException failed)
+        {
+            return (false, failed.Error.Message);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return (false, $"Grimoire live probe failed: {ex.GetType().Name}.");
         }
     }
-
 }

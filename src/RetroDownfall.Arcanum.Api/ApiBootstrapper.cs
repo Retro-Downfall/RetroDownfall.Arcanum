@@ -1001,6 +1001,15 @@ public static class ApiBootstrapper
         {
             _ = await GrimoireMaintenanceRefusal.TryWriteAsync(context).ConfigureAwait(false);
         }
+        catch (GrimoireConnectionUnavailableException failed)
+        {
+            // The framework bypasses exception handlers once a response has started and clears cache
+            // headers on other failures. Handle this safe typed fault here to preserve both surfaces.
+            ArcanumExceptionHandler handler = new(
+                context.RequestServices.GetRequiredService<ILogger<ArcanumExceptionHandler>>());
+
+            _ = await handler.TryHandleAsync(context, failed, context.RequestAborted).ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -1074,7 +1083,7 @@ public static class ApiBootstrapper
         // mid-frame, and the streaming-route inventory is what stops it staying forgotten.
         return admission.TryAdmit(
             endpoint.Metadata.GetMetadata<GrimoireStreamRouteMetadata>() is
-                { Class: GrimoireStreamClass.GrimoireQuiesceableStream }
+            { Class: GrimoireStreamClass.GrimoireQuiesceableStream }
                 ? GrimoireRequestKind.QuiesceableStream
                 : GrimoireRequestKind.Finite);
     }

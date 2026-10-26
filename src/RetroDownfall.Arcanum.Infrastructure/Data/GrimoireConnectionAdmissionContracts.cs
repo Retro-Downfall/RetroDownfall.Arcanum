@@ -587,3 +587,23 @@ internal sealed class GrimoireMaintenanceUnavailableException : InvalidOperation
     {
     }
 }
+
+/// <summary>A failed acquisition, distinct from deliberate maintenance admission refusal.</summary>
+internal sealed class GrimoireConnectionUnavailableException : InvalidOperationException
+{
+    internal GrimoireConnectionUnavailableException(Error error)
+        : base(error.ConnectionFailure?.ToPublicMessage() ?? "Grimoire connection unavailable.")
+    {
+        Error = new Error(ErrorCodes.Covenant.Unavailable, Message)
+        {
+            ConnectionFailure = error.ConnectionFailure,
+        };
+    }
+
+    internal Error Error { get; }
+
+    internal static Exception FromError(Error error) =>
+        error.Code == ErrorCodes.Grimoire.MaintenanceUnavailable
+            ? new GrimoireMaintenanceUnavailableException()
+            : new GrimoireConnectionUnavailableException(error);
+}

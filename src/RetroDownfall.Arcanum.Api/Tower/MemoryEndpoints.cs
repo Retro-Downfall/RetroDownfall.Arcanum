@@ -1771,7 +1771,7 @@ internal static class MemoryEndpoints
 
         if (acquired.IsFailure)
         {
-            throw new GrimoireMaintenanceUnavailableException();
+            throw GrimoireConnectionUnavailableException.FromError(acquired.Error);
         }
 
         return acquired.Value;

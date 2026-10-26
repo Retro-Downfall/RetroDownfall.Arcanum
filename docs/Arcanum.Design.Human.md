@@ -188,6 +188,8 @@ The Grimoire is a local SQLCipher database accessed through EF Core repositories
 
 The persistence inventory in `Arcanum.DESIGN.md` is authoritative; there is no separate persistence document. Attachment metadata belongs to the Grimoire while its authenticated encrypted snapshots belong to the external attachment blob tree, and neither half is a complete backup by itself. Use the supported encrypted `.arcbackup` workflow rather than copying a live database and WAL files.
 
+A database connection fault is reported separately from a planned maintenance window. Health and `arcanum doctor` identify the failed connection stage and safe SQLite or native-runtime codes when available; warning logs add the connection kind and mode. No database path, passphrase, connection string, or raw exception text is included. A maintenance refusal still means that the installation deliberately closed admission; an open failure means the operator should investigate the reported storage or runtime fault.
+
 Several rules make persistence reliable:
 
 - per-session writes are serialized;
