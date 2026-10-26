@@ -1,0 +1,9 @@
+# Shell symlink fixture capability repair
+
+This test-only descendant addresses the accepted independent REQUEST_CHANGES review of `8cea761cec9bfb79bc63e0d2c858aba04238db6e`. Preserve that original review and candidate evidence unchanged. No production, parser, containment, dispatcher, API, schema or configuration behavior changes.
+
+The two new alias/outward-link fixtures become SkippableFact cases. Their common test-only creation wrapper skips only an IOException from actual Windows link creation with HRESULT0x80070522 (Win32 ERROR_PRIVILEGE_NOT_HELD), the missing symbolic-link privilege/Developer Mode prerequisite. Other Windows I/O/access errors, non-Windows errors and unexpected exceptions still propagate. All original pin/path/hash assertions execute when creation succeeds; there is no blanket Windows skip.
+
+The portability defect and conditional Windows limitation are source-established from the unguarded setups and existing repository capability-aware Windows symlink policy. This macOS host cannot establish a Windows runtime RED/GREEN, and no such claim is made. No Windows VM/install/live action was performed. The full22-case new class passes on this actual macOS filesystem, including both real symbolic-link assertions.
+
+Focused complete qualification passes144 cases with four existing named Windows-only skips across148 cases in four complete classes: new shell fidelity, attachment builder, attachment file-kind and Windows backing probes. Exact committed build/style/test receipts and skip identities accompany the immutable handoff. Existing production causal mutations remain in the parent candidate package and were not redundantly rerun for this fixture-only delta. Root independently reviews this repair and owns combined qualification/integration; no original-finding or integration credit is claimed here.

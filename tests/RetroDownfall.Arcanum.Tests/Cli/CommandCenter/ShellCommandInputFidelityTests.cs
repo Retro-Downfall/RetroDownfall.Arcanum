@@ -91,12 +91,12 @@ public sealed class ShellCommandInputFidelityTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task A_contained_file_opened_through_a_directory_alias_uses_its_kernel_relative_path()
     {
         await using Harness h = new();
         string alias = Path.Combine(h.Parent, "alias");
-        Directory.CreateSymbolicLink(alias, h.Root);
+        CreateSymbolicLinkOrSkip(() => Directory.CreateSymbolicLink(alias, h.Root));
         await File.WriteAllTextAsync(Path.Combine(h.Root, "note.txt"), "content");
         h.State.ApplySessionMeta(Guid.NewGuid(), "Current", "Active", 0);
         await h.Dispatch("/pin file " + Path.Combine(alias, "note.txt"));
@@ -116,13 +116,13 @@ public sealed class ShellCommandInputFidelityTests
         Assert.Equal("CaseNote.txt", Assert.Single(h.Handler.Pins).TargetIdentifier);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task A_link_inside_the_workspace_cannot_pin_an_outside_file()
     {
         await using Harness h = new();
         string outside = Path.Combine(h.Parent, "outside.txt");
         await File.WriteAllTextAsync(outside, "outside contents");
-        File.CreateSymbolicLink(Path.Combine(h.Root, "escape.txt"), outside);
+        CreateSymbolicLinkOrSkip(() => File.CreateSymbolicLink(Path.Combine(h.Root, "escape.txt"), outside));
         h.State.ApplySessionMeta(Guid.NewGuid(), "Current", "Active", 0);
         await h.Dispatch("/pin file escape.txt");
         Assert.Empty(h.Handler.Pins);
@@ -161,6 +161,21 @@ public sealed class ShellCommandInputFidelityTests
         await h.Dispatch("/pin file " + target);
         Assert.Empty(h.Handler.Requests);
         Assert.Equal(SessionLogEntryKind.Error, h.State.Log.Snapshot()[^1].Kind);
+    }
+
+    private static void CreateSymbolicLinkOrSkip(Action createLink)
+    {
+        try
+        {
+            createLink();
+        }
+        catch (IOException exception) when (OperatingSystem.IsWindows()
+            && exception.HResult == unchecked((int)0x80070522))
+        {
+            // ERROR_PRIVILEGE_NOT_HELD: preserve assertions on capable Windows accounts while
+            // treating this specific fixture prerequisite as unavailable elsewhere on Windows.
+            Skip.If(true, "This Windows account lacks symbolic-link creation privilege or Developer Mode.");
+        }
     }
 
     private sealed class Harness : IAsyncDisposable
