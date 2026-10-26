@@ -40,3 +40,7 @@ ON workspace_file_chunks(WorkspacePath, RelativePath);
 
 -- Snapshot pages seek within one scope in source-id order.
 CREATE INDEX IF NOT EXISTS idx_workspace_file_chunks_tapestry_scope_id ON workspace_file_chunks(WorkspacePath, ChunkId COLLATE BINARY);
+
+CREATE INDEX IF NOT EXISTS idx_memory_search_workspace_file_chunks_order ON workspace_file_chunks(IndexedAt DESC,RelativePath ASC,ChunkIndex ASC,ChunkId ASC);
+
+CREATE INDEX IF NOT EXISTS idx_memory_search_workspace_file_chunks_owner ON workspace_file_chunks(WorkspacePath,IndexedAt DESC,RelativePath ASC,ChunkIndex ASC,ChunkId ASC);

@@ -33,3 +33,7 @@ CREATE INDEX IF NOT EXISTS "IX_Sessions_UnsummarizedEntryCount" ON "Sessions" ("
 CREATE INDEX IF NOT EXISTS "IX_Sessions_ForkedFromSessionId" ON "Sessions" ("ForkedFromSessionId");
 
 CREATE INDEX IF NOT EXISTS "IX_Sessions_Id_Norm" ON "Sessions" (lower(replace("Id", '-', '')));
+
+CREATE INDEX IF NOT EXISTS idx_memory_search_Sessions_order ON Sessions(UpdatedAt DESC,Id DESC) WHERE Summary IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_memory_search_Sessions_owner ON Sessions(Id,UpdatedAt DESC,Id DESC);

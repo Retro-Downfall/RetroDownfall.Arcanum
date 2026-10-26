@@ -24,3 +24,5 @@ CREATE TABLE IF NOT EXISTS lexicon_entries (
 -- two-tier match reads one scope and then the other.
 CREATE UNIQUE INDEX IF NOT EXISTS IX_lexicon_entries_Scope_NameNormalized
 ON lexicon_entries(ScopeCampaignId, NameNormalized);
+
+CREATE INDEX IF NOT EXISTS idx_memory_search_lexicon_order ON lexicon_entries(Name COLLATE NOCASE,ScopeCampaignId,Id);

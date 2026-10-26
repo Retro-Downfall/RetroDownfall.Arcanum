@@ -601,6 +601,33 @@ public sealed class MemoryCommandTests
     }
 
     [Fact]
+    public void Memory_search_forwards_explicit_continuation_and_explains_an_empty_unfinished_page()
+    {
+        MemorySearchResponse payload = new("needle", MemorySearchScope.All, [], HasMore: true,
+            Continuation: "next-token", TruncationReason: MemorySearchTruncationReason.ExaminedRows);
+
+        RecordingHandler handler = new(_ => CreateResponse(new ApiResponse<MemorySearchResponse>(payload, true, null),
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse));
+
+        CliTestResult result = RunCommand(handler, ["memory", "search", "needle", "--continuation", "previous-token", "--limit", "2"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("next-token", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("ExaminedRows", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("No memory matched.", result.Output, StringComparison.Ordinal);
+
+        MemorySearchRequest sent = JsonSerializer.Deserialize(ReadRequestBody(Assert.Single(handler.Requests)),
+            ArcanumJsonContext.Default.MemorySearchRequest)!;
+
+        Assert.Equal("previous-token", sent.Continuation);
+
+        Assert.Equal(2, sent.Limit);
+    }
+
+    [Fact]
 
     public void Memory_search_accepts_every_documented_scope_without_extra_enablement_switches()
     {

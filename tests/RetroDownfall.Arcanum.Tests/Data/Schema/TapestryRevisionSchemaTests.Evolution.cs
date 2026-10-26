@@ -11,7 +11,7 @@ public sealed partial class TapestryRevisionSchemaTests
     [InlineData(true)]
     public async Task Core27_EverySourceTransitionIsAtomicOnFailureOrCancellation(bool cancel)
     {
-        GrimoireSchemaVersionChain core = GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core);
+        GrimoireSchemaVersionChain core = CoreSchemaVersionTwentySevenFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core);
 
         GrimoireSchemaVersionStep step = Assert.Single(core.Steps, item => item.ToVersion == 27);
 
@@ -63,7 +63,7 @@ public sealed partial class TapestryRevisionSchemaTests
 
             Assert.Equal(0L, await RevisionScalarAsync(connection, "SELECT COUNT(*) FROM tapestry_scope_revisions"));
 
-            await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
+            await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentySevenFixture.ChainSet(), 64, CancellationToken.None);
 
             Assert.Equal(27L, await RevisionScalarAsync(connection, "SELECT SchemaVersion FROM grimoire_feature_schemas WHERE FamilyCode=0 AND TransactionTierCode=0"));
 
@@ -86,9 +86,9 @@ public sealed partial class TapestryRevisionSchemaTests
 
         await GrimoireSchemaTestInstaller.InstallAsync(old, CoreSchemaVersionTwentySixFixture.ChainSet(), 64, CancellationToken.None);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(old, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(old, CoreSchemaVersionTwentySevenFixture.ChainSet(), 64, CancellationToken.None);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(fresh, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(fresh, CoreSchemaVersionTwentySevenFixture.ChainSet(), 64, CancellationToken.None);
 
         Assert.Equal(await RevisionCatalogAsync(fresh), await RevisionCatalogAsync(old));
 

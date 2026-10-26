@@ -82,6 +82,8 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
         await ConvergeLexiconSecureDeleteAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
 
         await ConvergeLongRestSecureDeleteAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+
+        await ConvergeMemorySearchSecureDeleteAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -508,6 +510,17 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
             throw new InvalidOperationException(
                 "The Lexicon FTS5 index did not report secure-delete after it was enabled.");
         }
+    }
+
+    private static async Task ConvergeMemorySearchSecureDeleteAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT count(*) FROM sqlite_schema WHERE name='memory_search_fts' AND type='table'";
+        if (Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) == 0) return;
+        command.CommandText = "INSERT INTO memory_search_fts(memory_search_fts,rank) VALUES('secure-delete',1); SELECT v FROM memory_search_fts_config WHERE k='secure-delete'";
+        if (Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) != 1)
+            throw new InvalidDataException("The memory search index did not confirm secure-delete.");
     }
 
     private static async Task ConvergeLongRestSecureDeleteAsync(

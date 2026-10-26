@@ -36,3 +36,7 @@ CREATE INDEX IF NOT EXISTS "IX_Entries_Id_Norm" ON "Entries" (lower(replace("Id"
 
 -- Snapshot pages seek within one scope in source-id order.
 CREATE INDEX IF NOT EXISTS idx_Entries_tapestry_scope_id ON Entries(SessionId, Id COLLATE BINARY);
+
+CREATE INDEX IF NOT EXISTS idx_memory_search_Entries_order ON Entries(CreatedAt DESC,Sequence DESC,Id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_memory_search_Entries_owner ON Entries(SessionId,CreatedAt DESC,Sequence DESC,Id DESC);

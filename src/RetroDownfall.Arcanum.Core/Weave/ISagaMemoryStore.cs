@@ -139,6 +139,13 @@ public interface ISagaMemoryStore
         int offset,
         CancellationToken cancellationToken);
 
+    /// <summary>Read-only curation search strictly after an exact stored position.</summary>
+    Task<SagaMemoryCurationRow[]> ListCurationRowsAsync(
+        string? query, Guid? sessionId, MemoryScope scope, int limit,
+        SagaMemoryPosition? after, CancellationToken cancellationToken) => after is null
+            ? ListCurationRowsAsync(query, sessionId, scope, limit, 0, cancellationToken)
+            : Task.FromException<SagaMemoryCurationRow[]>(new NotSupportedException("Saga search continuation is unavailable."));
+
     /// <summary>
     /// One bounded local subject-recall window, excluding protected content, retired memories,
     /// missing embeddings and unavailable owners inside the same read snapshot as its content.

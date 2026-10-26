@@ -134,6 +134,33 @@ internal static class GrimoireSchemaTestInstaller
         CancellationToken cancellationToken) =>
         Create(chains).InstallAsync(connection, embeddingDimensions, CreateContext(), cancellationToken);
 
+    /// <summary>Explicitly drains bounded Core backfill passes for tests asserting the current head.</summary>
+    internal static async Task<GrimoireSchemaInstallResult> InstallAndDrainCoreAsync(
+        SqliteConnection connection, int embeddingDimensions, CancellationToken cancellationToken)
+    {
+        GrimoireSchemaInstaller installer = Create();
+
+        GrimoireSchemaInitializationContext context = CreateContext();
+
+        GrimoireSchemaBackfillRunner runner = new(installer, TimeProvider.System);
+
+        for (int pass = 0; pass < 100; pass++)
+        {
+            GrimoireSchemaInstallResult result = await installer.InstallAsync(connection, embeddingDimensions, context, cancellationToken).ConfigureAwait(false);
+
+            if (result.Core.Health != GrimoireSchemaTierHealth.TransitionIncomplete) return result;
+
+            GrimoireSchemaTransitionJournalRow journal = await GrimoireSchemaTransitionJournal.ReadAsync(connection, null,
+                GrimoireSchemaTransactionTier.Core, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("An incomplete Core install must have a transition journal.");
+
+            _ = await runner.AdvanceAsync(connection, GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core),
+                journal, context, 16, cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new InvalidOperationException("The test schema did not reach head within its bounded pass count.");
+    }
+
     /// <summary>
     /// Registers the schema-installation graph the bootstrapper resolves out of its scope.
     /// </summary>

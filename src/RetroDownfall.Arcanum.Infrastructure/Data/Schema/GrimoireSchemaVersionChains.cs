@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 26 and declares twenty-five steps, Covenant canonical is at version 6 and declares five,
+/// Core is at version 28 and declares twenty-seven steps, Covenant canonical is at version 6 and declares five,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -144,7 +144,7 @@ internal static class GrimoireSchemaVersionChains
     /// <para>Version 24 indexes Campaign continuity Session and output-artifact dependencies without
     /// changing source manifests, checkpoints, or their cascade relationships.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 27;
+    internal const int CoreSchemaVersion = 28;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -328,6 +328,8 @@ internal static class GrimoireSchemaVersionChains
 
             [(GrimoireSchemaTransactionTier.Core, 27)] = "9B9BE8D38636742B481D8C4A35BC1C84262AC4DA99373652B22FBB44517462A9",
 
+            [(GrimoireSchemaTransactionTier.Core, 28)] = "0834A2F4845EDF04B1F27B13C9F63F88CCF38F2A15BE1EC7AA3048745EA3DFDB",
+
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 2)] =
                 "7F906C4C832FDF824EC3B6A56431E9E6098DC9BB83EDA5BAE02EC62CE3B4E105",
 
@@ -404,6 +406,8 @@ internal static class GrimoireSchemaVersionChains
             [(GrimoireSchemaTransactionTier.Core, 16)] = new CampaignForkFrontierBackfill(),
 
             [(GrimoireSchemaTransactionTier.Core, 18)] = new LongRestSourceIdentityBackfill(),
+
+            [(GrimoireSchemaTransactionTier.Core, 28)] = new MemorySearchProjectionBackfill(),
 
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 5)] = new CovenantReviewEventBackfill(),
         };

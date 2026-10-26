@@ -288,7 +288,9 @@ public sealed partial class MemoryCommands(
         string? scope,
         string? sessionIdentifier,
         string? workspaceId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? continuation = null,
+        int? limit = null)
     {
         if (string.IsNullOrWhiteSpace(query))
         {
@@ -319,7 +321,9 @@ public sealed partial class MemoryCommands(
             query.Trim(),
             parsedScope,
             resolution.Id,
-            workspaceId);
+            workspaceId,
+            Limit: limit,
+            Continuation: continuation);
 
         Result<MemorySearchResponse> result = await apiClient
             .SearchMemoryAsync(request, cancellationToken)
@@ -403,7 +407,18 @@ public sealed partial class MemoryCommands(
             }
         }
 
-        if (result.Value.Results.Length == 0)
+        if (result.Value.HasMore)
+        {
+            dispatcher.WritePayload($"Search is unfinished ({result.Value.TruncationReason}); more work or matches remain.");
+
+            if (result.Value.Continuation is { } next)
+            {
+                dispatcher.WritePayload($"Continuation: {next}");
+
+                dispatcher.WritePayload("Repeat the same query and selectors with --continuation; --limit may change.");
+            }
+        }
+        else if (result.Value.Results.Length == 0)
         {
             dispatcher.WritePayload("No memory matched.");
         }

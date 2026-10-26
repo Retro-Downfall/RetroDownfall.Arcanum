@@ -41,3 +41,5 @@ CREATE INDEX IF NOT EXISTS idx_saga_memories_created ON saga_memories(CreatedAt)
 -- Campaign-scoped retrieval reads this on every turn, and the classification sweep pages the same
 -- index looking for code 0, so the kind leads and the Campaign follows it.
 CREATE INDEX IF NOT EXISTS idx_saga_memories_scope ON saga_memories(ScopeKindCode, CampaignId);
+
+CREATE INDEX IF NOT EXISTS idx_memory_search_saga_order ON saga_memories(CreatedAt DESC,Id DESC);

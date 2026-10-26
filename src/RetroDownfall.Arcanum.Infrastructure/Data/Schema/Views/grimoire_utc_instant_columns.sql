@@ -132,4 +132,5 @@ UNION ALL SELECT 'long_rest_sweeps' AS TableName, 'UpdatedAtUtc' AS ColumnName
 UNION ALL SELECT 'long_rest_provider_effects' AS TableName, 'UpdatedAtUtc' AS ColumnName
 UNION ALL SELECT 'memory_evaluations' AS TableName, 'CreatedAtUtc' AS ColumnName
 UNION ALL SELECT 'memory_evaluations' AS TableName, 'SourceAsOfUtc' AS ColumnName
-UNION ALL SELECT 'memory_evaluation_reports' AS TableName, 'CompletedAtUtc' AS ColumnName;
+UNION ALL SELECT 'memory_evaluation_reports' AS TableName, 'CompletedAtUtc' AS ColumnName
+UNION ALL SELECT 'memory_search_documents' AS TableName, 'SortAt' AS ColumnName;

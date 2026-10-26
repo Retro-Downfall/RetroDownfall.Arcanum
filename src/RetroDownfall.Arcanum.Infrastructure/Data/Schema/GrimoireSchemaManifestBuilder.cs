@@ -63,6 +63,11 @@ internal static class GrimoireSchemaManifestBuilder
 
         if (transactionTier == GrimoireSchemaTransactionTier.Core)
         {
+            if (definitions.Any(definition => definition.Name == "memory_search_fts"))
+            {
+                resolved.AddRange(MemorySearchFtsSyntheticManifest.Entries);
+            }
+
             foreach (string owner in new[] { "long_rest_clean_fts", "long_rest_protected_fts" })
             {
                 if (definitions.Any(definition => definition.Name == owner))

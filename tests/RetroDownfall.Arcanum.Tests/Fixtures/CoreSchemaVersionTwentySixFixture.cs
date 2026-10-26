@@ -139,7 +139,7 @@ internal static class CoreSchemaVersionTwentySixFixture
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects.Where(item => !LaterObjects.Contains(item.Name))
+        .. CoreSchemaVersionTwentySevenFixture.Objects.Where(item => !LaterObjects.Contains(item.Name))
             .Select(item => Frozen.TryGetValue(item.Name, out string? sql) ? item with { Sql = sql + "\n" } : item),
     ];
 
