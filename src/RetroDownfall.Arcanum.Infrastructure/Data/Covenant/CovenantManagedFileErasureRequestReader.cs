@@ -18,7 +18,6 @@ internal sealed record CovenantManagedFileErasureIdentity(
     Guid SensitivityLabelId,
     Guid? ExistingWorkItemId)
 {
-
     /// <summary>
     /// Creates the bounded request immediately before its kernel call, reusing committed work when
     /// present and minting an identity only when no nonterminal row exists.
@@ -31,7 +30,6 @@ internal sealed record CovenantManagedFileErasureIdentity(
             ArtifactId,
             SensitivityLabelId,
             ObservedSourceRevision);
-
 }
 
 /// <summary>
@@ -46,7 +44,6 @@ internal sealed record CovenantManagedFileErasureIdentity(
 /// </remarks>
 internal sealed class CovenantManagedFileErasureRequestReader
 {
-
     private static readonly Error ManualErasureRequired = new(
         ErrorCodes.Covenant.ManualArtifactErasureRequired,
         "A managed artifact does not have one exact adopted ownership record and requires manual erasure.");
@@ -57,21 +54,17 @@ internal sealed class CovenantManagedFileErasureRequestReader
         ArtifactSensitivityLabel label,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(callerOwnedConnection);
 
         ArgumentNullException.ThrowIfNull(label);
 
         if (label.ArtifactKind != SensitiveArtifactKind.ManagedWorkspaceFile)
         {
-
             return Result<CovenantManagedFileErasureIdentity?>.Failure(ManualErasureRequired);
-
         }
 
         try
         {
-
             Result<IReadOnlyList<ProducerIdentity>> producers = await ReadProducersAsync(
                 callerOwnedConnection,
                 transaction,
@@ -80,23 +73,17 @@ internal sealed class CovenantManagedFileErasureRequestReader
 
             if (producers.IsFailure)
             {
-
                 return Result<CovenantManagedFileErasureIdentity?>.Failure(ManualErasureRequired);
-
             }
 
             if (producers.Value.Count == 0)
             {
-
                 return Result<CovenantManagedFileErasureIdentity?>.Success(null);
-
             }
 
             if (producers.Value.Count != 1)
             {
-
                 return Result<CovenantManagedFileErasureIdentity?>.Failure(ManualErasureRequired);
-
             }
 
             ProducerIdentity producer = producers.Value[0];
@@ -109,29 +96,23 @@ internal sealed class CovenantManagedFileErasureRequestReader
 
             if (active.Count > 1)
             {
-
                 return Result<CovenantManagedFileErasureIdentity?>.Failure(ManualErasureRequired);
-
             }
 
             Guid? existingWorkItemId = null;
 
             if (active.Count == 1)
             {
-
                 WorkIdentity work = active[0];
 
                 if (work.ArtifactId != label.ArtifactId
                     || work.SensitivityLabelId != label.LabelId
                     || work.ExpectedSourceRevision != producer.Revision)
                 {
-
                     return Result<CovenantManagedFileErasureIdentity?>.Failure(ManualErasureRequired);
-
                 }
 
                 existingWorkItemId = work.WorkItemId;
-
             }
 
             return Result<CovenantManagedFileErasureIdentity?>.Success(
@@ -141,16 +122,17 @@ internal sealed class CovenantManagedFileErasureRequestReader
                     label.ArtifactId,
                     label.LabelId,
                     existingWorkItemId));
-
+        }
+        catch (SqliteException exception)
+        {
+            return Result<CovenantManagedFileErasureIdentity?>.Failure(
+                CovenantInventoryFailureDetails.FromSqliteCode(exception.SqliteErrorCode).ToError());
         }
         catch (Exception exception) when (
-            exception is SqliteException or FormatException or OverflowException or ArgumentException)
+            exception is FormatException or OverflowException or ArgumentException)
         {
-
             return Result<CovenantManagedFileErasureIdentity?>.Failure(ManualErasureRequired);
-
         }
-
     }
 
     private static async Task<Result<IReadOnlyList<ProducerIdentity>>> ReadProducersAsync(
@@ -159,7 +141,6 @@ internal sealed class CovenantManagedFileErasureRequestReader
         ArtifactSensitivityLabel label,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -187,26 +168,21 @@ internal sealed class CovenantManagedFileErasureRequestReader
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             if (reader.GetValue(2) is not byte[] locationPayload
                 || reader.GetValue(3) is not byte[] ownershipPayload
                 || ManagedFileEvidenceCodec.DecodeWriteLocation(locationPayload).IsFailure
                 || ManagedFileEvidenceCodec.DecodeOwnership(ownershipPayload).IsFailure)
             {
-
                 return Result<IReadOnlyList<ProducerIdentity>>.Failure(ManualErasureRequired);
-
             }
 
             rows.Add(
                 new ProducerIdentity(
                     Guid.Parse(reader.GetString(0), CultureInfo.InvariantCulture),
                     checked((ulong)reader.GetInt64(1))));
-
         }
 
         return Result<IReadOnlyList<ProducerIdentity>>.Success(rows);
-
     }
 
     private static async Task<IReadOnlyList<WorkIdentity>> ReadActiveWorkAsync(
@@ -215,7 +191,6 @@ internal sealed class CovenantManagedFileErasureRequestReader
         Guid sourceWriteOperationId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -238,18 +213,15 @@ internal sealed class CovenantManagedFileErasureRequestReader
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             rows.Add(
                 new WorkIdentity(
                     Guid.Parse(reader.GetString(0), CultureInfo.InvariantCulture),
                     Guid.Parse(reader.GetString(1), CultureInfo.InvariantCulture),
                     Guid.Parse(reader.GetString(2), CultureInfo.InvariantCulture),
                     checked((ulong)reader.GetInt64(3))));
-
         }
 
         return rows;
-
     }
 
     private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
@@ -261,5 +233,4 @@ internal sealed class CovenantManagedFileErasureRequestReader
         Guid ArtifactId,
         Guid SensitivityLabelId,
         ulong ExpectedSourceRevision);
-
 }

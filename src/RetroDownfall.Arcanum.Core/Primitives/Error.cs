@@ -32,16 +32,20 @@ public readonly record struct Error(
     [JsonIgnore]
     public CovenantStartupFailureDetails? CovenantStartupFailure { get; init; }
 
+    /// <summary>Validated erasure inventory facts; never part of the error wire shape.</summary>
+    [JsonIgnore]
+    public CovenantInventoryFailureDetails? CovenantInventoryFailure { get; init; }
+
     public static readonly Error None = new(string.Empty, string.Empty);
 
     /// <summary>
     /// Whether this error has exactly the field values of <see cref="None"/>: empty code, empty
-    /// message, no details, context overflow, connection failure or startup failure. It is the same
+    /// message, no details, context overflow, connection failure, startup failure or inventory failure. It is the same
     /// answer as <c>this == None</c>, read from the fields so a caller never runs the generated record comparison, which would compare
     /// <see cref="Details"/> through its interface.
     /// </summary>
     [JsonIgnore]
-    public bool IsNone => Code is { Length: 0 } && Message is { Length: 0 } && Details is null && ContextOverflow is null && ConnectionFailure is null && CovenantStartupFailure is null;
+    public bool IsNone => Code is { Length: 0 } && Message is { Length: 0 } && Details is null && ContextOverflow is null && ConnectionFailure is null && CovenantStartupFailure is null && CovenantInventoryFailure is null;
 }
 
 /// <summary>Only configured public identities and numeric context-window accounting, never prompt or response text.</summary>
@@ -169,5 +173,76 @@ public readonly record struct CovenantStartupFailureDetails(
             + "Keep the installation intact. Run 'arcanum doctor --only operations --only grimoire --json' "
             + "for supplemental offline diagnostics; it does not repair ownership. "
             + "See Command Reference: Covenant startup recovery refusal.";
+    }
+}
+
+/// <summary>Closed reasons an erasure inventory cannot prove its snapshot or artifact ownership.</summary>
+public enum CovenantInventoryFailureReason
+{
+    UnsupportedRequest,
+    InvalidDataset,
+    SnapshotMismatch,
+    MalformedLabel,
+    UnknownArtifactKind,
+    ManagedOwnershipMissing,
+    ManagedOwnershipMismatch,
+    StorageBusy,
+    StorageUnavailable,
+    StorageFault,
+    AdmissionUnavailable,
+    CleanupFailed,
+    CapacityExceeded,
+}
+
+/// <summary>Only independently validated identifiers and a declared artifact kind may describe a refusal.</summary>
+public readonly record struct CovenantInventoryFailureDetails(
+    CovenantInventoryFailureReason Reason,
+    Guid? LabelId = null,
+    Guid? ArtifactId = null,
+    RetroDownfall.Arcanum.Core.Covenant.SensitiveArtifactKind? ArtifactKind = null)
+{
+    /// <summary>Uses only SQLite's primary result code; missing schema is an integrity fault, never retryable busy.</summary>
+    public static CovenantInventoryFailureDetails FromSqliteCode(int? sqliteCode) => new((sqliteCode & 255) switch
+    {
+        5 or 6 => CovenantInventoryFailureReason.StorageBusy,
+        7 or 8 or 9 or 10 or 13 or 14 => CovenantInventoryFailureReason.StorageUnavailable,
+        _ => CovenantInventoryFailureReason.StorageFault,
+    });
+
+    public Error ToError()
+    {
+        string code = Reason switch
+        {
+            CovenantInventoryFailureReason.StorageBusy or CovenantInventoryFailureReason.StorageUnavailable
+                or CovenantInventoryFailureReason.AdmissionUnavailable => ErrorCodes.Covenant.Unavailable,
+            CovenantInventoryFailureReason.ManagedOwnershipMissing or CovenantInventoryFailureReason.ManagedOwnershipMismatch
+                => ErrorCodes.Covenant.ManualArtifactErasureRequired,
+            CovenantInventoryFailureReason.CleanupFailed => ErrorCodes.Covenant.MaintenanceFailed,
+            _ => ErrorCodes.Covenant.IntegrityFailure,
+        };
+
+        string label = LabelId is { } id && id != Guid.Empty ? $" LabelId={id:N}." : string.Empty;
+
+        string artifact = ArtifactId is { } artifactId && artifactId != Guid.Empty ? $" ArtifactId={artifactId:N}." : string.Empty;
+
+        string kind = ArtifactKind is { } artifactKind && Enum.IsDefined(artifactKind) ? $" ArtifactKind={artifactKind}." : string.Empty;
+
+        string reason = Enum.IsDefined(Reason) ? Reason.ToString() : nameof(CovenantInventoryFailureReason.StorageFault);
+
+        string guidance = Reason switch
+        {
+            CovenantInventoryFailureReason.StorageBusy => "Storage is busy. Retry after the conflicting work releases the database.",
+            CovenantInventoryFailureReason.StorageUnavailable => "Check storage availability, permissions and free space, then retry.",
+            CovenantInventoryFailureReason.AdmissionUnavailable => "Inventory admission is unavailable. Inspect the active operation before retrying.",
+            CovenantInventoryFailureReason.CleanupFailed => "Snapshot cleanup did not complete. Preserve the installation and inspect the operation and logs before retrying.",
+            CovenantInventoryFailureReason.ManagedOwnershipMissing or CovenantInventoryFailureReason.ManagedOwnershipMismatch
+                => "Adopted ownership could not be proved. Preserve the artifact and inspect its ownership evidence; do not erase an unverified path.",
+            _ => "Preserve the installation and inspect the named canonical evidence and diagnostics before retrying.",
+        };
+
+        return new Error(code, $"Covenant erasure inventory refused. Reason={reason}.{label}{artifact}{kind} {guidance}")
+        {
+            CovenantInventoryFailure = this,
+        };
     }
 }

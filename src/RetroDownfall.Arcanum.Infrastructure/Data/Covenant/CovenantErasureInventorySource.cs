@@ -35,20 +35,37 @@ internal sealed class CovenantErasureInventorySource(
     CovenantManagedFileErasureRequestReader managedFiles,
     CovenantDisclosureExposureReader disclosures) : ICovenantErasureInventorySource
 {
-
     private const int PageSize = CovenantProtectedArtifactErasurePage.MaxItems;
 
-    private static readonly Error UnsafeInventory = new(
-        ErrorCodes.Covenant.IntegrityFailure,
-        "The Covenant erasure inventory could not be proved from one bounded storage snapshot.");
+    private static Error InventoryFailure(CovenantInventoryFailureReason reason) =>
+        new CovenantInventoryFailureDetails(reason).ToError();
+
+    private static Error StorageFailure(int? sqliteCode) =>
+        CovenantInventoryFailureDetails.FromSqliteCode(sqliteCode).ToError();
+
+    private static Error OpenFailure(Error error) => error.ConnectionFailure is { } failure
+        ? failure.Kind == GrimoireConnectionFailureKind.Sqlite
+            ? StorageFailure(failure.SqliteErrorCode)
+            : InventoryFailure(failure.Kind is GrimoireConnectionFailureKind.IO
+                or GrimoireConnectionFailureKind.UnauthorizedAccess or GrimoireConnectionFailureKind.NativeRuntime
+                ? CovenantInventoryFailureReason.StorageUnavailable : CovenantInventoryFailureReason.StorageFault)
+        : InventoryFailure(CovenantInventoryFailureReason.AdmissionUnavailable);
+
+    private static Error ReadFailure(Exception exception) => exception switch
+    {
+        SqliteException sqlite => StorageFailure(sqlite.SqliteErrorCode),
+        IOException or UnauthorizedAccessException => InventoryFailure(CovenantInventoryFailureReason.StorageUnavailable),
+        _ => InventoryFailure(CovenantInventoryFailureReason.StorageFault),
+    };
 
     private static readonly Error UnadvanceableCanonicalState = new(
         ErrorCodes.Covenant.IntegrityFailure,
         "The Covenant canonical state is not one an offline transition can preselect a target against.");
 
-    private static readonly Error ManualManagedErasure = new(
-        ErrorCodes.Covenant.ManualArtifactErasureRequired,
-        "A managed artifact does not have one exact adopted ownership record and requires manual erasure.");
+    private static Error ManualManagedErasure(ArtifactSensitivityLabel label, bool malformed) =>
+        new CovenantInventoryFailureDetails(
+            malformed ? CovenantInventoryFailureReason.ManagedOwnershipMismatch : CovenantInventoryFailureReason.ManagedOwnershipMissing,
+            label.LabelId, label.ArtifactId, label.ArtifactKind).ToError();
 
     private readonly IGrimoireOrdinaryConnectionFactory _connections =
         connections ?? throw new ArgumentNullException(nameof(connections));
@@ -84,45 +101,42 @@ internal sealed class CovenantErasureInventorySource(
         CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
-
         if (operation is not CovenantExclusiveOperation.CovenantReset
             and not CovenantExclusiveOperation.HealthyCatalogFactoryErasure
             || datasetGeneration == Guid.Empty)
         {
-
-            return Task.FromResult(Result<CovenantErasureInventorySummary>.Failure(UnsafeInventory));
-
+            return Task.FromResult(Result<CovenantErasureInventorySummary>.Failure(InventoryFailure(CovenantInventoryFailureReason.UnsupportedRequest)));
         }
 
         return WithClosedSnapshotAsync(
             authority,
             async (connection, transaction, token) =>
             {
-
                 Result<Guid> liveDataset = await ReadDatasetGenerationAsync(
                     connection,
                     transaction,
                     token).ConfigureAwait(false);
 
-                if (liveDataset.IsFailure || liveDataset.Value != datasetGeneration)
+                if (liveDataset.IsFailure)
                 {
+                    return Result<CovenantErasureInventorySummary>.Failure(liveDataset.Error);
+                }
 
-                    return Result<CovenantErasureInventorySummary>.Failure(UnsafeInventory);
-
+                if (liveDataset.Value != datasetGeneration)
+                {
+                    return Result<CovenantErasureInventorySummary>.Failure(
+                        InventoryFailure(CovenantInventoryFailureReason.SnapshotMismatch));
                 }
 
                 if (operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure)
                 {
-
                     Result healthy = await _healthyCatalog
                         .RequireHealthyWithinAsync(connection, transaction, token)
                         .ConfigureAwait(false);
 
                     if (healthy.IsFailure)
                     {
-
                         return Result<CovenantErasureInventorySummary>.Failure(healthy.Error);
-
                     }
 
                     // Stage one has drained every admitted request and effect. A persisted run
@@ -137,13 +151,10 @@ internal sealed class CovenantErasureInventorySource(
 
                     if (Convert.ToInt64(await running.ExecuteScalarAsync(token).ConfigureAwait(false)) != 0)
                     {
-
                         return Result<CovenantErasureInventorySummary>.Failure(new Error(
                             ErrorCodes.Data.Conflict,
                             "An active inference run still protects its inputs and accounting chain after maintenance drain."));
-
                     }
-
                 }
 
                 Result<CovenantDisclosureExposure> exposure = await _disclosures
@@ -152,9 +163,7 @@ internal sealed class CovenantErasureInventorySource(
 
                 if (exposure.IsFailure)
                 {
-
                     return Result<CovenantErasureInventorySummary>.Failure(exposure.Error);
-
                 }
 
                 long databaseCount = 0;
@@ -165,7 +174,6 @@ internal sealed class CovenantErasureInventorySource(
 
                 while (true)
                 {
-
                     Result<IReadOnlyList<ArtifactSensitivityLabel>> page =
                         await ArtifactSensitivityLedger.ReadPageWithinAsync(
                             connection,
@@ -176,86 +184,64 @@ internal sealed class CovenantErasureInventorySource(
 
                     if (page.IsFailure)
                     {
-
                         return Result<CovenantErasureInventorySummary>.Failure(page.Error);
-
                     }
 
                     foreach (ArtifactSensitivityLabel label in page.Value)
                     {
-
                         Result<CovenantSensitiveArtifactPurgeRule> rule =
                             CovenantSensitiveArtifactPurgePolicy.Resolve(label.ArtifactKind);
 
                         if (rule.IsFailure)
                         {
-
-                            return Result<CovenantErasureInventorySummary>.Failure(UnsafeInventory);
-
+                            return Result<CovenantErasureInventorySummary>.Failure(InventoryFailure(CovenantInventoryFailureReason.UnknownArtifactKind));
                         }
 
                         try
                         {
-
                             if (rule.Value.Executor == CovenantArtifactPurgeExecutor.DatabaseTransaction)
                             {
-
                                 databaseCount = checked(databaseCount + 1);
-
                             }
                             else
                             {
-
                                 Result<CovenantManagedFileErasureIdentity?> source = await _managedFiles
                                     .TryReadWithinAsync(connection, transaction, label, token)
                                     .ConfigureAwait(false);
 
                                 if (source.IsFailure || source.Value is null)
                                 {
-
                                     return Result<CovenantErasureInventorySummary>.Failure(
-                                        source.IsFailure ? source.Error : ManualManagedErasure);
-
+                                        source.IsFailure && source.Error.CovenantInventoryFailure is not null
+                                            ? source.Error : ManualManagedErasure(label, source.IsFailure));
                                 }
 
                                 managedCount = checked(managedCount + 1);
-
                             }
-
                         }
                         catch (OverflowException)
                         {
-
-                            return Result<CovenantErasureInventorySummary>.Failure(UnsafeInventory);
-
+                            return Result<CovenantErasureInventorySummary>.Failure(InventoryFailure(CovenantInventoryFailureReason.CapacityExceeded));
                         }
-
                     }
 
                     if (page.Value.Count == 0)
                     {
-
                         break;
-
                     }
 
                     cursor = page.Value[^1].LabelId;
 
                     if (page.Value.Count < PageSize)
                     {
-
                         break;
-
                     }
-
                 }
 
                 return Result<CovenantErasureInventorySummary>.Success(
                     new CovenantErasureInventorySummary(databaseCount, managedCount, exposure.Value));
-
             },
             cancellationToken);
-
     }
 
     public Task<Result> PreflightRemainingManagedAsync(
@@ -265,12 +251,10 @@ internal sealed class CovenantErasureInventorySource(
             authority,
             async (connection, transaction, token) =>
             {
-
                 Guid? cursor = null;
 
                 while (true)
                 {
-
                     Result<IReadOnlyList<ArtifactSensitivityLabel>> page =
                         await ArtifactSensitivityLedger.ReadPageWithinAsync(
                             connection,
@@ -281,29 +265,22 @@ internal sealed class CovenantErasureInventorySource(
 
                     if (page.IsFailure)
                     {
-
                         return Result.Failure(page.Error);
-
                     }
 
                     foreach (ArtifactSensitivityLabel label in page.Value)
                     {
-
                         Result<CovenantSensitiveArtifactPurgeRule> rule =
                             CovenantSensitiveArtifactPurgePolicy.Resolve(label.ArtifactKind);
 
                         if (rule.IsFailure)
                         {
-
-                            return Result.Failure(UnsafeInventory);
-
+                            return Result.Failure(InventoryFailure(CovenantInventoryFailureReason.UnknownArtifactKind));
                         }
 
                         if (rule.Value.Executor != CovenantArtifactPurgeExecutor.ManagedFileKernel)
                         {
-
                             continue;
-
                         }
 
                         Result<CovenantManagedFileErasureIdentity?> source = await _managedFiles
@@ -312,33 +289,25 @@ internal sealed class CovenantErasureInventorySource(
 
                         if (source.IsFailure || source.Value is null)
                         {
-
-                            return Result.Failure(source.IsFailure ? source.Error : ManualManagedErasure);
-
+                            return Result.Failure(source.IsFailure && source.Error.CovenantInventoryFailure is not null
+                                            ? source.Error : ManualManagedErasure(label, source.IsFailure));
                         }
-
                     }
 
                     if (page.Value.Count == 0)
                     {
-
                         break;
-
                     }
 
                     cursor = page.Value[^1].LabelId;
 
                     if (page.Value.Count < PageSize)
                     {
-
                         break;
-
                     }
-
                 }
 
                 return Result.Success();
-
             },
             cancellationToken);
 
@@ -348,19 +317,15 @@ internal sealed class CovenantErasureInventorySource(
         CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
-
         if (datasetGeneration == Guid.Empty || afterLabelId == Guid.Empty)
         {
-
-            return Task.FromResult(Result<CovenantDatabaseErasureBatch>.Failure(UnsafeInventory));
-
+            return Task.FromResult(Result<CovenantDatabaseErasureBatch>.Failure(InventoryFailure(CovenantInventoryFailureReason.UnsupportedRequest)));
         }
 
         return WithClosedSnapshotAsync(
             authority,
             async (connection, transaction, token) =>
             {
-
                 Result<IReadOnlyList<ArtifactSensitivityLabel>> raw =
                     await ArtifactSensitivityLedger.ReadPageWithinAsync(
                         connection,
@@ -371,33 +336,25 @@ internal sealed class CovenantErasureInventorySource(
 
                 if (raw.IsFailure)
                 {
-
                     return Result<CovenantDatabaseErasureBatch>.Failure(raw.Error);
-
                 }
 
                 List<CovenantProtectedArtifactErasureItem> items = [];
 
                 foreach (ArtifactSensitivityLabel label in raw.Value)
                 {
-
                     Result<CovenantSensitiveArtifactPurgeRule> rule =
                         CovenantSensitiveArtifactPurgePolicy.Resolve(label.ArtifactKind);
 
                     if (rule.IsFailure)
                     {
-
-                        return Result<CovenantDatabaseErasureBatch>.Failure(UnsafeInventory);
-
+                        return Result<CovenantDatabaseErasureBatch>.Failure(InventoryFailure(CovenantInventoryFailureReason.UnknownArtifactKind));
                     }
 
                     if (rule.Value.Executor == CovenantArtifactPurgeExecutor.DatabaseTransaction)
                     {
-
                         items.Add(ToDatabaseItem(label));
-
                     }
-
                 }
 
                 Guid? next = raw.Value.Count == 0 ? afterLabelId : raw.Value[^1].LabelId;
@@ -410,10 +367,8 @@ internal sealed class CovenantErasureInventorySource(
 
                 return Result<CovenantDatabaseErasureBatch>.Success(
                     new CovenantDatabaseErasureBatch(next, complete, page));
-
             },
             cancellationToken);
-
     }
 
     public Task<Result<CovenantManagedFileErasureBatch>> ReadNextManagedFileBatchAsync(
@@ -422,19 +377,15 @@ internal sealed class CovenantErasureInventorySource(
         CovenantClosedPeriodAuthority authority,
         CancellationToken cancellationToken)
     {
-
         if (operationId == Guid.Empty || afterLabelId == Guid.Empty)
         {
-
-            return Task.FromResult(Result<CovenantManagedFileErasureBatch>.Failure(UnsafeInventory));
-
+            return Task.FromResult(Result<CovenantManagedFileErasureBatch>.Failure(InventoryFailure(CovenantInventoryFailureReason.UnsupportedRequest)));
         }
 
         return WithClosedSnapshotAsync(
             authority,
             async (connection, transaction, token) =>
             {
-
                 Result<IReadOnlyList<ArtifactSensitivityLabel>> raw =
                     await ArtifactSensitivityLedger.ReadPageWithinAsync(
                         connection,
@@ -445,31 +396,24 @@ internal sealed class CovenantErasureInventorySource(
 
                 if (raw.IsFailure)
                 {
-
                     return Result<CovenantManagedFileErasureBatch>.Failure(raw.Error);
-
                 }
 
                 List<CovenantManagedFileErasureRequest> requests = [];
 
                 foreach (ArtifactSensitivityLabel label in raw.Value)
                 {
-
                     Result<CovenantSensitiveArtifactPurgeRule> rule =
                         CovenantSensitiveArtifactPurgePolicy.Resolve(label.ArtifactKind);
 
                     if (rule.IsFailure)
                     {
-
-                        return Result<CovenantManagedFileErasureBatch>.Failure(UnsafeInventory);
-
+                        return Result<CovenantManagedFileErasureBatch>.Failure(InventoryFailure(CovenantInventoryFailureReason.UnknownArtifactKind));
                     }
 
                     if (rule.Value.Executor != CovenantArtifactPurgeExecutor.ManagedFileKernel)
                     {
-
                         continue;
-
                     }
 
                     Result<CovenantManagedFileErasureIdentity?> source = await _managedFiles
@@ -478,14 +422,12 @@ internal sealed class CovenantErasureInventorySource(
 
                     if (source.IsFailure || source.Value is null)
                     {
-
                         return Result<CovenantManagedFileErasureBatch>.Failure(
-                            source.IsFailure ? source.Error : ManualManagedErasure);
-
+                            source.IsFailure && source.Error.CovenantInventoryFailure is not null
+                                            ? source.Error : ManualManagedErasure(label, source.IsFailure));
                     }
 
                     requests.Add(source.Value.ToRequest(operationId));
-
                 }
 
                 Guid? next = raw.Value.Count == 0 ? afterLabelId : raw.Value[^1].LabelId;
@@ -494,10 +436,8 @@ internal sealed class CovenantErasureInventorySource(
 
                 return Result<CovenantManagedFileErasureBatch>.Success(
                     new CovenantManagedFileErasureBatch(next, complete, requests));
-
             },
             cancellationToken);
-
     }
 
     public Task<Result<CovenantDisclosureExposure>> ReadDisclosureExposureAsync(
@@ -566,7 +506,6 @@ internal sealed class CovenantErasureInventorySource(
             bool requireAdvanceableEpochs,
             CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -588,9 +527,7 @@ internal sealed class CovenantErasureInventorySource(
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return Result<CovenantOfflineTransitionSourceState>.Failure(UnadvanceableCanonicalState);
-
         }
 
         Guid generation = new(reader.GetFieldValue<byte[]>(0));
@@ -600,9 +537,7 @@ internal sealed class CovenantErasureInventorySource(
             || !TryReadEpoch(reader, 2, requireAdvanceableEpochs, out ulong keyReclamation)
             || !TryReadEpoch(reader, 3, requireAdvanceableEpochs, out ulong envelopeKey))
         {
-
             return Result<CovenantOfflineTransitionSourceState>.Failure(UnadvanceableCanonicalState);
-
         }
 
         return Result<CovenantOfflineTransitionSourceState>.Success(
@@ -611,7 +546,6 @@ internal sealed class CovenantErasureInventorySource(
                 accelerator,
                 keyReclamation,
                 envelopeKey));
-
     }
 
     /// <summary>
@@ -628,27 +562,21 @@ internal sealed class CovenantErasureInventorySource(
         bool requireAdvanceable,
         out ulong epoch)
     {
-
         epoch = 0;
 
         if (reader.GetValue(ordinal) is not long value)
         {
-
             return false;
-
         }
 
         if (value <= 0 || requireAdvanceable && value == long.MaxValue)
         {
-
             return false;
-
         }
 
         epoch = (ulong)value;
 
         return true;
-
     }
 
     private static async Task<Result<Guid>> ReadDatasetGenerationAsync(
@@ -656,7 +584,6 @@ internal sealed class CovenantErasureInventorySource(
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -673,17 +600,14 @@ internal sealed class CovenantErasureInventorySource(
 
         if (value is not byte[] { Length: 16 } bytes)
         {
-
-            return Result<Guid>.Failure(UnsafeInventory);
-
+            return Result<Guid>.Failure(InventoryFailure(CovenantInventoryFailureReason.InvalidDataset));
         }
 
         Guid generation = new(bytes);
 
         return generation == Guid.Empty
-            ? Result<Guid>.Failure(UnsafeInventory)
+            ? Result<Guid>.Failure(InventoryFailure(CovenantInventoryFailureReason.InvalidDataset))
             : Result<Guid>.Success(generation);
-
     }
 
     /// <summary>
@@ -701,59 +625,73 @@ internal sealed class CovenantErasureInventorySource(
         Func<SqliteConnection, SqliteTransaction, CancellationToken, Task<Result<T>>> work,
         CancellationToken cancellationToken)
     {
+        IGrimoireMaintenanceConnectionLease? lease = null;
 
-        Result<IGrimoireMaintenanceConnectionLease> opened =
-            await authority.OpenInventorySnapshotAsync(cancellationToken).ConfigureAwait(false);
+        SqliteTransaction? transaction = null;
 
-        if (opened.IsFailure)
+        Result<T> result = Result<T>.Failure(InventoryFailure(CovenantInventoryFailureReason.StorageFault));
+
+        bool callerCancelled = false;
+
+        try
         {
+            Result<IGrimoireMaintenanceConnectionLease> opened =
+                await authority.OpenInventorySnapshotAsync(cancellationToken).ConfigureAwait(false);
 
-            return Result<T>.Failure(UnsafeInventory);
+            if (opened.IsFailure)
+            {
+                return Result<T>.Failure(OpenFailure(opened.Error));
+            }
 
+            lease = opened.Value;
+
+            transaction = (SqliteTransaction)await lease.Connection.BeginTransactionAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            result = await work(lease.Connection, transaction, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            callerCancelled = true;
+        }
+        catch (Exception exception)
+        {
+            result = Result<T>.Failure(ReadFailure(exception));
         }
 
-        await using (opened.Value.ConfigureAwait(false))
+        bool cleaned = true;
+
+        if (transaction is not null)
         {
-
-            SqliteTransaction? transaction = null;
-
             try
             {
-
-                transaction = (SqliteTransaction)await opened.Value.Connection
-                    .BeginTransactionAsync(cancellationToken)
-                    .ConfigureAwait(false);
-
-                return await work(opened.Value.Connection, transaction, cancellationToken)
-                    .ConfigureAwait(false);
-
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-
-                throw;
-
+                await transaction.DisposeAsync().ConfigureAwait(false);
             }
             catch
             {
-
-                return Result<T>.Failure(UnsafeInventory);
-
+                cleaned = false;
             }
-            finally
-            {
-
-                if (transaction is not null)
-                {
-
-                    await transaction.DisposeAsync().ConfigureAwait(false);
-
-                }
-
-            }
-
         }
 
+        if (lease is not null)
+        {
+            try
+            {
+                await lease.DisposeAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                cleaned = false;
+            }
+        }
+
+        if (callerCancelled || cancellationToken.IsCancellationRequested)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        return cleaned ? result : Result<T>.Failure(
+            new CovenantInventoryFailureDetails(CovenantInventoryFailureReason.CleanupFailed).ToError());
     }
 
     /// <summary>
@@ -770,18 +708,16 @@ internal sealed class CovenantErasureInventorySource(
         Func<SqliteConnection, SqliteTransaction, CancellationToken, Task<Result<T>>> work,
         CancellationToken cancellationToken)
     {
-
         IGrimoireOrdinaryConnectionLease? lease = null;
 
         SqliteTransaction? transaction = null;
 
-        Result<T> result = Result<T>.Failure(UnsafeInventory);
+        Result<T> result = Result<T>.Failure(InventoryFailure(CovenantInventoryFailureReason.StorageFault));
 
         bool callerCancelled = false;
 
         try
         {
-
             Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
                 .OpenFreshAsync(
                     GrimoireOrdinaryFreshConnectionKind.ReadOnly,
@@ -790,9 +726,7 @@ internal sealed class CovenantErasureInventorySource(
 
             if (acquired.IsFailure)
             {
-
-                return Result<T>.Failure(UnsafeInventory);
-
+                return Result<T>.Failure(OpenFailure(acquired.Error));
             }
 
             lease = acquired.Value;
@@ -810,32 +744,24 @@ internal sealed class CovenantErasureInventorySource(
                 GrimoireScopedConsumerFinalUseKind.ReaderMaterialized,
                 result.IsSuccess ? 1 : 0,
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             callerCancelled = true;
-
         }
-        catch
+        catch (Exception exception)
         {
-
-            result = Result<T>.Failure(UnsafeInventory);
-
+            result = Result<T>.Failure(ReadFailure(exception));
         }
 
         bool cleaned = await CleanupAsync(transaction, lease).ConfigureAwait(false);
 
-        if (callerCancelled)
+        if (callerCancelled || cancellationToken.IsCancellationRequested)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
-
         }
 
-        return cleaned ? result : Result<T>.Failure(UnsafeInventory);
-
+        return cleaned ? result : Result<T>.Failure(InventoryFailure(CovenantInventoryFailureReason.CleanupFailed));
     }
 
     private static async Task<Result> WithClosedSnapshotAsync(
@@ -843,77 +769,56 @@ internal sealed class CovenantErasureInventorySource(
         Func<SqliteConnection, SqliteTransaction, CancellationToken, Task<Result>> work,
         CancellationToken cancellationToken)
     {
-
         Result<Unit> result = await WithClosedSnapshotAsync(
             authority,
             async (connection, transaction, token) =>
             {
-
                 Result completed = await work(connection, transaction, token).ConfigureAwait(false);
 
                 return completed.IsFailure
                     ? Result<Unit>.Failure(completed.Error)
                     : Result<Unit>.Success(Unit.Value);
-
             },
             cancellationToken).ConfigureAwait(false);
 
         return result.IsFailure ? Result.Failure(result.Error) : Result.Success();
-
     }
 
     private static async Task<bool> CleanupAsync(
         SqliteTransaction? transaction,
         IGrimoireOrdinaryConnectionLease? lease)
     {
-
         bool cleaned = true;
 
         if (transaction is not null)
         {
-
             try
             {
-
                 await transaction.DisposeAsync().ConfigureAwait(false);
-
             }
             catch
             {
-
                 cleaned = false;
-
             }
-
         }
 
         if (lease is not null)
         {
-
             try
             {
-
                 await lease.DisposeAsync().ConfigureAwait(false);
-
             }
             catch
             {
-
                 cleaned = false;
-
             }
-
         }
 
         return cleaned;
-
     }
 
     private readonly record struct Unit
     {
-
         internal static Unit Value { get; } = new();
-
     }
-
 }

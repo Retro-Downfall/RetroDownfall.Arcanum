@@ -9,6 +9,25 @@ namespace RetroDownfall.Arcanum.Tests.Primitives;
 public sealed class ResultTests
 {
     [Fact]
+    public void InventoryFailureMetadata_is_value_compared_and_absent_from_source_generated_wire_shape()
+    {
+        CovenantInventoryFailureDetails detail = new(CovenantInventoryFailureReason.MalformedLabel, Guid.NewGuid(), Guid.NewGuid());
+
+        Error error = Error.None with { CovenantInventoryFailure = detail };
+
+        Assert.False(error.IsNone);
+
+        Assert.NotEqual(Error.None, error);
+
+        Assert.Equal(error, Error.None with { CovenantInventoryFailure = detail });
+
+        Assert.NotEqual(error, error with { CovenantInventoryFailure = detail with { Reason = CovenantInventoryFailureReason.UnknownArtifactKind } });
+
+        Assert.Equal(JsonSerializer.Serialize(Error.None, ArcanumJsonContext.Default.Error),
+            JsonSerializer.Serialize(error, ArcanumJsonContext.Default.Error));
+    }
+
+    [Fact]
     public void StartupFailureMetadata_is_value_compared_and_absent_from_source_generated_wire_shape()
     {
         CovenantStartupFailureDetails detail = new(CovenantStartupFailureReason.MalformedRow, Guid.NewGuid());

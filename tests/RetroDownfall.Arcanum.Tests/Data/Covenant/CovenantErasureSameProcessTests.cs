@@ -92,6 +92,219 @@ public sealed class CovenantErasureSameProcessTests
     }
 
     [SkippableTheory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Inventory_refusal_warning_carries_safe_blocker_and_operation_with_exact_disposition(
+        bool keepClosed, bool untyped)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid labelId = Guid.NewGuid();
+
+        Guid artifactId = Guid.NewGuid();
+
+        Error refusal = untyped
+            ? new Error(ErrorCodes.Covenant.IntegrityFailure, "PRIVATE-INVENTORY-CANARY\r\nforged-diagnostic")
+            : new CovenantInventoryFailureDetails(CovenantInventoryFailureReason.ManagedOwnershipMissing,
+                labelId, artifactId, SensitiveArtifactKind.ManagedWorkspaceFile).ToError() with
+            { Message = "PRIVATE-INVENTORY-CANARY\r\nforged-diagnostic" };
+
+        RouteOperationWriteObserver writes = new();
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            operationWrites: writes,
+            serviceOverrides: services =>
+            {
+                services.RemoveAll<ICovenantErasureInventorySource>();
+
+                services.AddScoped<ICovenantErasureInventorySource>(provider => new RouteFailureInventory(
+                    RouteFailure.Rollback, provider.GetRequiredService<CovenantErasureInventorySource>(), refusal));
+
+                if (keepClosed)
+                {
+                    services.RemoveAll<ICovenantDisclosureWriterLifecycle>();
+
+                    services.AddSingleton<ICovenantDisclosureWriterLifecycle>(provider =>
+                        new RefusingRestartWriter(provider.GetRequiredService<CovenantDisclosureWriter>()));
+                }
+            });
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        DataRetentionPlan plan = await harness.PlanResetAsync();
+
+        Result<DataRetentionApplyResult> result = await harness.ApplyResetAsync(plan.PlanId);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(keepClosed ? ErrorCodes.Covenant.MaintenanceFailed : refusal.Code, result.Error.Code);
+
+        Assert.Contains(keepClosed ? "Admission stays closed" : "Admission reopened", result.Error.Message);
+
+        TestLogEntry warning = Assert.Single(harness.Services
+            .GetRequiredService<TestCapturingLogger<CovenantErasureCoordinator>>().Entries,
+            entry => entry.Level == LogLevel.Warning && entry.Message.Contains("inventory refused", StringComparison.Ordinal));
+
+        Assert.Null(warning.Exception);
+
+        Assert.Contains(writes.LastSuccessfulWrite.Id.ToString(), warning.Message);
+
+        Assert.Contains(keepClosed ? "admission stays closed" : "admission reopens", warning.Message);
+
+        Assert.DoesNotContain("PRIVATE", warning.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("forged-diagnostic", warning.Message, StringComparison.Ordinal);
+
+        Assert.All(warning.Properties!, property => Assert.DoesNotContain("PRIVATE", property.Value?.ToString() ?? string.Empty, StringComparison.Ordinal));
+
+        Assert.Equal(writes.LastSuccessfulWrite.Id, Assert.Single(warning.Properties!, property => property.Key == "OperationId").Value);
+
+        if (!untyped)
+        {
+            Assert.Contains(labelId.ToString("N"), warning.Message);
+
+            Assert.Contains(artifactId.ToString("N"), warning.Message);
+
+            Assert.Contains("ManagedOwnershipMissing", warning.Message);
+
+            Assert.Contains("Adopted ownership could not be proved", warning.Message);
+        }
+
+        if (keepClosed)
+        {
+            await AssertBothAdmissionsClosedAsync(harness);
+        }
+        else
+        {
+            LongRunningOperation operation = await harness.ReadResetOperationAsync();
+
+            Assert.Equal(LongRunningOperationState.Failed, operation.State);
+
+            Assert.Equal("grimoire.offline_transition_not_applied", operation.TerminalErrorCode);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Authenticated_pre_effect_retry_preserves_the_inventory_blocker_diagnostic()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid labelId = Guid.NewGuid();
+
+        Error refusal = new CovenantInventoryFailureDetails(CovenantInventoryFailureReason.ManagedOwnershipMissing,
+            labelId, Guid.NewGuid(), SensitiveArtifactKind.ManagedWorkspaceFile).ToError();
+
+        RouteOperationWriteObserver writes = new();
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            operationWrites: writes,
+            serviceOverrides: services =>
+            {
+                services.RemoveAll<ICovenantErasureInventorySource>();
+
+                services.AddScoped<ICovenantErasureInventorySource>(provider => new RouteFailureInventory(
+                    RouteFailure.Rollback, provider.GetRequiredService<CovenantErasureInventorySource>(), refusal));
+
+                services.RemoveAll<ICovenantDisclosureWriterLifecycle>();
+
+                services.AddSingleton<ICovenantDisclosureWriterLifecycle>(provider =>
+                    new RefusingRestartWriter(provider.GetRequiredService<CovenantDisclosureWriter>()));
+            });
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        DataRetentionPlan plan = await harness.PlanResetAsync();
+
+        Assert.True((await harness.ApplyResetAsync(plan.PlanId)).IsFailure);
+
+        PreparedAuthenticatedRecovery prepared = await harness.PrepareAuthenticatedResetAsync(writes.LastSuccessfulWrite);
+
+        await using CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission = prepared.Admission;
+
+        Result<CovenantErasureCompletion> completion = await prepared.Coordinator.RunAuthenticatedAsync(
+            prepared.Operation, prepared.Checkpoint, prepared.OwnerId, admission, CancellationToken.None);
+
+        TestLogEntry[] warnings = [.. harness.Services.GetRequiredService<TestCapturingLogger<CovenantErasureCoordinator>>().Entries
+            .Where(entry => entry.Level == LogLevel.Warning && entry.Message.Contains("inventory refused", StringComparison.Ordinal))];
+
+        Assert.Equal(2, warnings.Length);
+
+        TestLogEntry retry = warnings[1];
+
+        Assert.Contains(writes.LastSuccessfulWrite.Id.ToString(), retry.Message);
+
+        Assert.Contains(labelId.ToString("N"), retry.Message);
+
+        Assert.Contains("ManagedOwnershipMissing", retry.Message);
+
+        Assert.Null(retry.Exception);
+
+        Assert.DoesNotContain("PRIVATE", retry.Message, StringComparison.Ordinal);
+
+        Assert.Contains(completion.IsSuccess && completion.Value.Disposition is CovenantExclusiveLeaseDisposition.RollbackAndReopen
+            ? "admission reopens" : completion.IsSuccess ? "admission stays closed" : "admission reopening is unconfirmed", retry.Message);
+    }
+
+    [SkippableFact]
+    public async Task Inventory_refusal_keeps_its_safe_warning_when_terminal_finalization_fails()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid labelId = Guid.NewGuid();
+
+        Error refusal = new CovenantInventoryFailureDetails(CovenantInventoryFailureReason.ManagedOwnershipMissing,
+            labelId, Guid.NewGuid(), SensitiveArtifactKind.ManagedWorkspaceFile).ToError();
+
+        RouteOperationWriteObserver writes = new();
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            operationWrites: writes,
+            terminalSuffixFaultSeam: (boundary, _) => Task.FromResult(boundary is GrimoireOfflineTransitionTerminalSuffixBoundary.DatabaseTerminalized
+                ? Result.Failure(new Error(ErrorCodes.Covenant.MaintenanceFailed, "PRIVATE-FINALIZATION-CANARY"))
+                : Result.Success()),
+            serviceOverrides: services =>
+            {
+                services.RemoveAll<ICovenantErasureInventorySource>();
+
+                services.AddScoped<ICovenantErasureInventorySource>(provider => new RouteFailureInventory(
+                    RouteFailure.Rollback, provider.GetRequiredService<CovenantErasureInventorySource>(), refusal));
+            });
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        DataRetentionPlan plan = await harness.PlanResetAsync();
+
+        Result<DataRetentionApplyResult> result = await harness.ApplyResetAsync(plan.PlanId);
+
+        Assert.True(result.IsFailure);
+
+        TestLogEntry warning = Assert.Single(harness.Services
+            .GetRequiredService<TestCapturingLogger<CovenantErasureCoordinator>>().Entries,
+            entry => entry.Level == LogLevel.Warning && entry.Message.Contains("inventory refused", StringComparison.Ordinal));
+
+        Assert.Contains(writes.LastSuccessfulWrite.Id.ToString(), warning.Message);
+
+        Assert.Contains(labelId.ToString("N"), warning.Message);
+
+        Assert.Contains("admission reopening is unconfirmed", warning.Message);
+
+        Assert.Null(warning.Exception);
+
+        Assert.DoesNotContain("PRIVATE", warning.Message, StringComparison.Ordinal);
+
+        Assert.All(warning.Properties!, property => Assert.DoesNotContain("PRIVATE", property.Value?.ToString() ?? string.Empty, StringComparison.Ordinal));
+
+        await AssertBothAdmissionsClosedAsync(harness);
+    }
+
+    [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task A_proven_erasure_with_writer_restart_failure_reports_proof_and_same_operation_guidance(bool factoryReset)
@@ -3410,7 +3623,8 @@ public sealed class CovenantErasureSameProcessTests
             RouteStoreFaults? storeFaults = null,
             RouteOperationWriteObserver? operationWrites = null,
             CovenantErasureFaultSeam? faultSeam = null,
-            Action<IServiceCollection>? serviceOverrides = null)
+            Action<IServiceCollection>? serviceOverrides = null,
+            GrimoireOfflineTransitionTerminalSuffixFaultSeam? terminalSuffixFaultSeam = null)
         {
             ArcanumWebApplicationFactory factory = new()
             {
@@ -3439,7 +3653,7 @@ public sealed class CovenantErasureSameProcessTests
 
                 services.AddSingleton<IOsCredentialStore>(new InMemoryOsCredentialStore());
 
-                if (faultSeam is not null)
+                if (faultSeam is not null || terminalSuffixFaultSeam is not null)
                 {
                     // The whole coordinator is re-registered rather than a seam being injected into
                     // the composed one, because the seam is a constructor argument: production has no
@@ -3469,7 +3683,8 @@ public sealed class CovenantErasureSameProcessTests
                             provider.GetRequiredService<TimeProvider>(),
                             provider.GetRequiredService<
                                 TestCapturingLogger<CovenantErasureCoordinator>>(),
-                            faultSeam));
+                            faultSeam,
+                            terminalSuffixFaultSeam));
                 }
 
                 if (storeFaults is not null || operationWrites is not null)
@@ -4928,7 +5143,8 @@ public sealed class CovenantErasureSameProcessTests
     /// </remarks>
     private sealed class RouteFailureInventory(
         RouteFailure failure,
-        ICovenantErasureInventorySource inner) : ICovenantErasureInventorySource
+        ICovenantErasureInventorySource inner,
+        Error? refusal = null) : ICovenantErasureInventorySource
     {
         public Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
             CancellationToken cancellationToken) =>
@@ -4942,7 +5158,7 @@ public sealed class CovenantErasureSameProcessTests
             Task.FromResult(
                 failure is RouteFailure.Rollback
                     ? Result<CovenantErasureInventorySummary>.Failure(
-                        new Error(
+                        refusal ?? new Error(
                             ErrorCodes.Covenant.IntegrityFailure,
                             "The direct reset inventory was refused."))
                     : Result<CovenantErasureInventorySummary>.Success(

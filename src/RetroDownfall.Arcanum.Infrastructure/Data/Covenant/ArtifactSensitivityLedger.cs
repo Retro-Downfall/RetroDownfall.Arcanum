@@ -374,12 +374,39 @@ internal sealed partial class ArtifactSensitivityLedger(ICovenantConnectionSourc
     /// </summary>
     internal static Result<ArtifactSensitivityLabel> Materialize(DbDataReader reader, int first = 0)
     {
+        Guid? labelId = ReadDiagnosticId(reader.GetValue(first));
+
+        Guid? artifactId = ReadDiagnosticId(reader.GetValue(first + 2));
+
+        object kindValue = reader.GetValue(first + 1);
+
+        SensitiveArtifactKind? kind = kindValue is long value && value is >= byte.MinValue and <= byte.MaxValue
+            && Enum.IsDefined((SensitiveArtifactKind)value) ? (SensitiveArtifactKind)value : null;
+
+        if (kind is null)
+        {
+            return new CovenantInventoryFailureDetails(
+                kindValue is long ? CovenantInventoryFailureReason.UnknownArtifactKind : CovenantInventoryFailureReason.MalformedLabel,
+                labelId, artifactId).ToError();
+        }
+
         try
         {
-            GenerationProvenance provenance = (GenerationProvenanceMode)reader.GetInt64(first + 9)
-                is GenerationProvenanceMode.Exact
-                ? GenerationProvenance.CreateExact(ReadGenerations((byte[])reader.GetValue(first + 10)))
-                : GenerationProvenance.CreateBloom((byte[])reader.GetValue(first + 11));
+            if (reader.GetValue(first + 6) is not long revision
+                || reader.GetValue(first + 8) is not long sensitivity
+                || sensitivity != (long)ContentSensitivity.None && sensitivity != (long)ContentSensitivity.CovenantDerived)
+            {
+                throw new ArgumentException("The label requires declared integer revision and sensitivity values.");
+            }
+
+            GenerationProvenance provenance = reader.GetValue(first + 9) switch
+            {
+                (long)GenerationProvenanceMode.Exact => GenerationProvenance.CreateExact(
+                    ReadGenerations((byte[])reader.GetValue(first + 10))),
+                (long)GenerationProvenanceMode.BloomOverflow => GenerationProvenance.CreateBloom(
+                    (byte[])reader.GetValue(first + 11)),
+                _ => throw new ArgumentException("The label provenance mode is not declared."),
+            };
 
             return new ArtifactSensitivityLabel(
                 Guid.Parse(reader.GetString(first)),
@@ -388,9 +415,9 @@ internal sealed partial class ArtifactSensitivityLedger(ICovenantConnectionSourc
                 reader.IsDBNull(first + 3) ? null : Guid.Parse(reader.GetString(first + 3)),
                 reader.IsDBNull(first + 4) ? null : Guid.Parse(reader.GetString(first + 4)),
                 reader.IsDBNull(first + 5) ? null : Guid.Parse(reader.GetString(first + 5)),
-                checked((ulong)reader.GetInt64(first + 6)),
+                checked((ulong)revision),
                 new CovenantDigest((byte[])reader.GetValue(first + 7)),
-                (ContentSensitivity)reader.GetInt64(first + 8),
+                (ContentSensitivity)sensitivity,
                 provenance,
                 reader.IsDBNull(first + 12) ? null : new CovenantDigest((byte[])reader.GetValue(first + 12)),
                 reader.IsDBNull(first + 13) ? null : new CovenantDigest((byte[])reader.GetValue(first + 13)),
@@ -398,15 +425,17 @@ internal sealed partial class ArtifactSensitivityLedger(ICovenantConnectionSourc
                 UtcInstantText.Parse(reader.GetString(first + 15)));
         }
         catch (Exception exception) when (
-            exception is FormatException or OverflowException or ArgumentException)
+            exception is FormatException or OverflowException or ArgumentException or InvalidCastException)
         {
-            // A label that cannot be reconstructed is not a missing label. Reporting absence here
-            // would let a protected read proceed as though its artifact were clean.
-            return new Error(
-                ErrorCodes.Covenant.IntegrityFailure,
-                "This artifact's sensitivity label is malformed and cannot authorize any read.");
+            // A malformed label cannot authorize a read. Only facts decoded independently of its
+            // invalid fields may identify the blocker; no stored text or exception is exposed.
+            return new CovenantInventoryFailureDetails(
+                CovenantInventoryFailureReason.MalformedLabel, labelId, artifactId, kind).ToError();
         }
     }
+
+    private static Guid? ReadDiagnosticId(object value) =>
+        value is string text && Guid.TryParse(text, out Guid id) && id != Guid.Empty ? id : null;
 
     internal static async Task<Result<SessionSensitivityProjection>> ReadProjectionWithinAsync(
         SqliteConnection connection,
