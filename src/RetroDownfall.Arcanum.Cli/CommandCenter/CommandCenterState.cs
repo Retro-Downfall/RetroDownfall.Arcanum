@@ -36,7 +36,47 @@ internal sealed class CommandCenterState
 
     public string ThinkingDisplay => ThinkingSpinner.Format(ThinkingTick);
 
-    public Guid? SessionId { get; set; }
+    internal object AttachmentProjectionGate { get; } = new();
+
+    private Guid? _sessionId;
+
+    private long _attachmentBindingRevision;
+
+    public Guid? SessionId
+    {
+        get
+        {
+            lock (AttachmentProjectionGate)
+            {
+                return _sessionId;
+            }
+        }
+        set
+        {
+            lock (AttachmentProjectionGate)
+            {
+                if (_sessionId != value)
+                {
+                    _sessionId = value;
+
+                    _attachmentBindingRevision++;
+
+                    SessionAttachments = [];
+                }
+            }
+        }
+    }
+
+    internal (Guid? SessionId, long Revision) AttachmentBinding
+    {
+        get
+        {
+            lock (AttachmentProjectionGate)
+            {
+                return (_sessionId, _attachmentBindingRevision);
+            }
+        }
+    }
 
     public string? SessionTitle { get; set; }
 
