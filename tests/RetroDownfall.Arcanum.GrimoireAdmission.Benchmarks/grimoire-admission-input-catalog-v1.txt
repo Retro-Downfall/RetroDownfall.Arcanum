@@ -600,9 +600,11 @@ R	src/RetroDownfall.Arcanum.Core/Weave/SagaSuppressionDigest.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/SagaUseCoordinate.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/SemanticContextChunk.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/SessionAttachmentRetrievalContracts.cs
+R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/ITapestryClusterer.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/ITapestryStore.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/ITapestrySummarizer.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorAlgorithmManifest.cs
+R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorClusterer.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorFuzzyGraphBuilder.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorGaussianMixture.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorNeighborGraphBuilder.cs
@@ -612,6 +614,7 @@ R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorUmapOptimizer.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/SphericalKMeans.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/TapestryContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/TapestryDeterministicRandom.cs
+R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/TapestryGraphContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/WorkspaceIndexRuntimeStatus.cs
 R	src/RetroDownfall.Arcanum.Core/Workspaces/CreateWorkspaceRequest.cs
 R	src/RetroDownfall.Arcanum.Core/Workspaces/DirectoryCreateResult.cs
@@ -2355,6 +2358,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentRetrievalServi
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentTextExtractor.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SpellWeaveCache.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryBuildBackoff.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryBuildPlanner.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestrySummarizer.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryWeaver.cs
