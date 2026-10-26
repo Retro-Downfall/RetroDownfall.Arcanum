@@ -708,6 +708,57 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         }
     }
 
+    [Theory]
+    [InlineData("flint:40b", "flint:40b", 1)]
+    [InlineData("gemma4:e4b", "qwen3.8:27b", 2)]
+    [InlineData("flint:40b", "Flint:40b", 2)]
+    public void Text_roles_have_one_entry_per_exact_tag_with_truthful_capabilities(string chatModel, string defaultModel, int entries)
+    {
+        DirectoryInfo workspace = Directory.CreateTempSubdirectory("arcanum-long-rest-model-roles-");
+
+        try
+        {
+            ArcanumSettings settings = LongRestQualificationConfiguration.Create(
+                Options with { ChatModel = chatModel, DefaultModel = defaultModel },
+                51234,
+                new Uri("http://127.0.0.1:50001/v1/"),
+                workspace.FullName,
+                sagaExtraction: false,
+                longRest: true).Arcanum;
+
+            // Equal Fast/Default roles are already legitimate product configuration.
+            Assert.True(new ConfigurationValidator().Validate(settings).IsSuccess);
+            Assert.Empty(new ConfigurationValidator().ValidateLongRest(settings));
+            Assert.Equal(chatModel, settings.FastModel);
+            Assert.Equal(defaultModel, settings.DefaultModel);
+
+            ProviderSettings chat = Assert.Single(settings.Providers, static provider => provider.Name == LongRestQualificationConfiguration.ChatProviderName);
+
+            Assert.Equal(entries, chat.Models.Length);
+            Assert.Equal(entries, chat.Models.Select(static model => model.Name).Distinct(StringComparer.Ordinal).Count());
+            Assert.All(chat.Models, static model =>
+            {
+                Assert.False(model.SupportsVision);
+                Assert.True(model.SupportsTools);
+            });
+
+            ModelEntry fast = Assert.Single(chat.Models, model => model.Name == chatModel);
+
+            Assert.Equal(ReasoningWireDialect.Standard, fast.Reasoning!.WireDialect);
+
+            Result<LongRestRecipeIdentity> recipe = LongRestRecipeResolver.Resolve(settings);
+
+            Assert.True(recipe.IsSuccess);
+            Assert.Equal(chatModel, recipe.Value.SummaryModel);
+            Assert.Equal("embeddinggemma", recipe.Value.EmbeddingModel);
+            Assert.Equal(1766, recipe.Value.SummaryUtf8Bytes);
+        }
+        finally
+        {
+            workspace.Delete(recursive: true);
+        }
+    }
+
     private static void AssertConfiguration(string workspace)
     {
         ArcanumSettings settings = LongRestQualificationConfiguration.Create(
@@ -731,7 +782,7 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         Assert.Equal(["embeddinggemma"], embeddings.Models.Select(static model => model.Name));
         Assert.All(chat.Models, static model =>
         {
-            Assert.True(model.SupportsVision);
+            Assert.False(model.SupportsVision);
             Assert.True(model.SupportsTools);
         });
         Assert.False(Assert.Single(embeddings.Models).SupportsVision);

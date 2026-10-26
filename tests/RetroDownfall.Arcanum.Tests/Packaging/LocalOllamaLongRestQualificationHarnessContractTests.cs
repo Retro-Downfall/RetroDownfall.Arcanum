@@ -25,7 +25,7 @@ namespace RetroDownfall.Arcanum.Tests.Packaging;
 /// None of them contacts Ollama or starts the published host.
 /// </summary>
 [Collection("ProcessEnvironment")]
-public sealed class LocalOllamaLongRestQualificationHarnessContractTests
+public sealed partial class LocalOllamaLongRestQualificationHarnessContractTests
 {
     private const string WrapperName = "verify-local-ollama-long-rest.sh";
 
