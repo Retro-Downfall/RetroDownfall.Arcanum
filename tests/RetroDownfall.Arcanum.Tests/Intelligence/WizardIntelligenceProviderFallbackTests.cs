@@ -92,6 +92,26 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExecutePromptAsync_reports_the_successful_lease_model_after_fallback()
+    {
+        ProviderSettings providerA = MakeProvider("provider-a");
+        ProviderSettings providerB = MakeProvider("provider-b");
+        RecordingChatClientFactory factory = new();
+        factory.CandidateExceptions[providerA.Name] = new HttpRequestException("connection refused");
+        ScriptingChatClient chatB = new();
+        chatB.EnqueueText("answer from B");
+        factory.CandidateResolvers[providerB.Name] = () => new ChatClientLease(chatB, providerB, "actual-lease-model", ownedHttpClient: null);
+        WizardIntelligenceProvider wizard = CreateWizard(factory, CreateTracker(), providerA, providerB);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(BaseRequest(), InvocationContexts.AttendedSession(), CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("answer from B", result.Value.Text);
+        Assert.Equal("actual-lease-model", result.Value.ModelUsed);
+        Assert.Equal([providerA.Name, providerB.Name], factory.CandidateCallOrder);
+    }
+
+    [Fact]
     public async Task ExecutePromptAsync_tries_every_distinct_eligible_candidate()
     {
         ProviderSettings[] providers = Enumerable.Range(1, 5)

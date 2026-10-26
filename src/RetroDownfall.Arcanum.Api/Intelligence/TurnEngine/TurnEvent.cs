@@ -126,6 +126,8 @@ internal sealed record RunCompleted(
     bool StructuredOutputWarning,
     TurnTerminationReason Reason = TurnTerminationReason.Completed) : TurnEvent(Correlation)
 {
+    public string? ModelUsed { get; init; }
+
     public IReadOnlyList<ReasoningContentSegment> Reasoning { get; init; } = [];
 
     public RetroDownfall.Arcanum.Core.Covenant.ProviderCallSensitivity? Sensitivity { get; init; }
