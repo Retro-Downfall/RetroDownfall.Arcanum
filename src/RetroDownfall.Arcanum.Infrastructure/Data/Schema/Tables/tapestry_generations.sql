@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS tapestry_generations (
     TerminalReason TEXT,
     StartedAt TEXT NOT NULL,
     CompletedAt TEXT
-);
+, SourceRevision INTEGER NOT NULL DEFAULT 0 CHECK (SourceRevision >= 0), ValidatedInvalidationRevision INTEGER CHECK (ValidatedInvalidationRevision >= 0), EmbeddingIdentity TEXT);
 CREATE INDEX IF NOT EXISTS idx_tapestry_generations_scope
     ON tapestry_generations(ScopeKind, ScopeId, Status);
 

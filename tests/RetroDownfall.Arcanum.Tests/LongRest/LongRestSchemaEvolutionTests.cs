@@ -46,7 +46,7 @@ public sealed partial class LongRestSchemaEvolutionTests
 
         GrimoireSchemaInstallResult evolved = await InstallHeadAsync(connection);
 
-        Assert.Equal(24, evolved.Core.SchemaVersion);
+        Assert.Equal(26, evolved.Core.SchemaVersion);
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, evolved.Core.Health);
 
@@ -192,7 +192,7 @@ public sealed partial class LongRestSchemaEvolutionTests
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, upgraded.Core.Health);
 
-        Assert.Equal(24, upgraded.Core.SchemaVersion);
+        Assert.Equal(26, upgraded.Core.SchemaVersion);
 
         Assert.Equal(before, await RowsAsync(connection,
             "SELECT m.Content || '|' || v.VersionId || '|' || v.OriginCode || '|' || hex(v.ContentHash) FROM saga_memories m JOIN annal_claims c ON c.SubjectId = m.Id JOIN annal_versions v ON v.ClaimId = c.ClaimId;"));

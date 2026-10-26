@@ -373,6 +373,8 @@ internal sealed partial class DataRetentionService(
             RetentionDataClass.Tapestry,
             [
                 "tapestry_generations",
+                "tapestry_edges",
+                "tapestry_scope_revisions",
                 "tapestry_nodes",
                 "tapestry_node_embeddings",
                 "tapestry_node_embeddings_vec",

@@ -208,7 +208,7 @@ public sealed class TapestrySchemaTests
                     (GenerationId, ScopeKind, ScopeId, Status, AlgorithmVersion, SettingsFingerprint,
                      SummaryModel, SummaryRecipeVersion, EmbeddingDimension, CorpusFingerprint,
                      LayerCount, NodeCount, RootNodeCount, TerminalReason, StartedAt, CompletedAt)
-                VALUES ('g1', 'Workspace', '/repo', 'Complete', 'v1', 'fp', NULL, 'r1', 64, 'cf',
+                VALUES ('g1', 'Workspace', '/repo', 'Building', 'v1', 'fp', NULL, 'r1', 64, 'cf',
                         1, 1, 1, 'LeafOnly', '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z');
 
                 INSERT INTO tapestry_nodes
@@ -222,6 +222,8 @@ public sealed class TapestrySchemaTests
 
                 INSERT INTO tapestry_node_embeddings (NodeId, Embedding, Dim)
                 VALUES ('n1', x'00000000', 64);
+
+                UPDATE tapestry_generations SET Status='Complete' WHERE GenerationId='g1';
                 """;
 
             _ = await seed.ExecuteNonQueryAsync();
