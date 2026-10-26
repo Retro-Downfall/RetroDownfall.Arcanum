@@ -1017,7 +1017,8 @@ public sealed class ShellCommandDispatcherTests
             new ShellCommandParser(),
             new TestOptionsMonitor(new ArcanumSettings()),
             workspace,
-            NullLogger<ShellCommandDispatcher>.Instance);
+            NullLogger<ShellCommandDispatcher>.Instance,
+            new CommandCenterConfigurationStub("arcanum.json"));
     }
 
     private sealed class NoopLastSessionStore : ILastSessionStore

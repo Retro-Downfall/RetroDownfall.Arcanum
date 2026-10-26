@@ -22,7 +22,6 @@ internal sealed record SlashCommandDescriptor(
 /// </summary>
 internal static class SlashCommandRegistry
 {
-
     private static readonly SlashCommandDescriptor[] Commands =
     [
         new("help", "/help", "Show this command list.", ["?"]),
@@ -34,7 +33,7 @@ internal static class SlashCommandRegistry
         new("context", "/context", "Show the effective turn context and token allocation.", []),
         new("cost", "/cost", "Show token and spend totals for the current session.", []),
         new("memory", "/memory", "Show the compressed Campaign Summary for this session.", []),
-        new("config", "/config", "Show the effective configuration summary and its file path.", []),
+        new("config", "/config", "Show the effective configuration summary and the local profile's file path.", []),
         new("model", "/model [<name>]", "Show configured models, or select one for this session.", []),
         new("provider", "/provider list", "List configured providers.", []),
         new("mcp", "/mcp [reload]", "Show MCP server status, or reload MCP configuration.", []),
@@ -97,12 +96,9 @@ internal static class SlashCommandRegistry
     /// </summary>
     public static string? Suggest(string spelling)
     {
-
         if (string.IsNullOrWhiteSpace(spelling))
         {
-
             return null;
-
         }
 
         string[] candidates =
@@ -114,19 +110,13 @@ internal static class SlashCommandRegistry
 
         if (spelling.Length >= PrefixMinimumLength)
         {
-
             foreach (string candidate in candidates)
             {
-
                 if (candidate.StartsWith(spelling, StringComparison.Ordinal))
                 {
-
                     return $"/{BySpelling[candidate].Name}";
-
                 }
-
             }
-
         }
 
         int ceiling = spelling.Length <= 4 ? 1 : 2;
@@ -137,26 +127,21 @@ internal static class SlashCommandRegistry
 
         foreach (string candidate in candidates)
         {
-
             int distance = Distance(spelling, candidate, ceiling);
 
             if (distance > ceiling || distance >= bestDistance)
             {
-
                 continue;
-
             }
 
             bestDistance = distance;
 
             best = candidate;
-
         }
 
         return best is null
             ? null
             : $"/{BySpelling[best].Name}";
-
     }
 
     /// <summary>
@@ -165,12 +150,9 @@ internal static class SlashCommandRegistry
     /// </summary>
     public static string DescribeUnknown(string raw, string spelling)
     {
-
         if (Removed.TryGetValue(spelling, out string? canonical))
         {
-
             return $"`/{spelling}` was removed. Use `{canonical}` instead.";
-
         }
 
         string? suggestion = Suggest(spelling);
@@ -178,26 +160,22 @@ internal static class SlashCommandRegistry
         return suggestion is null
             ? $"Unknown command `{raw}`. Type `/help` for available commands."
             : $"Unknown command `{raw}`. Did you mean `{suggestion}`? Type `/help` for the full list.";
-
     }
 
     public static string BuildHelpText()
     {
-
         StringBuilder builder = new("Command Center commands:");
 
         int width = Commands.Max(static command => command.Usage.Length);
 
         foreach (SlashCommandDescriptor command in Commands)
         {
-
             builder
                 .Append(Environment.NewLine)
                 .Append("  ")
                 .Append(command.Usage.PadRight(width))
                 .Append("  ")
                 .Append(command.Description);
-
         }
 
         builder
@@ -208,30 +186,23 @@ internal static class SlashCommandRegistry
             .Append("Inline-stage a text file or Scrying image inside a message.");
 
         return builder.ToString();
-
     }
 
     private static Dictionary<string, SlashCommandDescriptor> BuildIndex()
     {
-
         Dictionary<string, SlashCommandDescriptor> index = new(StringComparer.Ordinal);
 
         foreach (SlashCommandDescriptor command in Commands)
         {
-
             index.Add(command.Name, command);
 
             foreach (string alias in command.Aliases)
             {
-
                 index.Add(alias, command);
-
             }
-
         }
 
         return index;
-
     }
 
     /// <summary>
@@ -241,12 +212,9 @@ internal static class SlashCommandRegistry
     /// </summary>
     private static int Distance(string left, string right, int ceiling)
     {
-
         if (Math.Abs(left.Length - right.Length) > ceiling)
         {
-
             return ceiling + 1;
-
         }
 
         int[] beforePrevious = new int[right.Length + 1];
@@ -257,21 +225,17 @@ internal static class SlashCommandRegistry
 
         for (int column = 0; column <= right.Length; column++)
         {
-
             previous[column] = column;
-
         }
 
         for (int row = 1; row <= left.Length; row++)
         {
-
             current[0] = row;
 
             int rowBest = current[0];
 
             for (int column = 1; column <= right.Length; column++)
             {
-
                 int substitution = previous[column - 1]
                     + (left[row - 1] == right[column - 1] ? 0 : 1);
 
@@ -284,28 +248,20 @@ internal static class SlashCommandRegistry
                     && left[row - 1] == right[column - 2]
                     && left[row - 2] == right[column - 1])
                 {
-
                     current[column] = Math.Min(current[column], beforePrevious[column - 2] + 1);
-
                 }
 
                 rowBest = Math.Min(rowBest, current[column]);
-
             }
 
             if (rowBest > ceiling)
             {
-
                 return ceiling + 1;
-
             }
 
             (beforePrevious, previous, current) = (previous, current, beforePrevious);
-
         }
 
         return previous[right.Length];
-
     }
-
 }

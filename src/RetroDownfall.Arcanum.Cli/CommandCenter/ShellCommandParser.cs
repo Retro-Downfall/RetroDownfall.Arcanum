@@ -78,7 +78,7 @@ internal sealed class ShellCommandParser
             return Unknown(raw);
         }
 
-        string[] parts = body.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        string[] parts = body.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         string head = parts[0].ToLowerInvariant();
 
         // Must run before attach* denial — "attachments" starts with "attach".
@@ -90,7 +90,7 @@ internal sealed class ShellCommandParser
         if (head is "attach")
         {
             string? arg = parts.Length >= 2
-                ? string.Join(' ', parts.Skip(1))
+                ? body[parts[0].Length..].Trim()
                 : null;
             return new ParsedShellCommand(ShellCommandKind.Attach, raw, Argument: arg);
         }
@@ -111,7 +111,7 @@ internal sealed class ShellCommandParser
                     ShellCommandKind.Pin,
                     raw,
                     Argument: parts[1],
-                    SecondaryArgument: string.Join(' ', parts.Skip(2)))
+                    SecondaryArgument: body[parts[0].Length..].TrimStart()[parts[1].Length..].Trim())
                 : Denied(raw, "Usage: /pin <kind> <target>");
         }
 
@@ -341,9 +341,14 @@ internal sealed class ShellCommandParser
     /// </summary>
     private static ParsedShellCommand Unknown(string raw)
     {
-        string spelling = raw.TrimStart('/').Split(' ', StringSplitOptions.RemoveEmptyEntries) is [string head, ..]
+        string spelling = raw.TrimStart('/').Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries) is [string head, ..]
             ? head.ToLowerInvariant()
             : string.Empty;
+
+        if (SlashCommandRegistry.TryResolve(spelling, out SlashCommandDescriptor? descriptor))
+        {
+            return Denied(raw, $"Usage: {descriptor!.Usage}");
+        }
 
         return new ParsedShellCommand(
             ShellCommandKind.Unknown,

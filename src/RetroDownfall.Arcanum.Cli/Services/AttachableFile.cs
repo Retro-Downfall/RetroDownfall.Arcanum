@@ -130,6 +130,34 @@ internal static class AttachableFile
         return new FileStream(handle, FileAccess.Read, bufferSize, isAsync: false);
     }
 
+    /// <summary>Admits the same regular-file handle that a workspace pin will hash.</summary>
+    internal static FileStream OpenWorkspaceFileForRead(
+        string fullPath,
+        string workspaceRoot,
+        int bufferSize,
+        out string relativePath)
+    {
+        FileStream stream = OpenForRead(fullPath, bufferSize);
+
+        try
+        {
+            if (!WorkspacePathPolicy.TryGetOpenedHandleRelativePath(workspaceRoot, stream.SafeFileHandle, out string? containedPath))
+            {
+                throw new IOException("File pins must name an existing file inside the workspace.");
+            }
+
+            relativePath = containedPath;
+
+            return stream;
+        }
+        catch
+        {
+            stream.Dispose();
+
+            throw;
+        }
+    }
+
     /// <summary>
     /// The failure a non-blocking open that ended with <paramref name="status"/> is reported as. Each cause
     /// keeps its own words, because the staging loop shows <see cref="Exception.Message"/> to the operator
