@@ -21,6 +21,20 @@ public class TomeViewModelTests
     private static readonly Guid SessionId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
 
     [Fact]
+    public void Generated_manual_entry_contract_preserves_explicit_system_and_detects_omission()
+    {
+        AppendEntryRequest omitted = JsonSerializer.Deserialize("{\"content\":\"operator note\"}", TheForgeJsonContext.Default.AppendEntryRequest)!;
+
+        Assert.Null(omitted.Role);
+
+        string json = JsonSerializer.Serialize(new AppendEntryRequest(MessageRole.System, "operator note"), TheForgeJsonContext.Default.AppendEntryRequest);
+
+        using JsonDocument wire = JsonDocument.Parse(json);
+
+        Assert.Equal("system", wire.RootElement.GetProperty("role").GetString());
+    }
+
+    [Fact]
     public async Task LoadAsync_PopulatesSessionAndTitle()
     {
         FakeTomeDataSource dataSource = new()

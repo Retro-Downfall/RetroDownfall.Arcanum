@@ -281,7 +281,7 @@ internal static class SessionDivinationEndpoints
             AddParameter(cmd, "@campaignId", NormalizeGuidText(campaignId));
         }
 
-        string effectiveStatus = string.IsNullOrWhiteSpace(statusFilter) ? DefaultStatusFilter : statusFilter.Trim();
+        string effectiveStatus = string.IsNullOrWhiteSpace(statusFilter) ? DefaultStatusFilter : statusFilter.Trim().ToLowerInvariant();
 
         sql.Append(" AND s.\"Status\" = @status");
 

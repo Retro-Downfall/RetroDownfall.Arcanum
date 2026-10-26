@@ -14,7 +14,7 @@ public sealed record UpdateSessionRequest(
     string? Status);
 
 public sealed record AppendEntryRequest(
-    MessageRole Role,
+    MessageRole? Role,
     string Content,
     string? ModelUsed = null);
 

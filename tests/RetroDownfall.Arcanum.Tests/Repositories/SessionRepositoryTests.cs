@@ -1981,6 +1981,53 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.Equal(System.Data.ConnectionState.Closed, _db.Database.GetDbConnection().State);
     }
 
+    [SkippableTheory]
+    [InlineData(" Active ", "active")]
+    [InlineData(" ARCHIVED ", "archived")]
+    [InlineData(" ALL ", "all")]
+    [InlineData("private-unknown-status", null)]
+    public async Task Query_status_validation_is_shared_before_any_native_filter(string status, string? expected)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string title = "status-contract-" + Guid.NewGuid().ToString("N");
+
+        Guid active = Guid.NewGuid();
+
+        Guid archived = Guid.NewGuid();
+
+        _db!.Sessions.AddRange(NewSession(active, title + " active", DateTimeOffset.UtcNow), NewSession(archived, title + " archived", DateTimeOffset.UtcNow, "archived"));
+
+        await _db.SaveChangesAsync();
+
+        await _db.Database.CloseConnectionAsync();
+
+        SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db));
+
+        Result<SessionQueryResult> result = await repository.QueryAsync(new SessionQueryRequest(Status: status, Title: title, Limit: 10), CancellationToken.None);
+
+        if (expected is null)
+        {
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.Session.InvalidStatus, result.Error.Code);
+
+            Assert.DoesNotContain(status, result.Error.Message, StringComparison.Ordinal);
+
+            Assert.Equal(System.Data.ConnectionState.Closed, _db.Database.GetDbConnection().State);
+
+            return;
+        }
+
+        Assert.True(result.IsSuccess);
+
+        Guid[] ids = [.. result.Value.Summaries.Select(static row => row.Id)];
+
+        Assert.Equal(expected == "all" ? 2 : 1, ids.Length);
+
+        Assert.Contains(expected == "archived" ? archived : active, ids);
+    }
+
     private static Session NewSession(Guid id, string title, DateTimeOffset updatedAt, string status = "active") =>
         new()
         {

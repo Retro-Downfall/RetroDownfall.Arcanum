@@ -36,6 +36,30 @@ public sealed class SessionDivinationEndpointTests
         _factory = factory;
     }
 
+    [SkippableTheory]
+    [InlineData("Active", "active")]
+    [InlineData("ACTIVE", "active")]
+    [InlineData("Archived", "archived")]
+    [InlineData("ARCHIVED", "archived")]
+    [InlineData(" archived ", "archived")]
+    [InlineData("active", "active")]
+    public async Task Divine_status_casing_is_canonicalized_before_the_native_join(string requested, string stored)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
+
+        (Guid session, _, _) = await SeedEmbeddedEntryAsync(factory, "status-case-probe", [1f, 0f, 0f], null, stored);
+
+        HttpResponseMessage response = await PostDivineAsync(factory.CreateAuthenticatedClient(), new SemanticSearchRequest("status-case-probe", Status: requested));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        SemanticSearchResult result = await ReadResultAsync(response);
+
+        Assert.Equal(session, Assert.Single(result.Results).SessionId);
+    }
+
     [SkippableFact]
     public async Task Divine_WhenDisabled_Returns503()
     {

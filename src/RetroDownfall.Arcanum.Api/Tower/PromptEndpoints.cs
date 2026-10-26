@@ -148,6 +148,16 @@ internal static class PromptEndpoints
                             traceId));
                 }
 
+                if (request.Template is null)
+                {
+                    return Results.Json(
+                        ApiResponse<PromptDetailDto>.FromResult(
+                            Result<PromptDetailDto>.Failure(new Error(ErrorCodes.Prompt.InvalidRequest, "Template is required.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponsePromptDetailDto,
+                        statusCode: StatusCodes.Status400BadRequest);
+                }
+
                 if (request.CampaignId is Guid requestedCampaignId
                     && await campaignRepo.GetByIdAsync(requestedCampaignId, ctx.RequestAborted).ConfigureAwait(false) is null)
                 {

@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
 
 namespace RetroDownfall.Arcanum.Api.Tower;
@@ -26,7 +27,6 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 /// </summary>
 internal static class SagaEndpoints
 {
-
     private const int DefaultListLimit = 100;
 
     private const int MaxListLimit = 10_000;
@@ -37,7 +37,6 @@ internal static class SagaEndpoints
 
     public static RouteGroupBuilder MapSagaEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapGet(
             "/saga",
             async (
@@ -46,15 +45,14 @@ internal static class SagaEndpoints
                 int? limit,
                 int? offset,
                 ISagaMemoryStore store,
+                IGrimoireRepository sessions,
                 IMemoryScopeResolver scopeResolver,
                 HttpContext ctx) =>
             {
-
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                 if (q is { Length: > MaxFilterQueryChars })
                 {
-
                     return Results.Json(
                         ApiResponse<SagaMemoryDto[]>.FromResult(
                             Result<SagaMemoryDto[]>.Failure(
@@ -64,7 +62,16 @@ internal static class SagaEndpoints
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray,
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Validation.InvalidBody));
+                }
 
+                if (sessionId is { } owner && !await sessions.SessionExistsAsync(owner, ctx.RequestAborted).ConfigureAwait(false))
+                {
+                    return Results.Json(
+                        ApiResponse<SagaMemoryDto[]>.FromResult(
+                            Result<SagaMemoryDto[]>.Failure(new Error(ErrorCodes.Session.NotFound, "Session was not found.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray,
+                        statusCode: StatusCodes.Status404NotFound);
                 }
 
                 int clampedLimit = Math.Clamp(limit ?? DefaultListLimit, 1, MaxListLimit);
@@ -93,7 +100,6 @@ internal static class SagaEndpoints
 
                 return Results.Ok(
                     ApiResponse<SagaMemoryDto[]>.FromResult(Result<SagaMemoryDto[]>.Success(memories), traceId));
-
             })
         .WithName("ListSagaMemories");
 
@@ -104,42 +110,41 @@ internal static class SagaEndpoints
                 IWeaveService weaveService,
                 IDivinationService divinationService,
                 ISagaMemoryStore store,
+                IGrimoireRepository sessions,
                 IMemoryScopeResolver scopeResolver,
                 IOptionsMonitor<ArcanumSettings> options,
                 HttpContext ctx) =>
             {
-
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                 EmbeddingSettings embeddings = options.CurrentValue.ResolveEmbeddings();
 
                 if (!embeddings.Enabled || !embeddings.SagaEnabled)
                 {
-
                     return DivineFailureResult(
                         traceId,
                         new Error(
                             ErrorCodes.Embeddings.FeatureDisabled,
                             "Saga is disabled (Arcanum:Features:Embeddings and Arcanum:Features:Saga must both be true)."));
-
                 }
 
                 if (request is null || string.IsNullOrWhiteSpace(request.Query))
                 {
-
                     return DivineFailureResult(
                         traceId,
                         new Error(ErrorCodes.Validation.InvalidBody, "Query is required."));
+                }
 
+                if (request.SessionId is { } owner && !await sessions.SessionExistsAsync(owner, ctx.RequestAborted).ConfigureAwait(false))
+                {
+                    return DivineFailureResult(traceId, new Error(ErrorCodes.Session.NotFound, "Session was not found."));
                 }
 
                 if (!weaveService.IsAvailable)
                 {
-
                     return DivineFailureResult(
                         traceId,
                         new Error(ErrorCodes.Embeddings.ProviderUnavailable, "The embedding provider is unavailable."));
-
                 }
 
                 Result<Embedding<float>> embedResult = await weaveService
@@ -148,9 +153,7 @@ internal static class SagaEndpoints
 
                 if (embedResult.IsFailure)
                 {
-
                     return DivineFailureResult(traceId, embedResult.Error);
-
                 }
 
                 int limit = ArcanumSettingClamps.EmbeddingsMaxResults(request.Limit ?? embeddings.MaxResults);
@@ -188,24 +191,20 @@ internal static class SagaEndpoints
 
                 if (searchResult.IsFailure)
                 {
-
                     // Preserves the original error code (e.g. Embeddings.ProviderUnavailable -> 503)
                     // rather than remapping to Saga.SearchFailed (-> 500), matching
                     // SessionDivinationEndpoints' identical divination-failure handling. Remapping
                     // here previously turned a "provider is down, try again" signal into an opaque
                     // 500, hiding the real cause from clients.
                     return DivineFailureResult(traceId, searchResult.Error);
-
                 }
 
                 if (searchResult.Value.Length == 0)
                 {
-
                     return Results.Ok(
                         ApiResponse<SagaSearchResult>.FromResult(
                             Result<SagaSearchResult>.Success(new SagaSearchResult([], [])),
                             traceId));
-
                 }
 
                 IReadOnlyDictionary<string, SagaMemoryDto> byId = await store
@@ -220,23 +219,18 @@ internal static class SagaEndpoints
 
                 foreach (DivinationResult hit in searchResult.Value)
                 {
-
                     if (byId.TryGetValue(hit.Id, out SagaMemoryDto? memory))
                     {
-
                         memories.Add(memory);
 
                         similarities.Add(hit.Similarity);
-
                     }
-
                 }
 
                 SagaSearchResult payload = new([.. memories], [.. similarities]);
 
                 return Results.Ok(
                     ApiResponse<SagaSearchResult>.FromResult(Result<SagaSearchResult>.Success(payload), traceId));
-
             })
         .WithName("SagaDivination");
 
@@ -248,39 +242,30 @@ internal static class SagaEndpoints
                 ICovenantSensitiveArtifactPurger purger,
                 HttpContext ctx) =>
             {
-
                 // A Saga id that is not a Guid cannot carry a label — the label table keys on Guid
                 // identities — so it takes the ordinary path unchanged rather than being refused here.
                 if (Guid.TryParse(id, out Guid memoryId))
                 {
-
                     Result<CovenantSensitivePurgeOutcome> purged = await CovenantSensitiveDeletion
                         .DispatchAsync(purger, SensitiveArtifactKind.Saga, memoryId, ctx.RequestAborted)
                         .ConfigureAwait(false);
 
                     if (purged.IsFailure)
                     {
-
                         return SagaPurgeRefusal(ctx, purged.Error);
-
                     }
 
                     CovenantSensitiveDeletion.MarkProtectedWhenPurged(ctx, purged.Value);
 
                     if (purged.Value.IsBlocked)
                     {
-
                         return SagaPurgeRefusal(ctx, CovenantSensitiveDeletion.BlockedError(purged.Value));
-
                     }
 
                     if (purged.Value.WasPurged(memoryId))
                     {
-
                         return Results.NoContent();
-
                     }
-
                 }
 
                 // The store asks the labelled-artifact guard again inside its own transaction, after the
@@ -291,7 +276,6 @@ internal static class SagaEndpoints
 
                 if (!deleted)
                 {
-
                     string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                     return Results.Json(
@@ -300,11 +284,9 @@ internal static class SagaEndpoints
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseString,
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Saga.NotFound));
-
                 }
 
                 return Results.NoContent();
-
             })
         .RequireConditionalSensitivityRetentionPurge()
         .WithName("DeleteSagaMemory");
@@ -317,10 +299,8 @@ internal static class SagaEndpoints
                 ICovenantSensitiveArtifactPurger purger,
                 HttpContext ctx) =>
             {
-
                 if (confirm != true)
                 {
-
                     string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                     return Results.Json(
@@ -330,7 +310,6 @@ internal static class SagaEndpoints
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseString,
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Saga.NotEmpty));
-
                 }
 
                 // Bounded stable identity pages, dispatched before the set-based delete runs. A bulk
@@ -343,18 +322,14 @@ internal static class SagaEndpoints
 
                 if (purgedAll.IsFailure)
                 {
-
                     return SagaPurgeRefusal(ctx, purgedAll.Error);
-
                 }
 
                 CovenantSensitiveDeletion.MarkProtectedWhenPurged(ctx, purgedAll.Value);
 
                 if (purgedAll.Value.IsBlocked)
                 {
-
                     return SagaPurgeRefusal(ctx, CovenantSensitiveDeletion.BlockedError(purgedAll.Value));
-
                 }
 
                 // A label written since the dispatch above is refused inside the store's own transaction,
@@ -362,7 +337,6 @@ internal static class SagaEndpoints
                 await store.DeleteAllAsync(ctx.RequestAborted).ConfigureAwait(false);
 
                 return Results.NoContent();
-
             })
         .RequireConditionalSensitivityRetentionPurge()
         .WithName("DeleteAllSagaMemories");
@@ -371,18 +345,15 @@ internal static class SagaEndpoints
             "/saga/stats",
             async (ISagaMemoryStore store, HttpContext ctx) =>
             {
-
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                 SagaStats stats = await store.GetStatsAsync(ctx.RequestAborted).ConfigureAwait(false);
 
                 return Results.Ok(ApiResponse<SagaStats>.FromResult(Result<SagaStats>.Success(stats), traceId));
-
             })
         .WithName("GetSagaStats");
 
         return apiGroup;
-
     }
 
     private static IResult DivineFailureResult(string traceId, Error error) =>
@@ -413,7 +384,6 @@ internal static class SagaEndpoints
         ICovenantSensitiveArtifactPurger purger,
         CancellationToken cancellationToken)
     {
-
         const int PageSize = 128;
 
         List<CovenantSensitivePurgeResult> results = [];
@@ -424,7 +394,6 @@ internal static class SagaEndpoints
 
         while (true)
         {
-
             // Deliberately unscoped: erasure has to reach every memory, including the ones no turn in
             // any Campaign can currently retrieve.
             SagaMemoryPosition[] page = await store
@@ -433,9 +402,7 @@ internal static class SagaEndpoints
 
             if (page.Length == 0)
             {
-
                 break;
-
             }
 
             Guid[] identities =
@@ -447,16 +414,13 @@ internal static class SagaEndpoints
 
             if (identities.Length > 0)
             {
-
                 Result<CovenantSensitivePurgeOutcome> purged = await CovenantSensitiveDeletion
                     .DispatchAsync(purger, SensitiveArtifactKind.Saga, identities, cancellationToken)
                     .ConfigureAwait(false);
 
                 if (purged.IsFailure)
                 {
-
                     return purged.Error;
-
                 }
 
                 results.AddRange(purged.Value.Results);
@@ -465,12 +429,9 @@ internal static class SagaEndpoints
 
                 if (purged.Value.IsBlocked)
                 {
-
                     return Result<CovenantSensitivePurgeOutcome>.Success(
                         new CovenantSensitivePurgeOutcome(results, progress));
-
                 }
-
             }
 
             // The cursor is the last row this page read, whether or not it was purged and whether or not
@@ -478,24 +439,19 @@ internal static class SagaEndpoints
             // the purge removed leaves nothing for the walk to slide past, and a row it left stays behind
             // the cursor and is not read again.
             after = page[^1];
-
         }
 
         return Result<CovenantSensitivePurgeOutcome>.Success(
             new CovenantSensitivePurgeOutcome(results, progress));
-
     }
 
     private static IResult SagaPurgeRefusal(HttpContext context, Error error)
     {
-
         string traceId = Activity.Current?.Id ?? context.TraceIdentifier;
 
         return Results.Json(
             ApiResponse<string>.FromResult(Result<string>.Failure(error), traceId),
             ArcanumJsonContext.Default.ApiResponseString,
             statusCode: ArcanumErrorMapper.ResolveStatusCode(error.Code));
-
     }
-
 }

@@ -41,6 +41,8 @@ internal static class SessionEndpoints
 
     private const long AttachmentMultipartEnvelopeAllowanceBytes = 64L * 1024L;
 
+    private const string MemoryManagementDisabledMessage = "Session memory management is disabled; set Arcanum:Features:MemoryManagement (features.memoryManagement) to true.";
+
     public static RouteGroupBuilder MapSessionEndpoints(this RouteGroupBuilder apiGroup)
     {
         apiGroup.MapPost(
@@ -1229,7 +1231,7 @@ internal static class SessionEndpoints
                 }
 
                 string label = string.IsNullOrWhiteSpace(request.DisplayLabel)
-                    ? target.Length <= 160 ? target : target[..157] + "..."
+                    ? target.Length <= 160 ? target : target[..Utf8Truncation.SafeCharSliceLength(target, 157)] + "..."
                     : request.DisplayLabel.Trim();
                 if (label.Length > 256)
                 {
@@ -1276,6 +1278,17 @@ internal static class SessionEndpoints
                             traceId));
                 }
 
+                if (request.Role is not { } role || !Enum.IsDefined(role))
+                {
+                    return Results.Json(
+                        ApiResponse<EntryDto>.FromResult(
+                            Result<EntryDto>.Failure(
+                                new Error(ErrorCodes.Validation.InvalidBody, "role is required and must be system, user, assistant or tool.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseEntryDto,
+                        statusCode: StatusCodes.Status400BadRequest);
+                }
+
                 if (string.IsNullOrWhiteSpace(request.Content))
                 {
                     return Results.BadRequest(
@@ -1288,7 +1301,7 @@ internal static class SessionEndpoints
                 Entry entry = new()
                 {
                     Id = Guid.NewGuid(),
-                    Role = request.Role,
+                    Role = role,
                     Content = request.Content.Trim(),
                     ModelUsed = request.ModelUsed ?? string.Empty,
                 };
@@ -1731,7 +1744,7 @@ internal static class SessionEndpoints
                     return Results.BadRequest(
                         ApiResponse<bool>.FromResult(
                             Result<bool>.Failure(
-                                new Error(ErrorCodes.Session.MemoryManagementDisabled, "Memory management is disabled.")),
+                                new Error(ErrorCodes.Session.MemoryManagementDisabled, MemoryManagementDisabledMessage)),
                             traceId));
                 }
 
@@ -1806,7 +1819,7 @@ internal static class SessionEndpoints
                     return Results.BadRequest(
                         ApiResponse<bool>.FromResult(
                             Result<bool>.Failure(
-                                new Error(ErrorCodes.Session.MemoryManagementDisabled, "Memory management is disabled.")),
+                                new Error(ErrorCodes.Session.MemoryManagementDisabled, MemoryManagementDisabledMessage)),
                             traceId));
                 }
 
@@ -1862,7 +1875,7 @@ internal static class SessionEndpoints
                     return Results.BadRequest(
                         ApiResponse<CompactResult>.FromResult(
                             Result<CompactResult>.Failure(
-                                new Error(ErrorCodes.Session.MemoryManagementDisabled, "Memory management is disabled.")),
+                                new Error(ErrorCodes.Session.MemoryManagementDisabled, MemoryManagementDisabledMessage)),
                             traceId));
                 }
 
@@ -1909,7 +1922,7 @@ internal static class SessionEndpoints
                     return Results.BadRequest(
                         ApiResponse<bool>.FromResult(
                             Result<bool>.Failure(
-                                new Error(ErrorCodes.Session.MemoryManagementDisabled, "Memory management is disabled.")),
+                                new Error(ErrorCodes.Session.MemoryManagementDisabled, MemoryManagementDisabledMessage)),
                             traceId));
                 }
 
