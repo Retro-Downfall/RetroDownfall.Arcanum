@@ -192,22 +192,17 @@ internal sealed class ContextCompressionService : IContextCompressionService
             out ProviderSettings compressionProvider,
             out string compressionModel);
 
-        if (!intelligenceSettings.EnableContextCompression)
-        {
-            return new CompactResult(0, 0, 0);
-        }
-
         int minMessages = ArcanumSettingClamps.CompressionPreflightMinMessages(
             intelligenceSettings.CompressionPreflightMinMessages);
 
         List<MeAiChatMessage> messages = InferenceContextBuilder.MapGrimoireToMeAiMessages(session, string.Empty);
 
+        int tokensBefore = CountTokens(messages, compressionProvider, compressionModel);
+
         if (messages.Count < minMessages)
         {
-            return new CompactResult(0, 0, 0);
+            return new CompactResult(tokensBefore, tokensBefore, 0, Outcome: CompactionOutcome.TooFewMessages);
         }
-
-        int tokensBefore = CountTokens(messages, compressionProvider, compressionModel);
 
         int effectiveLimit = ComputeEffectiveLimit(
             contextWindowLimit > 0 ? contextWindowLimit : DefaultContextWindowLimit,
@@ -215,7 +210,7 @@ internal sealed class ContextCompressionService : IContextCompressionService
 
         if (tokensBefore <= effectiveLimit)
         {
-            return new CompactResult(tokensBefore, tokensBefore, 0);
+            return new CompactResult(tokensBefore, tokensBefore, 0, Outcome: CompactionOutcome.NotNeeded);
         }
 
         List<Entry> ordered = session.Entries
@@ -351,7 +346,13 @@ internal sealed class ContextCompressionService : IContextCompressionService
                 effectiveLimit);
         }
 
-        return new CompactResult(tokensBefore, tokensAfter, removed, stoppedBy);
+        CompactionOutcome compactionOutcome = stoppedBy is not null
+            ? CompactionOutcome.Stopped
+            : tokensAfter > effectiveLimit && session is not null && session.Entries.All(static entry => entry.IsPinned)
+                ? CompactionOutcome.OnlyPinnedRemain
+                : CompactionOutcome.Compacted;
+
+        return new CompactResult(tokensBefore, tokensAfter, removed, stoppedBy, compactionOutcome);
     }
 
     public int CountTokens(

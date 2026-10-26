@@ -851,7 +851,9 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         return compact.StoppedBy is { } code
             ? $"{summary} Stopped early on {code}; the rest of the selected entries were left unchanged."
-            : summary;
+            : compact.GetOutcomeGuidance() is { } guidance
+                ? $"{summary} {guidance}"
+                : summary;
     }
 
     private void ApplyMemoryManagementDisabled(string? message)

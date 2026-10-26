@@ -554,8 +554,12 @@ public sealed class SessionCommands(
                 ? $" Stopped early on {code}; the rest of the selected entries were left unchanged."
                 : string.Empty;
 
+            string guidance = compact.StoppedBy is null && compact.GetOutcomeGuidance() is { } reason
+                ? $" {reason}"
+                : string.Empty;
+
             dispatcher.WritePayload(
-                $"Compacted session {resolution.Id:D}: {compact.TokensBefore} -> {compact.TokensAfter} tokens; {compact.EntriesRemoved} entries removed.{stopped}");
+                $"Compacted session {resolution.Id:D}: {compact.TokensBefore} -> {compact.TokensAfter} tokens; {compact.EntriesRemoved} entries removed.{stopped}{guidance}");
         }
 
         return 0;

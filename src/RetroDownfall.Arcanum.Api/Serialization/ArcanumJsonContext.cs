@@ -834,6 +834,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(McpToolInvokeRequest))]
 [JsonSerializable(typeof(McpToolInvokeResponse))]
 [JsonSerializable(typeof(ApiResponse<McpToolInvokeResponse>))]
+[JsonSerializable(typeof(CompactionOutcome))]
 [JsonSerializable(typeof(CompactResult))]
 [JsonSerializable(typeof(ApiResponse<CompactResult>))]
 

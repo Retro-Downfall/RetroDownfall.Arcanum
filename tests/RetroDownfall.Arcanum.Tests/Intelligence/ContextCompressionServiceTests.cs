@@ -1,3 +1,5 @@
+using System.Text.Json;
+using RetroDownfall.Arcanum.Api.Serialization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -18,6 +20,54 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class ContextCompressionServiceTests
 {
+    [Theory]
+    [InlineData(3, false, 256, "TooFewMessages")]
+    [InlineData(6, false, 100_000, "NotNeeded")]
+    [InlineData(6, true, 256, "OnlyPinnedRemain")]
+    public async Task Compact_no_op_explains_why_and_preserves_measured_context(
+        int entryCount, bool pinned, int limit, string expectedOutcome)
+    {
+        Session session = CreateSession([.. Enumerable.Range(0, entryCount)
+            .Select(index => CreateEntry(new string('x', 5_000), isPinned: pinned, createdAtOffset: index))]);
+        CompressionGrimoireRepository grimoire = new() { Session = session };
+        ContextCompressionService service = CreateService(grimoire);
+
+        CompactResult result = await service.CompressSessionAsync(session.Id, limit, CancellationToken.None);
+
+        Assert.True(result.TokensBefore > 0, "An existing nonempty context must not be reported as empty.");
+        Assert.Equal(result.TokensBefore, result.TokensAfter);
+        Assert.Equal(0, result.EntriesRemoved);
+        Assert.Null(result.StoppedBy);
+        Assert.Empty(grimoire.DeletedEntryIds);
+        AssertCompactOutcome(result, expectedOutcome);
+    }
+
+    [Fact]
+    public async Task Compact_explains_when_pinned_context_remains_after_actual_removals()
+    {
+        Entry removable = CreateEntry(new string('r', 10_000), createdAtOffset: 0);
+        Session session = CreateSession([removable, .. Enumerable.Range(1, 5)
+            .Select(index => CreateEntry(new string('p', 5_000), isPinned: true, createdAtOffset: index))]);
+        CompressionGrimoireRepository grimoire = new() { Session = session };
+        ContextCompressionService service = CreateService(grimoire);
+
+        CompactResult result = await service.CompressSessionAsync(session.Id, 256, CancellationToken.None);
+
+        Assert.Equal([removable.Id], grimoire.DeletedEntryIds);
+        Assert.Equal(1, result.EntriesRemoved);
+        Assert.True(result.TokensAfter > 256);
+        Assert.True(result.TokensBefore > result.TokensAfter);
+        AssertCompactOutcome(result, "OnlyPinnedRemain");
+    }
+
+    private static void AssertCompactOutcome(CompactResult result, string expected)
+    {
+        using JsonDocument document = JsonDocument.Parse(JsonSerializer.Serialize(result, ArcanumJsonContext.Default.CompactResult));
+
+        Assert.True(document.RootElement.TryGetProperty("outcome", out JsonElement outcome), "Compaction must expose its typed outcome.");
+        Assert.Equal(expected, outcome.GetString());
+    }
+
     [Fact]
     public async Task CompressSessionAsync_MissingSession_ReturnsEmptyResult()
     {
@@ -72,6 +122,7 @@ public sealed class ContextCompressionServiceTests
 
         Assert.Equal([oldest.Id], grimoire.DeletedEntryIds);
         Assert.Equal(1, result.EntriesRemoved);
+        AssertCompactOutcome(result, "Compacted");
         Assert.True(result.TokensBefore > result.TokensAfter);
         Assert.DoesNotContain(session.Entries, entry => entry.Id == oldest.Id);
         Assert.Contains(session.Entries, entry => entry.Id == retained.Id);
@@ -404,6 +455,7 @@ public sealed class ContextCompressionServiceTests
 
         Assert.Equal(2, result.EntriesRemoved);
         Assert.Equal(ErrorCodes.Covenant.Unavailable, result.StoppedBy);
+        AssertCompactOutcome(result, "Stopped");
         Assert.Equal(6, session.Entries.Count);
         Assert.Empty(grimoire.DeletedEntryIds);
     }
