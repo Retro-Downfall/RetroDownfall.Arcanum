@@ -11,6 +11,13 @@ public sealed record RaptorNumericOptions(
     int LocalNeighbors = 10,
     int MinimumNeighbors = 2,
     int ExactNeighborLimit = 2048,
+    int NeighborExactBlockSize = 64,
+    int NeighborMinimumSearchWidth = 32,
+    int NeighborSearchMultiplier = 2,
+    int NeighborProjectionTrees = 8,
+    int NeighborMinimumLeafSize = 32,
+    int NeighborMaximumIterations = 12,
+    int NeighborProgressInterval = 1024,
     double LocalConnectivity = 1,
     double SmoothBandwidth = 1,
     int SmoothIterations = 64,
@@ -33,7 +40,7 @@ public sealed record RaptorNumericOptions(
     int MaximumEmIterations = 100,
     int MixtureInitializations = 1,
     string NumericRecipe = "double-fixed-order-v1",
-    string NeighborRecipe = "cosine-exact-or-nndescent-v1",
+    string NeighborRecipe = "cosine-normalized-scalar-identical-zero-self-first-identical-anchors-median-rptree-coprime-fill-new-old-reverse-nearest-nndescent-v1",
     string InitializationRecipe = "splitmix64-random-v1",
     string MixtureRecipe = "full-covariance-best-converged-v1");
 
