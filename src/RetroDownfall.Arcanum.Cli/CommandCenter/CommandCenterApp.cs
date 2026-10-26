@@ -12,6 +12,32 @@ namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 /// </summary>
 internal sealed class CommandCenterApp(ILogger<CommandCenterApp> logger)
 {
+    private readonly Func<IApplication> _createApplication = static () => Application.Create();
+
+    private readonly Action<IApplication> _initializeApplication = InitializeApplication;
+
+    private readonly Action<IApplication> _disposeApplication = static app => app.Dispose();
+
+    private readonly Action _restoreTerminalModes = RestoreTerminalModes;
+
+    // Fault-injection seams exercise Run without initializing a real terminal driver.
+    internal CommandCenterApp(
+        ILogger<CommandCenterApp> logger,
+        Func<IApplication> createApplication,
+        Action<IApplication> initializeApplication,
+        Action<IApplication> disposeApplication,
+        Action restoreTerminalModes)
+        : this(logger)
+    {
+        _createApplication = createApplication;
+
+        _initializeApplication = initializeApplication;
+
+        _disposeApplication = disposeApplication;
+
+        _restoreTerminalModes = restoreTerminalModes;
+    }
+
     /// <summary>
     /// Floor tuned for Warp's startup race (PTY often begins at command-block height,
     /// then SIGWINCHes to the full viewport). Absolute layout expands on ScreenChanged.
@@ -110,8 +136,11 @@ internal sealed class CommandCenterApp(ILogger<CommandCenterApp> logger)
 
         try
         {
-            app = CreateAndInit();
+            app = _createApplication();
+
             terminalTouched = true;
+
+            _initializeApplication(app);
 
             CommandCenterTheme.Apply(monochromeTheme);
 
@@ -153,7 +182,10 @@ internal sealed class CommandCenterApp(ILogger<CommandCenterApp> logger)
 
             try
             {
-                app?.Dispose();
+                if (app is not null)
+                {
+                    _disposeApplication(app);
+                }
             }
             catch (Exception ex)
             {
@@ -162,7 +194,7 @@ internal sealed class CommandCenterApp(ILogger<CommandCenterApp> logger)
 
             if (terminalTouched)
             {
-                RestoreTerminalModes();
+                _restoreTerminalModes();
             }
         }
     }
@@ -384,7 +416,7 @@ internal sealed class CommandCenterApp(ILogger<CommandCenterApp> logger)
         "TrimAnalysis",
         "IL2026",
         Justification = "Terminal.Gui v2.4.17 initialization is isolated here; Arcanum Native AOT publish verified by ./scripts/verify-aot-il-warnings.sh.")]
-    private static IApplication CreateAndInit()
+    private static void InitializeApplication(IApplication app)
     {
         // Keep mouse off — session picking is ↑/↓ + Enter in the Session log.
         // Avoid leaving ?1003h/?1006h tracking in the shell if TG crashes.
@@ -392,7 +424,6 @@ internal sealed class CommandCenterApp(ILogger<CommandCenterApp> logger)
         Application.IsMouseDisabled = true;
 #pragma warning restore CS0618
 
-        IApplication app = Application.Create();
         app.AppModel = AppModel.FullScreen;
         if (app.Mouse is not null)
         {
@@ -405,7 +436,5 @@ internal sealed class CommandCenterApp(ILogger<CommandCenterApp> logger)
         {
             app.Mouse.IsMouseDisabled = true;
         }
-
-        return app;
     }
 }
