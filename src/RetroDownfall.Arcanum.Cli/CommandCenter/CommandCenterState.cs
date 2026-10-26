@@ -172,6 +172,23 @@ internal sealed class CommandCenterState
     /// <summary>Releases the turn slot claimed by <see cref="TryBeginTurn"/>.</summary>
     public void EndTurn() => Interlocked.Exchange(ref _turnActive, 0);
 
+    /// <summary>Completes the submit path's ownership of its cancellation source.</summary>
+    internal void EndTurn(CancellationTokenSource? turnCts)
+    {
+        CancellationTokenSource? captured = Interlocked.CompareExchange(ref _turnCts, null, turnCts);
+        try
+        {
+            turnCts?.Dispose();
+        }
+        finally
+        {
+            if (ReferenceEquals(captured, turnCts))
+            {
+                EndTurn();
+            }
+        }
+    }
+
     public string StreamingAssistantText { get; set; } = string.Empty;
 
     private CancellationTokenSource? _turnCts;
