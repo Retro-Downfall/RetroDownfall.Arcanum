@@ -6,6 +6,13 @@ namespace RetroDownfall.Arcanum.Api.Models;
 
 public sealed record WebSearchWorkflowRequest
 {
+    // Preserve omitted numeric defaults in source-generated construction; explicit zero is invalid.
+    [JsonConstructor]
+    public WebSearchWorkflowRequest(int resultCount = 5)
+    {
+        ResultCount = resultCount;
+    }
+
     public string Query { get; init; } = string.Empty;
 
     public int ResultCount { get; init; } = 5;
@@ -30,6 +37,13 @@ public sealed record WebBrowseWorkflowRequest
 
 public sealed record WebResearchWorkflowRequest
 {
+    // Preserve omitted numeric defaults in source-generated construction; explicit zero is invalid.
+    [JsonConstructor]
+    public WebResearchWorkflowRequest(int tokenBudget = 2_000)
+    {
+        TokenBudget = tokenBudget;
+    }
+
     public string Question { get; init; } = string.Empty;
 
     public int? SourceTarget { get; init; }
@@ -206,4 +220,12 @@ public sealed record WebResearchStreamFrame
     public string? Code { get; init; }
 
     public WebResearchWorkflowResult? Result { get; init; }
+
+    public string? TraceId { get; init; }
+
+    /// <summary>Reported usage so far, with null CostUsd when no search cost was reported.</summary>
+    public WebWorkflowUsage? Usage { get; init; }
+
+    /// <summary>On a terminal error, whether a partial final answer was retained.</summary>
+    public bool? PartialResultsRetained { get; init; }
 }

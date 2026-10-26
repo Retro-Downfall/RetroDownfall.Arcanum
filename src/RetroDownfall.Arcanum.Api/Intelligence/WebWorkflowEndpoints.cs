@@ -133,6 +133,10 @@ internal static class WebWorkflowEndpoints
 
         WebResearchWorkflowRequest effective = request ?? new();
 
+        string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+        WebWorkflowUsage? reportedUsage = null;
+
         // Once the first frame is flushed the response has started, and ArcanumExceptionHandler can
         // no longer produce an envelope — it logs and returns false, aborting the chunked body. A
         // caller would see a stream that simply stops, with the billable search and synthesis passes
@@ -143,7 +147,26 @@ internal static class WebWorkflowEndpoints
                 .ResearchAsync(effective, cancellationToken)
                 .ConfigureAwait(false))
             {
-                await WriteFrameAsync(httpContext, frame, cancellationToken).ConfigureAwait(false);
+                reportedUsage = frame.Usage ?? frame.Result?.Usage ?? reportedUsage;
+
+                bool failed = frame.Type == WebResearchStreamFrameType.Error;
+
+                if (failed)
+                {
+                    ResolveLogger(httpContext).LogWarning(
+                        "Web research ended with a terminal error; trace {TraceId}.",
+                        traceId);
+                }
+
+                await WriteFrameAsync(
+                    httpContext,
+                    frame with
+                    {
+                        TraceId = traceId,
+
+                        Usage = failed ? reportedUsage ?? new WebWorkflowUsage() : frame.Usage,
+                    },
+                    cancellationToken).ConfigureAwait(false);
             }
         }
         catch (Exception exception) when (ClientDisconnect.IsClientDisconnect(exception, httpContext))
@@ -157,9 +180,9 @@ internal static class WebWorkflowEndpoints
         catch (Exception exception)
         {
             ResolveLogger(httpContext).LogError(
-                exception,
-                "Web research stream failed after {TraceId} started; emitting a terminal error frame.",
-                httpContext.TraceIdentifier);
+                "Web research stream failed with {ExceptionType}; trace {TraceId}; emitting a terminal error frame.",
+                exception.GetType().Name,
+                traceId);
 
             try
             {
@@ -172,6 +195,12 @@ internal static class WebWorkflowEndpoints
                             Code = ErrorCodes.Hub.Error,
 
                             Message = PublicResearchFailureMessage,
+
+                            TraceId = traceId,
+
+                            Usage = reportedUsage ?? new WebWorkflowUsage(),
+
+                            PartialResultsRetained = false,
                         },
                         CancellationToken.None)
                     .ConfigureAwait(false);

@@ -52,7 +52,7 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 
 [Collection("ApiHost")]
 
-public sealed class WebWorkflowEndpointTests
+public sealed partial class WebWorkflowEndpointTests
 {
     [SkippableFact]
 
@@ -311,7 +311,9 @@ public sealed class WebWorkflowEndpointTests
             body,
             StringComparison.Ordinal);
 
-        Assert.Contains("--render static", body, StringComparison.Ordinal);
+        ApiResponse<WebBrowseWorkflowResult> envelope = JsonSerializer.Deserialize(body, ArcanumJsonContext.Default.ApiResponseWebBrowseWorkflowResult)!;
+
+        Assert.Contains("renderMode: \"static\"", envelope.Error!.Value.Message, StringComparison.Ordinal);
 
         Assert.Equal(0, provider.ReadCalls);
     }
@@ -2020,7 +2022,9 @@ public sealed class WebWorkflowEndpointTests
         StubSanctumGuard? sanctum = null,
         int vanishSessionAfterCalls = 0,
         Exception? attachmentFailure = null,
-        Action? beforeAttachmentFailure = null) =>
+        Action? beforeAttachmentFailure = null,
+        Action<IServiceCollection>? additionalServices = null,
+        bool webEnabled = true) =>
         new()
         {
             SettingsOverride = settings => settings with
@@ -2050,12 +2054,14 @@ public sealed class WebWorkflowEndpointTests
                 {
                     Attachments = attachmentsEnabled,
 
-                    WebBrowsing = true,
+                    WebBrowsing = webEnabled,
                 },
             },
 
             ServiceOverrides = services =>
             {
+                additionalServices?.Invoke(services);
+
                 services.RemoveAll<IWebResearchProviderCatalog>();
 
                 services.AddSingleton<IWebResearchProviderCatalog>(
@@ -2200,6 +2206,10 @@ public sealed class WebWorkflowEndpointTests
 
         public int ReadCalls { get; private set; }
 
+        public string? SearchActivityId { get; private set; }
+
+        public Action<CancellationToken>? BeforeSearch { get; init; }
+
         public WebSearchOptions? LastSearchOptions { get; private set; }
 
         public string ProviderName => WebResearchProviderNames.Perplexity;
@@ -2216,6 +2226,10 @@ public sealed class WebWorkflowEndpointTests
             CancellationToken cancellationToken = default)
         {
             SearchCalls++;
+
+            SearchActivityId = System.Diagnostics.Activity.Current?.Id;
+
+            BeforeSearch?.Invoke(cancellationToken);
 
             LastSearchOptions = options;
 

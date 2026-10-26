@@ -1,3 +1,5 @@
+using System.Globalization;
+
 using System.Text;
 
 using RetroDownfall.Arcanum.Api.Models;
@@ -312,6 +314,8 @@ public sealed class WebWorkflowCommands(
                         $"{frame.Code ?? ErrorCodes.WebResearch.ProviderUnavailable}: "
                         + CliStreamTransportHint.Append(frame.Code, frame.Message ?? "Research failed."));
 
+                    WriteResearchFailureDiagnostics(frame);
+
                     return CliFailureExit.ExitCode(frame.Code);
 
                 default:
@@ -524,6 +528,28 @@ public sealed class WebWorkflowCommands(
                 result.Citations.Select(
                     static citation =>
                         $"  [{citation.Index}] {citation.Title ?? citation.Url} — {citation.Url}"));
+    }
+
+    private void WriteResearchFailureDiagnostics(WebResearchStreamFrame frame)
+    {
+        if (!string.IsNullOrWhiteSpace(frame.TraceId))
+        {
+            dispatcher.WriteDiagnostic($"Trace: {frame.TraceId}");
+        }
+
+        if (frame.Usage is { } usage)
+        {
+            string cost = usage.CostUsd is decimal value
+                ? $"${value.ToString(CultureInfo.InvariantCulture)} USD"
+                : "unknown";
+
+            dispatcher.WriteDiagnostic($"Reported search cost so far: {cost}.");
+        }
+
+        if (frame.PartialResultsRetained is false)
+        {
+            dispatcher.WriteDiagnostic("No partial research answer was retained.");
+        }
     }
 
     private int WriteError(Error error)

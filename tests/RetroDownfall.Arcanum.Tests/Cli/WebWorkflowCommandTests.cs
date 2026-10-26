@@ -857,6 +857,73 @@ public sealed class WebWorkflowCommandTests
         }
     }
 
+    [Theory]
+    [InlineData("WebResearch.RequestRejected", "terminal")]
+    [InlineData("WebResearch.BudgetExceeded", "json")]
+    [InlineData("Hub.Error", "markdown")]
+    public void Research_terminal_http_200_error_with_additive_diagnostics_preserves_nonzero_exit(string code, string format)
+    {
+        RecordingHandler handler = new(_ => NdjsonResponse($$$"""
+            {"type":"progress","stage":"search_completed","traceId":"trace-123","usage":{"searchQueries":1,"costUsd":0.01}}
+            {"type":"error","code":"{{{code}}}","message":"Research failed safely.","traceId":"trace-123","usage":{"searchQueries":1,"costUsd":0.01},"partialResultsRetained":false}
+            """));
+
+        CliTestResult result = RunCommand(handler, ["research", "Evidence?", "--format", format]);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.Contains(code, result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("Research failed safely.", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("Trace: trace-123", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("Reported search cost so far: $0.01 USD", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("No partial research answer was retained", result.Error, StringComparison.Ordinal);
+
+        Assert.True(string.IsNullOrWhiteSpace(result.Output));
+    }
+
+    [Theory]
+    [InlineData("null", "unknown", false)]
+    [InlineData("0", "$0 USD", true)]
+    [InlineData("0.000000001", "$0.000000001 USD", true)]
+    public void Research_failure_diagnostics_preserve_unknown_zero_and_small_costs_literally(string cost, string expected, bool plain)
+    {
+        RecordingHandler handler = new(_ => NdjsonResponse($$$"""
+            {"type":"error","code":"Hub.Error","message":"Failure.","traceId":"[red]trace[/]","usage":{"searchQueries":1,"costUsd":{{{cost}}}},"partialResultsRetained":false}
+            """));
+
+        CliTestResult result = RunCommand(handler, plain ? ["research", "Evidence?", "--plain"] : ["research", "Evidence?"]);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.Contains("Trace: [red]trace[/]", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("Reported search cost so far: " + expected, result.Error, StringComparison.Ordinal);
+
+        Assert.True(string.IsNullOrWhiteSpace(result.Output));
+    }
+
+    [Fact]
+    public void Research_older_server_error_without_diagnostic_fields_keeps_message_only_behavior()
+    {
+        RecordingHandler handler = new(_ => NdjsonResponse("""{"type":"error","code":"Hub.Error","message":"Failure."}"""));
+
+        CliTestResult result = RunCommand(handler, ["research", "Evidence?"]);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.Contains("Hub.Error: Failure.", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Trace:", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Reported search cost", result.Error, StringComparison.Ordinal);
+
+        Assert.True(string.IsNullOrWhiteSpace(result.Output));
+    }
+
     private static HttpResponseMessage JsonResponse(
         string json,
         HttpStatusCode status = HttpStatusCode.OK) =>

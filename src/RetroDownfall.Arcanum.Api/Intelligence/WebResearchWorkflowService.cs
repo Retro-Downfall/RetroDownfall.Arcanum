@@ -158,14 +158,14 @@ public sealed class WebResearchWorkflowService(
         {
             return Failure<WebBrowseWorkflowResult>(
                 ErrorCodes.WebResearch.JavaScriptRenderingUnavailable,
-                "JavaScript rendering is not configured; retry with --render static.");
+                "renderMode: \"javascript\" is not configured; retry with renderMode: \"static\".");
         }
 
         if (renderMode != "static")
         {
             return Failure<WebBrowseWorkflowResult>(
                 ErrorCodes.WebResearch.RequestRejected,
-                "Render mode must be 'static' or 'javascript'.");
+                "renderMode must be 'static' or 'javascript'; only 'static' is currently configured.");
         }
 
         if (!Uri.TryCreate(request.Url, UriKind.Absolute, out Uri? uri)
@@ -180,7 +180,7 @@ public sealed class WebResearchWorkflowService(
         {
             return Failure<WebBrowseWorkflowResult>(
                 ErrorCodes.WebResearch.InvalidUrl,
-                "An absolute HTTP or HTTPS URL is required.");
+                "url must be an absolute HTTP or HTTPS URL.");
         }
 
         Result attachmentTarget = await PreflightAttachmentTargetAsync(
@@ -328,6 +328,15 @@ public sealed class WebResearchWorkflowService(
 
         while (true)
         {
+            if (pass == int.MaxValue)
+            {
+                yield return Progress(
+                    "search_pass_limit_reached",
+                    "The supported search pass count was reached; synthesis will use the research already collected.");
+
+                break;
+            }
+
             pass++;
 
             yield return Progress(
@@ -351,7 +360,7 @@ public sealed class WebResearchWorkflowService(
 
             if (options.IsFailure)
             {
-                yield return ErrorFrame(options.Error);
+                yield return ErrorFrame(options.Error, SnapshotUsage());
 
                 yield break;
             }
@@ -362,7 +371,7 @@ public sealed class WebResearchWorkflowService(
 
             if (search.IsFailure)
             {
-                yield return ErrorFrame(search.Error);
+                yield return ErrorFrame(search.Error, SnapshotUsage());
 
                 yield break;
             }
@@ -377,6 +386,13 @@ public sealed class WebResearchWorkflowService(
                 ref searchQueries,
                 ref totalCost,
                 ref hasReportedCost);
+
+            // Publish reported usage before another operation can fail. The endpoint can then
+            // include this known subtotal even when an unexpected exception ends the iterator.
+            yield return Progress("search_completed", $"Research search pass {pass} completed.") with
+            {
+                Usage = SnapshotUsage(),
+            };
 
             int newCitationCount = 0;
 
@@ -395,7 +411,8 @@ public sealed class WebResearchWorkflowService(
                 yield return ErrorFrame(
                     new Error(
                         ErrorCodes.WebResearch.BudgetExceeded,
-                        $"Research stopped after reported provider cost exceeded the ${costLimit:0.####} limit."));
+                        $"Research stopped after reported search cost exceeded the ${costLimit:0.####} limit. No partial research answer was retained."),
+                    SnapshotUsage());
 
                 yield break;
             }
@@ -615,7 +632,7 @@ public sealed class WebResearchWorkflowService(
 
         if (synthesis.IsFailure)
         {
-            yield return ErrorFrame(synthesis.Error);
+            yield return ErrorFrame(synthesis.Error, SnapshotUsage());
 
             yield break;
         }
@@ -673,18 +690,7 @@ public sealed class WebResearchWorkflowService(
 
             Warnings = [.. warnings],
 
-            Usage = new WebWorkflowUsage
-            {
-                PromptTokens = promptTokens,
-
-                CompletionTokens = completionTokens,
-
-                TotalTokens = totalTokens,
-
-                SearchQueries = searchQueries,
-
-                CostUsd = hasReportedCost ? totalCost : null,
-            },
+            Usage = SnapshotUsage(),
         };
 
         Result<Guid?> attached = await AttachAsync(
@@ -714,6 +720,19 @@ public sealed class WebResearchWorkflowService(
                 AttachmentId = attached.IsSuccess ? attached.Value : null,
             },
         };
+
+        WebWorkflowUsage SnapshotUsage() => new()
+        {
+            PromptTokens = promptTokens,
+
+            CompletionTokens = completionTokens,
+
+            TotalTokens = totalTokens,
+
+            SearchQueries = searchQueries,
+
+            CostUsd = hasReportedCost ? totalCost : null,
+        };
     }
 
     /// <remarks>
@@ -737,15 +756,18 @@ public sealed class WebResearchWorkflowService(
                 "Native web workflows are disabled. Enable Arcanum:Features:WebBrowsing.");
         }
 
-        if (string.IsNullOrWhiteSpace(query)
-            || resultCount is < 1 or > 20
-            || !IsValidFreshness(freshness)
-            || !AreValidDomains(includeDomains)
-            || !AreValidDomains(excludeDomains))
+        string? validationError = string.IsNullOrWhiteSpace(query) || query.Trim().Length > WebResearchConstants.MaxInputQueryChars
+            ? $"query must be nonempty and at most {WebResearchConstants.MaxInputQueryChars} characters."
+            : resultCount is < 1 or > 20
+                ? "resultCount must be in the range 1-20."
+                : !IsValidFreshness(freshness)
+                    ? "freshness must be day, week, month, or year when supplied."
+                    : DomainValidationError(includeDomains, "includeDomains")
+                        ?? DomainValidationError(excludeDomains, "excludeDomains");
+
+        if (validationError is not null)
         {
-            return Failure<WebSearchOptions>(
-                ErrorCodes.WebResearch.RequestRejected,
-                "Search requires a query, count 1-20, freshness day|week|month|year, and valid domain filters.");
+            return Failure<WebSearchOptions>(ErrorCodes.WebResearch.RequestRejected, validationError);
         }
 
         return Result<WebSearchOptions>.Success(
@@ -988,31 +1010,29 @@ public sealed class WebResearchWorkflowService(
     /// The provider bounds a single query at <see cref="WebResearchConstants.MaxInputQueryChars"/>,
     /// and every pass after the first appends the follow-up suffix. Reserving room for that suffix
     /// up front is what keeps a run from billing pass 1 and then aborting on pass 2. The reservation
-    /// is measured against a three-digit pass number, which is longer than any run reaches.
+    /// covers the full supported pass counter, including its last value before graceful synthesis.
     /// </summary>
     internal static readonly int MaxResearchQuestionChars =
-        WebResearchConstants.MaxInputQueryChars - BuildFollowUpQuery(string.Empty, 999).Length;
+        WebResearchConstants.MaxInputQueryChars - BuildFollowUpQuery(string.Empty, int.MaxValue).Length;
 
     private static Result ValidateResearchRequest(
         WebResearchWorkflowRequest request)
     {
-        if (request.Question?.Trim().Length > MaxResearchQuestionChars)
-        {
-            return Result.Failure(
-                new Error(
-                    ErrorCodes.WebResearch.RequestRejected,
-                    $"The research question must be at most {MaxResearchQuestionChars} characters so every follow-up pass stays within the provider's {WebResearchConstants.MaxInputQueryChars}-character query limit."));
-        }
+        string? validationError = string.IsNullOrWhiteSpace(request.Question)
+            ? "question must be nonempty."
+            : request.Question.Trim().Length > MaxResearchQuestionChars
+                ? $"question must be at most {MaxResearchQuestionChars} characters so every follow-up pass stays within the provider's {WebResearchConstants.MaxInputQueryChars}-character query limit."
+                : request.SourceTarget is < 1
+                    ? "sourceTarget must be a positive integer when supplied."
+                    : request.TokenBudget < 1
+                        ? "tokenBudget must be a positive integer."
+                        : request.CostBudgetUsd is < 0
+                            ? "costBudgetUsd must be nonnegative when supplied."
+                            : null;
 
-        if (string.IsNullOrWhiteSpace(request.Question)
-            || request.SourceTarget is < 1
-            || request.TokenBudget < 1
-            || request.CostBudgetUsd is < 0)
+        if (validationError is not null)
         {
-            return Result.Failure(
-                new Error(
-                    ErrorCodes.WebResearch.RequestRejected,
-                    "Research requires a question, an optional positive source target, a positive explicit synthesis-token budget, and a nonnegative cost budget."));
+            return Result.Failure(new Error(ErrorCodes.WebResearch.RequestRejected, validationError));
         }
 
         return Result.Success();
@@ -1401,16 +1421,34 @@ public sealed class WebResearchWorkflowService(
         || freshness.Trim().ToLowerInvariant()
             is "day" or "week" or "month" or "year";
 
-    private static bool AreValidDomains(IReadOnlyList<string>? domains) =>
-        domains is null
-        || (domains.Count <= 20
-        && domains.All(
-            static domain =>
-                !string.IsNullOrWhiteSpace(domain)
-                && domain.Length <= 253
-                && !domain.Contains('/')
-                && !domain.Contains(':')
-                && !domain.Any(char.IsWhiteSpace)));
+    private static string? DomainValidationError(IReadOnlyList<string>? domains, string field)
+    {
+        if (domains is null)
+        {
+            return null;
+        }
+
+        if (domains.Count > 20)
+        {
+            return $"{field} must contain at most 20 entries.";
+        }
+
+        for (int index = 0; index < domains.Count; index++)
+        {
+            string domain = domains[index];
+
+            if (string.IsNullOrWhiteSpace(domain)
+                || domain.Length > 253
+                || domain.Contains('/')
+                || domain.Contains(':')
+                || domain.Any(char.IsWhiteSpace))
+            {
+                return $"{field}[{index}] must be a bare host such as example.com, at most 253 characters, without a scheme, path, port, or whitespace.";
+            }
+        }
+
+        return null;
+    }
 
     private static string FormatCostLimit(decimal? costBudget) =>
         costBudget is decimal value
@@ -1493,7 +1531,7 @@ public sealed class WebResearchWorkflowService(
             Code = code,
         };
 
-    private static WebResearchStreamFrame ErrorFrame(Error error) =>
+    private static WebResearchStreamFrame ErrorFrame(Error error, WebWorkflowUsage? usage = null) =>
         new()
         {
             Type = WebResearchStreamFrameType.Error,
@@ -1501,6 +1539,10 @@ public sealed class WebResearchWorkflowService(
             Code = error.Code,
 
             Message = error.Message,
+
+            Usage = usage,
+
+            PartialResultsRetained = false,
         };
 
     private static Result<T> Failure<T>(string code, string message) =>
