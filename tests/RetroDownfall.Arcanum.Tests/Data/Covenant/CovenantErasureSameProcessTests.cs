@@ -1778,8 +1778,11 @@ public sealed class CovenantErasureSameProcessTests
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
+        TestCapturingLogger<DataRetentionService> log = new();
+
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
-            storeFaults: new RouteStoreFaults(fault));
+            storeFaults: new RouteStoreFaults(fault),
+            serviceOverrides: services => CaptureRetentionDiagnostics(services, log));
 
         DataRetentionPlan confirmed = await harness.PlanResetAsync();
 
@@ -1796,6 +1799,8 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, operation.TerminalErrorCode);
 
         Assert.Equal(expectedCheckpointVersion, operation.CheckpointVersion);
+
+        AssertRetentionDiagnostic(log, "UnexpectedFailure", operation.Id, nameof(InvalidOperationException));
     }
 
     [SkippableFact]
@@ -1803,7 +1808,10 @@ public sealed class CovenantErasureSameProcessTests
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
+        TestCapturingLogger<DataRetentionService> log = new();
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            serviceOverrides: services => CaptureRetentionDiagnostics(services, log));
 
         DataRetentionPlan confirmed = await harness.PlanResetAsync();
 
@@ -1822,6 +1830,138 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Equal(LongRunningOperationState.ReconciliationRequired, operation.State);
 
         Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, operation.CheckpointVersion);
+
+        AssertRetentionDiagnostic(log, "PlanningLeaseRelease", operation.Id, nameof(InvalidOperationException));
+    }
+
+    [SkippableFact]
+    public async Task Direct_retention_reset_effect_classification_failure_keeps_the_launch_and_private_details_out_of_logs()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        TestCapturingLogger<DataRetentionService> log = new();
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            storeFaults: new RouteStoreFaults(RouteStoreFault.ThrowAfterCheckpointAndClassification),
+            serviceOverrides: services => CaptureRetentionDiagnostics(services, log));
+
+        DataRetentionPlan confirmed = await harness.PlanResetAsync();
+
+        Result<DataRetentionApplyResult> reset = await harness.ApplyResetAsync(confirmed.PlanId);
+
+        Assert.True(reset.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, reset.Error.Code);
+
+        LongRunningOperation operation = await harness.ReadResetOperationAsync();
+
+        Assert.Equal(LongRunningOperationState.Running, operation.State);
+
+        Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, operation.CheckpointVersion);
+
+        Assert.NotNull(operation.LeaseOwner);
+
+        Assert.Null(operation.TerminalErrorCode);
+
+        Assert.Null(harness.RouteGate.ExclusiveOwner);
+
+        AssertRetentionDiagnostic(log, "EffectClassification", operation.Id, nameof(InvalidOperationException));
+    }
+
+    [SkippableFact]
+    public async Task Direct_retention_reset_finalization_read_failure_preserves_committed_erasure_and_private_diagnostics()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        TestCapturingLogger<DataRetentionService> log = new();
+
+        RouteStoreFaults faults = new(RouteStoreFault.None);
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            storeFaults: faults,
+            serviceOverrides: services => CaptureRetentionDiagnostics(services, log));
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        IGrimoireConnectionAdmissionGate admission = harness.Services
+            .GetRequiredService<IGrimoireConnectionAdmissionGate>();
+
+        int armed = 1;
+
+        faults.AfterCompletedRead = async () =>
+        {
+            // Coordinator terminal reconciliation reads Completed while admission is still closed.
+            // Only the later service finalization read can enter this actual reopened gate.
+            if (!admission.TryAcquireRequestLease(GrimoireRequestKind.Finite, out IGrimoireRequestLease? lease))
+            {
+                return;
+            }
+
+            await lease!.DisposeAsync();
+
+            if (Interlocked.Exchange(ref armed, 0) == 1)
+            {
+                throw new IOException("PRIVATE-retention-diagnostic-sentinel /private/catalog/query");
+            }
+        };
+
+        DataRetentionPlan confirmed = await harness.PlanResetAsync();
+
+        Result<DataRetentionApplyResult> reset = await harness.ApplyResetAsync(confirmed.PlanId);
+
+        Assert.True(reset.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, reset.Error.Code);
+
+        Assert.Equal(0, armed);
+
+        LongRunningOperation operation = await harness.ReadResetOperationAsync();
+
+        Assert.Equal(LongRunningOperationState.Completed, operation.State);
+
+        Assert.Null(operation.TerminalErrorCode);
+
+        Assert.Equal(ErasedRoute, await harness.CaptureRouteStateAsync());
+
+        Assert.True(admission.TryAcquireRequestLease(GrimoireRequestKind.Finite, out IGrimoireRequestLease? reopened));
+
+        await reopened!.DisposeAsync();
+
+        AssertRetentionDiagnostic(log, "CommittedFinalization", operation.Id, nameof(IOException));
+    }
+
+    private static void CaptureRetentionDiagnostics(IServiceCollection services, TestCapturingLogger<DataRetentionService> log)
+    {
+        services.RemoveAll<ILogger<DataRetentionService>>();
+
+        services.AddSingleton<ILogger<DataRetentionService>>(log);
+    }
+
+    private static void AssertRetentionDiagnostic(
+        TestCapturingLogger<DataRetentionService> log,
+        string stage,
+        Guid operationId,
+        string exceptionType)
+    {
+        Assert.NotEmpty(log.Entries);
+
+        Assert.All(log.Entries, entry =>
+        {
+            Assert.Null(entry.Exception);
+
+            Assert.DoesNotContain("PRIVATE-retention-diagnostic-sentinel", entry.Message);
+
+            Assert.DoesNotContain("/private/catalog/query", entry.Message);
+        });
+
+        TestLogEntry diagnostic = Assert.Single(log.Entries,
+            entry => entry.Message.Contains(stage, StringComparison.Ordinal));
+
+        Assert.Contains(operationId.ToString(), diagnostic.Message);
+
+        Assert.Contains(exceptionType, diagnostic.Message);
     }
 
     [SkippableFact]
@@ -5214,7 +5354,7 @@ public sealed class CovenantErasureSameProcessTests
                 {
                     owner.ThrowOnNextInstallationRelease = false;
 
-                    throw new InvalidOperationException("Injected planning lease release failure.");
+                    throw new InvalidOperationException("PRIVATE-retention-diagnostic-sentinel /private/catalog/query");
                 }
             }
         }
@@ -5266,6 +5406,8 @@ public sealed class CovenantErasureSameProcessTests
 
         ThrowAfterCheckpoint,
 
+        ThrowAfterCheckpointAndClassification,
+
         FailFirstCompletedTransition,
 
         FailAllCompletedTransitions,
@@ -5279,7 +5421,7 @@ public sealed class CovenantErasureSameProcessTests
 
         private int _renewalAttempts;
 
-        private int _throwNextGet;
+        private readonly System.Collections.Concurrent.ConcurrentQueue<bool> _getFailures = new();
 
         private int _completedTransitionsDisarmed;
 
@@ -5324,9 +5466,11 @@ public sealed class CovenantErasureSameProcessTests
 
         internal RouteStoreFault Fault { get; } = fault;
 
-        internal bool TakeThrowNextGet() => Interlocked.Exchange(ref _throwNextGet, 0) != 0;
+        internal Func<Task>? AfterCompletedRead { get; set; }
 
-        internal void ArmThrowNextGet() => _ = Interlocked.Exchange(ref _throwNextGet, 1);
+        internal bool TakeThrowNextGet() => _getFailures.TryDequeue(out _);
+
+        internal void ArmThrowNextGet() => _getFailures.Enqueue(true);
 
         internal bool CompletedTransitionsDisarmed =>
             Volatile.Read(ref _completedTransitionsDisarmed) != 0;
@@ -5520,10 +5664,16 @@ public sealed class CovenantErasureSameProcessTests
 
             if (faults.TakeThrowNextGet())
             {
-                throw new InvalidOperationException("Injected post-checkpoint ledger read failure.");
+                throw new InvalidOperationException("PRIVATE-retention-diagnostic-sentinel /private/catalog/query");
             }
 
             LongRunningOperation? operation = await inner.GetAsync(operationId, cancellationToken);
+
+            if (operation?.State is LongRunningOperationState.Completed
+                && faults.AfterCompletedRead is { } afterCompletedRead)
+            {
+                await afterCompletedRead();
+            }
 
             if (operation is { CheckpointVersion: DataRetentionFactoryTransitionLaunchV2.CurrentVersion }
                 && string.Equals(
@@ -5615,7 +5765,7 @@ public sealed class CovenantErasureSameProcessTests
             {
                 if (faults.Fault is RouteStoreFault.ThrowBeforeCheckpoint)
                 {
-                    throw new InvalidOperationException("Injected pre-checkpoint failure.");
+                    throw new InvalidOperationException("PRIVATE-retention-diagnostic-sentinel /private/catalog/query");
                 }
 
                 if (faults.Fault is RouteStoreFault.AdoptBeforeCheckpointCancellation)
@@ -5670,9 +5820,14 @@ public sealed class CovenantErasureSameProcessTests
             if (saved
                 && expectedCheckpointVersion == 0
                 && checkpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion
-                && faults.Fault is RouteStoreFault.ThrowAfterCheckpoint)
+                && faults.Fault is RouteStoreFault.ThrowAfterCheckpoint or RouteStoreFault.ThrowAfterCheckpointAndClassification)
             {
                 faults.ArmThrowNextGet();
+
+                if (faults.Fault is RouteStoreFault.ThrowAfterCheckpointAndClassification)
+                {
+                    faults.ArmThrowNextGet();
+                }
             }
 
             return saved;

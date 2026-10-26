@@ -1966,7 +1966,8 @@ internal sealed partial class DataRetentionService(
             }
 
             Result planningLeaseReleased = await TryDisposeCovenantPlanningLeaseAsync(
-                planningLease).ConfigureAwait(false);
+                planningLease,
+                operation.Id).ConfigureAwait(false);
 
             planningLease = null;
 
@@ -2053,8 +2054,11 @@ internal sealed partial class DataRetentionService(
         catch (Exception ex)
         {
             logger.LogError(
-                ex,
-                "Direct Covenant reset failed unexpectedly after durable operation admission.");
+                "Direct Covenant reset failed unexpectedly at {DiagnosticStage} for durable operation "
+                + "{OperationId} ({ExceptionType}).",
+                "UnexpectedFailure",
+                operation?.Id,
+                ex.GetType().Name);
 
             if (operation is null || string.IsNullOrWhiteSpace(ownerId))
             {
@@ -2067,7 +2071,7 @@ internal sealed partial class DataRetentionService(
         {
             if (planningLease is not null)
             {
-                _ = await TryDisposeCovenantPlanningLeaseAsync(planningLease).ConfigureAwait(false);
+                _ = await TryDisposeCovenantPlanningLeaseAsync(planningLease, operation?.Id).ConfigureAwait(false);
             }
         }
     }
@@ -2210,16 +2214,19 @@ internal sealed partial class DataRetentionService(
         catch (Exception ex)
         {
             logger.LogWarning(
-                ex,
-                "Covenant reset operation {OperationId} could not classify its durable effect boundary.",
-                operation.Id);
+                "Covenant reset operation {OperationId} could not classify its durable effect boundary "
+                + "at {DiagnosticStage} ({ExceptionType}).",
+                operation.Id,
+                "EffectClassification",
+                ex.GetType().Name);
 
             return Result<DataRetentionApplyResult>.Failure(failure);
         }
     }
 
     private async Task<Result> TryDisposeCovenantPlanningLeaseAsync(
-        ICovenantSnapshotReadLease planningLease)
+        ICovenantSnapshotReadLease planningLease,
+        Guid? operationId = null)
     {
         try
         {
@@ -2230,8 +2237,11 @@ internal sealed partial class DataRetentionService(
         catch (Exception ex)
         {
             logger.LogWarning(
-                ex,
-                "The direct Covenant reset planning lease could not be released cleanly.");
+                "The Covenant erasure planning lease could not be released cleanly at {DiagnosticStage} "
+                + "for durable operation {OperationId} ({ExceptionType}).",
+                "PlanningLeaseRelease",
+                operationId,
+                ex.GetType().Name);
 
             return Result.Failure(CovenantMaintenanceFailure());
         }
@@ -2298,9 +2308,11 @@ internal sealed partial class DataRetentionService(
         catch (Exception ex)
         {
             logger.LogWarning(
-                ex,
-                "Covenant reset operation {OperationId} could not finalize after committed reopen.",
-                operationId);
+                "Covenant reset operation {OperationId} could not finalize after committed reopen "
+                + "at {DiagnosticStage} ({ExceptionType}).",
+                operationId,
+                "CommittedFinalization",
+                ex.GetType().Name);
 
             return Result.Failure(CovenantMaintenanceFailure());
         }

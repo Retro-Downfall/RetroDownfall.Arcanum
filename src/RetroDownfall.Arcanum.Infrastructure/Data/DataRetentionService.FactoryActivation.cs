@@ -396,7 +396,8 @@ internal sealed partial class DataRetentionService
             }
 
             Result planningLeaseReleased = await TryDisposeCovenantPlanningLeaseAsync(
-                installationLease).ConfigureAwait(false);
+                installationLease,
+                operation.Id).ConfigureAwait(false);
 
             planningLease = null;
 
@@ -549,7 +550,7 @@ internal sealed partial class DataRetentionService
         {
             if (planningLease is not null)
             {
-                _ = await TryDisposeCovenantPlanningLeaseAsync(planningLease).ConfigureAwait(false);
+                _ = await TryDisposeCovenantPlanningLeaseAsync(planningLease, operation?.Id).ConfigureAwait(false);
             }
 
             _ = await CloseFactoryServiceConnectionAsync().ConfigureAwait(false);
