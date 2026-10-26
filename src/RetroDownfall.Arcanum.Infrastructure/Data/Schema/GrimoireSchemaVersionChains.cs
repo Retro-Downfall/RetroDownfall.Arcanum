@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 25 and declares twenty-four steps, Covenant canonical is at version 6 and declares five,
+/// Core is at version 26 and declares twenty-five steps, Covenant canonical is at version 6 and declares five,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -144,7 +144,7 @@ internal static class GrimoireSchemaVersionChains
     /// <para>Version 24 indexes Campaign continuity Session and output-artifact dependencies without
     /// changing source manifests, checkpoints, or their cascade relationships.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 25;
+    internal const int CoreSchemaVersion = 26;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -322,6 +322,10 @@ internal static class GrimoireSchemaVersionChains
             [(GrimoireSchemaTransactionTier.Core, 25)] =
                 "2D7C2C480B7345D3CDBE7A6EAF05BB131E70D2ADB7E1BD940B45A32959609028",
 
+            // Captured before the Core26 DAG schema edits.
+            [(GrimoireSchemaTransactionTier.Core, 26)] =
+                "4CD45949338193A2EDB9B54D990D0579763FB4BB0E12FB68C2447BEFE0177B20",
+
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 2)] =
                 "7F906C4C832FDF824EC3B6A56431E9E6098DC9BB83EDA5BAE02EC62CE3B4E105",
 
@@ -433,7 +437,10 @@ internal static class GrimoireSchemaVersionChains
                         statement.ResourcePath,
                         statement.Ordinal,
                         statement.Name,
-                        statement.Sql)),
+                        statement.Sql,
+                        statement.ResourcePath == "Transitions.V26.065_remove_corrupt_legacy_vector_mirrors"
+                            ? "tapestry_node_embeddings_vec"
+                            : null)),
             ];
 
             if (!SourcePins.TryGetValue((headManifest.TransactionTier, toVersion), out string? pin))

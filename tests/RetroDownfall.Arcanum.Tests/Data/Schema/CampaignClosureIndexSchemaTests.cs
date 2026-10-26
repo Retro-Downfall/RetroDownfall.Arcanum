@@ -12,7 +12,7 @@ public sealed class CampaignClosureIndexSchemaTests
         Assert.Equal(CoreSchemaVersionTwentyThreeFixture.PublishedFingerprint, CoreSchemaVersionTwentyThreeFixture.Fingerprint);
 
         Assert.Equal(CoreSchemaVersionTwentyThreeFixture.PublishedFingerprint,
-            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core).SourceDefinitionFingerprintFor(23));
+            CoreSchemaVersionTwentyFourFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core).SourceDefinitionFingerprintFor(23));
     }
 
     [Fact]
@@ -34,13 +34,13 @@ public sealed class CampaignClosureIndexSchemaTests
             _ = await seed.ExecuteNonQueryAsync();
         }
 
-        Assert.Equal(24, (await GrimoireSchemaTestInstaller.InstallAsync(old, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None)).Core.SchemaVersion);
+        Assert.Equal(24, (await GrimoireSchemaTestInstaller.InstallAsync(old, CoreSchemaVersionTwentyFourFixture.ChainSet(), 64, CancellationToken.None)).Core.SchemaVersion);
 
         using var freshFile = EvolutionScratchDatabase.Create();
 
         await using SqliteConnection fresh = await freshFile.OpenAsync(CancellationToken.None);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(fresh, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(fresh, CoreSchemaVersionTwentyFourFixture.ChainSet(), 64, CancellationToken.None);
 
         Assert.Equal(await ReadCatalogAsync(fresh), await ReadCatalogAsync(old));
 
@@ -73,7 +73,7 @@ public sealed class CampaignClosureIndexSchemaTests
             return 0L;
         });
 
-        GrimoireSchemaVersionChain core = GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core);
+        GrimoireSchemaVersionChain core = CoreSchemaVersionTwentyFourFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core);
 
         GrimoireSchemaVersionStep step = Assert.Single(core.Steps, item => item.ToVersion == 24);
 
@@ -87,8 +87,8 @@ public sealed class CampaignClosureIndexSchemaTests
         GrimoireSchemaVersionChainSet chain = new(
         [
             new GrimoireSchemaVersionChain(core.HeadManifest, core.HeadObjects, [.. core.Steps.Where(item => item.ToVersion < 24), interrupted]),
-            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
-            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+            CoreSchemaVersionTwentyFourFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
+            CoreSchemaVersionTwentyFourFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
         ]);
 
         if (cancel)
@@ -104,7 +104,7 @@ public sealed class CampaignClosureIndexSchemaTests
 
         Assert.Equal(23, (await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentyThreeFixture.ChainSet(), 64, CancellationToken.None)).Core.SchemaVersion);
 
-        Assert.Equal(24, (await GrimoireSchemaTestInstaller.InstallAsync(connection, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None)).Core.SchemaVersion);
+        Assert.Equal(24, (await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentyFourFixture.ChainSet(), 64, CancellationToken.None)).Core.SchemaVersion);
     }
 
     private static async Task<string[]> ReadCatalogAsync(SqliteConnection connection)

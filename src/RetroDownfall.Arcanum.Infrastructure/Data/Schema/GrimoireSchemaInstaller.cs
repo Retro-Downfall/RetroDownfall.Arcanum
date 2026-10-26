@@ -398,6 +398,16 @@ internal sealed class GrimoireSchemaInstaller(
                 foreach (GrimoireSchemaTransitionStatement statement in step.Statements.OrderBy(
                     static candidate => candidate.Ordinal))
                 {
+                    // Optional mirrors are outside the canonical catalog. Classify in this same
+                    // transaction; never open an absent or unsupported legacy virtual mirror.
+                    if (statement.RequiredPlainVectorMirror is string mirror
+                        && await SagaVectorMirror.ClassifyAsync(
+                            connection, transaction, mirror, cancellationToken).ConfigureAwait(false)
+                            is not SagaVectorMirrorKind.PlainTable)
+                    {
+                        continue;
+                    }
+
                     await ExecuteAsync(
                         connection,
                         transaction,

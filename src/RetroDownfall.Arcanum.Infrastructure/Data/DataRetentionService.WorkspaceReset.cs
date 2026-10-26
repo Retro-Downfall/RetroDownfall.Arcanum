@@ -160,25 +160,9 @@ internal sealed partial class DataRetentionService
                     ("@root", workspaceRoot)).ConfigureAwait(false);
             }
 
-            derivedDeleted += await ExecuteAsync(
-                connection,
-                transaction,
-                """
-                DELETE FROM tapestry_node_embeddings
-                WHERE NodeId IN (
-                    SELECT NodeId
-                    FROM tapestry_nodes
-                    WHERE ScopeKind = 'Workspace' AND ScopeId = @root)
-                """,
-                cancellationToken,
-                ("@root", workspaceRoot)).ConfigureAwait(false);
-
-            derivedDeleted += await ExecuteAsync(
-                connection,
-                transaction,
-                "DELETE FROM tapestry_nodes WHERE ScopeKind = 'Workspace' AND ScopeId = @root",
-                cancellationToken,
-                ("@root", workspaceRoot)).ConfigureAwait(false);
+            // Published graph children are immutable. Count the admitted snapshot before the owner
+            // cascade removes them; deleting children first would bypass the generation contract.
+            derivedDeleted += current.TapestryNodeRows + current.TapestryEmbeddingRows + current.TapestryEdgeRows;
 
             derivedDeleted += await ExecuteAsync(
                 connection,
@@ -370,6 +354,7 @@ internal sealed partial class DataRetentionService
         long tapestryRows = snapshot.TapestryGenerationRows
             + snapshot.TapestryNodeRows
             + snapshot.TapestryEmbeddingRows
+            + snapshot.TapestryEdgeRows
             + snapshot.TapestryVectorRows;
 
         if (tapestryRows > 0)
@@ -476,6 +461,17 @@ internal sealed partial class DataRetentionService
             FROM tapestry_node_embeddings embedding
             JOIN tapestry_nodes node ON node.NodeId = embedding.NodeId
             WHERE node.ScopeKind = 'Workspace' AND node.ScopeId = @root
+            """,
+            workspaceRoot,
+            cancellationToken).ConfigureAwait(false);
+
+        long tapestryEdges = await WorkspaceResetCountAsync(
+            connection,
+            transaction,
+            """
+            SELECT COUNT(*) FROM tapestry_edges edge
+            JOIN tapestry_generations generation ON generation.GenerationId = edge.GenerationId
+            WHERE generation.ScopeKind = 'Workspace' AND generation.ScopeId = @root
             """,
             workspaceRoot,
             cancellationToken).ConfigureAwait(false);
@@ -630,6 +626,20 @@ internal sealed partial class DataRetentionService
                 cancellationToken).ConfigureAwait(false);
         }
 
+        await AppendWorkspaceResetFingerprintAsync(
+            resourceFingerprint,
+            connection,
+            transaction,
+            "tapestry-edge:",
+            """
+            SELECT edge.GenerationId || ':' || edge.ParentNodeId || ':' || edge.ChildNodeId
+            FROM tapestry_edges edge JOIN tapestry_generations generation ON generation.GenerationId = edge.GenerationId
+            WHERE generation.ScopeKind = 'Workspace' AND generation.ScopeId = @root
+            ORDER BY edge.GenerationId, edge.ParentNodeId, edge.ChildNodeId
+            """,
+            workspaceRoot,
+            cancellationToken).ConfigureAwait(false);
+
         return new WorkspaceResetSnapshot(
             workspaceContexts,
             workspaceChunks,
@@ -638,6 +648,7 @@ internal sealed partial class DataRetentionService
             tapestryGenerations,
             tapestryNodes,
             tapestryEmbeddings,
+            tapestryEdges,
             tapestryVectors,
             crossScopeGenerationRows,
             Convert.ToHexString(resourceFingerprint.GetHashAndReset()));
@@ -732,6 +743,7 @@ internal sealed partial class DataRetentionService
         long TapestryGenerationRows,
         long TapestryNodeRows,
         long TapestryEmbeddingRows,
+        long TapestryEdgeRows,
         long TapestryVectorRows,
         long CrossScopeGenerationRows,
         string ResourceFingerprint)
@@ -743,6 +755,7 @@ internal sealed partial class DataRetentionService
             + TapestryGenerationRows
             + TapestryNodeRows
             + TapestryEmbeddingRows
+            + TapestryEdgeRows
             + TapestryVectorRows;
     }
 }

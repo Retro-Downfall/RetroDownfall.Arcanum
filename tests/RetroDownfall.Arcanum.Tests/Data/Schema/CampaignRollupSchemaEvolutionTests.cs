@@ -469,7 +469,7 @@ public sealed class CampaignRollupSchemaEvolutionTests
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, installed.Core.Health);
 
-        Assert.Equal(shared ? 25 : 16, installed.Core.SchemaVersion);
+        Assert.Equal(shared ? 26 : 16, installed.Core.SchemaVersion);
     }
 
     private static Task<SqliteConnection> OpenAsync() =>

@@ -2929,7 +2929,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Equal(
-            4,
+            5,
             plan.Items
                 .Where(static item => item.DataClass == RetentionDataClass.Tapestry)
                 .Sum(static item => item.DerivedRecords));
@@ -2942,6 +2942,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(1, recovery.Completed);
 
         Assert.Equal(0, recovery.RequiresAttention);
+
+        Assert.Equal(0, await CountAllAsync("tapestry_edges"));
 
         Assert.Equal(0, await CountAllAsync("tapestry_nodes"));
 
@@ -4353,7 +4355,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                  SettingsFingerprint, SummaryModel, SummaryRecipeVersion, EmbeddingDimension,
                  CorpusFingerprint, LayerCount, NodeCount, RootNodeCount, StartedAt, CompletedAt)
             VALUES
-                (@generationId, 'Session', @scopeId, 'Published', '1', 'FINGERPRINT',
+                (@generationId, 'Session', @scopeId, 'Building', '1', 'FINGERPRINT',
                  'test-model', '1', 1, 'CORPUS', 2, 2, 1, @at, @at)
             """,
             ("@generationId", generationId),
@@ -4367,12 +4369,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                  ParentNodeId, SourceKind, SourceId, SourceLabel, Content, ContentHash,
                  EmbeddingDimension, CreatedAt)
             VALUES
-                (@leafNodeId, @generationId, 'Session', @scopeId, 0, @scopeId, 'Leaf',
-                 @summaryNodeId, 'Entry', @scopeId, 'Transcript entry', NULL, 'LEAF-HASH',
-                 1, @at),
                 (@summaryNodeId, @generationId, 'Session', @scopeId, 1, @scopeId, 'Summary',
                  NULL, NULL, NULL, 'Session summary',
                  'The operator described their medical history in detail.', 'SUMMARY-HASH',
+                 1, @at),
+                (@leafNodeId, @generationId, 'Session', @scopeId, 0, @scopeId, 'Leaf',
+                 @summaryNodeId, 'Entry', @scopeId, 'Transcript entry', NULL, 'LEAF-HASH',
                  1, @at)
             """,
             ("@leafNodeId", leafNodeId),
@@ -4388,6 +4390,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             """,
             ("@nodeId", summaryNodeId),
             ("@embedding", new byte[] { 0, 0, 128, 63 }));
+
+        await ExecuteAsync("UPDATE tapestry_generations SET Status='Complete' WHERE GenerationId=@id", ("@id", generationId));
     }
 
     /// <summary>

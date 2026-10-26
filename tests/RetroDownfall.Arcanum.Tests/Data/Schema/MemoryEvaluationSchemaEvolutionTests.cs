@@ -13,13 +13,13 @@ public sealed class MemoryEvaluationSchemaEvolutionTests
     {
         Assert.Equal(CoreSchemaVersionEighteenFixture.PublishedFingerprint, CoreSchemaVersionEighteenFixture.Fingerprint);
 
-        Assert.Equal(24, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        Assert.Equal(26, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
         Assert.Equal(CoreSchemaVersionEighteenFixture.PublishedFingerprint, GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core).SourceDefinitionFingerprintFor(18));
     }
 
     [Fact]
-    public async Task Evolved_v18_and_fresh_v19_have_identical_catalogs()
+    public async Task Evolved_v18_and_fresh_head_have_identical_catalogs()
     {
         using var oldFile = EvolutionScratchDatabase.Create();
 
@@ -27,13 +27,13 @@ public sealed class MemoryEvaluationSchemaEvolutionTests
 
         Assert.Equal(18, (await GrimoireSchemaTestInstaller.InstallAsync(old, CoreSchemaVersionEighteenFixture.ChainSet(), 64, CancellationToken.None)).Core.SchemaVersion);
 
-        Assert.Equal(24, (await GrimoireSchemaTestInstaller.InstallAsync(old, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None)).Core.SchemaVersion);
+        Assert.Equal(26, (await GrimoireSchemaTestInstaller.InstallAsync(old, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None)).Core.SchemaVersion);
 
         using var newFile = EvolutionScratchDatabase.Create();
 
         await using var fresh = await newFile.OpenAsync(CancellationToken.None);
 
-        Assert.Equal(24, (await GrimoireSchemaTestInstaller.InstallAsync(fresh, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None)).Core.SchemaVersion);
+        Assert.Equal(26, (await GrimoireSchemaTestInstaller.InstallAsync(fresh, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None)).Core.SchemaVersion);
 
         Assert.Equal(await Catalog(fresh), await Catalog(old));
     }

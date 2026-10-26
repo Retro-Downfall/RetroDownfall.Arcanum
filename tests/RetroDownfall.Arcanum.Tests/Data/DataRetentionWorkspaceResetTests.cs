@@ -691,7 +691,7 @@ public sealed partial class DataRetentionServiceTests
                  SettingsFingerprint, SummaryModel, SummaryRecipeVersion, EmbeddingDimension,
                  CorpusFingerprint, LayerCount, NodeCount, RootNodeCount, StartedAt, CompletedAt)
             VALUES
-                (@generationId, @scopeKind, @scopeId, 'Published', '1', 'SETTINGS',
+                (@generationId, @scopeKind, @scopeId, 'Building', '1', 'SETTINGS',
                  'test-model', '1', 1, 'CORPUS', 1, 1, 1, @at, @at)
             """,
             ("@generationId", generationId),
@@ -734,6 +734,8 @@ public sealed partial class DataRetentionServiceTests
                 ("@embedding", new byte[768 * sizeof(float)]));
 
         }
+
+        await ExecuteAsync("UPDATE tapestry_generations SET Status='Complete' WHERE GenerationId=@id", ("@id", generationId));
 
         return (generationId, nodeId);
 
