@@ -5,10 +5,8 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class EmbeddingsResetScopeTests
 {
-
     [Theory]
     [InlineData(null, EmbeddingsResetScope.All)]
-    [InlineData("", EmbeddingsResetScope.All)]
     [InlineData("all", EmbeddingsResetScope.All)]
     [InlineData("ALL", EmbeddingsResetScope.All)]
     [InlineData("entry", EmbeddingsResetScope.Entry)]
@@ -22,16 +20,16 @@ public sealed class EmbeddingsResetScopeTests
     [InlineData("session_attachment", EmbeddingsResetScope.SessionAttachment)]
     public void ParseScope_ValidValues_ReturnsExpectedScope(string? value, EmbeddingsResetScope expected)
     {
-
         EmbeddingsResetScope? actual = EmbeddingsResetEndpoints.ParseScope(value);
 
         Assert.NotNull(actual);
 
         Assert.Equal(expected, actual.Value);
-
     }
 
     [Theory]
+    [InlineData("")]
+    [InlineData("\t")]
     [InlineData("entr")]
     [InlineData("workspace")]
     [InlineData("everything")]
@@ -40,11 +38,8 @@ public sealed class EmbeddingsResetScopeTests
     [InlineData(" ")]
     public void ParseScope_UnknownValues_ReturnsNull(string? value)
     {
-
         EmbeddingsResetScope? actual = EmbeddingsResetEndpoints.ParseScope(value);
 
         Assert.Null(actual);
-
     }
-
 }

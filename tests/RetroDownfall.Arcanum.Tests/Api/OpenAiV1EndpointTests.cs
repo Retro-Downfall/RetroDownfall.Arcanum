@@ -761,6 +761,74 @@ public sealed class OpenAiV1EndpointTests
         Assert.Equal("invalid_value", body!.Error.Code);
     }
 
+    [SkippableTheory]
+    [InlineData("private-image-canary.png", false)]
+    [InlineData("private-image-canary.png", true)]
+    [InlineData("data:image/png,private-image-canary", false)]
+    [InlineData("data:image/png,private-image-canary", true)]
+    public async Task Invalid_image_urls_are_rejected_before_buffered_or_streaming_inference(
+        string imageUrl,
+        bool stream)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                Features = settings.Features with { Scrying = true },
+                DefaultModel = "vision-model",
+                Providers =
+                [
+                    new ProviderSettings
+                    {
+                        Name = "vision-provider",
+                        Type = AiProviderKind.OpenAICompatible,
+                        Endpoint = "https://example.test/v1",
+                        Models = [new ModelEntry("vision-model", SupportsVision: true)],
+                    },
+                ],
+            },
+        };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        string urlJson = JsonSerializer.Serialize(imageUrl, ArcanumJsonContext.Default.String);
+
+        string streamJson = stream ? "true" : "false";
+
+        string payload = $$"""
+            {
+              "model": "vision-model",
+              "stream": {{streamJson}},
+              "messages": [{ "role": "user", "content": [
+                { "type": "text", "text": "look" },
+                { "type": "image_url", "image_url": { "url": {{urlJson}} } }
+              ] }]
+            }
+            """;
+
+        using HttpResponseMessage response = await client.PostAsync(
+            "/v1/chat/completions",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal("invalid_image_data", body.Error.Code);
+
+        Assert.Contains("messages[0].content[1].image_url.url", body.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("private-image-canary", body.Error.Message, StringComparison.Ordinal);
+
+        Assert.Null(factory.FakeIntelligence.LastRequest);
+    }
+
     [SkippableFact]
     public async Task PostChatCompletions_ImageToNonVisionModel_ReturnsVisionNotSupported()
     {

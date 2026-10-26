@@ -12,12 +12,11 @@ namespace RetroDownfall.Arcanum.Core.Intelligence;
 /// <see cref="PingRequest"/> so both surfaces share one code path). Model capability
 /// (<see cref="Configuration.ModelEntry.SupportsVision"/>) is checked separately by the caller via
 /// <see cref="ProviderResolver.SupportsVision(ArcanumSettings, string?)"/> once a model is resolved
-/// — this class only validates the image payloads themselves (count/MIME/size) and the master
+/// — this class only validates the image payloads themselves (URL shape/count/MIME/size) and the master
 /// <see cref="ScryingSettings.Enabled"/> kill-switch.
 /// </summary>
 public static class ScryingValidator
 {
-
     private const string DataUriPrefix = "data:";
 
     /// <summary>
@@ -26,7 +25,6 @@ public static class ScryingValidator
     /// </summary>
     public static bool RequestContainsImages(PingRequest request)
     {
-
         if (request.ScryingFoci is { Count: > 0 })
         {
             return true;
@@ -54,7 +52,6 @@ public static class ScryingValidator
         }
 
         return false;
-
     }
 
     /// <summary>
@@ -71,7 +68,6 @@ public static class ScryingValidator
     /// </summary>
     public static Result ValidateRequestImages(PingRequest request, ScryingSettings scrying)
     {
-
         if (!RequestContainsImages(request))
         {
             return Result.Success();
@@ -96,7 +92,6 @@ public static class ScryingValidator
         {
             foreach (ScryingFocusDto focus in foci)
             {
-
                 imageCount++;
 
                 if (imageCount > maxImages)
@@ -117,21 +112,22 @@ public static class ScryingValidator
                 {
                     return sizeResult;
                 }
-
             }
         }
 
         if (request.StatelessMessages is { Count: > 0 } messages)
         {
-            foreach (CoreChatMessage message in messages)
+            for (int messageIndex = 0; messageIndex < messages.Count; messageIndex++)
             {
-                if (message.ContentParts is not { Count: > 0 } parts)
+                if (messages[messageIndex].ContentParts is not { Count: > 0 } parts)
                 {
                     continue;
                 }
 
-                foreach (CoreContentPart part in parts)
+                for (int partIndex = 0; partIndex < parts.Count; partIndex++)
                 {
+                    CoreContentPart part = parts[partIndex];
+
                     if (!string.Equals(part.Kind, "image_url", StringComparison.OrdinalIgnoreCase))
                     {
                         continue;
@@ -146,13 +142,26 @@ public static class ScryingValidator
 
                     string? url = part.ImageUrl;
 
-                    if (string.IsNullOrWhiteSpace(url)
-                        || !url.StartsWith(DataUriPrefix, StringComparison.OrdinalIgnoreCase)
-                        || !TryParseDataUri(url, out string mime, out string base64Payload))
+                    if (string.IsNullOrWhiteSpace(url))
                     {
-                        // http(s) URL (or a malformed data: URI, left to the provider/mapper to
-                        // reject) — not size/MIME-checked here; see ValidateRequestImages summary.
-                        continue;
+                        return InvalidImageUrl(messageIndex, partIndex);
+                    }
+
+                    if (!url.StartsWith(DataUriPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)
+                            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+                            && !string.IsNullOrEmpty(uri.Host))
+                        {
+                            continue;
+                        }
+
+                        return InvalidImageUrl(messageIndex, partIndex);
+                    }
+
+                    if (!TryParseDataUri(url, out string mime, out string base64Payload))
+                    {
+                        return InvalidImageUrl(messageIndex, partIndex);
                     }
 
                     Result mimeResult = ValidateMimeType(mime, allowedMimeTypes);
@@ -168,14 +177,18 @@ public static class ScryingValidator
                     {
                         return sizeResult;
                     }
-
                 }
             }
         }
 
         return Result.Success();
-
     }
+
+    private static Result InvalidImageUrl(int messageIndex, int partIndex) =>
+        Result.Failure(new Error(
+            ErrorCodes.Scrying.InvalidImageData,
+            $"messages[{messageIndex}].content[{partIndex}].image_url.url must be an absolute HTTP(S) URL "
+            + "or a data:<mime>;base64,<payload> URI."));
 
     private static Result TooManyImagesError(int maxImages) =>
         Result.Failure(new Error(
@@ -184,7 +197,6 @@ public static class ScryingValidator
 
     private static Result ValidateMimeType(string? mimeType, string[] allowedMimeTypes)
     {
-
         if (string.IsNullOrWhiteSpace(mimeType))
         {
             return Result.Failure(new Error(
@@ -203,12 +215,10 @@ public static class ScryingValidator
         return Result.Failure(new Error(
             ErrorCodes.Scrying.UnsupportedMimeType,
             $"Image type '{mimeType}' is not supported. Allowed types: {string.Join(", ", allowedMimeTypes)}."));
-
     }
 
     private static Result ValidateBase64Size(string? base64Data, long maxBytes)
     {
-
         long decodedBytes = EstimateDecodedBase64Bytes(base64Data);
 
         if (decodedBytes > maxBytes)
@@ -233,7 +243,6 @@ public static class ScryingValidator
         }
 
         return Result.Success();
-
     }
 
     /// <summary>
@@ -242,7 +251,6 @@ public static class ScryingValidator
     /// </summary>
     private static long EstimateDecodedBase64Bytes(string? base64)
     {
-
         if (string.IsNullOrEmpty(base64))
         {
             return 0L;
@@ -255,19 +263,17 @@ public static class ScryingValidator
                 : 0;
 
         return ((long)base64.Length * 3 / 4) - padding;
-
     }
 
     /// <summary>
     /// Parses a <c>data:&lt;mime&gt;;base64,&lt;payload&gt;</c> URI. Returns <c>false</c> for any
-    /// other shape (missing <c>base64,</c> marker or encoding token) — callers skip size/MIME
-    /// validation for those rather than fail the request, leaving them to the provider/mapper. An
+    /// other shape (missing <c>base64,</c> marker or encoding token), which callers reject before
+    /// provider dispatch. An
     /// empty mime still parses, so <c>data:;base64,…</c> reaches the allow-list and is rejected
     /// there rather than slipping past validation.
     /// </summary>
     private static bool TryParseDataUri(string dataUri, out string mimeType, out string base64Payload)
     {
-
         mimeType = string.Empty;
 
         base64Payload = string.Empty;
@@ -299,7 +305,5 @@ public static class ScryingValidator
         mimeType = mimeSpan.ToString();
 
         return true;
-
     }
-
 }

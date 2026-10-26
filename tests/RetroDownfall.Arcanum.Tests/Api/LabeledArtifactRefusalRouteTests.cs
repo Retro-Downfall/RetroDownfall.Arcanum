@@ -216,6 +216,49 @@ public sealed class LabeledArtifactRefusalRouteTests
         Assert.Equal(1, await CountAsync(factory, "saga_memories", "Id", memoryId));
     }
 
+    [SkippableTheory]
+    [InlineData("", false)]
+    [InlineData("%20", false)]
+    [InlineData("%09", false)]
+    [InlineData("private-scope-canary%0A", false)]
+    [InlineData("all", true)]
+    [InlineData(null, true)]
+    public async Task Explicit_empty_embedding_scope_refuses_without_erasing_while_omission_keeps_all_contract(
+        string? scope,
+        bool valid)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = Host(static _ => { });
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid memoryId = await InsertSagaAsync(factory);
+
+        string query = scope is null ? "" : "&scope=" + scope;
+
+        using HttpResponseMessage response = await client.PostAsync("/api/embeddings/reset?confirm=true" + query, null);
+
+        ApiResponse<EmbeddingsResetResult> body = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseEmbeddingsResetResult);
+
+        Assert.Equal(valid ? HttpStatusCode.OK : HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Equal(valid, body.IsSuccess);
+
+        if (!valid)
+        {
+            Assert.Equal(ErrorCodes.Validation.InvalidBody, body.Error?.Code);
+
+            Assert.Contains("Allowed:", body.Error?.Message, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("private-scope-canary", body.Error?.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(valid ? 0 : 1, await CountAsync(factory, "saga_memories", "Id", memoryId));
+    }
+
     /// <summary>
     /// A host with memory management and the Saga on, and the supplied registrations in front of the
     /// composition's own.
