@@ -34,7 +34,7 @@ internal sealed class CovenantFeatureConfigurationPublisher : IHostedService, ID
 
     private readonly IOptionsMonitor<ArcanumSettings> _options;
 
-    private readonly ILogger<CovenantFeatureConfigurationPublisher>? _logger;
+    private readonly ILogger<CovenantFeatureConfigurationPublisher> _logger;
 
     private readonly Lock _gate = new();
 
@@ -45,11 +45,13 @@ internal sealed class CovenantFeatureConfigurationPublisher : IHostedService, ID
     public CovenantFeatureConfigurationPublisher(
         CovenantAvailability availability,
         IOptionsMonitor<ArcanumSettings> options,
-        ILogger<CovenantFeatureConfigurationPublisher>? logger = null)
+        ILogger<CovenantFeatureConfigurationPublisher> logger)
     {
         ArgumentNullException.ThrowIfNull(availability);
 
         ArgumentNullException.ThrowIfNull(options);
+
+        ArgumentNullException.ThrowIfNull(logger);
 
         _availability = availability;
 
@@ -134,7 +136,7 @@ internal sealed class CovenantFeatureConfigurationPublisher : IHostedService, ID
 
             if (changed)
             {
-                _logger?.LogInformation("Covenant feature enabled: {FeatureEnabled}.", enabled);
+                _logger.LogInformation("Covenant feature enabled: {FeatureEnabled}.", enabled);
             }
         }
     }
