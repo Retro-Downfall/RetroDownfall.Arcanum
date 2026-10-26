@@ -28,16 +28,20 @@ public readonly record struct Error(
     [JsonIgnore]
     public GrimoireConnectionFailureDetails? ConnectionFailure { get; init; }
 
+    /// <summary>Safe startup-owner refusal facts; never part of the error wire shape.</summary>
+    [JsonIgnore]
+    public CovenantStartupFailureDetails? CovenantStartupFailure { get; init; }
+
     public static readonly Error None = new(string.Empty, string.Empty);
 
     /// <summary>
     /// Whether this error has exactly the field values of <see cref="None"/>: empty code, empty
-    /// message, no details, context overflow or connection failure. It is the same answer as <c>this == None</c>, read from the
-    /// fields so a caller never runs the generated record comparison, which would compare
+    /// message, no details, context overflow, connection failure or startup failure. It is the same
+    /// answer as <c>this == None</c>, read from the fields so a caller never runs the generated record comparison, which would compare
     /// <see cref="Details"/> through its interface.
     /// </summary>
     [JsonIgnore]
-    public bool IsNone => Code is { Length: 0 } && Message is { Length: 0 } && Details is null && ContextOverflow is null && ConnectionFailure is null;
+    public bool IsNone => Code is { Length: 0 } && Message is { Length: 0 } && Details is null && ContextOverflow is null && ConnectionFailure is null && CovenantStartupFailure is null;
 }
 
 /// <summary>Only configured public identities and numeric context-window accounting, never prompt or response text.</summary>
@@ -127,5 +131,43 @@ public readonly record struct GrimoireConnectionFailureDetails(
         return Kind == GrimoireConnectionFailureKind.Sqlite
             ? FormattableString.Invariant($"Grimoire {stage} failed: {kind} (SQLite {SqliteErrorCode}, extended {SqliteExtendedErrorCode}).")
             : $"Grimoire {stage} failed: {kind}.";
+    }
+}
+
+/// <summary>Closed reasons why startup cannot safely adopt a durable Covenant erasure owner.</summary>
+public enum CovenantStartupFailureReason
+{
+    MalformedRow,
+    PolicyMismatch,
+    UnsupportedVersion,
+    UnreadableCheckpoint,
+    WrongOperation,
+    SecondOwner,
+    GateRefused,
+    StorageFault,
+}
+
+/// <summary>Only a validated identity, closed classifications and numeric SQLite codes; no stored content.</summary>
+public readonly record struct CovenantStartupFailureDetails(
+    CovenantStartupFailureReason Reason,
+    Guid? OperationId = null,
+    GrimoireConnectionFailureKind? FailureKind = null,
+    int? SqliteErrorCode = null,
+    int? SqliteExtendedErrorCode = null)
+{
+    public string ToPublicMessage()
+    {
+        string identity = OperationId is { } id ? $" OperationId={id:N}." : string.Empty;
+
+        string failure = FailureKind is { } kind ? $" Failure={kind}." : string.Empty;
+
+        string sqlite = SqliteErrorCode is { } code
+            ? FormattableString.Invariant($" SQLite={code}, extended={SqliteExtendedErrorCode}.")
+            : string.Empty;
+
+        return $"Durable Covenant erasure startup refused. Reason={Reason}.{identity}{failure}{sqlite} "
+            + "Keep the installation intact. Run 'arcanum doctor --only operations --only grimoire --json' "
+            + "for supplemental offline diagnostics; it does not repair ownership. "
+            + "See Command Reference: Covenant startup recovery refusal.";
     }
 }

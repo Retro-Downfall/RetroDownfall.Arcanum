@@ -127,6 +127,101 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
     }
 
     [Fact]
+    public async Task Startup_owner_refusal_preserves_safe_reason_and_logs_one_warning_before_readiness()
+    {
+        _secretStore.SetApiKey("test-api-key");
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
+            _secretStore, _passphraseSource, _scopeFactory, _dbPath, _tempDir, CancellationToken.None);
+
+        Guid operationId = Guid.NewGuid();
+
+        await using (SqliteConnection connection = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = _dbPath,
+            Password = _passphraseSource.Passphrase,
+            Pooling = false,
+        }.ToString()))
+        {
+            await connection.OpenAsync();
+
+            await using SqliteCommand command = connection.CreateCommand();
+
+            command.CommandText = """
+                INSERT INTO "LongRunningOperations"
+                    ("Id", "Kind", "State", "RecoveryPolicy", "CreatedAt", "PublicSummary", "CheckpointVersion", "CheckpointPayload")
+                VALUES (@id, @kind, @state, @policy, @created, 'private-summary-canary', 99, X'736563726574');
+                """;
+
+            command.Parameters.AddWithValue("@id", operationId.ToString("N"));
+
+            command.Parameters.AddWithValue("@kind", LongRunningOperationKinds.DataRetentionMutation);
+
+            command.Parameters.AddWithValue("@state", (int)LongRunningOperationState.Running);
+
+            command.Parameters.AddWithValue("@policy", (int)LongRunningOperationRecoveryPolicy.ReconcileAndComplete);
+
+            command.Parameters.AddWithValue("@created", "2026-10-26T00:00:00.0000000+00:00");
+
+            await command.ExecuteNonQueryAsync();
+        }
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        IServiceScopeFactory scopes = CreateScopeFactory(_credentialStore, startupGate: gate);
+
+        using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(ArcanumMaintenanceLock.TryAcquire(_tempDir));
+
+        StartupOwnerWarningSink sink = new();
+
+        Serilog.ILogger previous = Serilog.Log.Logger;
+
+        using Serilog.Core.Logger logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+
+        Serilog.Log.Logger = logger;
+
+        try
+        {
+            GrimoireDatabaseUnavailableException error = await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+                GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+                    _secretStore, new GrimoireDbPassphraseSource(), scopes, _dbPath, _tempDir, held, null, CancellationToken.None));
+
+            Assert.Contains("Reason=UnsupportedVersion", error.Message, StringComparison.Ordinal);
+
+            Assert.Contains(operationId.ToString("N"), error.Message, StringComparison.Ordinal);
+
+            Assert.Contains("arcanum doctor", error.Message, StringComparison.Ordinal);
+
+            Assert.Null(error.InnerException);
+
+            Serilog.Events.LogEvent warning = Assert.Single(sink.Events, item =>
+                item.Level == Serilog.Events.LogEventLevel.Warning
+                && item.RenderMessage().Contains("UnsupportedVersion", StringComparison.Ordinal));
+
+            Assert.Null(warning.Exception);
+
+            Assert.Contains(operationId.ToString("N"), warning.RenderMessage(), StringComparison.Ordinal);
+
+            Assert.DoesNotContain("private-summary-canary", string.Join("\n", sink.Events.Select(item => item.RenderMessage())), StringComparison.Ordinal);
+
+            using IServiceScope scope = scopes.CreateScope();
+
+            Assert.False(scope.ServiceProvider.GetRequiredService<IGrimoireDbReadiness>().IsReady);
+        }
+        finally
+        {
+            Serilog.Log.Logger = previous;
+        }
+    }
+
+    private sealed class StartupOwnerWarningSink : Serilog.Core.ILogEventSink
+    {
+        internal System.Collections.Concurrent.ConcurrentBag<Serilog.Events.LogEvent> Events { get; } = [];
+
+        public void Emit(Serilog.Events.LogEvent logEvent) => Events.Add(logEvent);
+    }
+
+    [Fact]
     public async Task EnsureInitializedAsync_missing_api_key_throws_MissingMasterApiKeyException()
     {
         // No API key set on the secret store -> GetApiKeyAsync returns null/whitespace,
@@ -3785,9 +3880,15 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         bool escapeHatchOptIn = false,
         HostProcessToolsMarkerReadStatus? markerReadStatusOverride = null,
         IMemoryErasureKeyProvider? erasureKeys = null,
-        IGrimoireDbReadiness? readiness = null)
+        IGrimoireDbReadiness? readiness = null,
+        CovenantOperationGate? startupGate = null)
     {
         ServiceCollection services = new();
+
+        if (startupGate is not null)
+        {
+            services.AddSingleton(startupGate);
+        }
 
         services.AddSingleton<GrimoireDbReadiness>();
 

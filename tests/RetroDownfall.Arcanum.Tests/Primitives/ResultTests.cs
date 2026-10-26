@@ -9,6 +9,26 @@ namespace RetroDownfall.Arcanum.Tests.Primitives;
 public sealed class ResultTests
 {
     [Fact]
+    public void StartupFailureMetadata_is_value_compared_and_absent_from_source_generated_wire_shape()
+    {
+        CovenantStartupFailureDetails detail = new(CovenantStartupFailureReason.MalformedRow, Guid.NewGuid());
+
+        Error error = Error.None with { CovenantStartupFailure = detail };
+
+        Assert.False(error.IsNone);
+
+        Assert.NotEqual(Error.None, error);
+
+        Assert.Equal(error, Error.None with { CovenantStartupFailure = detail });
+
+        Assert.NotEqual(error, error with { CovenantStartupFailure = detail with { Reason = CovenantStartupFailureReason.SecondOwner } });
+
+        string json = JsonSerializer.Serialize(error, ArcanumJsonContext.Default.Error);
+
+        Assert.Equal(JsonSerializer.Serialize(Error.None, ArcanumJsonContext.Default.Error), json);
+    }
+
+    [Fact]
     public void ConnectionFailureMetadata_is_value_compared_ignored_and_closed()
     {
         GrimoireConnectionFailureDetails detail = new(GrimoireConnectionFailureStage.Open, GrimoireConnectionFailureKind.Sqlite, 14, 526);
