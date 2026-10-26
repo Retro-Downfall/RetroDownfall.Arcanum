@@ -33,7 +33,7 @@ internal static class MemoryDelegationEndpoints
 
         var opened = await MemoryDelegationRequestScope.OpenAsync(http, read.Body!, http.RequestAborted).ConfigureAwait(false);
 
-        if (opened.IsFailure) return Failure(opened.Error);
+        if (opened.IsFailure) return Failure(opened.Error, opened.Diagnostic);
 
         var scope = opened.Value;
 
@@ -59,11 +59,17 @@ internal static class MemoryDelegationEndpoints
         }
     }
 
-    internal static IResult Failure(Error error) => new MemoryDelegationJsonResult(null, Result<PromptResponseDto>.Failure(error));
+    internal static IResult Failure(Error error) => Failure(error, null);
+
+    internal static IResult Failure(Error error, MemoryDelegationCallerDiagnostic? diagnostic) =>
+        new MemoryDelegationJsonResult(null, Result<PromptResponseDto>.Failure(error), diagnostic);
 }
 
-internal sealed class MemoryDelegationJsonResult(MemoryDelegationRequestScope? scope, Result<PromptResponseDto> payload) : IResult
+internal sealed class MemoryDelegationJsonResult(MemoryDelegationRequestScope? scope, Result<PromptResponseDto> payload, MemoryDelegationCallerDiagnostic? callerDiagnostic) : IResult
 {
+    internal MemoryDelegationJsonResult(MemoryDelegationRequestScope? scope, Result<PromptResponseDto> payload)
+        : this(scope, payload, null) { }
+
     private int _executed;
 
     public async Task ExecuteAsync(HttpContext http)
@@ -76,7 +82,9 @@ internal sealed class MemoryDelegationJsonResult(MemoryDelegationRequestScope? s
         {
             CovenantProtectedResponseHeaders.Apply(http.Response);
 
-            Result valid = scope is null ? Result.Success() : await scope.RevalidateAsync(http.RequestAborted).ConfigureAwait(false);
+            Result valid = scope is null
+                ? callerDiagnostic?.Origin.Revalidate(http) ?? Result.Success()
+                : await scope.RevalidateAsync(http.RequestAborted).ConfigureAwait(false);
 
             if (valid.IsSuccess && scope?.Root.IsConsumed == true)
             {
@@ -91,9 +99,17 @@ internal sealed class MemoryDelegationJsonResult(MemoryDelegationRequestScope? s
 
             Result<PromptResponseDto> effective = valid.IsFailure ? valid.Error : payload;
 
-            if (effective.IsFailure) effective = new Error(effective.Error.Code, "The memory delegation request could not be completed.");
+            string? callerMessage = effective.IsFailure && valid.IsSuccess
+                ? callerDiagnostic?.PublicMessage(effective.Error.Code) : null;
 
-            http.Response.StatusCode = effective.IsSuccess ? StatusCodes.Status200OK : ArcanumErrorMapper.ResolveStatusCode(effective.Error.Code);
+            if (effective.IsFailure)
+            {
+                effective = new Error(effective.Error.Code, callerMessage ?? MemoryDelegationCallerDiagnostic.ProtectedMessage);
+            }
+
+            http.Response.StatusCode = effective.IsSuccess ? StatusCodes.Status200OK
+                : callerMessage is not null && callerDiagnostic!.IsLocalRequestBoundFailure ? StatusCodes.Status400BadRequest
+                : ArcanumErrorMapper.ResolveStatusCode(effective.Error.Code);
 
             http.Response.ContentType = "application/json; charset=utf-8";
 
