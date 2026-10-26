@@ -473,8 +473,7 @@ internal sealed class TapestryWeaver(
                 return new LeafLayer([], 0, 0);
             }
 
-            if (embedded.Value.Length != needsEmbedding.Count
-                || embedded.Value.Any(value => !MatchesEmbeddingIdentity(value, bounds)))
+            if (embedded.Value.Any(value => !MatchesEmbeddingIdentity(value, bounds)))
             {
                 return new LeafLayer([], 0, needsEmbedding.Count);
             }
