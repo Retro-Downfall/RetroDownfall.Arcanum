@@ -8777,8 +8777,12 @@ public sealed partial class WizardIntelligenceProvider(
             return Result.Success();
         }
 
+        string? auditModel = ProviderResolver.TryResolveProviderForModel(settings.Value, request.Model, out _, out string resolvedModel)
+            ? resolvedModel
+            : request.Model;
+
         Result<GuardrailsResult> outcome = await guardrailsPipeline
-            .FilterInputAsync(messages, cancellationToken, new GuardrailAuditContext(null, request.Model))
+            .FilterInputAsync(messages, cancellationToken, new GuardrailAuditContext(request.SessionId?.ToString(), auditModel))
             .ConfigureAwait(false);
 
         return outcome.IsSuccess ? Result.Success() : Result.Failure(outcome.Error);

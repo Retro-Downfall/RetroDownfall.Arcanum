@@ -316,6 +316,112 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.Equal(validResponse, result.Value.Text);
     }
 
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, false)]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    [InlineData(true, true, true)]
+    public async Task Guardrails_InputAudit_CarriesRequestedSessionAndPreflightModel(bool stream, bool hasSession, bool useDefault)
+    {
+        ScriptingChatClient chat = new();
+
+        FakeGuardrailAuditLogger audit = new();
+
+        ArcanumSettings settings = ConfigureGuardrails(DefaultSettings(), enabled: true, detectPii: true);
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, guardrailsPipeline: CreateGuardrailsPipeline(settings, audit));
+
+        Guid? sessionId = hasSession ? Guid.NewGuid() : null;
+
+        PingRequest request = BaseRequest() with
+        {
+            SessionId = sessionId,
+            Model = useDefault ? null : ModelName,
+            Prompt = hasSession ? "Email alice@example.com" : string.Empty,
+            StatelessMessages = hasSession ? null : [new("user", "Email alice@example.com")],
+            SkipSpellRouting = true,
+            DisableMcpTools = true,
+        };
+
+        if (stream)
+        {
+            List<IntelligenceEvent> frames = [];
+
+            await foreach (IntelligenceEvent frame in wizard.StreamPromptAsync(request, InvocationContexts.AttendedSession(), CancellationToken.None))
+            {
+                frames.Add(frame);
+            }
+
+            Assert.Contains(frames, frame => frame.Type == IntelligenceEventType.Error && frame.Data == ErrorCodes.Guardrails.PiiDetected);
+        }
+        else
+        {
+            Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(request, InvocationContexts.AttendedSession(), CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.Guardrails.PiiDetected, result.Error.Code);
+        }
+
+        GuardrailAuditRecord record = Assert.Single(audit.Records);
+
+        Assert.Equal("Input", record.Stage);
+
+        Assert.Equal(sessionId?.ToString(), record.SessionId);
+
+        Assert.Equal(ModelName, record.Model);
+
+        Assert.DoesNotContain("alice", record.MatchedTextRedacted ?? string.Empty, StringComparison.Ordinal);
+
+        Assert.Equal(0, chat.BufferedCallCount);
+
+        Assert.Equal(0, chat.StreamingCallCount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Guardrails_InputAudit_UnresolvedModelPreservesGuardrailPrecedence(bool stream)
+    {
+        ScriptingChatClient chat = new();
+
+        FakeGuardrailAuditLogger audit = new();
+
+        ArcanumSettings settings = ConfigureGuardrails(DefaultSettings() with { Providers = [] }, enabled: true, detectPii: true);
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, guardrailsPipeline: CreateGuardrailsPipeline(settings, audit));
+
+        PingRequest request = BaseRequest() with { Prompt = "Email alice@example.com", Model = "unconfigured-model", SkipSpellRouting = true, DisableMcpTools = true };
+
+        if (stream)
+        {
+            List<IntelligenceEvent> frames = [];
+
+            await foreach (IntelligenceEvent frame in wizard.StreamPromptAsync(request, InvocationContexts.AttendedSession(), CancellationToken.None))
+            {
+                frames.Add(frame);
+            }
+
+            Assert.Contains(frames, frame => frame.Type == IntelligenceEventType.Error && frame.Data == ErrorCodes.Guardrails.PiiDetected);
+        }
+        else
+        {
+            Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(request, InvocationContexts.AttendedSession(), CancellationToken.None);
+
+            Assert.Equal(ErrorCodes.Guardrails.PiiDetected, result.Error.Code);
+        }
+
+        Assert.Equal("unconfigured-model", Assert.Single(audit.Records).Model);
+
+        Assert.Equal(0, chat.BufferedCallCount);
+
+        Assert.Equal(0, chat.StreamingCallCount);
+    }
+
     [Fact]
     public async Task Guardrails_PiiInInput_BlocksBeforeInference()
     {
