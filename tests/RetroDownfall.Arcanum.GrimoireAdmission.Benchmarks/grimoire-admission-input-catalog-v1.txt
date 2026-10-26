@@ -602,6 +602,9 @@ R	src/RetroDownfall.Arcanum.Core/Weave/SemanticContextChunk.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/SessionAttachmentRetrievalContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/ITapestryStore.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/ITapestrySummarizer.cs
+R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorAlgorithmManifest.cs
+R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorNeighborGraphBuilder.cs
+R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorNumericContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/SphericalKMeans.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/TapestryContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/TapestryDeterministicRandom.cs
@@ -877,6 +880,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionSweepHostedService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/EfSaveChangesRetry.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/ExactUsdText.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Fts5QueryValidation.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/FtsMatchQuerySanitizer.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAcquisitionRouteAttribute.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionContracts.cs
