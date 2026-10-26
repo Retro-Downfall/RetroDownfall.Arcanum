@@ -280,6 +280,101 @@ public sealed class TapestryBuildPlannerTests
         AssertCoverage(nodes, result.Value);
     }
 
+    [Fact]
+    public void FullSizeOversizedCluster_PreservesFittingOverlappingSemanticSibling()
+    {
+        var nodes = Nodes(12).Select((node, index) => node with { Embedding = new float[] { 1, index + 1, -index } }).ToArray();
+
+        var clusterer = new Splitter((points, call) => FullWithSibling(points.Count, [0, 4, 8]));
+
+        var result = new TapestryBuildPlanner(4).Plan(Scope, nodes, 1, clusterer, new Summary(4), default);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(TapestryPlanDisposition.Ready, result.Value.Disposition);
+
+        Assert.Null(result.Value.TerminalReason);
+
+        Assert.Equal(new[]
+        {
+            "p000,p001,p002,p003",
+            "p000,p004,p008",
+            "p004,p005,p006,p007",
+            "p008,p009,p010,p011",
+        }, result.Value.Summaries.Select(c => string.Join(",", c.Children.Select(child => child.StableId))).Order(StringComparer.Ordinal));
+
+        var semantic = Assert.Single(result.Value.Summaries, c => c.Children.Select(child => child.StableId).SequenceEqual(new[] { "p000", "p004", "p008" }));
+
+        Assert.Equal(TapestryPlanReason.None, semantic.Reason);
+
+        Assert.All(semantic.Children, child =>
+        {
+            var path = Assert.Single(child.Paths);
+
+            Assert.Equal("semantic", path.ClusterId);
+
+            Assert.Equal(.4, path.Membership.GlobalPosterior);
+
+            Assert.Equal(1, path.Membership.LocalPosterior);
+        });
+
+        Assert.Equal(1, clusterer.Calls);
+
+        AssertCoverage(nodes, result.Value);
+    }
+
+    [Fact]
+    public void FullSizeOversizedCluster_ReclustersProperOversizedSemanticSibling()
+    {
+        var nodes = Nodes(24).Select((node, index) => node with { Embedding = new float[] { 1, index + 1, -index } }).ToArray();
+
+        var clusterer = new Splitter((points, call) =>
+        {
+            if (call == 1) return FullWithSibling(points.Count, [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]);
+
+            Assert.Equal(new[] { "p000", "p002", "p004", "p006", "p008", "p010", "p012", "p014", "p016", "p018", "p020", "p022" }, points.Select(point => point.StableId));
+
+            return Groups(points, [[0, 3, 6, 9], [1, 4, 7, 10], [2, 5, 8, 11]]);
+        });
+
+        var result = new TapestryBuildPlanner(4).Plan(Scope, nodes, 1, clusterer, new Summary(4), default);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(2, clusterer.Calls);
+
+        Assert.Equal(TapestryPlanDisposition.Ready, result.Value.Disposition);
+
+        Assert.Null(result.Value.TerminalReason);
+
+        Assert.Equal(new[]
+        {
+            "p000,p001,p002,p003",
+            "p000,p006,p012,p018",
+            "p002,p008,p014,p020",
+            "p004,p005,p006,p007",
+            "p004,p010,p016,p022",
+            "p008,p009,p010,p011",
+            "p012,p013,p014,p015",
+            "p016,p017,p018,p019",
+            "p020,p021,p022,p023",
+        }, result.Value.Summaries.Select(c => string.Join(",", c.Children.Select(child => child.StableId))).Order(StringComparer.Ordinal));
+
+        Assert.Equal(2, result.Value.Evidence.Length);
+
+        Assert.Equal(3, result.Value.Summaries.Count(c => c.Reason == TapestryPlanReason.None));
+
+        Assert.All(result.Value.Evidence[0].Result.Clusters.Single(c => c.StableId == "semantic").Members, member => Assert.Equal(.4, member.GlobalPosterior));
+
+        AssertCoverage(nodes, result.Value);
+    }
+
+    private static RaptorClusterResult FullWithSibling(int count, int[] sibling) => new(
+    [
+        new("full", Enumerable.Range(0, count).Select(i => new RaptorMembership(i, 0, 0, sibling.Contains(i) ? .6 : 1, 1, RaptorRepairReason.None)).ToImmutableArray()),
+        new("semantic", sibling.Select(i => new RaptorMembership(i, 1, 0, .4, 1, RaptorRepairReason.None)).ToImmutableArray()),
+    ], []);
+
     private static void AssertCoverage(TapestryWorkingNode[] nodes, TapestryLayerPlan plan) => Assert.Equal(nodes.Select(n => n.StableId).Order(), plan.Summaries.SelectMany(c => c.Children).Select(c => c.StableId).Concat(plan.Carries.Select(c => c.StableId)).Distinct().Order());
 
     private static TapestryWorkingNode[] Nodes(int count) => Enumerable.Range(0, count).Select(i => new TapestryWorkingNode($"p{i:D3}", "text", new float[] { 1, 2, 3 })).ToArray();

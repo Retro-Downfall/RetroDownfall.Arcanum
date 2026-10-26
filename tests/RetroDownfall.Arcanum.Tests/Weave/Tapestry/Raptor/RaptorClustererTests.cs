@@ -13,7 +13,7 @@ public sealed class RaptorClustererTests
     [Fact]
     public void LocalReduction_UsesOriginalEmbeddingSubset()
     {
-        var points = Points(24);
+        var points = Points(24).Select((point, index) => point with { Vector = new float[] { 1, index + 1, -index } }).Reverse().ToArray();
 
         int localCalls = 0;
 
@@ -25,7 +25,11 @@ public sealed class RaptorClustererTests
 
             if (identity.Stage == RaptorStage.LocalUmap)
             {
+                string[] expectedIds = Enumerable.Range(localCalls * 12, 12).Select(index => $"p{index:D3}").ToArray();
+
                 localCalls++;
+
+                Assert.Equal(expectedIds, input.Select(point => point.StableId));
 
                 Assert.Equal(12, input.Count);
 

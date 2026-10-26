@@ -243,7 +243,8 @@ public sealed class TapestryBuildPlanner(int maximumChildren = 24)
 
                 Partition(full, reason | TapestryPlanReason.NonContractingPartition);
 
-                return;
+                // Only this nonshrinking candidate needs partitioning; retain every proper semantic sibling.
+                next.Remove(identity.MemberDigest);
             }
 
             foreach (var child in next.OrderByDescending(p => p.Key, StringComparer.Ordinal)) pending.Push(child.Value);
