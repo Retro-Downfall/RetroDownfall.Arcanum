@@ -228,7 +228,9 @@ public sealed partial class GrimoireSchemaTransitionCoordinatorTests
             return Create(file, connection, chains, installed, logger, timeProvider);
         }
 
-        internal static async Task<CoordinatorHarness> StartCovenantDdlAsync(ILogger<GrimoireSchemaTransitionCoordinator> logger)
+        internal static async Task<CoordinatorHarness> StartCovenantDdlAsync(
+            ILogger<GrimoireSchemaTransitionCoordinator> logger,
+            ILogger<GrimoireSchemaInstaller>? installerLogger = null)
         {
             EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
@@ -271,7 +273,7 @@ public sealed partial class GrimoireSchemaTransitionCoordinatorTests
                 await GrimoireSchemaInstaller.ReadRecordedTierAsync(connection, chains.ForTier(run.TransactionTier), CancellationToken.None),
                 anyOwnedObjectPresent: true, durable).Action);
 
-            return Create(file, connection, chains, installed, logger);
+            return Create(file, connection, chains, installed, logger, installerLogger: installerLogger);
         }
 
         private static CoordinatorHarness Create(
@@ -280,7 +282,8 @@ public sealed partial class GrimoireSchemaTransitionCoordinatorTests
             GrimoireSchemaVersionChainSet chains,
             GrimoireSchemaInstallResult installed,
             ILogger<GrimoireSchemaTransitionCoordinator>? logger,
-            TimeProvider? timeProvider = null)
+            TimeProvider? timeProvider = null,
+            ILogger<GrimoireSchemaInstaller>? installerLogger = null)
         {
             ServiceCollection collection = new();
 
@@ -296,7 +299,7 @@ public sealed partial class GrimoireSchemaTransitionCoordinatorTests
 
             _ = availability.PublishSchema(installed, CovenantHealthTransition.Bootstrap);
 
-            GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create(chains);
+            GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create(chains, installerLogger);
 
             GrimoireSchemaTransitionCoordinator coordinator = new(
                 new FixedCoreConnectionSource(connection),

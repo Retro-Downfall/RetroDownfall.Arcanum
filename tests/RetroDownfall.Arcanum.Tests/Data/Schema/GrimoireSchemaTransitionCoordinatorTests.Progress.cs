@@ -1,6 +1,8 @@
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
@@ -55,6 +57,84 @@ public sealed partial class GrimoireSchemaTransitionCoordinatorTests
         Assert.Null(warning.Exception);
 
         await harness.ExecuteAsync("ALTER TABLE covenant_entries DROP COLUMN private_catalog_drift;");
+
+        var recovered = await harness.Coordinator.RunOnceAsync(CancellationToken.None);
+
+        Assert.True(recovered.Value.Advanced);
+
+        Assert.False(recovered.Value.Deferred);
+
+        Assert.Null(await harness.ReadJournalAsync(GrimoireSchemaTransactionTier.CovenantCanonical));
+
+        Assert.Equal(6, await harness.RecordedVersionAsync(GrimoireSchemaTransactionTier.CovenantCanonical));
+    }
+
+    [Fact]
+    public async Task Optional_DDL_failure_keeps_both_installer_and_coordinator_diagnostics_content_free()
+    {
+        const string canary = "private-optional-DDL-canary";
+
+        TestCapturingLogger<GrimoireSchemaInstaller> installerLog = new();
+
+        TestCapturingLogger<GrimoireSchemaTransitionCoordinator> coordinatorLog = new();
+
+        await using CoordinatorHarness harness = await CoordinatorHarness.StartCovenantDdlAsync(coordinatorLog, installerLog);
+
+        GrimoireSchemaTransitionJournalRow before = (await harness.ReadJournalAsync(GrimoireSchemaTransactionTier.CovenantCanonical))!;
+
+        await harness.ExecuteAsync("""
+            INSERT INTO covenant_key_epochs (NormalizedKey, KeyEpoch, UpdatedAtUtc)
+            VALUES ('private-key', 1, '2026-10-26T00:00:00.0000000Z');
+            CREATE TEMP TRIGGER fail_optional_ddl BEFORE UPDATE ON main.covenant_key_epochs
+            BEGIN SELECT RAISE(ABORT, 'private-optional-DDL-canary'); END;
+            """);
+
+        SqliteException failure = await Assert.ThrowsAsync<SqliteException>(
+            () => harness.ExecuteAsync("UPDATE covenant_key_epochs SET KeyEpoch = KeyEpoch;"));
+
+        Assert.Contains(canary, failure.Message, StringComparison.Ordinal);
+
+        var outcome = await harness.Coordinator.RunOnceAsync(CancellationToken.None);
+
+        Assert.True(outcome.IsSuccess);
+
+        Assert.True(outcome.Value.Deferred);
+
+        Assert.False(outcome.Value.Advanced);
+
+        Assert.Equal(0, outcome.Value.BatchesRun);
+
+        Assert.Equal(0, outcome.Value.RowsProcessed);
+
+        Assert.Equal(before, await harness.ReadJournalAsync(GrimoireSchemaTransactionTier.CovenantCanonical));
+
+        Assert.Equal(4, await harness.RecordedVersionAsync(GrimoireSchemaTransactionTier.CovenantCanonical));
+
+        Assert.Equal(ErrorCodes.Grimoire.Schema.FinalizationFailed,
+            await harness.ReadErrorCodeAsync(GrimoireSchemaTransactionTier.CovenantCanonical));
+
+        Assert.NotEqual(CovenantCapabilityState.Healthy, harness.Availability.Current.Canonical);
+
+        TestLogEntry installerWarning = Assert.Single(installerLog.Entries, entry => entry.Level == LogLevel.Warning);
+
+        Assert.Contains("CovenantCanonical", installerWarning.Message, StringComparison.Ordinal);
+
+        Assert.Contains(ErrorCodes.Grimoire.Schema.SqliteFailure, installerWarning.Message, StringComparison.Ordinal);
+
+        _ = Assert.Single(coordinatorLog.Entries, entry => entry.Level == LogLevel.Warning);
+
+        Assert.All(installerLog.Entries.Concat(coordinatorLog.Entries), entry =>
+        {
+            Assert.Null(entry.Exception);
+
+            Assert.DoesNotContain(canary, entry.Message, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("covenant_key_epochs", entry.Message, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("fail_optional_ddl", entry.Message, StringComparison.Ordinal);
+        });
+
+        await harness.ExecuteAsync("DROP TRIGGER temp.fail_optional_ddl;");
 
         var recovered = await harness.Coordinator.RunOnceAsync(CancellationToken.None);
 

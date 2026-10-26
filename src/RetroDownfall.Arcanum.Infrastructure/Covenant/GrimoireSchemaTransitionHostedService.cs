@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 
@@ -58,7 +59,7 @@ internal sealed class GrimoireSchemaTransitionHostedService(
             catch (Exception ex)
             {
                 logger.LogError("A Grimoire schema transition pass failed before it could report a result ({Code}); retrying.",
-                    GrimoireSchemaTransitionCoordinator.FailureCode(ex));
+                    GrimoireSchemaFailureCode.FromException(ex));
             }
 
             try

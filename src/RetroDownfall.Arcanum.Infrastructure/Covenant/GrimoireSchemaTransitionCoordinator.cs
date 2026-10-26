@@ -176,7 +176,7 @@ internal sealed class GrimoireSchemaTransitionCoordinator(
                     committedRows[run.TransactionTier] = committed;
                 }
 
-                failureCode = FailureCode(exception);
+                failureCode = GrimoireSchemaFailureCode.FromException(exception);
             }
 
             if (failureCode is not null)
@@ -251,20 +251,6 @@ internal sealed class GrimoireSchemaTransitionCoordinator(
         && string.Equals(name, run.BackfillName, StringComparison.Ordinal)
             ? name : "unrecognized";
 
-    internal static string FailureCode(Exception exception) => exception switch
-    {
-        SqliteException { SqliteErrorCode: 5 or 6 } => ErrorCodes.Grimoire.Schema.Busy,
-        SqliteException { SqliteErrorCode: 13 } => ErrorCodes.Grimoire.Schema.DiskFull,
-        SqliteException { SqliteErrorCode: 10 or 14 } => ErrorCodes.Grimoire.Schema.StorageUnavailable,
-        SqliteException { SqliteErrorCode: 11 or 26 } => ErrorCodes.Grimoire.Schema.CorruptDatabase,
-        SqliteException => ErrorCodes.Grimoire.Schema.SqliteFailure,
-        UnauthorizedAccessException => ErrorCodes.Grimoire.Schema.AccessDenied,
-        IOException => ErrorCodes.Grimoire.Schema.StorageUnavailable,
-        GrimoireSchemaRefusedException => ErrorCodes.Grimoire.Schema.TransitionUnresumable,
-        InvalidOperationException => ErrorCodes.Grimoire.Schema.InvariantViolation,
-        _ => ErrorCodes.Grimoire.Schema.TransitionPassFailed,
-    };
-
     /// <summary>
     /// Re-enters the installer so the next step's DDL runs without a restart, and republishes what the
     /// tiers now are.
@@ -301,7 +287,7 @@ internal sealed class GrimoireSchemaTransitionCoordinator(
                 throw;
             }
 
-            await RecordFailureAsync(connection, failed, FailureCode(exception), cancellationToken).ConfigureAwait(false);
+            await RecordFailureAsync(connection, failed, GrimoireSchemaFailureCode.FromException(exception), cancellationToken).ConfigureAwait(false);
 
             return true;
         }
