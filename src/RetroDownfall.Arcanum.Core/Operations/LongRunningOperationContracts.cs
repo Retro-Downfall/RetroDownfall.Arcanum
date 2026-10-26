@@ -329,7 +329,8 @@ public sealed record LongRunningOperationReconciliationSummary(
     int Failed,
     int Abandoned,
     int RequiresAttention,
-    int Skipped);
+    int Skipped,
+    long? OwnerRecoveryRequired = null);
 
 public sealed record LongRunningOperationRecoveryResult(
     LongRunningOperationState State,
@@ -535,4 +536,12 @@ public interface ILongRunningOperationRecoveryHandler
     Task<LongRunningOperationRecoveryResult> RecoverAsync(
         LongRunningOperation operation,
         CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Read-only interrupted owner-bound recovery diagnostics. This count grants no execution authority.
+/// </summary>
+public interface ILongRunningOperationOwnerRecoveryDiagnostics
+{
+    Task<long> CountOwnerRecoveryRequiredAsync(DateTimeOffset utcNow, CancellationToken cancellationToken = default);
 }

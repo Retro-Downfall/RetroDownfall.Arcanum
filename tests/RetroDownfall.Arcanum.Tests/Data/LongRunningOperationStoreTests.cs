@@ -1999,6 +1999,57 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal("recovery-owner", claimed.Operation.LeaseOwner);
     }
 
+    [SkippableTheory]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, 4)]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, 2)]
+    public async Task Owner_recovery_count_matches_interrupted_rows_without_mutating_them(string kind, int version)
+    {
+        RequireSqlCipher();
+        LongRunningOperationStore store = Store(_db!);
+        DateTimeOffset now = new(2026, 10, 25, 12, 0, 0, TimeSpan.Zero);
+        (LongRunningOperationState State, string? Code, bool LiveLease, bool FirstAttempt, int Version, bool Counted)[] cases =
+        [
+            (LongRunningOperationState.ReconciliationRequired, ErrorCodes.Covenant.MaintenanceFailed, false, false, version, true),
+            (LongRunningOperationState.ReconciliationRequired, ErrorCodes.Data.ReconciliationFailed, false, false, version, true),
+            (LongRunningOperationState.ReconciliationRequired, "unknown.blocker", false, false, version, false),
+            (LongRunningOperationState.Running, null, false, false, version, true),
+            (LongRunningOperationState.Waiting, null, false, false, version, true),
+            (LongRunningOperationState.Cancelling, null, false, false, version, true),
+            (LongRunningOperationState.Pending, null, false, false, version, true),
+            (LongRunningOperationState.Pending, null, false, true, version, false),
+            (LongRunningOperationState.Running, null, true, false, version, false),
+            (LongRunningOperationState.Completed, null, false, false, version, false),
+            (LongRunningOperationState.Failed, ErrorCodes.Covenant.MaintenanceFailed, false, false, version, false),
+            (LongRunningOperationState.Abandoned, null, false, false, version, false),
+            (LongRunningOperationState.Running, null, false, false, 99, false),
+            (LongRunningOperationState.Running, null, false, false, 0, false),
+        ];
+        long expected = 0;
+        foreach (var item in cases)
+        {
+            LongRunningOperation row = await store.CreateAsync(new LongRunningOperationCreateRequest(
+                kind, kind == LongRunningOperationKinds.DataRetentionMutation
+                    ? LongRunningOperationRecoveryPolicy.ReconcileAndComplete
+                    : LongRunningOperationRecoveryPolicy.RestartIdempotently, "Owner recovery count.", now.AddHours(-1)));
+            Assert.True((await store.TryAcquireLeaseAsync(
+                row.Id, "test-owner", now.AddHours(-1), item.LiveLease ? now.AddHours(1) : now)).Acquired);
+            if (item.Version > 0)
+            {
+                Assert.True(await store.SaveCheckpointAsync(
+                    row.Id, "test-owner", 0, item.Version, [1, 2], "private-checkpoint", row.PublicSummary, now.AddMinutes(-1)));
+            }
+
+            // Seed all durable interruption shapes, including a queued first attempt that cannot have a checkpoint through the live API.
+            await ExecuteAsync($"UPDATE LongRunningOperations SET State = {(int)item.State}, AttemptCount = {(item.FirstAttempt ? 0 : 1)}, TerminalErrorCode = {(item.Code is null ? "NULL" : "'" + item.Code + "'")} WHERE Id = '{row.Id:N}';");
+            LongRunningOperation before = (await store.GetAsync(row.Id))!;
+            expected += item.Counted ? 1 : 0;
+            Assert.Equal(expected, await store.CountOwnerRecoveryRequiredAsync(now));
+            LongRunningOperation after = (await store.GetAsync(row.Id))!;
+            Assert.Equal(before with { CheckpointPayload = null }, after with { CheckpointPayload = null });
+            Assert.Equal(before.CheckpointPayload, after.CheckpointPayload);
+        }
+    }
+
     [SkippableFact]
     public async Task Generic_recovery_excludes_owner_bound_rows_before_applying_the_page_limit()
     {

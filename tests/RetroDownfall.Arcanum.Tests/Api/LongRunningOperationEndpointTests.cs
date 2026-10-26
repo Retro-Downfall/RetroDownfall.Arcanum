@@ -107,11 +107,20 @@ public sealed class LongRunningOperationEndpointTests
     }
 
     [SkippableTheory]
-    [InlineData(LongRunningOperationKinds.DataRetentionMutation, CovenantOfflineTransitionLaunchV4.CurrentVersion)]
-    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, DataRetentionFactoryTransitionLaunchV2.CurrentVersion)]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, CovenantOfflineTransitionLaunchV4.CurrentVersion, LongRunningOperationState.ReconciliationRequired)]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, DataRetentionFactoryTransitionLaunchV2.CurrentVersion, LongRunningOperationState.ReconciliationRequired)]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, 4, LongRunningOperationState.Running)]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, 4, LongRunningOperationState.Completed)]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, 4, LongRunningOperationState.Failed)]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, 4, LongRunningOperationState.Abandoned)]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, 2, LongRunningOperationState.Running)]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, 2, LongRunningOperationState.Completed)]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, 2, LongRunningOperationState.Failed)]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, 2, LongRunningOperationState.Abandoned)]
     public async Task Current_owner_bound_offline_transition_cancel_returns_conflict_without_mutating_row(
         string kind,
-        int checkpointVersion)
+        int checkpointVersion,
+        LongRunningOperationState state)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -146,13 +155,16 @@ public sealed class LongRunningOperationEndpointTests
             now.AddSeconds(1)));
         LongRunningOperation checkpointed = Assert.IsType<LongRunningOperation>(
             await store.GetAsync(created.Id));
-        Assert.True(await store.TryTransitionAsync(
-            created.Id,
-            checkpointed.Revision,
-            "offline-transition-owner",
-            LongRunningOperationState.ReconciliationRequired,
-            now.AddSeconds(2),
-            ErrorCodes.Covenant.MaintenanceFailed));
+        if (state != LongRunningOperationState.Running)
+        {
+            Assert.True(await store.TryTransitionAsync(
+                created.Id,
+                checkpointed.Revision,
+                "offline-transition-owner",
+                state,
+                now.AddSeconds(2),
+                ErrorCodes.Covenant.MaintenanceFailed));
+        }
         LongRunningOperation before = Assert.IsType<LongRunningOperation>(
             await store.GetAsync(created.Id));
 
@@ -167,20 +179,35 @@ public sealed class LongRunningOperationEndpointTests
         Assert.NotNull(envelope);
         Assert.False(envelope.IsSuccess);
         Assert.Equal(ErrorCodes.Operation.StateConflict, envelope.Error?.Code);
-        Assert.Equal(
-            "The operation cannot be cancelled in its current state.",
-            envelope.Error?.Message);
+        if (state is LongRunningOperationState.Completed or LongRunningOperationState.Failed or LongRunningOperationState.Abandoned)
+        {
+            Assert.Contains("terminal", envelope.Error?.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("restart the host", envelope.Error?.Message, StringComparison.Ordinal);
+        }
+        else
+        {
+            AssertOwnerBoundGuidance(envelope.Error?.Message);
+        }
         LongRunningOperation after = Assert.IsType<LongRunningOperation>(
             await store.GetAsync(created.Id));
         AssertStoredOperationEqual(before, after);
     }
 
     [SkippableTheory]
-    [InlineData(LongRunningOperationKinds.DataRetentionMutation, CovenantOfflineTransitionLaunchV4.CurrentVersion)]
-    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, DataRetentionFactoryTransitionLaunchV2.CurrentVersion)]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, CovenantOfflineTransitionLaunchV4.CurrentVersion, LongRunningOperationState.ReconciliationRequired)]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, DataRetentionFactoryTransitionLaunchV2.CurrentVersion, LongRunningOperationState.ReconciliationRequired)]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, 4, LongRunningOperationState.Running)]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, 4, LongRunningOperationState.Completed)]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, 4, LongRunningOperationState.Failed)]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, 4, LongRunningOperationState.Abandoned)]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, 2, LongRunningOperationState.Running)]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, 2, LongRunningOperationState.Completed)]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, 2, LongRunningOperationState.Failed)]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, 2, LongRunningOperationState.Abandoned)]
     public async Task Current_owner_bound_offline_transition_retry_returns_conflict_without_mutating_row(
         string kind,
-        int checkpointVersion)
+        int checkpointVersion,
+        LongRunningOperationState state)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -215,13 +242,16 @@ public sealed class LongRunningOperationEndpointTests
             now.AddSeconds(1)));
         LongRunningOperation checkpointed = Assert.IsType<LongRunningOperation>(
             await store.GetAsync(created.Id));
-        Assert.True(await store.TryTransitionAsync(
-            created.Id,
-            checkpointed.Revision,
-            "offline-transition-owner",
-            LongRunningOperationState.ReconciliationRequired,
-            now.AddSeconds(2),
-            ErrorCodes.Covenant.MaintenanceFailed));
+        if (state != LongRunningOperationState.Running)
+        {
+            Assert.True(await store.TryTransitionAsync(
+                created.Id,
+                checkpointed.Revision,
+                "offline-transition-owner",
+                state,
+                now.AddSeconds(2),
+                ErrorCodes.Covenant.MaintenanceFailed));
+        }
         LongRunningOperation before = Assert.IsType<LongRunningOperation>(
             await store.GetAsync(created.Id));
 
@@ -236,9 +266,15 @@ public sealed class LongRunningOperationEndpointTests
         Assert.NotNull(envelope);
         Assert.False(envelope.IsSuccess);
         Assert.Equal(ErrorCodes.Operation.StateConflict, envelope.Error?.Code);
-        Assert.Equal(
-            "Only Failed, Abandoned, or ReconciliationRequired operations can be retried.",
-            envelope.Error?.Message);
+        if (state is LongRunningOperationState.Completed or LongRunningOperationState.Failed or LongRunningOperationState.Abandoned)
+        {
+            Assert.Contains("terminal", envelope.Error?.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("restart the host", envelope.Error?.Message, StringComparison.Ordinal);
+        }
+        else
+        {
+            AssertOwnerBoundGuidance(envelope.Error?.Message);
+        }
         LongRunningOperation after = Assert.IsType<LongRunningOperation>(
             await store.GetAsync(created.Id));
         AssertStoredOperationEqual(before, after);
@@ -316,6 +352,77 @@ public sealed class LongRunningOperationEndpointTests
     }
 
     [SkippableFact]
+    public async Task Reconcile_reports_owner_recovery_separately_without_replaying_or_mutating_rows()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        HttpClient client = _factory.CreateAuthenticatedClient();
+        await using AsyncServiceScope scope = _factory.Services.CreateAsyncScope();
+        ILongRunningOperationStore store = scope.ServiceProvider.GetRequiredService<ILongRunningOperationStore>();
+        Assert.Same(store, scope.ServiceProvider.GetRequiredService<ILongRunningOperationOwnerRecoveryDiagnostics>());
+        long baseline = await ReadOwnerRecoveryCountAsync(client);
+        DateTimeOffset now = DateTimeOffset.UtcNow.AddHours(-1);
+        List<LongRunningOperation> retained = [];
+
+        foreach ((string kind, int version) in new[]
+        {
+            (LongRunningOperationKinds.DataRetentionMutation, 4),
+            (LongRunningOperationKinds.DataRetentionFactoryReset, 2),
+        })
+        {
+            LongRunningOperation created = await store.CreateAsync(new LongRunningOperationCreateRequest(
+                kind, kind == LongRunningOperationKinds.DataRetentionMutation
+                    ? LongRunningOperationRecoveryPolicy.ReconcileAndComplete
+                    : LongRunningOperationRecoveryPolicy.RestartIdempotently, "Owner recovery test.", now));
+            Assert.True((await store.TryAcquireLeaseAsync(created.Id, "offline-owner", now, now.AddMinutes(1))).Acquired);
+            Assert.True(await store.SaveCheckpointAsync(
+                created.Id, "offline-owner", 0, version, [1, 2], "private-checkpoint", created.PublicSummary, now));
+            LongRunningOperation checkpointed = (await store.GetAsync(created.Id))!;
+            Assert.True(await store.TryTransitionAsync(
+                created.Id, checkpointed.Revision, "offline-owner", LongRunningOperationState.ReconciliationRequired,
+                now, ErrorCodes.Covenant.MaintenanceFailed));
+            retained.Add((await store.GetAsync(created.Id))!);
+        }
+
+        Assert.Equal(baseline + 2, await ReadOwnerRecoveryCountAsync(client));
+        foreach (LongRunningOperation before in retained)
+        {
+            AssertStoredOperationEqual(before, (await store.GetAsync(before.Id))!);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Reconcile_does_not_report_zero_when_owner_recovery_diagnostics_fail()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services => services.AddScoped<ILongRunningOperationOwnerRecoveryDiagnostics, UnavailableOwnerRecoveryDiagnostics>(),
+        };
+        using HttpClient client = factory.CreateAuthenticatedClient();
+        using HttpResponseMessage response = await client.PostAsync("/api/operations/reconcile", content: null);
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.DoesNotContain("\"ownerRecoveryRequired\":0", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    private sealed class UnavailableOwnerRecoveryDiagnostics : ILongRunningOperationOwnerRecoveryDiagnostics
+    {
+        public Task<long> CountOwnerRecoveryRequiredAsync(DateTimeOffset utcNow, CancellationToken cancellationToken = default) =>
+            throw new IOException("Diagnostic count unavailable.");
+    }
+
+    private static async Task<long> ReadOwnerRecoveryCountAsync(HttpClient client)
+    {
+        using HttpResponseMessage response = await client.PostAsync("/api/operations/reconcile", content: null);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        string json = await response.Content.ReadAsStringAsync();
+        using JsonDocument document = JsonDocument.Parse(json);
+        Assert.True(document.RootElement.GetProperty("data").TryGetProperty("ownerRecoveryRequired", out JsonElement count),
+            "Manual reconciliation must report excluded owner-bound recovery separately from skipped operations.");
+        Assert.DoesNotContain("private-checkpoint", json, StringComparison.Ordinal);
+        return count.GetInt64();
+    }
+
+    [SkippableFact]
     public async Task OperationsRequireApiKey()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -324,6 +431,18 @@ public sealed class LongRunningOperationEndpointTests
         HttpResponseMessage response = await client.GetAsync("/api/operations");
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    private static void AssertOwnerBoundGuidance(string? message)
+    {
+        Assert.NotNull(message);
+        Assert.Contains("authenticated offline transition", message, StringComparison.Ordinal);
+        Assert.Contains("Resolve the recorded blocker", message, StringComparison.Ordinal);
+        Assert.Contains("restart the host", message, StringComparison.Ordinal);
+        Assert.Contains("same operation", message, StringComparison.Ordinal);
+        Assert.Contains("arcanum operation show <id>", message, StringComparison.Ordinal);
+        Assert.Contains("Do not start a second reset", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Only Failed, Abandoned", message, StringComparison.Ordinal);
     }
 
     private static void AssertStoredOperationEqual(

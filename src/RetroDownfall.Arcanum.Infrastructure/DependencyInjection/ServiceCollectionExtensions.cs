@@ -1416,6 +1416,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ILongRunningOperationGenericRecoveryDiscovery>(
             static sp => sp.GetRequiredService<LongRunningOperationStore>());
 
+        services.AddScoped<ILongRunningOperationOwnerRecoveryDiagnostics>(
+            static sp => sp.GetRequiredService<LongRunningOperationStore>());
+
         services.AddScoped<ILongRunningOperationClassifiedRecoveryLeaseAcquisition>(
             static sp => sp.GetRequiredService<LongRunningOperationStore>());
 

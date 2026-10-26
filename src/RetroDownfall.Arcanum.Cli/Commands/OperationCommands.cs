@@ -110,6 +110,16 @@ public sealed class OperationCommands(
             $"Examined {summary.Examined}; claimed {summary.Claimed}; completed {summary.Completed}; "
             + $"failed {summary.Failed}; abandoned {summary.Abandoned}; "
             + $"attention {summary.RequiresAttention}; skipped {summary.Skipped}.")));
+        if (summary.OwnerRecoveryRequired is { } ownerRecoveryRequired)
+        {
+            AnsiConsole.MarkupLine(themePalette.TextMarkup($"owner recovery required {ownerRecoveryRequired}."));
+        }
+
+        if (summary.OwnerRecoveryRequired > 0)
+        {
+            AnsiConsole.MarkupLine(themePalette.TextMarkup(Markup.Escape(LongRunningOperationRecoveryRegistry.OwnerRecoveryGuidance)));
+        }
+
         return summary.RequiresAttention > 0 ? 2 : 0;
     }
 
