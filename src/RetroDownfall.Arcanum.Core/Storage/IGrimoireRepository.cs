@@ -130,11 +130,39 @@ public interface IGrimoireRepository
         Guid entryId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Low-level pin bit primitive; cap-governed host routes must use the atomic operation below.</summary>
     Task<bool> SetEntryPinnedAsync(
         Guid sessionId,
         Guid entryId,
         bool pinned,
         CancellationToken cancellationToken = default);
+
+    /// <summary>Atomically applies the pin policy and mutation, returning missing/cap refusals without effects.</summary>
+    Task<Result<bool>> SetEntryPinnedWithinLimitAsync(
+        Guid sessionId,
+        Guid entryId,
+        bool pinned,
+        int maxPinnedEntries,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(Result<bool>.Failure(new Error(
+            ErrorCodes.Session.PinUnavailable,
+            "Atomic entry pin admission is unavailable. Use a host that supports the Session pin policy.")));
+    }
+
+    /// <summary>Reads the newest assistant-answer model without exposing its content.</summary>
+    Task<Result<SessionCompactionModelSnapshot?>> ReadSessionCompactionModelAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(Result<SessionCompactionModelSnapshot?>.Failure(new Error(
+            ErrorCodes.Session.CompactionUnavailable,
+            "Saved assistant model metadata is unavailable. Restore a compatible host before compacting. No entries were removed.")));
+    }
 
     Task<int> GetPinnedEntryCountAsync(
         Guid sessionId,

@@ -1823,42 +1823,14 @@ internal static class SessionEndpoints
                             traceId));
                 }
 
-                GrimoireEntryDto? entry = await grimoire
-                    .GetEntryByIdAsync(id, entryId, ctx.RequestAborted)
-                    .ConfigureAwait(false);
+                int maxPinned = ArcanumSettingClamps.SessionMaxPinnedEntries(sessionSettings.MaxPinnedEntries);
+                Result<bool> result = await grimoire.SetEntryPinnedWithinLimitAsync(
+                    id, entryId, true, maxPinned, ctx.RequestAborted).ConfigureAwait(false);
 
-                if (entry is null)
-                {
-                    return Results.Json(
-                        ApiResponse<bool>.FromResult(
-                            Result<bool>.Failure(new Error(ErrorCodes.Session.EntryNotFound, "Entry was not found in this session.")),
-                            traceId),
-                        ArcanumJsonContext.Default.ApiResponseBoolean,
-                        statusCode: StatusCodes.Status404NotFound);
-                }
-
-                if (!entry.IsPinned)
-                {
-                    int maxPinned = ArcanumSettingClamps.SessionMaxPinnedEntries(sessionSettings.MaxPinnedEntries);
-
-                    int currentPinned = await grimoire.GetPinnedEntryCountAsync(id, ctx.RequestAborted).ConfigureAwait(false);
-
-                    if (currentPinned >= maxPinned)
-                    {
-                        return Results.Json(
-                            ApiResponse<bool>.FromResult(
-                                Result<bool>.Failure(
-                                    new Error(ErrorCodes.Session.TooManyPinned, $"Cannot pin more than {maxPinned} entries in this session.")),
-                                traceId),
-                            ArcanumJsonContext.Default.ApiResponseBoolean,
-                            statusCode: StatusCodes.Status409Conflict);
-                    }
-                }
-
-                await grimoire.SetEntryPinnedAsync(id, entryId, true, ctx.RequestAborted).ConfigureAwait(false);
-
-                return Results.Ok(
-                    ApiResponse<bool>.FromResult(Result<bool>.Success(true), traceId));
+                return Results.Json(
+                    ApiResponse<bool>.FromResult(result, traceId),
+                    ArcanumJsonContext.Default.ApiResponseBoolean,
+                    statusCode: result.IsSuccess ? StatusCodes.Status200OK : ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
             })
         .WithName("PinSessionEntry");
 
@@ -1889,22 +1861,14 @@ internal static class SessionEndpoints
                         statusCode: StatusCodes.Status404NotFound);
                 }
 
-                ArcanumSettings settings = options.CurrentValue;
-
-                int contextWindowLimit = 8192; // Matches ContextCompressionService.DefaultContextWindowLimit.
-
-                if (ProviderResolver.TryResolveProviderForModel(settings, settings.DefaultModel, out ProviderSettings? provider, out _)
-                    && provider is not null)
-                {
-                    contextWindowLimit = provider.ContextWindowLimit;
-                }
-
-                CompactResult result = await compression
-                    .CompressSessionAsync(id, contextWindowLimit, ctx.RequestAborted)
+                Result<CompactResult> result = await compression
+                    .CompactSessionAsync(id, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
-                return Results.Ok(
-                    ApiResponse<CompactResult>.FromResult(Result<CompactResult>.Success(result), traceId));
+                return Results.Json(
+                    ApiResponse<CompactResult>.FromResult(result, traceId),
+                    ArcanumJsonContext.Default.ApiResponseCompactResult,
+                    statusCode: result.IsSuccess ? StatusCodes.Status200OK : ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
             })
         .RequireConditionalSensitivityRetentionPurge()
         .WithName("CompactSession");
@@ -1926,24 +1890,14 @@ internal static class SessionEndpoints
                             traceId));
                 }
 
-                GrimoireEntryDto? entry = await grimoire
-                    .GetEntryByIdAsync(id, entryId, ctx.RequestAborted)
-                    .ConfigureAwait(false);
+                int maxPinned = ArcanumSettingClamps.SessionMaxPinnedEntries(sessionSettings.MaxPinnedEntries);
+                Result<bool> result = await grimoire.SetEntryPinnedWithinLimitAsync(
+                    id, entryId, false, maxPinned, ctx.RequestAborted).ConfigureAwait(false);
 
-                if (entry is null)
-                {
-                    return Results.Json(
-                        ApiResponse<bool>.FromResult(
-                            Result<bool>.Failure(new Error(ErrorCodes.Session.EntryNotFound, "Entry was not found in this session.")),
-                            traceId),
-                        ArcanumJsonContext.Default.ApiResponseBoolean,
-                        statusCode: StatusCodes.Status404NotFound);
-                }
-
-                await grimoire.SetEntryPinnedAsync(id, entryId, false, ctx.RequestAborted).ConfigureAwait(false);
-
-                return Results.Ok(
-                    ApiResponse<bool>.FromResult(Result<bool>.Success(true), traceId));
+                return Results.Json(
+                    ApiResponse<bool>.FromResult(result, traceId),
+                    ArcanumJsonContext.Default.ApiResponseBoolean,
+                    statusCode: result.IsSuccess ? StatusCodes.Status200OK : ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
             })
         .WithName("UnpinSessionEntry");
 

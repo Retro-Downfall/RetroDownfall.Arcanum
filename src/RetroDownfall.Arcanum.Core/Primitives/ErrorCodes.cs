@@ -312,6 +312,12 @@ public static class ErrorCodes
         /// <summary>Pinning an entry would exceed the code-owned per-session limit.</summary>
         public const string TooManyPinned = "Session.TooManyPinned";
 
+        /// <summary>The repository cannot apply the public pin policy atomically.</summary>
+        public const string PinUnavailable = "Session.PinUnavailable";
+
+        /// <summary>The recorded assistant context cannot identify a safe manual compaction target.</summary>
+        public const string CompactionUnavailable = "Session.CompactionUnavailable";
+
         /// <summary>The context pin named by <c>DELETE /api/sessions/{id}/context-pins/{pinId}</c> does not exist in that Session.</summary>
         public const string PinNotFound = "Session.PinNotFound";
 

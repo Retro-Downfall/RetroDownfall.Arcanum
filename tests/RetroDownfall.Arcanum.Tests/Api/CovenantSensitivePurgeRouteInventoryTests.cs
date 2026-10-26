@@ -209,6 +209,7 @@ public sealed class CovenantSensitivePurgeRouteInventoryTests
             "MemoryEndpoints.cs:HandleLexiconDeleteAsync:DeleteByNameAsync",
             "MemoryEndpoints.cs:HandleLexiconDeleteAsync:FindAllLifecycleIdentityForDeletionAsync",
             "MemoryEndpoints.cs:HandleLexiconShowAsync:ShowEffectiveAsync",
+            "MemoryEndpoints.cs:HandleSearchAsync:SearchInspectionPageAsync",
             "MemoryEndpoints.cs:RespondToLexiconCountsAsync:CountInspectionAsync",
             "MemoryEndpoints.cs:RespondToLexiconInspectionAsync:ListInspectionAsync",
             "MemoryEndpoints.cs:RespondToLexiconInspectionAsync:SearchInspectionAsync",
