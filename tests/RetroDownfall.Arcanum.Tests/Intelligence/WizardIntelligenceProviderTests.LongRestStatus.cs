@@ -1,4 +1,6 @@
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Infrastructure.Resilience;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
@@ -36,7 +38,8 @@ public sealed partial class WizardIntelligenceProviderTests
         WizardIntelligenceProvider wizard = CreateWizard(chat, f.Options.CurrentValue,
             new FakeGrimoireRepository { Session = new Session { Id = h.Request.SessionId!.Value } }, db: f.H.Saga.Context,
             ordinaryConnections: FixtureOrdinaryConnectionFactory.For(f.H.Saga.Context), campaignRollups: h.Preparer,
-            claimedBeginStore: h.Begin, claims: h.Claims, turnCommitter: h.Repository);
+            claimedBeginStore: h.Begin, claims: h.Claims, turnCommitter: h.Repository,
+            healthTracker: new ProviderHealthTracker(NullLogger<ProviderHealthTracker>.Instance));
 
         ArcanumInvocationContext invocation = ArcanumInvocationContext.Create(f.Invocation.Surface, f.Scope,
             f.Invocation.Attendance, f.Invocation.ContextPolicy, ToolPolicy.NoTools, f.Invocation.ReadAuthorityEpoch).Value;
@@ -88,7 +91,8 @@ public sealed partial class WizardIntelligenceProviderTests
         WizardIntelligenceProvider wizard = CreateWizard(chat, f.Options.CurrentValue,
             new FakeGrimoireRepository { Session = new Session { Id = h.Request.SessionId!.Value } }, db: f.H.Saga.Context,
             ordinaryConnections: FixtureOrdinaryConnectionFactory.For(f.H.Saga.Context), campaignRollups: h.Preparer,
-            claimedBeginStore: h.Begin, claims: h.Claims, turnCommitter: h.Repository);
+            claimedBeginStore: h.Begin, claims: h.Claims, turnCommitter: h.Repository,
+            healthTracker: new ProviderHealthTracker(NullLogger<ProviderHealthTracker>.Instance));
 
         ArcanumInvocationContext invocation = ArcanumInvocationContext.Create(f.Invocation.Surface, f.Scope,
             f.Invocation.Attendance, f.Invocation.ContextPolicy, ToolPolicy.NoTools, f.Invocation.ReadAuthorityEpoch).Value;
@@ -144,7 +148,8 @@ public sealed partial class WizardIntelligenceProviderTests
         WizardIntelligenceProvider wizard = CreateWizard(chat, f.Options.CurrentValue,
             new FakeGrimoireRepository { Session = new Session { Id = h.Request.SessionId!.Value } }, db: f.H.Saga.Context,
             ordinaryConnections: FixtureOrdinaryConnectionFactory.For(f.H.Saga.Context), campaignRollups: h.Preparer,
-            claimedBeginStore: h.Begin, claims: h.Claims, turnCommitter: h.Repository);
+            claimedBeginStore: h.Begin, claims: h.Claims, turnCommitter: h.Repository,
+            healthTracker: new ProviderHealthTracker(NullLogger<ProviderHealthTracker>.Instance));
 
         ArcanumInvocationContext invocation = ArcanumInvocationContext.Create(f.Invocation.Surface, f.Scope,
             f.Invocation.Attendance, f.Invocation.ContextPolicy, ToolPolicy.NoTools, f.Invocation.ReadAuthorityEpoch).Value;

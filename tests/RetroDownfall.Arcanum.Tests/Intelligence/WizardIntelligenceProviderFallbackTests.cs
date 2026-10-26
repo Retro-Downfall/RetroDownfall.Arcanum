@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -624,6 +625,169 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token && e.Data == "B");
 
         Assert.DoesNotContain(events, static e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Single(events, static e => e.Type == IntelligenceEventType.Status);
+
+        IntelligenceEvent binding = Assert.Single(events, static e => e.Type == IntelligenceEventType.SessionBound);
+
+        Assert.Equal(binding.Data, Assert.Single(events, static e => e.Type == IntelligenceEventType.ConversationBound).Data);
+
+        // Candidate identity makes these distinct accounting updates, even when the text and
+        // estimates agree. The failed candidate's pre-call context already reached the caller.
+        Assert.Equal(
+            [providerA.Name, providerB.Name],
+            events.Where(static e => e.Type == IntelligenceEventType.Context)
+                .Select(static e => e.ContextBreakdown!.Provider));
+
+        Assert.Equal(1, chatA.DisposeCount);
+
+        Assert.Equal(1, chatB.DisposeCount);
+    }
+
+    [Fact]
+    public async Task StreamPromptAsync_reports_progress_and_bindings_while_the_provider_has_not_produced_a_token()
+    {
+        ProviderSettings provider = MakeProvider("provider");
+
+        ScriptingChatClient chat = new();
+
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        chat.EnqueueHeldStream(entered, release);
+
+        RecordingChatClientFactory factory = new();
+
+        factory.CandidateResolvers[provider.Name] = () => MakeLease(chat, provider);
+
+        WizardIntelligenceProvider wizard = CreateWizard(factory, CreateTracker(healthFailureThreshold: 1), provider);
+
+        ConcurrentQueue<IntelligenceEvent> events = new();
+
+        TaskCompletionSource progressVisible = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using CancellationTokenSource cancellation = new(TimeSpan.FromSeconds(30));
+
+        Task consumer = Task.Run(async () =>
+        {
+            await foreach (IntelligenceEvent frame in wizard.StreamPromptAsync(BaseRequest(), InvocationContexts.AttendedSession(), cancellation.Token))
+            {
+                events.Enqueue(frame);
+
+                if (frame.Type == IntelligenceEventType.Context)
+                {
+                    progressVisible.TrySetResult();
+                }
+            }
+        });
+
+        try
+        {
+            await Task.WhenAll(entered.Task, progressVisible.Task).WaitAsync(cancellation.Token);
+
+            IntelligenceEvent[] beforeToken = events.ToArray();
+
+            Assert.Contains(beforeToken, frame => frame.Type == IntelligenceEventType.Status);
+
+            Assert.Contains(beforeToken, frame => frame.Type == IntelligenceEventType.SessionBound);
+
+            Assert.Contains(beforeToken, frame => frame.Type == IntelligenceEventType.ConversationBound);
+
+            Assert.Contains(beforeToken, frame => frame.Type == IntelligenceEventType.Context);
+
+            Assert.DoesNotContain(beforeToken, frame => frame.Type == IntelligenceEventType.Token);
+        }
+        finally
+        {
+            release.TrySetResult();
+
+            await consumer.WaitAsync(cancellation.Token);
+        }
+
+        Assert.Contains(events, frame => frame.Type == IntelligenceEventType.Token && frame.Data == "released");
+    }
+
+    [Theory]
+    [InlineData(IntelligenceEventType.Status, false)]
+    [InlineData(IntelligenceEventType.Status, true)]
+    [InlineData(IntelligenceEventType.SessionBound, false)]
+    [InlineData(IntelligenceEventType.SessionBound, true)]
+    [InlineData(IntelligenceEventType.ConversationBound, false)]
+    [InlineData(IntelligenceEventType.ConversationBound, true)]
+    [InlineData(IntelligenceEventType.Context, false)]
+    [InlineData(IntelligenceEventType.Context, true)]
+    public async Task StreamPromptAsync_stopping_at_each_informational_frame_cancels_the_read_and_disposes_the_lease(
+        IntelligenceEventType stopAt,
+        bool cancelCaller)
+    {
+        ProviderSettings provider = MakeProvider("provider");
+
+        ScriptingChatClient chat = new();
+
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource unwound = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        chat.EnqueueHeldStream(entered, release, unwound);
+
+        RecordingChatClientFactory factory = new();
+
+        factory.CandidateResolvers[provider.Name] = () => MakeLease(chat, provider);
+
+        FakeGrimoireRepository grimoire = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            factory, CreateTracker(healthFailureThreshold: 1), withHealthTracker: true, grimoire, provider);
+
+        using CancellationTokenSource cancellation = new(TimeSpan.FromSeconds(30));
+
+        await using (IAsyncEnumerator<IntelligenceEvent> enumerator = wizard.StreamPromptAsync(
+            BaseRequest(), InvocationContexts.AttendedSession(), cancellation.Token).GetAsyncEnumerator())
+        {
+            bool found = false;
+
+            while (await enumerator.MoveNextAsync())
+            {
+                Assert.NotEqual(IntelligenceEventType.Token, enumerator.Current.Type);
+
+                if (enumerator.Current.Type == stopAt)
+                {
+                    found = true;
+
+                    break;
+                }
+            }
+
+            Assert.True(found);
+
+            // TurnEngine may run ahead through its bounded channel. Hold the provider read so
+            // abandoning any informational frame must cancel and join that producer.
+            await entered.Task.WaitAsync(cancellation.Token);
+
+            Assert.False(unwound.Task.IsCompleted);
+
+            if (cancelCaller)
+            {
+                await cancellation.CancelAsync();
+            }
+        }
+
+        Assert.True(unwound.Task.IsCompletedSuccessfully);
+
+        Assert.False(release.Task.IsCompleted);
+
+        Assert.Equal(1, chat.StreamingCallCount);
+
+        Assert.Equal(1, chat.DisposeCount);
+
+        Assert.Single(grimoire.BeginCalls);
+
+        Assert.Single(grimoire.DiscardedAssistantEntryIds);
+
+        Assert.Empty(grimoire.FinalizedContents);
     }
 
     [Fact]
@@ -1898,6 +2062,12 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         public void EnqueueStreamTokens(params string[] tokens) =>
             _streaming.Enqueue(_ => StreamTokens(tokens));
 
+        public void EnqueueHeldStream(
+            TaskCompletionSource entered,
+            TaskCompletionSource release,
+            TaskCompletionSource? unwound = null) =>
+            _streaming.Enqueue(token => HoldBeforeFirstUpdate(entered, release, unwound, token));
+
         public void EnqueueStreamUpdates(params ChatResponseUpdate[] updates) =>
             _streaming.Enqueue(_ => StreamUpdates(updates));
 
@@ -1949,6 +2119,26 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             }
 
             return _streaming.Dequeue()(cancellationToken);
+        }
+
+        private static async IAsyncEnumerable<ChatResponseUpdate> HoldBeforeFirstUpdate(
+            TaskCompletionSource entered,
+            TaskCompletionSource release,
+            TaskCompletionSource? unwound,
+            [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            try
+            {
+                entered.TrySetResult();
+
+                await release.Task.WaitAsync(cancellationToken);
+
+                yield return new ChatResponseUpdate(ChatRole.Assistant, "released");
+            }
+            finally
+            {
+                unwound?.TrySetResult();
+            }
         }
 
         private static async IAsyncEnumerable<ChatResponseUpdate> StreamTokens(
