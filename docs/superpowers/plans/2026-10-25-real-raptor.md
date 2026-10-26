@@ -112,6 +112,10 @@ Interfaces: `ITapestryClusterer.Cluster` from map; planner `Result<TapestryLayer
 - [ ] Run GREEN with duplicate, all-identical, near-duplicate, overlap and 0..12-size corpora; prove finite work and exact source-set union.
 - [ ] Commit with algorithm/default docs in DESIGN draft, still no production switch.
 
+### Approved stage 5 bounded-work clarification
+
+Global repeated-member-set detection cannot itself bound exponentially many distinct overlapping subsets. Stage 5 fingerprints a deterministic per-layer envelope of at most n clustering calls and 81*n member visits (submitted members plus inspected returned membership/unassigned records), using checked arithmetic and cancellation. Exhaustion returns a zero-summary diagnostic plan with all original current nodes, terminal reason `WorkLimit`, and typed disposition `Incomplete`. **Task 8 must refuse this build, preserve the prior valid generation, back off, and never publish this plan.** WorkLimit is neither successful completion nor `NonContracting`; it must never trigger a stable-partition fallback. Repetition/nonshrinking semantic splits retain the approved stable-id/request-fit partition behavior. Per-split evidence preserves prior posterior paths without recursively copying shared ancestry.
+
 ## Task 6: DAG schema and legacy atomic evolution
 
 Files: current schema table files for tapestry_nodes/generations; create `Tables/tapestry_edges.sql`, `Tables/tapestry_scope_revisions.sql`; graph validation/write guards as individually named `Triggers/*.sql`; new transition resources; `GrimoireSchemaVersionChains.cs`; new `Schema/TapestryDagBackfill.cs` only if bounded managed backfill required; `tests/.../Data/Schema/TapestryDagSchemaEvolutionTests.cs`; existing `TapestrySchemaTests.cs`.

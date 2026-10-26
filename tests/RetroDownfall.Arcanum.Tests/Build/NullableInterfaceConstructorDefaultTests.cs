@@ -72,6 +72,14 @@ public sealed class NullableInterfaceConstructorDefaultTests
     /// </remarks>
     private static readonly Dictionary<string, string> Allowed = new(StringComparer.Ordinal)
     {
+        ["src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorGaussianMixture.cs:RaptorGaussianMixture:progress"] = "optional content-free E/M progress after sample work, not DI or an authority/arithmetic dependency; with/without observer equality covers selected weights, means, full covariances, likelihood, BIC and iterations in RaptorClustererTests.OptionalNumericObservers_DoNotChangeGraphOrOptimizedCoordinates. An observer can intentionally cancel or throw; no guard depends on its presence",
+
+        ["src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorGaussianMixture.cs:RaptorGaussianMixture:diagnostics"] = "optional content-free attempted-candidate outcome after model selection work, not DI or an authority/arithmetic dependency; RaptorClustererTests.OptionalNumericObservers_DoNotChangeGraphOrOptimizedCoordinates proves identical selected parameters and scores with/without it. Candidate acceptance and every numeric refusal run with null diagnostics",
+
+        ["src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorNeighborGraphBuilder.cs:RaptorNeighborGraphBuilder:progress"] = "optional content-free observation after distance work, not DI or an authority/arithmetic dependency; absent and present observers produce identical graph arrays and distance counts (RaptorClustererTests.OptionalNumericObservers_DoNotChangeGraphOrOptimizedCoordinates). Observers may intentionally cancel or throw; null never skips a guard",
+
+        ["src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorUmapOptimizer.cs:RaptorUmapOptimizer:progress"] = "optional content-free observation after optimizer work, not DI or an authority/arithmetic dependency; absent and present observers produce identical original indices and optimized coordinates (RaptorClustererTests.OptionalNumericObservers_DoNotChangeGraphOrOptimizedCoordinates). Observers may intentionally cancel or throw; null never skips a guard",
+
         ["src/RetroDownfall.Arcanum.Core/Intelligence/ModelTokenizationContracts.cs:ModelCallContext:ProtectedBinding"] = "per-call capsule metadata, not a DI service; ordinary model calls carry no protected binding. Wizard supplies the marker at the protected physical-call boundary, where ModelCallExecutor validates its authority before dispatch",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantEntryErasureService.cs:CovenantEntryErasureService:memoryDelegation"] = "direct erasure fixtures without a delegation runtime need no capsule barrier; the host supplies the shared singleton before entry erasure invalidates delegated sources",
@@ -103,6 +111,14 @@ public sealed class NullableInterfaceConstructorDefaultTests
         ["src/RetroDownfall.Arcanum.Infrastructure/Repositories/CampaignRepository.cs:CampaignRepository:memoryDelegation"] = "direct Campaign repository fixtures have no delegation runtime; the host supplies the shared singleton before Campaign source mutation",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Weave/EmbeddingsResetService.cs:EmbeddingsResetService:memoryDelegation"] = "offline embedding reset and direct fixtures have no live capsules; host composition supplies the shared singleton before resetting source embeddings",
+
+        ["src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorGaussianMixture.cs:RaptorGaussianMixture:progress"] = "optional content-free E/M progress after sample work, not DI or an authority/arithmetic dependency; with/without observer equality covers selected weights, means, full covariances, likelihood, BIC and iterations in RaptorClustererTests.OptionalNumericObservers_DoNotChangeGraphOrOptimizedCoordinates. An observer can intentionally cancel or throw; no guard depends on its presence",
+
+        ["src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorGaussianMixture.cs:RaptorGaussianMixture:diagnostics"] = "optional content-free attempted-candidate outcome after model selection work, not DI or an authority/arithmetic dependency; RaptorClustererTests.OptionalNumericObservers_DoNotChangeGraphOrOptimizedCoordinates proves identical selected parameters and scores with/without it. Candidate acceptance and every numeric refusal run with null diagnostics",
+
+        ["src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorNeighborGraphBuilder.cs:RaptorNeighborGraphBuilder:progress"] = "optional content-free observation after distance work, not DI or an authority/arithmetic dependency; absent and present observers produce identical graph arrays and distance counts (RaptorClustererTests.OptionalNumericObservers_DoNotChangeGraphOrOptimizedCoordinates). Observers may intentionally cancel or throw; null never skips a guard",
+
+        ["src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorUmapOptimizer.cs:RaptorUmapOptimizer:progress"] = "optional content-free observation after optimizer work, not DI or an authority/arithmetic dependency; absent and present observers produce identical original indices and optimized coordinates (RaptorClustererTests.OptionalNumericObservers_DoNotChangeGraphOrOptimizedCoordinates). Observers may intentionally cancel or throw; null never skips a guard",
 
         ["src/RetroDownfall.Arcanum.Core/Intelligence/ModelTokenizationContracts.cs:ModelCallContext:PromptCacheBinding"] = "opaque per-call metadata, not a DI service; null preserves ordinary/default-off calls and source compatibility. Wizard supplies a binding only for a prepared candidate; the physical executor refuses every nonnull unknown/stale binding or missing validator. Null never grants source or dispatch authority",
 
