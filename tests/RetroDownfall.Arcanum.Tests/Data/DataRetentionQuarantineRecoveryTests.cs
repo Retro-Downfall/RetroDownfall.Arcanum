@@ -16,6 +16,8 @@ using Microsoft.Data.Sqlite;
 
 using Microsoft.EntityFrameworkCore;
 
+using Microsoft.Extensions.Logging;
+
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -52,6 +54,474 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class DataRetentionServiceTests
 {
+    [SkippableTheory]
+    [InlineData("kind", "WrongKind")]
+    [InlineData("reference", "CheckpointReferenceMismatch")]
+    [InlineData("payload", "MissingCheckpoint")]
+    [InlineData("version", "UnsupportedVersion")]
+    [InlineData("header", "JournalHeaderInvalid")]
+    public async Task MutationRecovery_RefusalNamesSafeCauseAndOperation(string defect, string reason)
+    {
+        RequireSqlCipher();
+
+        const string canary = "PRIVATE-CHECKPOINT-CONTENT\r\nforged-log-line";
+
+        LongRunningOperationStore operations = new(_db!, TestOrdinaryConnectionFactory.For(_db!));
+
+        LongRunningOperation operation = await operations.CreateAsync(new LongRunningOperationCreateRequest(
+            LongRunningOperationKinds.DataRetentionMutation,
+            LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+            "Interrupted mutation diagnostics.", DateTimeOffset.UtcNow));
+
+        operation = operation with
+        {
+            CheckpointVersion = 2,
+            CheckpointReference = "retention-mutation:" + operation.Id.ToString("N"),
+            CheckpointPayload = SerializeEmptyMutationCheckpoint("delete-session", Guid.NewGuid().ToString("D")),
+        };
+
+        operation = defect switch
+        {
+            "kind" => operation with { Kind = canary },
+            "reference" => operation with { CheckpointReference = canary },
+            "payload" => operation with { CheckpointPayload = null },
+            "version" => operation with { CheckpointVersion = 99 },
+            _ => operation with { CheckpointPayload = Encoding.UTF8.GetBytes(canary) },
+        };
+
+        MutationRecoveryLogger log = new();
+
+        LongRunningOperationRecoveryResult result = await CreateService(logger: log)
+            .RecoverMutationAsync(operation, CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.ErrorCode);
+
+        MutationRecoveryLog warning = Assert.Single(log.Entries);
+
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Warning, warning.Level);
+
+        Assert.Contains(operation.Id.ToString("D"), warning.Message, StringComparison.Ordinal);
+
+        Assert.Contains(reason, warning.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(canary, warning.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("forged-log-line", warning.Message, StringComparison.Ordinal);
+
+        Assert.Null(warning.Exception);
+
+        Assert.Equal(operation.Id, warning.Values["OperationId"]);
+
+        Assert.Equal(operation.CheckpointVersion, warning.Values["CheckpointVersion"]);
+
+        Assert.Equal("Unknown", warning.Values["JournalSubtype"]?.ToString());
+
+        Assert.Equal(reason, warning.Values["Reason"]?.ToString());
+
+        AssertSafeMutationRecoveryLog(warning);
+    }
+
+    // These cases catch flattened causes and accidental promotion of unvalidated journal text.
+    [SkippableTheory]
+    [InlineData("header", "JournalHeaderInvalid")]
+    [InlineData("digest", "JournalDigestMismatch")]
+    [InlineData("digest-encoding", "JournalDigestInvalid")]
+    [InlineData("target-encoding", "JournalTargetInvalid")]
+    [InlineData("target", "JournalTargetInvalid")]
+    [InlineData("entry", "JournalEntryInvalid")]
+    [InlineData("root", "JournalRootInvalid")]
+    [InlineData("path", "JournalPathInvalid")]
+    [InlineData("duplicate", "JournalDuplicatePath")]
+    public async Task MutationRecovery_StoredCorruption_NamesClosedCauseWithoutContent(string defect, string reason)
+    {
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
+
+        Assert.True(IdentityOwnedFileSystemCleanup.TryCapturePath(attachment.AbsolutePath,
+            FileSystemObjectKind.RegularFile, out IdentityOwnedFileSystemArtifact artifact));
+
+        byte[] checkpoint = SerializeMutationCheckpoint("delete-attachment", attachment.AttachmentId.ToString("D"),
+            Path.GetRelativePath(_attachmentsRoot, attachment.AbsolutePath), artifact.Metadata);
+
+        string[] lines = Encoding.UTF8.GetString(checkpoint).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        string encodedCanary = Convert.ToBase64String(Encoding.UTF8.GetBytes(MutationRecoveryCanary));
+
+        switch (defect)
+        {
+            case "header":
+                lines[1] = MutationRecoveryCanary.Replace("\r\n", "-");
+
+                break;
+            case "target-encoding":
+                lines[2] = "!" + MutationRecoveryCanary.Replace("\r\n", "-");
+
+                break;
+            case "target":
+                lines[2] = encodedCanary;
+
+                break;
+            case "entry":
+                lines[4] = "E:attachments:!" + MutationRecoveryCanary.Replace("\r\n", "-") + ":1:2:1:1";
+
+                break;
+            case "root":
+                lines[4] = lines[4].Replace("E:attachments:", "E:PRIVATE-CHECKPOINT-CONTENT:", StringComparison.Ordinal);
+
+                break;
+            case "path":
+                lines[4] = lines[4].Replace(lines[4].Split(':')[2], Convert.ToBase64String(Encoding.UTF8.GetBytes("/" + MutationRecoveryCanary)), StringComparison.Ordinal);
+
+                break;
+            case "duplicate":
+                lines = [.. lines[..^1], lines[4], lines[^1]];
+
+                lines[3] = "2";
+
+                break;
+        }
+
+        string body = string.Join('\n', lines[..^1]) + "\n";
+
+        string digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(body)));
+
+        lines[^1] = "H:" + (defect == "digest" ? new string(digest[0] == '0' ? '1' : '0', 64)
+            : defect == "digest-encoding" ? new string('Z', 64) : digest);
+
+        checkpoint = Encoding.UTF8.GetBytes(string.Join('\n', lines) + "\n");
+
+        LongRunningOperationStore store = new(_db!, TestOrdinaryConnectionFactory.For(_db!));
+
+        LongRunningOperation operation = await StoreMutationRecoveryCheckpointAsync(store, checkpoint);
+
+        MutationRecoveryLogger log = new();
+
+        LongRunningOperationRecoveryResult result = await CreateService(logger: log)
+            .RecoverMutationAsync(operation, CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.ErrorCode);
+
+        MutationRecoveryLog warning = Assert.Single(log.Entries);
+
+        Assert.Equal(LogLevel.Warning, warning.Level);
+
+        Assert.Equal(reason, warning.Values["Reason"]?.ToString());
+
+        Assert.Equal(defect == "target" ? "delete-attachment" : "Unknown", warning.Values["JournalSubtype"]?.ToString());
+
+        AssertSafeMutationRecoveryLog(warning);
+
+        Assert.True(File.Exists(attachment.AbsolutePath));
+
+        Assert.Equal(1, await CountNormalizedKeyAsync("SessionAttachments", "Id", Canonical(attachment.AttachmentId)));
+
+        Assert.Equal(checkpoint, (await store.GetAsync(operation.Id))!.CheckpointPayload);
+    }
+
+    // Replacing a file or adopting an unjournalled quarantine must remain parked.
+    [SkippableTheory]
+    [InlineData("missing", "OriginalFileMissingOrChanged", false)]
+    [InlineData("replaced", "OriginalFileMissingOrChanged", false)]
+    [InlineData("committed-original", "CommittedOriginalStillPresent", true)]
+    [InlineData("restore-blocked", "QuarantineRestoreRefused", false)]
+    [InlineData("quarantine-name", "QuarantineNameInvalid", false)]
+    [InlineData("quarantine-shape", "QuarantineShapeInvalid", false)]
+    [InlineData("quarantine-unexpected", "QuarantineNotInJournal", false)]
+    [InlineData("quarantine-empty-committed", "EmptyQuarantineUnreconciled", true)]
+    [InlineData("quarantine-limit", "QuarantineSetUnbounded", false)]
+    [InlineData("containment", "ManagedRootContainmentFailed", false)]
+    public async Task MutationRecovery_FileRefusal_PreservesAuthorityAndNamesCause(string defect, string reason, bool committed)
+    {
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
+
+        Assert.True(IdentityOwnedFileSystemCleanup.TryCapturePath(attachment.AbsolutePath,
+            FileSystemObjectKind.RegularFile, out IdentityOwnedFileSystemArtifact artifact));
+
+        string relative = Path.GetRelativePath(_attachmentsRoot, attachment.AbsolutePath);
+
+        byte[] checkpoint = SerializeMutationCheckpoint("delete-attachment", attachment.AttachmentId.ToString("D"),
+            defect == "containment" ? "../PRIVATE-CHECKPOINT-CONTENT" : relative, artifact.Metadata);
+
+        LongRunningOperationStore store = new(_db!, TestOrdinaryConnectionFactory.For(_db!));
+
+        LongRunningOperation operation = await StoreMutationRecoveryCheckpointAsync(store, checkpoint);
+
+        string? quarantinePath = null;
+
+        if (defect == "missing")
+        {
+            File.Delete(attachment.AbsolutePath);
+        }
+        else if (defect is "restore-blocked" or "replaced")
+        {
+            Assert.True(IdentityOwnedFileSystemCleanup.TryQuarantine(artifact,
+                $".arcanum-retention-{operation.Id:N}-", out IdentityOwnedFileSystemQuarantine quarantine));
+
+            if (defect == "restore-blocked")
+            {
+                quarantinePath = quarantine.Directory.Path;
+            }
+            else
+            {
+                // Retain the inode outside discovery to prevent reuse after deleting the original.
+                Directory.Move(quarantine.Directory.Path, Path.Combine(_filesRoot, Guid.NewGuid().ToString("N")));
+            }
+
+            await File.WriteAllTextAsync(attachment.AbsolutePath, MutationRecoveryCanary);
+        }
+        else if (defect.StartsWith("quarantine-", StringComparison.Ordinal))
+        {
+            int count = defect == "quarantine-limit" ? 17 : 1;
+
+            for (int i = 0; i < count; i++)
+            {
+                quarantinePath = Path.Combine(Path.GetDirectoryName(attachment.AbsolutePath)!,
+                    $".arcanum-retention-{operation.Id:N}-" + (defect == "quarantine-name" ? "PRIVATE-CHECKPOINT-CONTENT" : Guid.NewGuid().ToString("N")));
+
+                SecureFilePermissions.CreateOwnerOnlyDirectoryAtPath(quarantinePath);
+
+                if (defect is "quarantine-shape" or "quarantine-unexpected")
+                {
+                    await File.WriteAllTextAsync(Path.Combine(quarantinePath, "PRIVATE-CHECKPOINT-CONTENT"), MutationRecoveryCanary);
+
+                    if (defect == "quarantine-shape")
+                    {
+                        await File.WriteAllTextAsync(Path.Combine(quarantinePath, "second"), MutationRecoveryCanary);
+                    }
+                }
+            }
+        }
+
+        if (committed)
+        {
+            await ExecuteAsync("DELETE FROM SessionAttachments WHERE lower(replace(Id, '-', '')) = @id",
+                ("@id", attachment.AttachmentId.ToString("N")));
+        }
+
+        MutationRecoveryLogger log = new();
+
+        LongRunningOperationRecoveryResult result = await CreateService(logger: log)
+            .RecoverMutationAsync(operation, CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.ErrorCode);
+
+        MutationRecoveryLog warning = Assert.Single(log.Entries);
+
+        Assert.Equal(LogLevel.Warning, warning.Level);
+
+        Assert.Equal(reason, warning.Values["Reason"]?.ToString());
+
+        Assert.Equal("delete-attachment", warning.Values["JournalSubtype"]?.ToString());
+
+        AssertSafeMutationRecoveryLog(warning);
+
+        Assert.Equal(defect != "missing", File.Exists(attachment.AbsolutePath));
+
+        Assert.Equal(committed ? 0 : 1, await CountNormalizedKeyAsync("SessionAttachments", "Id", Canonical(attachment.AttachmentId)));
+
+        if (quarantinePath is not null)
+        {
+            Assert.True(Directory.Exists(quarantinePath));
+        }
+    }
+
+    [SkippableFact]
+    public async Task MutationRecovery_Reconciler_ParksWithRetentionCodeAndRetainsSingleFlight()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = new(_db!, TestOrdinaryConnectionFactory.For(_db!));
+
+        byte[] corrupt = Encoding.UTF8.GetBytes(MutationRecoveryCanary);
+
+        LongRunningOperation operation = await StoreMutationRecoveryCheckpointAsync(store, corrupt);
+
+        MutationRecoveryLogger log = new();
+
+        LongRunningOperationReconciler reconciler = new(store,
+            [new DataRetentionMutationRecoveryHandler(CreateService(logger: log))], TimeProvider.System,
+            NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
+
+        _ = await reconciler.ReconcileAsync(DateTimeOffset.UtcNow, "diagnostic-recovery", 10, 1);
+
+        LongRunningOperation parked = (await store.GetAsync(operation.Id))!;
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, parked.State);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, parked.TerminalErrorCode);
+
+        Assert.Equal(corrupt, parked.CheckpointPayload);
+
+        AssertSafeMutationRecoveryLog(Assert.Single(log.Entries));
+
+        Assert.Null(await store.TryStartSingleFlightAsync(new LongRunningOperationCreateRequest(
+            LongRunningOperationKinds.DataRetentionPrune, LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            "Must remain blocked.", DateTimeOffset.UtcNow), "next-owner", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1)));
+
+        _ = await reconciler.ReconcileAsync(DateTimeOffset.UtcNow, "diagnostic-recovery-2", 10, 1);
+
+        Assert.Equal(2, log.Entries.Count);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, (await store.GetAsync(operation.Id))!.TerminalErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task MutationRecovery_Cancellation_PropagatesWithoutTerminalDiagnostic()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = new(_db!, TestOrdinaryConnectionFactory.For(_db!));
+
+        LongRunningOperation operation = await StoreMutationRecoveryCheckpointAsync(store,
+            SerializeEmptyMutationCheckpoint("delete-session", Guid.NewGuid().ToString("D")));
+
+        MutationRecoveryLogger log = new();
+
+        using CancellationTokenSource cancellation = new();
+
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => CreateService(logger: log)
+            .RecoverMutationAsync(operation, cancellation.Token));
+
+        Assert.Empty(log.Entries);
+
+        Assert.Equal(operation.CheckpointPayload, (await store.GetAsync(operation.Id))!.CheckpointPayload);
+    }
+
+    [SkippableFact]
+    public async Task MutationRecovery_StorageFailure_UsesSafeCategoryAndPreservesCheckpoint()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = new(_db!, TestOrdinaryConnectionFactory.For(_db!));
+
+        LongRunningOperation operation = await StoreMutationRecoveryCheckpointAsync(store,
+            SerializeEmptyMutationCheckpoint("delete-attachment", Guid.NewGuid().ToString("D")));
+
+        await ExecuteAsync("ALTER TABLE SessionAttachments RENAME TO diagnostic_storage_failure");
+
+        await ExecuteAsync("CREATE VIEW SessionAttachments AS SELECT Id FROM \"" + MutationRecoveryCanary + "\"");
+
+        MutationRecoveryLogger log = new();
+
+        LongRunningOperationRecoveryResult result = await CreateService(logger: log)
+            .RecoverMutationAsync(operation, CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.ErrorCode);
+
+        MutationRecoveryLog warning = Assert.Single(log.Entries);
+
+        Assert.Equal(LogLevel.Warning, warning.Level);
+
+        Assert.Equal("UnexpectedStorageFailure", warning.Values["Reason"]?.ToString());
+
+        AssertSafeMutationRecoveryLog(warning);
+
+        Assert.Equal(operation.CheckpointPayload, (await store.GetAsync(operation.Id))!.CheckpointPayload);
+    }
+
+    [SkippableFact]
+    public async Task MutationRecovery_CovenantV4_DelegatesWithoutOrdinaryOutcome()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = new(_db!, TestOrdinaryConnectionFactory.For(_db!));
+
+        LongRunningOperation operation = await SeedCheckpointAsync(store,
+            CovenantOfflineTransitionLaunchV4.CurrentVersion, "unreadable private launch"u8.ToArray());
+
+        MutationRecoveryLogger log = new();
+
+        LongRunningOperationRecoveryResult result = await CreateService(logger: log)
+            .RecoverMutationAsync(operation, CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, result.ErrorCode);
+
+        Assert.Empty(log.Entries);
+    }
+
+    private async Task<LongRunningOperation> StoreMutationRecoveryCheckpointAsync(LongRunningOperationStore store, byte[] checkpoint)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow.AddMinutes(-10);
+
+        LongRunningOperation operation = await store.CreateAsync(new LongRunningOperationCreateRequest(
+            LongRunningOperationKinds.DataRetentionMutation, LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+            "Interrupted mutation.", now));
+
+        Assert.True((await store.TryAcquireLeaseAsync(operation.Id, "dead-owner", now, now.AddMinutes(5))).Acquired);
+
+        Assert.True(await store.SaveCheckpointAsync(operation.Id, "dead-owner", 0, 2, checkpoint,
+            "retention-mutation:" + operation.Id.ToString("N"), "Interrupted mutation.", now));
+
+        return (await store.GetAsync(operation.Id))!;
+    }
+
+    private const string MutationRecoveryCanary = "PRIVATE-CHECKPOINT-CONTENT\r\nforged-log-line";
+
+    private static void AssertSafeMutationRecoveryLog(MutationRecoveryLog entry)
+    {
+        Assert.Null(entry.Exception);
+
+        Assert.Equal(new[] { "CheckpointVersion", "JournalSubtype", "OperationId", "Outcome", "Reason", "{OriginalFormat}" },
+            entry.Values.Keys.Order(StringComparer.Ordinal));
+
+        Assert.IsType<Guid>(entry.Values["OperationId"]);
+
+        Assert.IsType<int>(entry.Values["CheckpointVersion"]);
+
+        Assert.IsType<LongRunningOperationState>(entry.Values["Outcome"]);
+
+        Assert.IsAssignableFrom<Enum>(entry.Values["Reason"]);
+
+        Assert.Contains(entry.Values["JournalSubtype"]?.ToString(),
+            new[] { "Unknown", "delete-session", "delete-attachment", "reset-memory", "reset-workspace", "prune-candidate" });
+
+        foreach (string text in entry.Values.Values.Select(value => value?.ToString() ?? string.Empty).Append(entry.Message))
+        {
+            Assert.DoesNotContain("PRIVATE-CHECKPOINT-CONTENT", text, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("forged-log-line", text, StringComparison.Ordinal);
+
+            Assert.DoesNotContain('\r', text);
+
+            Assert.DoesNotContain('\n', text);
+        }
+    }
+
+    private sealed record MutationRecoveryLog(LogLevel Level, string Message, Exception? Exception, IReadOnlyDictionary<string, object?> Values);
+
+    private sealed class MutationRecoveryLogger : ILogger<DataRetentionService>
+    {
+        public List<MutationRecoveryLog> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) => Entries.Add(new MutationRecoveryLog(logLevel,
+                formatter(state, exception), exception,
+                ((IEnumerable<KeyValuePair<string, object?>>)state!).ToDictionary(pair => pair.Key, pair => pair.Value)));
+    }
+
     [SkippableTheory]
     [InlineData("initial", null)]
     [InlineData("pending-journal", null)]
@@ -396,7 +866,9 @@ public sealed partial class DataRetentionServiceTests
 
         SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
 
-        DataRetentionService service = CreateService();
+        MutationRecoveryLogger log = new();
+
+        DataRetentionService service = CreateService(logger: log);
 
         LongRunningOperationStore operations = new(
             _db!,
@@ -474,6 +946,18 @@ public sealed partial class DataRetentionServiceTests
                 ? LongRunningOperationState.Completed
                 : LongRunningOperationState.Failed,
             recovered.State);
+
+        MutationRecoveryLog outcome = Assert.Single(log.Entries);
+
+        Assert.Equal(databaseCommitSucceeded ? LogLevel.Information : LogLevel.Warning, outcome.Level);
+
+        Assert.Equal(databaseCommitSucceeded ? "CommittedCleanupReconciled" : "PrecommitFilesRecovered", outcome.Values["Reason"]?.ToString());
+
+        Assert.Equal(recovered.State.ToString(), outcome.Values["Outcome"]?.ToString());
+
+        Assert.Equal("delete-attachment", outcome.Values["JournalSubtype"]?.ToString());
+
+        AssertSafeMutationRecoveryLog(outcome);
 
         Assert.Equal(!databaseCommitSucceeded, File.Exists(attachment.AbsolutePath));
 
@@ -1283,7 +1767,9 @@ public sealed partial class DataRetentionServiceTests
     {
         RequireSqlCipher();
 
-        DataRetentionService service = CreateService();
+        MutationRecoveryLogger log = new();
+
+        DataRetentionService service = CreateService(logger: log);
 
         LongRunningOperationStore operations = new(
             _db!,
@@ -1324,6 +1810,16 @@ public sealed partial class DataRetentionServiceTests
             CancellationToken.None);
 
         Assert.Equal(LongRunningOperationState.Abandoned, recovered.State);
+
+        MutationRecoveryLog outcome = Assert.Single(log.Entries);
+
+        Assert.Equal(LogLevel.Information, outcome.Level);
+
+        Assert.Equal("NeverStarted", outcome.Values["Reason"]?.ToString());
+
+        Assert.Equal("Unknown", outcome.Values["JournalSubtype"]?.ToString());
+
+        AssertSafeMutationRecoveryLog(outcome);
 
         Assert.True(
             await operations.TryTransitionAsync(
