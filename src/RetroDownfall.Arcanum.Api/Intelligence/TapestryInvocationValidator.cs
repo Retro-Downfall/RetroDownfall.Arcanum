@@ -57,16 +57,23 @@ public sealed class TapestryInvocationValidator(IServiceScopeFactory scopes,
             || observation.Generations.Any(item => !authorized.Scopes.Contains(item.Scope)
                 || !observation.Selection.Scopes.Contains(item.Scope))) return Refused();
 
-        await using AsyncServiceScope scope = scopes.CreateAsyncScope();
-
-        ITapestryStore store = scope.ServiceProvider.GetRequiredService<ITapestryStore>();
-
-        foreach (TapestryScopeGeneration item in observation.Generations)
+        await using (AsyncServiceScope scope = scopes.CreateAsyncScope())
         {
-            var current = await store.GetRetrievableGenerationAsync(item.Scope, observation.Identity, cancellationToken).ConfigureAwait(false);
+            ITapestryStore store = scope.ServiceProvider.GetRequiredService<ITapestryStore>();
 
-            if (current.IsFailure || current.Value.Generation.GenerationId != item.GenerationId) return Refused();
+            foreach (TapestryScopeGeneration item in observation.Generations)
+            {
+                var current = await store.GetRetrievableGenerationAsync(item.Scope, observation.Identity, cancellationToken).ConfigureAwait(false);
+
+                if (current.IsFailure || current.Value.Generation.GenerationId != item.GenerationId) return Refused();
+            }
         }
+
+        // Generation reads can await after the first canonical snapshot. Recheck the original
+        // inputs after those reads and their scope finish, before the final epoch/model check.
+        TapestryInvocationSelection? finalAuthorized = await AuthorizeAsync(request, observation.Selection.Invocation, cancellationToken).ConfigureAwait(false);
+
+        if (finalAuthorized is null || observation.Generations.Any(item => !finalAuthorized.Scopes.Contains(item.Scope))) return Refused();
 
         return IsEligible(observation.Selection.Invocation) && MatchesCurrentIdentity(observation) ? Result.Success() : Refused();
     }

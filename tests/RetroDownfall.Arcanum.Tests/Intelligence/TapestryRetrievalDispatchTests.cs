@@ -23,7 +23,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
-public sealed class TapestryRetrievalDispatchTests
+public sealed partial class TapestryRetrievalDispatchTests
 {
     [Theory]
     [InlineData(false, "edit", false)]
@@ -212,9 +212,25 @@ public sealed class TapestryRetrievalDispatchTests
 
         internal int CanonicalCalls => _resolver.Calls;
 
+        internal TaskCompletionSource FinalCanonicalEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource FinalCanonicalRelease { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal void HoldFinalCanonicalResolution() => _resolver.AfterResolve = async (call, token) =>
+        {
+            // Initial authorization, direct pre/post, native pre/post: five resolves.
+            if (call != 5) return;
+
+            FinalCanonicalEntered.TrySetResult();
+
+            await FinalCanonicalRelease.Task.WaitAsync(token);
+        };
+
         private ArcanumDbContext _db = null!;
 
         private TapestryStore _store = null!;
+
+        internal HeldGenerationStore? Held { get; private set; }
 
         private TapestryGenerationRecipe _recipe = null!;
 
@@ -228,7 +244,7 @@ public sealed class TapestryRetrievalDispatchTests
 
         private static TapestryScope Scope => new(TapestryScopeKind.Workspace, "/task10");
 
-        internal static async Task<Harness> CreateAsync()
+        internal static async Task<Harness> CreateAsync(bool holdGeneration = false)
         {
             Harness h = new();
 
@@ -263,7 +279,9 @@ public sealed class TapestryRetrievalDispatchTests
 
             services.AddSingleton<IWorkspaceIndexingService>(new ScopeWorkspace());
 
-            services.AddSingleton<ITapestryStore>(h._store);
+            h.Held = holdGeneration ? new(h._store) : null;
+
+            services.AddSingleton<ITapestryStore>(h.Held is { } held ? held : h._store);
 
             h._services = services.BuildServiceProvider();
 
@@ -351,6 +369,12 @@ public sealed class TapestryRetrievalDispatchTests
                     break;
                 case "epoch": _authority.Current = _authority.Current! with { AuthorityEpoch = 12 }; break;
                 case "canonical": _resolver.Changed = true; break;
+                case "physical-root": _resolver.Paths.Changed = true; break;
+                case "configured-dimension": Settings.CurrentValue.Integrations.Embeddings.Dimensions++; break;
+                case "configured-summary-model":
+                    Settings.CurrentValue.Providers[0].Models = ["model", "embed", "summary-next"];
+                    Settings.CurrentValue.Integrations.Embeddings.Tapestry.SummaryModel = "summary-next";
+                    break;
             }
         }
 
@@ -394,18 +418,29 @@ public sealed class TapestryRetrievalDispatchTests
 
     private sealed class CountingResolver : ICanonicalCampaignContextResolver
     {
-        private readonly ICanonicalCampaignContextResolver _inner = ProductionCampaignResolver.Over(new(), new());
+        internal ChangingPhysicalPath Paths { get; } = new();
+
+        private readonly ICanonicalCampaignContextResolver _inner;
+
+        internal CountingResolver() => _inner = ProductionCampaignResolver.Over(new(), new(ChangingPhysicalPath.Campaign), Paths);
 
         internal int Calls { get; private set; }
 
         internal bool Changed { get; set; }
 
-        public ValueTask<Result<CanonicalCampaignContext>> ResolveAsync(CanonicalCampaignResolutionRequest request, CancellationToken token)
-        {
-            Calls++;
+        internal Func<int, CancellationToken, Task>? AfterResolve { get; set; }
 
-            return Changed ? ValueTask.FromResult(Result<CanonicalCampaignContext>.Failure(new Error(
-                ErrorCodes.Covenant.CampaignBindingConflict, "Canonical source changed."))) : _inner.ResolveAsync(request, token);
+        public async ValueTask<Result<CanonicalCampaignContext>> ResolveAsync(CanonicalCampaignResolutionRequest request, CancellationToken token)
+        {
+            int call = ++Calls;
+
+            Result<CanonicalCampaignContext> result = Changed
+                ? Result<CanonicalCampaignContext>.Failure(new Error(ErrorCodes.Covenant.CampaignBindingConflict, "Canonical source changed."))
+                : await _inner.ResolveAsync(request, token);
+
+            if (AfterResolve is { } after) await after(call, token);
+
+            return result;
         }
     }
 
