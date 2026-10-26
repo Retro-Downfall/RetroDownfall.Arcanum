@@ -13,6 +13,290 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class TurnAccountingHandleTests
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task BeginFailure_CleanupCannotReplaceReservationFaultOrInventCancellation(bool cancelCaller, bool cancellationFault)
+    {
+        using CancellationTokenSource caller = new();
+
+        Exception reservationFault = cancellationFault
+            ? new OperationCanceledException("private-reserve-fault", cancelCaller ? caller.Token : new CancellationToken(canceled: true))
+            : new IOException("private-reserve-fault");
+
+        InvalidOperationException runFault = new("private-cleanup-fault");
+
+        RecordingTurnRunWriter writer = new() { CompleteFailuresRemaining = 1, CompleteException = runFault };
+
+        RecordingBudgetReservationService reservations = new()
+        {
+            ReserveException = reservationFault,
+            BeforeReserve = () => { if (cancelCaller) caller.Cancel(); },
+        };
+
+        Task<Result<TurnAccountingHandle>> beginning = TurnAccountingHandle.BeginAsync(
+            writer, reservations, new PricingSettings(), null, null, "test", "begin-failure", "private-request", caller.Token);
+
+        Exception? failure = await Record.ExceptionAsync(() => beginning);
+
+        AggregateException both;
+
+        if (cancelCaller && cancellationFault)
+        {
+            OperationCanceledException canceled = Assert.IsType<OperationCanceledException>(failure);
+
+            Assert.Equal(caller.Token, canceled.CancellationToken);
+
+            Assert.True(beginning.IsCanceled);
+
+            both = Assert.IsType<AggregateException>(canceled.InnerException);
+        }
+        else
+        {
+            Assert.True(beginning.IsFaulted);
+
+            both = Assert.IsType<AggregateException>(failure);
+        }
+        Assert.Collection(both.InnerExceptions, first => Assert.Same(reservationFault, first), second => Assert.Same(runFault, second));
+
+        Assert.Equal(1, writer.CompleteCalls);
+
+        Assert.Equal(CancellationToken.None, writer.CompletionToken);
+
+        Assert.Equal(writer.RunId, reservations.LastRequest!.RunId);
+    }
+
+    [Theory]
+    [InlineData(InferenceRunStatus.Completed)]
+    [InlineData(InferenceRunStatus.Failed)]
+    public async Task Completion_ReservationFaultStillCompletesRunAndRetriesOnlyFailedStep(InferenceRunStatus status)
+    {
+        IOException original = new("private-reservation-fault");
+
+        RecordingTurnRunWriter writer = new();
+
+        RecordingBudgetReservationService reservations = new()
+        {
+            ReconcileFailuresRemaining = 1,
+            ReleaseFailuresRemaining = 1,
+            DispositionException = original,
+        };
+
+        TurnAccountingHandle handle = await BeginReasonerTurnAsync(writer, reservations, ReasonerPricing());
+
+        TurnAccountingAmbient.Clear();
+
+        try
+        {
+            TurnAccountingAmbient.Publish(handle.CreateNestedOperationHandle(), writer);
+
+            Assert.Same(original, await Assert.ThrowsAsync<IOException>(() => handle.CompleteAsync(writer, reservations, status, CancellationToken.None)));
+
+            Assert.Equal(1, writer.CompleteCalls);
+
+            Assert.Equal(status, writer.CompletedStatus);
+
+            Assert.True(handle.IsSettled);
+
+            Assert.Null(TurnAccountingAmbient.Current);
+
+            Assert.Null(TurnAccountingAmbient.Writer);
+
+            handle.AddCost(7m);
+
+            await handle.CompleteAsync(writer, reservations, InferenceRunStatus.Abandoned, CancellationToken.None);
+
+            await handle.CompleteAsync(writer, reservations, InferenceRunStatus.Abandoned, CancellationToken.None);
+
+            Assert.Equal(1, writer.CompleteCalls);
+
+            Assert.Equal(status, writer.CompletedStatus);
+
+            Assert.Equal(status == InferenceRunStatus.Completed ? 2 : 0, reservations.ReconcileCalls);
+
+            Assert.Equal(status == InferenceRunStatus.Completed ? 0 : 2, reservations.ReleaseCalls);
+
+            Assert.Equal(status == InferenceRunStatus.Completed ? 0m : null, reservations.ReconciledUsd);
+        }
+        finally
+        {
+            TurnAccountingAmbient.Clear();
+        }
+    }
+
+    [Theory]
+    [InlineData(InferenceRunStatus.Completed)]
+    [InlineData(InferenceRunStatus.Failed)]
+    public async Task Completion_TwoFaultsRemainOrderedAndIndependentAcrossStagedRetries(InferenceRunStatus status)
+    {
+        IOException reservationFault = new("private-reservation-fault");
+
+        InvalidOperationException runFault = new("private-run-fault");
+
+        RecordingTurnRunWriter writer = new() { CompleteFailuresRemaining = 2, CompleteException = runFault };
+
+        RecordingBudgetReservationService reservations = new()
+        {
+            ReconcileFailuresRemaining = 1,
+            ReleaseFailuresRemaining = 1,
+            DispositionException = reservationFault,
+        };
+
+        TurnAccountingHandle handle = await BeginReasonerTurnAsync(writer, reservations, ReasonerPricing());
+
+        AggregateException both = await Assert.ThrowsAsync<AggregateException>(() => handle.CompleteAsync(writer, reservations, status, CancellationToken.None));
+
+        Assert.Collection(both.InnerExceptions, first => Assert.Same(reservationFault, first), second => Assert.Same(runFault, second));
+
+        Assert.Equal(1, writer.CompleteCalls);
+
+        handle.AddCost(9m);
+
+        Assert.Same(runFault, await Assert.ThrowsAsync<InvalidOperationException>(() => handle.CompleteAsync(writer, reservations, InferenceRunStatus.Abandoned, CancellationToken.None)));
+
+        await handle.CompleteAsync(writer, reservations, InferenceRunStatus.Abandoned, CancellationToken.None);
+
+        await handle.CompleteAsync(writer, reservations, InferenceRunStatus.Abandoned, CancellationToken.None);
+
+        Assert.Equal(3, writer.CompleteCalls);
+
+        Assert.Equal(status, writer.CompletedStatus);
+
+        Assert.Equal(status == InferenceRunStatus.Completed ? 2 : 0, reservations.ReconcileCalls);
+
+        Assert.Equal(status == InferenceRunStatus.Completed ? 0 : 2, reservations.ReleaseCalls);
+
+        Assert.Equal(status == InferenceRunStatus.Completed ? 0m : null, reservations.ReconciledUsd);
+    }
+
+    [Theory]
+    [InlineData(true, true, false)]
+    [InlineData(true, true, true)]
+    [InlineData(false, true, false)]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, false)]
+    public async Task Completion_TwoFaultsUseCancellationOnlyForRequestedTokenAndActualCancellation(bool cancelCaller, bool cancellationFault, bool runCancellation)
+    {
+        using CancellationTokenSource caller = new();
+
+        OperationCanceledException cancellation = new("private-cancellation-fault",
+            cancelCaller ? caller.Token : new CancellationToken(canceled: true));
+
+        Exception reservationFault = cancellationFault && !runCancellation
+            ? cancellation : new IOException("private-reservation-fault");
+
+        Exception runFault = cancellationFault && runCancellation
+            ? cancellation : new IOException("private-run-fault");
+
+        RecordingTurnRunWriter writer = new() { CompleteFailuresRemaining = 1, CompleteException = runFault };
+
+        RecordingBudgetReservationService reservations = new()
+        {
+            ReconcileFailuresRemaining = 1,
+            DispositionException = reservationFault,
+            BeforeDisposition = () => { if (cancelCaller) caller.Cancel(); },
+        };
+
+        TurnAccountingHandle handle = await BeginReasonerTurnAsync(writer, reservations, ReasonerPricing());
+
+        Task completion = handle.CompleteAsync(writer, reservations, InferenceRunStatus.Completed, caller.Token);
+
+        Exception? failure = await Record.ExceptionAsync(() => completion);
+
+        AggregateException both;
+
+        if (cancelCaller && cancellationFault)
+        {
+            OperationCanceledException canceled = Assert.IsType<OperationCanceledException>(failure);
+
+            Assert.Equal(caller.Token, canceled.CancellationToken);
+
+            Assert.True(completion.IsCanceled);
+
+            both = Assert.IsType<AggregateException>(canceled.InnerException);
+        }
+        else
+        {
+            Assert.True(completion.IsFaulted);
+
+            both = Assert.IsType<AggregateException>(failure);
+        }
+        Assert.Collection(both.InnerExceptions, first => Assert.Same(reservationFault, first), second => Assert.Same(runFault, second));
+
+        Assert.Equal(caller.Token, writer.CompletionToken);
+
+        Assert.Equal(caller.Token, reservations.DispositionToken);
+
+        Assert.Equal(1, writer.CompleteCalls);
+
+        await handle.CompleteAsync(writer, reservations, InferenceRunStatus.Failed, CancellationToken.None);
+
+        Assert.Equal(InferenceRunStatus.Completed, writer.CompletedStatus);
+    }
+
+    [Fact]
+    public async Task Completion_LoneCancellationIsRethrownUnchangedAfterRunDisposition()
+    {
+        using CancellationTokenSource caller = new();
+
+        OperationCanceledException original = new("private-cancellation-fault", caller.Token);
+
+        RecordingTurnRunWriter writer = new();
+
+        RecordingBudgetReservationService reservations = new()
+        {
+            ReconcileFailuresRemaining = 1,
+            DispositionException = original,
+            BeforeDisposition = caller.Cancel,
+        };
+
+        TurnAccountingHandle handle = await BeginReasonerTurnAsync(writer, reservations, ReasonerPricing());
+
+        Task completion = handle.CompleteAsync(writer, reservations, InferenceRunStatus.Completed, caller.Token);
+
+        Assert.Same(original, await Assert.ThrowsAsync<OperationCanceledException>(() => completion));
+
+        Assert.True(completion.IsCanceled);
+
+        Assert.Equal(1, writer.CompleteCalls);
+
+        Assert.Equal(InferenceRunStatus.Completed, writer.CompletedStatus);
+
+        await handle.CompleteAsync(writer, reservations, InferenceRunStatus.Failed, CancellationToken.None);
+
+        Assert.Equal(1, writer.CompleteCalls);
+    }
+
+    [Fact]
+    public async Task Completion_CanceledGateDoesNotFreezeOrWrite()
+    {
+        RecordingTurnRunWriter writer = new();
+
+        RecordingBudgetReservationService reservations = new();
+
+        TurnAccountingHandle handle = await BeginReasonerTurnAsync(writer, reservations, ReasonerPricing());
+
+        using CancellationTokenSource caller = new();
+
+        caller.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => handle.CompleteAsync(writer, reservations, InferenceRunStatus.Failed, caller.Token));
+
+        Assert.False(handle.IsSettled);
+
+        Assert.Equal(0, writer.CompleteCalls);
+
+        Assert.Equal(0, reservations.ReconcileCalls);
+
+        Assert.Equal(0, reservations.ReleaseCalls);
+
+        await handle.CompleteAsync(writer, reservations, InferenceRunStatus.Completed, CancellationToken.None);
+
+        Assert.Equal(InferenceRunStatus.Completed, writer.CompletedStatus);
+    }
+
     [Fact]
     public async Task AmbientPush_RestoresNestedHandleAndWriterAfterException()
     {
@@ -1231,6 +1515,8 @@ public sealed class TurnAccountingHandleTests
         public Exception? RecordException { get; init; }
 
         public int CompleteFailuresRemaining { get; set; }
+        public Exception? CompleteException { get; init; }
+        public CancellationToken CompletionToken { get; private set; }
 
         /// <summary>The summed actual cost of every operation recorded so far.</summary>
         public decimal RecordedCostUsd { get; private set; }
@@ -1246,12 +1532,13 @@ public sealed class TurnAccountingHandleTests
             CancellationToken cancellationToken = default)
         {
             CompleteCalls++;
+            CompletionToken = cancellationToken;
 
             if (CompleteFailuresRemaining > 0)
             {
                 CompleteFailuresRemaining--;
 
-                return Task.FromException(new IOException("run completion failed"));
+                return Task.FromException(CompleteException ?? new IOException("run completion failed"));
             }
 
             CompletedStatus = status;
@@ -1296,7 +1583,14 @@ public sealed class TurnAccountingHandleTests
 
         public Exception? ReserveException { get; init; }
 
+        public Action? BeforeReserve { get; init; }
+
         public int ReconcileFailuresRemaining { get; set; }
+        public int ReleaseFailuresRemaining { get; set; }
+        public int ReleaseCalls { get; private set; }
+        public Exception? DispositionException { get; init; }
+        public Action? BeforeDisposition { get; init; }
+        public CancellationToken DispositionToken { get; private set; }
 
         public TaskCompletionSource? ReconciliationEntered { get; init; }
 
@@ -1376,6 +1670,8 @@ public sealed class TurnAccountingHandleTests
         {
             LastRequest = request;
 
+            BeforeReserve?.Invoke();
+
             if (ReserveException is not null)
             {
                 return Task.FromException<Result<BudgetReservation>>(ReserveException);
@@ -1400,6 +1696,9 @@ public sealed class TurnAccountingHandleTests
             CancellationToken cancellationToken = default)
         {
             _ = Interlocked.Increment(ref _reconcileCalls);
+            DispositionToken = cancellationToken;
+
+            BeforeDisposition?.Invoke();
 
             ReconciliationEntered?.TrySetResult();
 
@@ -1412,7 +1711,7 @@ public sealed class TurnAccountingHandleTests
             {
                 ReconcileFailuresRemaining--;
 
-                throw new IOException("reservation reconciliation failed");
+                throw DispositionException ?? new IOException("reservation reconciliation failed");
             }
 
             ReconciledUsd = actualCostUsd;
@@ -1433,6 +1732,18 @@ public sealed class TurnAccountingHandleTests
             Guid reservationId,
             CancellationToken cancellationToken = default)
         {
+            ReleaseCalls++;
+
+            DispositionToken = cancellationToken;
+
+            BeforeDisposition?.Invoke();
+
+            if (ReleaseFailuresRemaining > 0)
+            {
+                ReleaseFailuresRemaining--;
+
+                return Task.FromException(DispositionException ?? new IOException("reservation release failed"));
+            }
             WasReleased = true;
             return Task.CompletedTask;
         }

@@ -3,6 +3,7 @@ using System.Net;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -14,6 +15,65 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed partial class WeaveServiceTests
 {
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task AccountingCompletionFailure_WarnsWithSafeActualIdsKeepsVectorsAndDisposesScope(bool reservationFails, bool runFails)
+    {
+        TestCapturingLogger<WeaveService> logger = new();
+
+        CountingScopeFactory? scopes = null;
+
+        RecordingTurnRunWriter writer = new() { CompleteException = runFails ? new InvalidOperationException("private-run-fault") : null };
+
+        RecordingBudgetReservationService reservations = new() { ReconcileException = reservationFails ? new IOException("private-reservation-fault") : null };
+
+        FakeEmbeddingGeneratorFactory factory = new();
+
+        WeaveService service = CreateService(EnabledSettings(), factory, writer, reservations,
+            inner => scopes = new CountingScopeFactory(inner), logger: logger);
+
+        var result = await service.EmbedBatchAsync(["private-embedding-input"], CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Single(result.Value);
+
+        Assert.Single(factory.Generator.CallSizes);
+
+        Assert.Equal(1, scopes!.Created);
+
+        Assert.Equal(scopes.Created, scopes.Disposed);
+
+        Assert.Equal(1, writer.CompleteCalls);
+
+        TestLogEntry warning = Assert.Single(logger.Entries);
+
+        Assert.Equal(LogLevel.Warning, warning.Level);
+
+        Assert.Null(warning.Exception);
+
+        Assert.DoesNotContain("private-", warning.Message);
+
+        Assert.NotNull(warning.Properties);
+
+        Assert.Equal(writer.RunId, warning.Properties.Single(p => p.Key == "RunId").Value);
+
+        Assert.Equal(reservations.ReservationId, warning.Properties.Single(p => p.Key == "ReservationId").Value);
+
+        string type = reservationFails && runFails ? typeof(AggregateException).FullName!
+            : reservationFails ? typeof(IOException).FullName! : typeof(InvalidOperationException).FullName!;
+
+        Assert.Equal(type, warning.Properties.Single(p => p.Key == "ExceptionType").Value);
+
+        Assert.All(warning.Properties, p => Assert.False(p.Value is Exception));
+
+        Assert.DoesNotContain("private-", string.Join(" ", warning.Properties.Select(p => p.Value)));
+
+        Assert.Single(writer.Operations);
+    }
+
     [Fact]
     public void IsAvailable_Disabled_ReturnsFalse()
     {
@@ -696,7 +756,8 @@ public sealed partial class WeaveServiceTests
         ITurnRunWriter? writer = null,
         IBudgetReservationService? reservations = null,
         Func<IServiceScopeFactory, IServiceScopeFactory>? decorateScopes = null,
-        RetroDownfall.Arcanum.Core.Weave.Tapestry.ITapestryProviderValidator? tapestryValidator = null)
+        RetroDownfall.Arcanum.Core.Weave.Tapestry.ITapestryProviderValidator? tapestryValidator = null,
+        ILogger<WeaveService>? logger = null)
     {
         ServiceCollection collection = new();
 
@@ -718,7 +779,7 @@ public sealed partial class WeaveServiceTests
             factory ?? new FakeEmbeddingGeneratorFactory(),
             new TestOptionsMonitor<ArcanumSettings>(settings),
             decorateScopes is null ? scopes : decorateScopes(scopes),
-            NullLogger<WeaveService>.Instance, tapestryValidator);
+            logger ?? NullLogger<WeaveService>.Instance, tapestryValidator);
     }
 
     /// <summary>Counts the scopes a call opens and the ones it actually gives back.</summary>
@@ -777,17 +838,25 @@ public sealed partial class WeaveServiceTests
     private sealed class RecordingTurnRunWriter : ITurnRunWriter
     {
         public List<BillableOperationRecord> Operations { get; } = [];
+        public Guid RunId { get; } = Guid.NewGuid();
+
+        public Exception? CompleteException { get; init; }
+        public int CompleteCalls { get; private set; }
 
         public Task<Guid> StartRunAsync(
             InferenceRunStart start,
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(Guid.NewGuid());
+            Task.FromResult(RunId);
 
         public Task CompleteRunAsync(
             Guid runId,
             InferenceRunStatus status,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
+            CancellationToken cancellationToken = default)
+        {
+            CompleteCalls++;
+
+            return CompleteException is null ? Task.CompletedTask : Task.FromException(CompleteException);
+        }
 
         public Task<bool> TryAbandonRunAsync(Guid runId, CancellationToken cancellationToken = default) =>
             Task.FromResult(false);
@@ -804,6 +873,9 @@ public sealed partial class WeaveServiceTests
     private sealed class RecordingBudgetReservationService : IBudgetReservationService
     {
         public BudgetReservationRequest? LastRequest { get; private set; }
+        public Guid ReservationId { get; } = Guid.NewGuid();
+
+        public Exception? ReconcileException { get; init; }
 
         public decimal? ReconciledUsd { get; private set; }
 
@@ -815,7 +887,7 @@ public sealed partial class WeaveServiceTests
         {
             LastRequest = request;
             return Task.FromResult(Result<BudgetReservation>.Success(new BudgetReservation(
-                Guid.NewGuid(),
+                ReservationId,
                 request.RunId,
                 request.BudgetPeriod,
                 request.ReservedUsd,
@@ -832,7 +904,7 @@ public sealed partial class WeaveServiceTests
         {
             ReconciledUsd = actualCostUsd;
             ReconcileCount++;
-            return Task.CompletedTask;
+            return ReconcileException is null ? Task.CompletedTask : Task.FromException(ReconcileException);
         }
 
         public Task<Result> AdjustAsync(
