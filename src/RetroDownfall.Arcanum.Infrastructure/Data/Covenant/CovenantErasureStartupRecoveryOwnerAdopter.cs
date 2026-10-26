@@ -2,6 +2,8 @@ using System.Data;
 
 using System.Data.Common;
 
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Operations;
@@ -171,7 +173,7 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
 
                     if (retained is not null)
                     {
-                        return Refusal();
+                        return Refusal(CovenantStartupFailureReason.SecondOwner, owner.Owner.OperationId);
                     }
 
                     retained = owner;
@@ -189,11 +191,11 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
                 }
                 catch (ArgumentException)
                 {
-                    return Refusal();
+                    return Refusal(CovenantStartupFailureReason.GateRefused, adopted.Owner.OperationId);
                 }
                 catch (InvalidOperationException)
                 {
-                    return Refusal();
+                    return Refusal(CovenantStartupFailureReason.GateRefused, adopted.Owner.OperationId);
                 }
             }
 
@@ -203,9 +205,21 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception failure)
         {
-            return Refusal();
+            return Refusal(
+                CovenantStartupFailureReason.StorageFault,
+                failureKind: failure switch
+                {
+                    SqliteException => GrimoireConnectionFailureKind.Sqlite,
+                    UnauthorizedAccessException => GrimoireConnectionFailureKind.UnauthorizedAccess,
+                    IOException => GrimoireConnectionFailureKind.IO,
+                    ArgumentException => GrimoireConnectionFailureKind.Argument,
+                    InvalidOperationException => GrimoireConnectionFailureKind.InvalidOperation,
+                    _ => GrimoireConnectionFailureKind.Other,
+                },
+                sqliteErrorCode: (failure as SqliteException)?.SqliteErrorCode,
+                sqliteExtendedErrorCode: (failure as SqliteException)?.SqliteExtendedErrorCode);
         }
     }
 
@@ -213,8 +227,13 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
     {
         if (reader.GetValue(0) is not string rawId
             || !Guid.TryParseExact(rawId, "N", out Guid operationId)
-            || !string.Equals(rawId, operationId.ToString("N"), StringComparison.Ordinal)
-            || reader.GetValue(1) is not string kind
+            || operationId == Guid.Empty
+            || !string.Equals(rawId, operationId.ToString("N"), StringComparison.Ordinal))
+        {
+            return Refusal(CovenantStartupFailureReason.MalformedRow);
+        }
+
+        if (reader.GetValue(1) is not string kind
             || reader.GetValue(2) is not long rawState
             || rawState is < int.MinValue or > int.MaxValue
             || !Enum.IsDefined((LongRunningOperationState)(int)rawState)
@@ -224,7 +243,7 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
             || reader.GetValue(4) is not long rawVersion
             || rawVersion is < int.MinValue or > int.MaxValue)
         {
-            return Refusal();
+            return Refusal(CovenantStartupFailureReason.MalformedRow, operationId);
         }
 
         LongRunningOperationState state = (LongRunningOperationState)(int)rawState;
@@ -248,7 +267,7 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
             || mutation && policy != LongRunningOperationRecoveryPolicy.ReconcileAndComplete
             || factory && policy != LongRunningOperationRecoveryPolicy.RestartIdempotently)
         {
-            return Refusal();
+            return Refusal(CovenantStartupFailureReason.PolicyMismatch, operationId);
         }
 
         if (mutation && version is >= 0 and <= LastOrdinaryMutationCheckpointVersion
@@ -262,15 +281,19 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
             and not LongRunningOperationState.Cancelling
             and not LongRunningOperationState.ReconciliationRequired)
         {
-            return Refusal();
+            return Refusal(CovenantStartupFailureReason.MalformedRow, operationId);
         }
 
         int expectedVersion = mutation
             ? CovenantOfflineTransitionLaunchV4.CurrentVersion
             : DataRetentionFactoryTransitionLaunchV2.CurrentVersion;
 
-        if (version != expectedVersion
-            || reader.GetValue(5) is not string reference
+        if (version != expectedVersion)
+        {
+            return Refusal(CovenantStartupFailureReason.UnsupportedVersion, operationId);
+        }
+
+        if (reader.GetValue(5) is not string reference
             || !string.Equals(
                 reference,
                 CovenantResetCheckpointInitiator.CheckpointReference(kind, operationId),
@@ -282,7 +305,7 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
             || payloadLength is < 1 or > MaximumPayloadBytes
             || payload.Length != payloadLength)
         {
-            return Refusal();
+            return Refusal(CovenantStartupFailureReason.UnreadableCheckpoint, operationId);
         }
 
         Result<CovenantErasureCheckpointState> checkpoint;
@@ -312,12 +335,28 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
             ? CovenantExclusiveOperation.CovenantReset
             : CovenantExclusiveOperation.HealthyCatalogFactoryErasure;
 
-        if (checkpoint.IsFailure
-            || checkpoint.Value.Operation != expectedOperation
-            || !CovenantResetPhaseMachine.IsDeclared(checkpoint.Value.Phase)
-            || reader.GetValue(9) is not long revision)
+        if (checkpoint.IsFailure)
         {
-            return Refusal();
+            return Refusal(
+                checkpoint.Error.CovenantStartupFailure?.Reason == CovenantStartupFailureReason.WrongOperation
+                    ? CovenantStartupFailureReason.WrongOperation
+                    : CovenantStartupFailureReason.UnreadableCheckpoint,
+                operationId);
+        }
+
+        if (!CovenantResetPhaseMachine.IsDeclared(checkpoint.Value.Phase))
+        {
+            return Refusal(CovenantStartupFailureReason.UnreadableCheckpoint, operationId);
+        }
+
+        if (checkpoint.Value.Operation != expectedOperation)
+        {
+            return Refusal(CovenantStartupFailureReason.WrongOperation, operationId);
+        }
+
+        if (reader.GetValue(9) is not long revision)
+        {
+            return Refusal(CovenantStartupFailureReason.MalformedRow, operationId);
         }
 
         return Result<AdoptedCandidate?>.Success(
@@ -330,11 +369,22 @@ internal sealed class CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperati
                     revision)));
     }
 
-    private static Result<AdoptedCandidate?> Refusal() =>
-        Result<AdoptedCandidate?>.Failure(
-            new Error(
-                ErrorCodes.Covenant.ManualRecoveryRequired,
-                "Durable Covenant erasure ownership could not be reconstructed safely."));
+    private static Result<AdoptedCandidate?> Refusal(
+        CovenantStartupFailureReason reason,
+        Guid? operationId = null,
+        GrimoireConnectionFailureKind? failureKind = null,
+        int? sqliteErrorCode = null,
+        int? sqliteExtendedErrorCode = null)
+    {
+        CovenantStartupFailureDetails details = new(
+            reason, operationId, failureKind, sqliteErrorCode, sqliteExtendedErrorCode);
+
+        return Result<AdoptedCandidate?>.Failure(
+            new Error(ErrorCodes.Covenant.ManualRecoveryRequired, details.ToPublicMessage())
+            {
+                CovenantStartupFailure = details,
+            });
+    }
 
     private static void Add(DbCommand command, string name, object value)
     {

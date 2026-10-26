@@ -129,7 +129,7 @@ public static partial class CovenantRecoveryCheckpointCodec
             static bytes => JsonSerializer.Deserialize(
                 bytes,
                 CovenantRecoveryJsonContext.Default.CovenantOfflineTransitionLaunchV4),
-            static launch => IsLaunchable(launch));
+            static launch => LaunchRefusal(launch));
 
     public static Result<DataRetentionFactoryTransitionLaunchV2> DecodeDataRetentionFactoryTransitionLaunch(
         ReadOnlySpan<byte> payload) =>
@@ -138,7 +138,7 @@ public static partial class CovenantRecoveryCheckpointCodec
             static bytes => JsonSerializer.Deserialize(
                 bytes,
                 CovenantRecoveryJsonContext.Default.DataRetentionFactoryTransitionLaunchV2),
-            static launch => IsLaunchable(launch));
+            static launch => LaunchRefusal(launch));
 
     /// <summary>
     /// The exclusive owner a launch names, rebuilt from the launch and nothing else.
@@ -178,39 +178,45 @@ public static partial class CovenantRecoveryCheckpointCodec
     /// and the half that disagreed would be the half authorizing a destructive plan.
     /// </remarks>
     internal static bool IsLaunchable(CovenantOfflineTransitionLaunchV4 launch) =>
-        launch is not null
-        && launch.Version == CovenantOfflineTransitionLaunchV4.CurrentVersion
-        && IsLaunchable(
-            launch.OperationId,
-            launch.OperationKind,
-            launch.RecoveryPolicy,
-            launch.Operation,
-            launch.EffectDigest,
-            launch.SourceDatasetGeneration,
-            launch.TargetDatasetGeneration,
-            launch.SourceEpochs,
-            launch.TargetEpochs,
-            launch.StartingRevision,
-            LongRunningOperationKinds.DataRetentionMutation,
-            CovenantExclusiveOperation.CovenantReset);
+        LaunchRefusal(launch) is null;
+
+    private static CovenantStartupFailureReason? LaunchRefusal(CovenantOfflineTransitionLaunchV4 launch) =>
+        launch is null || launch.Version != CovenantOfflineTransitionLaunchV4.CurrentVersion
+            ? CovenantStartupFailureReason.UnreadableCheckpoint
+            : LaunchRefusal(
+                launch.OperationId,
+                launch.OperationKind,
+                launch.RecoveryPolicy,
+                launch.Operation,
+                launch.EffectDigest,
+                launch.SourceDatasetGeneration,
+                launch.TargetDatasetGeneration,
+                launch.SourceEpochs,
+                launch.TargetEpochs,
+                launch.StartingRevision,
+                LongRunningOperationKinds.DataRetentionMutation,
+                CovenantExclusiveOperation.CovenantReset);
 
     /// <summary>Whether this factory launch is one the codec would accept from durable storage.</summary>
     internal static bool IsLaunchable(DataRetentionFactoryTransitionLaunchV2 launch) =>
-        launch is not null
-        && launch.Version == DataRetentionFactoryTransitionLaunchV2.CurrentVersion
-        && IsLaunchable(
-            launch.OperationId,
-            launch.OperationKind,
-            launch.RecoveryPolicy,
-            launch.Operation,
-            launch.EffectDigest,
-            launch.SourceDatasetGeneration,
-            launch.TargetDatasetGeneration,
-            launch.SourceEpochs,
-            launch.TargetEpochs,
-            launch.StartingRevision,
-            LongRunningOperationKinds.DataRetentionFactoryReset,
-            CovenantExclusiveOperation.HealthyCatalogFactoryErasure);
+        LaunchRefusal(launch) is null;
+
+    private static CovenantStartupFailureReason? LaunchRefusal(DataRetentionFactoryTransitionLaunchV2 launch) =>
+        launch is null || launch.Version != DataRetentionFactoryTransitionLaunchV2.CurrentVersion
+            ? CovenantStartupFailureReason.UnreadableCheckpoint
+            : LaunchRefusal(
+                launch.OperationId,
+                launch.OperationKind,
+                launch.RecoveryPolicy,
+                launch.Operation,
+                launch.EffectDigest,
+                launch.SourceDatasetGeneration,
+                launch.TargetDatasetGeneration,
+                launch.SourceEpochs,
+                launch.TargetEpochs,
+                launch.StartingRevision,
+                LongRunningOperationKinds.DataRetentionFactoryReset,
+                CovenantExclusiveOperation.HealthyCatalogFactoryErasure);
 
     /// <summary>
     /// The recovery policy a launch names, when it names the one its kind is registered under.
@@ -236,7 +242,7 @@ public static partial class CovenantRecoveryCheckpointCodec
 
     }
 
-    private static bool IsLaunchable(
+    private static CovenantStartupFailureReason? LaunchRefusal(
         Guid operationId,
         string operationKind,
         string recoveryPolicy,
@@ -248,21 +254,33 @@ public static partial class CovenantRecoveryCheckpointCodec
         CovenantOfflineTransitionEpochsV1? targetEpochs,
         long startingRevision,
         string expectedKind,
-        CovenantExclusiveOperation expectedOperation) =>
-        operationId != Guid.Empty
-        && string.Equals(operationKind, expectedKind, StringComparison.Ordinal)
-        && TryReadRecoveryPolicy(recoveryPolicy, expectedKind, out _)
-        && operation == expectedOperation
-        && IsCanonicalEffectDigest(effectDigest)
-        && sourceDatasetGeneration != Guid.Empty
-        && targetDatasetGeneration != Guid.Empty
-        && sourceDatasetGeneration != targetDatasetGeneration
-        && sourceEpochs is not null
-        && targetEpochs is not null
-        && IsPreselectedSuccessor(sourceEpochs.AcceleratorEpoch, targetEpochs.AcceleratorEpoch)
-        && IsPreselectedSuccessor(sourceEpochs.KeyReclamationEpoch, targetEpochs.KeyReclamationEpoch)
-        && IsPreselectedSuccessor(sourceEpochs.EnvelopeKeyEpoch, targetEpochs.EnvelopeKeyEpoch)
-        && startingRevision >= 0;
+        CovenantExclusiveOperation expectedOperation)
+    {
+        if (operationId == Guid.Empty
+            || !string.Equals(operationKind, expectedKind, StringComparison.Ordinal)
+            || !TryReadRecoveryPolicy(recoveryPolicy, expectedKind, out _))
+        {
+            return CovenantStartupFailureReason.UnreadableCheckpoint;
+        }
+
+        if (operation != expectedOperation)
+        {
+            return CovenantStartupFailureReason.WrongOperation;
+        }
+
+        return IsCanonicalEffectDigest(effectDigest)
+            && sourceDatasetGeneration != Guid.Empty
+            && targetDatasetGeneration != Guid.Empty
+            && sourceDatasetGeneration != targetDatasetGeneration
+            && sourceEpochs is not null
+            && targetEpochs is not null
+            && IsPreselectedSuccessor(sourceEpochs.AcceleratorEpoch, targetEpochs.AcceleratorEpoch)
+            && IsPreselectedSuccessor(sourceEpochs.KeyReclamationEpoch, targetEpochs.KeyReclamationEpoch)
+            && IsPreselectedSuccessor(sourceEpochs.EnvelopeKeyEpoch, targetEpochs.EnvelopeKeyEpoch)
+            && startingRevision >= 0
+            ? null
+            : CovenantStartupFailureReason.UnreadableCheckpoint;
+    }
 
     /// <summary>
     /// Each target epoch is the successor of its own source, and of no other.

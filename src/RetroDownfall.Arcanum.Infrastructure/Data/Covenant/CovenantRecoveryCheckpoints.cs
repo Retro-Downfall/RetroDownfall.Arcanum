@@ -112,9 +112,9 @@ public sealed partial class CovenantRecoveryJsonContext : JsonSerializerContext
 /// </summary>
 /// <remarks>
 /// Every failure is one code — <c>Covenant.ManualRecoveryRequired</c> — because they all have the
-/// same remedy and none of them can be distinguished safely. A checkpoint that failed to decode
-/// cannot be trusted to say why it failed, and an operator who is told "unknown field" versus
-/// "wrong version" does the same thing in both cases: look at the operation, not at the bytes.
+/// same manual-recovery boundary. Strict validation may attach a closed, content-free reason for
+/// startup diagnostics, but never copies a payload identity or rejected bytes into that diagnostic.
+/// A checkpoint that failed to decode supplies no facts from which recovery can infer ownership.
 ///
 /// <para>Nothing here throws. Recovery runs before readiness, so an exception escaping the decoder
 /// would take down a host over a payload the correct answer to is "leave this operation alone".</para>
@@ -138,7 +138,8 @@ public static partial class CovenantRecoveryCheckpointCodec
             static bytes => JsonSerializer.Deserialize(
                 bytes,
                 CovenantRecoveryJsonContext.Default.CovenantIndexRebuildCheckpointV1),
-            static checkpoint => checkpoint.Version == CovenantIndexRebuildCheckpointV1.CurrentVersion);
+            static checkpoint => checkpoint.Version == CovenantIndexRebuildCheckpointV1.CurrentVersion
+                ? null : CovenantStartupFailureReason.UnreadableCheckpoint);
 
     public static Result<CovenantFamilyReinitializeCheckpointV1> DecodeFamilyReinitialize(ReadOnlySpan<byte> payload) =>
         Decode(
@@ -146,7 +147,8 @@ public static partial class CovenantRecoveryCheckpointCodec
             static bytes => JsonSerializer.Deserialize(
                 bytes,
                 CovenantRecoveryJsonContext.Default.CovenantFamilyReinitializeCheckpointV1),
-            static checkpoint => checkpoint.Version == CovenantFamilyReinitializeCheckpointV1.CurrentVersion);
+            static checkpoint => checkpoint.Version == CovenantFamilyReinitializeCheckpointV1.CurrentVersion
+                ? null : CovenantStartupFailureReason.UnreadableCheckpoint);
 
     /// <summary>
     /// The canonical encoding of a 32-byte effect digest: exactly 64 lowercase hexadecimal
@@ -168,7 +170,7 @@ public static partial class CovenantRecoveryCheckpointCodec
     private static Result<T> Decode<T>(
         ReadOnlySpan<byte> payload,
         Func<byte[], T?> deserialize,
-        Func<T, bool> versionMatches)
+        Func<T, CovenantStartupFailureReason?> validate)
         where T : class
     {
 
@@ -184,9 +186,14 @@ public static partial class CovenantRecoveryCheckpointCodec
         try
         {
 
-            return deserialize(payload.ToArray()) is { } decoded && versionMatches(decoded)
-                ? Result<T>.Success(decoded)
-                : Unrecoverable<T>();
+            if (deserialize(payload.ToArray()) is not { } decoded)
+            {
+                return Unrecoverable<T>();
+            }
+
+            return validate(decoded) is { } refusal
+                ? Unrecoverable<T>(refusal)
+                : Result<T>.Success(decoded);
 
         }
         catch (JsonException)
@@ -204,10 +211,13 @@ public static partial class CovenantRecoveryCheckpointCodec
 
     }
 
-    private static Result<T> Unrecoverable<T>() =>
+    private static Result<T> Unrecoverable<T>(CovenantStartupFailureReason? reason = null) =>
         Result<T>.Failure(
             new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
-                "This Covenant recovery checkpoint cannot be resumed by this build."));
+                "This Covenant recovery checkpoint cannot be resumed by this build.")
+            {
+                CovenantStartupFailure = reason is { } refusal ? new(refusal) : null,
+            });
 
 }

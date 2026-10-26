@@ -1201,7 +1201,18 @@ public static class GrimoireDatabaseBootstrapper
 
             if (erasureOwner.IsFailure)
             {
-                throw ProtectedRecoveryUnavailable();
+                CovenantStartupFailureDetails? diagnostic = erasureOwner.Error.CovenantStartupFailure;
+
+                Log.Warning(
+                    "Covenant startup owner adoption refused. Reason={Reason} OperationId={OperationId} Failure={Failure} SQLite={SqliteErrorCode} Extended={SqliteExtendedErrorCode}. {Diagnostic}",
+                    diagnostic?.Reason,
+                    diagnostic?.OperationId?.ToString("N"),
+                    diagnostic?.FailureKind,
+                    diagnostic?.SqliteErrorCode,
+                    diagnostic?.SqliteExtendedErrorCode,
+                    erasureOwner.Error.Message);
+
+                throw new GrimoireDatabaseUnavailableException(erasureOwner.Error.Message);
             }
 
             adoptedErasureOwner = erasureOwner.Value;

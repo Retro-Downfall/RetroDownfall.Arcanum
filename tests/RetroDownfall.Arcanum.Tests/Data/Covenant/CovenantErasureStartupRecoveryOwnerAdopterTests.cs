@@ -1,3 +1,11 @@
+using System.Data;
+
+using System.Data.Common;
+
+using System.Text.Json;
+
+using RetroDownfall.Arcanum.Api.Serialization;
+
 using Microsoft.Data.Sqlite;
 
 using Microsoft.EntityFrameworkCore;
@@ -136,31 +144,37 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
 
     [SkippableTheory]
 
-    [InlineData("\"CheckpointPayload\" = NULL")]
+    [InlineData("\"CheckpointPayload\" = NULL", "UnreadableCheckpoint")]
 
-    [InlineData("\"CheckpointPayload\" = X''")]
+    [InlineData("\"CheckpointPayload\" = X''", "UnreadableCheckpoint")]
 
-    [InlineData("\"CheckpointPayload\" = 'text payload'")]
+    [InlineData("\"CheckpointPayload\" = 'text payload'", "UnreadableCheckpoint")]
 
-    [InlineData("\"CheckpointPayload\" = zeroblob(4097)")]
+    [InlineData("\"CheckpointPayload\" = zeroblob(4097)", "UnreadableCheckpoint")]
 
-    [InlineData("\"State\" = 99")]
+    [InlineData("\"State\" = 99", "MalformedRow")]
 
-    [InlineData("\"State\" = 'running'")]
+    [InlineData("\"State\" = 0", "MalformedRow")]
 
-    [InlineData("\"RecoveryPolicy\" = 99")]
+    [InlineData("\"RecoveryPolicy\" = 0", "PolicyMismatch")]
 
-    [InlineData("\"RecoveryPolicy\" = 'policy'")]
+    [InlineData("\"Revision\" = 'private-revision-canary'", "MalformedRow")]
 
-    [InlineData("\"CheckpointVersion\" = 99")]
+    [InlineData("\"State\" = 'running'", "MalformedRow")]
 
-    [InlineData("\"CheckpointVersion\" = 'version'")]
+    [InlineData("\"RecoveryPolicy\" = 99", "MalformedRow")]
 
-    [InlineData("\"Id\" = upper(\"Id\")")]
+    [InlineData("\"RecoveryPolicy\" = 'policy'", "MalformedRow")]
 
-    [InlineData("\"CheckpointReference\" = upper(\"CheckpointReference\")")]
+    [InlineData("\"CheckpointVersion\" = 99", "UnsupportedVersion")]
+
+    [InlineData("\"CheckpointVersion\" = 'version'", "MalformedRow")]
+
+    [InlineData("\"Id\" = upper(\"Id\")", "MalformedRow")]
+
+    [InlineData("\"CheckpointReference\" = upper(\"CheckpointReference\")", "UnreadableCheckpoint")]
     public async Task Malformed_current_evidence_refuses_without_installing_an_owner(
-        string assignment)
+        string assignment, string reason)
     {
         RequireSqlCipher();
 
@@ -177,16 +191,35 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
 
         Assert.True(adopted.IsFailure);
 
+        Assert.Contains($"Reason={reason}", adopted.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("private-revision-canary", adopted.Error.Message, StringComparison.Ordinal);
+
+        Assert.NotNull(adopted.Error.CovenantStartupFailure);
+
+        using JsonDocument wire = JsonDocument.Parse(JsonSerializer.Serialize(adopted.Error, ArcanumJsonContext.Default.Error));
+
+        Assert.DoesNotContain(wire.RootElement.EnumerateObject(), static property =>
+            property.Name.Equals("covenantStartupFailure", StringComparison.OrdinalIgnoreCase));
+
+        if (assignment.Contains("\"Id\"", StringComparison.Ordinal))
+        {
+            Assert.DoesNotContain(owner.OperationId.ToString("N"), adopted.Error.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        else
+        {
+            Assert.Contains(owner.OperationId.ToString("N"), adopted.Error.Message, StringComparison.Ordinal);
+        }
+
         Assert.True((await gate.ResumeExclusiveAsync(owner, CancellationToken.None)).IsFailure);
     }
 
     /// <summary>
-    /// A launch whose own identity fields disagree with the plan is refused, and says nothing.
+    /// A launch whose own identity fields disagree with the plan is refused without echoing content.
     /// </summary>
     /// <remarks>
-    /// The three cases are the three ways a payload can decode as a launch and still be the wrong
-    /// one: an exclusive operation this kind never launches, a digest that is not a canonical effect,
-    /// and a target tuple whose members were transposed. The last is the subtle one — every transposed
+    /// Both launch kinds refuse wrong exclusive operations and mismatched operation IDs distinctly
+    /// from unreadable JSON, noncanonical digests and transposed target tuples. The last is the subtle one — every transposed
     /// target is still some source plus one, so a rule that compared the tuples as sets would admit a
     /// launch that later verified a replaced family against the wrong counter.
     ///
@@ -196,17 +229,23 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
     /// </remarks>
     [SkippableTheory]
 
-    [InlineData(0)]
-
-    [InlineData(1)]
-
-    [InlineData(2)]
-    public async Task Malformed_current_payload_identity_refuses_content_free(int malformedPart)
+    [InlineData(0, LongRunningOperationKinds.DataRetentionMutation)]
+    [InlineData(1, LongRunningOperationKinds.DataRetentionMutation)]
+    [InlineData(2, LongRunningOperationKinds.DataRetentionMutation)]
+    [InlineData(3, LongRunningOperationKinds.DataRetentionMutation)]
+    [InlineData(4, LongRunningOperationKinds.DataRetentionMutation)]
+    [InlineData(0, LongRunningOperationKinds.DataRetentionFactoryReset)]
+    [InlineData(1, LongRunningOperationKinds.DataRetentionFactoryReset)]
+    [InlineData(2, LongRunningOperationKinds.DataRetentionFactoryReset)]
+    [InlineData(3, LongRunningOperationKinds.DataRetentionFactoryReset)]
+    [InlineData(4, LongRunningOperationKinds.DataRetentionFactoryReset)]
+    public async Task Malformed_current_payload_identity_refuses_content_free(int malformedPart, string kind)
     {
         RequireSqlCipher();
 
-        CovenantExclusiveRecoveryOwner owner = await SeedCurrentAsync(
-            LongRunningOperationKinds.DataRetentionMutation);
+        CovenantExclusiveRecoveryOwner owner = await SeedCurrentAsync(kind);
+
+        Guid payloadOperationId = malformedPart == 3 ? Guid.NewGuid() : owner.OperationId;
 
         string digest = malformedPart == 1
             ? "xyz"
@@ -214,7 +253,7 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
 
         CovenantExclusiveOperation operation = malformedPart == 0
             ? CovenantExclusiveOperation.SchemaRepair
-            : CovenantExclusiveOperation.CovenantReset;
+            : owner.Operation;
 
         CovenantOfflineTransitionEpochsV1 target = malformedPart == 2
             ? new CovenantOfflineTransitionEpochsV1(
@@ -223,10 +262,10 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
                 SourceEpochs.EnvelopeKeyEpoch + 1)
             : TargetEpochs;
 
-        byte[] payload = CovenantRecoveryCheckpointCodec.Encode(
-            new CovenantOfflineTransitionLaunchV4(
+        byte[] payload = kind == LongRunningOperationKinds.DataRetentionMutation
+            ? CovenantRecoveryCheckpointCodec.Encode(new CovenantOfflineTransitionLaunchV4(
                 CovenantOfflineTransitionLaunchV4.CurrentVersion,
-                owner.OperationId,
+                payloadOperationId,
                 LongRunningOperationKinds.DataRetentionMutation,
                 nameof(LongRunningOperationRecoveryPolicy.ReconcileAndComplete),
                 operation,
@@ -235,19 +274,53 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
                 TargetGeneration,
                 SourceEpochs,
                 target,
+                StartingRevision: 0))
+            : CovenantRecoveryCheckpointCodec.Encode(new DataRetentionFactoryTransitionLaunchV2(
+                DataRetentionFactoryTransitionLaunchV2.CurrentVersion,
+                payloadOperationId,
+                LongRunningOperationKinds.DataRetentionFactoryReset,
+                nameof(LongRunningOperationRecoveryPolicy.RestartIdempotently),
+                operation,
+                digest,
+                SourceGeneration,
+                TargetGeneration,
+                SourceEpochs,
+                target,
                 StartingRevision: 0));
+
+        if (malformedPart == 4)
+        {
+            payload = "{private-payload-canary"u8.ToArray();
+        }
 
         await ExecuteAsync(
             "UPDATE \"LongRunningOperations\" SET \"CheckpointPayload\" = @payload;",
             ("@payload", payload));
 
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
         Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> adopted = await new
-            CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperationGateFixture.CreateGate())
+            CovenantErasureStartupRecoveryOwnerAdopter(gate)
             .AdoptBeforeReadinessAsync(Connection, CancellationToken.None);
 
         Assert.True(adopted.IsFailure);
 
+        Assert.Equal(
+            malformedPart is 0 or 3 ? CovenantStartupFailureReason.WrongOperation : CovenantStartupFailureReason.UnreadableCheckpoint,
+            adopted.Error.CovenantStartupFailure?.Reason);
+
+        Assert.Equal(owner.OperationId, adopted.Error.CovenantStartupFailure?.OperationId);
+
+        Assert.True((await gate.ResumeExclusiveAsync(owner, CancellationToken.None)).IsFailure);
+
         Assert.DoesNotContain("xyz", adopted.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("private-payload-canary", adopted.Error.Message, StringComparison.Ordinal);
+
+        if (malformedPart == 3)
+        {
+            Assert.DoesNotContain(payloadOperationId.ToString("N"), adopted.Error.Message, StringComparison.Ordinal);
+        }
     }
 
     /// <summary>
@@ -402,6 +475,10 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
 
         Assert.True(adopted.IsFailure);
 
+        Assert.Contains("Reason=SecondOwner", adopted.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains(second.OperationId.ToString("N"), adopted.Error.Message, StringComparison.Ordinal);
+
         Assert.True((await gate.ResumeExclusiveAsync(first, CancellationToken.None)).IsFailure);
 
         Assert.True((await gate.ResumeExclusiveAsync(second, CancellationToken.None)).IsFailure);
@@ -421,8 +498,12 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
 
         conflict.AdoptDurableRecoveryOwner(existing, null, cleanupOnlyHistoricalCampaign: false);
 
-        Assert.True((await new CovenantErasureStartupRecoveryOwnerAdopter(conflict)
-            .AdoptBeforeReadinessAsync(Connection, CancellationToken.None)).IsFailure);
+        Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> conflictResult = await new
+            CovenantErasureStartupRecoveryOwnerAdopter(conflict).AdoptBeforeReadinessAsync(Connection, CancellationToken.None);
+
+        Assert.True(conflictResult.IsFailure);
+
+        Assert.Equal(CovenantStartupFailureReason.GateRefused, conflictResult.Error.CovenantStartupFailure?.Reason);
 
         CovenantOperationGate ready = CovenantOperationGateFixture.CreateGate();
 
@@ -444,6 +525,113 @@ public sealed class CovenantErasureStartupRecoveryOwnerAdopterTests : IAsyncLife
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new
             CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperationGateFixture.CreateGate())
             .AdoptBeforeReadinessAsync(Connection, cancelled.Token));
+    }
+
+    [SkippableTheory]
+    [InlineData("00000000000000000000000000000000")]
+    [InlineData("private-id-canary\nforged warning")]
+    public async Task Invalid_operation_identity_is_never_reported_as_a_validated_identifier(string rawId)
+    {
+        RequireSqlCipher();
+
+        _ = await SeedCurrentAsync(LongRunningOperationKinds.DataRetentionMutation);
+
+        await ExecuteAsync("UPDATE \"LongRunningOperations\" SET \"Id\" = @id;", ("@id", rawId));
+
+        Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> result = await new
+            CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperationGateFixture.CreateGate())
+            .AdoptBeforeReadinessAsync(Connection, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Null(result.Error.CovenantStartupFailure?.OperationId);
+
+        Assert.DoesNotContain(rawId, result.Error.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Missing_operation_table_reports_bounded_storage_fault_without_sql_text()
+    {
+        RequireSqlCipher();
+
+        await ExecuteAsync("ALTER TABLE \"LongRunningOperations\" RENAME TO \"private-table-canary\";");
+
+        Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> adopted = await new
+            CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperationGateFixture.CreateGate())
+            .AdoptBeforeReadinessAsync(Connection, CancellationToken.None);
+
+        Assert.True(adopted.IsFailure);
+
+        Assert.Contains("Reason=StorageFault", adopted.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("Sqlite", adopted.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("SQLite=1", adopted.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("LongRunningOperations", adopted.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("private-table-canary", adopted.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Unexpected_storage_exception_reports_only_closed_category_and_no_message()
+    {
+        await using FaultingOpenConnection connection = new(() => new IOException("private-exception-canary"));
+
+        Result<CovenantErasureStartupRecoveryOwnerAdopter.AdoptedOwner?> result = await new
+            CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperationGateFixture.CreateGate())
+            .AdoptBeforeReadinessAsync(connection, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(CovenantStartupFailureReason.StorageFault, result.Error.CovenantStartupFailure?.Reason);
+
+        Assert.Equal(GrimoireConnectionFailureKind.IO, result.Error.CovenantStartupFailure?.FailureKind);
+
+        Assert.Null(result.Error.CovenantStartupFailure?.OperationId);
+
+        Assert.DoesNotContain("private-exception-canary", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Cancellation_during_storage_access_is_preserved()
+    {
+        using CancellationTokenSource cancellation = new();
+
+        await using FaultingOpenConnection connection = new(() =>
+        {
+            cancellation.Cancel();
+
+            return new OperationCanceledException(cancellation.Token);
+        });
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new
+            CovenantErasureStartupRecoveryOwnerAdopter(CovenantOperationGateFixture.CreateGate())
+            .AdoptBeforeReadinessAsync(connection, cancellation.Token));
+    }
+
+    private sealed class FaultingOpenConnection(Func<Exception> failure) : DbConnection
+    {
+        [System.Diagnostics.CodeAnalysis.AllowNull]
+        public override string ConnectionString { get; set; } = string.Empty;
+
+        public override string Database => string.Empty;
+
+        public override string DataSource => string.Empty;
+
+        public override string ServerVersion => string.Empty;
+
+        public override ConnectionState State => ConnectionState.Open;
+
+        public override void ChangeDatabase(string databaseName) => throw new NotSupportedException();
+
+        public override void Close() { }
+
+        public override void Open() => throw new NotSupportedException();
+
+        protected override DbTransaction BeginDbTransaction(IsolationLevel isolationLevel) => throw new NotSupportedException();
+
+        protected override DbCommand CreateDbCommand() => throw failure();
     }
 
     private async Task<CovenantExclusiveRecoveryOwner> SeedCurrentAsync(string kind)
