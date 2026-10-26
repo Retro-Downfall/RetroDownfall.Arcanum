@@ -130,6 +130,21 @@ internal static partial class OpenAiV1Endpoints
                             $"messages[{i}].content[{j}].type",
                             StatusCodes.Status400BadRequest);
                     }
+
+                    if (part is not null && string.Equals(part.Type, "image_url", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Result imageUrlShape = ScryingValidator.ValidateImageUrlShape(part.ImageUrl?.Url, i, j);
+
+                        if (imageUrlShape.IsFailure)
+                        {
+                            return new ChatCompletionValidationFailure(
+                                imageUrlShape.Error.Message,
+                                "invalid_request_error",
+                                MapScryingOpenAiErrorCode(imageUrlShape.Error.Code),
+                                $"messages[{i}].content[{j}].image_url.url",
+                                ArcanumErrorMapper.ResolveStatusCode(imageUrlShape.Error.Code));
+                        }
+                    }
                 }
             }
         }

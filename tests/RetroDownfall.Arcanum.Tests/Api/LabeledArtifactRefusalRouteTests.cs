@@ -216,6 +216,111 @@ public sealed class LabeledArtifactRefusalRouteTests
         Assert.Equal(1, await CountAsync(factory, "saga_memories", "Id", memoryId));
     }
 
+    [SkippableTheory]
+    [InlineData("maintenance", HttpStatusCode.ServiceUnavailable, ErrorCodes.Grimoire.MaintenanceUnavailable)]
+    [InlineData("unexpected", HttpStatusCode.InternalServerError, ErrorCodes.Hub.Unhandled)]
+    [InlineData("blocked", HttpStatusCode.ServiceUnavailable, ErrorCodes.Covenant.ManualArtifactErasureRequired)]
+    [InlineData("storage", HttpStatusCode.ServiceUnavailable, ErrorCodes.Covenant.Unavailable)]
+    public async Task Embedding_reset_preserves_the_failure_kind_and_never_truncates_on_refusal(
+        string failure,
+        HttpStatusCode status,
+        string code)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = Host(services =>
+            services.AddScoped<ICovenantSensitiveArtifactPurger>(_ => new ResetFailurePurger(failure)));
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid memoryId = await InsertSagaAsync(factory);
+
+        await LabelSagaAsync(factory, memoryId);
+
+        using HttpResponseMessage response = await client.PostAsync("/api/embeddings/reset?confirm=true&scope=saga", null);
+
+        ApiResponse<EmbeddingsResetResult> body = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseEmbeddingsResetResult);
+
+        Assert.Equal(status, response.StatusCode);
+
+        Assert.Equal(code, body.Error?.Code);
+
+        Assert.DoesNotContain("private-reset-canary", body.Error?.Message, StringComparison.Ordinal);
+
+        Assert.Equal(1, await CountAsync(factory, "saga_memories", "Id", memoryId));
+    }
+
+    private sealed class ResetFailurePurger(string failure) : ICovenantSensitiveArtifactPurger
+    {
+        public ValueTask<Result<CovenantSensitivePurgeOutcome>> PurgeAsync(
+            IReadOnlyList<CovenantSensitivePurgeTarget> targets,
+            CancellationToken cancellationToken = default)
+        {
+            if (failure == "maintenance")
+            {
+                throw new GrimoireMaintenanceUnavailableException();
+            }
+
+            if (failure == "unexpected")
+            {
+                throw new InvalidOperationException("private-reset-canary\r\n");
+            }
+
+            CovenantErasureBlocker blocker = failure == "storage"
+                ? CovenantErasureBlocker.StorageUnavailable
+                : CovenantErasureBlocker.ManualOwnershipMismatch;
+
+            return ValueTask.FromResult(Result<CovenantSensitivePurgeOutcome>.Success(new(
+                [new(targets[0].ArtifactId, targets[0].Kind, CovenantSensitivePurgeDisposition.Blocked, blocker)],
+                new(1, 0, 1, blocker))));
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData("", false)]
+    [InlineData("%20", false)]
+    [InlineData("%09", false)]
+    [InlineData("private-scope-canary%0A", false)]
+    [InlineData("all", true)]
+    [InlineData(null, true)]
+    public async Task Explicit_empty_embedding_scope_refuses_without_erasing_while_omission_keeps_all_contract(
+        string? scope,
+        bool valid)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = Host(static _ => { });
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid memoryId = await InsertSagaAsync(factory);
+
+        string query = scope is null ? "" : "&scope=" + scope;
+
+        using HttpResponseMessage response = await client.PostAsync("/api/embeddings/reset?confirm=true" + query, null);
+
+        ApiResponse<EmbeddingsResetResult> body = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseEmbeddingsResetResult);
+
+        Assert.Equal(valid ? HttpStatusCode.OK : HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Equal(valid, body.IsSuccess);
+
+        if (!valid)
+        {
+            Assert.Equal(ErrorCodes.Validation.InvalidBody, body.Error?.Code);
+
+            Assert.Contains("Allowed:", body.Error?.Message, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("private-scope-canary", body.Error?.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(valid ? 0 : 1, await CountAsync(factory, "saga_memories", "Id", memoryId));
+    }
+
     /// <summary>
     /// A host with memory management and the Saga on, and the supplied registrations in front of the
     /// composition's own.

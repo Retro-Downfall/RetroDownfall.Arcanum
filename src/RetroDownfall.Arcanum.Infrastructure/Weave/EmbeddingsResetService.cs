@@ -435,8 +435,9 @@ public sealed class EmbeddingsResetService(
                     "The sensitivity purge could not finish, so this embeddings reset was stopped before any table was truncated."));
             }
 
-            throw new InvalidOperationException(
-                "A protected artifact selected by this embeddings reset could not be erased and was left unchanged.");
+            throw new LabeledArtifactRefusalException(new Error(
+                ErrorCodes.Covenant.ManualArtifactErasureRequired,
+                "A protected artifact selected by this embeddings reset could not be erased and was left unchanged."));
         }
 
         Dictionary<string, int> deleted = [];

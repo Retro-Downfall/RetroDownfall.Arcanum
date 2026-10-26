@@ -37,7 +37,11 @@ internal static class ClientToolCapabilityValidator
     {
         if (!request.ForwardClientTools)
         {
-            return Result.Success();
+            return request.ClientTools is not null || request.ClientToolChoice is not null
+                ? Result.Failure(new Error(
+                    ErrorCodes.ClientTools.InvalidSchema,
+                    "clientTools and clientToolChoice require forwardClientTools=true."))
+                : Result.Success();
         }
 
         ClientToolForwardingSettings clientTools = settings.ResolveClientTools();
@@ -55,7 +59,8 @@ internal static class ClientToolCapabilityValidator
                 tools,
                 clientTools.MaxClientTools,
                 ArcanumSettingClamps.JsonSchemaMaxDepth(
-                    ArcanumRuntimeDefaults.StructuredOutput.SchemaMaxDepth));
+                    ArcanumRuntimeDefaults.StructuredOutput.SchemaMaxDepth),
+                fieldName: "clientTools");
 
             if (definitions.IsFailure)
             {
@@ -108,7 +113,8 @@ internal static class ClientToolCapabilityValidator
     internal static Result ValidateToolDefinitions(
         OpenAiToolDefinition[] tools,
         int configuredMaxClientTools,
-        int schemaMaxDepth)
+        int schemaMaxDepth,
+        string fieldName = "tools")
     {
         int maxClientTools = ArcanumSettingClamps.ClientToolForwardingMaxClientTools(
             configuredMaxClientTools);
@@ -128,17 +134,17 @@ internal static class ClientToolCapabilityValidator
 
             if (tool is null)
             {
-                return InvalidDefinition($"tools[{index}] cannot be null.");
+                return InvalidDefinition($"{fieldName}[{index}] cannot be null.");
             }
 
             if (!string.Equals(tool.Type, "function", StringComparison.Ordinal))
             {
-                return InvalidDefinition($"tools[{index}].type must be 'function'.");
+                return InvalidDefinition($"{fieldName}[{index}].type must be 'function'.");
             }
 
             if (string.IsNullOrWhiteSpace(tool.Function?.Name))
             {
-                return InvalidDefinition($"tools[{index}].function.name is required.");
+                return InvalidDefinition($"{fieldName}[{index}].function.name is required.");
             }
 
             if (!seenNames.Add(tool.Function.Name))
@@ -158,7 +164,7 @@ internal static class ClientToolCapabilityValidator
             if (parametersElement.ValueKind != JsonValueKind.Object)
             {
                 return InvalidDefinition(
-                    $"tools[{index}].function.parameters must be a valid JSON Schema object.");
+                    $"{fieldName}[{index}].function.parameters must be a valid JSON Schema object.");
             }
 
             using JsonDocument parametersDocument = JsonDocument.Parse(
@@ -171,7 +177,7 @@ internal static class ClientToolCapabilityValidator
             if (parsedSchema.IsFailure)
             {
                 return InvalidDefinition(
-                    $"tools[{index}].function.parameters is not a valid JSON Schema: "
+                    $"{fieldName}[{index}].function.parameters is not a valid JSON Schema: "
                     + parsedSchema.Error.Message);
             }
         }
