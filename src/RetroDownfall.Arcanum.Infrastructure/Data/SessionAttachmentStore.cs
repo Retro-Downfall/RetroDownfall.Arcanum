@@ -1703,18 +1703,17 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
             if (record is null)
             {
-                throw new InvalidOperationException($"Attachment '{attachmentId}' was not found.");
+                throw new SessionAttachmentReferenceException(attachmentId, SessionAttachmentReferenceFailure.NotFound);
             }
 
             if (record.State != SessionAttachmentState.Bound)
             {
-                throw new InvalidOperationException($"Attachment '{attachmentId}' is not bound.");
+                throw new SessionAttachmentReferenceException(attachmentId, SessionAttachmentReferenceFailure.NotBound);
             }
 
             if (record.SessionId != sessionId)
             {
-                throw new InvalidOperationException(
-                    $"Attachment '{attachmentId}' does not belong to session '{sessionId}'.");
+                throw new SessionAttachmentReferenceException(attachmentId, SessionAttachmentReferenceFailure.WrongSession);
             }
         }
     }

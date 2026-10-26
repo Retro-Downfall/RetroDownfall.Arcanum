@@ -244,7 +244,7 @@ public static class SessionAttachmentToolInjection
     /// The code-owned reason a document put no text into the turn: the extraction's own fixed reason, which
     /// never echoes an entry name, part name or document text, and for a busy family a hint to try again.
     /// </summary>
-    private static string NotExtractedReason(SessionAttachmentExtractionResult extraction) =>
+    internal static string NotExtractedReason(SessionAttachmentExtractionResult extraction) =>
         extraction.Status switch
         {
             SessionAttachmentExtractionStatus.Deferred =>

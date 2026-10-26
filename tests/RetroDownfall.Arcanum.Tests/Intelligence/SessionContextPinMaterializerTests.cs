@@ -17,7 +17,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 [Collection("Grimoire")]
-public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) : IAsyncLifetime
+public sealed partial class SessionContextPinMaterializerTests(GrimoireFixture fixture) : IAsyncLifetime
 {
     [Theory]
     [InlineData(false, "application/vnd.arcanum.comprehension-text")]

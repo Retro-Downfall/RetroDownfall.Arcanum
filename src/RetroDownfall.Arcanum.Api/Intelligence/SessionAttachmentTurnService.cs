@@ -342,7 +342,8 @@ public static class SessionAttachmentTurnService
                 [],
                 [],
                 null,
-                PublicPersistenceFailureMessage);
+                PublicPersistenceFailureMessage,
+                ErrorCode: ex is AttachmentLimitExceededException ? ErrorCodes.Validation.AttachedFiles : ErrorCodes.Hub.Error);
         }
     }
 
@@ -387,7 +388,8 @@ public static class SessionAttachmentTurnService
         ISessionAttachmentStore store,
         ArcanumSettings settings,
         string resolvedModel,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(record);
 
@@ -463,7 +465,7 @@ public static class SessionAttachmentTurnService
                 {
                     return new SessionAttachmentReferenceMaterialization(
                         [],
-                        $"Attachment '{ResolveReferenceLabel(record, record.Id.ToString())}' could not be extracted for model context.");
+                        $"Attachment '{ResolveReferenceLabel(record, record.Id.ToString())}': {SessionAttachmentToolInjection.NotExtractedReason(extraction)}");
                 }
 
                 string text = SessionAttachmentToolInjection.BoundExtractedText(extraction, maxTextBytes, out bool truncated);
@@ -508,13 +510,18 @@ public static class SessionAttachmentTurnService
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            logger?.LogWarning(
+                "Session attachment materialization failed for attachment {AttachmentId}; exception type {ExceptionType}.",
+                record.Id,
+                ex.GetType().FullName);
+
             string label = ResolveReferenceLabel(record, record.Id.ToString());
 
             return new SessionAttachmentReferenceMaterialization(
                 [],
-                $"Attachment '{label}' could not be read for model context. Retry the request or refresh the attachment.");
+                $"Attachment '{label}' could not be read for model context. Refresh or replace the attachment before using it again.");
         }
     }
 
@@ -643,7 +650,8 @@ public sealed record SessionAttachmentTurnPreparation(
     string? PendingTurnId,
     string? ErrorMessage,
     IReadOnlySet<Guid>? VisibleAttachmentIds = null,
-    IReadOnlyList<SessionAttachmentExplicitMaterialization>? ExplicitMaterializations = null);
+    IReadOnlyList<SessionAttachmentExplicitMaterialization>? ExplicitMaterializations = null,
+    string ErrorCode = ErrorCodes.Validation.AttachedFiles);
 
 public sealed record SessionAttachmentExplicitMaterialization(
     SessionAttachmentRecord Record,

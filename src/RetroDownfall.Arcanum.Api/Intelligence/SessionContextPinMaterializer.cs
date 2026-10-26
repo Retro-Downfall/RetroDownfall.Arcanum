@@ -934,7 +934,7 @@ public sealed class SessionContextPinMaterializer(
             if (extraction.Status != SessionAttachmentExtractionStatus.Extracted
                 || string.IsNullOrWhiteSpace(extraction.Text))
             {
-                return new(SessionContextPinStatus.Error, null, "Document text extraction failed or produced no text.");
+                return new(SessionContextPinStatus.Error, null, SessionAttachmentToolInjection.NotExtractedReason(extraction));
             }
 
             materialized = FromText(extraction.Text, byteLimit);

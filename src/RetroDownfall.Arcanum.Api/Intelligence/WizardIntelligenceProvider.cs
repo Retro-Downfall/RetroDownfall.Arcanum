@@ -1986,13 +1986,13 @@ public sealed partial class WizardIntelligenceProvider(
                 if (!streaming)
                 {
                     classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
-                        new Error(ErrorCodes.Validation.AttachedFiles, streamAttachmentPrep.ErrorMessage));
+                        new Error(streamAttachmentPrep.ErrorCode, streamAttachmentPrep.ErrorMessage));
                 }
 
                 if (streaming)
                 {
                     yield return await FailureFrameAsync(
-                        new Error(ErrorCodes.Validation.AttachedFiles, streamAttachmentPrep.ErrorMessage));
+                        new Error(streamAttachmentPrep.ErrorCode, streamAttachmentPrep.ErrorMessage));
                 }
 
                 await grimoireTurnWriter
@@ -2815,7 +2815,8 @@ public sealed partial class WizardIntelligenceProvider(
                             sessionAttachmentStore,
                             settings.Value,
                             lease.ResolvedModel,
-                            inferenceToken).ConfigureAwait(false);
+                            inferenceToken,
+                            logger).ConfigureAwait(false);
 
                     if (reference.ErrorMessage is not null)
                     {

@@ -48,6 +48,15 @@ public sealed class SessionAttachmentTurnServiceTests
     }
 
     [Fact]
+    public async Task AttachmentDiagnostics_Preparation_keeps_typed_storage_limit_in_its_existing_validation_contract()
+    {
+        FakeSessionAttachmentStore store = new() { PersistThrows = true, PersistFailure = new AttachmentLimitExceededException("private-limit-canary") };
+        SessionAttachmentTurnPreparation result = await SessionAttachmentTurnService.PrepareAsync(new PingRequest("hello", SessionId: Guid.NewGuid(), AttachedFiles: [new AttachedFileDto("notes.txt", "content")]), store, new ArcanumSettings(), null, null, null);
+        Assert.Equal(RetroDownfall.Arcanum.Core.Primitives.ErrorCodes.Validation.AttachedFiles, result.ErrorCode);
+        Assert.DoesNotContain("private-limit-canary", result.ErrorMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Comprehension_reference_materializes_stored_document_as_untrusted_data()
     {
         byte[] bytes = Encoding.UTF8.GetBytes("ARCCOMP1\nReferenced document sentinel ``` fence");
@@ -812,6 +821,8 @@ public sealed class SessionAttachmentTurnServiceTests
 
         public ReadOnlyMemory<byte> LastBytes { get; private set; }
 
+        public Exception? PersistFailure { get; init; }
+
         public bool PersistThrows { get; init; }
 
         /// <summary>1-based persist call that throws, after earlier calls already succeeded.</summary>
@@ -880,7 +891,7 @@ public sealed class SessionAttachmentTurnServiceTests
 
             if (PersistThrows)
             {
-                throw new InvalidOperationException(PersistFailureCanary);
+                throw PersistFailure ?? new InvalidOperationException(PersistFailureCanary);
             }
 
             Guid id = Guid.NewGuid();
@@ -1105,7 +1116,7 @@ public sealed class SessionAttachmentTurnServiceTests
             {
                 if (!ValidIds.Contains(id))
                 {
-                    throw new InvalidOperationException($"Attachment '{id}' was not found.");
+                    throw new SessionAttachmentReferenceException(id, SessionAttachmentReferenceFailure.NotFound);
                 }
             }
 
