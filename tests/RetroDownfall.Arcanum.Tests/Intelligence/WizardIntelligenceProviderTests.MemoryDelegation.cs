@@ -581,6 +581,10 @@ public sealed partial class WizardIntelligenceProviderTests
             Assert.Equal(scenario == "oscillate" ? 4 : 3, chat.BufferedCallCount);
             Assert.Contains(logger.Entries, entry => entry.Message.Contains("no progress", StringComparison.Ordinal));
             Assert.DoesNotContain(logger.Entries, entry => entry.Message.Contains("signature", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(toolName, result.Error.Message, StringComparison.Ordinal);
+            Assert.Contains("request", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(logger.Entries.Where(entry => entry.Message.Contains("no progress", StringComparison.Ordinal)),
+                entry => entry.Message.Contains(toolName, StringComparison.Ordinal));
         }
         else
         {

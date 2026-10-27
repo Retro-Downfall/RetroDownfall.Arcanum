@@ -205,24 +205,12 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
                 static (_, _) => Task.FromResult(Result.Success()),
                 cancellationToken).ConfigureAwait(false);
 
-            Result erased = await EraseProtectedStateAsync(operation, state, authority.Value, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (erased.IsFailure)
-            {
-                // A manual file blocker leaves the family intact and admission closed. Dropping the
-                // family now would destroy the database's own record of a file it still cannot prove
-                // it removed from disk.
-                return await CloseAsync(lease, CovenantExclusiveLeaseDisposition.KeepClosed, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-
             state = await AdvanceAsync(
                 operation,
                 state,
                 ownerId,
                 CovenantFamilyReinitializePhase.LocalArtifactsProcessed,
-                static (_, _) => Task.FromResult(Result.Success()),
+                (current, token) => EraseProtectedStateAsync(operation, current, authority.Value, token),
                 cancellationToken).ConfigureAwait(false);
 
             state = await AdvanceAsync(
@@ -573,10 +561,10 @@ internal sealed class CovenantFamilyReinitializeRecoveryHandler : ILongRunningOp
                     LongRunningOperationErrorCodes.CorruptCheckpoint));
         }
 
+        // Storage verification precedes publication and writer reopening. No checkpoint proves that
+        // suffix completed, so every readable checkpoint still belongs to the live resume owner.
         return Task.FromResult(
-            checkpoint.Value.Phase == CovenantFamilyReinitializePhase.ReopenedVerified
-                ? LongRunningOperationRecoveryResult.Completed()
-                : LongRunningOperationRecoveryResult.RequiresAttention(CovenantReinitializeResumeRequired));
+            LongRunningOperationRecoveryResult.RequiresAttention(CovenantReinitializeResumeRequired));
     }
 
     /// <summary>The terminal code for a reinitialize that never closed admission.</summary>

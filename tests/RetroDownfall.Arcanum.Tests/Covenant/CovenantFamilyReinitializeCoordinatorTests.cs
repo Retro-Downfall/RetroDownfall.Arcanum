@@ -193,6 +193,68 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
         Assert.DoesNotContain(skippedStep, harness.Steps);
     }
 
+    [Theory]
+    [InlineData(CovenantFamilyReinitializePhase.LocalArtifactsProcessed)]
+    [InlineData(CovenantFamilyReinitializePhase.HandlesClosed)]
+    [InlineData(CovenantFamilyReinitializePhase.FamilyDropped)]
+    [InlineData(CovenantFamilyReinitializePhase.DatabaseCompacted)]
+    [InlineData(CovenantFamilyReinitializePhase.CanonicalInstalled)]
+    [InlineData(CovenantFamilyReinitializePhase.AcceleratorInstalled)]
+    [InlineData(CovenantFamilyReinitializePhase.FinalWalTruncated)]
+    [InlineData(CovenantFamilyReinitializePhase.SidecarsVerified)]
+    [InlineData(CovenantFamilyReinitializePhase.ReopenedVerified)]
+    public async Task Recorded_artifact_processing_is_never_repeated_during_resume(CovenantFamilyReinitializePhase phase)
+    {
+        CoordinatorHarness harness = new();
+
+        await harness.CloseAndAdoptAsync();
+
+        Result<CovenantExclusiveLeaseDisposition> result = await harness.RunAsync(phase);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.CommitAndReopen, result.Value);
+
+        Assert.Equal(0, harness.Source.Calls);
+
+        Assert.Equal(0, harness.Artifacts.Calls);
+
+        Assert.Equal(0, harness.ManagedFiles.Calls);
+
+        Assert.DoesNotContain("erase-artifacts", harness.Steps);
+
+        Assert.DoesNotContain("erase-managed-files", harness.Steps);
+
+        Assert.Equal(["publish", "reopen-writer"], harness.Steps.TakeLast(2));
+    }
+
+    [Theory]
+    [InlineData(CovenantFamilyReinitializePhase.Planned)]
+    [InlineData(CovenantFamilyReinitializePhase.AdmissionClosed)]
+    public async Task Unrecorded_artifact_processing_still_erases_both_kinds_before_family_drop(CovenantFamilyReinitializePhase phase)
+    {
+        CoordinatorHarness harness = new();
+
+        if (phase != CovenantFamilyReinitializePhase.Planned)
+        {
+            await harness.CloseAndAdoptAsync();
+        }
+
+        Result<CovenantExclusiveLeaseDisposition> result = await harness.RunAsync(phase);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.CommitAndReopen, result.Value);
+
+        Assert.Equal(1, harness.Artifacts.Calls);
+
+        Assert.Equal(1, harness.ManagedFiles.Calls);
+
+        Assert.True(harness.Steps.IndexOf("erase-artifacts") < harness.Steps.IndexOf("drop-family"));
+
+        Assert.True(harness.Steps.IndexOf("erase-managed-files") < harness.Steps.IndexOf("drop-family"));
+    }
+
     [Fact]
     public async Task A_checkpoint_past_installation_without_its_generation_keeps_admission_closed()
     {
@@ -229,6 +291,8 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
         internal RecordingManagedFileKernel ManagedFiles { get; }
 
         internal RecordingTransition Transition { get; }
+
+        internal StubErasureSource Source { get; } = new();
 
         internal CoordinatorHarness()
         {
@@ -267,7 +331,7 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
                 _gate,
                 Artifacts,
                 ManagedFiles,
-                new StubErasureSource(),
+                Source,
                 Transition,
                 TimeProvider.System);
 
@@ -460,11 +524,16 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
 
     private sealed class StubErasureSource : ICovenantReinitializeErasureSource
     {
+        internal int Calls { get; private set; }
+
         public Task<Result<CovenantReinitializeErasureWork>> EnumerateAsync(
             Guid operationId,
             Guid datasetGeneration,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(
+            CancellationToken cancellationToken)
+        {
+            Calls++;
+
+            return Task.FromResult(
                 Result<CovenantReinitializeErasureWork>.Success(
                     new CovenantReinitializeErasureWork(
                         [
@@ -481,6 +550,7 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
                                 Guid.NewGuid(),
                                 1),
                         ])));
+        }
     }
 
     private sealed class RecordingOperationCoordinator : ILongRunningOperationCoordinator

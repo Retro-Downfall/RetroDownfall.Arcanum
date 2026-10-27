@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 /// </summary>
 public sealed class CovenantMaintenanceOperationTests
 {
-
     private static CancellationToken Token => CancellationToken.None;
 
     [Theory]
@@ -20,7 +19,6 @@ public sealed class CovenantMaintenanceOperationTests
     [InlineData("covenant-family-reinitialize")]
     public void Covenant_operation_kinds_have_exactly_one_descriptor_each(string kind)
     {
-
         LongRunningOperationRecoveryDescriptor? descriptor = LongRunningOperationRecoveryRegistry.Find(kind);
 
         Assert.NotNull(descriptor);
@@ -34,13 +32,11 @@ public sealed class CovenantMaintenanceOperationTests
         Assert.Single(
             LongRunningOperationRecoveryRegistry.Descriptors.Values,
             entry => entry.Kind == kind);
-
     }
 
     [Fact]
     public void The_kind_literals_are_pinned_and_the_reinitialize_recovers_before_state_writes()
     {
-
         Assert.Equal("covenant-index-rebuild", LongRunningOperationKinds.CovenantIndexRebuild);
 
         Assert.Equal("covenant-family-reinitialize", LongRunningOperationKinds.CovenantFamilyReinitialize);
@@ -56,13 +52,11 @@ public sealed class CovenantMaintenanceOperationTests
             LongRunningOperationRecoveryRegistry
                 .Find(LongRunningOperationKinds.CovenantIndexRebuild)!
                 .StartupPriority);
-
     }
 
     [Fact]
     public void Index_rebuild_checkpoints_round_trip_the_exact_rebuilder_cursor()
     {
-
         CovenantIndexRebuildProgress progress = new(
             CovenantOperationGateFixture.DatasetGeneration,
             AcceleratorEpoch: 4,
@@ -89,26 +83,22 @@ public sealed class CovenantMaintenanceOperationTests
         Assert.Equal(progress, decoded.Value);
 
         Assert.Equal(1, checkpoint.Version);
-
     }
 
     [Fact]
     public void A_rebuild_operation_without_a_checkpoint_decodes_as_a_fresh_cursor()
     {
-
         Result<CovenantIndexRebuildProgress?> decoded = CovenantIndexRebuildCoordinator.DecodeCheckpoint(
             Operation(LongRunningOperationKinds.CovenantIndexRebuild, checkpoint: null));
 
         Assert.True(decoded.IsSuccess);
 
         Assert.Null(decoded.Value);
-
     }
 
     [Fact]
     public async Task Rebuild_recovery_completes_a_verified_index_and_restarts_a_stale_one()
     {
-
         CovenantIndexRebuildRecoveryHandler handler = new();
 
         Assert.Equal(LongRunningOperationKinds.CovenantIndexRebuild, handler.Kind);
@@ -134,13 +124,11 @@ public sealed class CovenantMaintenanceOperationTests
         Assert.Equal(
             CovenantIndexRebuildCoordinator.CovenantIndexRebuildRestartCode,
             stale.ErrorCode);
-
     }
 
     [Fact]
     public async Task Rebuild_recovery_never_reports_an_unreadable_checkpoint_as_success()
     {
-
         LongRunningOperationRecoveryResult result = await new CovenantIndexRebuildRecoveryHandler().RecoverAsync(
             Operation(LongRunningOperationKinds.CovenantIndexRebuild, [0x7B, 0x7D]),
             Token);
@@ -148,7 +136,6 @@ public sealed class CovenantMaintenanceOperationTests
         Assert.Equal(LongRunningOperationState.Abandoned, result.State);
 
         Assert.Equal(LongRunningOperationErrorCodes.CorruptCheckpoint, result.ErrorCode);
-
     }
 
     [Theory]
@@ -162,10 +149,10 @@ public sealed class CovenantMaintenanceOperationTests
     [InlineData(CovenantFamilyReinitializePhase.AcceleratorInstalled)]
     [InlineData(CovenantFamilyReinitializePhase.FinalWalTruncated)]
     [InlineData(CovenantFamilyReinitializePhase.SidecarsVerified)]
-    public async Task Reinitialize_recovery_parks_every_nonterminal_phase_for_resume(
+    [InlineData(CovenantFamilyReinitializePhase.ReopenedVerified)]
+    public async Task Reinitialize_recovery_parks_every_checkpoint_phase_for_resume(
         CovenantFamilyReinitializePhase phase)
     {
-
         LongRunningOperationRecoveryResult result = await new CovenantFamilyReinitializeRecoveryHandler()
             .RecoverAsync(
                 Operation(
@@ -178,13 +165,11 @@ public sealed class CovenantMaintenanceOperationTests
         Assert.Equal(
             CovenantFamilyReinitializeRecoveryHandler.CovenantReinitializeResumeRequired,
             result.ErrorCode);
-
     }
 
     [Fact]
-    public async Task Reinitialize_recovery_completes_only_a_verified_reopen_and_closes_an_unstarted_row()
+    public async Task Reinitialize_recovery_does_not_infer_publication_from_verified_reopen_and_closes_an_unstarted_row()
     {
-
         CovenantFamilyReinitializeRecoveryHandler handler = new();
 
         LongRunningOperationRecoveryResult verified = await handler.RecoverAsync(
@@ -194,7 +179,9 @@ public sealed class CovenantMaintenanceOperationTests
                     ReinitializeCheckpoint(CovenantFamilyReinitializePhase.ReopenedVerified))),
             Token);
 
-        Assert.Equal(LongRunningOperationState.Completed, verified.State);
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, verified.State);
+
+        Assert.Equal(CovenantFamilyReinitializeRecoveryHandler.CovenantReinitializeResumeRequired, verified.ErrorCode);
 
         LongRunningOperationRecoveryResult unstarted = await handler.RecoverAsync(
             Operation(LongRunningOperationKinds.CovenantFamilyReinitialize, checkpoint: null),
@@ -205,13 +192,11 @@ public sealed class CovenantMaintenanceOperationTests
         Assert.Equal(
             CovenantFamilyReinitializeRecoveryHandler.CovenantReinitializeNeverStarted,
             unstarted.ErrorCode);
-
     }
 
     [Fact]
     public async Task Reinitialize_recovery_requires_attention_for_an_unreadable_checkpoint()
     {
-
         LongRunningOperationRecoveryResult result = await new CovenantFamilyReinitializeRecoveryHandler()
             .RecoverAsync(
                 Operation(LongRunningOperationKinds.CovenantFamilyReinitialize, [0x7B, 0x7D]),
@@ -220,7 +205,6 @@ public sealed class CovenantMaintenanceOperationTests
         Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
 
         Assert.Equal(LongRunningOperationErrorCodes.CorruptCheckpoint, result.ErrorCode);
-
     }
 
     private static CovenantIndexRebuildCheckpointV1 Checkpoint(CovenantIndexRebuildPhase phase) =>
@@ -284,5 +268,4 @@ public sealed class CovenantMaintenanceOperationTests
             "maintenance",
             TerminalErrorCode: null,
             Revision: 1);
-
 }

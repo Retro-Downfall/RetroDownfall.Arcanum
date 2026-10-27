@@ -2192,6 +2192,8 @@ public sealed partial class WizardIntelligenceProvider(
                     .Where((_, index) => acceptedAttachedFileIndices.Contains(index))
                     .ToList();
 
+            ToolLoopProgressDetector toolLoopProgressDetector = new();
+
             PingRequest streamContextRequest = request with
             {
                 ScryingFoci = request.ScryingFoci is null
@@ -2948,7 +2950,8 @@ public sealed partial class WizardIntelligenceProvider(
                         request,
                         streamMaterializationLedger,
                         RemoveSemanticForAttachmentAdmission,
-                        out _);
+                        out _,
+                        progress: toolLoopProgressDetector);
 
                     if (attachmentAdmission.IsFailure)
                     {
@@ -3037,8 +3040,6 @@ public sealed partial class WizardIntelligenceProvider(
             bool streamingContextPrepared = false;
 
             bool streamToolCompatibilityRetry = false;
-
-            ToolLoopProgressDetector toolLoopProgressDetector = new();
 
             while (true)
             {
@@ -3216,7 +3217,8 @@ public sealed partial class WizardIntelligenceProvider(
                         RemoveSemanticMaterialization,
                         out ContextTokenBreakdown callBreakdown,
                         systemPromptAttribution: () => streamCachePrepared?.Build.Attribution
-                            ?? (covenantScope?.MemorySources is null ? null : streamSystemPromptDocument.BuildResult().Attribution));
+                            ?? (covenantScope?.MemorySources is null ? null : streamSystemPromptDocument.BuildResult().Attribution),
+                        progress: toolLoopProgressDetector);
 
                     if (streamContextGate.IsSuccess)
                     {
@@ -3803,6 +3805,8 @@ public sealed partial class WizardIntelligenceProvider(
                         break;
                     }
 
+                    int firstToolExchangeMessage = chatMessages.Count;
+
                     List<ToolLoopProgressEntry> toolLoopProgressEntries = new(
                         toolCalls.Count);
 
@@ -4207,21 +4211,27 @@ public sealed partial class WizardIntelligenceProvider(
                     }
 
                     if (toolLoopProgressDetector.ObserveCompletedRound(
-                            toolLoopProgressEntries))
+                            toolLoopProgressEntries,
+                            chatMessages.GetRange(firstToolExchangeMessage, chatMessages.Count - firstToolExchangeMessage)))
                     {
-                        Error noProgressError = new(
-                            ErrorCodes.Hub.NoProgressDetected,
-                            "Tool execution stopped because the latest call/result round repeated a recent round and produced no new evidence.");
+                        const string nextStep = "Narrow or change the request, or inspect the tool output before retrying.";
+                        string explanation = "Tool execution stopped because the latest call/result round repeated a recent round and produced no new evidence.";
+                        Error noProgressError;
 
                         if (covenantScope?.Protection is null)
                         {
+                            string toolNames = DescribeRepeatedTools(toolLoopProgressEntries, streamChatOptions);
+                            noProgressError = new(ErrorCodes.Hub.NoProgressDetected,
+                                $"{explanation} Tools: {toolNames}; calls: {toolLoopProgressEntries.Count}. {nextStep}");
                             logger.LogWarning(
-                                "Tool loop stopped for no progress; recurring round signature {ProgressSignature}.",
+                                "Tool loop stopped for no progress; tools {ToolNames}; calls {ToolCallCount}; session {SessionId}; recurring round signature {ProgressSignature}. Narrow the request or inspect the tool output before retrying.",
+                                toolNames, toolLoopProgressEntries.Count, grimoireTurn.SessionId ?? request.SessionId,
                                 toolLoopProgressDetector.RepeatedSignature);
                         }
                         else
                         {
-                            logger.LogWarning("Protected tool loop stopped for no progress.");
+                            noProgressError = new(ErrorCodes.Hub.NoProgressDetected, $"{explanation} {nextStep}");
+                            logger.LogWarning("Protected tool loop stopped for no progress. Narrow the request or inspect the tool output before retrying.");
                         }
 
                         inferenceTypedError = noProgressError;
@@ -4362,7 +4372,8 @@ public sealed partial class WizardIntelligenceProvider(
                                         RemoveSemanticMaterialization,
                                         out ContextTokenBreakdown retryContextBreakdown,
                                         systemPromptAttribution: () => streamCachePrepared?.Build.Attribution
-                                ?? (covenantScope?.MemorySources is null ? null : streamSystemPromptDocument.BuildResult().Attribution));
+                                ?? (covenantScope?.MemorySources is null ? null : streamSystemPromptDocument.BuildResult().Attribution),
+                        progress: toolLoopProgressDetector);
 
                                     if (retryContextGate.IsFailure)
                                     {
@@ -7374,6 +7385,28 @@ public sealed partial class WizardIntelligenceProvider(
         return inspection.ToString();
     }
 
+    private static string DescribeRepeatedTools(IReadOnlyList<ToolLoopProgressEntry> entries, ChatOptions options)
+    {
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        List<string> shown = [];
+        foreach (ToolLoopProgressEntry entry in entries)
+        {
+            AIFunction? registered = options.Tools?.OfType<AIFunction>()
+                .FirstOrDefault(tool => string.Equals(tool.Name, entry.ToolName, StringComparison.Ordinal));
+            string name = registered?.Name ?? ToolExecutionPipeline.UnregisteredToolMetricLabel;
+            if (!seen.Add(name)) continue;
+            if (shown.Count < 8)
+            {
+                string bounded = new(name.Take(64).Select(character => char.IsControl(character) || character is '\u2028' or '\u2029' ? '?' : character).ToArray());
+                if (bounded.Length > 0 && char.IsHighSurrogate(bounded[^1])) bounded = bounded[..^1];
+                shown.Add(name.Length > bounded.Length ? bounded + "…" : bounded);
+            }
+        }
+
+        string description = string.Join(", ", shown);
+        return seen.Count > shown.Count ? $"{description} (+{seen.Count - shown.Count} more tools)" : description;
+    }
+
     private Result EnsureContextBudget(
         List<MeAiChatMessage> chatMessages,
         ChatOptions chatOptions,
@@ -7655,7 +7688,8 @@ public sealed partial class WizardIntelligenceProvider(
         ContextMaterializationLedger? ledger,
         Func<ContextMaterializationEntry, bool>? onSemanticDropped,
         out ContextTokenBreakdown breakdown,
-        Func<SystemPromptAttributionMap?>? systemPromptAttribution = null)
+        Func<SystemPromptAttributionMap?>? systemPromptAttribution = null,
+        ToolLoopProgressDetector? progress = null)
     {
         int contextWindowLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
         ModelCallContext context = BuildModelCallContext(lease, request);
@@ -7683,7 +7717,8 @@ public sealed partial class WizardIntelligenceProvider(
         _ = TurnContextGuards.TryTrimOldestToolExchanges(
             chatMessages,
             Count,
-            contextWindowLimit);
+            contextWindowLimit,
+            progress);
 
         breakdown = ModelTokenEstimator.EstimateContext(
             new ModelTokenizationRequest(

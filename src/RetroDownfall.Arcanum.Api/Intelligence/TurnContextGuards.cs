@@ -120,7 +120,8 @@ internal static class TurnContextGuards
     public static bool TryTrimOldestToolExchanges(
         List<MeAiChatMessage> messages,
         Func<IReadOnlyList<MeAiChatMessage>, int> countTokens,
-        int maxTokens)
+        int maxTokens,
+        ToolLoopProgressDetector? progress = null)
     {
         int currentTokens = countTokens(messages);
 
@@ -141,6 +142,13 @@ internal static class TurnContextGuards
         // once against an empty message list and subtracted back out of every slice estimate
         // before it is applied to the running total.
         int fixedOverhead = countTokens([]);
+
+        // A notice is fixed host text. Estimate its own framed slice, subtracting the fixed
+        // call overhead already counted above, rather than rescanning the whole transcript.
+        // Framing it separately is conservative when it was appended to an existing user message;
+        // the final full estimate below is authoritative for actual admission and ceiling margins.
+        if (progress?.EnsureTrimNotice(messages) is { } notice)
+            currentTokens += countTokens([notice]) - fixedOverhead;
 
         while (currentTokens > maxTokens && guard-- > 0)
         {
@@ -183,7 +191,11 @@ internal static class TurnContextGuards
                 removeCount++;
             }
 
-            currentTokens -= countTokens(messages.GetRange(removeAt, removeCount)) - fixedOverhead;
+            List<MeAiChatMessage> removed = messages.GetRange(removeAt, removeCount);
+
+            currentTokens -= countTokens(removed) - fixedOverhead;
+
+            progress?.ObserveTrimmedExchanges(removed);
 
             messages.RemoveRange(removeAt, removeCount);
         }

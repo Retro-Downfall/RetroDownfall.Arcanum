@@ -1,5 +1,7 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
+using System.Runtime.CompilerServices;
+using Microsoft.Extensions.AI;
 using System.Text;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
@@ -10,12 +12,11 @@ internal readonly record struct ToolLoopProgressEntry(
     string ResultText);
 
 /// <summary>
-/// Detects a completed tool round that produced exactly the same calls and results as any of the
-/// last <see cref="RecentRoundWindow"/> rounds. Comparing against a window rather than only the
-/// adjacent round catches an oscillation (A, B, A, B …) that a confused model can otherwise sustain
-/// forever — the shared tool loop has no round, duration, or model-call ceiling (DESIGN §2.1), so
-/// this is the only structural stop. The window is a fixed-size ring of digests, so productive
-/// loops still run unbounded on O(1) memory with no round counter.
+/// Detects repetition in the last eight completed tool rounds. An exact host-owned message witness
+/// permits reacquiring evidence lost to context trimming once while its fingerprint is retained;
+/// another identical eviction/reacquisition cycle remains no progress. The fixed ring owns only
+/// fingerprints/flags; weak message associations retain neither removed payload nor authority.
+/// Productive loops still have no total round, duration or model-call ceiling (DESIGN §2.1).
 /// </summary>
 internal sealed class ToolLoopProgressDetector
 {
@@ -25,7 +26,11 @@ internal sealed class ToolLoopProgressDetector
     /// </summary>
     private const int RecentRoundWindow = 8;
 
-    private readonly byte[]?[] _recentFingerprints = new byte[]?[RecentRoundWindow];
+    private readonly RoundEvidence?[] _recentRounds = new RoundEvidence?[RecentRoundWindow];
+
+    private readonly ConditionalWeakTable<ChatMessage, RoundEvidence> _messageEvidence = new();
+
+    private readonly TextContent _trimNotice = new("Tool evidence trimmed; reread narrowly.");
 
     private int _nextSlot;
 
@@ -54,7 +59,8 @@ internal sealed class ToolLoopProgressDetector
         Convert.ToHexString(HMACSHA256.HashData(_protectedKey!, Encoding.UTF8.GetBytes(content)));
 
     public bool ObserveCompletedRound(
-        IReadOnlyList<ToolLoopProgressEntry> entries)
+        IReadOnlyList<ToolLoopProgressEntry> entries,
+        IReadOnlyList<ChatMessage>? exchangeMessages = null)
     {
         ArgumentNullException.ThrowIfNull(entries);
 
@@ -68,28 +74,75 @@ internal sealed class ToolLoopProgressDetector
         byte[] fingerprint = ComputeFingerprint(entries);
 
         bool repeated = false;
+        bool allEvidenceEvicted = true;
+        bool reacquisitionUsed = false;
 
-        foreach (byte[]? previous in _recentFingerprints)
+        foreach (RoundEvidence? previous in _recentRounds)
         {
-            if (previous is not null
-                && CryptographicOperations.FixedTimeEquals(previous, fingerprint))
+            if (previous is not null && CryptographicOperations.FixedTimeEquals(previous.Fingerprint, fingerprint))
             {
                 repeated = true;
-
-                break;
+                allEvidenceEvicted &= previous.EvidenceEvicted;
+                reacquisitionUsed |= previous.ReacquisitionUsed;
             }
         }
 
-        _recentFingerprints[_nextSlot] = fingerprint;
+        // A visible equivalent result is still evidence. Repeated loss never renews the allowance,
+        // including when several retained observations have this same fingerprint.
+        bool reacquiring = repeated && allEvidenceEvicted && !reacquisitionUsed;
 
-        _nextSlot = (_nextSlot + 1) % RecentRoundWindow;
-
-        if (repeated && _protectedKey is null)
+        if (reacquiring)
         {
-            RepeatedSignature = Convert.ToHexString(fingerprint.AsSpan(0, 8));
+            foreach (RoundEvidence? previous in _recentRounds)
+            {
+                if (previous is not null && CryptographicOperations.FixedTimeEquals(previous.Fingerprint, fingerprint))
+                    previous.ReacquisitionUsed = true;
+            }
         }
 
-        return repeated;
+        RoundEvidence current = new(fingerprint) { ReacquisitionUsed = reacquisitionUsed || reacquiring };
+        _recentRounds[_nextSlot] = current;
+        _nextSlot = (_nextSlot + 1) % RecentRoundWindow;
+
+        if (exchangeMessages is not null)
+        {
+            foreach (ChatMessage message in exchangeMessages)
+            {
+                if (message.Contents.Any(static content => content is FunctionCallContent or FunctionResultContent))
+                    _messageEvidence.AddOrUpdate(message, current);
+            }
+        }
+
+        bool stopped = repeated && !reacquiring;
+
+        if (stopped && _protectedKey is null)
+            RepeatedSignature = Convert.ToHexString(fingerprint.AsSpan(0, 8));
+
+        return stopped;
+    }
+
+    internal ChatMessage? EnsureTrimNotice(List<ChatMessage> messages)
+    {
+        if (messages.Any(message => message.Contents.Any(content => ReferenceEquals(content, _trimNotice)))) return null;
+        ChatMessage? user = messages.LastOrDefault(static message => message.Role == ChatRole.User);
+        if (user is null) messages.Add(new ChatMessage(ChatRole.Assistant, [_trimNotice]));
+        else user.Contents.Add(_trimNotice);
+        return new ChatMessage(ChatRole.User, [_trimNotice]);
+    }
+
+    internal void ObserveTrimmedExchanges(IReadOnlyList<ChatMessage> removed)
+    {
+        foreach (ChatMessage message in removed)
+        {
+            if (_messageEvidence.TryGetValue(message, out RoundEvidence? evidence)) evidence.EvidenceEvicted = true;
+        }
+    }
+
+    private sealed class RoundEvidence(byte[] fingerprint)
+    {
+        internal byte[] Fingerprint { get; } = fingerprint;
+        internal bool EvidenceEvicted { get; set; }
+        internal bool ReacquisitionUsed { get; set; }
     }
 
     private static byte[] ComputeFingerprint(

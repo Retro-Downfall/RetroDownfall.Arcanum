@@ -295,8 +295,10 @@ public sealed class CovenantIndexRebuildTests
         Assert.False(operations.LastToken.CanBeCanceled);
     }
 
-    [Fact]
-    public async Task The_coordinator_completes_a_finished_rebuild_without_the_callers_token()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task The_coordinator_preserves_committed_work_but_requires_completion_CAS_without_the_callers_token(bool completed)
     {
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
@@ -324,7 +326,7 @@ public sealed class CovenantIndexRebuildTests
 
         TokenRecordingStore store = new(operation);
 
-        CheckpointRecordingCoordinator operations = new() { AllowsTerminalBookkeeping = true };
+        CheckpointRecordingCoordinator operations = new() { AllowsTerminalBookkeeping = true, CompletionResult = completed };
 
         using CancellationTokenSource caller = new();
 
@@ -336,9 +338,22 @@ public sealed class CovenantIndexRebuildTests
                 TimeProvider.System)
             .AdvanceAsync(operation, "owner", caller.Token);
 
-        Assert.True(advanced.IsSuccess, advanced.IsFailure ? advanced.Error.Message : null);
+        if (completed)
+        {
+            Assert.True(advanced.IsSuccess, advanced.IsFailure ? advanced.Error.Message : null);
 
-        Assert.Equal(CovenantIndexRebuildPhase.Completed, advanced.Value.Phase);
+            Assert.Equal(CovenantIndexRebuildPhase.Completed, advanced.Value.Phase);
+        }
+        else
+        {
+            Assert.True(advanced.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.RevisionConflict, advanced.Error.Code);
+
+            Assert.Contains("rebuilt", advanced.Error.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        Assert.Equal(1, await Count(fixture, "covenant_search_documents"));
 
         // The projection is published by the time the operation is closed, so closing it is bookkeeping
         // for work that already happened: neither the read of the current revision nor the completion
@@ -353,8 +368,10 @@ public sealed class CovenantIndexRebuildTests
         Assert.False(store.LastReadToken.CanBeCanceled);
     }
 
-    [Fact]
-    public async Task The_coordinator_abandons_a_stale_rebuild_and_starts_its_replacement_without_the_callers_token()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_stale_rebuild_never_creates_an_unreturned_replacement_and_requires_terminal_CAS(bool abandoned)
     {
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
@@ -372,7 +389,7 @@ public sealed class CovenantIndexRebuildTests
         // The dataset the rebuild captured is no longer the one in the database.
         LongRunningOperation operation = RebuildOperation(scanned with { DatasetGeneration = Guid.NewGuid() });
 
-        TokenRecordingStore store = new(operation);
+        TokenRecordingStore store = new(operation) { TransitionResult = abandoned };
 
         CheckpointRecordingCoordinator operations = new()
         {
@@ -390,12 +407,21 @@ public sealed class CovenantIndexRebuildTests
                 TimeProvider.System)
             .AdvanceAsync(operation, "owner", caller.Token);
 
-        Assert.True(advanced.IsSuccess, advanced.IsFailure ? advanced.Error.Message : null);
+        if (abandoned)
+        {
+            Assert.True(advanced.IsSuccess, advanced.IsFailure ? advanced.Error.Message : null);
 
-        Assert.Equal(CovenantIndexRebuildPhase.RestartRequired, advanced.Value.Phase);
+            Assert.Equal(CovenantIndexRebuildPhase.RestartRequired, advanced.Value.Phase);
+        }
+        else
+        {
+            Assert.True(advanced.IsFailure);
 
-        // The stale operation is closed and its replacement started on tokens the caller cannot cancel:
-        // cancelling between the two would leave a rebuild owed with nothing running it.
+            Assert.Equal(ErrorCodes.Covenant.RevisionConflict, advanced.Error.Code);
+        }
+
+        // The caller receives the restart decision and owns any later explicit StartAsync call.
+        // Failed bookkeeping must not report a terminal transition or create hidden replacement work.
         Assert.Equal(1, store.Transitions);
 
         Assert.Equal(LongRunningOperationState.Abandoned, store.LastTransitionState);
@@ -404,9 +430,7 @@ public sealed class CovenantIndexRebuildTests
 
         Assert.False(store.LastTransitionToken.CanBeCanceled);
 
-        Assert.Equal(1, operations.Starts);
-
-        Assert.False(operations.LastStartToken.CanBeCanceled);
+        Assert.Equal(0, operations.Starts);
     }
 
     [Fact]
@@ -627,6 +651,8 @@ public sealed class CovenantIndexRebuildTests
         /// </summary>
         internal bool AllowsTerminalBookkeeping { get; init; }
 
+        internal bool CompletionResult { get; init; } = true;
+
         internal LongRunningOperation? Replacement { get; init; }
 
         internal int Checkpoints { get; private set; }
@@ -705,7 +731,7 @@ public sealed class CovenantIndexRebuildTests
 
             LastCompleteToken = cancellationToken;
 
-            return Task.FromResult(true);
+            return Task.FromResult(CompletionResult);
         }
 
         public Task<bool> FailAsync(
@@ -723,6 +749,8 @@ public sealed class CovenantIndexRebuildTests
     /// </summary>
     private sealed class TokenRecordingStore(LongRunningOperation operation) : ILongRunningOperationStore
     {
+        internal bool TransitionResult { get; init; } = true;
+
         internal int Reads { get; private set; }
 
         internal int Transitions { get; private set; }
@@ -757,7 +785,7 @@ public sealed class CovenantIndexRebuildTests
 
             LastTransitionState = state;
 
-            return Task.FromResult(true);
+            return Task.FromResult(TransitionResult);
         }
 
         public Task<LongRunningOperation> CreateAsync(

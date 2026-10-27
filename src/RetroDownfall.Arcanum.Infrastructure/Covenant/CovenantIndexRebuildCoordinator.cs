@@ -78,8 +78,8 @@ internal sealed class CovenantIndexRebuildCoordinator(
     /// a caller that cancels after the commit must not leave the cursor behind for no reason.
     ///
     /// <para>A <c>RestartRequired</c> phase terminalizes this operation with a content-free code and
-    /// starts a new one rather than rewriting this operation's identity: the stale identity is the
-    /// evidence of what was being rebuilt when the ground moved.</para>
+    /// returns restart ownership to the caller. A later explicit start returns its new identity:
+    /// the stale identity remains evidence of what was being rebuilt when the ground moved.</para>
     /// </remarks>
     internal async Task<Result<CovenantIndexRebuildProgress>> AdvanceAsync(
         LongRunningOperation operation,
@@ -227,11 +227,16 @@ internal sealed class CovenantIndexRebuildCoordinator(
             return Result.Success();
         }
 
-        _ = await _operations
+        bool completed = await _operations
             .CompleteAsync(operation.Id, ownerId, current.Revision, cancellationToken)
             .ConfigureAwait(false);
 
-        return Result.Success();
+        return completed
+            ? Result.Success()
+            : Result.Failure(
+                new Error(
+                    ErrorCodes.Covenant.RevisionConflict,
+                    "The Covenant index was rebuilt, but another owner changed its operation before completion was recorded."));
     }
 
     private async Task<Result> AbandonStaleAsync(
@@ -243,7 +248,7 @@ internal sealed class CovenantIndexRebuildCoordinator(
 
         if (current is not null)
         {
-            _ = await _store.TryTransitionAsync(
+            bool abandoned = await _store.TryTransitionAsync(
                 operation.Id,
                 current.Revision,
                 ownerId,
@@ -251,9 +256,15 @@ internal sealed class CovenantIndexRebuildCoordinator(
                 _time.GetUtcNow(),
                 CovenantIndexRebuildRestartCode,
                 cancellationToken).ConfigureAwait(false);
-        }
 
-        _ = await StartAsync(ownerId, cancellationToken).ConfigureAwait(false);
+            if (!abandoned)
+            {
+                return Result.Failure(
+                    new Error(
+                        ErrorCodes.Covenant.RevisionConflict,
+                        "Another owner changed the Covenant index rebuild operation before its restart was recorded."));
+            }
+        }
 
         return Result.Success();
     }
