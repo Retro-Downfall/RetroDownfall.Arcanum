@@ -236,10 +236,10 @@ internal sealed class ObservingCovenantConnectionDrain(CovenantConnectionDrain i
 
     internal MaintenanceStageObservation Draining { get; } = new();
 
-    public IDisposable Register(SqliteConnection connection) => Observe(connection, inner.Register(connection));
+    public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire) => Observe(connection, inner.Register(connection, owner));
 
-    public IDisposable Register(SqliteConnection connection, ICovenantPhysicalCloseObserver observer) =>
-        Observe(connection, inner.Register(connection, observer));
+    public IDisposable Register(SqliteConnection connection, ICovenantPhysicalCloseObserver observer, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire) =>
+        Observe(connection, inner.Register(connection, observer, owner));
 
     private IDisposable Observe(SqliteConnection connection, IDisposable registration)
     {

@@ -2063,6 +2063,8 @@ public static class ServiceCollectionExtensions
     /// </remarks>
     private static IServiceCollection AddCovenantPersistence(this IServiceCollection services)
     {
+        services.AddLogging();
+
         // Explicit factories rather than type registrations: these components declare internal
         // constructors on purpose, so the container is handed exactly the dependency graph the tier
         // intends instead of whatever a reflective activator can reach.
@@ -2325,7 +2327,8 @@ public static class ServiceCollectionExtensions
             static sp => new CovenantDisclosureWriter(
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
                 sp.GetRequiredService<ICovenantAvailability>(),
-                sp.GetRequiredService<ICovenantDisclosureTransactionWriter>()));
+                sp.GetRequiredService<ICovenantDisclosureTransactionWriter>(),
+                sp.GetRequiredService<ILogger<CovenantDisclosureWriter>>()));
 
         services.AddSingleton<ICovenantDisclosureJournal>(
             static sp => sp.GetRequiredService<CovenantDisclosureWriter>());

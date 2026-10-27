@@ -19,13 +19,11 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 /// </remarks>
 public sealed class GrimoireRequestAdmissionScopeTests
 {
-
     private static readonly TimeSpan OpeningTimeout = TimeSpan.FromSeconds(1);
 
     [Fact]
     public async Task A_new_scope_has_taken_nothing_until_a_request_asks()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         await using GrimoireRequestAdmissionScope scope = new(gate);
@@ -37,13 +35,11 @@ public sealed class GrimoireRequestAdmissionScopeTests
         Result drained = await gate.DrainRequestAndWorkAsync(closing, CancellationToken.None);
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
-
     }
 
     [Fact]
     public async Task An_ordinary_gate_admits_the_request_and_the_scope_keeps_its_lease()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         await using GrimoireRequestAdmissionScope scope = new(gate);
@@ -55,13 +51,11 @@ public sealed class GrimoireRequestAdmissionScopeTests
         Assert.Equal(GrimoireRequestKind.Finite, scope.Lease.Kind);
 
         Assert.Equal(gate.CurrentGeneration, scope.Lease.Generation);
-
     }
 
     [Fact]
     public async Task A_second_admission_on_the_same_scope_reuses_the_first_lease()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         await using GrimoireRequestAdmissionScope scope = new(gate);
@@ -73,13 +67,11 @@ public sealed class GrimoireRequestAdmissionScopeTests
         Assert.True(scope.TryAdmit(GrimoireRequestKind.Finite));
 
         Assert.Same(first, scope.Lease);
-
     }
 
     [Fact]
     public async Task A_closing_gate_refuses_the_request_and_the_scope_keeps_nothing()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         await using IGrimoireClosingOwner closing = Begin(gate);
@@ -89,7 +81,6 @@ public sealed class GrimoireRequestAdmissionScopeTests
         Assert.False(scope.TryAdmit(GrimoireRequestKind.Finite));
 
         Assert.Null(scope.Lease);
-
     }
 
     /// <summary>
@@ -98,7 +89,6 @@ public sealed class GrimoireRequestAdmissionScopeTests
     [Fact]
     public async Task A_drain_waits_for_the_scope_and_finishes_when_it_is_disposed()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         GrimoireRequestAdmissionScope scope = new(gate);
@@ -118,13 +108,11 @@ public sealed class GrimoireRequestAdmissionScopeTests
         Result drained = await drain;
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
-
     }
 
     [Fact]
     public async Task Disposal_releases_exactly_once_and_a_later_request_is_still_admitted()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         GrimoireRequestAdmissionScope first = new(gate);
@@ -146,13 +134,11 @@ public sealed class GrimoireRequestAdmissionScopeTests
         Result drained = await gate.DrainRequestAndWorkAsync(closing, CancellationToken.None);
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
-
     }
 
     [Fact]
     public async Task A_scope_that_never_asked_disposes_without_touching_the_gate()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         GrimoireRequestAdmissionScope scope = new(gate);
@@ -162,7 +148,6 @@ public sealed class GrimoireRequestAdmissionScopeTests
         await using GrimoireRequestAdmissionScope later = new(gate);
 
         Assert.True(later.TryAdmit(GrimoireRequestKind.Finite));
-
     }
 
     /// <summary>
@@ -177,7 +162,6 @@ public sealed class GrimoireRequestAdmissionScopeTests
     [Fact]
     public async Task A_disposed_scope_admits_nothing()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         GrimoireRequestAdmissionScope scope = new(gate);
@@ -187,7 +171,6 @@ public sealed class GrimoireRequestAdmissionScopeTests
         Assert.False(scope.TryAdmit(GrimoireRequestKind.Finite));
 
         Assert.Null(scope.Lease);
-
     }
 
     /// <summary>
@@ -202,14 +185,11 @@ public sealed class GrimoireRequestAdmissionScopeTests
     [Fact]
     public async Task A_synchronously_disposed_scope_still_releases_the_lease()
     {
-
         GrimoireConnectionAdmissionGate gate = CreateGate();
 
         using (GrimoireRequestAdmissionScope scope = new(gate))
         {
-
             Assert.True(scope.TryAdmit(GrimoireRequestKind.Finite));
-
         }
 
         await using IGrimoireClosingOwner closing = Begin(gate);
@@ -217,7 +197,6 @@ public sealed class GrimoireRequestAdmissionScopeTests
         Result drained = await gate.DrainRequestAndWorkAsync(closing, CancellationToken.None);
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
-
     }
 
     private static GrimoireConnectionAdmissionGate CreateGate() =>
@@ -228,13 +207,11 @@ public sealed class GrimoireRequestAdmissionScopeTests
 
     private static IGrimoireClosingOwner Begin(GrimoireConnectionAdmissionGate gate)
     {
-
         Result<IGrimoireClosingOwner> begun = gate.BeginOrResumeExclusive(Owner);
 
         Assert.True(begun.IsSuccess, begun.IsFailure ? begun.Error.Message : null);
 
         return begun.Value;
-
     }
 
     private static CovenantExclusiveRecoveryOwner Owner =>
@@ -245,8 +222,7 @@ public sealed class GrimoireRequestAdmissionScopeTests
 
     private sealed class NoOpConnectionDrain : ICovenantConnectionDrain
     {
-
-        public IDisposable Register(SqliteConnection connection) => new Registration();
+        public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire) => new Registration();
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection) => Result.Success();
 
@@ -255,13 +231,9 @@ public sealed class GrimoireRequestAdmissionScopeTests
 
         private sealed class Registration : IDisposable
         {
-
             public void Dispose()
             {
             }
-
         }
-
     }
-
 }

@@ -16,7 +16,7 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// skipped is worth nothing to the readers that trust it, so the interesting cases are the second
 /// write, the clean relabel, and the write whose transaction rolls back (§10.12).
 /// </remarks>
-public sealed class ArtifactSensitivityLedgerTests
+public sealed partial class ArtifactSensitivityLedgerTests
 {
     [Theory]
     [InlineData("LabelId = '11111111-1111-4111-8111-111111111111'")]

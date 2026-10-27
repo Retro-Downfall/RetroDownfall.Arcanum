@@ -58,27 +58,44 @@ internal sealed partial class ArtifactSensitivityLedger(ICovenantConnectionSourc
     {
         ArgumentNullException.ThrowIfNull(write);
 
-        SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken)
-            .ConfigureAwait(false);
+        SqliteConnection connection;
 
-        await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
+        SqliteTransaction transaction;
 
-        Result<LabeledArtifactWriteReceipt> receipt = await WriteWithinAsync(
-            connection,
-            transaction,
-            write,
-            cancellationToken).ConfigureAwait(false);
-
-        if (receipt.IsFailure)
+        try
         {
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            transaction = connection.BeginTransaction(deferred: false);
+        }
+        catch (Exception failure) when (failure is SqliteException or IOException or UnauthorizedAccessException)
+        {
+            return CovenantStorageFailure.Create(failure, "Sensitivity label persistence");
+        }
+
+        await using (transaction)
+        {
+            Result<LabeledArtifactWriteReceipt> receipt = await WriteWithinAsync(
+                connection, transaction, write, cancellationToken).ConfigureAwait(false);
+
+            if (receipt.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                return receipt;
+            }
+
+            try
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (SqliteException failure)
+            {
+                return CovenantStorageFailure.Create(failure, "Sensitivity label persistence");
+            }
 
             return receipt;
         }
-
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
-        return receipt;
     }
 
     public async Task<Result<ArtifactSensitivityLabel?>> TryReadLabelAsync(
@@ -133,48 +150,48 @@ internal sealed partial class ArtifactSensitivityLedger(ICovenantConnectionSourc
 
         ArgumentNullException.ThrowIfNull(write);
 
-        Result<ArtifactSensitivityLabel?> existing = await ReadLabelWithinAsync(
-            connection,
-            transaction,
-            write.ArtifactKind,
-            write.ArtifactId,
-            cancellationToken).ConfigureAwait(false);
-
-        if (existing.IsFailure)
-        {
-            return existing.Error;
-        }
-
-        if (existing.Value is { } current)
-        {
-            // The artifact already carries evidence. Repeating the exact same label is an idempotent
-            // replay; anything else — including a clean relabel — would be a downgrade.
-            return current.LabelDigest == BuildLabel(write, current.LabelId, current.CreatedAt).LabelDigest
-                ? Result<LabeledArtifactWriteReceipt>.Success(new LabeledArtifactWriteReceipt(
-                    write.ArtifactKind,
-                    write.ArtifactId,
-                    current.Sensitivity,
-                    current.LabelId,
-                    current.LabelDigest))
-                : new Error(
-                    ErrorCodes.Covenant.IntegrityFailure,
-                    "This artifact already carries different sensitivity evidence; a label is never rewritten.");
-        }
-
-        if (!write.RequiresLabel)
-        {
-            return Result<LabeledArtifactWriteReceipt>.Success(new LabeledArtifactWriteReceipt(
-                write.ArtifactKind,
-                write.ArtifactId,
-                ContentSensitivity.None,
-                LabelId: null,
-                LabelDigest: null));
-        }
-
-        ArtifactSensitivityLabel label = BuildLabel(write, Guid.NewGuid(), DateTimeOffset.UtcNow);
-
         try
         {
+            Result<ArtifactSensitivityLabel?> existing = await ReadLabelWithinAsync(
+                connection,
+                transaction,
+                write.ArtifactKind,
+                write.ArtifactId,
+                cancellationToken).ConfigureAwait(false);
+
+            if (existing.IsFailure)
+            {
+                return existing.Error;
+            }
+
+            if (existing.Value is { } current)
+            {
+                // The artifact already carries evidence. Repeating the exact same label is an idempotent
+                // replay; anything else — including a clean relabel — would be a downgrade.
+                return current.LabelDigest == BuildLabel(write, current.LabelId, current.CreatedAt).LabelDigest
+                    ? Result<LabeledArtifactWriteReceipt>.Success(new LabeledArtifactWriteReceipt(
+                        write.ArtifactKind,
+                        write.ArtifactId,
+                        current.Sensitivity,
+                        current.LabelId,
+                        current.LabelDigest))
+                    : new Error(
+                        ErrorCodes.Covenant.IntegrityFailure,
+                        "This artifact already carries different sensitivity evidence; a label is never rewritten.");
+            }
+
+            if (!write.RequiresLabel)
+            {
+                return Result<LabeledArtifactWriteReceipt>.Success(new LabeledArtifactWriteReceipt(
+                    write.ArtifactKind,
+                    write.ArtifactId,
+                    ContentSensitivity.None,
+                    LabelId: null,
+                    LabelDigest: null));
+            }
+
+            ArtifactSensitivityLabel label = BuildLabel(write, Guid.NewGuid(), DateTimeOffset.UtcNow);
+
             await InsertLabelAsync(connection, transaction, label, cancellationToken).ConfigureAwait(false);
 
             if (label.SessionId is { } sessionId)
@@ -186,22 +203,20 @@ internal sealed partial class ArtifactSensitivityLedger(ICovenantConnectionSourc
                     label,
                     cancellationToken).ConfigureAwait(false);
             }
+
+            return Result<LabeledArtifactWriteReceipt>.Success(new LabeledArtifactWriteReceipt(
+                write.ArtifactKind,
+                write.ArtifactId,
+                label.Sensitivity,
+                label.LabelId,
+                label.LabelDigest));
         }
         catch (SqliteException exception)
         {
-            // A constraint or guard trigger refused the row. The caller's transaction is still open
-            // and must not commit an artifact whose label did not land.
-            return new Error(
-                ErrorCodes.Covenant.IntegrityFailure,
-                $"The sensitivity label for this artifact could not be persisted ({exception.SqliteErrorCode}).");
+            // The caller owns rollback: SQLite may already have rolled back an environmental or
+            // guard failure. It must never commit an artifact whose label did not land.
+            return CovenantStorageFailure.Create(exception, "Sensitivity label persistence");
         }
-
-        return Result<LabeledArtifactWriteReceipt>.Success(new LabeledArtifactWriteReceipt(
-            write.ArtifactKind,
-            write.ArtifactId,
-            label.Sensitivity,
-            label.LabelId,
-            label.LabelDigest));
     }
 
     internal static async Task<Result<ArtifactSensitivityLabel?>> ReadLabelWithinAsync(

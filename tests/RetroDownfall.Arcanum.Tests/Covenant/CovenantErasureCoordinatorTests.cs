@@ -2542,11 +2542,12 @@ public sealed class CovenantErasureCoordinatorTests
 
         internal int ClearCalls { get; private set; }
 
-        public IDisposable Register(SqliteConnection connection) => _inner.Register(connection);
+        public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire) => _inner.Register(connection, owner);
 
         public IDisposable Register(
             SqliteConnection connection,
-            ICovenantPhysicalCloseObserver observer) => _inner.Register(connection, observer);
+            ICovenantPhysicalCloseObserver observer,
+            CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire) => _inner.Register(connection, observer, owner);
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection)
         {
@@ -2568,11 +2569,12 @@ public sealed class CovenantErasureCoordinatorTests
     {
         private readonly CovenantConnectionDrain _inner = new();
 
-        public IDisposable Register(SqliteConnection connection) => _inner.Register(connection);
+        public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire) => _inner.Register(connection, owner);
 
         public IDisposable Register(
             SqliteConnection connection,
-            ICovenantPhysicalCloseObserver observer) => _inner.Register(connection, observer);
+            ICovenantPhysicalCloseObserver observer,
+            CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire) => _inner.Register(connection, observer, owner);
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
             _inner.ClearExactPoolAfterClose(connection);

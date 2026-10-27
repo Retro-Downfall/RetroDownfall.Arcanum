@@ -11,13 +11,11 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed class GrimoireOrdinaryConnectionLifecycleTests
 {
-
     private const string ConnectionString = "Data Source=:memory:;Pooling=False";
 
     [Fact]
     public void Closed_connection_begins_exactly_one_open_ticket()
     {
-
         GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
 
         RecordingConnectionDrain drain = new();
@@ -33,13 +31,11 @@ public sealed class GrimoireOrdinaryConnectionLifecycleTests
         _ = Assert.Throws<InvalidOperationException>(() => lifecycle.BeginOpen(connection));
 
         registration.MarkFailed();
-
     }
 
     [Fact]
     public void Already_open_unproven_connection_cannot_be_borrowed()
     {
-
         GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
 
         GrimoireOrdinaryConnectionLifecycle lifecycle = new(gate, new RecordingConnectionDrain());
@@ -52,13 +48,11 @@ public sealed class GrimoireOrdinaryConnectionLifecycleTests
             lifecycle.BorrowCurrentOpen(connection);
 
         Assert.True(borrowed.IsFailure);
-
     }
 
     [Fact]
     public void Proven_current_generation_open_can_be_borrowed()
     {
-
         GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
 
         RecordingConnectionDrain drain = new();
@@ -81,13 +75,11 @@ public sealed class GrimoireOrdinaryConnectionLifecycleTests
         Assert.Equal(owner.Generation, holder.Generation);
 
         Assert.Equal(1, drain.RegisterCount);
-
     }
 
     [Fact]
     public async Task Stale_generation_provenance_cannot_be_borrowed()
     {
-
         GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
 
         GrimoireOrdinaryConnectionLifecycle lifecycle = new(gate, new RecordingConnectionDrain());
@@ -102,13 +94,11 @@ public sealed class GrimoireOrdinaryConnectionLifecycleTests
             lifecycle.BorrowCurrentOpen(connection);
 
         Assert.True(borrowed.IsFailure);
-
     }
 
     [Fact]
     public void Disposing_one_of_two_holders_keeps_the_physical_open_enrolled()
     {
-
         GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
 
         RecordingConnectionDrain drain = new();
@@ -127,13 +117,11 @@ public sealed class GrimoireOrdinaryConnectionLifecycleTests
         Assert.Equal(1, drain.ActiveCount);
 
         Assert.Equal(0, drain.DisposeCount);
-
     }
 
     [Fact]
     public void Last_holder_unregisters_the_physical_open_exactly_once()
     {
-
         GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
 
         RecordingConnectionDrain drain = new();
@@ -160,13 +148,11 @@ public sealed class GrimoireOrdinaryConnectionLifecycleTests
         Assert.Equal(0, drain.ActiveCount);
 
         Assert.Equal(1, drain.DisposeCount);
-
     }
 
     [Fact]
     public async Task Refused_registration_cannot_terminalize_until_physical_connection_is_closed()
     {
-
         GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
 
         GrimoireOrdinaryConnectionLifecycle lifecycle = new(gate, new RecordingConnectionDrain());
@@ -208,13 +194,11 @@ public sealed class GrimoireOrdinaryConnectionLifecycleTests
         Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
 
         await using IGrimoireExclusiveClosedLease lease = closed.Value;
-
     }
 
     [Fact]
     public async Task External_drain_close_invalidates_every_holder_before_a_fresh_open()
     {
-
         GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
 
         CovenantConnectionDrain drain = new();
@@ -243,14 +227,12 @@ public sealed class GrimoireOrdinaryConnectionLifecycleTests
         using IGrimoireOrdinaryConnectionRegistration fresh = lifecycle.BeginOpen(connection);
 
         fresh.MarkFailed();
-
     }
 
     private static IGrimoireOrdinaryConnectionRegistration ProveOpen(
         IGrimoireOrdinaryConnectionLifecycle lifecycle,
         SqliteConnection connection)
     {
-
         IGrimoireOrdinaryConnectionRegistration registration = lifecycle.BeginOpen(connection);
 
         connection.Open();
@@ -266,14 +248,12 @@ public sealed class GrimoireOrdinaryConnectionLifecycleTests
         Assert.True(opened.IsSuccess, opened.IsFailure ? opened.Error.Message : null);
 
         return registration;
-
     }
 
     private static async Task AdvanceGenerationAsync(
         GrimoireConnectionAdmissionGate gate,
         byte ownerSeed)
     {
-
         await using IGrimoireClosingOwner closing = Begin(gate, ownerSeed);
 
         Result requestsDrained = await gate.DrainRequestAndWorkAsync(
@@ -296,14 +276,12 @@ public sealed class GrimoireOrdinaryConnectionLifecycleTests
             CancellationToken.None);
 
         Assert.True(reopened.IsSuccess, reopened.IsFailure ? reopened.Error.Message : null);
-
     }
 
     private static IGrimoireClosingOwner Begin(
         GrimoireConnectionAdmissionGate gate,
         byte ownerSeed)
     {
-
         CovenantExclusiveRecoveryOwner owner = new(
             Guid.Parse($"00000000-0000-0000-0000-{ownerSeed:D12}"),
             CovenantExclusiveOperation.CovenantReset,
@@ -314,12 +292,10 @@ public sealed class GrimoireOrdinaryConnectionLifecycleTests
         Assert.True(begun.IsSuccess, begun.IsFailure ? begun.Error.Message : null);
 
         return begun.Value;
-
     }
 
     private sealed class RecordingConnectionDrain : ICovenantConnectionDrain
     {
-
         private int _activeCount;
 
         private int _disposeCount;
@@ -332,9 +308,8 @@ public sealed class GrimoireOrdinaryConnectionLifecycleTests
 
         internal int RegisterCount => Volatile.Read(ref _registerCount);
 
-        public IDisposable Register(SqliteConnection connection)
+        public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire)
         {
-
             ArgumentNullException.ThrowIfNull(connection);
 
             _ = Interlocked.Increment(ref _registerCount);
@@ -342,7 +317,6 @@ public sealed class GrimoireOrdinaryConnectionLifecycleTests
             _ = Interlocked.Increment(ref _activeCount);
 
             return new Registration(this);
-
         }
 
         public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
@@ -353,27 +327,19 @@ public sealed class GrimoireOrdinaryConnectionLifecycleTests
 
         private sealed class Registration(RecordingConnectionDrain owner) : IDisposable
         {
-
             private int _disposed;
 
             public void Dispose()
             {
-
                 if (Interlocked.Exchange(ref _disposed, 1) != 0)
                 {
-
                     return;
-
                 }
 
                 _ = Interlocked.Increment(ref owner._disposeCount);
 
                 _ = Interlocked.Decrement(ref owner._activeCount);
-
             }
-
         }
-
     }
-
 }

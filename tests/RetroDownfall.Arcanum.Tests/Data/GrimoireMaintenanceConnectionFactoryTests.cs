@@ -1055,7 +1055,7 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
 
     private sealed class NoOpDrain : ICovenantConnectionDrain
     {
-        public IDisposable Register(SqliteConnection connection) => new NoOpDisposable();
+        public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire) => new NoOpDisposable();
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection) => Result.Success();
 

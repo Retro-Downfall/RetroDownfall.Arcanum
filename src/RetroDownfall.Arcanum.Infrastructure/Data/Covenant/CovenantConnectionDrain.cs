@@ -6,6 +6,13 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
+/// <summary>The closed enrolling components this drain can actually identify.</summary>
+internal enum CovenantConnectionOwner
+{
+    OrdinaryGrimoire,
+    OperationStore,
+}
+
 /// <summary>
 /// The central connection owner's drain: the one way a Covenant maintenance path clears every idle
 /// pool and closes every direct handle before it takes an exclusive lock.
@@ -43,11 +50,12 @@ internal interface ICovenantConnectionDrain
     /// <summary>
     /// Enrols one direct handle, until the returned registration is disposed.
     /// </summary>
-    IDisposable Register(SqliteConnection connection);
+    IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire);
 
     IDisposable Register(
         SqliteConnection connection,
-        ICovenantPhysicalCloseObserver observer) => Register(connection);
+        ICovenantPhysicalCloseObserver observer,
+        CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire) => Register(connection, owner);
 
     /// <summary>
     /// Clears the exact pool of one physically closed handle and observes that it remains closed.
@@ -100,7 +108,7 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
 
     private readonly Lock _gate = new();
 
-    private readonly Dictionary<SqliteConnection, int> _handles = [];
+    private readonly Dictionary<SqliteConnection, Dictionary<CovenantConnectionOwner, int>> _handles = [];
 
     private readonly Dictionary<SqliteConnection, List<ICovenantPhysicalCloseObserver>>
         _physicalCloseObservers = [];
@@ -115,27 +123,37 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
         _beforeClearAllPools = beforeClearAllPools;
     }
 
-    public IDisposable Register(SqliteConnection connection)
+    public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire)
     {
         ArgumentNullException.ThrowIfNull(connection);
 
-        lock (_gate)
+        if (!Enum.IsDefined(owner))
         {
-            _handles[connection] = _handles.TryGetValue(connection, out int enrolments)
-                ? enrolments + 1
-                : 1;
+            throw new ArgumentOutOfRangeException(nameof(owner));
         }
 
-        return new Enrolment(this, connection);
+        lock (_gate)
+        {
+            if (!_handles.TryGetValue(connection, out Dictionary<CovenantConnectionOwner, int>? owners))
+            {
+                owners = [];
+                _handles.Add(connection, owners);
+            }
+
+            owners[owner] = owners.GetValueOrDefault(owner) + 1;
+        }
+
+        return new Enrolment(this, connection, owner);
     }
 
     public IDisposable Register(
         SqliteConnection connection,
-        ICovenantPhysicalCloseObserver observer)
+        ICovenantPhysicalCloseObserver observer,
+        CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire)
     {
         ArgumentNullException.ThrowIfNull(observer);
 
-        IDisposable enrolment = Register(connection);
+        IDisposable enrolment = Register(connection, owner);
 
         lock (_gate)
         {
@@ -178,7 +196,11 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
 
     public async Task<Result> DrainAsync(CancellationToken cancellationToken)
     {
-        SqliteConnection[] enrolled = Snapshot();
+        HandleSnapshot[] snapshot = Snapshot();
+
+        SqliteConnection[] enrolled = snapshot.Select(static item => item.Handle).ToArray();
+
+        int enrolments = snapshot.Sum(static item => item.Enrolments);
 
         HashSet<SqliteConnection> closed = [];
 
@@ -207,7 +229,7 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
             {
                 return new Error(
                     ErrorCodes.Covenant.MaintenanceFailed,
-                    $"A Covenant connection handle did not close: {failed.Message}");
+                    Refusal(handle, snapshot, enrolments) + " " + CovenantStorageFailure.Describe(failed));
             }
         }
 
@@ -227,8 +249,7 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
             {
                 return new Error(
                     ErrorCodes.Covenant.MaintenanceFailed,
-                    "A Covenant connection handle did not close, so no exclusive maintenance "
-                    + "connection may be opened.");
+                    Refusal(handle, snapshot, enrolments));
             }
         }
 
@@ -308,31 +329,46 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
         }
     }
 
-    private SqliteConnection[] Snapshot()
+    private sealed record HandleSnapshot(SqliteConnection Handle, string Owners, int Enrolments);
+
+    private static string Refusal(SqliteConnection handle, HandleSnapshot[] snapshot, int enrolments) =>
+        $"A Covenant connection handle did not close, so no exclusive maintenance connection may be opened. "
+        + $"Owners={snapshot.First(item => ReferenceEquals(item.Handle, handle)).Owners}. "
+        + $"Snapshot Handles={snapshot.Length} Enrolments={enrolments}. "
+        + "Inspect the active operation and connection diagnostics; keep the installation intact and follow its admission outcome before retrying.";
+
+    private HandleSnapshot[] Snapshot()
     {
         lock (_gate)
         {
-            return [.. _handles.Keys];
+            return _handles.Select(static pair => new HandleSnapshot(pair.Key,
+                string.Join(',', pair.Value.Keys.Order()), pair.Value.Values.Sum())).ToArray();
         }
     }
 
-    private void Unregister(SqliteConnection connection)
+    private void Unregister(SqliteConnection connection, CovenantConnectionOwner owner)
     {
         lock (_gate)
         {
-            if (!_handles.TryGetValue(connection, out int enrolments))
+            if (!_handles.TryGetValue(connection, out Dictionary<CovenantConnectionOwner, int>? owners)
+                || !owners.TryGetValue(owner, out int enrolments))
             {
                 return;
             }
 
             if (enrolments > 1)
             {
-                _handles[connection] = enrolments - 1;
-
-                return;
+                owners[owner] = enrolments - 1;
+            }
+            else
+            {
+                _ = owners.Remove(owner);
             }
 
-            _ = _handles.Remove(connection);
+            if (owners.Count == 0)
+            {
+                _ = _handles.Remove(connection);
+            }
         }
     }
 
@@ -341,7 +377,7 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
     /// explicit release pays back one enrolment rather than two, which would otherwise cancel a
     /// second component's registration of the same handle.
     /// </summary>
-    private sealed class Enrolment(CovenantConnectionDrain owner, SqliteConnection connection) : IDisposable
+    private sealed class Enrolment(CovenantConnectionDrain owner, SqliteConnection connection, CovenantConnectionOwner enrollingOwner) : IDisposable
     {
         private bool _disposed;
 
@@ -354,7 +390,7 @@ internal sealed class CovenantConnectionDrain : ICovenantConnectionDrain
 
             _disposed = true;
 
-            owner.Unregister(connection);
+            owner.Unregister(connection, enrollingOwner);
         }
     }
 }

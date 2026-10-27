@@ -17,7 +17,7 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// an exclusive lock.
 /// </summary>
 [Collection(RetroDownfall.Arcanum.Tests.Collections.SqliteConnectionPoolCollection.Name)]
-public sealed class CovenantConnectionDrainTests
+public sealed partial class CovenantConnectionDrainTests
 {
     private static CancellationToken Token => CancellationToken.None;
 
@@ -575,20 +575,21 @@ public sealed class CovenantConnectionDrainTests
 
         internal int ReleaseCount { get; private set; }
 
-        public IDisposable Register(SqliteConnection connection)
+        public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire)
         {
             RegisterCount++;
 
-            return new CountedEnrolment(this, inner.Register(connection));
+            return new CountedEnrolment(this, inner.Register(connection, owner));
         }
 
         public IDisposable Register(
             SqliteConnection connection,
-            ICovenantPhysicalCloseObserver observer)
+            ICovenantPhysicalCloseObserver observer,
+            CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire)
         {
             RegisterCount++;
 
-            return new CountedEnrolment(this, inner.Register(connection, observer));
+            return new CountedEnrolment(this, inner.Register(connection, observer, owner));
         }
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection) =>

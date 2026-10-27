@@ -749,12 +749,15 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         Result<Guid>.Failure(
             new Error(
                 ErrorCodes.Covenant.MaintenanceFailed,
-                $"A Covenant erasure could not {step}: {failed.Message}"));
+                $"A Covenant erasure could not {step}. {CovenantStorageFailure.Describe(failed)} Preserve the installation and inspect the active operation and storage diagnostics before retrying."));
 
     private static Result<Guid> Failure(GrimoireBusyTimeoutException timedOut, string step) =>
         Result<Guid>.Failure(
             new Error(
                 ErrorCodes.Covenant.MaintenanceFailed,
                 $"A Covenant erasure could not {step}: another handle held the database for "
-                + $"{timedOut.Attempts} attempt(s) over {timedOut.Elapsed}."));
+                + $"{timedOut.Attempts} attempt(s) over {timedOut.Elapsed}. "
+                + "Conflicting work may be in this host or another process. Inspect the active operation and storage diagnostics, "
+                + "let legitimate work release its handle, and close an identified database browser or duplicate host. "
+                + "Follow that operation's admission outcome before retrying; do not start a second erasure while recovery remains active."));
 }
