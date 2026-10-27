@@ -79,7 +79,6 @@ public sealed class RaptorScaleProbe(ITestOutputHelper output)
         output.WriteLine($"gmm attempted={candidates.Count} converged={candidates.Count(candidate => candidate.RefusalCode is null)} selected={fit.Value.Weights.Length} selected_iterations={fit.Value.Iterations} last_component={fitted.Components} last_iteration={fitted.Iteration}");
 
         output.WriteLine($"fit fingerprint={DoubleHash(fit.Value.Weights.Concat(fit.Value.Means.SelectMany(row => row)).Concat(fit.Value.Covariances.SelectMany(matrix => matrix.SelectMany(row => row))))}");
-
     }
 
     [SkippableFact]
