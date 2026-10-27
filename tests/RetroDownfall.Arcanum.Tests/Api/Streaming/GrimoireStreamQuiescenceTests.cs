@@ -24,7 +24,6 @@ namespace RetroDownfall.Arcanum.Tests.Api.Streaming;
 /// </remarks>
 public sealed class GrimoireStreamQuiescenceTests
 {
-
     private static readonly TimeSpan OpeningTimeout = TimeSpan.FromSeconds(1);
 
     /// <summary>
@@ -38,7 +37,6 @@ public sealed class GrimoireStreamQuiescenceTests
     [Fact]
     public void A_request_with_no_admission_holder_never_quiesces()
     {
-
         DefaultHttpContext context = new()
         {
             RequestServices = new ServiceCollection().BuildServiceProvider(),
@@ -49,7 +47,6 @@ public sealed class GrimoireStreamQuiescenceTests
         Assert.False(quiescence.IsQuiescing);
 
         Assert.False(quiescence.Revocation.CanBeCanceled);
-
     }
 
     /// <summary>
@@ -58,7 +55,6 @@ public sealed class GrimoireStreamQuiescenceTests
     [Fact]
     public void A_quiesceable_lease_publishes_the_gates_revocation()
     {
-
         using GateFixture fixture = new();
 
         GrimoireStreamQuiescence quiescence = fixture.Admit(GrimoireRequestKind.QuiesceableStream);
@@ -70,7 +66,6 @@ public sealed class GrimoireStreamQuiescenceTests
         fixture.BeginClosing();
 
         Assert.True(quiescence.IsQuiescing);
-
     }
 
     /// <summary>
@@ -86,7 +81,6 @@ public sealed class GrimoireStreamQuiescenceTests
     [Fact]
     public void A_finite_lease_never_reports_quiescence()
     {
-
         using GateFixture fixture = new();
 
         GrimoireStreamQuiescence quiescence = fixture.Admit(GrimoireRequestKind.Finite);
@@ -96,7 +90,6 @@ public sealed class GrimoireStreamQuiescenceTests
         Assert.False(quiescence.IsQuiescing);
 
         Assert.False(quiescence.Revocation.CanBeCanceled);
-
     }
 
     /// <summary>
@@ -105,7 +98,6 @@ public sealed class GrimoireStreamQuiescenceTests
     [Fact]
     public void The_producer_link_answers_to_both_the_caller_and_maintenance()
     {
-
         using GateFixture fixture = new();
 
         GrimoireStreamQuiescence quiescence = fixture.Admit(GrimoireRequestKind.QuiesceableStream);
@@ -127,7 +119,6 @@ public sealed class GrimoireStreamQuiescenceTests
         fixture.BeginClosing();
 
         Assert.True(viaMaintenance.IsCancellationRequested);
-
     }
 
     /// <summary>
@@ -147,7 +138,6 @@ public sealed class GrimoireStreamQuiescenceTests
     [Fact]
     public void Only_the_producer_link_hands_back_a_revocable_token()
     {
-
         using GateFixture fixture = new();
 
         GrimoireStreamQuiescence quiescence = fixture.Admit(GrimoireRequestKind.QuiesceableStream);
@@ -165,7 +155,6 @@ public sealed class GrimoireStreamQuiescenceTests
         Assert.NotEqual(request.Token, producer.Token);
 
         Assert.False(request.Token.IsCancellationRequested);
-
     }
 
     /// <summary>
@@ -173,7 +162,6 @@ public sealed class GrimoireStreamQuiescenceTests
     /// </summary>
     private sealed class GateFixture : IDisposable
     {
-
         private readonly GrimoireConnectionAdmissionGate _gate =
             new(TimeProvider.System, new NoOpConnectionDrain(), OpeningTimeout);
 
@@ -185,7 +173,6 @@ public sealed class GrimoireStreamQuiescenceTests
 
         internal GateFixture()
         {
-
             ServiceCollection services = new();
 
             services.AddSingleton<IGrimoireConnectionAdmissionGate>(_gate);
@@ -195,12 +182,10 @@ public sealed class GrimoireStreamQuiescenceTests
                     sp.GetRequiredService<IGrimoireConnectionAdmissionGate>()));
 
             _root = services.BuildServiceProvider();
-
         }
 
         internal GrimoireStreamQuiescence Admit(GrimoireRequestKind kind)
         {
-
             _scope = _root.CreateScope();
 
             GrimoireRequestAdmissionScope admission =
@@ -214,12 +199,10 @@ public sealed class GrimoireStreamQuiescenceTests
             };
 
             return GrimoireStreamQuiescence.For(context);
-
         }
 
         internal void BeginClosing()
         {
-
             Result<IGrimoireClosingOwner> begun = _gate.BeginOrResumeExclusive(
                 new CovenantExclusiveRecoveryOwner(
                     Guid.Parse("00000000-0000-0000-0000-000000000252"),
@@ -229,26 +212,21 @@ public sealed class GrimoireStreamQuiescenceTests
             Assert.True(begun.IsSuccess, begun.IsFailure ? begun.Error.Message : null);
 
             _closing = begun.Value;
-
         }
 
         public void Dispose()
         {
-
             _closing?.DisposeAsync().AsTask().GetAwaiter().GetResult();
 
             _scope?.Dispose();
 
             _root.Dispose();
-
         }
-
     }
 
     private sealed class NoOpConnectionDrain : ICovenantConnectionDrain
     {
-
-        public IDisposable Register(SqliteConnection connection) => new Registration();
+        public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire) => new Registration();
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection) => Result.Success();
 
@@ -257,13 +235,9 @@ public sealed class GrimoireStreamQuiescenceTests
 
         private sealed class Registration : IDisposable
         {
-
             public void Dispose()
             {
             }
-
         }
-
     }
-
 }

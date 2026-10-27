@@ -1115,6 +1115,28 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         }
 
         Assert.False(await reader.ReadAsync(cancellationToken));
+
+        await reader.DisposeAsync();
+
+        command.CommandText = "SELECT COUNT(*) FROM memory_search_documents WHERE Corpus = 0;";
+
+        Assert.Equal(1L, (long)(await command.ExecuteScalarAsync(cancellationToken))!);
+
+        command.CommandText = "SELECT COUNT(*) FROM memory_search_documents WHERE Corpus = 2;";
+
+        Assert.Equal(attachmentIndexed ? 1L : 0L, (long)(await command.ExecuteScalarAsync(cancellationToken))!);
+
+        command.CommandText = "SELECT COUNT(*) FROM memory_search_documents;";
+
+        long searchDocuments = (long)(await command.ExecuteScalarAsync(cancellationToken))!;
+
+        Assert.Equal(attachmentIndexed ? 2L : 1L, searchDocuments);
+
+        command.CommandText = "SELECT COUNT(*) FROM memory_search_fts;";
+
+        long searchFts = (long)(await command.ExecuteScalarAsync(cancellationToken))!;
+
+        Assert.Equal(attachmentIndexed ? 2L : 1L, searchFts);
     }
 
     private static async Task<FactoryDrainEvidence> ReadFactoryDrainEvidenceAsync(GrimoireMaintenanceAdmissionHarness harness,
@@ -1196,18 +1218,20 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         command.CommandText = """
             SELECT (SELECT COUNT(*) FROM Entries_fts) + (SELECT COUNT(*) FROM session_attachment_index_state)
                 + (SELECT COUNT(*) FROM session_attachment_chunks) + (SELECT COUNT(*) FROM session_attachment_embeddings)
-                + (SELECT COUNT(*) FROM tapestry_scope_revisions);
+                + (SELECT COUNT(*) FROM tapestry_scope_revisions)
+                + (SELECT COUNT(*) FROM memory_search_documents) + (SELECT COUNT(*) FROM memory_search_fts);
             """;
 
         long derived = (long)(await command.ExecuteScalarAsync(token))!;
 
-        // Planning sees the Entry FTS row, active indexing state and Session revision. Draining
-        // indexing adds its chunk, BLOB embedding and SessionAttachment revision; no vector mirror.
-        Assert.Equal(3L, plan.DerivedRecords);
+        // Planning sees Entry FTS, active indexing state, Session revision, and the Entry's Core28
+        // projection/FTS pair. Indexing adds chunk, BLOB embedding, attachment revision and its
+        // Core28 projection/FTS pair; the named native counts above prove both additions.
+        Assert.Equal(5L, plan.DerivedRecords);
 
-        Assert.Equal(6L, derived);
+        Assert.Equal(10L, derived);
 
-        Assert.Equal(plan.DerivedRecords + 3, derived);
+        Assert.Equal(plan.DerivedRecords + 5, derived);
 
         command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE name = 'session_attachment_embeddings_vec';";
 
@@ -1283,7 +1307,7 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Assert.Equal(plan.Rows + 1, result.RowsDeleted);
 
-        Assert.Equal(plan.DerivedRecords + 3, result.DerivedRecordsDeleted);
+        Assert.Equal(plan.DerivedRecords + 5, result.DerivedRecordsDeleted);
 
         Assert.Equal(plan.Files + 1, result.FilesDeleted);
 

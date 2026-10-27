@@ -438,6 +438,7 @@ R	src/RetroDownfall.Arcanum.Core/Primitives/JsonSchemaDefinition.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/JsonSchemaHelper.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/ListPageResult.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/Result.cs
+R	src/RetroDownfall.Arcanum.Core/Primitives/SqliteStorageFailure.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/StrictUtf8.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/UnicodeNfc.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/Utf8Truncation.cs
@@ -547,6 +548,7 @@ R	src/RetroDownfall.Arcanum.Core/Storage/SessionAttachmentContentPolicy.cs
 R	src/RetroDownfall.Arcanum.Core/Storage/SessionAttachmentPathSanitizer.cs
 R	src/RetroDownfall.Arcanum.Core/Storage/SessionAttachmentToolAmbient.cs
 R	src/RetroDownfall.Arcanum.Core/Storage/SessionAttachmentTurnBudget.cs
+R	src/RetroDownfall.Arcanum.Core/Storage/SessionCompactionModelSnapshot.cs
 R	src/RetroDownfall.Arcanum.Core/Storage/SessionDerivedArtifactContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Storage/UnseenServantWatermark.cs
 R	src/RetroDownfall.Arcanum.Core/Telemetry/ArcanumMetrics.cs
@@ -859,6 +861,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSqliteAuthoriza
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSqliteConnectionInitializer.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSqliteConnectionMode.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantSqliteConnectionState.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantStorageFailure.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantStoreSql.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantTokenStartMatcher.cs

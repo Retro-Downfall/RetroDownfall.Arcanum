@@ -23,7 +23,7 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// <c>external_disclosure_state</c> are all triggers, and a suite built on doubles would assert the
 /// erasure's intentions rather than its effect.
 /// </remarks>
-public sealed class CovenantCanonicalErasureTransactionTests
+public sealed partial class CovenantCanonicalErasureTransactionTests
 {
     /// <summary>Every canonical table the erasure is responsible for emptying.</summary>
     private static readonly string[] FamilyTables =
@@ -1267,7 +1267,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
     private sealed class RecordingConnectionDrain(ICovenantConnectionDrain inner, List<string> steps)
         : ICovenantConnectionDrain
     {
-        public IDisposable Register(SqliteConnection connection) => inner.Register(connection);
+        public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire) => inner.Register(connection, owner);
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
             inner.ClearExactPoolAfterClose(connection);
@@ -1282,7 +1282,7 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
     private sealed class FailingConnectionDrain : ICovenantConnectionDrain
     {
-        public IDisposable Register(SqliteConnection connection) => throw new NotSupportedException();
+        public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire) => throw new NotSupportedException();
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
             throw new NotSupportedException();

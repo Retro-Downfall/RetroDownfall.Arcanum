@@ -202,10 +202,10 @@ public readonly record struct CovenantInventoryFailureDetails(
     RetroDownfall.Arcanum.Core.Covenant.SensitiveArtifactKind? ArtifactKind = null)
 {
     /// <summary>Uses only SQLite's primary result code; missing schema is an integrity fault, never retryable busy.</summary>
-    public static CovenantInventoryFailureDetails FromSqliteCode(int? sqliteCode) => new((sqliteCode & 255) switch
+    public static CovenantInventoryFailureDetails FromSqliteCode(int? sqliteCode) => new(SqliteStorageFailure.Classify(sqliteCode) switch
     {
-        5 or 6 => CovenantInventoryFailureReason.StorageBusy,
-        7 or 8 or 9 or 10 or 13 or 14 => CovenantInventoryFailureReason.StorageUnavailable,
+        SqliteStorageFailureKind.Busy => CovenantInventoryFailureReason.StorageBusy,
+        SqliteStorageFailureKind.Unavailable => CovenantInventoryFailureReason.StorageUnavailable,
         _ => CovenantInventoryFailureReason.StorageFault,
     });
 

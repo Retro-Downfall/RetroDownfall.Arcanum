@@ -9,7 +9,7 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
-public sealed class CampaignRollupStoreTests
+public sealed partial class CampaignRollupStoreTests
 {
     internal static readonly Guid Campaign = Guid.Parse("BC037C35-E97D-456B-AE21-42E06BEDD321");
 

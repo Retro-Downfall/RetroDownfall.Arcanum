@@ -212,7 +212,8 @@ internal sealed class GrimoireOrdinaryConnectionLifecycle :
             {
                 lifecycle.Enrolment = _drain.Register(
                     sqlite,
-                    this);
+                    this,
+                    CovenantConnectionOwner.OrdinaryGrimoire);
             }
 
             Result opened = lifecycle.OpenTicket!.MarkOpened();

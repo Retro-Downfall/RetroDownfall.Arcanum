@@ -3175,7 +3175,7 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
 
         internal void Release() => _released.TrySetResult();
 
-        public IDisposable Register(SqliteConnection connection) => new NoOpRegistration();
+        public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire) => new NoOpRegistration();
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection) => Result.Success();
 

@@ -289,35 +289,49 @@ internal sealed partial class CampaignRollupStore(
     {
         ArgumentNullException.ThrowIfNull(initializer);
 
-        SqliteConnection connection = await connections.GetOpenCoreConnectionAsync(cancellationToken).ConfigureAwait(false);
+        SqliteConnection connection;
 
-        await using SqliteTransaction transaction = connection.BeginTransaction(deferred: !write);
+        SqliteTransaction transaction;
 
         try
         {
-            T value = await action(connection, transaction).ConfigureAwait(false);
+            connection = await connections.GetOpenCoreConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
-            return Result<T>.Success(value);
+            transaction = connection.BeginTransaction(deferred: !write);
         }
-        catch (ReadRefusal refusal)
+        catch (Exception failure) when (failure is SqliteException or IOException or UnauthorizedAccessException)
         {
-            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-
-            return refusal.Error;
+            return CovenantStorageFailure.Create(failure, "Campaign summary storage");
         }
-        catch (Exception exception) when (exception is FormatException or OverflowException or ArgumentException or InvalidDataException)
-        {
-            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
-            return new Error(ErrorCodes.Covenant.IntegrityFailure, "Campaign source evidence cannot be reconstructed exactly.");
-        }
-        catch (SqliteException exception)
+        await using (transaction)
         {
-            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                T value = await action(connection, transaction).ConfigureAwait(false);
 
-            return new Error(ErrorCodes.Grimoire.WriteFailed, $"Campaign summary storage could not complete ({exception.SqliteErrorCode}).");
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                return Result<T>.Success(value);
+            }
+            catch (ReadRefusal refusal)
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+                return refusal.Error;
+            }
+            catch (Exception exception) when (exception is FormatException or OverflowException or ArgumentException or InvalidDataException)
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+                return new Error(ErrorCodes.Covenant.IntegrityFailure, "Campaign source evidence cannot be reconstructed exactly.");
+            }
+            catch (SqliteException exception)
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+                return CovenantStorageFailure.Create(exception, "Campaign summary storage");
+            }
         }
     }
 

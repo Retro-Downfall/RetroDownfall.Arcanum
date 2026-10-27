@@ -52,7 +52,7 @@ internal sealed partial class LongRunningOperationStore(
 
     private IDisposable? _covenantDrainEnrolment =
         covenantDrain is not null && db.Database.GetDbConnection() is SqliteConnection sqlite
-            ? covenantDrain.Register(sqlite)
+            ? covenantDrain.Register(sqlite, CovenantConnectionOwner.OperationStore)
             : null;
 
     /// <summary>

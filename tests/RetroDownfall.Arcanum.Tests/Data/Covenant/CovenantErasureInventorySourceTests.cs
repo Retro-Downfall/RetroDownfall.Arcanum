@@ -1965,9 +1965,9 @@ public sealed class CovenantErasureInventorySourceTests
 
         internal int MaximumActiveCount => Volatile.Read(ref _maximumActiveCount);
 
-        public IDisposable Register(SqliteConnection connection)
+        public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire)
         {
-            IDisposable enrollment = inner.Register(connection);
+            IDisposable enrollment = inner.Register(connection, owner);
 
             int active = Interlocked.Increment(ref _activeCount);
 

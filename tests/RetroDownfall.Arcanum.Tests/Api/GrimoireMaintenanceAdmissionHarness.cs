@@ -467,6 +467,7 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
                     provider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
                     provider.GetRequiredService<ICovenantAvailability>(),
                     provider.GetRequiredService<ICovenantDisclosureTransactionWriter>(),
+                    provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<CovenantDisclosureWriter>>(),
                     startupObservation.ObserveDisclosureWriterReopen));
 
                 if (startupObservation.FailDisclosureWriterRestore)

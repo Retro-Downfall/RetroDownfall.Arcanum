@@ -971,7 +971,7 @@ public sealed class GrimoireRequestAdmissionTests
 
     private sealed class NoOpConnectionDrain : ICovenantConnectionDrain
     {
-        public IDisposable Register(SqliteConnection connection) => new Registration();
+        public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire) => new Registration();
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection) => Result.Success();
 

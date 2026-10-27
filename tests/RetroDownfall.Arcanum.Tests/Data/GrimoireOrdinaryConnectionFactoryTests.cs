@@ -1239,7 +1239,7 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
 
         internal ConnectionState? StateAtClear { get; private set; }
 
-        public IDisposable Register(SqliteConnection connection)
+        public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire)
         {
             RegisterCount++;
 
@@ -1294,7 +1294,7 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
 
         internal int ClearCount { get; private set; }
 
-        public IDisposable Register(SqliteConnection connection) => new NoopDisposable();
+        public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire) => new NoopDisposable();
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection)
         {
@@ -1319,7 +1319,7 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
 
         internal void Release() => _released.TrySetResult();
 
-        public IDisposable Register(SqliteConnection connection) => new NoopDisposable();
+        public IDisposable Register(SqliteConnection connection, CovenantConnectionOwner owner = CovenantConnectionOwner.OrdinaryGrimoire) => new NoopDisposable();
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection) => Result.Success();
 

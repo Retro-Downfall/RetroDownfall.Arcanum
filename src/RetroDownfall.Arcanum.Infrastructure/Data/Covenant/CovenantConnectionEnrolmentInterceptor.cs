@@ -213,7 +213,11 @@ internal sealed class CovenantConnectionEnrolmentInterceptor : DbConnectionInter
         }
         else
         {
-            logger?.LogError("An ordinary Grimoire connection failed to open safely.");
+            logger?.LogError(
+                "An ordinary Grimoire connection failed to open safely. Failure={Failure} SQLite={SqliteErrorCode} Extended={SqliteExtendedErrorCode}.",
+                CovenantStorageFailure.Classify(eventData.Exception),
+                (eventData.Exception as SqliteException)?.SqliteErrorCode,
+                (eventData.Exception as SqliteException)?.SqliteExtendedErrorCode);
         }
     }
 

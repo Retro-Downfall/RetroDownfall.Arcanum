@@ -19,9 +19,8 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// The process-wide warm disclosure writer, including its real SQLCipher connection lifecycle.
 /// </summary>
 [Trait("Category", "Integration")]
-public sealed class CovenantDisclosureWriterTests
+public sealed partial class CovenantDisclosureWriterTests
 {
-
     private static readonly Guid Installation = new("11111111-2222-3333-4444-555555555555");
 
     private static readonly Guid TurnId = new("66666666-7777-8888-9999-aaaaaaaaaaaa");
@@ -37,7 +36,6 @@ public sealed class CovenantDisclosureWriterTests
         bool healthy,
         bool emptyDataset)
     {
-
         await using WriterHarness harness = await WriterHarness.CreateAsync();
 
         harness.Availability!.Publish(
@@ -57,13 +55,11 @@ public sealed class CovenantDisclosureWriterTests
         Assert.Empty(harness.FreshConnections.Opened);
 
         Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
-
     }
 
     [Fact]
     public async Task Initial_lazy_open_refuses_a_mismatched_database_dataset_and_cleans_the_candidate()
     {
-
         await using WriterHarness harness = await WriterHarness.CreateAsync();
 
         harness.Availability!.Publish(CovenantCapabilityState.Healthy, Guid.NewGuid());
@@ -93,13 +89,11 @@ public sealed class CovenantDisclosureWriterTests
         Assert.True(stillClosed.IsFailure);
 
         Assert.Single(harness.FreshConnections.Opened);
-
     }
 
     [Fact]
     public async Task Candidate_is_admitted_as_one_warm_read_write_ordinary_lease_after_proof()
     {
-
         await using WriterHarness harness = await WriterHarness.CreateAsync();
 
         Result<CovenantDisclosureReceipt> acknowledged = await harness.Subject.AcknowledgeAsync(
@@ -115,13 +109,11 @@ public sealed class CovenantDisclosureWriterTests
             harness.FreshConnections.Kinds);
 
         Assert.Equal(1, harness.FreshConnections.LiveLeaseCount);
-
     }
 
     [Fact]
     public async Task Quiesce_closes_admission_before_waiting_for_the_inflight_commit()
     {
-
         BlockingTransactionWriter transaction = new();
 
         await using WriterHarness harness = await WriterHarness.CreateAsync(transaction);
@@ -155,13 +147,11 @@ public sealed class CovenantDisclosureWriterTests
         Assert.Equal(ConnectionState.Closed, warm.State);
 
         Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
-
     }
 
     [Fact]
     public async Task Reopen_is_idempotent_without_a_duplicate_connection_or_enrolment()
     {
-
         await using WriterHarness harness = await WriterHarness.CreateAsync();
 
         Assert.True((await harness.Subject.QuiesceAsync(Token)).IsSuccess);
@@ -181,13 +171,11 @@ public sealed class CovenantDisclosureWriterTests
         Assert.Equal(ConnectionState.Open, warm.State);
 
         Assert.Equal(1, harness.FreshConnections.LiveLeaseCount);
-
     }
 
     [Fact]
     public async Task Reopen_after_a_cancelled_quiesce_waits_for_admitted_work_and_uses_a_fresh_handle()
     {
-
         BlockingTransactionWriter transaction = new();
 
         await using WriterHarness harness = await WriterHarness.CreateAsync(transaction);
@@ -231,13 +219,11 @@ public sealed class CovenantDisclosureWriterTests
         Assert.Equal(ConnectionState.Open, fresh.State);
 
         Assert.Equal(1, harness.FreshConnections.LiveLeaseCount);
-
     }
 
     [Fact]
     public async Task Quiesce_requested_during_the_first_lazy_open_closes_the_candidate_and_keeps_admission_closed()
     {
-
         await using WriterHarness harness = await WriterHarness.CreateAsync();
 
         Assert.True((await harness.Subject.QuiesceAsync(Token)).IsSuccess);
@@ -271,13 +257,11 @@ public sealed class CovenantDisclosureWriterTests
         Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
 
         Assert.True((await harness.AcknowledgeAsync(1)).IsFailure);
-
     }
 
     [Fact]
     public async Task Dispose_requested_during_the_first_lazy_open_closes_the_candidate_and_keeps_admission_closed()
     {
-
         await using WriterHarness harness = await WriterHarness.CreateAsync();
 
         Assert.True((await harness.Subject.QuiesceAsync(Token)).IsSuccess);
@@ -311,7 +295,6 @@ public sealed class CovenantDisclosureWriterTests
         Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
 
         Assert.True((await harness.AcknowledgeAsync(1)).IsFailure);
-
     }
 
     /// <summary>
@@ -323,7 +306,6 @@ public sealed class CovenantDisclosureWriterTests
     [Fact]
     public async Task First_lazy_open_survives_an_availability_republication_that_keeps_its_dataset()
     {
-
         await using WriterHarness harness = await WriterHarness.CreateAsync(productionAvailability: true);
 
         harness.FreshConnections.BlockNextOpen();
@@ -357,7 +339,6 @@ public sealed class CovenantDisclosureWriterTests
         Assert.True((await harness.AcknowledgeAsync(2)).IsSuccess);
 
         Assert.Single(harness.FreshConnections.Opened);
-
     }
 
     /// <summary>
@@ -370,7 +351,6 @@ public sealed class CovenantDisclosureWriterTests
     public async Task First_lazy_open_still_refuses_a_dataset_or_canonical_health_that_changes_while_it_opens(
         bool replaceDataset)
     {
-
         await using WriterHarness harness = await WriterHarness.CreateAsync();
 
         harness.FreshConnections.BlockNextOpen();
@@ -398,13 +378,11 @@ public sealed class CovenantDisclosureWriterTests
         Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
 
         Assert.True((await harness.AcknowledgeAsync(2)).IsFailure);
-
     }
 
     [Fact]
     public async Task Disposal_is_idempotent_and_waits_for_admitted_work_before_closing_the_handle()
     {
-
         BlockingTransactionWriter transaction = new();
 
         await using WriterHarness harness = await WriterHarness.CreateAsync(transaction);
@@ -438,13 +416,11 @@ public sealed class CovenantDisclosureWriterTests
         Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
 
         await harness.Subject.DisposeAsync();
-
     }
 
     [Fact]
     public async Task Warm_writer_owns_one_read_write_ordinary_lease_until_physical_close_precedes_release()
     {
-
         await using WriterHarness harness = await WriterHarness.CreateAsync();
 
         Assert.DoesNotContain(
@@ -496,7 +472,6 @@ public sealed class CovenantDisclosureWriterTests
         Assert.True((await quiesce.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
 
         Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
-
     }
 
     [Theory]
@@ -504,7 +479,6 @@ public sealed class CovenantDisclosureWriterTests
     [InlineData(true)]
     public async Task Cold_readiness_refuses_unhealthy_or_empty_authority_without_opening(bool empty)
     {
-
         await using WriterHarness harness = await WriterHarness.CreateAsync();
 
         Assert.True((await harness.Subject.QuiesceAsync(Token)).IsSuccess);
@@ -521,13 +495,11 @@ public sealed class CovenantDisclosureWriterTests
         Assert.Empty(harness.FreshConnections.Opened);
 
         Assert.True((await harness.AcknowledgeAsync(1)).IsFailure);
-
     }
 
     [Fact]
     public async Task Maintenance_refusal_of_prepared_cold_readiness_remains_retryable_without_a_receipt()
     {
-
         await using WriterHarness harness = await WriterHarness.CreateAsync(new CovenantDisclosureTransactionWriter(BootId));
 
         Assert.True((await harness.Subject.QuiesceAsync(Token)).IsSuccess);
@@ -549,13 +521,11 @@ public sealed class CovenantDisclosureWriterTests
         Assert.True(admitted.IsSuccess);
 
         Assert.Equal(1, await CountReceiptsAsync(Assert.Single(harness.FreshConnections.Opened)));
-
     }
 
     [Fact]
     public async Task An_ordinary_open_failure_keeps_the_writer_closed_without_a_lease()
     {
-
         await using WriterHarness harness = await WriterHarness.CreateAsync();
 
         harness.FreshConnections.RefuseNextOpen();
@@ -569,13 +539,11 @@ public sealed class CovenantDisclosureWriterTests
         Assert.Empty(harness.FreshConnections.Opened);
 
         Assert.Equal(0, harness.FreshConnections.LiveLeaseCount);
-
     }
 
     [Fact]
     public async Task Real_writer_restores_the_unchanged_old_generation_on_a_fresh_handle()
     {
-
         await using WriterHarness harness = await WriterHarness.CreateAsync(
             new CovenantDisclosureTransactionWriter(BootId),
             productionAvailability: true);
@@ -597,13 +565,11 @@ public sealed class CovenantDisclosureWriterTests
         Assert.Equal(ConnectionState.Closed, oldWarm.State);
 
         Assert.Equal(2, await CountReceiptsAsync(fresh));
-
     }
 
     [Fact]
     public async Task Real_writer_restarts_against_the_fresh_generation_after_canonical_replacement()
     {
-
         await using WriterHarness harness = await WriterHarness.CreateAsync(
             new CovenantDisclosureTransactionWriter(BootId),
             productionAvailability: true);
@@ -645,13 +611,11 @@ public sealed class CovenantDisclosureWriterTests
         Assert.Equal(applied.Value, await ReadDatasetGenerationAsync(fresh));
 
         Assert.Equal(2, await CountReceiptsAsync(fresh));
-
     }
 
     [Fact]
     public async Task Both_public_writer_interfaces_resolve_to_the_same_singleton()
     {
-
         ServiceCollection services = [];
 
         services.AddArcanumGrimoireForCli();
@@ -667,7 +631,6 @@ public sealed class CovenantDisclosureWriterTests
         Assert.Same(journal, lifecycle);
 
         Assert.IsType<CovenantDisclosureWriter>(journal);
-
     }
 
     private static readonly GenerationProvenance Provenance =
@@ -699,7 +662,6 @@ public sealed class CovenantDisclosureWriterTests
 
     private static async Task<long> CountReceiptsAsync(SqliteConnection connection)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = "SELECT COUNT(*) FROM external_disclosure_receipts;";
@@ -707,12 +669,10 @@ public sealed class CovenantDisclosureWriterTests
         object? value = await command.ExecuteScalarAsync(Token);
 
         return Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
-
     }
 
     private static async Task<Guid> ReadDatasetGenerationAsync(SqliteConnection connection)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = "SELECT DatasetGeneration FROM covenant_state WHERE StateKey = 1;";
@@ -720,12 +680,10 @@ public sealed class CovenantDisclosureWriterTests
         byte[] value = Assert.IsType<byte[]>(await command.ExecuteScalarAsync(Token));
 
         return new Guid(value);
-
     }
 
     private static CovenantAvailability HealthyAvailability(Guid datasetGeneration)
     {
-
         const string CanonicalFingerprint =
             "sha256-1111111111111111111111111111111111111111111111111111111111111111";
 
@@ -770,12 +728,10 @@ public sealed class CovenantDisclosureWriterTests
             CovenantHealthTransition.Bootstrap);
 
         return availability;
-
     }
 
     private sealed class WriterHarness : IAsyncDisposable
     {
-
         private WriterHarness(
             CovenantCanonicalErasureFixture fixture,
             Guid datasetGeneration,
@@ -784,7 +740,6 @@ public sealed class CovenantDisclosureWriterTests
             CovenantAvailability? publishedAvailability,
             CovenantDisclosureWriter subject)
         {
-
             Fixture = fixture;
 
             DatasetGeneration = datasetGeneration;
@@ -796,7 +751,6 @@ public sealed class CovenantDisclosureWriterTests
             PublishedAvailability = publishedAvailability;
 
             Subject = subject;
-
         }
 
         internal CovenantCanonicalErasureFixture Fixture { get; }
@@ -813,15 +767,15 @@ public sealed class CovenantDisclosureWriterTests
 
         internal static async Task<WriterHarness> CreateAsync(
             ICovenantDisclosureTransactionWriter? transaction = null,
-            bool productionAvailability = false)
+            bool productionAvailability = false,
+            Func<IGrimoireOrdinaryConnectionFactory, IGrimoireOrdinaryConnectionFactory>? wrap = null,
+            Microsoft.Extensions.Logging.ILogger<CovenantDisclosureWriter>? logger = null)
         {
-
             CovenantCanonicalErasureFixture fixture =
                 await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
             try
             {
-
                 Guid datasetGeneration = Assert.IsType<Guid>(
                     await fixture.ReadDatasetGenerationAsync(Token));
 
@@ -851,9 +805,10 @@ public sealed class CovenantDisclosureWriterTests
                     transaction ?? new ImmediateTransactionWriter();
 
                 CovenantDisclosureWriter subject = new(
-                    freshConnections,
+                    wrap?.Invoke(freshConnections) ?? freshConnections,
                     writerAvailability,
-                    resolvedTransaction);
+                    resolvedTransaction,
+                    logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<CovenantDisclosureWriter>.Instance);
 
                 return new WriterHarness(
                     fixture,
@@ -862,17 +817,13 @@ public sealed class CovenantDisclosureWriterTests
                     mutable,
                     published,
                     subject);
-
             }
             catch
             {
-
                 await fixture.DisposeAsync();
 
                 throw;
-
             }
-
         }
 
         internal Task<Result<CovenantDisclosureReceipt>> AcknowledgeAsync(byte effectSeed) =>
@@ -884,18 +835,14 @@ public sealed class CovenantDisclosureWriterTests
 
         public async ValueTask DisposeAsync()
         {
-
             await Subject.DisposeAsync();
 
             await Fixture.DisposeAsync();
-
         }
-
     }
 
     private sealed class MutableAvailability(Guid datasetGeneration) : ICovenantAvailability
     {
-
         private CovenantAvailabilitySnapshot _current = Snapshot(
             CovenantCapabilityState.Healthy,
             datasetGeneration);
@@ -904,22 +851,18 @@ public sealed class CovenantDisclosureWriterTests
 
         internal void Publish(CovenantCapabilityState canonical, Guid? datasetGeneration)
         {
-
             CovenantAvailabilitySnapshot current = Current;
 
             Volatile.Write(
                 ref _current,
                 current with
                 {
-
                     Generation = current.Generation + 1,
 
                     Canonical = canonical,
 
                     DatasetGeneration = datasetGeneration,
-
                 });
-
         }
 
         private static CovenantAvailabilitySnapshot Snapshot(
@@ -946,12 +889,10 @@ public sealed class CovenantDisclosureWriterTests
                 CovenantHealthTransition.Bootstrap,
                 CanonicalDiagnosticCode: null,
                 AcceleratorDiagnosticCode: null);
-
     }
 
     private sealed class ImmediateTransactionWriter : ICovenantDisclosureTransactionWriter
     {
-
         public ValueTask<Result<CovenantDisclosureReceipt>> AcknowledgeAsync(
             SqliteConnection connection,
             CovenantDisclosureDraft draft,
@@ -961,12 +902,10 @@ public sealed class CovenantDisclosureWriterTests
             ValueTask.FromResult(
                 Result<CovenantDisclosureReceipt>.Success(
                     new CovenantDisclosureReceipt(draft, allocatedSubjectOrdinal: 1)));
-
     }
 
     private sealed class BlockingTransactionWriter : ICovenantDisclosureTransactionWriter
     {
-
         private readonly TaskCompletionSource<bool> _entered =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -984,16 +923,12 @@ public sealed class CovenantDisclosureWriterTests
             ProviderCallSensitivity sensitivity,
             CancellationToken cancellationToken)
         {
-
             _ = _entered.TrySetResult(true);
 
             await _release.Task.WaitAsync(cancellationToken);
 
             return Result<CovenantDisclosureReceipt>.Success(
                 new CovenantDisclosureReceipt(draft, allocatedSubjectOrdinal: 1));
-
         }
-
     }
-
 }
