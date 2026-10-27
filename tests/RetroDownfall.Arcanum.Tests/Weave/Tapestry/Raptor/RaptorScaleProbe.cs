@@ -143,7 +143,9 @@ public sealed class RaptorScaleProbe(ITestOutputHelper output)
 
             completed = true;
 
-            output.WriteLine($"graph edges={graph.Value.SourceIndices.Length} evaluations={graph.Value.DistanceEvaluations} iterations={graph.Value.DescentIterations} requests={graph.Value.DistanceRequests} memo_lookups={graph.Value.MemoLookups} memo_hits={graph.Value.MemoHits} memo_evictions={graph.Value.MemoEvictions} memo_bytes={graph.Value.MemoAllocatedBytes} fingerprint={GraphHash(graph.Value)}");
+            output.WriteLine($"graph edges={graph.Value.SourceIndices.Length} evaluations={graph.Value.DistanceEvaluations} iterations={graph.Value.DescentIterations} requests={graph.Value.DistanceRequests} memo_lookups={graph.Value.MemoLookups} memo_hits={graph.Value.MemoHits} memo_evictions={graph.Value.MemoEvictions} memo_bytes={graph.Value.MemoAllocatedBytes} heap_checks={graph.Value.ForwardHeapChecks} pair_visits={graph.Value.PairEnumerationVisits} pair_bytes={graph.Value.PairEnumerationAllocatedBytes} fingerprint={GraphHash(graph.Value)}");
+
+            Assert.Equal("4de447eabf110f6de835b9a3795c5f98bb634f1d50c0010604398748c41de354", GraphHash(graph.Value));
 
             Assert.True(graph.Value.DistanceEvaluations < exactEvaluations, $"Actual distance evaluations {graph.Value.DistanceEvaluations} must be strictly below exact all-pairs {exactEvaluations}.");
 
@@ -382,6 +384,104 @@ public sealed class RaptorScaleProbe(ITestOutputHelper output)
 
     [Fact]
     public void A_bounded_probe_records_natural_completion_instead_of_inventing_cancellation() => Assert.True(PartialNeighborPilot(100));
+
+    [Fact]
+    public void Memo_hits_do_not_repeat_forward_heap_checks()
+    {
+        RaptorPoint[] points = RaptorNeighborQualityTests.Points("clustered", 2304);
+
+        var built = new RaptorNeighborGraphBuilder().Build(points, Neighbors(points.Length), 751, CancellationToken.None);
+
+        Assert.True(built.IsSuccess, built.IsFailure ? built.Error.Code : "");
+
+        RaptorNeighborGraph graph = built.Value;
+
+        Assert.Equal("783dc08ffd6a44b2a5a4ccf1451607bab27d345d3ea8206dd7609386a43b4e55", GraphHash(graph));
+
+        AssertMemoCounters(graph);
+
+        output.WriteLine($"heap_work requests={graph.DistanceRequests} scalar_evaluations={graph.DistanceEvaluations} memo_hits={graph.MemoHits} forward_heap_checks={graph.ForwardHeapChecks} iterations={graph.DescentIterations}");
+
+        Assert.Equal(2 * graph.DistanceEvaluations, graph.ForwardHeapChecks);
+    }
+
+    [Fact]
+    public void Each_round_does_not_revisit_eligible_unordered_pairs()
+    {
+        RaptorPoint[] points = RaptorNeighborQualityTests.Points("clustered", 2304);
+
+        long initializationRequests = -1;
+
+        var observer = new Progress<RaptorNeighborProgress>(value =>
+        {
+            if (value.Phase == "descent-allocation") initializationRequests = value.WorkSteps;
+        });
+
+        var built = new RaptorNeighborGraphBuilder(observer).Build(points, Neighbors(points.Length), 751, CancellationToken.None);
+
+        Assert.True(built.IsSuccess, built.IsFailure ? built.Error.Code : "");
+
+        Assert.True(initializationRequests >= 0);
+
+        RaptorNeighborGraph graph = built.Value;
+
+        long descentRequests = graph.DistanceRequests - initializationRequests;
+
+        long uniquePairCeiling = (long)points.Length * (points.Length - 1) / 2 * graph.DescentIterations;
+
+        output.WriteLine($"round_work initialization_requests={initializationRequests} descent_requests={descentRequests} distinct_pair_ceiling={uniquePairCeiling} iterations={graph.DescentIterations}");
+
+        Assert.Equal("783dc08ffd6a44b2a5a4ccf1451607bab27d345d3ea8206dd7609386a43b4e55", GraphHash(graph));
+
+        Assert.InRange(descentRequests, 0, uniquePairCeiling);
+
+        long stride = 4L * (Neighbors(points.Length) - 1);
+
+        Assert.Equal((points.Length * stride + 4L * points.Length + 1) * sizeof(int), graph.PairEnumerationAllocatedBytes);
+
+        long membershipCeiling = points.Length * stride * (stride + 2) * graph.DescentIterations;
+
+        Assert.InRange(graph.PairEnumerationVisits, 1, membershipCeiling);
+
+        output.WriteLine($"pair_enumeration visits={graph.PairEnumerationVisits} visit_ceiling={membershipCeiling} bytes={graph.PairEnumerationAllocatedBytes}");
+    }
+
+    [Fact]
+    public void Pair_enumeration_cancels_without_another_distance_request()
+    {
+        using CancellationTokenSource source = new();
+
+        RaptorNeighborProgress observed = default;
+
+        int reports = 0;
+
+        var observer = new Progress<RaptorNeighborProgress>(value =>
+        {
+            if (value.Phase != "descent-pair-enumeration") return;
+
+            if (++reports == 1) observed = value;
+
+            if (reports == 2)
+            {
+                Assert.Equal(observed.PairEnumerationVisits + 1024, value.PairEnumerationVisits);
+
+                Assert.Equal(observed.WorkSteps, value.WorkSteps);
+
+                Assert.Equal(observed.DistanceEvaluations, value.DistanceEvaluations);
+
+                source.Cancel();
+            }
+        });
+
+        RaptorPoint[] points = RaptorNeighborQualityTests.Points("clustered", 2304);
+
+        OperationCanceledException canceled = Assert.ThrowsAny<OperationCanceledException>(() =>
+            new RaptorNeighborGraphBuilder(observer).Build(points, Neighbors(points.Length), 751, source.Token));
+
+        Assert.Equal(source.Token, canceled.CancellationToken);
+
+        Assert.Equal(2, reports);
+    }
 
     [Fact]
     public void Synthetic_corpus_has_full_width_distinct_identity_and_repeatable_float_bits()
