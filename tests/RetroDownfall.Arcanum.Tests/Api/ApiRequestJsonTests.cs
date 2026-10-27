@@ -12,11 +12,9 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 
 public sealed class ApiRequestJsonTests
 {
-
     [Fact]
     public async Task ReadAsync_malformed_json_returns_error_result()
     {
-
         DefaultHttpContext httpContext = new();
 
         byte[] payload = Encoding.UTF8.GetBytes("{not-json");
@@ -30,19 +28,17 @@ public sealed class ApiRequestJsonTests
         (PingRequest? body, IResult? error) = await ApiRequestJson.ReadAsync(
             httpContext,
             ArcanumJsonContext.Default.PingRequest,
-            ctx => ApiRequestJson.InvalidBodyResult(ctx, ApiRequestJson.MalformedJsonMessage),
+            (ctx, jsonFailure) => ApiRequestJson.InvalidBodyResult(ctx, jsonFailure),
             CancellationToken.None);
 
         Assert.Null(body);
 
         Assert.NotNull(error);
-
     }
 
     [Fact]
     public async Task ReadAsync_non_json_content_type_returns_415_instead_of_throwing()
     {
-
         // ReadFromJsonAsync raises InvalidOperationException here, which used to escape ReadAsync and
         // surface as HTTP 500 Hub.Unhandled with an Error-level stack trace for a routine client mistake.
         DefaultHttpContext httpContext = new();
@@ -58,7 +54,7 @@ public sealed class ApiRequestJsonTests
         (PingRequest? body, IResult? error) = await ApiRequestJson.ReadAsync(
             httpContext,
             ArcanumJsonContext.Default.PingRequest,
-            ctx => ApiRequestJson.InvalidBodyResult(ctx, ApiRequestJson.MalformedJsonMessage),
+            (ctx, jsonFailure) => ApiRequestJson.InvalidBodyResult(ctx, jsonFailure),
             CancellationToken.None);
 
         Assert.Null(body);
@@ -68,13 +64,11 @@ public sealed class ApiRequestJsonTests
         Assert.Equal(
             StatusCodes.Status415UnsupportedMediaType,
             await ExecuteStatusCodeAsync(error));
-
     }
 
     [Fact]
     public async Task ReadAsync_missing_content_type_returns_415()
     {
-
         DefaultHttpContext httpContext = new();
 
         httpContext.Request.Body = new MemoryStream([]);
@@ -84,7 +78,7 @@ public sealed class ApiRequestJsonTests
         (PingRequest? body, IResult? error) = await ApiRequestJson.ReadAsync(
             httpContext,
             ArcanumJsonContext.Default.PingRequest,
-            ctx => ApiRequestJson.InvalidBodyResult(ctx, ApiRequestJson.MalformedJsonMessage),
+            (ctx, jsonFailure) => ApiRequestJson.InvalidBodyResult(ctx, jsonFailure),
             CancellationToken.None);
 
         Assert.Null(body);
@@ -94,13 +88,11 @@ public sealed class ApiRequestJsonTests
         Assert.Equal(
             StatusCodes.Status415UnsupportedMediaType,
             await ExecuteStatusCodeAsync(error));
-
     }
 
     [Fact]
     public async Task UnsupportedMediaTypeResult_names_the_required_header_in_a_structured_envelope()
     {
-
         DefaultHttpContext httpContext = new();
 
         string body = await ExecuteBodyAsync(ApiRequestJson.UnsupportedMediaTypeResult(httpContext));
@@ -108,12 +100,10 @@ public sealed class ApiRequestJsonTests
         Assert.Contains(ErrorCodes.Validation.UnsupportedMediaType, body, StringComparison.Ordinal);
 
         Assert.Contains("application/json", body, StringComparison.Ordinal);
-
     }
 
     private static async Task<int> ExecuteStatusCodeAsync(IResult result)
     {
-
         DefaultHttpContext context = new()
         {
             RequestServices = new ServiceCollection().AddLogging().BuildServiceProvider(),
@@ -124,12 +114,10 @@ public sealed class ApiRequestJsonTests
         await result.ExecuteAsync(context);
 
         return context.Response.StatusCode;
-
     }
 
     private static async Task<string> ExecuteBodyAsync(IResult result)
     {
-
         DefaultHttpContext context = new()
         {
             RequestServices = new ServiceCollection().AddLogging().BuildServiceProvider(),
@@ -142,13 +130,11 @@ public sealed class ApiRequestJsonTests
         await result.ExecuteAsync(context);
 
         return Encoding.UTF8.GetString(buffer.ToArray());
-
     }
 
     [Fact]
     public void InvalidBodyResult_uses_generic_envelope()
     {
-
         DefaultHttpContext httpContext = new();
 
         httpContext.TraceIdentifier = "trace-1";
@@ -156,13 +142,11 @@ public sealed class ApiRequestJsonTests
         IResult result = ApiRequestJson.InvalidBodyResult(httpContext, "missing");
 
         Assert.NotNull(result);
-
     }
 
     [Fact]
     public void InvalidBodyResult_typed_envelope_sets_validation_code()
     {
-
         using Activity activity = new Activity("api-json").Start();
 
         DefaultHttpContext httpContext = new();
@@ -175,7 +159,5 @@ public sealed class ApiRequestJsonTests
             ArcanumJsonContext.Default.ApiResponseBoolean);
 
         Assert.NotNull(result);
-
     }
-
 }

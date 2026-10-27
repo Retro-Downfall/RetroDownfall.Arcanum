@@ -84,7 +84,7 @@ internal static class LexiconCurationEndpoints
 
         (LexiconShowRequest? request, IResult? error) = await ApiRequestJson.ReadAsync(context,
             ArcanumJsonContext.Default.LexiconShowRequest,
-            ctx => ApiRequestJson.InvalidBodyResult(ctx, ApiRequestJson.MalformedJsonMessage, typeInfo),
+            (ctx, jsonFailure) => ApiRequestJson.InvalidBodyResult(ctx, jsonFailure, typeInfo),
             context.RequestAborted).ConfigureAwait(false);
 
         if (error is not null)
@@ -168,7 +168,7 @@ internal static class LexiconCurationEndpoints
         try
         {
             (request, error) = await ApiRequestJson.ReadAsync(context, requestTypeInfo,
-                ctx => ApiRequestJson.InvalidBodyResult(ctx, ApiRequestJson.MalformedJsonMessage, typeInfo),
+                (ctx, jsonFailure) => ApiRequestJson.InvalidBodyResult(ctx, jsonFailure, typeInfo),
                 context.RequestAborted).ConfigureAwait(false);
         }
         catch (ArgumentException)

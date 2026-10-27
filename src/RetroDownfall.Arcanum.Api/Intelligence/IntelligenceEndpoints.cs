@@ -128,7 +128,7 @@ internal static class IntelligenceEndpoints
                 (body, jsonError) = await ApiRequestJson.ReadAsync(
                     httpContext,
                     ArcanumJsonContext.Default.SubmitHumanResponseRequest,
-                    static ctx => ApiRequestJson.InvalidBodyResult(ctx, ApiRequestJson.MalformedJsonMessage),
+                    static (ctx, jsonFailure) => ApiRequestJson.InvalidBodyResult(ctx, jsonFailure),
                     cancellationToken).ConfigureAwait(false);
 
                 string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;

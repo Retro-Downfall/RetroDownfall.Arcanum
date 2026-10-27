@@ -13,10 +13,8 @@ namespace RetroDownfall.Arcanum.Api.Spells;
 
 internal static class SpellEndpoints
 {
-
     public static RouteGroupBuilder MapSpellEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapGet(
             "/spells",
             async (
@@ -38,7 +36,6 @@ internal static class SpellEndpoints
 
                 if (paged == true)
                 {
-
                     IResult? pagedWorkspaceFailure = SpellApiResults.MapOptionalWorkspaceFailure<SpellCatalogPage>(
                         workspaceResult,
                         traceId,
@@ -47,9 +44,7 @@ internal static class SpellEndpoints
 
                     if (pagedWorkspaceFailure is not null)
                     {
-
                         return pagedWorkspaceFailure;
-
                     }
 
                     Result<SpellCatalogPage> page = await catalog.PageAsync(
@@ -66,7 +61,6 @@ internal static class SpellEndpoints
                         statusCode: page.IsSuccess
                             ? StatusCodes.Status200OK
                             : StatusCodes.Status400BadRequest);
-
                 }
 
                 IResult? workspaceFailure = SpellApiResults.MapOptionalWorkspaceFailure<SpellSummary[]>(
@@ -143,9 +137,9 @@ internal static class SpellEndpoints
                 (request, jsonError) = await ApiRequestJson.ReadAsync(
                     ctx,
                     ArcanumJsonContext.Default.CreateSpellRequest,
-                    static httpContext => ApiRequestJson.InvalidBodyResult(
+                    static (httpContext, jsonFailure) => ApiRequestJson.InvalidBodyResult(
                         httpContext,
-                        ApiRequestJson.MalformedJsonMessage),
+                        jsonFailure),
                     ctx.RequestAborted).ConfigureAwait(false);
 
                 if (jsonError is not null)
@@ -209,9 +203,9 @@ internal static class SpellEndpoints
                 (request, jsonError) = await ApiRequestJson.ReadAsync(
                     ctx,
                     ArcanumJsonContext.Default.UpdateSpellRequest,
-                    static httpContext => ApiRequestJson.InvalidBodyResult(
+                    static (httpContext, jsonFailure) => ApiRequestJson.InvalidBodyResult(
                         httpContext,
-                        ApiRequestJson.MalformedJsonMessage),
+                        jsonFailure),
                     ctx.RequestAborted).ConfigureAwait(false);
 
                 if (jsonError is not null)
@@ -293,5 +287,4 @@ internal static class SpellEndpoints
 
         return apiGroup;
     }
-
 }

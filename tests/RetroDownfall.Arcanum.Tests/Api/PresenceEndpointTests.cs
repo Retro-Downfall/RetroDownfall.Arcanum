@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -115,6 +116,7 @@ public sealed class PresenceEndpointTests
         using HttpResponseMessage response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(await response.Content.ReadAsStringAsync());
         Assert.False(response.Headers.Contains(ArcanumApiHeaders.PresenceProof));
         Assert.False(response.Headers.Contains(ArcanumApiHeaders.PresenceCapability));
     }
@@ -448,6 +450,8 @@ public sealed class PresenceEndpointTests
         builder.Services.AddSingleton<ArcanumProcessCapabilityService>();
 
         WebApplication app = builder.Build();
+
+        app.UseStatusCodePages(ApiBootstrapper.WriteBodyFaultEnvelopeAsync);
 
         app.Use((context, next) =>
         {

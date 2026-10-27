@@ -303,7 +303,7 @@ internal static class InferenceExecuteWriter
                 TurnContextGuards.MarkIdempotencyTerminal(httpContext);
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException failure)
         {
             if (ownershipLost.IsCancellationRequested)
             {
@@ -320,6 +320,12 @@ internal static class InferenceExecuteWriter
                 // Inference CTS was not linked to RequestAborted; treat as clean finish if producer ended.
                 return;
             }
+
+            logger.LogError(
+                "Stream inference failed with exception type {ExceptionType} (responseStarted={ResponseStarted}, trace={TraceId}).",
+                failure.GetType().FullName,
+                responseStarted,
+                httpContext.TraceIdentifier);
 
             // Not calling MarkIdempotencyTerminal here is not by itself
             // enough — PersistClaimAsync's own buffered/aborted fallback treats any non-empty,

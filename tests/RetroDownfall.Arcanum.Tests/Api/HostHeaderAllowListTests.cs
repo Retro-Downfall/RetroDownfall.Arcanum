@@ -227,6 +227,8 @@ public sealed class HostHeaderAllowListTests(ArcanumWebApplicationFactory factor
 
             Assert.Equal(HttpStatusCode.BadRequest, health.StatusCode);
 
+            Assert.Empty(await health.Content.ReadAsStringAsync());
+
             using HttpResponseMessage meta = await client.GetAsync($"http://{addressedHost}:8443/api/meta");
 
             Assert.Equal(HttpStatusCode.BadRequest, meta.StatusCode);

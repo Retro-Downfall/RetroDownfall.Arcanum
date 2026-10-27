@@ -32,9 +32,9 @@ internal static class LongRestEndpoints
                 (LongRestRequest? request, IResult? bodyError) = await ApiRequestJson.ReadAsync(
                     context,
                     ArcanumJsonContext.Default.LongRestRequest,
-                    static ctx => ApiRequestJson.InvalidBodyResult(
+                    static (ctx, jsonFailure) => ApiRequestJson.InvalidBodyResult(
                         ctx,
-                        ApiRequestJson.MalformedJsonMessage,
+                        jsonFailure,
                         ArcanumJsonContext.Default.ApiResponseLongRestReceipt),
                     context.RequestAborted).ConfigureAwait(false);
 
@@ -66,9 +66,9 @@ internal static class LongRestEndpoints
                 (LongRestSweepRequest? request, IResult? bodyError) = await ApiRequestJson.ReadAsync(
                     context,
                     ArcanumJsonContext.Default.LongRestSweepRequest,
-                    static ctx => ApiRequestJson.InvalidBodyResult(
+                    static (ctx, jsonFailure) => ApiRequestJson.InvalidBodyResult(
                         ctx,
-                        ApiRequestJson.MalformedJsonMessage,
+                        jsonFailure,
                         ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto),
                     context.RequestAborted).ConfigureAwait(false);
 

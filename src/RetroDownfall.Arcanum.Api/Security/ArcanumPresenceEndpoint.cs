@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
@@ -48,6 +49,11 @@ internal static class ArcanumPresenceEndpoint
                 ArcanumPresenceProofProtocol.NonceBytes,
                 out byte[]? nonce))
         {
+            if (httpContext.Features.Get<IStatusCodePagesFeature>() is { } statusPages)
+            {
+                statusPages.Enabled = false;
+            }
+
             return Results.BadRequest();
         }
 

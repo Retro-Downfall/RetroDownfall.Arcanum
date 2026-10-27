@@ -556,7 +556,7 @@ internal static class MemoryErasureEndpoints
         await ApiRequestJson.ReadAsync(
             context,
             typeInfo,
-            static ctx => ApiRequestJson.InvalidBodyResult(ctx, ApiRequestJson.MalformedJsonMessage),
+            static (ctx, jsonFailure) => ApiRequestJson.InvalidBodyResult(ctx, jsonFailure),
             context.RequestAborted).ConfigureAwait(false);
 
     /// <summary>

@@ -15,10 +15,8 @@ namespace RetroDownfall.Arcanum.Api.Workspaces;
 
 internal static class WorkspaceEndpoints
 {
-
     public static RouteGroupBuilder MapWorkspaceEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapGet(
             "/workspaces",
             async (IWorkspaceRegistry registry, HttpContext ctx) =>
@@ -73,9 +71,9 @@ internal static class WorkspaceEndpoints
                 (request, jsonError) = await ApiRequestJson.ReadAsync(
                     ctx,
                     ArcanumJsonContext.Default.CreateWorkspaceRequest,
-                    static httpContext => ApiRequestJson.InvalidBodyResult<WorkspaceInfo>(
+                    static (httpContext, jsonFailure) => ApiRequestJson.InvalidBodyResult<WorkspaceInfo>(
                         httpContext,
-                        ApiRequestJson.MalformedJsonMessage,
+                        jsonFailure,
                         ArcanumJsonContext.Default.ApiResponseWorkspaceInfo),
                     ctx.RequestAborted).ConfigureAwait(false);
 
@@ -99,7 +97,6 @@ internal static class WorkspaceEndpoints
 
                 if (result.IsSuccess)
                 {
-
                     indexingService.RegisterWorkspace(result.Value.Path);
 
                     return Results.Created(
@@ -109,14 +106,12 @@ internal static class WorkspaceEndpoints
 
                 if (string.Equals(result.Error.Code, ErrorCodes.Workspace.PathNotAllowed, StringComparison.Ordinal))
                 {
-
                     return Results.Json(
                         ApiResponse<WorkspaceInfo>.FromResult(
                             Result<WorkspaceInfo>.Failure(result.Error),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseWorkspaceInfo,
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
-
                 }
 
                 return Results.BadRequest(
@@ -148,9 +143,9 @@ internal static class WorkspaceEndpoints
                 (request, jsonError) = await ApiRequestJson.ReadAsync(
                     ctx,
                     ArcanumJsonContext.Default.UpdateWorkspaceRequest,
-                    static httpContext => ApiRequestJson.InvalidBodyResult<WorkspaceInfo>(
+                    static (httpContext, jsonFailure) => ApiRequestJson.InvalidBodyResult<WorkspaceInfo>(
                         httpContext,
-                        ApiRequestJson.MalformedJsonMessage,
+                        jsonFailure,
                         ArcanumJsonContext.Default.ApiResponseWorkspaceInfo),
                     ctx.RequestAborted).ConfigureAwait(false);
 
@@ -182,19 +177,15 @@ internal static class WorkspaceEndpoints
 
                 if (result.IsSuccess)
                 {
-
                     if (previousWorkspace is not null
                         && !string.Equals(previousWorkspace.Path, result.Value.Path, StringComparison.Ordinal))
                     {
-
                         indexingService.UnregisterWorkspace(previousWorkspace.Path);
-
                     }
 
                     indexingService.RegisterWorkspace(result.Value.Path);
 
                     return Results.Ok(ApiResponse<WorkspaceInfo>.FromResult(result, traceId));
-
                 }
 
                 return Results.BadRequest(
@@ -233,16 +224,12 @@ internal static class WorkspaceEndpoints
 
                 if (result.IsSuccess)
                 {
-
                     if (workspace is not null)
                     {
-
                         indexingService.UnregisterWorkspace(workspace.Path);
-
                     }
 
                     return Results.NoContent();
-
                 }
 
                 return Results.BadRequest(
@@ -457,9 +444,9 @@ internal static class WorkspaceEndpoints
                 (request, jsonError) = await ApiRequestJson.ReadAsync(
                     ctx,
                     ArcanumJsonContext.Default.FileWriteRequest,
-                    static httpContext => ApiRequestJson.InvalidBodyResult<FileWriteResult>(
+                    static (httpContext, jsonFailure) => ApiRequestJson.InvalidBodyResult<FileWriteResult>(
                         httpContext,
-                        ApiRequestJson.MalformedJsonMessage,
+                        jsonFailure,
                         ArcanumJsonContext.Default.ApiResponseFileWriteResult),
                     ctx.RequestAborted).ConfigureAwait(false);
 
@@ -535,9 +522,9 @@ internal static class WorkspaceEndpoints
                 (request, jsonError) = await ApiRequestJson.ReadAsync(
                     ctx,
                     ArcanumJsonContext.Default.TextBlockReplaceRequest,
-                    static httpContext => ApiRequestJson.InvalidBodyResult<TextBlockReplaceResult>(
+                    static (httpContext, jsonFailure) => ApiRequestJson.InvalidBodyResult<TextBlockReplaceResult>(
                         httpContext,
-                        ApiRequestJson.MalformedJsonMessage,
+                        jsonFailure,
                         ArcanumJsonContext.Default.ApiResponseTextBlockReplaceResult),
                     ctx.RequestAborted).ConfigureAwait(false);
 
@@ -684,5 +671,4 @@ internal static class WorkspaceEndpoints
 
         return apiGroup;
     }
-
 }

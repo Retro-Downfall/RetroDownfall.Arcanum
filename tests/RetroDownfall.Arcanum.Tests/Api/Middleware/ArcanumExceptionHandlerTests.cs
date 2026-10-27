@@ -699,7 +699,7 @@ public sealed class ArcanumExceptionHandlerTests
         (PingRequest? request, IResult? error) = await ApiRequestJson.ReadAsync(
             httpContext,
             ArcanumJsonContext.Default.PingRequest,
-            static context => ApiRequestJson.InvalidBodyResult(context, ApiRequestJson.MalformedJsonMessage),
+            static (context, jsonFailure) => ApiRequestJson.InvalidBodyResult(context, jsonFailure),
             CancellationToken.None);
 
         Assert.Null(error);

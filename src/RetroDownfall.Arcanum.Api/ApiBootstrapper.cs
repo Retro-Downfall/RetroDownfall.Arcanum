@@ -334,6 +334,11 @@ public static class ApiBootstrapper
             {
                 context.Response.StatusCode = StatusCodes.Status400BadRequest;
 
+                if (context.Features.Get<IStatusCodePagesFeature>() is { } statusPages)
+                {
+                    statusPages.Enabled = false;
+                }
+
                 return;
             }
 
@@ -728,23 +733,22 @@ public static class ApiBootstrapper
         // sees them and the response would reach the client with a status and no body. A Content-Type the
         // route does not declare it accepts never reaches that code at all: routing's accepts policy picks
         // an endpoint that sets 415 and writes nothing. This hook is what gives those empty responses the
-        // envelope. It acts on exactly the statuses below and leaves every other empty status as it was,
-        // because a route can return a bodyless 400 on purpose (GET /api/presence).
+        // envelope. Matched bodyless API query/route/header refusals also receive the 400 envelope.
+        // Presence explicitly opts out when returning its deliberate anonymous challenge refusal.
         app.UseStatusCodePages(WriteBodyFaultEnvelopeAsync);
     }
 
     /// <summary>
-    /// Puts the documented error envelope on an otherwise empty 408, 413, 415 or 431 that a route's own
-    /// body read produced.
+    /// Puts the documented error envelope on empty body-read faults and matched bodyless API 400 refusals.
     /// </summary>
     /// <remarks>
     /// 408 (a body under the minimum data rate), 413 (a body past the ceiling) and 431 (trailers over the
     /// header ceiling) only ever come from reading a body, so for a matched endpoint they are answered
     /// here. 415 is answered whatever the endpoint: routing sets it, before any route is chosen, for a
     /// Content-Type no candidate route accepts, and the endpoint it reports is routing's own rejection
-    /// endpoint. A body that ends early (400) is deliberately not covered: it is indistinguishable here from
-    /// a bodyless 400 a route returns on purpose, and the client that dropped the connection is no longer
-    /// there to read it.
+    /// endpoint. An empty 400 is covered only for a matched API GET/HEAD/DELETE with no request body.
+    /// This answers optional-parameter failures recorded by generated binders without an exception.
+    /// Endpoints with deliberately empty protocol refusals disable status-code pages explicitly.
     /// </remarks>
     internal static async Task WriteBodyFaultEnvelopeAsync(StatusCodeContext context)
     {
@@ -752,11 +756,18 @@ public static class ApiBootstrapper
 
         int statusCode = httpContext.Response.StatusCode;
 
+        bool isParameterBinding = statusCode == StatusCodes.Status400BadRequest
+            && httpContext.GetEndpoint() is not null
+            && httpContext.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase)
+            && (HttpMethods.IsGet(httpContext.Request.Method) || HttpMethods.IsHead(httpContext.Request.Method)
+                || HttpMethods.IsDelete(httpContext.Request.Method))
+            && !ApiRequestJson.CarriesABody(httpContext.Request);
+
         bool isBodyRead = statusCode is StatusCodes.Status408RequestTimeout
             or StatusCodes.Status413PayloadTooLarge
             or StatusCodes.Status431RequestHeaderFieldsTooLarge;
 
-        if (statusCode != StatusCodes.Status415UnsupportedMediaType
+        if (!isParameterBinding && statusCode != StatusCodes.Status415UnsupportedMediaType
             && !(isBodyRead && httpContext.GetEndpoint() is not null))
         {
             return;
@@ -764,7 +775,9 @@ public static class ApiBootstrapper
 
         bool isOpenAiRoute = httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase);
 
-        IResult envelope = isOpenAiRoute
+        IResult envelope = isParameterBinding
+            ? ApiRequestJson.InvalidBodyResult(httpContext, ApiRequestJson.ParameterBindingFailedMessage)
+            : isOpenAiRoute
             ? OpenAiV1Endpoints.CreateRequestBodyReadErrorResult(statusCode)
             : statusCode == StatusCodes.Status415UnsupportedMediaType
                 ? ApiRequestJson.UnacceptedMediaTypeResult(httpContext)

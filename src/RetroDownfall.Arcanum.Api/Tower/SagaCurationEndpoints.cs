@@ -65,15 +65,12 @@ public sealed record SagaReinstateRequest(string ExpectedContentHash);
 /// </remarks>
 internal static class SagaCurationEndpoints
 {
-
     public static RouteGroupBuilder MapSagaCurationEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapGet(
             "/memory/saga/{id}",
             async (string id, ISagaCurationService curation, HttpContext ctx) =>
             {
-
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                 Result<SagaMemoryDetail> detail = await curation
@@ -86,7 +83,6 @@ internal static class SagaCurationEndpoints
                     statusCode: detail.IsSuccess
                         ? StatusCodes.Status200OK
                         : ArcanumErrorMapper.ResolveStatusCode(detail.Error.Code));
-
             })
         .WithName("ShowSagaMemory");
 
@@ -94,7 +90,6 @@ internal static class SagaCurationEndpoints
             "/memory/saga/{id}/correct",
             async (string id, ISagaCurationService curation, HttpContext ctx) =>
             {
-
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                 // Read through ApiRequestJson rather than a bound parameter: minimal-API binding answers
@@ -103,24 +98,20 @@ internal static class SagaCurationEndpoints
                 (SagaCorrectRequest? request, IResult? bodyError) = await ApiRequestJson.ReadAsync(
                     ctx,
                     ArcanumJsonContext.Default.SagaCorrectRequest,
-                    static context => ApiRequestJson.InvalidBodyResult(
+                    static (context, jsonFailure) => ApiRequestJson.InvalidBodyResult(
                         context,
-                        ApiRequestJson.MalformedJsonMessage,
+                        jsonFailure,
                         ArcanumJsonContext.Default.ApiResponseSagaCurationResult),
                     ctx.RequestAborted).ConfigureAwait(false);
 
                 if (bodyError is not null)
                 {
-
                     return bodyError;
-
                 }
 
                 if (request is null || string.IsNullOrWhiteSpace(request.ExpectedContentHash) || request.Content is null)
                 {
-
                     return CurationBadBody(traceId, "ExpectedContentHash and Content are required.");
-
                 }
 
                 Result<SagaCurationResult> corrected = await curation
@@ -133,7 +124,6 @@ internal static class SagaCurationEndpoints
                     statusCode: corrected.IsSuccess
                         ? StatusCodes.Status200OK
                         : ArcanumErrorMapper.ResolveStatusCode(corrected.Error.Code));
-
             })
         .WithName("CorrectSagaMemory");
 
@@ -141,7 +131,6 @@ internal static class SagaCurationEndpoints
             "/memory/saga/{id}/retire",
             async (string id, ISagaCurationService curation, HttpContext ctx) =>
             {
-
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                 // Read through ApiRequestJson rather than a bound parameter: minimal-API binding answers
@@ -150,24 +139,20 @@ internal static class SagaCurationEndpoints
                 (SagaRetireRequest? request, IResult? bodyError) = await ApiRequestJson.ReadAsync(
                     ctx,
                     ArcanumJsonContext.Default.SagaRetireRequest,
-                    static context => ApiRequestJson.InvalidBodyResult(
+                    static (context, jsonFailure) => ApiRequestJson.InvalidBodyResult(
                         context,
-                        ApiRequestJson.MalformedJsonMessage,
+                        jsonFailure,
                         ArcanumJsonContext.Default.ApiResponseSagaCurationResult),
                     ctx.RequestAborted).ConfigureAwait(false);
 
                 if (bodyError is not null)
                 {
-
                     return bodyError;
-
                 }
 
                 if (request is null || string.IsNullOrWhiteSpace(request.ExpectedContentHash))
                 {
-
                     return CurationBadBody(traceId, "ExpectedContentHash is required.");
-
                 }
 
                 Result<SagaCurationResult> retired = await curation
@@ -180,7 +165,6 @@ internal static class SagaCurationEndpoints
                     statusCode: retired.IsSuccess
                         ? StatusCodes.Status200OK
                         : ArcanumErrorMapper.ResolveStatusCode(retired.Error.Code));
-
             })
         .WithName("RetireSagaMemory");
 
@@ -188,7 +172,6 @@ internal static class SagaCurationEndpoints
             "/memory/saga/{id}/reinstate",
             async (string id, ISagaCurationService curation, HttpContext ctx) =>
             {
-
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                 // Read through ApiRequestJson rather than a bound parameter: minimal-API binding answers
@@ -197,24 +180,20 @@ internal static class SagaCurationEndpoints
                 (SagaReinstateRequest? request, IResult? bodyError) = await ApiRequestJson.ReadAsync(
                     ctx,
                     ArcanumJsonContext.Default.SagaReinstateRequest,
-                    static context => ApiRequestJson.InvalidBodyResult(
+                    static (context, jsonFailure) => ApiRequestJson.InvalidBodyResult(
                         context,
-                        ApiRequestJson.MalformedJsonMessage,
+                        jsonFailure,
                         ArcanumJsonContext.Default.ApiResponseSagaCurationResult),
                     ctx.RequestAborted).ConfigureAwait(false);
 
                 if (bodyError is not null)
                 {
-
                     return bodyError;
-
                 }
 
                 if (request is null || string.IsNullOrWhiteSpace(request.ExpectedContentHash))
                 {
-
                     return CurationBadBody(traceId, "ExpectedContentHash is required.");
-
                 }
 
                 Result<SagaCurationResult> reinstated = await curation
@@ -227,7 +206,6 @@ internal static class SagaCurationEndpoints
                     statusCode: reinstated.IsSuccess
                         ? StatusCodes.Status200OK
                         : ArcanumErrorMapper.ResolveStatusCode(reinstated.Error.Code));
-
             })
         .WithName("ReinstateSagaMemory");
 
@@ -237,7 +215,6 @@ internal static class SagaCurationEndpoints
             "/memory/saga/{id}/pin",
             async (string id, ISagaCurationService curation, HttpContext ctx) =>
             {
-
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                 Result<SagaCurationResult> pinned = await curation
@@ -250,7 +227,6 @@ internal static class SagaCurationEndpoints
                     statusCode: pinned.IsSuccess
                         ? StatusCodes.Status200OK
                         : ArcanumErrorMapper.ResolveStatusCode(pinned.Error.Code));
-
             })
         .WithName("PinSagaMemory");
 
@@ -258,7 +234,6 @@ internal static class SagaCurationEndpoints
             "/memory/saga/{id}/unpin",
             async (string id, ISagaCurationService curation, HttpContext ctx) =>
             {
-
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                 Result<SagaCurationResult> unpinned = await curation
@@ -271,12 +246,10 @@ internal static class SagaCurationEndpoints
                     statusCode: unpinned.IsSuccess
                         ? StatusCodes.Status200OK
                         : ArcanumErrorMapper.ResolveStatusCode(unpinned.Error.Code));
-
             })
         .WithName("UnpinSagaMemory");
 
         return apiGroup;
-
     }
 
     /// <summary>
@@ -294,5 +267,4 @@ internal static class SagaCurationEndpoints
                 traceId),
             ArcanumJsonContext.Default.ApiResponseSagaCurationResult,
             statusCode: ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Validation.InvalidBody));
-
 }
