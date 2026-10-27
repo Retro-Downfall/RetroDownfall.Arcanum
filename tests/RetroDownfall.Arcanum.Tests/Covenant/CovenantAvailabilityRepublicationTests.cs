@@ -43,7 +43,7 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// same tuple and to name the writer that published it.</para>
 /// </remarks>
 [Collection("ApiHost")]
-public sealed class CovenantAvailabilityRepublicationTests
+public sealed partial class CovenantAvailabilityRepublicationTests
 {
     private const string Key = "republication.answer-style";
 
@@ -424,6 +424,8 @@ public sealed class CovenantAvailabilityRepublicationTests
             Assert.Equal(1, scanned.Value.BaseHeadsProcessed);
         }
 
+        CovenantAvailabilitySnapshot beforeIdlePass = Live(host);
+
         await PassAsync(host);
 
         CovenantSearchHealthDto search = await SearchAsync(client);
@@ -434,7 +436,9 @@ public sealed class CovenantAvailabilityRepublicationTests
 
         Assert.Equal(CovenantSearchRebuildGuidance.RebuildRequired, search.Guidance);
 
-        CovenantAvailabilitySnapshot live = await AssertRepublishedAsync(host, CovenantHealthTransition.AcceleratorSynchronization);
+        CovenantAvailabilitySnapshot live = await AssertRepublishedAsync(host, beforeIdlePass.LastHealthTransition);
+
+        Assert.Same(beforeIdlePass, live);
 
         Assert.Null(live.AppliedSequence);
 
@@ -611,6 +615,8 @@ public sealed class CovenantAvailabilityRepublicationTests
 
         Assert.Equal(CovenantSearchRebuildGuidance.RebuildRequired, (await SearchAsync(client)).Guidance);
 
+        CovenantAvailabilitySnapshot beforeIdlePass = Live(host);
+
         await PassAsync(host);
 
         AssertOwesRebuild(await SearchAsync(client));
@@ -621,7 +627,9 @@ public sealed class CovenantAvailabilityRepublicationTests
 
         Assert.Single(found.Items);
 
-        CovenantAvailabilitySnapshot live = await AssertRepublishedAsync(host, CovenantHealthTransition.AcceleratorSynchronization);
+        CovenantAvailabilitySnapshot live = await AssertRepublishedAsync(host, beforeIdlePass.LastHealthTransition);
+
+        Assert.Same(beforeIdlePass, live);
 
         Assert.Null(live.AppliedSequence);
     }

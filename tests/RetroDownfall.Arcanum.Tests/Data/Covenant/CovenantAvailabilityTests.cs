@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using System.Collections.Concurrent;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -23,7 +24,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 public sealed class CovenantAvailabilityTests
 {
-
     /// <summary>
     /// The installed-catalog fingerprint form the installer produces: the lowercase <c>sha256-</c>
     /// prefix plus 64 hex characters. Fixed rather than computed, so an assertion failure is a real
@@ -62,7 +62,6 @@ public sealed class CovenantAvailabilityTests
     [Fact]
     public void Availability_enum_codes_are_immutable()
     {
-
         Assert.Equal(1, (int)CovenantCapabilityState.Unavailable);
 
         Assert.Equal(2, (int)CovenantCapabilityState.Degraded);
@@ -102,7 +101,6 @@ public sealed class CovenantAvailabilityTests
         Assert.Equal(11, (int)CovenantHealthTransition.SchemaEvolution);
 
         Assert.Equal(11, Enum.GetValues<CovenantHealthTransition>().Length);
-
     }
 
     /// <summary>
@@ -118,7 +116,6 @@ public sealed class CovenantAvailabilityTests
     [Fact]
     public void Availability_generation_advances_on_each_published_install_result()
     {
-
         CovenantAvailability availability = new();
 
         long initial = availability.Current.Generation;
@@ -144,13 +141,120 @@ public sealed class CovenantAvailabilityTests
         Assert.Equal(CovenantHealthTransition.Restore, availability.Current.LastHealthTransition);
 
         Assert.Equal(third.Generation, availability.Current.Generation);
+    }
 
+    [Fact]
+    public void Explicit_equal_feature_publications_keep_the_forced_generation_contract()
+    {
+        CovenantAvailability availability = new();
+
+        CovenantAvailabilitySnapshot first = availability.PublishFeatureEnabled(false);
+
+        CovenantAvailabilitySnapshot second = availability.PublishFeatureEnabled(false);
+
+        Assert.NotSame(first, second);
+
+        Assert.Equal(first.Generation + 1, second.Generation);
+
+        Assert.False(second.FeatureEnabled);
+    }
+
+    [Fact]
+    public void Equal_persisted_facts_with_another_transition_preserve_the_exact_snapshot()
+    {
+        CovenantAvailability availability = new();
+
+        CovenantAvailabilitySnapshot before = availability.PublishPersistedState(DatasetGeneration, 7, 5,
+            DatasetGeneration, 7, 5, 3, CovenantFtsSynchronizationState.Synchronized, false,
+            CovenantHealthTransition.AcceleratorSynchronization);
+
+        CovenantAvailabilitySnapshot after = availability.PublishPersistedState(DatasetGeneration, 7, 5,
+            DatasetGeneration, 7, 5, 3, CovenantFtsSynchronizationState.Synchronized, false,
+            CovenantHealthTransition.OwnerCleanup);
+
+        Assert.Same(before, after);
+
+        Assert.Equal(CovenantHealthTransition.AcceleratorSynchronization, after.LastHealthTransition);
+    }
+
+    [Theory]
+    [InlineData("feature")]
+    [InlineData("canonical")]
+    [InlineData("canonical-version")]
+    [InlineData("canonical-fingerprint")]
+    [InlineData("accelerator")]
+    [InlineData("accelerator-version")]
+    [InlineData("accelerator-fingerprint")]
+    [InlineData("dataset")]
+    [InlineData("canonical-sequence")]
+    [InlineData("deletion-sequence")]
+    [InlineData("applied-dataset")]
+    [InlineData("applied-sequence")]
+    [InlineData("applied-deletion-sequence")]
+    [InlineData("accelerator-epoch")]
+    [InlineData("synchronization")]
+    [InlineData("rebuild")]
+    [InlineData("canonical-diagnostic")]
+    [InlineData("accelerator-diagnostic")]
+    public void Conditional_publication_keeps_every_material_fact_significant(string field)
+    {
+        using CovenantRuntimeGenerationProvider runtime = new();
+
+        CovenantRuntimeGenerationState before = runtime.Current;
+
+        CovenantAvailabilitySnapshot next = runtime.PublishAvailabilityIfChanged(current => field switch
+        {
+            "feature" => current with { FeatureEnabled = !current.FeatureEnabled },
+            "canonical" => current with { Canonical = CovenantCapabilityState.Healthy },
+            "canonical-version" => current with { CanonicalSchemaVersion = 1 },
+            "canonical-fingerprint" => current with { CanonicalInstalledFingerprint = CanonicalFingerprint },
+            "accelerator" => current with { Accelerator = CovenantCapabilityState.Healthy },
+            "accelerator-version" => current with { AcceleratorSchemaVersion = 1 },
+            "accelerator-fingerprint" => current with { AcceleratorInstalledFingerprint = AcceleratorFingerprint },
+            "dataset" => current with { DatasetGeneration = DatasetGeneration },
+            "canonical-sequence" => current with { CanonicalSequence = 1 },
+            "deletion-sequence" => current with { CoreCampaignDeletionSequence = 1 },
+            "applied-dataset" => current with { AppliedDatasetGeneration = DatasetGeneration },
+            "applied-sequence" => current with { AppliedSequence = 1 },
+            "applied-deletion-sequence" => current with { AppliedCampaignDeletionSequence = 1 },
+            "accelerator-epoch" => current with { AcceleratorEpoch = 1 },
+            "synchronization" => current with { FtsSynchronization = CovenantFtsSynchronizationState.Synchronized },
+            "rebuild" => current with { RebuildRequired = !current.RebuildRequired },
+            "canonical-diagnostic" => current with { CanonicalDiagnosticCode = "Covenant.Expected" },
+            "accelerator-diagnostic" => current with { AcceleratorDiagnosticCode = "Covenant.Expected" },
+            _ => throw new ArgumentOutOfRangeException(nameof(field)),
+        });
+
+        Assert.Equal(before.Availability.Generation + 1, next.Generation);
+
+        Assert.NotSame(before, runtime.Current);
+
+        Assert.Same(before.Keys, runtime.Current.Keys);
+
+        Assert.Same(before.AuthoritySlot, runtime.Current.AuthoritySlot);
+
+        Assert.Equal(before.RuntimeAuthorityGeneration, runtime.Current.RuntimeAuthorityGeneration);
+    }
+
+    [Fact]
+    public void Concurrent_conditional_noops_preserve_the_exact_composite_reference()
+    {
+        using CovenantRuntimeGenerationProvider runtime = new();
+
+        CovenantRuntimeGenerationState before = runtime.Current;
+
+        Parallel.For(0, 512, _ =>
+            Assert.Same(before.Availability, runtime.PublishAvailabilityIfChanged(current => current with
+            {
+                LastHealthTransition = CovenantHealthTransition.OwnerCleanup,
+            })));
+
+        Assert.Same(before, runtime.Current);
     }
 
     [Fact]
     public void A_committed_reset_builds_the_complete_tuple_in_one_generation()
     {
-
         CovenantAvailability availability = new();
 
         _ = availability.PublishSchema(HealthyInstallResult(), CovenantHealthTransition.Bootstrap);
@@ -221,7 +325,6 @@ public sealed class CovenantAvailabilityTests
         Assert.Equal(CovenantHealthTransition.Reset, built.Value.LastHealthTransition);
 
         Assert.Same(expected, availability.Current);
-
     }
 
     /// <summary>
@@ -236,7 +339,6 @@ public sealed class CovenantAvailabilityTests
     [Fact]
     public void Availability_snapshot_carries_every_hot_gate_cursor_and_status_field()
     {
-
         CovenantAvailability availability = new();
 
         _ = availability.PublishSchema(HealthyInstallResult(), CovenantHealthTransition.Bootstrap);
@@ -300,7 +402,6 @@ public sealed class CovenantAvailabilityTests
         Assert.Null(snapshot.AcceleratorDiagnosticCode);
 
         Assert.Same(snapshot, availability.Current);
-
     }
 
     /// <summary>
@@ -316,7 +417,6 @@ public sealed class CovenantAvailabilityTests
     [Fact]
     public void Feature_publication_advances_generation_without_schema_reinstall()
     {
-
         CovenantAvailability availability = new();
 
         _ = availability.PublishSchema(HealthyInstallResult(), CovenantHealthTransition.Bootstrap);
@@ -332,13 +432,11 @@ public sealed class CovenantAvailabilityTests
 
         CovenantAvailabilitySnapshot expected = before with
         {
-
             Generation = before.Generation + 1,
 
             FeatureEnabled = true,
 
             LastHealthTransition = CovenantHealthTransition.FeatureConfiguration,
-
         };
 
         Assert.Equal(expected, after);
@@ -346,7 +444,6 @@ public sealed class CovenantAvailabilityTests
         Assert.True(after.FeatureEnabled);
 
         Assert.Equal(before.Generation + 1, after.Generation);
-
     }
 
     /// <summary>
@@ -361,7 +458,6 @@ public sealed class CovenantAvailabilityTests
     [Fact]
     public void Projection_publication_updates_applied_tuple_epoch_and_rebuild_state_atomically()
     {
-
         CovenantAvailability availability = new();
 
         _ = availability.PublishSchema(HealthyInstallResult(), CovenantHealthTransition.Bootstrap);
@@ -388,7 +484,6 @@ public sealed class CovenantAvailabilityTests
 
         CovenantAvailabilitySnapshot expected = before with
         {
-
             Generation = before.Generation + 1,
 
             AppliedDatasetGeneration = DatasetGeneration,
@@ -404,7 +499,6 @@ public sealed class CovenantAvailabilityTests
             RebuildRequired = false,
 
             LastHealthTransition = CovenantHealthTransition.AcceleratorRebuild,
-
         };
 
         Assert.Equal(expected, after);
@@ -415,7 +509,6 @@ public sealed class CovenantAvailabilityTests
         Assert.Equal(5L, after.CoreCampaignDeletionSequence);
 
         Assert.Equal(DatasetGeneration, after.DatasetGeneration);
-
     }
 
     /// <summary>
@@ -432,7 +525,6 @@ public sealed class CovenantAvailabilityTests
     [Fact]
     public void Canonical_failure_marks_canonical_unavailable_and_accelerator_failure_marks_search_degraded()
     {
-
         CovenantAvailability canonicalFailed = new();
 
         CovenantAvailabilitySnapshot canonical = canonicalFailed.PublishSchema(
@@ -486,7 +578,6 @@ public sealed class CovenantAvailabilityTests
         Assert.Equal("Grimoire.Schema.Unavailable", accelerator.AcceleratorDiagnosticCode);
 
         Assert.Null(accelerator.CanonicalDiagnosticCode);
-
     }
 
     /// <summary>
@@ -503,7 +594,6 @@ public sealed class CovenantAvailabilityTests
     [Fact]
     public void Concurrent_publications_produce_distinct_monotonic_generations()
     {
-
         const int Publications = 512;
 
         CovenantAvailability availability = new();
@@ -524,7 +614,6 @@ public sealed class CovenantAvailabilityTests
         Assert.Equal(initial + Publications, availability.Current.Generation);
 
         Assert.Equal(initial + Publications, generations.Max());
-
     }
 
     /// <summary>
@@ -540,7 +629,6 @@ public sealed class CovenantAvailabilityTests
     [Fact]
     public void Initial_snapshot_is_unavailable_and_rebuild_required()
     {
-
         CovenantAvailability availability = new();
 
         CovenantAvailabilitySnapshot snapshot = availability.Current;
@@ -576,7 +664,6 @@ public sealed class CovenantAvailabilityTests
         Assert.Equal(CovenantHealthTransition.Bootstrap, snapshot.LastHealthTransition);
 
         Assert.Equal(1L, snapshot.Generation);
-
     }
 
     /// <summary>
@@ -613,5 +700,4 @@ public sealed class CovenantAvailabilityTests
             SourceFingerprint,
             InstalledCatalogFingerprint: null,
             $"Grimoire.Schema.{health}");
-
 }

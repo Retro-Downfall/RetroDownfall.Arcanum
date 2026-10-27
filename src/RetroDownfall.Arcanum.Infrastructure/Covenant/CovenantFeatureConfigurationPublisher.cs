@@ -61,7 +61,7 @@ internal sealed class CovenantFeatureConfigurationPublisher : IHostedService, ID
     }
 
     /// <summary>
-    /// Publishes the configured value once, then keeps publishing on every later change.
+    /// Observes the configured value once, then publishes material feature changes from later callbacks.
     /// </summary>
     /// <remarks>
     /// The initial publication is not redundant with the snapshot's <c>false</c> default. An
@@ -132,7 +132,7 @@ internal sealed class CovenantFeatureConfigurationPublisher : IHostedService, ID
 
             bool changed = _availability.Current.FeatureEnabled != enabled;
 
-            _ = _availability.PublishFeatureEnabled(enabled);
+            _ = _availability.PublishFeatureEnabledIfChanged(enabled);
 
             if (changed)
             {

@@ -58,8 +58,15 @@ internal sealed class CovenantMaintenanceHostedService(
 {
     private readonly Dictionary<string, string> _refusedSweeps = new(StringComparer.Ordinal);
 
+    // One closed warning cause: a rebuild required without projection writes. Its generation key
+    // prevents catch-up passes from repeating it, without hiding a new dataset or accelerator epoch.
+    private (Guid? DatasetGeneration, ulong AcceleratorEpoch)? _reportedOutboxRebuild;
+
     /// <summary>How long a pass waits before the next one, when the tier is healthy.</summary>
     internal static readonly TimeSpan Interval = TimeSpan.FromMinutes(5);
+
+    /// <summary>A short yield after a pass made durable owner-cleanup or outbox progress.</summary>
+    internal static readonly TimeSpan CatchUpInterval = TimeSpan.FromMilliseconds(500);
 
     /// <summary>How long it waits when the feature or the tier is not in a state to sweep.</summary>
     internal static readonly TimeSpan IdleInterval = TimeSpan.FromMinutes(1);
@@ -68,11 +75,11 @@ internal sealed class CovenantMaintenanceHostedService(
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            bool swept = false;
+            CovenantMaintenancePassOutcome outcome = default;
 
             try
             {
-                swept = await RunOnceAsync(stoppingToken).ConfigureAwait(false);
+                outcome = await RunPassAsync(stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -85,7 +92,9 @@ internal sealed class CovenantMaintenanceHostedService(
 
             try
             {
-                await Task.Delay(swept ? Interval : IdleInterval, timeProvider, stoppingToken).ConfigureAwait(false);
+                TimeSpan delay = outcome.Advanced ? CatchUpInterval : outcome.Admitted ? Interval : IdleInterval;
+
+                await Task.Delay(delay, timeProvider, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -97,7 +106,10 @@ internal sealed class CovenantMaintenanceHostedService(
     /// <summary>
     /// Runs one bounded pass of each sweep, reporting whether the tier was in a state to sweep at all.
     /// </summary>
-    internal async Task<bool> RunOnceAsync(CancellationToken cancellationToken)
+    internal async Task<bool> RunOnceAsync(CancellationToken cancellationToken) =>
+        (await RunPassAsync(cancellationToken).ConfigureAwait(false)).Admitted;
+
+    internal async Task<CovenantMaintenancePassOutcome> RunPassAsync(CancellationToken cancellationToken)
     {
         CovenantAvailabilitySnapshot health = availability.Current;
 
@@ -106,19 +118,21 @@ internal sealed class CovenantMaintenanceHostedService(
         // the sweeps simply have nothing they may do until it leaves.
         if (!health.FeatureEnabled || health.Canonical != CovenantCapabilityState.Healthy)
         {
-            return false;
+            return default;
         }
 
         if (!admissionGate.TryAcquireWorkLease(
                 GrimoireWorkKind.CovenantMaintenance,
                 out IGrimoireWorkLease? admitted))
         {
-            return false;
+            return default;
         }
 
         await using IGrimoireWorkLease lease = admitted!;
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        bool advanced = false;
 
         await RunSweepAsync(
                 scope,
@@ -130,6 +144,9 @@ internal sealed class CovenantMaintenanceHostedService(
                         .GetRequiredService<CovenantOwnerCleanupCoordinator>()
                         .RunBatchAsync(CovenantCleanupWorker.DefaultBatchSize, cancellationToken)
                         .ConfigureAwait(false);
+
+                    advanced |= outcome.IsSuccess
+                        && (outcome.Value.CampaignsCleaned > 0 || outcome.Value.SessionsCleaned > 0);
 
                     return outcome.IsFailure
                         ? Result<string>.Failure(outcome.Error)
@@ -149,9 +166,29 @@ internal sealed class CovenantMaintenanceHostedService(
                         .SynchronizeAsync(CovenantSearchOutboxWorker.DefaultBatchRows, cancellationToken)
                         .ConfigureAwait(false);
 
-                    if (outcome.IsSuccess && outcome.Value.RebuildRequired && outcome.Value.ProjectionsWritten == 0)
+                    // Whole atomic sequences can consume below or above the row target, and
+                    // coalescing can write no projection. Only committed consumption is progress.
+                    advanced |= outcome.IsSuccess && outcome.Value.RowsConsumed > 0;
+
+                    if (outcome.IsSuccess)
                     {
-                        logger.LogWarning("The Covenant search outbox requires a rebuild and wrote no projections this pass.");
+                        if (outcome.Value.RebuildRequired && outcome.Value.ProjectionsWritten == 0)
+                        {
+                            CovenantAvailabilitySnapshot current = availability.Current;
+
+                            var warningGeneration = (current.DatasetGeneration, current.AcceleratorEpoch);
+
+                            if (_reportedOutboxRebuild != warningGeneration)
+                            {
+                                logger.LogWarning("The Covenant search outbox requires a rebuild and wrote no projections this pass.");
+
+                                _reportedOutboxRebuild = warningGeneration;
+                            }
+                        }
+                        else if (!outcome.Value.RebuildRequired)
+                        {
+                            _reportedOutboxRebuild = null;
+                        }
                     }
 
                     return outcome.IsFailure
@@ -178,7 +215,7 @@ internal sealed class CovenantMaintenanceHostedService(
                 })
             .ConfigureAwait(false);
 
-        return true;
+        return new CovenantMaintenancePassOutcome(Admitted: true, advanced);
     }
 
     /// <summary>
@@ -241,3 +278,5 @@ internal sealed class CovenantMaintenanceHostedService(
         }
     }
 }
+
+internal readonly record struct CovenantMaintenancePassOutcome(bool Admitted, bool Advanced);

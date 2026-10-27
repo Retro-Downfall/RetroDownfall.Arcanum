@@ -1,3 +1,8 @@
+using Microsoft.Extensions.AI;
+using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Intelligence;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.DependencyInjection;
@@ -117,6 +122,72 @@ public sealed class CovenantFeatureConfigurationPublisherTests
         Assert.Contains("True", logger.Entries.First().Message, StringComparison.Ordinal);
 
         Assert.Contains("False", logger.Entries.Last().Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Same_feature_callbacks_preserve_the_exact_availability_snapshot()
+    {
+        CovenantAvailability availability = new();
+
+        TestOptionsMonitor monitor = new(Settings(covenant: true));
+
+        using CovenantFeatureConfigurationPublisher publisher = new(availability, monitor, NullLogger<CovenantFeatureConfigurationPublisher>.Instance);
+
+        publisher.Start();
+
+        CovenantAvailabilitySnapshot before = availability.Current;
+
+        monitor.Change(Settings(covenant: true));
+
+        Assert.Same(before, availability.Current);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Actual_configuration_ABA_invalidates_prepared_cache_evidence(bool initial, bool duringCredentialAwait)
+    {
+        using CovenantRuntimeGenerationProvider runtime = new();
+
+        CovenantAvailability availability = new(runtime);
+
+        TestOptionsMonitor monitor = new(Settings(covenant: initial));
+
+        using CovenantFeatureConfigurationPublisher publisher = new(availability, monitor, NullLogger<CovenantFeatureConfigurationPublisher>.Instance);
+
+        publisher.Start();
+
+        CovenantAvailabilitySnapshot before = availability.Current;
+
+        using PromptCacheDispatchValidatorTests.Fixture cache = new(authorityProvider: new PromptCacheAuthoritySnapshotProvider(runtime));
+
+        var prepared = (await cache.Prepare())!;
+
+        List<ChatMessage> messages = [new(ChatRole.System, prepared.Document.Render()), new(ChatRole.User, "fixture")];
+
+        ModelCallContext context = new(cache.Provider, "gpt-5", 0, 0,
+            PromptCacheBinding: prepared.Bind(messages, cache.Options));
+
+        void ChangeAndReturn()
+        {
+            monitor.Change(Settings(covenant: !initial));
+
+            monitor.Change(Settings(covenant: initial));
+        }
+
+        if (duringCredentialAwait) cache.Credentials.BeforeCurrentReturn = ChangeAndReturn;
+        else ChangeAndReturn();
+
+        Assert.Equal(PromptCacheDispatchStatus.ReplanRequired,
+            (await cache.Validator.ValidateAsync(cache.Chat, messages, cache.Options, context, CancellationToken.None)).Value);
+
+        Assert.Equal(initial, availability.Current.FeatureEnabled);
+
+        Assert.Equal(before.Generation + 2, availability.Current.Generation);
+
+        Assert.NotEqual(prepared.ScopeMarkerDigest, (await cache.Prepare())!.ScopeMarkerDigest);
     }
 
     [Fact]
