@@ -1602,9 +1602,11 @@ internal sealed partial class DataRetentionService(
     {
         LongRunningOperationLeaseResult lease = new(true, operation);
 
+        RetentionMutationJournal? mutationJournal = null;
+
         try
         {
-            RetentionMutationJournal? mutationJournal =
+            mutationJournal =
                 operationKind == LongRunningOperationKinds.DataRetentionMutation
                     ? await PrepareMutationJournalAsync(
                         operation,
@@ -1701,6 +1703,18 @@ internal sealed partial class DataRetentionService(
             }
 
             return Result<DataRetentionApplyResult>.Success(applied);
+        }
+        catch (RetentionMutationCleanupException failure)
+        {
+            Result<DataRetentionApplyResult> result = await SettleUnexpectedOrdinaryFailureAsync(
+                operation, ownerId, failure.Primary, mutationJournal is not null, failure).ConfigureAwait(false);
+
+            if (failure.Primary is OperationCanceledException cancelled)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(cancelled).Throw();
+            }
+
+            return result;
         }
         catch (RetentionCovenantLabelException ex)
         {
@@ -1820,33 +1834,69 @@ internal sealed partial class DataRetentionService(
                         ? "The database mutation committed; quarantined bytes will be finalized by durable recovery."
                         : "The database mutation committed, but its quarantine recovery marker could not be finalized."));
         }
-        catch (Exception ex)
+        catch (Exception failure)
         {
-            logger.LogError(
-                ex,
-                "Data-retention operation {OperationId} failed while applying plan {PlanId}.",
-                operation.Id,
-                current.PlanId);
-
-            LongRunningOperation latest = await operations.GetAsync(
-                operation.Id,
-                CancellationToken.None).ConfigureAwait(false)
-                ?? lease.Operation;
-
-            _ = await operations.TryTransitionAsync(
-                operation.Id,
-                latest.Revision,
-                ownerId,
-                LongRunningOperationState.Failed,
-                timeProvider.GetUtcNow(),
-                ErrorCodes.Data.ReconciliationFailed,
-                CancellationToken.None).ConfigureAwait(false);
-
-            return Result<DataRetentionApplyResult>.Failure(
-                new Error(
-                    ErrorCodes.Data.ReconciliationFailed,
-                    "The retention operation failed; its durable history requires operator review."));
+            return await SettleUnexpectedOrdinaryFailureAsync(
+                operation, ownerId, failure, mutationJournal is not null).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>Unknown post-checkpoint effects retain their exact recovery owner and journal.</summary>
+    private async Task<Result<DataRetentionApplyResult>> SettleUnexpectedOrdinaryFailureAsync(
+        LongRunningOperation operation,
+        string ownerId,
+        Exception primary,
+        bool journalPrepared,
+        RetentionMutationCleanupException? cleanup = null)
+    {
+        LongRunningOperation current = operation;
+
+        bool effectsMayExist = journalPrepared || cleanup is not null;
+
+        bool evidenceRead = false;
+
+        try
+        {
+            (LongRunningOperation observed, bool checkpoint) = await ReadEffectEvidenceAsync(operation).ConfigureAwait(false);
+
+            current = observed;
+
+            effectsMayExist |= checkpoint;
+
+            evidenceRead = true;
+        }
+        catch (Exception)
+        {
+            // An unreadable effect boundary is unknown, never evidence that nothing happened.
+            effectsMayExist = true;
+        }
+
+        bool settled = false;
+
+        try
+        {
+            settled = await operations.TryTransitionAsync(
+                operation.Id, current.Revision, ownerId,
+                effectsMayExist ? LongRunningOperationState.ReconciliationRequired : LongRunningOperationState.Failed,
+                timeProvider.GetUtcNow(), RetentionRecoveryTerminalCode, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Preserve the primary failure; an unproved marker must not masquerade as a handoff.
+        }
+
+        logger.LogWarning(
+            "Data-retention operation {OperationId} at {Stage}: failure {Failure}, SQLite {SqliteCode}, extended {SqliteExtendedCode}; rollback {RollbackProved}, disposal {DisposalProved}, restoration {RestorationProved}, evidenceRead {EvidenceRead}, effectsMayExist {EffectsMayExist}, settled {Settled}.",
+            operation.Id, "RequestRecovery", CovenantStorageFailure.Classify(primary),
+            (primary as SqliteException)?.SqliteErrorCode, (primary as SqliteException)?.SqliteExtendedErrorCode,
+            cleanup?.RollbackProved, cleanup?.DisposalProved, cleanup?.RestorationProved, evidenceRead, effectsMayExist, settled);
+
+        return new Error(ErrorCodes.Data.ReconciliationFailed,
+            !settled
+                ? "The retention failure's durable recovery marker could not be proved; preserve the installation and inspect its operation history before retrying."
+                : effectsMayExist
+                    ? "The retention operation requires durable reconciliation of its saved journal; do not repeat deletion until recovery settles."
+                    : "The retention operation failed before any durable effect checkpoint; its history requires operator review.");
     }
 
     private async Task<Result<DataRetentionApplyResult>> ApplyCovenantResetAsync(
@@ -3217,7 +3267,7 @@ internal sealed partial class DataRetentionService(
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
-        await using DbTransaction transaction = await BeginMutationTransactionAsync(
+        DbTransaction transaction = await BeginMutationTransactionAsync(
             connection,
             cancellationToken).ConfigureAwait(false);
 
@@ -3230,6 +3280,8 @@ internal sealed partial class DataRetentionService(
         long bytesDeleted = 0;
 
         bool committed = false;
+
+        bool disposalAttempted = false;
 
         List<IdentityOwnedFileSystemQuarantine> quarantinedFiles = [];
 
@@ -3403,21 +3455,23 @@ internal sealed partial class DataRetentionService(
 
             committed = true;
         }
-        catch
+        catch (Exception primary)
         {
             if (!committed)
             {
-                try
-                {
-                    await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                }
-                finally
-                {
-                    RestoreQuarantinedFactoryFiles(quarantinedFiles);
-                }
+                disposalAttempted = true;
+
+                RetentionMutationCleanupException? cleanup = await RollbackDisposeAndRestoreAsync(
+                    connection, transaction, quarantinedFiles, primary).ConfigureAwait(false);
+
+                if (cleanup is not null) throw cleanup;
             }
 
             throw;
+        }
+        finally
+        {
+            if (!disposalAttempted) await transaction.DisposeAsync().ConfigureAwait(false);
         }
 
         FinalizeOperationQuarantines(quarantinedFiles);
@@ -3592,7 +3646,7 @@ internal sealed partial class DataRetentionService(
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
-        await using DbTransaction transaction = await BeginMutationTransactionAsync(
+        DbTransaction transaction = await BeginMutationTransactionAsync(
             connection,
             cancellationToken).ConfigureAwait(false);
 
@@ -3605,6 +3659,8 @@ internal sealed partial class DataRetentionService(
         long bytesDeleted;
 
         bool committed = false;
+
+        bool disposalAttempted = false;
 
         List<IdentityOwnedFileSystemQuarantine> quarantinedFiles = [];
 
@@ -3684,21 +3740,23 @@ internal sealed partial class DataRetentionService(
 
             committed = true;
         }
-        catch
+        catch (Exception primary)
         {
             if (!committed)
             {
-                try
-                {
-                    await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                }
-                finally
-                {
-                    RestoreQuarantinedFactoryFiles(quarantinedFiles);
-                }
+                disposalAttempted = true;
+
+                RetentionMutationCleanupException? cleanup = await RollbackDisposeAndRestoreAsync(
+                    connection, transaction, quarantinedFiles, primary).ConfigureAwait(false);
+
+                if (cleanup is not null) throw cleanup;
             }
 
             throw;
+        }
+        finally
+        {
+            if (!disposalAttempted) await transaction.DisposeAsync().ConfigureAwait(false);
         }
 
         FinalizeOperationQuarantines(quarantinedFiles);
@@ -8203,39 +8261,60 @@ internal sealed partial class DataRetentionService(
 
     private static (long Files, long Bytes) MeasureOwnedTree(string root)
     {
-        if (!Directory.Exists(root))
-        {
-            return (0, 0);
-        }
+        if (!Directory.Exists(root)) return (0, 0);
 
-        FileInfo[] files =
-            [.. Directory.EnumerateFiles(
-                    root,
-                    "*",
-                    OwnedTreeEnumeration)
-                .Select(static path => new FileInfo(path))];
-
-        return (
-            files.LongLength,
-            files.Sum(static file => file.Length));
+        return MeasureObservedFiles(new DirectoryInfo(root).EnumerateFiles("*", OwnedTreeEnumeration));
     }
 
-    private static (long Files, long Bytes) CountFiles(
-        string root,
-        string pattern)
+    private static (long Files, long Bytes) CountFiles(string root, string pattern)
     {
-        if (!Directory.Exists(root))
+        if (!Directory.Exists(root)) return (0, 0);
+
+        return MeasureObservedFiles(new DirectoryInfo(root).EnumerateFiles(pattern, LogInventoryEnumeration)
+            .Where(static file => IsDatedLogFile(file.Name, "audit-") || IsDatedLogFile(file.Name, "guardrails-")));
+    }
+
+    /// <summary>Observational metadata pairs; neither a fresh identity proof nor an atomic snapshot.</summary>
+    private static (long Files, long Bytes) MeasureObservedFiles(IEnumerable<FileInfo> source)
+    {
+        long count = 0;
+
+        long bytes = 0;
+
+        try
         {
-            return (0, 0);
+            foreach (FileInfo file in source)
+            {
+                long length;
+
+                try
+                {
+                    length = file.Length;
+                }
+                catch (FileNotFoundException)
+                {
+                    continue;
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    continue;
+                }
+
+                count = checked(count + 1);
+
+                bytes = checked(bytes + length);
+            }
+        }
+        catch (FileNotFoundException)
+        {
+            // The enumerated tree disappeared; retain only already observed metadata pairs.
+        }
+        catch (DirectoryNotFoundException)
+        {
+            // A missing root/subtree is ordinary churn, not an unreadable storage success.
         }
 
-        FileInfo[] files =
-            [.. Directory.EnumerateFiles(root, pattern)
-                .Select(static path => new FileInfo(path))];
-
-        return (
-            files.LongLength,
-            files.Sum(static file => file.Length));
+        return (count, bytes);
     }
 
     private static EnumerationOptions OwnedTreeEnumeration { get; } =
@@ -8321,6 +8400,82 @@ internal sealed partial class DataRetentionService(
     private sealed record BatchReferenceSnapshot(
         Guid BatchId,
         string Status);
+
+    /// <summary>Restoration requires a positively completed rollback and transaction disposal.</summary>
+    private static async Task<RetentionMutationCleanupException?> RollbackDisposeAndRestoreAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        IEnumerable<IdentityOwnedFileSystemQuarantine> quarantines,
+        Exception primary)
+    {
+        bool rollbackProved = false;
+
+        bool disposalProved = false;
+
+        bool restorationProved = false;
+
+        // An ADO wrapper may accept a rollback as a no-op after the native transaction has ended.
+        // That does not say whether COMMIT or ROLLBACK ended it. Only an active native transaction
+        // observed before the successful rollback can support an in-process restoration.
+        try
+        {
+            bool nativeActive = connection is SqliteConnection sqlite && sqlite.State == ConnectionState.Open
+                && SQLitePCL.raw.sqlite3_get_autocommit(sqlite.Handle) == 0;
+
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+            rollbackProved = nativeActive && connection is SqliteConnection rolledBack && rolledBack.State == ConnectionState.Open
+                && SQLitePCL.raw.sqlite3_get_autocommit(rolledBack.Handle) != 0;
+        }
+        catch (Exception)
+        {
+            // COMMIT may have succeeded. A rollback failure authorizes no filesystem restoration.
+        }
+
+        try
+        {
+            await transaction.DisposeAsync().ConfigureAwait(false);
+
+            disposalProved = true;
+        }
+        catch (Exception)
+        {
+            // Disposal failure is not proof of rollback and must not replace the primary cause.
+        }
+
+        if (rollbackProved && disposalProved)
+        {
+            try
+            {
+                RestoreQuarantinedFactoryFiles(quarantines);
+
+                restorationProved = true;
+            }
+            catch (Exception)
+            {
+                // The unchanged journal owns every remaining quarantine until fresh recovery.
+            }
+        }
+
+        return rollbackProved && disposalProved && restorationProved ? null
+            : new RetentionMutationCleanupException(primary, rollbackProved, disposalProved, restorationProved);
+    }
+
+    private sealed class RetentionMutationCleanupException(
+        Exception primary,
+        bool rollbackProved,
+        bool disposalProved,
+        bool restorationProved)
+        : Exception("Retention cleanup remains owned by its durable journal.", primary)
+    {
+        public Exception Primary { get; } = primary;
+
+        public bool RollbackProved { get; } = rollbackProved;
+
+        public bool DisposalProved { get; } = disposalProved;
+
+        public bool RestorationProved { get; } = restorationProved;
+    }
 
     private sealed class RetentionConflictException(string message) : Exception(message);
 

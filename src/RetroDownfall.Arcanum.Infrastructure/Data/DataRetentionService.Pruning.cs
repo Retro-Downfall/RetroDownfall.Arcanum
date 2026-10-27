@@ -3663,6 +3663,14 @@ internal sealed partial class DataRetentionService
                         observeDurableCancellation).ConfigureAwait(false);
                 }
             }
+            catch (RetentionMutationCleanupException failure) when (effectGroup is not null && failure.Primary is OperationCanceledException)
+            {
+                cancellationInFlight = true;
+
+                await TrySurrenderHostedPruneAsync(operationId, ownerId).ConfigureAwait(false);
+
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure.Primary).Throw();
+            }
             catch (OperationCanceledException) when (effectGroup is not null)
             {
                 cancellationInFlight = true;
@@ -5679,7 +5687,7 @@ internal sealed partial class DataRetentionService
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
-        await using DbTransaction transaction = await BeginMutationTransactionAsync(
+        DbTransaction transaction = await BeginMutationTransactionAsync(
             connection,
             cancellationToken).ConfigureAwait(false);
 
@@ -5690,6 +5698,8 @@ internal sealed partial class DataRetentionService
         long bytes;
 
         bool committed = false;
+
+        bool disposalAttempted = false;
 
         List<IdentityOwnedFileSystemQuarantine> quarantinedFiles = [];
 
@@ -5739,21 +5749,23 @@ internal sealed partial class DataRetentionService
 
             committed = true;
         }
-        catch
+        catch (Exception primary)
         {
             if (!committed)
             {
-                try
-                {
-                    await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                }
-                finally
-                {
-                    RestoreQuarantinedFactoryFiles(quarantinedFiles);
-                }
+                disposalAttempted = true;
+
+                RetentionMutationCleanupException? cleanup = await RollbackDisposeAndRestoreAsync(
+                    connection, transaction, quarantinedFiles, primary).ConfigureAwait(false);
+
+                if (cleanup is not null) throw cleanup;
             }
 
             throw;
+        }
+        finally
+        {
+            if (!disposalAttempted) await transaction.DisposeAsync().ConfigureAwait(false);
         }
 
         FinalizeOperationQuarantines(quarantinedFiles);
@@ -6835,34 +6847,49 @@ internal sealed partial class DataRetentionService
         DateTimeOffset cutoff = PrunePlanningTimestamp.AddDays(
             -ArcanumSettingClamps.RetentionRuleDays(rule.Days));
 
-        foreach (string path in Directory
-                     .EnumerateFiles(_logsRoot, pattern, LogInventoryEnumeration)
-                     .OrderBy(static path => path, StringComparer.Ordinal))
+        try
         {
-            if (candidates.Count >= limit)
+            foreach (FileInfo info in new DirectoryInfo(_logsRoot)
+                         .EnumerateFiles(pattern, LogInventoryEnumeration)
+                         .OrderBy(static file => file.FullName, StringComparer.Ordinal))
             {
-                break;
+                if (candidates.Count >= limit) break;
+
+                string stem = dataClass == RetentionDataClass.AuditLogs ? "audit-" : "guardrails-";
+
+                if (!IsDatedLogFile(info.Name, stem)) continue;
+
+                long bytes;
+
+                try
+                {
+                    if (info.LastWriteTimeUtc > cutoff.UtcDateTime) continue;
+
+                    bytes = info.Length;
+                }
+                catch (FileNotFoundException)
+                {
+                    continue;
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    continue;
+                }
+
+                // Sampling can describe an earlier observation; apply still proves current ownership.
+                // Append both only after the complete pair is available so failed stats spend no quota.
+                candidates.Add(prefix + info.Name);
+
+                items.Add(new DataRetentionPlanItem(dataClass, 0, 1, bytes, 0));
             }
-
-            string name = Path.GetFileName(path);
-
-            string stem = dataClass == RetentionDataClass.AuditLogs ? "audit-" : "guardrails-";
-
-            if (!IsDatedLogFile(name, stem))
-            {
-                continue;
-            }
-
-            FileInfo info = new(path);
-
-            if (info.LastWriteTimeUtc > cutoff.UtcDateTime)
-            {
-                continue;
-            }
-
-            candidates.Add(prefix + info.Name);
-
-            items.Add(new DataRetentionPlanItem(dataClass, 0, 1, info.Length, 0));
+        }
+        catch (FileNotFoundException)
+        {
+            // The log root disappeared while its observational inventory was being enumerated.
+        }
+        catch (DirectoryNotFoundException)
+        {
+            // Existing successful samples remain paired; no other IO/access failure is hidden.
         }
     }
 

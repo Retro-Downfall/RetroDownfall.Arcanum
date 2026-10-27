@@ -334,6 +334,8 @@ public sealed class MemoryErasureGuardTests : IClassFixture<GrimoireFixture>, IA
 
         Assert.Equal(code, prepared.Error.Code);
 
+        Assert.Contains("arcanum memory erasure status", prepared.Error.Message, StringComparison.Ordinal);
+
         // A write that cannot be guarded is refused before it runs.
         int writes = 0;
 
@@ -351,6 +353,8 @@ public sealed class MemoryErasureGuardTests : IClassFixture<GrimoireFixture>, IA
                 Token));
 
         Assert.Equal(code, refused.Error.Code);
+
+        Assert.Contains("arcanum memory erasure status", refused.Error.Message, StringComparison.Ordinal);
 
         Assert.Equal(0, writes);
     }

@@ -109,7 +109,7 @@ internal static class MemoryErasureGuard
 
     internal static Error KeyUnavailableError { get; } = new(
         ErrorCodes.MemoryErasure.KeyUnavailable,
-        "The erasure key could not be read, so automatic writes to this store are withheld until it can be.");
+        "The erasure key could not be read, so automatic writes to this store are withheld until it can be. Run 'arcanum memory erasure status'.");
 
     internal static Error UnavailableError { get; } = new(
         ErrorCodes.MemoryErasure.Unavailable,

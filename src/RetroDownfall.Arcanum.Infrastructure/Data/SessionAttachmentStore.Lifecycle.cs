@@ -569,13 +569,17 @@ internal sealed partial class SessionAttachmentStore
             {
                 revalidated = await _sourceResolver.RevalidateAsync(source, cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception)
+            catch (OperationCanceledException)
             {
-                revalidated = source with
-                {
-                    Status = AttachmentSourceStatus.CorruptMetadata,
-                    DiagnosticReason = "Source metadata could not be safely revalidated.",
-                };
+                throw;
+            }
+            catch (Exception ex)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                LogSourceRevalidationFailure(row.Id, ex);
+
+                continue;
             }
 
             await UpdateSourceAsync(row.Id, revalidated, cancellationToken).ConfigureAwait(false);
@@ -637,16 +641,13 @@ internal sealed partial class SessionAttachmentStore
                 {
                     throw;
                 }
-                catch (Exception)
-
+                catch (Exception ex)
                 {
-                    current = source with
+                    cancellationToken.ThrowIfCancellationRequested();
 
-                    {
-                        Status = AttachmentSourceStatus.CorruptMetadata,
+                    LogSourceRevalidationFailure(row.Id, ex);
 
-                        DiagnosticReason = "Source metadata could not be safely revalidated.",
-                    };
+                    current = source;
                 }
 
                 observed[source] = current;
@@ -665,6 +666,26 @@ internal sealed partial class SessionAttachmentStore
         }
 
         return revalidated;
+    }
+
+    private void LogSourceRevalidationFailure(Guid attachmentId, Exception exception)
+    {
+        string kind = exception switch
+        {
+            SqliteException => "Storage",
+            UnauthorizedAccessException => "Access",
+            IOException => "IO",
+            _ => "Unexpected",
+        };
+
+        SqliteException? sqlite = exception as SqliteException;
+
+        _logger.LogWarning(
+            "Attachment {AttachmentId} source revalidation did not complete ({FailureKind}; SQLite {SqliteCode}/{SqliteExtendedCode}). The last successful observation and snapshot were retained. Retry attachment listing; if this persists, check workspace registry and storage availability.",
+            attachmentId,
+            kind,
+            sqlite?.SqliteErrorCode,
+            sqlite?.SqliteExtendedErrorCode);
     }
 
     private async Task SweepMissingSessionRowsAndDirectoriesAsync(CancellationToken cancellationToken)

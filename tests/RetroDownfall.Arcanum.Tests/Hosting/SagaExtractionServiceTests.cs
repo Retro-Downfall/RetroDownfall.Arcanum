@@ -516,7 +516,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             NextText = """{ "memories": [{ "content": "The operator prefers dark mode.", "attachmentId": null }] }""",
         };
 
-        SagaExtractionService service = CreateService();
+        TestCapturingLogger<SagaExtractionService> logger = new();
+
+        SagaExtractionService service = CreateService(logger);
 
         (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) =
             BuildScope(weave, intelligence, keyring);
@@ -532,6 +534,22 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountMemoriesAsync());
 
         Assert.Null(await GetWatermarkAsync(sessionId));
+
+        TestLogEntry deferred = Assert.Single(logger.Entries, entry => entry.Level == LogLevel.Warning);
+
+        Assert.Contains("arcanum memory erasure status", deferred.Message, StringComparison.Ordinal);
+
+        Assert.Contains(ErrorCodes.MemoryErasure.KeyLost, deferred.Message, StringComparison.Ordinal);
+
+        Assert.Contains(deferred.Properties!, value => value.Key == "ErrorCode" && Equals(value.Value, ErrorCodes.MemoryErasure.KeyLost));
+
+        Assert.Contains(deferred.Properties!, value => value.Key == "SessionId" && Equals(value.Value, sessionId));
+
+        Assert.Null(deferred.Exception);
+
+        Assert.DoesNotContain("dark mode", deferred.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("Something the operator erased", deferred.Message, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -559,11 +577,13 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence, keyring);
 
+        TestCapturingLogger<SagaExtractionService> logger = new();
+
         SagaExtractionService service = new(
             scopeFactory,
             new TestOptionsMonitor<ArcanumSettings>(settings),
             _admissionGate,
-            NullLogger<SagaExtractionService>.Instance)
+            logger)
         {
             RetryBaseDelayForTests = TimeSpan.FromMilliseconds(10),
             ErasureKeyDeferralDelayForTests = TimeSpan.FromMilliseconds(10),
@@ -601,6 +621,23 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.NotEmpty(service.PendingSegmentsForTests(sessionId));
 
             Assert.Equal(0, intelligence.CallCount);
+
+            TestLogEntry[] deferrals = logger.Entries.Where(entry => entry.Level == LogLevel.Warning).ToArray();
+
+            Assert.NotEmpty(deferrals);
+
+            Assert.All(deferrals, entry =>
+            {
+                Assert.Contains("arcanum memory erasure status", entry.Message, StringComparison.Ordinal);
+
+                Assert.Contains(ErrorCodes.MemoryErasure.KeyLost, entry.Message, StringComparison.Ordinal);
+
+                Assert.Contains(entry.Properties!, value => value.Key == "ErrorCode" && Equals(value.Value, ErrorCodes.MemoryErasure.KeyLost));
+
+                Assert.Null(entry.Exception);
+
+                Assert.DoesNotContain("content that waits", entry.Message, StringComparison.Ordinal);
+            });
 
             // The operator restores the key and asks again, which publishes it into the shared latch.
             _ = credentials.Set(
@@ -5570,12 +5607,12 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             });
     }
 
-    private SagaExtractionService CreateService() =>
+    private SagaExtractionService CreateService(ILogger<SagaExtractionService>? logger = null) =>
         new(
             new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
             _admissionGate,
-            NullLogger<SagaExtractionService>.Instance);
+            logger ?? NullLogger<SagaExtractionService>.Instance);
 
     private async Task<SagaExtractionOutcome> ExtractWithLeaseAsync(
         SagaExtractionService service,

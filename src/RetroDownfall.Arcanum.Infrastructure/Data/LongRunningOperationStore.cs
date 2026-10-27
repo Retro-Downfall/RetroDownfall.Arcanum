@@ -1180,7 +1180,10 @@ internal sealed partial class LongRunningOperationStore(
         return ExecuteUpdateAsync(
             """
             UPDATE "LongRunningOperations"
-            SET "State" = @state,
+            SET "State" = CASE
+                    WHEN "State" = @cancelling AND "Kind" = @retentionPrune
+                      AND @state = @reconciliation AND @error = @retentionRecovery
+                    THEN @cancelling ELSE @state END,
                 "CompletedAt" = CASE WHEN @completed = 1 THEN @now ELSE NULL END,
                 "LeaseOwner" = CASE WHEN @release = 1 THEN NULL ELSE "LeaseOwner" END,
                 "LeaseExpiresAt" = CASE WHEN @release = 1 THEN NULL ELSE "LeaseExpiresAt" END,
@@ -1195,6 +1198,10 @@ internal sealed partial class LongRunningOperationStore(
                 Add(cmd, "@revision", expectedRevision);
                 Add(cmd, "@owner", ownerId is null ? null : Bound(ownerId, MaxOwnerLength));
                 Add(cmd, "@state", (int)state);
+                Add(cmd, "@cancelling", (int)LongRunningOperationState.Cancelling);
+                Add(cmd, "@retentionPrune", LongRunningOperationKinds.DataRetentionPrune);
+                Add(cmd, "@reconciliation", (int)LongRunningOperationState.ReconciliationRequired);
+                Add(cmd, "@retentionRecovery", ErrorCodes.Data.ReconciliationFailed);
                 Add(cmd, "@completed", completed ? 1 : 0);
                 Add(cmd, "@release", releasesLease ? 1 : 0);
                 Add(cmd, "@now", Format(utcNow));

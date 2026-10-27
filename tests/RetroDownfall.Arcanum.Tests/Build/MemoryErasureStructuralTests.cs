@@ -159,12 +159,30 @@ public sealed class MemoryErasureStructuralTests
     };
 
     /// <summary>
+    /// The entry-erasure service's reviewed diagnostics: a mutation GUID, fixed stage, closed failure
+    /// kind, numeric SQLite codes, rollback flag, closed receipt state, disposition enum and whitelisted
+    /// error code. These names are allowed only in that file; arguments still pass the content scan.
+    /// </summary>
+    private static readonly HashSet<string> EntryErasureDiagnosticPlaceholders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "MutationId",
+        "Stage",
+        "Failure",
+        "SqliteCode",
+        "SqliteExtendedCode",
+        "RollbackFailed",
+        "ReceiptState",
+        "Disposition",
+        "Code",
+    };
+
+    /// <summary>
     /// An identifier that could hold an erased item's content, name, key or digest. A log argument that
     /// mentions one is refused whatever its template says, because an innocuous placeholder name can carry
     /// any argument.
     /// </summary>
     private static readonly Regex ContentBearingIdentifier = new(
-        "name|key|content|fact|fingerprint|keyId|digest|token|identity|value|text",
+        "name|key|content|fact|fingerprint|keyId|digest|token|identity|value|text|message",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>
@@ -844,6 +862,63 @@ public sealed class MemoryErasureStructuralTests
         Assert.Equal(expected, LogTemplateViolations(source).Count);
     }
 
+    [Fact]
+    public void Every_reviewed_entry_erasure_placeholder_is_still_logged_by_its_file()
+    {
+        string path = Path.Combine(NativeSqlCipherTestPaths.RepositoryRoot(), EntryErasureService);
+
+        List<string> expressions = LoggedArgumentExpressions(File.ReadAllText(path));
+
+        Assert.All(
+            EntryErasureDiagnosticPlaceholders,
+            placeholder => Assert.Contains(expressions, expression => expression.Contains("{" + placeholder + "}", StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData("Covenant/CovenantEntryErasureService.cs", true)]
+    [InlineData("Memory/MemoryErasureRelease.cs", false)]
+    [InlineData(null, false)]
+    public void Entry_erasure_diagnostic_placeholders_are_reviewed_only_in_their_own_file(string? file, bool allowed)
+    {
+        string[] placeholders =
+        [
+            "MutationId", "Stage", "Failure", "SqliteCode", "SqliteExtendedCode",
+            "RollbackFailed", "ReceiptState", "Disposition", "Code",
+        ];
+
+        foreach (string placeholder in placeholders)
+        {
+            string source = $$"""
+                internal sealed class Fixture(Microsoft.Extensions.Logging.ILogger logger)
+                {
+                    internal void Report(int count) => logger.LogWarning("Diagnostic {{{placeholder}}}.", count);
+                }
+                """;
+
+            Assert.Equal(allowed ? 0 : 1, LogTemplateViolations(source, file).Count);
+        }
+    }
+
+    [Theory]
+    [InlineData("subject.Content")]
+    [InlineData("failure.Message")]
+    [InlineData("preflightToken")]
+    [InlineData("requestDigest")]
+    [InlineData("entry.NormalizedKey")]
+    public void Reviewed_entry_erasure_placeholders_do_not_excuse_private_arguments(string expression)
+    {
+        string source = $$"""
+            internal sealed class Fixture(Microsoft.Extensions.Logging.ILogger logger)
+            {
+                internal void Report() => logger.LogWarning("Diagnostic {Failure}.", {{expression}});
+            }
+            """;
+
+        Assert.Contains(
+            LogTemplateViolations(source, "Covenant/CovenantEntryErasureService.cs"),
+            violation => violation.Contains("the argument " + expression, StringComparison.Ordinal));
+    }
+
     /// <summary>
     /// A reviewed argument excuses exactly the expression a reviewer read in exactly the file it was read
     /// in, and nothing else that happens to match.
@@ -944,7 +1019,7 @@ public sealed class MemoryErasureStructuralTests
         {
             foreach (ArgumentSyntax argument in invocation.ArgumentList.Arguments)
             {
-                ScanTemplate(argument, violations);
+                ScanTemplate(argument, file, violations);
 
                 ScanArgumentIdentifiers(argument.Expression, file, violations);
             }
@@ -952,7 +1027,7 @@ public sealed class MemoryErasureStructuralTests
 
         foreach (AttributeSyntax attribute in LoggerMessageAttributes(root).Where(static attribute => attribute.ArgumentList is not null))
         {
-            ScanTemplate(attribute.ArgumentList!, violations);
+            ScanTemplate(attribute.ArgumentList!, file, violations);
 
             if (attribute.Parent?.Parent is MethodDeclarationSyntax method)
             {
@@ -976,7 +1051,7 @@ public sealed class MemoryErasureStructuralTests
     /// The placeholders in every string literal under a node that are not on the allow-list, and every
     /// interpolated string under it, which carries whatever it interpolates whatever the placeholder is named.
     /// </summary>
-    private static void ScanTemplate(SyntaxNode node, List<string> violations)
+    private static void ScanTemplate(SyntaxNode node, string? file, List<string> violations)
     {
         foreach (LiteralExpressionSyntax literal in node.DescendantNodesAndSelf()
             .OfType<LiteralExpressionSyntax>()
@@ -984,7 +1059,9 @@ public sealed class MemoryErasureStructuralTests
         {
             foreach (Match match in Placeholder.Matches(literal.Token.ValueText))
             {
-                if (!AllowedPlaceholders.Contains(match.Groups["name"].Value))
+                if (!AllowedPlaceholders.Contains(match.Groups["name"].Value)
+                    && !(file == "Covenant/CovenantEntryErasureService.cs"
+                        && EntryErasureDiagnosticPlaceholders.Contains(match.Groups["name"].Value)))
                 {
                     violations.Add($"{match.Value} in \"{literal.Token.ValueText}\" is not an allowed placeholder");
                 }

@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Operations;
@@ -97,10 +99,11 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
     ICovenantManagedFileErasureKernel managedFiles,
     ICovenantReinitializeErasureSource erasureSource,
     ICovenantFamilyReinitializeTransition transition,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    ILogger<CovenantFamilyReinitializeCoordinator> logger)
 {
     /// <summary>How long the apply request owns its ledger lease.</summary>
-    internal static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(30);
+    internal static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(15);
 
     private const string Summary = "Reinitializing the Covenant schema family.";
 
@@ -127,6 +130,8 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
         transition ?? throw new ArgumentNullException(nameof(transition));
 
     private readonly TimeProvider _time = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+
+    private readonly ILogger<CovenantFamilyReinitializeCoordinator> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     /// <summary>
     /// Starts, or replays, the caller-named reinitialize operation.
@@ -177,6 +182,8 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
 
         if (acquired.IsFailure)
         {
+            LogRefusal(operation.Id, "Admission", checkpoint.Phase, null, acquired.Error.Code);
+
             return Result<CovenantExclusiveLeaseDisposition>.Failure(acquired.Error);
         }
 
@@ -188,6 +195,8 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
 
         if (authority.IsFailure)
         {
+            LogRefusal(operation.Id, "Authority", checkpoint.Phase, null, authority.Error.Code);
+
             return Result<CovenantExclusiveLeaseDisposition>.Failure(authority.Error);
         }
 
@@ -297,9 +306,11 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
                 (_, token) => _transition.VerifyReopenAsync(token),
                 cancellationToken).ConfigureAwait(false);
         }
-        catch (CovenantReinitializeStepFailedException)
+        catch (CovenantReinitializeStepFailedException exception)
         {
-            return await CloseAsync(lease, CovenantExclusiveLeaseDisposition.KeepClosed, cancellationToken)
+            LogRefusal(operation.Id, exception.Phase.ToString(), state.Phase, CovenantExclusiveLeaseDisposition.KeepClosed, exception.Error.Code);
+
+            return await CloseAsync(operation.Id, state.Phase, lease, CovenantExclusiveLeaseDisposition.KeepClosed)
                 .ConfigureAwait(false);
         }
 
@@ -308,7 +319,9 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
         // stays closed and the operation stays resumable.
         if (state.NewDatasetGeneration is not { } publishedGeneration)
         {
-            return await CloseAsync(lease, CovenantExclusiveLeaseDisposition.KeepClosed, cancellationToken)
+            LogRefusal(operation.Id, "Generation", state.Phase, CovenantExclusiveLeaseDisposition.KeepClosed, ErrorCodes.Covenant.IntegrityFailure);
+
+            return await CloseAsync(operation.Id, state.Phase, lease, CovenantExclusiveLeaseDisposition.KeepClosed)
                 .ConfigureAwait(false);
         }
 
@@ -320,7 +333,9 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
 
         if (published.IsFailure)
         {
-            return await CloseAsync(lease, CovenantExclusiveLeaseDisposition.KeepClosed, cancellationToken)
+            LogRefusal(operation.Id, "Publication", state.Phase, CovenantExclusiveLeaseDisposition.KeepClosed, published.Error.Code);
+
+            return await CloseAsync(operation.Id, state.Phase, lease, CovenantExclusiveLeaseDisposition.KeepClosed)
                 .ConfigureAwait(false);
         }
 
@@ -331,7 +346,9 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
 
         if (writer.IsFailure)
         {
-            return await CloseAsync(lease, CovenantExclusiveLeaseDisposition.KeepClosed, cancellationToken)
+            LogRefusal(operation.Id, "WriterReopen", state.Phase, CovenantExclusiveLeaseDisposition.KeepClosed, writer.Error.Code);
+
+            return await CloseAsync(operation.Id, state.Phase, lease, CovenantExclusiveLeaseDisposition.KeepClosed)
                 .ConfigureAwait(false);
         }
 
@@ -342,7 +359,37 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
                 DurablyMutated: durablyMutated,
                 HealthPublished: true));
 
-        return await CloseAsync(lease, disposition, cancellationToken).ConfigureAwait(false);
+        Result<CovenantExclusiveLeaseDisposition> closed = await CloseAsync(operation.Id, state.Phase, lease, disposition)
+            .ConfigureAwait(false);
+
+        if (closed.IsFailure || disposition != CovenantExclusiveLeaseDisposition.CommitAndReopen)
+        {
+            return closed;
+        }
+
+        // Publication and admission are already committed. Only the original durable owner may
+        // record completion, using the revision after the final checkpoint, without caller abandonment.
+        try
+        {
+            LongRunningOperation? current = await _store.GetAsync(operation.Id, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            if (current is not null && await _operations.CompleteAsync(
+                operation.Id, ownerId, current.Revision, CancellationToken.None).ConfigureAwait(false))
+            {
+                return closed;
+            }
+        }
+        catch (Exception)
+        {
+            // A durable bookkeeping fault cannot undo the published generation or reopened gate.
+        }
+
+        LogRefusal(operation.Id, "Completion", state.Phase, disposition, ErrorCodes.Covenant.ManualRecoveryRequired, "UnconfirmedCompletion");
+
+        return Result<CovenantExclusiveLeaseDisposition>.Failure(new Error(
+            ErrorCodes.Covenant.ManualRecoveryRequired,
+            $"The Covenant generation is committed and admission is reopened, but operation {operation.Id:D} completion is unconfirmed. Inspect operation show before further maintenance."));
     }
 
     /// <summary>
@@ -455,7 +502,7 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
 
         if (performed.IsFailure)
         {
-            throw new CovenantReinitializeStepFailedException(performed.Error);
+            throw new CovenantReinitializeStepFailedException(performed.Error, phase);
         }
 
         return await CheckpointAsync(
@@ -488,23 +535,51 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
             throw new CovenantReinitializeStepFailedException(
                 new Error(
                     ErrorCodes.Covenant.RevisionConflict,
-                    "The Covenant reinitialize checkpoint was written by another owner."));
+                    "The Covenant reinitialize checkpoint was written by another owner."), checkpoint.Phase);
         }
 
         return checkpoint;
     }
 
-    private static async Task<Result<CovenantExclusiveLeaseDisposition>> CloseAsync(
+    private async Task<Result<CovenantExclusiveLeaseDisposition>> CloseAsync(
+        Guid operationId,
+        CovenantFamilyReinitializePhase phase,
         CovenantExclusiveLease lease,
-        CovenantExclusiveLeaseDisposition disposition,
-        CancellationToken cancellationToken)
+        CovenantExclusiveLeaseDisposition disposition)
     {
         // The disposition reports what the reinitialize durably did, so completing it takes no token.
         Result closed = await lease.CompleteAsync(disposition, CancellationToken.None).ConfigureAwait(false);
 
+        if (closed.IsFailure)
+        {
+            LogRefusal(operationId, "Disposition", phase, disposition, closed.Error.Code);
+        }
+
         return closed.IsFailure
             ? Result<CovenantExclusiveLeaseDisposition>.Failure(closed.Error)
             : Result<CovenantExclusiveLeaseDisposition>.Success(disposition);
+    }
+
+    private void LogRefusal(
+        Guid operationId,
+        string stage,
+        CovenantFamilyReinitializePhase phase,
+        CovenantExclusiveLeaseDisposition? disposition,
+        string code,
+        string outcome = "Refused")
+    {
+        string safeCode = code switch
+        {
+            ErrorCodes.Covenant.RevisionConflict or ErrorCodes.Covenant.LifecycleConflict
+                or ErrorCodes.Covenant.IntegrityFailure or ErrorCodes.Covenant.ManualArtifactErasureRequired
+                or ErrorCodes.Covenant.ManualRecoveryRequired or ErrorCodes.Covenant.ForbiddenAuthority
+                => code,
+            _ => ErrorCodes.Covenant.MaintenanceFailed,
+        };
+
+        _logger.LogWarning(
+            "Covenant family operation {OperationId} at stage {Stage}, recorded phase {Phase}, requested disposition {RequestedDisposition}, outcome {Outcome}, code {ErrorCode}. Inspect operation show before further maintenance.",
+            operationId, stage, phase, disposition, outcome, safeCode);
     }
 }
 
@@ -516,10 +591,12 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
 /// caller that forgot to check. It never escapes the coordinator: every catch selects
 /// <c>KeepClosed</c>, which is the only safe answer when a durable step's outcome is unknown.
 /// </remarks>
-internal sealed class CovenantReinitializeStepFailedException(Error error)
+internal sealed class CovenantReinitializeStepFailedException(Error error, CovenantFamilyReinitializePhase phase)
     : Exception(error.Message)
 {
     internal Error Error { get; } = error;
+
+    internal CovenantFamilyReinitializePhase Phase { get; } = phase;
 }
 
 /// <summary>

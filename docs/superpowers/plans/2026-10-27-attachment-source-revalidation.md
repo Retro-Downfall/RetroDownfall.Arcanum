@@ -1,0 +1,5 @@
+# Attachment source revalidation — RV265
+
+Unexpected workspace-registry faults are not proof that persisted attachment metadata is corrupt. Through the real resolver and encrypted native store, prove the startup and bound-list paths preserve the last successful source observation and immutable snapshot, log a closed cause and Attachment GUID without raw exception text, and recover on a later successful pass. Preserve precise resolver-returned Missing/Unsafe/CorruptMetadata outcomes. Cancellation propagates unchanged without a warning or mutation. No schema, new source status, wire field, authority or live-provider activity.
+
+Tests first: native registry fault and cancellation cases with healthy missing-source controls. Repair only the two catch boundaries and safe common diagnostics. Keep bound-list per-snapshot memoization and no-change write suppression. Prove causal reversals, run complete affected native/source/endpoint families and all owned static gates, then seal for independent review.

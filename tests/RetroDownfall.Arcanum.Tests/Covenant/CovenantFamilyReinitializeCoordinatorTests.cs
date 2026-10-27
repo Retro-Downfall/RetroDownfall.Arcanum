@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Operations;
@@ -322,6 +324,8 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
             bool useDefaultGeneration = true,
             CancellationToken? cancellationToken = null)
         {
+            _store.Add(Operation());
+
             RecordingOperationCoordinator operations = new();
 
             CovenantFamilyReinitializeCoordinator coordinator = new(
@@ -333,7 +337,8 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
                 ManagedFiles,
                 Source,
                 Transition,
-                TimeProvider.System);
+                TimeProvider.System,
+                NullLogger<CovenantFamilyReinitializeCoordinator>.Instance);
 
             return await coordinator.RunAsync(
                 Operation(),

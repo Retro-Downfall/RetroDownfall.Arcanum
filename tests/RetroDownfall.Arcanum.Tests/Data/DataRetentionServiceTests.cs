@@ -378,7 +378,15 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 new LongRunningOperationQuery(
                     Kind: LongRunningOperationKinds.DataRetentionMutation)));
 
-        Assert.Equal(LongRunningOperationState.Failed, operation.State);
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, operation.State);
+
+        Assert.Equal(DataRetentionService.RetentionRecoveryTerminalCode, operation.TerminalErrorCode);
+
+        Assert.Null(operation.LeaseOwner);
+
+        Assert.Null(operation.LeaseExpiresAt);
+
+        Assert.Contains(await operations.FindExpiredAsync(DateTimeOffset.UtcNow, 10), row => row.Id == operation.Id);
 
         Assert.Equal(ErrorCodes.Data.ReconciliationFailed, operation.TerminalErrorCode);
 
@@ -1695,7 +1703,15 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 new LongRunningOperationQuery(
                     Kind: LongRunningOperationKinds.DataRetentionPrune)));
 
-        Assert.Equal(LongRunningOperationState.Failed, operation.State);
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, operation.State);
+
+        Assert.Equal(DataRetentionService.RetentionRecoveryTerminalCode, operation.TerminalErrorCode);
+
+        Assert.Null(operation.LeaseOwner);
+
+        Assert.Null(operation.LeaseExpiresAt);
+
+        Assert.Contains(await operations.FindExpiredAsync(DateTimeOffset.UtcNow, 10), row => row.Id == operation.Id);
 
         Assert.Equal(ErrorCodes.Data.ReconciliationFailed, operation.TerminalErrorCode);
 
@@ -1784,7 +1800,15 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 new LongRunningOperationQuery(
                     Kind: LongRunningOperationKinds.DataRetentionPrune)));
 
-        Assert.Equal(LongRunningOperationState.Failed, operation.State);
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, operation.State);
+
+        Assert.Equal(DataRetentionService.RetentionRecoveryTerminalCode, operation.TerminalErrorCode);
+
+        Assert.Null(operation.LeaseOwner);
+
+        Assert.Null(operation.LeaseExpiresAt);
+
+        Assert.Contains(await operations.FindExpiredAsync(DateTimeOffset.UtcNow, 10), row => row.Id == operation.Id);
 
         byte[] checkpointPayload = Assert.IsType<byte[]>(operation.CheckpointPayload);
 
@@ -2548,7 +2572,15 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                 new LongRunningOperationQuery(
                     Kind: LongRunningOperationKinds.DataRetentionPrune)));
 
-        Assert.Equal(LongRunningOperationState.Failed, operation.State);
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, operation.State);
+
+        Assert.Equal(DataRetentionService.RetentionRecoveryTerminalCode, operation.TerminalErrorCode);
+
+        Assert.Null(operation.LeaseOwner);
+
+        Assert.Null(operation.LeaseExpiresAt);
+
+        Assert.Contains(await operations.FindExpiredAsync(DateTimeOffset.UtcNow, 10), row => row.Id == operation.Id);
 
         byte[] checkpointPayload = Assert.IsType<byte[]>(operation.CheckpointPayload);
 
@@ -4012,104 +4044,104 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         switch (scenario)
         {
             case "session":
-            {
-                (Guid blockedSessionId, _) = await SeedSessionAsync(pinned: true);
+                {
+                    (Guid blockedSessionId, _) = await SeedSessionAsync(pinned: true);
 
-                (Guid eligibleSessionId, _) = await SeedSessionAsync(pinned: false);
+                    (Guid eligibleSessionId, _) = await SeedSessionAsync(pinned: false);
 
-                await ExecuteAsync(
-                    "UPDATE \"Sessions\" SET \"UpdatedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
-                    ("@at", blockedAt),
-                    ("@id", blockedSessionId.ToString("N")));
+                    await ExecuteAsync(
+                        "UPDATE \"Sessions\" SET \"UpdatedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
+                        ("@at", blockedAt),
+                        ("@id", blockedSessionId.ToString("N")));
 
-                await ExecuteAsync(
-                    "UPDATE \"Sessions\" SET \"UpdatedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
-                    ("@at", eligibleAt),
-                    ("@id", eligibleSessionId.ToString("N")));
+                    await ExecuteAsync(
+                        "UPDATE \"Sessions\" SET \"UpdatedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
+                        ("@at", eligibleAt),
+                        ("@id", eligibleSessionId.ToString("N")));
 
-                settings.Retention.ArchivedSessions = EnabledRule();
+                    settings.Retention.ArchivedSessions = EnabledRule();
 
-                return (
-                    settings,
-                    "session:" + eligibleSessionId.ToString("D"));
-            }
+                    return (
+                        settings,
+                        "session:" + eligibleSessionId.ToString("D"));
+                }
 
             case "batch":
-            {
-                Guid blockedFileId = Guid.NewGuid();
+                {
+                    Guid blockedFileId = Guid.NewGuid();
 
-                Guid eligibleFileId = Guid.NewGuid();
+                    Guid eligibleFileId = Guid.NewGuid();
 
-                Guid blockedBatchId = Guid.NewGuid();
+                    Guid blockedBatchId = Guid.NewGuid();
 
-                Guid eligibleBatchId = Guid.NewGuid();
+                    Guid eligibleBatchId = Guid.NewGuid();
 
-                await SeedUploadedFileAsync(blockedFileId, 0);
+                    await SeedUploadedFileAsync(blockedFileId, 0);
 
-                await SeedUploadedFileAsync(eligibleFileId, 0);
+                    await SeedUploadedFileAsync(eligibleFileId, 0);
 
-                await ExecuteAsync(
-                    """
+                    await ExecuteAsync(
+                        """
                     INSERT INTO "Batches"
                         ("Id", "InputFileId", "Endpoint", "Status", "CreatedAt")
                     VALUES
                         (@id, @fileId, '/v1/chat/completions', @status, @at)
                     """,
-                    ("@id", blockedBatchId.ToString()),
-                    ("@fileId", blockedFileId.ToString()),
-                    ("@status", BatchStatuses.InProgress),
-                    ("@at", blockedAt));
+                        ("@id", blockedBatchId.ToString()),
+                        ("@fileId", blockedFileId.ToString()),
+                        ("@status", BatchStatuses.InProgress),
+                        ("@at", blockedAt));
 
-                await ExecuteAsync(
-                    """
+                    await ExecuteAsync(
+                        """
                     INSERT INTO "Batches"
                         ("Id", "InputFileId", "Endpoint", "Status", "CreatedAt", "CompletedAt")
                     VALUES
                         (@id, @fileId, '/v1/chat/completions', @status, @at, @at)
                     """,
-                    ("@id", eligibleBatchId.ToString()),
-                    ("@fileId", eligibleFileId.ToString()),
-                    ("@status", BatchStatuses.Completed),
-                    ("@at", eligibleAt));
+                        ("@id", eligibleBatchId.ToString()),
+                        ("@fileId", eligibleFileId.ToString()),
+                        ("@status", BatchStatuses.Completed),
+                        ("@at", eligibleAt));
 
-                settings.Retention.CompletedBatches = EnabledRule();
+                    settings.Retention.CompletedBatches = EnabledRule();
 
-                return (
-                    settings,
-                    "batch:" + eligibleBatchId.ToString("D"));
-            }
+                    return (
+                        settings,
+                        "batch:" + eligibleBatchId.ToString("D"));
+                }
 
             case "entry":
-            {
-                (_, Guid blockedEntryId) = await SeedSessionAsync(pinned: true);
+                {
+                    (_, Guid blockedEntryId) = await SeedSessionAsync(pinned: true);
 
-                (_, Guid eligibleEntryId) = await SeedSessionAsync(pinned: false);
+                    (_, Guid eligibleEntryId) = await SeedSessionAsync(pinned: false);
 
-                await ExecuteAsync(
-                    "UPDATE \"Entries\" SET \"CreatedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
-                    ("@at", blockedAt),
-                    ("@id", blockedEntryId.ToString("N")));
+                    await ExecuteAsync(
+                        "UPDATE \"Entries\" SET \"CreatedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
+                        ("@at", blockedAt),
+                        ("@id", blockedEntryId.ToString("N")));
 
-                await ExecuteAsync(
-                    "UPDATE \"Entries\" SET \"CreatedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
-                    ("@at", eligibleAt),
-                    ("@id", eligibleEntryId.ToString("N")));
+                    await ExecuteAsync(
+                        "UPDATE \"Entries\" SET \"CreatedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
+                        ("@at", eligibleAt),
+                        ("@id", eligibleEntryId.ToString("N")));
 
-                settings.Retention.Entries = EnabledRule();
+                    settings.Retention.Entries = EnabledRule();
 
-                return (
-                    settings,
-                    "entry:" + eligibleEntryId.ToString("D"));
-            }
+                    return (
+                        settings,
+                        "entry:" + eligibleEntryId.ToString("D"));
+                }
 
             case "idempotency":
-            {
-                Guid blockedClaimId = Guid.NewGuid();
+                {
+                    Guid blockedClaimId = Guid.NewGuid();
 
-                Guid eligibleClaimId = Guid.NewGuid();
+                    Guid eligibleClaimId = Guid.NewGuid();
 
-                await ExecuteAsync(
-                    """
+                    await ExecuteAsync(
+                        """
                     INSERT INTO "IdempotencyClaims"
                         ("Id", "ClaimKeyHash", "FingerprintHash", "State", "OwnerId",
                          "LeaseExpiresAt", "HeartbeatAt", "TerminalStreamComplete", "CreatedAt", "UpdatedAt")
@@ -4117,13 +4149,13 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                         (@id, @key, 'blocked-fingerprint', @state, 'blocked-owner',
                          @at, @at, 0, @at, @at)
                     """,
-                    ("@id", blockedClaimId.ToString()),
-                    ("@key", "blocked-" + blockedClaimId.ToString("N")),
-                    ("@state", (int)IdempotencyClaimState.Running),
-                    ("@at", blockedAt));
+                        ("@id", blockedClaimId.ToString()),
+                        ("@key", "blocked-" + blockedClaimId.ToString("N")),
+                        ("@state", (int)IdempotencyClaimState.Running),
+                        ("@at", blockedAt));
 
-                await ExecuteAsync(
-                    """
+                    await ExecuteAsync(
+                        """
                     INSERT INTO "IdempotencyClaims"
                         ("Id", "ClaimKeyHash", "FingerprintHash", "State", "OwnerId",
                          "LeaseExpiresAt", "HeartbeatAt", "TerminalStreamComplete", "CreatedAt", "UpdatedAt")
@@ -4131,52 +4163,52 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                         (@id, @key, 'eligible-fingerprint', @state, 'eligible-owner',
                          @at, @at, 1, @at, @at)
                     """,
-                    ("@id", eligibleClaimId.ToString()),
-                    ("@key", "eligible-" + eligibleClaimId.ToString("N")),
-                    ("@state", (int)IdempotencyClaimState.Completed),
-                    ("@at", eligibleAt));
+                        ("@id", eligibleClaimId.ToString()),
+                        ("@key", "eligible-" + eligibleClaimId.ToString("N")),
+                        ("@state", (int)IdempotencyClaimState.Completed),
+                        ("@at", eligibleAt));
 
-                settings.Retention.IdempotencyClaims = EnabledRule();
+                    settings.Retention.IdempotencyClaims = EnabledRule();
 
-                return (
-                    settings,
-                    "idempotency-claim:" + eligibleClaimId.ToString("D"));
-            }
+                    return (
+                        settings,
+                        "idempotency-claim:" + eligibleClaimId.ToString("D"));
+                }
 
             case "accounting":
-            {
-                (Guid retainedSessionId, _) = await SeedSessionAsync(pinned: false);
+                {
+                    (Guid retainedSessionId, _) = await SeedSessionAsync(pinned: false);
 
-                Guid blockedRunId = Guid.NewGuid();
+                    Guid blockedRunId = Guid.NewGuid();
 
-                Guid eligibleRunId = Guid.NewGuid();
+                    Guid eligibleRunId = Guid.NewGuid();
 
-                await SeedCompletedInferenceRunAsync(
-                    blockedRunId,
-                    retainedSessionId);
+                    await SeedCompletedInferenceRunAsync(
+                        blockedRunId,
+                        retainedSessionId);
 
-                await SeedCompletedInferenceRunAsync(
-                    eligibleRunId,
-                    null);
+                    await SeedCompletedInferenceRunAsync(
+                        eligibleRunId,
+                        null);
 
-                await ExecuteAsync(
-                    "UPDATE \"InferenceRuns\" SET \"StartedAt\" = @at, \"CompletedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
-                    ("@at", blockedAt),
-                    ("@id", blockedRunId.ToString("N")));
+                    await ExecuteAsync(
+                        "UPDATE \"InferenceRuns\" SET \"StartedAt\" = @at, \"CompletedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
+                        ("@at", blockedAt),
+                        ("@id", blockedRunId.ToString("N")));
 
-                await ExecuteAsync(
-                    "UPDATE \"InferenceRuns\" SET \"StartedAt\" = @at, \"CompletedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
-                    ("@at", eligibleAt),
-                    ("@id", eligibleRunId.ToString("N")));
+                    await ExecuteAsync(
+                        "UPDATE \"InferenceRuns\" SET \"StartedAt\" = @at, \"CompletedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
+                        ("@at", eligibleAt),
+                        ("@id", eligibleRunId.ToString("N")));
 
-                settings.Retention.Accounting = EnabledRule();
+                    settings.Retention.Accounting = EnabledRule();
 
-                settings.Retention.AccountingMinimumDays = 1;
+                    settings.Retention.AccountingMinimumDays = 1;
 
-                return (
-                    settings,
-                    "accounting:" + eligibleRunId.ToString("D"));
-            }
+                    return (
+                        settings,
+                        "accounting:" + eligibleRunId.ToString("D"));
+                }
 
             default:
                 throw new ArgumentOutOfRangeException(

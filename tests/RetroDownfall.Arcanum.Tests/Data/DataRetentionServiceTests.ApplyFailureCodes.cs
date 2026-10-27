@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Api.Primitives;
 
@@ -31,7 +32,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 /// </remarks>
 public sealed partial class DataRetentionServiceTests
 {
-
     /// <summary>
     /// A prune that deleted its rows but could not close its operation row is not the same failure
     /// as a prune whose deletion did not reconcile.
@@ -47,16 +47,14 @@ public sealed partial class DataRetentionServiceTests
 
     public async Task ApplyAsync_DistinguishesAnUnfinalizedOperationFromAFailedReconciliation()
     {
-
         RequireSqlCipher();
 
         ArcanumSettings settings = CreatePruneSettings();
 
         settings.Retention.UploadedFiles = EnabledRule();
 
-        // The reconciliation failure runs first, because it terminalizes its own durable operation.
-        // The refused-completion case deliberately leaves its operation row open, which is the state
-        // the next apply would refuse as an already-active operation.
+        // The reconciliation failure runs first and leaves its exact journal recoverable. Settle it
+        // through actual recovery before the completion-bookkeeping case, whose row remains open.
         (Guid sessionId, _) = await SeedSessionAsync(pinned: false);
 
         await ExecuteAsync(
@@ -90,6 +88,24 @@ public sealed partial class DataRetentionServiceTests
             reconciliationFailed.Error.Code);
 
         await ExecuteAsync("DROP TRIGGER retain_deleted_session_for_codes");
+
+        // The first post-checkpoint uncertainty must be settled by its real recovery handler before
+        // this fixture can start the independent completion-bookkeeping case. Do not erase/reset it.
+        await using ArcanumDbContext recoveryDb = _fixture.CreateContext(_dbPath);
+
+        LongRunningOperationStore recoveryStore = new(recoveryDb, TestOrdinaryConnectionFactory.For(recoveryDb));
+
+        LongRunningOperationReconciler reconciler = new(recoveryStore,
+            [new DataRetentionMutationRecoveryHandler(FreshRequestRecoveryService(recoveryDb))], TimeProvider.System,
+            NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
+
+        var recovery = await reconciler.ReconcileNowAsync("failure-codes-required-recovery", 10, 1, CancellationToken.None);
+
+        Assert.Equal(1, recovery.Failed);
+
+        Assert.Equal(0, recovery.Completed);
+
+        Assert.Equal(0, recovery.RequiresAttention);
 
         Guid finalizeFileId = Guid.NewGuid();
 
@@ -131,7 +147,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.NotEqual(
             reconciliationFailed.Error.Code,
             notFinalized.Error.Code);
-
     }
 
     /// <summary>
@@ -147,7 +162,6 @@ public sealed partial class DataRetentionServiceTests
 
     public void The_three_retention_endings_do_not_share_one_status()
     {
-
         int quarantine = ArcanumErrorMapper.ResolveStatusCode(
             ErrorCodes.Data.QuarantineRecoveryRequired);
 
@@ -164,7 +178,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(StatusCodes.Status500InternalServerError, reconciliation);
 
         Assert.NotEqual(reconciliation, notFinalized);
-
     }
 
     /// <summary>
@@ -195,7 +208,6 @@ public sealed partial class DataRetentionServiceTests
 
     public async Task A_retention_row_left_for_durable_recovery_is_adopted_by_the_store()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore operations = new(
@@ -251,7 +263,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.NotEqual(
             ErrorCodes.Data.QuarantineRecoveryRequired,
             DataRetentionService.RetentionRecoveryTerminalCode);
-
     }
 
     /// <summary>
@@ -265,7 +276,6 @@ public sealed partial class DataRetentionServiceTests
     private sealed class RefusesCompletionOperationStore(ILongRunningOperationStore inner)
         : ILongRunningOperationStore
     {
-
         public bool RefusedCompletion { get; private set; }
 
         public Task<LongRunningOperation> CreateAsync(
@@ -374,14 +384,11 @@ public sealed partial class DataRetentionServiceTests
             string? terminalErrorCode = null,
             CancellationToken cancellationToken = default)
         {
-
             if (state is LongRunningOperationState.Completed)
             {
-
                 RefusedCompletion = true;
 
                 return Task.FromResult(false);
-
             }
 
             return inner.TryTransitionAsync(
@@ -392,7 +399,6 @@ public sealed partial class DataRetentionServiceTests
                 utcNow,
                 terminalErrorCode,
                 cancellationToken);
-
         }
 
         public Task<bool> RequestCancellationAsync(
@@ -420,7 +426,5 @@ public sealed partial class DataRetentionServiceTests
         public Task<IReadOnlyList<LongRunningOperationCount>> GetCountsAsync(
             CancellationToken cancellationToken = default) =>
             inner.GetCountsAsync(cancellationToken);
-
     }
-
 }

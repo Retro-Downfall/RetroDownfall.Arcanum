@@ -700,10 +700,7 @@ internal sealed partial class DataRetentionService
             }
             else
             {
-                logger.LogWarning(
-                    ex,
-                    "Factory-reset ordinary cleanup requires durable reconciliation for operation {OperationId}.",
-                    operationId);
+                LogFactoryPostCommitRecoveryFailure(operationId, ex, "FactoryContinuation");
             }
 
             return Result<DataRetentionApplyResult>.Failure(

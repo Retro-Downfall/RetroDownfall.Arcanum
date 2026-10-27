@@ -1,0 +1,15 @@
+# Family terminal bookkeeping — RV190 positive completion and adjacent start defect
+
+Base25ac28d87f60b708f0cd3e4bd7f90c38615d9735; preserve sealed RV189/RV190 candidate and prior7e7 branch. Initial independent approval missed RV190 positive durable-completion acceptance; correction is retained outside the repository.
+
+1. Prove the actual Family.StartAsync path rejects its current30minute lease against the existing coordinator's15minute maximum. Narrowly use an existing supported duration, without widening coordinator policy. Only then prove actual Start→Run leaves the native SQLCipher operation Running after successful publication/writer/gate disposition. Do not seed around the invalid production start.
+2. After successful CommitAndReopen only, read the latest row and complete via existing original-owner/revision CAS with coordinator-owned CancellationToken.None. Missing/refused/failed completion must explicitly disclose committed effects and pending durable bookkeeping, never overwrite a successor or claim no effects. No retries, new authority/surface/phase/version/schema/generic recovery.
+3. Native positive/caller-cancel/latest-revision and refused/takeover/failure suffix controls; existing phase/recovery/authority controls retained. Causal reversions, exact restoration, normal build, complete affected classes and owned static checks. Freeze descendant/source/evidence for independent review, no integration credit.
+
+No maintenance source writes, numerical rerun, install/configuration or live/provider/model/embedding actions.
+
+4. RV194 separate RED: actual native refusals expose no warning (7 failures / successful control). Require typed logger; record one warning per refused boundary using server operation GUID, closed stage/phase/disposition/outcome and whitelisted code only. Preserve KeepClosed behavior and distinguish unconfirmed completion after committed publication/admission. No raw collaborator messages/exceptions/private codes/paths or new operator surface. Checkpoint-refusal control and private canaries accompany the same complete native class.
+
+TDD progress: invalid production lease native RED1 → supported-lease GREEN1. Actual Start→Run missing completion RED1/control1 → GREEN2. Expanded native ownership/revision/cancellation/suffix controls and original phase class GREEN35. A missing-row fixture's initial D-format lookup did not match native N-format storage and was excluded/corrected. RV194 RED7/control1 → combined GREEN43 before final checkpoint control and style qualification. Initial compile-only missing helper namespace is retained but never counted as RED.
+
+5. Independent d528 review clarified that the diagnostic disposition is requested intent, not proof of a completed transition. Rename the property `RequestedDisposition`, leave it null before admission/authority refusal selects any completion, and prove a real conflicting-owner admission refusal has no completion/effects/row revision change. Preserve d528 gate and eight causal receipts; bind the narrow reviewed delta and fresh final qualification independently.

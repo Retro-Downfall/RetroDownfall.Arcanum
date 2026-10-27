@@ -347,10 +347,14 @@ internal sealed partial class DataRetentionService
         SqliteConnection connection = (SqliteConnection)await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
-        await using SqliteTransaction transaction = connection.BeginTransaction(
+        SqliteTransaction transaction = connection.BeginTransaction(
             deferred: false);
 
         bool committed = false;
+
+        bool disposalAttempted = false;
+
+        Exception? primaryFailure = null;
 
         List<IdentityOwnedFileSystemQuarantine> quarantinedFiles = [];
 
@@ -538,52 +542,41 @@ internal sealed partial class DataRetentionService
         }
         catch (Exception failure)
         {
+            primaryFailure = failure;
+
             if (committed)
             {
-                if (failure is RetentionQuarantineRecoveryRequiredException)
-                {
-                    throw;
-                }
+                if (failure is RetentionQuarantineRecoveryRequiredException) throw;
 
                 throw new RetentionQuarantineRecoveryRequiredException(
-                    "Factory reset committed, but its post-commit cleanup did not finish.",
-                    failure);
+                    "Factory reset committed, but its post-commit cleanup did not finish.", failure);
             }
 
-            if (!committed && transaction.Connection is not null)
-            {
-                Exception? cleanupFailure = null;
+            disposalAttempted = true;
 
-                try
-                {
-                    RestoreQuarantinedFactoryFiles(quarantinedFiles);
-                }
-                catch (Exception ex)
-                {
-                    cleanupFailure = ex;
-                }
+            RetentionMutationCleanupException? cleanup = await RollbackDisposeAndRestoreAsync(
+                connection, transaction, quarantinedFiles, failure).ConfigureAwait(false);
 
-                try
-                {
-                    await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    cleanupFailure = cleanupFailure is null
-                        ? ex
-                        : new AggregateException(cleanupFailure, ex);
-                }
-
-                if (cleanupFailure is not null)
-                {
-                    throw new AggregateException(
-                        "Factory reset could not fully restore its pre-commit state.",
-                        failure,
-                        cleanupFailure);
-                }
-            }
+            if (cleanup is not null) throw cleanup;
 
             throw;
+        }
+        finally
+        {
+            if (!disposalAttempted)
+            {
+                try
+                {
+                    await transaction.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception) when (primaryFailure is not null)
+                {
+                    // The earlier committed-cleanup failure already requires recovery. Preserve it;
+                    // failed disposal neither proves rollback nor authorizes file restoration.
+                    logger.LogWarning("Factory-reset operation {OperationId} at {Stage}: transaction disposal failed after an earlier failure; preserve its recovery state.",
+                        operationId, "TransactionDisposal");
+                }
+            }
         }
     }
 
@@ -656,6 +649,19 @@ internal sealed partial class DataRetentionService
                 ? LongRunningOperationRecoveryResult.Completed()
                 : LongRunningOperationRecoveryResult.Failed(ErrorCodes.Data.ReconciliationFailed);
         }
+        catch (RetentionMutationCleanupException failure)
+        {
+            if (failure.Primary is OperationCanceledException && cancellationToken.IsCancellationRequested)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure.Primary).Throw();
+            }
+
+            logger.LogWarning("Factory-reset recovery {OperationId} at {Stage}: failure {Failure}, rollback {RollbackProved}, disposal {DisposalProved}, restoration {RestorationProved}; fresh durable recovery is required.",
+                operation.Id, "TransactionCleanup", CovenantStorageFailure.Classify(failure.Primary),
+                failure.RollbackProved, failure.DisposalProved, failure.RestorationProved);
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(ErrorCodes.Data.ReconciliationFailed);
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
@@ -683,10 +689,7 @@ internal sealed partial class DataRetentionService
             }
             else
             {
-                logger.LogWarning(
-                    ex,
-                    "Factory-reset recovery still requires post-commit cleanup for durable operation {OperationId}.",
-                    operation.Id);
+                LogFactoryPostCommitRecoveryFailure(operation.Id, ex, "FactoryRecovery");
             }
 
             return LongRunningOperationRecoveryResult.RequiresAttention(
@@ -708,6 +711,21 @@ internal sealed partial class DataRetentionService
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Data.ReconciliationFailed);
         }
+    }
+
+    private void LogFactoryPostCommitRecoveryFailure(
+        Guid operationId,
+        RetentionQuarantineRecoveryRequiredException failure,
+        string stage)
+    {
+        // Only the factory's own wrapper is unwrapped once. Arbitrary exception graphs and their
+        // messages are never diagnostics: a native directory error can contain a private path.
+        Exception cause = failure.InnerException ?? failure;
+
+        logger.LogWarning(
+            "Factory-reset operation {OperationId} at {Stage}: post-commit cleanup failure {Failure}, SQLite {SqliteCode}, extended {SqliteExtendedCode}; durable recovery is required.",
+            operationId, stage, CovenantStorageFailure.Classify(cause),
+            (cause as SqliteException)?.SqliteErrorCode, (cause as SqliteException)?.SqliteExtendedErrorCode);
     }
 
     internal async Task<LongRunningOperationRecoveryResult> RecoverFactoryResetAuthenticatedAsync(

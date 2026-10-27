@@ -753,10 +753,6 @@ public sealed class SagaExtractionService : BackgroundService
 
                 if (attempt.Outcome == SagaExtractionOutcome.DeferredForErasureKey)
                 {
-                    _logger.LogWarning(
-                        "Saga extraction for session {SessionId} deferred: Saga erasure fingerprints exist and the erasure key is not available.",
-                        sessionId);
-
                     // Keeps the pending key and its segments exactly as the Retry branch does during
                     // backoff, but never asks NextRetryDelay: the ladder is for failing providers, and a
                     // key an operator restores after the ladder's last rung must not find this work
@@ -1208,6 +1204,11 @@ public sealed class SagaExtractionService : BackgroundService
 
             if (erasurePrepared.IsFailure)
             {
+                _logger.LogWarning(
+                    "Saga extraction for session {SessionId} deferred with {ErrorCode}: the erasure key cannot verify Saga erasure evidence. Run 'arcanum memory erasure status'.",
+                    sessionId,
+                    erasurePrepared.Error.Code);
+
                 return new SagaExtractionAttemptResult(
                     SagaExtractionOutcome.DeferredForErasureKey,
                     sourceSegment);
