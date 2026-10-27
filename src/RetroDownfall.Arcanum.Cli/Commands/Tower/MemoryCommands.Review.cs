@@ -367,7 +367,9 @@ public sealed partial class MemoryCommands
 
         foreach (MemoryReviewBulkPlanItemDto item in plan.Items)
         {
-            write($"  event {item.EventSequence}: {item.SubjectId} @ {item.VersionId} ({item.Scope}; {item.Origin}; {item.Source})");
+            string subject = item.Label is { Length: > 0 } label ? $"{label}: {item.SubjectId}" : item.SubjectId;
+
+            write($"  event {item.EventSequence}: {subject} @ {item.VersionId} ({item.Scope}; {item.Origin}; {item.Source})");
         }
 
         write($"Prepared plan expires {plan.ExpiresAtUtc:u}.");

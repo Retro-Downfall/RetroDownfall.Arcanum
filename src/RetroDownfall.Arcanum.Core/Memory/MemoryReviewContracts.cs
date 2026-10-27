@@ -248,6 +248,10 @@ public sealed record CovenantReviewPageDto(
     DateTimeOffset? ExpiresAtUtc = null);
 
 /// <summary>One exact target of a prepared bulk review.</summary>
+/// <param name="Label">
+/// The normalized Covenant key for display before confirmation, or null for Saga/Lexicon plans.
+/// This never replaces the exact subject/version identity or grants authority.
+/// </param>
 /// <param name="ReleasesErasureFingerprint">
 /// What applying this item would do to an erasure fingerprint, measured when the plan was prepared so
 /// the operator sees it before approving: <see langword="true"/> when a Saga or Covenant <c>Correct</c>
@@ -264,7 +268,8 @@ public sealed record MemoryReviewBulkPlanItemDto(
     string Origin,
     string Source,
     string Scope,
-    bool? ReleasesErasureFingerprint = false);
+    bool? ReleasesErasureFingerprint = false,
+    string? Label = null);
 
 public sealed record MemoryReviewBulkPlanDto(
     MemoryReviewStore Store,

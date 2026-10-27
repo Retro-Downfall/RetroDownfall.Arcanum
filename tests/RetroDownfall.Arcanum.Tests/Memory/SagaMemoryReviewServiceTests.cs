@@ -510,6 +510,8 @@ public sealed class SagaMemoryReviewServiceTests
             request,
             CancellationToken.None).ConfigureAwait(false)).Value;
 
+        Assert.All(plan.Items, item => Assert.Null(item.Label));
+
         MemoryReviewBulkResultDto first = (await runtime.Service.ApplyAsync(
             new SagaReviewBulkApplyRequest(request, plan.PreparedPlanToken),
             CancellationToken.None).ConfigureAwait(false)).Value;
