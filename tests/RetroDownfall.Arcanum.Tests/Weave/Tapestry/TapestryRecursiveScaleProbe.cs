@@ -16,12 +16,14 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using Xunit.Sdk;
+using Xunit.Abstractions;
+using RetroDownfall.Arcanum.Tests.Weave.Tapestry.Raptor;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
-public sealed class TapestryRecursiveScaleProbe(GrimoireFixture fixture) : IAsyncLifetime
+public sealed partial class TapestryRecursiveScaleProbe(GrimoireFixture fixture, ITestOutputHelper output) : IAsyncLifetime
 {
     private static readonly TapestryScope Scope = new(TapestryScopeKind.Workspace, "/synthetic/raptor-scale");
 
@@ -34,6 +36,8 @@ public sealed class TapestryRecursiveScaleProbe(GrimoireFixture fixture) : IAsyn
     private readonly SyntheticWeave _embedding = new();
 
     private readonly SyntheticSummary _summary = new();
+
+    private readonly CountingClusterer _clusterer = new();
 
     private static EmbeddingSettings Settings => new()
     {
@@ -100,7 +104,7 @@ public sealed class TapestryRecursiveScaleProbe(GrimoireFixture fixture) : IAsyn
 
         _ = await BuildAsync(CancellationToken.None);
 
-        int before = _embedding.Calls;
+        Effects before = CaptureEffects();
 
         TapestryWeaveOutcome unchanged = await BuildAsync(CancellationToken.None);
 
@@ -138,7 +142,7 @@ public sealed class TapestryRecursiveScaleProbe(GrimoireFixture fixture) : IAsyn
 
         await ValidatePublishedAsync(outcome, 24, CancellationToken.None);
 
-        int before = _embedding.Calls;
+        Effects before = CaptureEffects();
 
         TapestryWeaveOutcome unchanged = await BuildAsync(CancellationToken.None);
 
@@ -147,9 +151,55 @@ public sealed class TapestryRecursiveScaleProbe(GrimoireFixture fixture) : IAsyn
         ValidateNoNewEffects(before);
     }
 
+    [Theory]
+    [InlineData("summary")]
+    [InlineData("clustering")]
+    public async Task Unchanged_oracle_rejects_additional_nonembedding_effects(string effect)
+    {
+        await SeedAsync(24, CancellationToken.None);
+
+        _ = await BuildAsync(CancellationToken.None);
+
+        Effects before = CaptureEffects();
+
+        Assert.Equal(TapestryWeaveStatus.UpToDate, (await BuildAsync(CancellationToken.None)).Status);
+
+        if (effect == "summary")
+        {
+            _ = await _summary.SummarizeAsync(new(Scope.Kind, Scope.Id, 1, ["a", "b"]), CancellationToken.None);
+        }
+        else
+        {
+            _ = _clusterer.Cluster([new("a", new float[] { 1, 0 }), new("b", new float[] { 0, 1 })],
+                new(Scope, 1, RaptorStage.Split, "oracle-effect", ["a", "b"]), CancellationToken.None);
+        }
+
+        _ = Assert.ThrowsAny<XunitException>(() => ValidateNoNewEffects(before));
+    }
+
+    [Fact]
+    public async Task Coverage_oracle_rejects_one_omitted_row_from_a_real_published_projection()
+    {
+        await SeedAsync(24, CancellationToken.None);
+
+        TapestryWeaveOutcome outcome = await BuildAsync(CancellationToken.None);
+
+        IReadOnlyList<TapestryNode> leaves = await _store.GetLayerNodesAsync(outcome.GenerationId!, 0, CancellationToken.None);
+
+        Assert.Equal(24, leaves.Count);
+
+        _ = Assert.ThrowsAny<XunitException>(() => AssertExactLeafCoverage(leaves.Skip(1).ToArray(), 24));
+    }
+
+    private static void AssertExactLeafCoverage(IReadOnlyList<TapestryNode> leaves, int expectedLeaves)
+    {
+        Assert.Equal(Enumerable.Range(0, expectedLeaves).Select(index => "scale-" + index.ToString("D6", CultureInfo.InvariantCulture)),
+            leaves.Select(node => node.SourceId).Order(StringComparer.Ordinal));
+    }
+
     private Task<TapestryWeaveOutcome> BuildAsync(CancellationToken caller) => new TapestryWeaver(
         _store, _embedding, _summary, new TapestryBuildBackoff(), TimeProvider.System,
-        NullLogger<TapestryWeaver>.Instance, new RaptorClusterer()).WeaveAsync(Scope, Settings, caller);
+        NullLogger<TapestryWeaver>.Instance, _clusterer).WeaveAsync(Scope, Settings, caller);
 
     private async Task ValidatePublishedAsync(TapestryWeaveOutcome outcome, int expectedLeaves, CancellationToken token)
     {
@@ -189,6 +239,14 @@ public sealed class TapestryRecursiveScaleProbe(GrimoireFixture fixture) : IAsyn
 
         Assert.Equal(0, outcome.QuarantinedVectors);
 
+        Assert.Equal(1, _embedding.BatchCalls);
+
+        Assert.Equal(expectedLeaves, _embedding.BatchInputs);
+
+        Assert.Equal(outcome.SummaryCallsMade, _summary.Calls);
+
+        Assert.Equal(outcome.SummaryCallsMade, _embedding.SingleCalls);
+
         List<TapestryNode> nodes = [];
 
         for (int layer = 0; layer < generation.LayerCount; layer++)
@@ -200,12 +258,13 @@ public sealed class TapestryRecursiveScaleProbe(GrimoireFixture fixture) : IAsyn
 
         Assert.Equal(generation.NodeCount, nodes.Count);
 
+        Assert.Equal(expectedLeaves + outcome.SummaryCallsMade + outcome.SummariesReused, nodes.Count);
+
         Dictionary<string, TapestryNode> byId = nodes.ToDictionary(node => node.NodeId, StringComparer.Ordinal);
 
         TapestryNode[] leaves = nodes.Where(node => node.NodeKind == TapestryNodeKind.Leaf).ToArray();
 
-        Assert.Equal(Enumerable.Range(0, expectedLeaves).Select(index => "scale-" + index.ToString("D6", CultureInfo.InvariantCulture)),
-            leaves.Select(node => node.SourceId).Order(StringComparer.Ordinal));
+        AssertExactLeafCoverage(leaves, expectedLeaves);
 
         foreach (TapestryNode node in nodes)
         {
@@ -326,13 +385,112 @@ public sealed class TapestryRecursiveScaleProbe(GrimoireFixture fixture) : IAsyn
         return children;
     }
 
-    private void ValidateNoNewEffects(int before)
+    private Effects CaptureEffects() => new(_embedding.Calls, _summary.Calls, _clusterer.Calls);
+
+    private void ValidateNoNewEffects(Effects before)
     {
-        Assert.Equal(before, _embedding.Calls);
+        Assert.Equal(before, CaptureEffects());
+    }
+
+    private readonly record struct Effects(int EmbeddingCalls, int SummaryCalls, int ClusteringCalls);
+
+    private sealed class CountingClusterer : ITapestryClusterer
+    {
+        private readonly object _gate = new();
+
+        private int _calls;
+
+        private int _maxLayer;
+
+        private int _layer;
+
+        private int _inputCount;
+
+        private long _memberships;
+
+        private string _digest = TapestryHash.OfParts([]);
+
+        private string _state = "idle";
+
+        internal int Calls { get { lock (_gate) return _calls; } }
+
+        internal int MaxLayer { get { lock (_gate) return _maxLayer; } }
+
+        internal string Describe()
+        {
+            lock (_gate) return FormattableString.Invariant($"cluster_calls={_calls} max_layer={_maxLayer} last_layer={_layer} last_inputs={_inputCount} cluster_state={_state} membership_paths={_memberships} call_digest={_digest} inner_phase=UNOBSERVED scalar=UNOBSERVED");
+        }
+
+        public Result<RaptorClusterResult> Cluster(IReadOnlyList<RaptorPoint> points, TapestryClusterIdentity identity, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            lock (_gate)
+            {
+                _calls++;
+
+                _maxLayer = Math.Max(_maxLayer, identity.Layer);
+
+                _layer = identity.Layer;
+
+                _inputCount = points.Count;
+
+                _state = "running";
+
+                _digest = TapestryHash.OfParts([_digest, identity.Stage.ToString(), identity.StageKey,
+                    identity.MemberDigest, RaptorScaleProbe.CorpusHash(points)]);
+            }
+
+            try
+            {
+                Result<RaptorClusterResult> result = new RaptorClusterer().Cluster(points, identity, cancellationToken);
+
+                lock (_gate)
+                {
+                    _state = result.IsSuccess ? "completed" : "refused";
+
+                    if (result.IsSuccess)
+                    {
+                        _memberships = checked(_memberships + result.Value.Clusters.Sum(cluster => (long)cluster.Members.Length));
+
+                        _digest = TapestryHash.OfParts(ResultParts(result.Value).Prepend(_digest));
+                    }
+                }
+
+                return result;
+            }
+            catch (OperationCanceledException)
+            {
+                lock (_gate) _state = "canceled";
+
+                throw;
+            }
+        }
+
+        private static IEnumerable<string> ResultParts(RaptorClusterResult result)
+        {
+            foreach (RaptorCluster cluster in result.Clusters)
+            {
+                yield return cluster.StableId;
+
+                foreach (RaptorMembership member in cluster.Members)
+                {
+                    yield return FormattableString.Invariant($"{member.PointIndex}/{member.GlobalComponent}/{member.LocalComponent}/{BitConverter.DoubleToInt64Bits(member.GlobalPosterior):X16}/{BitConverter.DoubleToInt64Bits(member.LocalPosterior):X16}/{(int)member.Repair}");
+                }
+            }
+
+            yield return "unassigned";
+
+            foreach (int index in result.Unassigned) yield return index.ToString(CultureInfo.InvariantCulture);
+        }
     }
 
     private async Task SeedAsync(int count, CancellationToken token)
     {
+        token.ThrowIfCancellationRequested();
+
+        _embedding.Leaves = RaptorScaleProbe.Corpus(count);
+
         await SqlAsync(
             """
             WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i+1<@count)
@@ -371,6 +529,16 @@ public sealed class TapestryRecursiveScaleProbe(GrimoireFixture fixture) : IAsyn
     {
         internal int Calls { get; private set; }
 
+        internal Action<CancellationToken>? BeforeBatch { get; set; }
+
+        internal RaptorPoint[] Leaves { get; set; } = [];
+
+        internal int BatchCalls { get; private set; }
+
+        internal int BatchInputs { get; private set; }
+
+        internal int SingleCalls { get; private set; }
+
         public bool IsAvailable => true;
 
         public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken)
@@ -379,16 +547,37 @@ public sealed class TapestryRecursiveScaleProbe(GrimoireFixture fixture) : IAsyn
 
             Calls++;
 
+            SingleCalls++;
+
             return Task.FromResult(Result<Embedding<float>>.Success(Vector(text)));
         }
 
         public Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
         {
+            BeforeBatch?.Invoke(cancellationToken);
+
             cancellationToken.ThrowIfCancellationRequested();
 
             Calls++;
 
-            return Task.FromResult(Result<Embedding<float>[]>.Success(texts.Select(Vector).ToArray()));
+            BatchCalls++;
+
+            BatchInputs = checked(BatchInputs + texts.Count);
+
+            Embedding<float>[] embeddings = new Embedding<float>[texts.Count];
+
+            for (int index = 0; index < texts.Count; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                int source = int.Parse(texts[index].AsSpan(6), CultureInfo.InvariantCulture);
+
+                Assert.Equal(Leaves[source].StableId, texts[index]);
+
+                embeddings[index] = Stamp(Leaves[source].Vector);
+            }
+
+            return Task.FromResult(Result<Embedding<float>[]>.Success(embeddings));
         }
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) => throw new NotSupportedException();
@@ -404,16 +593,20 @@ public sealed class TapestryRecursiveScaleProbe(GrimoireFixture fixture) : IAsyn
                 for (int offset = 0; offset < 32; offset++) values[(block * 32) + offset] = (hash[offset] - 127) / 128f;
             }
 
-            return new(values)
-            {
-                AdditionalProperties = new() { [EmbeddingProvenance.MetadataKey] = new EmbeddingProvenance("synthetic-offline", "recursive-768-v1") },
-            };
+            return Stamp(values);
         }
+
+        private static Embedding<float> Stamp(ReadOnlyMemory<float> values) => new(values)
+        {
+            AdditionalProperties = new() { [EmbeddingProvenance.MetadataKey] = new EmbeddingProvenance("synthetic-offline", "recursive-768-v1") },
+        };
     }
 
     private sealed class SyntheticSummary : ITapestrySummarizer
     {
         internal bool Refuse { get; set; }
+
+        internal int Calls { get; private set; }
 
         public string? ResolveSummaryModel() => "synthetic-summary-v1";
 
@@ -425,6 +618,8 @@ public sealed class TapestryRecursiveScaleProbe(GrimoireFixture fixture) : IAsyn
         public Task<Result<string>> SummarizeAsync(TapestrySummaryRequest request, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            Calls++;
 
             return Task.FromResult(Refuse
                 ? Result<string>.Failure(new Error("Synthetic.Refusal", "offline refusal"))
