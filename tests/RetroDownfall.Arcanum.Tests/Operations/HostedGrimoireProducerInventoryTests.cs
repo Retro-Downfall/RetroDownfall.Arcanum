@@ -918,72 +918,27 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             if (variant == "baseline") output.WriteLine(message);
         }
 
-        string repository = TestRepositoryPaths.RepositoryRoot();
-
         const string manifestPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantPolicyV1Manifest.cs";
 
         const string modelsPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantDigestModels.cs";
 
         const string recordDeclaration = "public sealed record SensitivityDigestInput(ContentSensitivity Level, GenerationProvenanceMode ProvenanceMode, ImmutableArray<Guid> ExactGenerationIds, ImmutableArray<byte> GenerationBloom);";
 
-        const string wrapperPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantDigests.cs";
+        const string wrapperPath = FixtureWrapperPath;
 
-        (string Path, string Hash, (int Start, int End)[] Ranges)[] inputs =
-        [
-            ("src/RetroDownfall.Arcanum.Core/Tower/SessionCampaignBinding.cs", "76C9BA2788216A3A7697E44BB169008A64DF4ADC33DD40DE63274FAF7E38CADD", [(1, 4), (6, 12)]),
-            ("src/RetroDownfall.Arcanum.Core/Intelligence/CovenantContextPolicy.cs", "9BE8C84DE91FD541534FD557E39C13B9EC52AD8AC6C543D348385147D17F6359", [(1, 4), (6, 11)]),
-            ("src/RetroDownfall.Arcanum.Core/Intelligence/InvocationAttendance.cs", "F05E67D031FF69306DAF9E11092EF4D3F47DA221DABC0E93395063C4FEAD4322", [(1, 4), (6, 11)]),
-            ("src/RetroDownfall.Arcanum.Core/Covenant/GenerationProvenance.cs", "494A7BA401ADA5D7ABD8B51E6B1C68D9E69E78B4FF147502DA16574C7723B788", [(1, 8), (10, 15)]),
-            ("src/RetroDownfall.Arcanum.Core/Covenant/CovenantEnums.cs", "E4CF0344277C55625EC95B15A8AEDBE8DA7D6F7ED3A621C2986A7409643CBE16", [(1, 4), (6, 11), (13, 18), (20, 25), (35, 49), (51, 57), (59, 66), (68, 74), (76, 93), (95, 101), (103, 110), (112, 117), (119, 126), (128, 135), (137, 143), (145, 152), (154, 159), (161, 171), (173, 180), (182, 202), (204, 215), (217, 222), (224, 229), (231, 236), (238, 244), (246, 253), (255, 266), (268, 274), (276, 285), (287, 292), (294, 302), (304, 311), (313, 319), (321, 330), (332, 338), (340, 347), (349, 355), (357, 363), (365, 379), (381, 386), (388, 393), (395, 401), (403, 410), (412, 418), (420, 426), (428, 435)]),
-            ("src/RetroDownfall.Arcanum.Core/Covenant/ContentSensitivity.cs", "BD73D0448CB681FD9A467F8654F007A7E9E11596A4148AA2ED0B6FDA74A63084", [(1, 4), (6, 11)]),
-            ("src/RetroDownfall.Arcanum.Core/Serialization/StringOnlyJsonStringEnumConverter.cs", "A637ED2325AB8AF0789AB20F424DEB8CD3F37BE5278F0597CF281901FE712273", [(1, 16)]),
-            ("src/RetroDownfall.Arcanum.Core/Covenant/CovenantPolicyV1Manifest.cs", "63B1222E680CEDCEB8F9A4F93F98AEBBAD6D5674C11B2850BBB0F7DB08D7640C", [(1, 5), (50, 51), (142, 336), (337, 337)]),
-        ];
+        Dictionary<string, string> extracted = ExtractReviewedManifestInputs("R108", Report);
 
-        Dictionary<string, string> extracted = new(StringComparer.Ordinal);
+        (string originalHeader, string originalCode) = ExtractReviewedCodeWrapper();
 
-        foreach (var input in inputs)
-        {
-            string original = File.ReadAllText(Path.Combine(repository, input.Path));
-
-            Assert.Equal(input.Hash, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(original))));
-
-            string[] lines = original.Split('\n');
-
-            string source = string.Concat(input.Ranges.Select(range => string.Join("\n", lines.Skip(range.Start - 1).Take(range.End - range.Start + 1)) + "\n"));
-
-            extracted.Add(input.Path, source);
-
-            Report($"R108_EXTRACTION={input.Path}|inputSha256={input.Hash}|ranges={string.Join(",", input.Ranges.Select(range => $"{range.Start}-{range.End}"))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source)))}");
-        }
-
-        string originalWrapper = File.ReadAllText(Path.Combine(repository, wrapperPath));
-
-        Assert.Equal("A5726522632805205611697EF702D6BA33577B3957E12168CFDC5D2E6C983BA2", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalWrapper))));
-
-        string[] wrapperLines = originalWrapper.Split('\n');
-
-        string originalCode = string.Join("\n", wrapperLines.Skip(1357).Take(12)) + "\n";
-
-        string originalHeader = string.Join("\n", wrapperLines.Take(9)) + "\n";
-
-        Assert.Equal("}", wrapperLines[^2]);
-
-        string originalModels = File.ReadAllText(Path.Combine(repository, modelsPath));
-
-        Assert.Equal("FF6B9BA7F8D88C885609DC24F1B3C5FA03F3B6AE43A5027407A415133495F49A", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalModels))));
-
-        string[] modelLines = originalModels.Split('\n');
-
-        Assert.Equal(recordDeclaration, modelLines[60]);
+        string recordSource = ExtractReviewedSensitivityRecord("R108");
 
         string selectedRecordDeclaration = variant == "peer-getter"
             ? recordDeclaration[..^1] + " { public GenerationProvenanceMode Uncertified { get; } }"
             : recordDeclaration;
 
-        extracted.Add(modelsPath, string.Join("\n", modelLines.Take(5)) + "\n" + selectedRecordDeclaration + "\n");
+        Assert.Equal(1, recordSource.Split(recordDeclaration, StringSplitOptions.None).Length - 1);
 
-        Report($"R108_RECORD_EXTRACTION={modelsPath}|inputSha256=FF6B9BA7F8D88C885609DC24F1B3C5FA03F3B6AE43A5027407A415133495F49A|ranges=1-5,61-61|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(extracted[modelsPath])))}");
+        extracted.Add(modelsPath, recordSource.Replace(recordDeclaration, selectedRecordDeclaration, StringComparison.Ordinal));
 
         string[] properties = slice == "Level" ? ["Level"] : slice == "ProvenanceMode" ? ["ProvenanceMode"] : ["Level", "ProvenanceMode"];
 
@@ -1030,7 +985,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         extracted.Add(wrapperPath, originalHeader + originalCode + peerCode + scaffold + "}\n");
 
-        Report($"R108_WRAPPER_EXTRACTION={slice}|ranges=1-9,1358-1369,last-closing-brace|omitted=all-unrelated-members-including-Sensitivity|wrapperUnchanged=true|headerSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalHeader)))}|originalCodeSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalCode)))}|scaffoldSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(scaffold)))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(extracted[wrapperPath])))}");
+        Report($"R108_WRAPPER_EXTRACTION={slice}|declarations=CovenantDigests/header,Code;closing-brace=scaffold|omitted=all-unrelated-members-including-Sensitivity|wrapperUnchanged=true|headerSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalHeader)))}|originalCodeSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalCode)))}|scaffoldSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(scaffold)))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(extracted[wrapperPath])))}");
 
         CSharpCompilation compilation = CompileWithProductionReferencePack(
             "global using System; using RetroDownfall.Arcanum.Core.Covenant; " + RegistrationSource("services.AddHostedService<Worker>();")
@@ -2178,52 +2133,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
     private void AssertOuterCodeWrapper(string receiver, string shape)
     {
-        string repository = TestRepositoryPaths.RepositoryRoot();
-
         const string manifestPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantPolicyV1Manifest.cs";
 
-        const string wrapperPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantDigests.cs";
+        const string wrapperPath = FixtureWrapperPath;
 
-        (string Path, string Hash, (int Start, int End)[] Ranges)[] inputs =
-        [
-            ("src/RetroDownfall.Arcanum.Core/Tower/SessionCampaignBinding.cs", "76C9BA2788216A3A7697E44BB169008A64DF4ADC33DD40DE63274FAF7E38CADD", [(1, 4), (6, 12)]),
-            ("src/RetroDownfall.Arcanum.Core/Intelligence/CovenantContextPolicy.cs", "9BE8C84DE91FD541534FD557E39C13B9EC52AD8AC6C543D348385147D17F6359", [(1, 4), (6, 11)]),
-            ("src/RetroDownfall.Arcanum.Core/Intelligence/InvocationAttendance.cs", "F05E67D031FF69306DAF9E11092EF4D3F47DA221DABC0E93395063C4FEAD4322", [(1, 4), (6, 11)]),
-            ("src/RetroDownfall.Arcanum.Core/Covenant/GenerationProvenance.cs", "494A7BA401ADA5D7ABD8B51E6B1C68D9E69E78B4FF147502DA16574C7723B788", [(1, 8), (10, 15)]),
-            ("src/RetroDownfall.Arcanum.Core/Covenant/CovenantEnums.cs", "E4CF0344277C55625EC95B15A8AEDBE8DA7D6F7ED3A621C2986A7409643CBE16", [(1, 4), (6, 11), (13, 18), (20, 25), (35, 49), (51, 57), (59, 66), (68, 74), (76, 93), (95, 101), (103, 110), (112, 117), (119, 126), (128, 135), (137, 143), (145, 152), (154, 159), (161, 171), (173, 180), (182, 202), (204, 215), (217, 222), (224, 229), (231, 236), (238, 244), (246, 253), (255, 266), (268, 274), (276, 285), (287, 292), (294, 302), (304, 311), (313, 319), (321, 330), (332, 338), (340, 347), (349, 355), (357, 363), (365, 379), (381, 386), (388, 393), (395, 401), (403, 410), (412, 418), (420, 426), (428, 435)]),
-            ("src/RetroDownfall.Arcanum.Core/Covenant/ContentSensitivity.cs", "BD73D0448CB681FD9A467F8654F007A7E9E11596A4148AA2ED0B6FDA74A63084", [(1, 4), (6, 11)]),
-            ("src/RetroDownfall.Arcanum.Core/Serialization/StringOnlyJsonStringEnumConverter.cs", "A637ED2325AB8AF0789AB20F424DEB8CD3F37BE5278F0597CF281901FE712273", [(1, 16)]),
-            ("src/RetroDownfall.Arcanum.Core/Covenant/CovenantPolicyV1Manifest.cs", "63B1222E680CEDCEB8F9A4F93F98AEBBAD6D5674C11B2850BBB0F7DB08D7640C", [(1, 5), (50, 51), (142, 336), (337, 337)]),
-        ];
+        Dictionary<string, string> extracted = ExtractReviewedManifestInputs("R103");
 
-        Dictionary<string, string> extracted = new(StringComparer.Ordinal);
-
-        foreach (var input in inputs)
-        {
-            string original = File.ReadAllText(Path.Combine(repository, input.Path));
-
-            Assert.Equal(input.Hash, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(original))));
-
-            string[] lines = original.Split('\n');
-
-            string source = string.Concat(input.Ranges.Select(range => string.Join("\n", lines.Skip(range.Start - 1).Take(range.End - range.Start + 1)) + "\n"));
-
-            extracted.Add(input.Path, source);
-
-            output.WriteLine($"R103_EXTRACTION={input.Path}|inputSha256={input.Hash}|ranges={string.Join(",", input.Ranges.Select(range => $"{range.Start}-{range.End}"))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source)))}");
-        }
-
-        string originalWrapper = File.ReadAllText(Path.Combine(repository, wrapperPath));
-
-        Assert.Equal("A5726522632805205611697EF702D6BA33577B3957E12168CFDC5D2E6C983BA2", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalWrapper))));
-
-        string[] wrapperLines = originalWrapper.Split('\n');
-
-        string originalCode = string.Join("\n", wrapperLines.Skip(1357).Take(12)) + "\n";
-
-        string originalHeader = string.Join("\n", wrapperLines.Take(9)) + "\n";
-
-        Assert.Equal("}", wrapperLines[^2]);
+        (string originalHeader, string originalCode) = ExtractReviewedCodeWrapper();
 
         const string forwarding = "            return CovenantPolicyV1Manifest.GetCode(value);";
 
@@ -2280,7 +2196,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         extracted.Add(wrapperPath, originalHeader + code + scaffold + "}\n");
 
-        output.WriteLine($"R103_WRAPPER_EXTRACTION={receiver}|{shape}|ranges=1-9,1358-1369,last-closing-brace|omitted=all-unrelated-members|headerSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalHeader)))}|originalCodeSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalCode)))}|deltaOld={delta.Old.Replace("\n", "\\n", StringComparison.Ordinal)}|deltaNew={delta.New.Replace("\n", "\\n", StringComparison.Ordinal)}|scaffoldSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(scaffold)))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(extracted[wrapperPath])))}");
+        output.WriteLine($"R103_WRAPPER_EXTRACTION={receiver}|{shape}|declarations=CovenantDigests/header,Code;closing-brace=scaffold|omitted=all-unrelated-members|headerSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalHeader)))}|originalCodeSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalCode)))}|deltaOld={delta.Old.Replace("\n", "\\n", StringComparison.Ordinal)}|deltaNew={delta.New.Replace("\n", "\\n", StringComparison.Ordinal)}|scaffoldSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(scaffold)))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(extracted[wrapperPath])))}");
 
         CSharpCompilation compilation = CompileWithProductionReferencePack(
             "global using System; using RetroDownfall.Arcanum.Core.Covenant; " + RegistrationSource("services.AddHostedService<Worker>();")
@@ -2954,38 +2870,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
     private void AssertExtractedManifestTailIngress(string receiver, string propertyName, string shape, string mutation)
     {
-        string repository = TestRepositoryPaths.RepositoryRoot();
-
         const string manifestPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantPolicyV1Manifest.cs";
 
-        (string Path, string Hash, (int Start, int End)[] Ranges)[] inputs =
-        [
-            ("src/RetroDownfall.Arcanum.Core/Tower/SessionCampaignBinding.cs", "76C9BA2788216A3A7697E44BB169008A64DF4ADC33DD40DE63274FAF7E38CADD", [(1, 4), (6, 12)]),
-            ("src/RetroDownfall.Arcanum.Core/Intelligence/CovenantContextPolicy.cs", "9BE8C84DE91FD541534FD557E39C13B9EC52AD8AC6C543D348385147D17F6359", [(1, 4), (6, 11)]),
-            ("src/RetroDownfall.Arcanum.Core/Intelligence/InvocationAttendance.cs", "F05E67D031FF69306DAF9E11092EF4D3F47DA221DABC0E93395063C4FEAD4322", [(1, 4), (6, 11)]),
-            ("src/RetroDownfall.Arcanum.Core/Covenant/GenerationProvenance.cs", "494A7BA401ADA5D7ABD8B51E6B1C68D9E69E78B4FF147502DA16574C7723B788", [(1, 8), (10, 15)]),
-            ("src/RetroDownfall.Arcanum.Core/Covenant/CovenantEnums.cs", "E4CF0344277C55625EC95B15A8AEDBE8DA7D6F7ED3A621C2986A7409643CBE16", [(1, 4), (6, 11), (13, 18), (20, 25), (35, 49), (51, 57), (59, 66), (68, 74), (76, 93), (95, 101), (103, 110), (112, 117), (119, 126), (128, 135), (137, 143), (145, 152), (154, 159), (161, 171), (173, 180), (182, 202), (204, 215), (217, 222), (224, 229), (231, 236), (238, 244), (246, 253), (255, 266), (268, 274), (276, 285), (287, 292), (294, 302), (304, 311), (313, 319), (321, 330), (332, 338), (340, 347), (349, 355), (357, 363), (365, 379), (381, 386), (388, 393), (395, 401), (403, 410), (412, 418), (420, 426), (428, 435)]),
-            ("src/RetroDownfall.Arcanum.Core/Covenant/ContentSensitivity.cs", "BD73D0448CB681FD9A467F8654F007A7E9E11596A4148AA2ED0B6FDA74A63084", [(1, 4), (6, 11)]),
-            ("src/RetroDownfall.Arcanum.Core/Serialization/StringOnlyJsonStringEnumConverter.cs", "A637ED2325AB8AF0789AB20F424DEB8CD3F37BE5278F0597CF281901FE712273", [(1, 16)]),
-            ("src/RetroDownfall.Arcanum.Core/Covenant/CovenantPolicyV1Manifest.cs", "63B1222E680CEDCEB8F9A4F93F98AEBBAD6D5674C11B2850BBB0F7DB08D7640C", [(1, 5), (50, 51), (142, 336), (337, 337)]),
-        ];
-
-        Dictionary<string, string> extracted = new(StringComparer.Ordinal);
-
-        foreach (var input in inputs)
-        {
-            string original = File.ReadAllText(Path.Combine(repository, input.Path));
-
-            Assert.Equal(input.Hash, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(original))));
-
-            string[] lines = original.Split('\n');
-
-            string source = string.Concat(input.Ranges.Select(range => string.Join("\n", lines.Skip(range.Start - 1).Take(range.End - range.Start + 1)) + "\n"));
-
-            extracted.Add(input.Path, source);
-
-            output.WriteLine($"R101_EXTRACTION={input.Path}|inputSha256={input.Hash}|ranges={string.Join(",", input.Ranges.Select(range => $"{range.Start}-{range.End}"))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source)))}");
-        }
+        Dictionary<string, string> extracted = ExtractReviewedManifestInputs("R101");
 
         string exactManifest = extracted[manifestPath];
 
@@ -2997,11 +2884,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         if (generated)
         {
-            string original = File.ReadAllText(Path.Combine(repository, modelsPath));
-
-            string[] lines = original.Split('\n');
-
-            string source = string.Join("\n", lines.Take(5)) + "\n" + lines[60] + "\n";
+            string source = ExtractReviewedSensitivityRecord("R101");
 
             Assert.Contains(recordDeclaration, source, StringComparison.Ordinal);
 
@@ -3013,7 +2896,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
             extracted.Add(modelsPath, variant);
 
-            output.WriteLine($"R101_RECORD={shape}|inputSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(original)))}|ranges=1-5,61-61|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(variant)))}");
+            output.WriteLine($"R101_RECORD={shape}|inputSha256={ReviewedFixtureHash(modelsPath)}|declarations=SensitivityDigestInput|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(variant)))}");
         }
 
         const string codeStart = "        byte code = GetSupportedByte(value);";
@@ -3820,38 +3703,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("parameter", "extra-unknown-use")]
     public void ExplicitOwnedPropertyIntoExtractedManifestRetainsOnlyRequiredSources(string receiver, string mutation)
     {
-        string repository = TestRepositoryPaths.RepositoryRoot();
-
         const string manifestPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantPolicyV1Manifest.cs";
 
-        (string Path, string Hash, (int Start, int End)[] Ranges)[] inputs =
-        [
-            ("src/RetroDownfall.Arcanum.Core/Tower/SessionCampaignBinding.cs", "76C9BA2788216A3A7697E44BB169008A64DF4ADC33DD40DE63274FAF7E38CADD", [(1, 4), (6, 12)]),
-            ("src/RetroDownfall.Arcanum.Core/Intelligence/CovenantContextPolicy.cs", "9BE8C84DE91FD541534FD557E39C13B9EC52AD8AC6C543D348385147D17F6359", [(1, 4), (6, 11)]),
-            ("src/RetroDownfall.Arcanum.Core/Intelligence/InvocationAttendance.cs", "F05E67D031FF69306DAF9E11092EF4D3F47DA221DABC0E93395063C4FEAD4322", [(1, 4), (6, 11)]),
-            ("src/RetroDownfall.Arcanum.Core/Covenant/GenerationProvenance.cs", "494A7BA401ADA5D7ABD8B51E6B1C68D9E69E78B4FF147502DA16574C7723B788", [(1, 8), (10, 15)]),
-            ("src/RetroDownfall.Arcanum.Core/Covenant/CovenantEnums.cs", "E4CF0344277C55625EC95B15A8AEDBE8DA7D6F7ED3A621C2986A7409643CBE16", [(1, 4), (6, 11), (13, 18), (20, 25), (35, 49), (51, 57), (59, 66), (68, 74), (76, 93), (95, 101), (103, 110), (112, 117), (119, 126), (128, 135), (137, 143), (145, 152), (154, 159), (161, 171), (173, 180), (182, 202), (204, 215), (217, 222), (224, 229), (231, 236), (238, 244), (246, 253), (255, 266), (268, 274), (276, 285), (287, 292), (294, 302), (304, 311), (313, 319), (321, 330), (332, 338), (340, 347), (349, 355), (357, 363), (365, 379), (381, 386), (388, 393), (395, 401), (403, 410), (412, 418), (420, 426), (428, 435)]),
-            ("src/RetroDownfall.Arcanum.Core/Covenant/ContentSensitivity.cs", "BD73D0448CB681FD9A467F8654F007A7E9E11596A4148AA2ED0B6FDA74A63084", [(1, 4), (6, 11)]),
-            ("src/RetroDownfall.Arcanum.Core/Serialization/StringOnlyJsonStringEnumConverter.cs", "A637ED2325AB8AF0789AB20F424DEB8CD3F37BE5278F0597CF281901FE712273", [(1, 16)]),
-            ("src/RetroDownfall.Arcanum.Core/Covenant/CovenantPolicyV1Manifest.cs", "63B1222E680CEDCEB8F9A4F93F98AEBBAD6D5674C11B2850BBB0F7DB08D7640C", [(1, 5), (50, 51), (142, 336), (337, 337)]),
-        ];
-
-        Dictionary<string, string> extracted = new(StringComparer.Ordinal);
-
-        foreach (var input in inputs)
-        {
-            string original = File.ReadAllText(Path.Combine(repository, input.Path));
-
-            Assert.Equal(input.Hash, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(original))));
-
-            string[] lines = original.Split('\n');
-
-            string source = string.Concat(input.Ranges.Select(range => string.Join("\n", lines.Skip(range.Start - 1).Take(range.End - range.Start + 1)) + "\n"));
-
-            extracted.Add(input.Path, source);
-
-            output.WriteLine($"R100_EXTRACTION={input.Path}|inputSha256={input.Hash}|ranges={string.Join(",", input.Ranges.Select(range => $"{range.Start}-{range.End}"))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source)))}");
-        }
+        Dictionary<string, string> extracted = ExtractReviewedManifestInputs("R100");
 
         string exactManifest = extracted[manifestPath];
 
@@ -4444,24 +4298,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("parameter", "Level", "readonly-struct")]
     public void GeneratedPositionalEnumPropertyIngressKeepsOnlyExactRecordContexts(string receiver, string propertyName, string shape)
     {
-        string repository = TestRepositoryPaths.RepositoryRoot();
-
-        string Extract(string relative, params (int Start, int End)[] ranges)
-        {
-            string original = File.ReadAllText(Path.Combine(repository, relative));
-
-            string[] lines = original.Split('\n');
-
-            string extracted = string.Concat(ranges.Select(range => string.Join("\n", lines.Skip(range.Start - 1).Take(range.End - range.Start + 1)) + "\n"));
-
-            output.WriteLine($"R98_EXTRACTION={relative}|ranges={string.Join(",", ranges.Select(range => $"{range.Start}-{range.End}"))}|inputSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(original)))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(extracted)))}");
-
-            return extracted;
-        }
-
         const string modelsPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantDigestModels.cs";
 
-        string recordSource = Extract(modelsPath, (1, 5), (61, 61));
+        string recordSource = ExtractReviewedSensitivityRecord("R98");
 
         const string recordDeclaration = "public sealed record SensitivityDigestInput(ContentSensitivity Level, GenerationProvenanceMode ProvenanceMode, ImmutableArray<Guid> ExactGenerationIds, ImmutableArray<byte> GenerationBloom);";
 
@@ -4559,9 +4398,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         compilation = compilation.AddSyntaxTrees(
             CSharpSyntaxTree.ParseText(recordSource, path: modelsPath),
-            CSharpSyntaxTree.ParseText(Extract(sensitivityPath, (1, 4), (6, 11)), path: sensitivityPath),
-            CSharpSyntaxTree.ParseText(Extract(provenancePath, (1, 8), (10, 15)), path: provenancePath),
-            CSharpSyntaxTree.ParseText(Extract(converterPath, (1, 16)), path: converterPath));
+            CSharpSyntaxTree.ParseText(ExtractReviewedManifestInput(sensitivityPath, "R98", output.WriteLine), path: sensitivityPath),
+            CSharpSyntaxTree.ParseText(ExtractReviewedManifestInput(provenancePath, "R98", output.WriteLine), path: provenancePath),
+            CSharpSyntaxTree.ParseText(ExtractReviewedManifestInput(converterPath, "R98", output.WriteLine), path: converterPath));
 
         Diagnostic[] compilerDiagnostics = compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning).ToArray();
 
@@ -17487,10 +17326,37 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         Assert.Contains(DiscoverWithRoots(FixtureSource(body, AdmissionTypes), OrdinaryRoot()).Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.StreamWriter.Dispose");
     }
 
-    [Fact]
-    public void InheritedBlobWriterDisposalIsStillAnExplicitPublicationEffect()
+    [Theory]
+    [InlineData("literal-null")]
+    [InlineData("unknown")]
+    [InlineData("known")]
+    public void InheritedBlobWriterDisposalIsStillAnExplicitPublicationEffect(string shape)
     {
-        Assert.Contains(Discover(FixtureSource("RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter writer = null!; _ = writer.DisposeAsync();")).Items, static site => site.Callee == "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.DisposeAsync" && site.Kind == HostedProducerSiteKind.FileSystemEffect);
+        string value = shape switch
+        {
+            "literal-null" => "null!",
+            "unknown" => "WriterInput.UnknownWriter()",
+            _ => "new KnownWriter()",
+        };
+
+        // Use the actual Core reference: DisposeAsync is inherited from Stream.
+        // A directly declared fake method would bypass compiler-effective cleanup.
+        HostedProducerDiscovery<HostedProducerSite> result = HostedClosureReferenceDiscover(
+            "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter writer = " + value + "; await writer.DisposeAsync();",
+            HostedContinuationWriterOrigins);
+
+        if (shape == "unknown")
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith("System.IO.Stream.DisposeAsync", StringComparison.Ordinal));
+
+            return;
+        }
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Equal(shape == "known", result.Items.Any(static site => site.Callee == "System.IO.File.Delete"
+            && site.Kind == HostedProducerSiteKind.FileSystemEffect));
     }
 
     [Fact]

@@ -1093,7 +1093,7 @@ internal static partial class HostedGrimoireProducerInventory
         // The members ToString of a value of the type runs when a record prints it: the framework value types that
         // print nothing authored add nothing, an exact authored type adds its ToString and formatting members, and a
         // type that is not exact adds those of every authored formatter assignable to it.
-        private void AddFormatting(AuthoredMember member, ITypeSymbol type, ImplicitTargetCollector targets)
+        private void AddFormatting(AuthoredMember member, ITypeSymbol type, ImplicitTargetCollector targets, int depth = 0)
         {
             // A nullable value formats the value it holds.
             if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
@@ -1103,6 +1103,21 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (IsIntrinsicFormatType(type))
             {
+                return;
+            }
+
+            // Generated record printing formats the stored tuple fields, just as a
+            // direct interpolation does. Keep the same four-level aggregate bound;
+            // exceeding it falls through to the existing unresolved framework call.
+            if (depth < 4 && type is INamedTypeSymbol { IsTupleType: true } tuple
+                && IsExactFrameworkType((tuple.TupleUnderlyingType ?? tuple).OriginalDefinition,
+                    TypeKey(tuple.TupleUnderlyingType ?? tuple), typeof(ValueTuple).Assembly.GetName()))
+            {
+                foreach (IFieldSymbol element in tuple.TupleElements)
+                {
+                    AddFormatting(member, element.Type, targets, depth + 1);
+                }
+
                 return;
             }
 

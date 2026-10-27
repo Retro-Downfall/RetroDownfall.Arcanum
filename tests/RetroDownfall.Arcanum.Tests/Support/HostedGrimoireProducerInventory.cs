@@ -473,7 +473,7 @@ internal static partial class HostedGrimoireProducerInventory
                         return canonical.ToMetadataReference();
                     }
 
-                    return MetadataReference.CreateFromFile(file);
+                    return CreateProductionMetadataReference(file);
                 })
                 .ToArray();
 
@@ -1641,6 +1641,7 @@ internal static partial class HostedGrimoireProducerInventory
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.IdentitySpellingBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.LongRestSourceIdentityBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.MemoryAnnalsBackfill",
+        "RetroDownfall.Arcanum.Infrastructure.Data.Schema.MemorySearchProjectionBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.SagaExtractionCursorBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.SagaMemoryCampaignScopeBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.UtcInstantCanonicalizationBackfill",
@@ -9823,6 +9824,8 @@ internal static partial class HostedGrimoireProducerInventory
         private static bool IsExactProductionFrameworkServiceBuilder(
             IMethodSymbol method)
         {
+            if (IsExactDefaultLoggingRegistration(method)) return true;
+
             IMethodSymbol definition = method.ReducedFrom ?? method;
 
             string? assembly = (TypeKey(definition.ContainingType), definition.Name)
@@ -13722,7 +13725,7 @@ internal static partial class HostedGrimoireProducerInventory
                 .DescendantNodesAndSelf(node => node == member.Syntax
                     || node is not AnonymousFunctionExpressionSyntax
                         and not LocalFunctionStatementSyntax)
-                .Where(node => node.SpanStart > after
+                .Where(node => node.SpanStart >= after
                     && node.SpanStart < before);
 
             if (directNodes.Any(node => SyntaxNodeWritesSymbol(
@@ -20762,6 +20765,17 @@ internal static partial class HostedGrimoireProducerInventory
                                     callee + "; Explicit asynchronous cleanup must complete within its caller's retained lifetime."));
                             }
 
+                            if (IsExactEncryptedBlobWriterType(
+                                    member.Model.GetTypeInfo(cleanupReceiver).Type,
+                                    member.Model.Compilation))
+                            {
+                                emittedEvidence = MergeEvidence(emittedEvidence,
+                                    AddSite(HostedProducerSiteKind.FileSystemEffect,
+                                        "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter." + method.Name,
+                                        member, rootType, operationId, node,
+                                        joined ? effectGroup : null, joined ? workAdmitted : null));
+                            }
+
                             foreach (AuthoredMember cleanupTarget in cleanup.Targets)
                             {
                                 emittedEvidence = MergeEvidence(emittedEvidence,
@@ -25390,9 +25404,16 @@ internal static partial class HostedGrimoireProducerInventory
                 && member.Model.GetSymbolInfo(consumerCall).Symbol is IMethodSymbol consumerMethod
                 && ResolveInvocationTarget(consumerMethod, member, consumerCall) is { } consumer
                 && suppliedParameter.Ordinal < consumer.Symbol.Parameters.Length
-                && ConsumesLazyParameterSynchronously(
-                    consumer,
-                    consumer.Symbol.Parameters[suppliedParameter.Ordinal])
+                && (ConsumesLazyParameterWithinCompletedCall(
+                        consumer,
+                        consumer.Symbol.Parameters[suppliedParameter.Ordinal])
+                    || CompletionPoint(member, consumerCall, false) is not null
+                        && IsAsyncSequence(consumer.Symbol.Parameters[suppliedParameter.Ordinal].Type)
+                        && IsAwaitable(consumer.Symbol.ReturnType)
+                        && ConsumesLazyParameterWithinCompletedCall(
+                            consumer,
+                            consumer.Symbol.Parameters[suppliedParameter.Ordinal],
+                            allowAwaitedAsync: true))
                 && !ConsumerMayHoldTheAdmission(member, consumerCall, argument))
             {
                 return consumerCall;
@@ -25431,11 +25452,12 @@ internal static partial class HostedGrimoireProducerInventory
             consumerCall.ArgumentList.Arguments.Any(other => other != lazyArgument && MayCarryAdmissionHandle(member, other.Expression))
             || consumerCall.Expression is MemberAccessExpressionSyntax { Expression: { } receiver } && MayCarryAdmissionHandle(member, receiver);
 
-        private static bool ConsumesLazyParameterSynchronously(
+        private static bool ConsumesLazyParameterWithinCompletedCall(
             AuthoredMember consumer,
-            IParameterSymbol parameter)
+            IParameterSymbol parameter,
+            bool allowAwaitedAsync = false)
         {
-            if (IsAwaitable(consumer.Symbol.ReturnType)
+            if (IsAwaitable(consumer.Symbol.ReturnType) && !allowAwaitedAsync
                 || IsLazySequence(consumer.Symbol.ReturnType)
                 || IsIteratorMember(consumer))
             {
@@ -25460,11 +25482,11 @@ internal static partial class HostedGrimoireProducerInventory
                     return false;
                 }
 
-                if (reference.Ancestors().OfType<ForEachStatementSyntax>()
-                    .Any(loop => loop.Expression.Span.Contains(reference.Span))
-                    || reference.Ancestors().OfType<ForEachVariableStatementSyntax>()
-                        .Any(loop => loop.Expression.Span.Contains(reference.Span)))
+                if (reference.Ancestors().OfType<CommonForEachStatementSyntax>()
+                    .FirstOrDefault(loop => loop.Expression.Span.Contains(reference.Span)) is { } loop)
                 {
+                    if (allowAwaitedAsync && loop.AwaitKeyword.RawKind == 0) return false;
+
                     consumed = true;
 
                     continue;
@@ -25605,6 +25627,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedInMemoryXmlReaderMember(method, node, model, context)
                 || IsReviewedLongRestHistogramObservation(method, node, model, context)
                 || IsReviewedArcanumTokenHistogramObservation(method, node, model, context)
+                || IsReviewedSdkPolicyStorageMember(method)
                 || IsReviewedCodeOwnedSdkConstruction(method, node, model, context)
                 || IsReviewedConcreteTokenizerCall(method, node, model, context)
                 || IsReviewedCampaignEncodingMethod(method, node, model, context)
@@ -26131,6 +26154,8 @@ internal static partial class HostedGrimoireProducerInventory
                     {
                         if (reference == expression || reference.Parent is ReturnStatementSyntax) continue;
 
+                        if (IsExactSdkPolicyRegistrationReceiver(reference, owner)) continue;
+
                         if (reference.Parent is EqualsValueClauseSyntax { Parent: VariableDeclaratorSyntax alias }
                             && owner.Model.GetDeclaredSymbol(alias) is ILocalSymbol local && ClosedUses(local, owner)) continue;
 
@@ -26472,6 +26497,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedPrimitiveQueueMember(method, node, model, context)
                 || IsReviewedClosedScalarLog(method, node, model)
                 || IsReviewedInvariantScalarInterpolation(method, node, model)
+                || IsReviewedRuneColumnCalculation(method)
                 || IsReviewedSystemClockElapsed(method, node, model, context)
                 || IsReviewedInvariantDateTimeParser(method, node, model)
                 || IsReviewedDefaultProviderUInt32Format(method, node, model)
@@ -26479,6 +26505,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedCollectionMechanicalMember(method)
                 || IsReviewedInterpolatedStringCreate(method)
                 || IsReviewedSequenceOperation(method, node, model)
+                || IsReviewedAsyncSequenceWrapperOperation(method, node, model)
                 || IsReviewedInMemoryOrderingOperation(method, node, model))
             {
                 return true;
@@ -28841,6 +28868,11 @@ internal static partial class HostedGrimoireProducerInventory
                             or "System.Threading.Channels.ChannelReader`1.ReadAllAsync")
                 {
                     return true;
+                }
+
+                if (TryExactAsyncSequenceWrapperSource(method, call, model, out ExpressionSyntax wrappedSource))
+                {
+                    return HasReviewedSequenceProvenance(wrappedSource, model, path, context);
                 }
 
                 if (IsKnownLazyCallback(method)
@@ -32407,11 +32439,12 @@ internal static partial class HostedGrimoireProducerInventory
                         result,
                         "IsFailure")
                     && DefinitelyTerminates(guard.Statement)
-                    && SymbolIsStableBetween(
+                    && SymbolIsStableAfterResultFailureGuard(
                         member,
                         result,
                         guard.Span.End,
-                        expression))
+                        expression,
+                        block))
                 .ToArray();
 
             return declarationIndex >= 0
@@ -36556,7 +36589,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             foreach (InvocationExpressionSyntax invocation in rootNodes
                 .OfType<InvocationExpressionSyntax>()
-                .Where(invocation => invocation.SpanStart > after
+                .Where(invocation => invocation.SpanStart >= after
                     && invocation.Span.End <= before))
             {
                 if (member.Model.GetSymbolInfo(invocation).Symbol is not
@@ -38539,6 +38572,29 @@ internal static partial class HostedGrimoireProducerInventory
         private static bool HasOnlyReferences(AuthoredMember member, ISymbol symbol, params ExpressionSyntax[] allowed) => SymbolReferences(member, symbol) is { } references && references.Length == allowed.Length && references.All(reference => allowed.Contains(reference));
 
         private static bool IsAwaitable(ITypeSymbol type) => TypeKey(type) is "System.Threading.Tasks.Task" or "System.Threading.Tasks.Task`1" or "System.Threading.Tasks.ValueTask" or "System.Threading.Tasks.ValueTask`1";
+
+        private bool IsExactEncryptedBlobWriterType(
+            ITypeSymbol? type,
+            Compilation consumingCompilation)
+        {
+            if (type is null
+                || TypeKey(type) != "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter"
+                || AuthoredCompilationIdentity(type, consumingCompilation) is not int owner)
+            {
+                return false;
+            }
+
+            CSharpCompilation[] canonical = compilationIdentities.Keys
+                .OfType<CSharpCompilation>()
+                .Where(compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Core"
+                    && compilation.SyntaxTrees.Any(tree => tree.FilePath.StartsWith(
+                        "src/RetroDownfall.Arcanum.Core/",
+                        StringComparison.Ordinal)))
+                .ToArray();
+
+            return canonical is [CSharpCompilation exact]
+                && CompilationIdentity(exact) == owner;
+        }
 
         private static bool IsExactWriterCompletion(IMethodSymbol method) => TypeKey(method.ContainingType) == "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter"
             && method.Name == "CompleteAsync"
@@ -41848,8 +41904,13 @@ internal static partial class HostedGrimoireProducerInventory
 
             List<ExternalCleanupResolution> externalEffects = [];
 
+            // Explicit cleanup dispatches through the compiler-bound slot. A receiver
+            // may have an authored abstract type while inheriting the trusted Stream
+            // slot; target selection below must use that same dispatch type.
+            ITypeSymbol dispatchType = explicitCleanupSlot?.ContainingType ?? staticType;
+
             bool exactCandidatesResolved = exactCandidates.Length != 0
-                && !(staticType is INamedTypeSymbol
+                && !(dispatchType is INamedTypeSymbol
                 {
                     TypeKind: TypeKind.Class,
                     IsSealed: false,
@@ -41865,7 +41926,7 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 IMethodSymbol[] selectedCleanup = SelectEffectiveCleanupMembers(
                         candidate.Type,
-                        explicitCleanupSlot?.ContainingType ?? staticType,
+                        dispatchType,
                         name,
                         configuredAsync);
 
@@ -43170,6 +43231,17 @@ internal static partial class HostedGrimoireProducerInventory
                 return ExactCleanupProvenance(member, defaultType);
             }
 
+            // The verified premise closes these exact static Sqlite family types even
+            // after a value is forwarded through a wider Db* parameter. Keep the
+            // expression's ordinary traversal: a getter/factory/conversion producing
+            // the value can still perform work. No abstract Db* type is inferred here.
+            if (SqliteSealedByUse
+                && member.Model.GetTypeInfo(expression).Type is { } sqliteType
+                && IsSqliteSealedFamilyClass(sqliteType))
+            {
+                return ExactCleanupProvenance(member, sqliteType);
+            }
+
             ISymbol? symbol = member.Model.GetSymbolInfo(expression).Symbol;
 
             if (expression is InvocationExpressionSyntax relinquishingRead
@@ -43285,6 +43357,17 @@ internal static partial class HostedGrimoireProducerInventory
                     context) is { } conditionalPropertyProvenance)
             {
                 return conditionalPropertyProvenance;
+            }
+
+            if (expression is MemberAccessExpressionSyntax connectionAccess
+                && symbol is IPropertySymbol connectionProperty
+                && ExactSqliteCommandConnectionProvenance(
+                    member,
+                    connectionAccess,
+                    connectionProperty,
+                    context) is { } connectionProvenance)
+            {
+                return connectionProvenance;
             }
 
             if (expression is MemberAccessExpressionSyntax propertyAccess
@@ -47284,8 +47367,9 @@ internal static partial class HostedGrimoireProducerInventory
                 argument.Expression,
                 context);
 
+            // A complete empty flow is a typed null (or a non-returning source),
+            // which carries no cleanup target. It is not an opaque value.
             if (!projected.Complete
-                || projected.Values.Count == 0
                 || projected.Values.Any(value =>
                     value.Caller.Model.GetTypeInfo(
                         ExactNonThrowingValue(value.Expression)).Type is not
@@ -53336,7 +53420,7 @@ internal static partial class HostedGrimoireProducerInventory
                         || variable.Initializer is null
                         || !ReferencesGroup(variable.Initializer.Value)
                         || declaration.SpanStart <= admittedAt
-                        || declaration.Span.End >= position
+                        || declaration.Span.End > position
                         || declaration.Parent is not BlockSyntax declarationBlock
                         || !site.AncestorsAndSelf().Contains(declarationBlock)
                         || declarationBlock != block
@@ -54461,7 +54545,8 @@ internal static partial class HostedGrimoireProducerInventory
                 || type == "Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade"
                     && property.Name == "CurrentTransaction"
                 || type == "System.Data.Common.DbCommand"
-                    && property.Name is "CommandText" or "Parameters" or "Transaction"
+                    && (property.Name is "CommandText" or "Parameters" or "Transaction"
+                        || !mutation && property.Name == "Connection")
                 || type == "System.Data.Common.DbConnection"
                     && property.Name == "State"
                 || type == "System.Data.Common.DbDataReader"
