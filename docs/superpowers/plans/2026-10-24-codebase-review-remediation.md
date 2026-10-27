@@ -9,7 +9,13 @@
 - **No finding has been checked by a second reader.** The planned skeptic stage did not run. Each finding carries its reviewer's evidence; those marked `probe` quote a probe, deliberate break or measurement the reviewer ran, and the probe code is in `docs/reviews/2026-10-24-review-reports/`. Treat every finding as a hypothesis until its red test fails on `ac0d2d8e`. A finding whose red test cannot be made to fail is not fixed; it is recorded as refuted in the remediation record (below) with the evidence.
 - **What the owner wants done with it:** execute the phases with test-driven development, then merge to `general-enhancements` and `main` and push. The owner fixes Minors; they are not deferred.
 
-## Current remediation checkpoint — 2026-10-25
+## Current remediation checkpoint — 2026-10-27
+
+**230/272 original findings are integrated (84.6%); 42 remain.** All 3 Critical and 76 Important findings are integrated. Runtime `fac26644c393c46cd6155ed4b590c532e09d7958` and tested tree `da2d9bd990aa5f261501eb13deb371213693387c` passed 2,263 distinct affected tests with no skips/failures, a zero-warning solution build and all owned static gates. RV192 and RV258 are independently approved but not yet integrated. Current evidence and subsequent dated updates are in the [review register](../../reviews/2026-10-24-repository-code-review.md); the historical checkpoints below retain their original scope and dates.
+
+Full native FTS5 and literal-memory search are integrated. Real RAPTOR's production implementation and fresh 10k / 50k offline qualification are accepted; final CI/native/review acceptance remains. The final 14-job full CI run has not started. Installation and all live Ollama/embedding qualification remain paused at the owner's explicit boundary. Main and the original Claude review branch remain unchanged.
+
+## Historical remediation checkpoint — 2026-10-25
 
 The original remediation count is 83/272 integrated (3 Critical, 66 Important, 14 Minor), with 189 open (10 Important, 179 Minor). Actual RAPTOR has 5/12 reviewed and integrated stages through `a8b4cb3466fee54d2aa0792697a0aea72905c2d1`; production Tapestry has not switched. Additional required Covenant publisher logging is integrated in `5a2cc2e`, and the complete nullable-default inventory now passes without exclusions in wave15's568 distinct affected tests and zero-warning build. Exact tree, commands and evidence are in `/private/tmp/arcanum-integrated-wave15-manifest.json`.
 
