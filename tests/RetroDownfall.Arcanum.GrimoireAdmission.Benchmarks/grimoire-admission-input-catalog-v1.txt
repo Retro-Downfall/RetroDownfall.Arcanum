@@ -566,6 +566,7 @@ R	src/RetroDownfall.Arcanum.Core/Tower/ICampaignRepository.cs
 R	src/RetroDownfall.Arcanum.Core/Tower/ICanonicalCampaignContextResolver.cs
 R	src/RetroDownfall.Arcanum.Core/Tower/ICanonicalCampaignRootEnricher.cs
 R	src/RetroDownfall.Arcanum.Core/Tower/IPromptRepository.cs
+R	src/RetroDownfall.Arcanum.Core/Tower/ISessionDivinationService.cs
 R	src/RetroDownfall.Arcanum.Core/Tower/ISessionRepository.cs
 R	src/RetroDownfall.Arcanum.Core/Tower/Prompt.cs
 R	src/RetroDownfall.Arcanum.Core/Tower/PromptDtos.cs
@@ -2485,6 +2486,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexingServic
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIsolatedDocumentHost.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentRetrievalService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentTextExtractor.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionDivinationService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SpellWeaveCache.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryBuildBackoff.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryBuildContext.cs
