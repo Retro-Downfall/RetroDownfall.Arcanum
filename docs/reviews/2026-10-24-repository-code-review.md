@@ -4787,3 +4787,12 @@ Runtime `fac26644c393c46cd6155ed4b590c532e09d7958`, tested tree `da2d9bd990aa5f2
 RV192 Campaign-marker diagnostics and RV258 stranded idempotency expiry are independently approved and await the next integration batch; they are included in the 42 remaining, not counted complete. Provider-attempt policy (RV111), retention cancellation under actual native writer contention (RV249), and fork copy-time authority (RV259) are active. The remaining inference, retention, attachment and query-performance findings stay open in the detailed ledger.
 
 Real RAPTOR's fresh 10,000 / 50,000-leaf offline qualification is accepted, and its production source lineage is integrated. The 50,000-leaf run built 62,455 nodes over 6 layers with 14 roots in approximately 1 hour 58 minutes, peaking at 4,378,558,464 bytes process memory; summaries/embeddings were synthetic, with no live provider calls. Final RAPTOR acceptance still includes the final CI/native/review gates. Full native FTS5 grammar and Core28 literal-memory search remain integrated. The final 14-job full CI run has not started. No install or live Ollama/embedding tests have run; they remain user-paused. Main and Claude's original review branch remain unchanged.
+
+
+### 2026-10-27 checkpoint — 232 original findings integrated
+
+**232/272 original findings (85.3%) are independently reviewed and integrated; 40 remain.** This batch adds RV192 Campaign-marker diagnostics and RV258 expired idempotency cleanup. All 3 Critical and 76 Important findings, plus 153 Minor findings, are integrated. Seven remaining findings are executing and 33 are pending.
+
+Runtime `4c65ed84472f66292e8344925f8d0543160ea3b9`, tested tree `9c7da4ee61ab022feae75f293217040dd35a7e24`, passed **1,274 distinct tests, zero failures/skips**, covering 43 complete selected families, a zero-warning solution build and all eight owned build/test/static stages. Every changed C# file is byte-identical to its independently approved source; the two owning DESIGN changes merged cleanly. Qualification: `/private/tmp/arcanum-integrated-wave89-qualification.json`. Catalog/schema counts remain unchanged.
+
+The accepted offline RAPTOR 50,000-leaf run and integrated full FTS5 support remain unchanged from the preceding checkpoint. Final full CI has not started. Provider-attempt policy, native retention cancellation, fork copy authority and four inference-contract findings are active. Installation and live Ollama/embedding tests remain paused; no live provider qualification has run.

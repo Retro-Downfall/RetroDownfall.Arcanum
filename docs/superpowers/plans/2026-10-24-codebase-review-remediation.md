@@ -11,9 +11,9 @@
 
 ## Current remediation checkpoint — 2026-10-27
 
-**230/272 original findings are integrated (84.6%); 42 remain.** All 3 Critical and 76 Important findings are integrated. Runtime `fac26644c393c46cd6155ed4b590c532e09d7958` and tested tree `da2d9bd990aa5f261501eb13deb371213693387c` passed 2,263 distinct affected tests with no skips/failures, a zero-warning solution build and all owned static gates. RV192 and RV258 are independently approved but not yet integrated. Current evidence and subsequent dated updates are in the [review register](../../reviews/2026-10-24-repository-code-review.md); the historical checkpoints below retain their original scope and dates.
+**232/272 original findings are integrated (85.3%); 40 remain.** All 3 Critical and 76 Important findings are integrated, along with 153 Minor findings. The latest batch adds RV192 Campaign-marker diagnostics and RV258 expired idempotency cleanup. Runtime `4c65ed84472f66292e8344925f8d0543160ea3b9` and tested tree `9c7da4ee61ab022feae75f293217040dd35a7e24` passed 1,274 distinct affected tests with no skips/failures, a zero-warning solution build and all eight owned verification stages. Seven findings are in implementation and 33 are pending. Current evidence and subsequent dated updates are in the [review register](../../reviews/2026-10-24-repository-code-review.md); historical checkpoints below retain their original scope and dates.
 
-Full native FTS5 and literal-memory search are integrated. Real RAPTOR's production implementation and fresh 10k / 50k offline qualification are accepted; final CI/native/review acceptance remains. The final 14-job full CI run has not started. Installation and all live Ollama/embedding qualification remain paused at the owner's explicit boundary. Main and the original Claude review branch remain unchanged.
+Full native FTS5 and literal-memory search are integrated. Real RAPTOR's production implementation and fresh 10k/50k offline qualification are accepted; final CI/native/review acceptance remains. The final 14-job full CI run has not started. Installation and all live Ollama/embedding qualification remain paused at the owner's explicit boundary. Main and the original Claude review branch remain unchanged.
 
 ## Historical remediation checkpoint — 2026-10-25
 
