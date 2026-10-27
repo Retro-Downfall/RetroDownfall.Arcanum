@@ -102,6 +102,13 @@ internal static class ArcanumErrorMapper
                 StatusCodes.Status500InternalServerError,
 
             ErrorCodes.Validation.InvalidPrompt
+                or ErrorCodes.Validation.InvalidTemperature
+                or ErrorCodes.Validation.InvalidTopP
+                or ErrorCodes.Validation.InvalidPresencePenalty
+                or ErrorCodes.Validation.InvalidFrequencyPenalty
+                or ErrorCodes.Validation.InvalidMaxOutputTokens
+                or ErrorCodes.Validation.InvalidResponseFormat
+                or ErrorCodes.Validation.InvalidResponseSchema
                 or ErrorCodes.Validation.AttachedFiles
                 or ErrorCodes.Validation.InvalidBody
                 or ErrorCodes.Validation.InvalidFields

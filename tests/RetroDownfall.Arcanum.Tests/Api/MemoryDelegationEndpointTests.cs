@@ -144,6 +144,13 @@ public sealed class MemoryDelegationEndpointTests
     [InlineData("prompt", "Validation.PromptTooLong", "parent.prompt")]
     [InlineData("system-prompt", "Validation.AdditionalSystemPromptTooLong", "parent.additionalSystemPrompt")]
     [InlineData("reasoning", ErrorCodes.Validation.ReasoningEffortAndBudgetMutuallyExclusive, "parent.reasoning")]
+    [InlineData("temperature", ErrorCodes.Validation.InvalidTemperature, "parent.temperature")]
+    [InlineData("topP", ErrorCodes.Validation.InvalidTopP, "parent.topP")]
+    [InlineData("presencePenalty", ErrorCodes.Validation.InvalidPresencePenalty, "parent.presencePenalty")]
+    [InlineData("frequencyPenalty", ErrorCodes.Validation.InvalidFrequencyPenalty, "parent.frequencyPenalty")]
+    [InlineData("maxOutputTokens", ErrorCodes.Validation.InvalidMaxOutputTokens, "parent.maxOutputTokens")]
+    [InlineData("responseFormat", ErrorCodes.Validation.InvalidResponseFormat, "parent.responseFormat")]
+    [InlineData("responseSchema", ErrorCodes.Validation.InvalidResponseSchema, "parent.responseFormatJsonSchema")]
     [InlineData("client-tools", ErrorCodes.ClientTools.InvalidSchema, "forwardClientTools=false")]
     [InlineData("vision", ErrorCodes.Scrying.VisionNotSupported, "vision-capable")]
     public async Task Real_preflight_mints_only_closed_field_guidance_before_hydration(string mode, string code, string expected)
@@ -189,6 +196,13 @@ public sealed class MemoryDelegationEndpointTests
             "prompt" => parent with { Prompt = "private-prompt-canary" + new string('x', ArcanumSettingClamps.MaxPingPromptChars(ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars)) },
             "system-prompt" => parent with { AdditionalSystemPrompt = "private-system-canary" + new string('x', ArcanumSettingClamps.MaxPingPromptChars(ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars)) },
             "reasoning" => parent with { Reasoning = new(ReasoningEffortLevel.Medium, 128) },
+            "temperature" => parent with { Temperature = 7 },
+            "topP" => parent with { TopP = 3 },
+            "presencePenalty" => parent with { PresencePenalty = -9 },
+            "frequencyPenalty" => parent with { FrequencyPenalty = 3 },
+            "maxOutputTokens" => parent with { MaxOutputTokens = 0 },
+            "responseFormat" => parent with { ResponseFormat = "private-format-canary" },
+            "responseSchema" => parent with { ResponseFormat = "json_schema" },
             "client-tools" => parent with { ClientToolChoice = clientChoice.RootElement.Clone() },
             _ => parent with { ScryingFoci = [new(Convert.ToBase64String([1, 2, 3]), "image/png")] },
         };

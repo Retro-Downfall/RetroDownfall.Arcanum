@@ -89,6 +89,20 @@ public static class ErrorCodes
 
         public const string InvalidPrompt = "Validation.InvalidPrompt";
 
+        public const string InvalidTemperature = "Validation.InvalidTemperature";
+
+        public const string InvalidTopP = "Validation.InvalidTopP";
+
+        public const string InvalidPresencePenalty = "Validation.InvalidPresencePenalty";
+
+        public const string InvalidFrequencyPenalty = "Validation.InvalidFrequencyPenalty";
+
+        public const string InvalidMaxOutputTokens = "Validation.InvalidMaxOutputTokens";
+
+        public const string InvalidResponseFormat = "Validation.InvalidResponseFormat";
+
+        public const string InvalidResponseSchema = "Validation.InvalidResponseSchema";
+
         public const string AttachedFiles = "Validation.AttachedFiles";
 
         public const string InvalidBody = "Validation.InvalidBody";
