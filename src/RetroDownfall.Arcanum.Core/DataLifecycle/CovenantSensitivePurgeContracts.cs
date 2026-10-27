@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Covenant;
 
@@ -18,22 +19,18 @@ namespace RetroDownfall.Arcanum.Core.DataLifecycle;
 /// </remarks>
 public sealed record CovenantSensitivePurgeTarget
 {
-
     public CovenantSensitivePurgeTarget(SensitiveArtifactKind kind, Guid artifactId)
     {
-
         Kind = CovenantSensitiveArtifactPurgePolicy.IsCovered(kind)
             ? kind
             : throw new ArgumentOutOfRangeException(nameof(kind));
 
         ArtifactId = CovenantValidation.RequireNonEmpty(artifactId, nameof(artifactId));
-
     }
 
     public SensitiveArtifactKind Kind { get; }
 
     public Guid ArtifactId { get; }
-
 }
 
 /// <summary>
@@ -52,7 +49,6 @@ public sealed record CovenantSensitivePurgeTarget
 /// </remarks>
 public enum CovenantSensitivePurgeDisposition : byte
 {
-
     /// <summary>No live label. The caller performs its ordinary delete.</summary>
     Unlabeled = 1,
 
@@ -61,7 +57,6 @@ public enum CovenantSensitivePurgeDisposition : byte
 
     /// <summary>Labelled, and left exactly as found. The caller deletes nothing.</summary>
     Blocked = 3,
-
 }
 
 /// <summary>The disposition of one target.</summary>
@@ -78,7 +73,6 @@ public sealed record CovenantSensitivePurgeOutcome(
     IReadOnlyList<CovenantSensitivePurgeResult> Results,
     CovenantArtifactErasureProgress Progress)
 {
-
     /// <summary>Nothing in this batch carried a label, so the installation has no protected state here.</summary>
     public bool AllUnlabeled =>
         Results.All(static result => result.Disposition is CovenantSensitivePurgeDisposition.Unlabeled);
@@ -98,7 +92,6 @@ public sealed record CovenantSensitivePurgeOutcome(
         Results.Any(result =>
             result.ArtifactId == artifactId
             && result.Disposition is CovenantSensitivePurgeDisposition.Purged);
-
 }
 
 /// <summary>
@@ -118,9 +111,8 @@ public sealed record CovenantSensitivePurgeOutcome(
 /// </remarks>
 public interface ICovenantSensitiveArtifactPurger
 {
-
     /// <summary>The largest number of artifacts one purge call may carry.</summary>
-    public const int MaxTargets = 256;
+    public const int MaxTargets = IArtifactSensitivityLedger.MaxReadTargets;
 
     ValueTask<Result<CovenantSensitivePurgeOutcome>> PurgeAsync(
         IReadOnlyList<CovenantSensitivePurgeTarget> targets,
@@ -128,7 +120,6 @@ public interface ICovenantSensitiveArtifactPurger
 
     ValueTask<Result<CovenantSensitivePurgeOutcome>> PurgeOwnedAsync(IReadOnlyList<CovenantSensitivePurgeTarget> targets, MemoryDelegationMutation? memoryMutation, CancellationToken cancellationToken = default) =>
         PurgeAsync(targets, cancellationToken);
-
 }
 
 /// <summary>
@@ -148,7 +139,6 @@ public interface ICovenantSensitiveArtifactPurger
 /// </remarks>
 public sealed class CovenantSensitivePurgeAuthorityScope
 {
-
     private OperatorAuthorityContext? _context;
 
     /// <summary>The authority issued for this request, or null when none was.</summary>
@@ -164,29 +154,22 @@ public sealed class CovenantSensitivePurgeAuthorityScope
     /// </remarks>
     public Result Publish(OperatorAuthorityContext context)
     {
-
         ArgumentNullException.ThrowIfNull(context);
 
         if (!context.Satisfies(CovenantAuthorityRequirement.SensitivityRetentionPurge))
         {
-
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "A sensitivity purge scope accepts only authority issued for a retention purge.");
-
         }
 
         if (Interlocked.CompareExchange(ref _context, context, null) is not null)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "The retention-purge authority for this request has already been published.");
-
         }
 
         return Result.Success();
-
     }
-
 }

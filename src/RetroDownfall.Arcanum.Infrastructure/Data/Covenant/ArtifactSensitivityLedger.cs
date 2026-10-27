@@ -114,6 +114,73 @@ internal sealed partial class ArtifactSensitivityLedger(ICovenantConnectionSourc
             cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<Result<IReadOnlyList<ArtifactSensitivityLabel>>> ReadLabelsAsync(
+        SensitiveArtifactKind artifactKind,
+        IReadOnlyList<Guid> artifactIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(artifactIds);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (artifactIds.Count > IArtifactSensitivityLedger.MaxReadTargets)
+        {
+            return new Error(ErrorCodes.Covenant.InvalidScope, "A sensitivity-label read exceeds the bounded target count.");
+        }
+
+        if (artifactIds.Count == 0)
+        {
+            return Result<IReadOnlyList<ArtifactSensitivityLabel>>.Success([]);
+        }
+
+        SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        string[] parameters = new string[artifactIds.Count];
+
+        for (int index = 0; index < artifactIds.Count; index++)
+        {
+            parameters[index] = "$artifact" + index.ToString(CultureInfo.InvariantCulture);
+
+            _ = command.Parameters.AddWithValue(parameters[index], Format(artifactIds[index]));
+        }
+
+        command.CommandText = "SELECT " + LabelColumnList
+            + " FROM artifact_sensitivity WHERE ArtifactKindCode = $kind AND ArtifactId IN ("
+            + string.Join(", ", parameters) + ");";
+
+        _ = command.Parameters.AddWithValue("$kind", (long)artifactKind);
+
+        Dictionary<Guid, ArtifactSensitivityLabel> byId = new(artifactIds.Count);
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            Result<ArtifactSensitivityLabel> materialized = Materialize(reader);
+
+            if (materialized.IsFailure)
+            {
+                return materialized.Error;
+            }
+
+            byId.Add(materialized.Value.ArtifactId, materialized.Value);
+        }
+
+        List<ArtifactSensitivityLabel> ordered = new(artifactIds.Count);
+
+        foreach (Guid artifactId in artifactIds)
+        {
+            if (byId.TryGetValue(artifactId, out ArtifactSensitivityLabel? label))
+            {
+                ordered.Add(label);
+            }
+        }
+
+        return Result<IReadOnlyList<ArtifactSensitivityLabel>>.Success(ordered);
+    }
+
     public async Task<Result<SessionSensitivityProjection>> ReadSessionProjectionAsync(
         Guid sessionId,
         CancellationToken cancellationToken)

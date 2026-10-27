@@ -176,23 +176,46 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
         IReadOnlyList<CovenantSensitivePurgeTarget> targets,
         CancellationToken cancellationToken)
     {
+        Dictionary<Guid, ArtifactSensitivityLabel> byId = [];
+
+        foreach (SensitiveArtifactKind kind in targets.Select(static target => target.Kind).Distinct())
+        {
+            Guid[] identities = [.. targets.Where(target => target.Kind == kind).Select(static target => target.ArtifactId)];
+
+            Result<IReadOnlyList<ArtifactSensitivityLabel>> read;
+
+            try
+            {
+                read = await labels.ReadLabelsAsync(kind, identities, cancellationToken).ConfigureAwait(false);
+            }
+            catch (SqliteException)
+            {
+                return new Error(ErrorCodes.Covenant.Unavailable, "The sensitivity labels could not be read, so nothing was deleted.");
+            }
+
+            if (read.IsFailure)
+            {
+                return read.Error;
+            }
+
+            foreach (ArtifactSensitivityLabel label in read.Value)
+            {
+                if (label.ArtifactKind != kind || !identities.Contains(label.ArtifactId)
+                    || !byId.TryAdd(label.ArtifactId, label))
+                {
+                    return new Error(ErrorCodes.Covenant.IntegrityFailure,
+                        "The sensitivity labels did not match the requested artifacts, so nothing was deleted.");
+                }
+            }
+        }
+
         List<LabeledTarget> labeled = [];
 
         foreach (CovenantSensitivePurgeTarget target in targets)
         {
-            Result<ArtifactSensitivityLabel?> label = await ReadLabelAsync(
-                target,
-                "The sensitivity labels could not be read, so nothing was deleted.",
-                cancellationToken).ConfigureAwait(false);
-
-            if (label.IsFailure)
+            if (byId.TryGetValue(target.ArtifactId, out ArtifactSensitivityLabel? label))
             {
-                return label.Error;
-            }
-
-            if (label.Value is { } live)
-            {
-                labeled.Add(new LabeledTarget(target, live));
+                labeled.Add(new LabeledTarget(target, label));
             }
         }
 
@@ -203,9 +226,9 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
     /// Reads one target's live label, failing closed when storage cannot answer.
     /// </summary>
     /// <remarks>
-    /// Both label reads go through here: the resolution before the lease is used, and the reread that
-    /// classifies an item the kernel examined but did not erase. A <see cref="SqliteException"/> in
-    /// either is <c>Covenant.Unavailable</c>, because "could not read" is not "no label".
+    /// This point reread classifies an item the kernel examined but did not erase. Initial resolution
+    /// reads bounded batches by kind. A <see cref="SqliteException"/> on either path is
+    /// <c>Covenant.Unavailable</c>, because "could not read" is not "no label".
     /// </remarks>
     private async Task<Result<ArtifactSensitivityLabel?>> ReadLabelAsync(
         CovenantSensitivePurgeTarget target,

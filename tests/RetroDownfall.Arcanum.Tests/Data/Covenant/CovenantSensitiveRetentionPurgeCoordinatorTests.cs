@@ -196,6 +196,24 @@ public sealed class CovenantSensitiveRetentionPurgeCoordinatorTests
         Assert.Empty(kernel.Pages);
     }
 
+    [Fact]
+    public async Task A_label_returned_for_another_identity_cannot_make_the_requested_target_unlabeled()
+    {
+        ScriptedLabelLedger ledger = new();
+
+        ledger.Script(A, LabelRead.Of(Label(B, Guid.NewGuid())));
+
+        ScriptedErasureKernel kernel = new();
+
+        Result<CovenantSensitivePurgeOutcome> result = await PurgeAsync(ledger, kernel, A);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, result.Error.Code);
+
+        Assert.Empty(kernel.Pages);
+    }
+
     /// <summary>
     /// The re-read that decides between unlabelled and stale fails closed on a storage error too.
     /// </summary>
