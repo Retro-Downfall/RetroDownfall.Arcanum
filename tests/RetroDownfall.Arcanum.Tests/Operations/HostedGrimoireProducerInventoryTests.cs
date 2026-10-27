@@ -17487,10 +17487,37 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         Assert.Contains(DiscoverWithRoots(FixtureSource(body, AdmissionTypes), OrdinaryRoot()).Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.StreamWriter.Dispose");
     }
 
-    [Fact]
-    public void InheritedBlobWriterDisposalIsStillAnExplicitPublicationEffect()
+    [Theory]
+    [InlineData("literal-null")]
+    [InlineData("unknown")]
+    [InlineData("known")]
+    public void InheritedBlobWriterDisposalIsStillAnExplicitPublicationEffect(string shape)
     {
-        Assert.Contains(Discover(FixtureSource("RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter writer = null!; _ = writer.DisposeAsync();")).Items, static site => site.Callee == "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.DisposeAsync" && site.Kind == HostedProducerSiteKind.FileSystemEffect);
+        string value = shape switch
+        {
+            "literal-null" => "null!",
+            "unknown" => "WriterInput.UnknownWriter()",
+            _ => "new KnownWriter()",
+        };
+
+        // Use the actual Core reference: DisposeAsync is inherited from Stream.
+        // A directly declared fake method would bypass compiler-effective cleanup.
+        HostedProducerDiscovery<HostedProducerSite> result = HostedClosureReferenceDiscover(
+            "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter writer = " + value + "; await writer.DisposeAsync();",
+            HostedContinuationWriterOrigins);
+
+        if (shape == "unknown")
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith("System.IO.Stream.DisposeAsync", StringComparison.Ordinal));
+
+            return;
+        }
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Equal(shape == "known", result.Items.Any(static site => site.Callee == "System.IO.File.Delete"
+            && site.Kind == HostedProducerSiteKind.FileSystemEffect));
     }
 
     [Fact]

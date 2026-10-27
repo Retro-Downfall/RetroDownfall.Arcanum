@@ -866,7 +866,7 @@ internal static partial class HostedGrimoireProducerInventory
                 if (value.Syntax is not ExpressionSyntax valueSyntax
                     || valueSyntax == call
                     || model.GetTypeInfo(valueSyntax).Type is not { } valueType
-                    || !IsEnumerableValueType(valueType)
+                    || !IsEnumerableValueType(valueType) && !IsExactConfiguredAsyncSequenceType(valueType)
                     || IsClosedFrameworkEnumerationType(valueType))
                 {
                     continue;
@@ -974,9 +974,10 @@ internal static partial class HostedGrimoireProducerInventory
                 return definition.Name is "Select" or "SelectMany" or "Where";
             }
 
-            // The one asynchronous wrapper the call classification reviews: the other wrappers of an asynchronous
-            // sequence are unclassified at their own call, so they are never followed here.
-            return IsExactFrameworkType(definition.ContainingType, "System.Threading.Tasks.TaskAsyncEnumerableExtensions", typeof(System.Threading.Tasks.TaskAsyncEnumerableExtensions).Assembly.GetName())
+            // Exact token/continuation wrappers store their source; following the returned wrapper
+            // must still prove each exposed enumerable, including another configured wrapper.
+            return IsExactAsyncSequenceWrapperMethod(method)
+                || IsExactFrameworkType(definition.ContainingType, "System.Threading.Tasks.TaskAsyncEnumerableExtensions", typeof(System.Threading.Tasks.TaskAsyncEnumerableExtensions).Assembly.GetName())
                 && definition.Name == "ConfigureAwait";
         }
 
