@@ -103,8 +103,8 @@ internal sealed class AttachmentMemoryProvenanceStore(
                         ON e."Id" = c.SourceEntryId
                        AND e."SessionId" = c.SessionId
                     WHERE c.SessionId = @sessionId
-                      AND julianday(e."CreatedAt") > julianday(@afterExclusive)
-                      AND julianday(e."CreatedAt") <= julianday(@throughInclusive)
+                      AND e."CreatedAt" > @afterExclusive
+                      AND e."CreatedAt" <= @throughInclusive
                     ORDER BY e."Sequence", c.MaterializedAt, c.AttachmentId
                     """;
 
@@ -113,15 +113,15 @@ internal sealed class AttachmentMemoryProvenanceStore(
                     "@sessionId",
                     sessionId.ToString().ToUpperInvariant());
 
-                    AddParameter(
-                        command,
-                        "@afterExclusive",
-                        UtcInstantText.Format(afterExclusive));
+                AddParameter(
+                    command,
+                    "@afterExclusive",
+                    UtcInstantText.Format(afterExclusive));
 
-                    AddParameter(
-                        command,
-                        "@throughInclusive",
-                        UtcInstantText.Format(throughInclusive));
+                AddParameter(
+                    command,
+                    "@throughInclusive",
+                    UtcInstantText.Format(throughInclusive));
 
                 List<AttachmentMemoryProvenance> results = [];
 

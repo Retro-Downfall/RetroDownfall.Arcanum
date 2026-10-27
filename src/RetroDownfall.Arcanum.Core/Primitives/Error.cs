@@ -75,6 +75,16 @@ public readonly record struct ContextOverflowDetails(
 /// <summary>Shared operator guidance for every enforced daily budget refusal.</summary>
 public static class BudgetErrorMessages
 {
+    /// <summary>Explains the exact proposed exposure in the UTC ledger period being refused.</summary>
+    public static string WouldExceed(string period, decimal limit, decimal current, decimal additional, string additionalLabel) =>
+        $"Daily budget limit of ${FormatUsd(limit)} USD for UTC day {period} would be exceeded "
+        + $"(committed+reserved: ${FormatUsd(current)} USD; {additionalLabel}: ${FormatUsd(additional)} USD; "
+        + $"projected: ${FormatUsd(checked(current + additional))} USD). " + Guidance;
+
+    /// <summary>Formats USD invariantly with at least cents and every significant decimal place.</summary>
+    public static string FormatUsd(decimal value) =>
+        value.ToString("0.00##########################", System.Globalization.CultureInfo.InvariantCulture);
+
     public const string Guidance = "The budget day is UTC; a new accounting day starts at 00:00 UTC. Outstanding reservations from prior days may still count. Review Arcanum:Cost:Budget:DailyLimitUsd and raise it if appropriate.";
 }
 

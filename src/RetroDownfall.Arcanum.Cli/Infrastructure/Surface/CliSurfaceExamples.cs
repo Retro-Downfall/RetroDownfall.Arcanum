@@ -307,7 +307,7 @@ internal static class CliSurfaceExamples
         // Data lifecycle
         ["data status"] = ["arcanum data status"],
         ["data retention show"] = ["arcanum data retention show"],
-        ["data retention set"] = ["arcanum data retention set --sessions 90"],
+        ["data retention set"] = ["arcanum data retention set archived-sessions 90"],
         ["data encryption status"] = ["arcanum data encryption status"],
         ["data encryption verify"] = ["arcanum data encryption verify"],
 

@@ -2657,6 +2657,24 @@
           ],
           "options": [
             {
+              "name": "--continuation",
+              "aliases": [],
+              "description": "Continue an unfinished literal memory search with the same query and selectors.",
+              "recursive": false,
+              "takesValue": true,
+              "repeatable": false,
+              "values": []
+            },
+            {
+              "name": "--limit",
+              "aliases": [],
+              "description": "Maximum results in this page, between 1 and 10000.",
+              "recursive": false,
+              "takesValue": true,
+              "repeatable": false,
+              "values": []
+            },
+            {
               "name": "--scope",
               "aliases": [],
               "description": "session, attachments, workspace, saga, lexicon, or all (default).",
@@ -8638,7 +8656,7 @@
               ],
               "options": [],
               "examples": [
-                "arcanum data retention set --sessions 90"
+                "arcanum data retention set archived-sessions 90"
               ],
               "commands": []
             }

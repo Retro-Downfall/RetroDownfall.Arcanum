@@ -16,7 +16,7 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 namespace RetroDownfall.Arcanum.Tests.Data;
 
 [Collection(RetroDownfall.Arcanum.Tests.Collections.SqliteConnectionPoolCollection.Name)]
-public sealed class GrimoireConnectionAdmissionInterceptorTests
+public sealed partial class GrimoireConnectionAdmissionInterceptorTests
 {
     [Theory]
     [InlineData(false)]
