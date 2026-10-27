@@ -347,8 +347,8 @@ internal sealed partial class DataRetentionService
         SqliteConnection connection = (SqliteConnection)await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
-        SqliteTransaction transaction = connection.BeginTransaction(
-            deferred: false);
+        SqliteTransaction transaction = (SqliteTransaction)await BeginMutationTransactionAsync(
+            connection, cancellationToken).ConfigureAwait(false);
 
         bool committed = false;
 
@@ -648,6 +648,12 @@ internal sealed partial class DataRetentionService
             return applied.Reconciled
                 ? LongRunningOperationRecoveryResult.Completed()
                 : LongRunningOperationRecoveryResult.Failed(ErrorCodes.Data.ReconciliationFailed);
+        }
+        catch (RetentionAcquisitionBusyException failure)
+        {
+            LogRetentionAcquisitionFailure(operation.Id, failure, "LegacyFactoryAcquisition");
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(ErrorCodes.Data.ReconciliationFailed);
         }
         catch (RetentionMutationCleanupException failure)
         {

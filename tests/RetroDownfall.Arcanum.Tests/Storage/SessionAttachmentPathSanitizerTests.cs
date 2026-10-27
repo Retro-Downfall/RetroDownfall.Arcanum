@@ -5,6 +5,59 @@ namespace RetroDownfall.Arcanum.Tests.Storage;
 
 public sealed class SessionAttachmentPathSanitizerTests
 {
+    [Theory]
+    [InlineData(". notes", "notes")]
+    [InlineData(". . notes . .", "notes")]
+    [InlineData("x\u00a0.", "x")]
+    [InlineData(".\u00a0.\u2003notes\u2003.\u00a0.", "notes")]
+    [InlineData("/ notes /", "notes")]
+    [InlineData("notes.txt", "notes.txt")]
+    public void Rv266_sanitized_keys_are_stable_after_boundary_normalization(string input, string expected)
+    {
+        Assert.True(SessionAttachmentPathSanitizer.TrySanitize(input, out string key, out _));
+
+        Assert.Equal(expected, key);
+
+        Assert.True(SessionAttachmentPathSanitizer.TrySanitize(key, out string again, out _));
+
+        Assert.Equal(key, again);
+    }
+
+    [Theory]
+    [InlineData(". .")]
+    [InlineData(".\u00a0.\u2003.")]
+    [InlineData(". . CON .")]
+    public void Rv266_exposed_empty_and_reserved_names_are_refused(string input)
+    {
+        Assert.False(SessionAttachmentPathSanitizer.TrySanitize(input, out string key, out _));
+
+        Assert.Empty(key);
+    }
+
+    [Fact]
+    public void Rv266_sanitization_is_idempotent_across_unicode_edges_and_length_cuts()
+    {
+        string[] edges = ["", ".", " ", "\u00a0", ". \u2003.", "/ .\u00a0", ".\t."];
+
+        foreach (string left in edges)
+        {
+            foreach (string right in edges)
+            {
+                foreach (string middle in new[] { "notes", "n..m", new string('x', 118) + "\u00a0.z", new string('x', 118) + "\U0001F600.end" })
+                {
+                    string input = left + middle + right;
+
+                    Assert.True(SessionAttachmentPathSanitizer.TrySanitize(input, out string key, out _));
+
+                    Assert.True(SessionAttachmentPathSanitizer.TrySanitize(key, out string again, out _));
+
+                    Assert.Equal(key, again);
+
+                    Assert.InRange(key.Length, 1, 120);
+                }
+            }
+        }
+    }
 
     [Theory]
     [InlineData(null)]
@@ -17,13 +70,11 @@ public sealed class SessionAttachmentPathSanitizerTests
     [InlineData("../..")]
     public void TrySanitize_rejects_empty_or_dot_only(string? input)
     {
-
         Assert.False(SessionAttachmentPathSanitizer.TrySanitize(input, out string sanitized, out string error));
 
         Assert.Equal(string.Empty, sanitized);
 
         Assert.False(string.IsNullOrWhiteSpace(error));
-
     }
 
     [Theory]
@@ -35,13 +86,11 @@ public sealed class SessionAttachmentPathSanitizerTests
     [InlineData("/absolute", "absolute")]
     public void TrySanitize_strips_path_traversal_and_separators(string input, string expected)
     {
-
         Assert.True(SessionAttachmentPathSanitizer.TrySanitize(input, out string sanitized, out string error));
 
         Assert.Equal(expected, sanitized);
 
         Assert.Equal(string.Empty, error);
-
     }
 
     [Theory]
@@ -55,11 +104,9 @@ public sealed class SessionAttachmentPathSanitizerTests
     [InlineData("nul.txt")]
     public void TrySanitize_rejects_reserved_names(string input)
     {
-
         Assert.False(SessionAttachmentPathSanitizer.TrySanitize(input, out _, out string error));
 
         Assert.False(string.IsNullOrWhiteSpace(error));
-
     }
 
     [Theory]
@@ -69,13 +116,11 @@ public sealed class SessionAttachmentPathSanitizerTests
     [InlineData("file_name-1.md", "file_name-1.md")]
     public void TrySanitize_accepts_safe_names(string input, string expected)
     {
-
         Assert.True(SessionAttachmentPathSanitizer.TrySanitize(input, out string sanitized, out string error));
 
         Assert.Equal(expected, sanitized);
 
         Assert.Equal(string.Empty, error);
-
     }
 
     [Theory]
@@ -86,78 +131,63 @@ public sealed class SessionAttachmentPathSanitizerTests
     [InlineData("left|right.csv", "leftright.csv")]
     public void TrySanitize_strips_characters_windows_filenames_reject(string input, string expected)
     {
-
         Assert.True(SessionAttachmentPathSanitizer.TrySanitize(input, out string sanitized, out string error));
 
         Assert.Equal(expected, sanitized);
 
         Assert.Equal(string.Empty, error);
-
     }
 
     [Fact]
     public void TrySanitize_rejects_names_made_only_of_unsafe_characters()
     {
-
         Assert.False(SessionAttachmentPathSanitizer.TrySanitize("<*?>", out string sanitized, out string error));
 
         Assert.Equal(string.Empty, sanitized);
 
         Assert.False(string.IsNullOrWhiteSpace(error));
-
     }
 
     [Fact]
     public void TrySanitize_strips_leading_dots()
     {
-
         Assert.True(SessionAttachmentPathSanitizer.TrySanitize("...hidden.txt", out string sanitized, out _));
 
         Assert.Equal("hidden.txt", sanitized);
-
     }
 
     [Fact]
     public void TrySanitize_trims_a_trailing_dot_so_windows_normalisation_cannot_collide_two_logical_keys()
     {
-
         bool dottedOk = SessionAttachmentPathSanitizer.TrySanitize("notes.", out string dotted, out _);
 
         bool plainOk = SessionAttachmentPathSanitizer.TrySanitize("notes", out string plain, out _);
 
         if (dottedOk && plainOk)
         {
-
             Assert.Equal(plain, dotted);
-
         }
         else
         {
-
             Assert.False(dottedOk);
 
             Assert.False(plainOk);
-
         }
-
     }
 
     [Fact]
     public void TrySanitize_trims_a_trailing_dot_exposed_by_stripping_a_trailing_unsafe_character()
     {
-
         Assert.True(SessionAttachmentPathSanitizer.TrySanitize("report", out string expected, out _));
 
         Assert.True(SessionAttachmentPathSanitizer.TrySanitize("report.|", out string sanitized, out _));
 
         Assert.Equal(expected, sanitized);
-
     }
 
     [Fact]
     public void TrySanitize_trims_a_trailing_dot_exposed_by_truncation()
     {
-
         // 121 chars; truncating to the 120-char cap drops the trailing 'b' and would leave a
         // trailing '.' if nothing re-trimmed after the cut.
         string aDotB = new string('a', 119) + ".b";
@@ -170,47 +200,37 @@ public sealed class SessionAttachmentPathSanitizerTests
 
         if (longOk && shortOk)
         {
-
             Assert.Equal(shortSanitized, longSanitized);
-
         }
         else
         {
-
             Assert.False(longOk);
 
             Assert.False(shortOk);
-
         }
-
     }
 
     [Fact]
     public void TrySanitize_strips_control_characters()
     {
-
         Assert.True(SessionAttachmentPathSanitizer.TrySanitize("a\nb\tc.txt", out string sanitized, out _));
 
         Assert.Equal("abc.txt", sanitized);
-
     }
 
     [Fact]
     public void TrySanitize_caps_length_near_120()
     {
-
         string input = new('a', 200);
 
         Assert.True(SessionAttachmentPathSanitizer.TrySanitize(input, out string sanitized, out _));
 
         Assert.Equal(120, sanitized.Length);
-
     }
 
     [Fact]
     public void TrySanitize_does_not_split_a_surrogate_pair_at_the_length_cap()
     {
-
         string input = new string('a', 119) + "\U0001F600" + new string('b', 40);
 
         Assert.True(SessionAttachmentPathSanitizer.TrySanitize(input, out string sanitized, out _));
@@ -220,13 +240,11 @@ public sealed class SessionAttachmentPathSanitizerTests
         Assert.DoesNotContain(sanitized, char.IsSurrogate);
 
         Assert.Equal(sanitized, Utf8Truncation.NormalizeInvalidUtf16(sanitized));
-
     }
 
     [Fact]
     public void TrySanitize_keeps_a_whole_surrogate_pair_that_fits_under_the_cap()
     {
-
         string input = new string('a', 118) + "\U0001F600" + new string('b', 40);
 
         Assert.True(SessionAttachmentPathSanitizer.TrySanitize(input, out string sanitized, out _));
@@ -236,7 +254,6 @@ public sealed class SessionAttachmentPathSanitizerTests
         Assert.EndsWith("\U0001F600", sanitized, StringComparison.Ordinal);
 
         Assert.Equal(sanitized, Utf8Truncation.NormalizeInvalidUtf16(sanitized));
-
     }
 
     [Theory]
@@ -247,13 +264,11 @@ public sealed class SessionAttachmentPathSanitizerTests
     [InlineData("bad id")]
     public void TryValidatePendingTurnId_rejects_unsafe(string? input)
     {
-
         Assert.False(SessionAttachmentPathSanitizer.TryValidatePendingTurnId(input, out string validated, out string error));
 
         Assert.Equal(string.Empty, validated);
 
         Assert.False(string.IsNullOrEmpty(error));
-
     }
 
     [Theory]
@@ -261,13 +276,10 @@ public sealed class SessionAttachmentPathSanitizerTests
     [InlineData("orphan-deadbeef", "orphan-deadbeef")]
     public void TryValidatePendingTurnId_accepts_safe(string input, string expected)
     {
-
         Assert.True(SessionAttachmentPathSanitizer.TryValidatePendingTurnId(input, out string validated, out string error));
 
         Assert.Equal(expected, validated);
 
         Assert.Equal(string.Empty, error);
-
     }
-
 }

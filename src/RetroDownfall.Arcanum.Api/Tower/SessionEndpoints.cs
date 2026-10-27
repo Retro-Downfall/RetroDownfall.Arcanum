@@ -1202,7 +1202,8 @@ internal static class SessionEndpoints
                 HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
-                if (request is null || string.IsNullOrWhiteSpace(request.TargetIdentifier))
+                if (request is null || string.IsNullOrEmpty(request.TargetIdentifier)
+                    || (request.Kind != SessionContextPinKind.Attachment && string.IsNullOrWhiteSpace(request.TargetIdentifier)))
                 {
                     return Results.BadRequest(ApiResponse<SessionContextPinDto>.FromResult(
                         Result<SessionContextPinDto>.Failure(
@@ -1221,7 +1222,9 @@ internal static class SessionEndpoints
                         statusCode: StatusCodes.Status404NotFound);
                 }
 
-                string target = request.TargetIdentifier.Trim();
+                string target = request.Kind == SessionContextPinKind.Attachment
+                    ? request.TargetIdentifier
+                    : request.TargetIdentifier.Trim();
                 if (target.Length > 16_384)
                 {
                     return Results.BadRequest(ApiResponse<SessionContextPinDto>.FromResult(

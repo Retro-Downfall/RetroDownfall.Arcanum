@@ -303,6 +303,41 @@ public sealed partial class ToolExecutionPipelineTests
                 cancellationToken: caller.Token)));
     }
 
+    [Theory]
+    [InlineData(" notes", false)]
+    [InlineData(" notes", true)]
+    [InlineData("x\u00a0", false)]
+    [InlineData("x\u00a0", true)]
+    [InlineData("notes.txt", false)]
+    [InlineData("notes.txt", true)]
+    [InlineData("\u00a0", false)]
+    [InlineData("\u00a0", true)]
+    [InlineData("\u2003", false)]
+    [InlineData("\u2003", true)]
+    public async Task Rv266_refresh_postprocessing_preserves_legacy_key_before_source_authorization(string key, bool jsonValue)
+    {
+        ToolExecutionPipeline.ProcessedToolCall result = await RunWithSessionAsync(() =>
+        {
+            Guid session = SessionAttachmentToolAmbient.CurrentSessionId!.Value;
+
+            SessionAttachmentRecord row = new(Guid.NewGuid(), session, null, null, SessionAttachmentState.Bound,
+                key, "legacy.txt", 1, "safe/legacy", "hash", "text/plain", 5, SessionAttachmentKind.Text, DateTimeOffset.UtcNow);
+
+            object value = jsonValue ? System.Text.Json.JsonSerializer.SerializeToElement(key, AdHocJson.Options) : key;
+
+            return CreatePipeline(new NoOpSessionAttachmentStore(row), new UnusedAttachmentSourceResolver())
+                .ProcessSingleToolCallAsync(
+                    new FunctionCallContent("legacy-refresh", "refresh_session_file", new Dictionary<string, object?> { ["logicalKey"] = value }),
+                    new PingRequest("refresh", WorkingDirectory: "/tmp"), SessionToolOptions("refresh_session_file"),
+                    activeSpell: null, sessionId: null, turnContext: new ToolExecutionPipeline.TurnContext(),
+                    suppressInvocationFailures: true, cancellationToken: CancellationToken.None);
+        });
+
+        Assert.Contains("source_unavailable", result.ResultText, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("attachment_not_visible", result.ResultText, StringComparison.Ordinal);
+    }
+
     private static ToolExecutionPipeline CreatePipeline(
         NoOpSessionAttachmentStore? store = null,
         IAttachmentSourceResolver? attachmentSourceResolver = null,

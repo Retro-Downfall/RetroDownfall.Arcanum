@@ -1675,21 +1675,20 @@ internal sealed partial class DataRetentionService(
             }
 
             // Past the point of no return: the mutation has committed, so the bookkeeping that records it
-            // runs on CancellationToken.None, as the arms' own post-commit reconciliation reads do. A cancel
-            // landing here would otherwise report a committed deletion as cancelled and leave its row for
-            // recovery to rediscover.
+            // uses an independent cleanup budget. Caller cancellation cannot turn a committed deletion
+            // into a cancelled source mutation; an unproved marker remains available to durable recovery.
             LongRunningOperation latest = await operations.GetAsync(
                 operation.Id,
                 CancellationToken.None).ConfigureAwait(false)
                 ?? lease.Operation;
 
-            bool completed = await operations.TryTransitionAsync(
+            bool completed = await TrySettleRetentionAsync(
                 operation.Id,
                 latest.Revision,
                 ownerId,
                 LongRunningOperationState.Completed,
                 timeProvider.GetUtcNow(),
-                cancellationToken: CancellationToken.None).ConfigureAwait(false);
+                terminalErrorCode: null).ConfigureAwait(false);
 
             if (!completed)
             {
@@ -1703,6 +1702,11 @@ internal sealed partial class DataRetentionService(
             }
 
             return Result<DataRetentionApplyResult>.Success(applied);
+        }
+        catch (RetentionAcquisitionBusyException failure)
+        {
+            return await RefuseUnstartedRetentionAcquisitionAsync(operation, ownerId, failure,
+                prune: request.Request.Operation == DataRetentionOperation.Prune).ConfigureAwait(false);
         }
         catch (RetentionMutationCleanupException failure)
         {
@@ -1729,14 +1733,13 @@ internal sealed partial class DataRetentionService(
                 CancellationToken.None).ConfigureAwait(false)
                 ?? lease.Operation;
 
-            bool marked = await operations.TryTransitionAsync(
+            bool marked = await TrySettleRetentionAsync(
                 operation.Id,
                 refused.Revision,
                 ownerId,
                 LongRunningOperationState.Failed,
                 timeProvider.GetUtcNow(),
-                ex.Error.Code,
-                CancellationToken.None).ConfigureAwait(false);
+                ex.Error.Code).ConfigureAwait(false);
 
             return Result<DataRetentionApplyResult>.Failure(
                 marked
@@ -1752,14 +1755,13 @@ internal sealed partial class DataRetentionService(
                 CancellationToken.None).ConfigureAwait(false)
                 ?? lease.Operation;
 
-            bool terminalized = await operations.TryTransitionAsync(
+            bool terminalized = await TrySettleRetentionAsync(
                 operation.Id,
                 latest.Revision,
                 ownerId,
                 LongRunningOperationState.Failed,
                 timeProvider.GetUtcNow(),
-                ErrorCodes.Data.Blocked,
-                CancellationToken.None).ConfigureAwait(false);
+                ErrorCodes.Data.Blocked).ConfigureAwait(false);
 
             return Result<DataRetentionApplyResult>.Failure(
                 terminalized
@@ -1775,14 +1777,13 @@ internal sealed partial class DataRetentionService(
                 CancellationToken.None).ConfigureAwait(false)
                 ?? lease.Operation;
 
-            bool terminalized = await operations.TryTransitionAsync(
+            bool terminalized = await TrySettleRetentionAsync(
                 operation.Id,
                 latest.Revision,
                 ownerId,
                 LongRunningOperationState.Failed,
                 timeProvider.GetUtcNow(),
-                ErrorCodes.Data.Conflict,
-                CancellationToken.None).ConfigureAwait(false);
+                ErrorCodes.Data.Conflict).ConfigureAwait(false);
 
             return Result<DataRetentionApplyResult>.Failure(
                 terminalized
@@ -1818,14 +1819,13 @@ internal sealed partial class DataRetentionService(
             // The opposite instruction to the one above, and it used to share its code: the mutation
             // is durable and bytes an operator owns are still on disk, so a client must not read this
             // as "nothing happened" and must not retry it blind.
-            bool terminalized = await operations.TryTransitionAsync(
+            bool terminalized = await TrySettleRetentionAsync(
                 operation.Id,
                 latest.Revision,
                 ownerId,
                 LongRunningOperationState.ReconciliationRequired,
                 timeProvider.GetUtcNow(),
-                RetentionRecoveryTerminalCode,
-                CancellationToken.None).ConfigureAwait(false);
+                RetentionRecoveryTerminalCode).ConfigureAwait(false);
 
             return Result<DataRetentionApplyResult>.Failure(
                 new Error(
@@ -1842,6 +1842,100 @@ internal sealed partial class DataRetentionService(
     }
 
     /// <summary>Unknown post-checkpoint effects retain their exact recovery owner and journal.</summary>
+    private async Task<bool> TrySettleRetentionAsync(
+        Guid operationId,
+        long revision,
+        string ownerId,
+        LongRunningOperationState state,
+        DateTimeOffset now,
+        string? terminalErrorCode = null)
+    {
+        using CancellationTokenSource cleanup = new(RetentionCleanupBudget);
+
+        try
+        {
+            return await operations.TryTransitionAsync(operationId, revision, ownerId, state, now,
+                terminalErrorCode, cleanup.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cleanup.IsCancellationRequested)
+        {
+            return false;
+        }
+    }
+
+    private async Task<Result<DataRetentionApplyResult>> RefuseUnstartedRetentionAcquisitionAsync(
+        LongRunningOperation operation,
+        string ownerId,
+        RetentionAcquisitionBusyException failure,
+        bool prune)
+    {
+        bool settled = false;
+
+        bool provenNoEffects = !prune;
+
+        bool rejectedCas = false;
+
+        using CancellationTokenSource cleanup = new(RetentionCleanupBudget);
+
+        try
+        {
+            LongRunningOperation? current = await operations.GetAsync(operation.Id, cleanup.Token).ConfigureAwait(false);
+
+            if (prune)
+            {
+                // A fresh request cannot enter any candidate before its initial save succeeds.
+                // BEGIN failure alone cannot distinguish this boundary from a later candidate.
+                provenNoEffects = current is not null
+                    && current.Id == operation.Id
+                    && current.Kind == LongRunningOperationKinds.DataRetentionPrune
+                    && current.RecoveryPolicy == LongRunningOperationRecoveryPolicy.RestartIdempotently
+                    && current.State == LongRunningOperationState.Running
+                    && string.Equals(current.LeaseOwner, ownerId, StringComparison.Ordinal)
+                    && current.LeaseExpiresAt > timeProvider.GetUtcNow()
+                    && current.CheckpointVersion == 0
+                    && current.CheckpointPayload is null
+                    && current.CheckpointReference is null;
+            }
+
+            if (provenNoEffects)
+            {
+                settled = await operations.TryTransitionAsync(operation.Id, (current ?? operation).Revision, ownerId,
+                    LongRunningOperationState.Failed, timeProvider.GetUtcNow(), ErrorCodes.Data.Conflict, cleanup.Token).ConfigureAwait(false);
+
+                rejectedCas = !settled;
+            }
+        }
+        catch (Exception)
+        {
+            // The independent writer can also prevent bookkeeping. No marker or surrender is claimed.
+        }
+
+        if (prune && rejectedCas)
+        {
+            LogRetentionAcquisitionFailure(operation.Id, failure, "InitialPruneDispositionRejected");
+
+            return new Error(ErrorCodes.Data.ReconciliationFailed,
+                $"Retention operation {operation.Id}'s disposition was refused by its ownership/revision check. Preserve its recovery state and inspect the current operation before retrying.");
+        }
+
+        if (!provenNoEffects)
+        {
+            return await SettleUnexpectedOrdinaryFailureAsync(operation, ownerId, failure.Primary,
+                journalPrepared: false).ConfigureAwait(false);
+        }
+
+        LogRetentionAcquisitionFailure(operation.Id, failure, "OrdinaryAcquisition");
+
+        return new Error(ErrorCodes.Data.Conflict, settled
+            ? $"The database is busy; this retention attempt did not begin its source mutation. Operation {operation.Id} is marked failed. Let conflicting work release the database before retrying."
+            : $"The database is busy; this retention attempt did not begin its source mutation, but operation {operation.Id}'s durable disposition is unproved. Its retained owner may recover and continue under the existing expiry policy. Preserve its journal and inspect the operation after the writer releases before retrying.");
+    }
+
+    private void LogRetentionAcquisitionFailure(Guid operationId, RetentionAcquisitionBusyException failure, string stage) =>
+        logger.LogWarning("Retention operation {OperationId} at {Stage}: writer acquisition exhausted its bounded wait ({Failure}, SQLite {SqliteCode}, extended {SqliteExtendedCode}); preserve its existing durable disposition.",
+            operationId, stage, CovenantStorageFailure.Classify(failure.Primary),
+            (failure.Primary as SqliteException)?.SqliteErrorCode, (failure.Primary as SqliteException)?.SqliteExtendedErrorCode);
+
     private async Task<Result<DataRetentionApplyResult>> SettleUnexpectedOrdinaryFailureAsync(
         LongRunningOperation operation,
         string ownerId,
@@ -1849,6 +1943,8 @@ internal sealed partial class DataRetentionService(
         bool journalPrepared,
         RetentionMutationCleanupException? cleanup = null)
     {
+        using CancellationTokenSource cleanupBudget = new(RetentionCleanupBudget);
+
         LongRunningOperation current = operation;
 
         bool effectsMayExist = journalPrepared || cleanup is not null;
@@ -1857,7 +1953,7 @@ internal sealed partial class DataRetentionService(
 
         try
         {
-            (LongRunningOperation observed, bool checkpoint) = await ReadEffectEvidenceAsync(operation).ConfigureAwait(false);
+            (LongRunningOperation observed, bool checkpoint) = await ReadEffectEvidenceAsync(operation, cleanupBudget.Token).ConfigureAwait(false);
 
             current = observed;
 
@@ -1878,7 +1974,7 @@ internal sealed partial class DataRetentionService(
             settled = await operations.TryTransitionAsync(
                 operation.Id, current.Revision, ownerId,
                 effectsMayExist ? LongRunningOperationState.ReconciliationRequired : LongRunningOperationState.Failed,
-                timeProvider.GetUtcNow(), RetentionRecoveryTerminalCode, CancellationToken.None).ConfigureAwait(false);
+                timeProvider.GetUtcNow(), RetentionRecoveryTerminalCode, cleanupBudget.Token).ConfigureAwait(false);
         }
         catch (Exception)
         {
@@ -2310,10 +2406,11 @@ internal sealed partial class DataRetentionService(
     /// differently: the hosted prune assumes effects, and the Covenant reset records nothing.
     /// </remarks>
     private async Task<(LongRunningOperation Current, bool EffectsMayExist)> ReadEffectEvidenceAsync(
-        LongRunningOperation operation)
+        LongRunningOperation operation,
+        CancellationToken cancellationToken = default)
     {
         LongRunningOperation current = await operations
-            .GetAsync(operation.Id, CancellationToken.None)
+            .GetAsync(operation.Id, cancellationToken)
             .ConfigureAwait(false)
             ?? operation;
 
@@ -2501,19 +2598,21 @@ internal sealed partial class DataRetentionService(
     /// and an unsurrendered lease is recovered by <c>FindExpiredAsync</c> on its next pass anyway. Same
     /// shape, and the same reasoning, as <c>LexiconService.TryRollbackAsync</c>.</para>
     ///
-    /// <para>Both writes run on <see cref="CancellationToken.None"/>: cancellation is the only reason this
-    /// path runs, so passing the caller's token would skip the surrender on exactly the path it exists for.</para>
+    /// <para>The cleanup deadline is independent of the already-cancelled caller. Native polling may
+    /// spend one synchronous slice beyond that deadline; an unproved marker leaves the original row owned.</para>
     /// </remarks>
     private async Task TrySurrenderLeaseForReconciliationAsync(
         LongRunningOperation operation,
         LongRunningOperationLeaseResult lease,
         string ownerId)
     {
+        using CancellationTokenSource cleanup = new(RetentionCleanupBudget);
+
         try
         {
             LongRunningOperation cancelled = await operations.GetAsync(
                 operation.Id,
-                CancellationToken.None).ConfigureAwait(false)
+                cleanup.Token).ConfigureAwait(false)
                 ?? lease.Operation;
 
             _ = await operations.TryTransitionAsync(
@@ -2523,14 +2622,13 @@ internal sealed partial class DataRetentionService(
                 LongRunningOperationState.ReconciliationRequired,
                 timeProvider.GetUtcNow(),
                 ErrorCodes.Data.ReconciliationFailed,
-                CancellationToken.None).ConfigureAwait(false);
+                cleanup.Token).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             logger.LogWarning(
-                ex,
-                "Data-retention operation {OperationId} was cancelled, but its lease could not be surrendered; durable recovery will reclaim it.",
-                operation.Id);
+                "Data-retention operation {OperationId} at {Stage}: lease surrender is unproved ({Failure}); preserve its existing recovery state.",
+                operation.Id, "CancellationSettlement", CovenantStorageFailure.Classify(ex));
         }
     }
 
@@ -5021,18 +5119,91 @@ internal sealed partial class DataRetentionService(
         return Convert.ToInt64(result, CultureInfo.InvariantCulture);
     }
 
+    private static readonly TimeSpan RetentionAcquisitionBudget = TimeSpan.FromSeconds(5);
+
+    // Independent of the caller's token. One synchronous provider slice may overshoot this deadline
+    // to roughly one second plus scheduling; it is not a hard 500ms wall-clock guarantee.
+    private static readonly TimeSpan RetentionCleanupBudget = TimeSpan.FromMilliseconds(500);
+
     private static async Task<DbTransaction> BeginMutationTransactionAsync(
         DbConnection connection,
         CancellationToken cancellationToken)
     {
-        if (connection is SqliteConnection sqliteConnection)
+        if (connection is not SqliteConnection sqlite)
         {
-            return sqliteConnection.BeginTransaction(deferred: false);
+            return await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
         }
 
-        return await connection.BeginTransactionAsync(
-            IsolationLevel.Serializable,
-            cancellationToken).ConfigureAwait(false);
+        using CancellationTokenSource deadline = new(RetentionAcquisitionBudget);
+
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
+
+        SqliteBusyRetryCursor retry = SqliteBusyRetry.Begin(RetentionAcquisitionBudget);
+
+        Exception? lastBusy = null;
+
+        try
+        {
+            while (true)
+            {
+                linked.Token.ThrowIfCancellationRequested();
+
+                (int ProviderSeconds, int NativeMilliseconds) settings = SqliteBusyRetry.BeginShortAttempt(sqlite, linked.Token);
+
+                SqliteTransaction? transaction = null;
+
+                Exception? primary = null;
+
+                try
+                {
+                    transaction = sqlite.BeginTransaction(deferred: false);
+                }
+                catch (Exception failure)
+                {
+                    primary = failure;
+                }
+
+                bool restored = SqliteBusyRetry.TryRestoreShortAttempt(sqlite, settings);
+
+                if (transaction is not null) return transaction;
+
+                if (primary is null) throw new InvalidOperationException("Retention acquisition returned no transaction outcome.");
+
+                bool busy = SqliteBusyRetry.IsBusyOrLocked(primary);
+
+                if (busy) cancellationToken.ThrowIfCancellationRequested();
+
+                if (!restored || !busy || !NativeIdle(sqlite))
+                {
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(primary).Throw();
+                }
+
+                lastBusy = primary;
+
+                await retry.WaitAsync(primary, linked.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            throw;
+        }
+        catch (Exception failure) when (lastBusy is not null && NativeIdle(sqlite)
+            && (failure is GrimoireBusyTimeoutException
+                || failure is OperationCanceledException && deadline.IsCancellationRequested))
+        {
+            throw new RetentionAcquisitionBusyException(lastBusy);
+        }
+    }
+
+    private static bool NativeIdle(SqliteConnection connection) =>
+        connection.State == ConnectionState.Open && SQLitePCL.raw.sqlite3_get_autocommit(connection.Handle) != 0;
+
+    private sealed class RetentionAcquisitionBusyException(Exception primary)
+        : Exception("Retention could not acquire the native writer before its bounded deadline.", primary)
+    {
+        internal Exception Primary { get; } = primary;
     }
 
     private async Task<DataRetentionBlocker[]> ReadContextPinBlockersAsync(

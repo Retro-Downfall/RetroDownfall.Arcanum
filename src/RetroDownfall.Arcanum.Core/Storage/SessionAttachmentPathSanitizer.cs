@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 /// </summary>
 public static class SessionAttachmentPathSanitizer
 {
-
     private const int MaxLength = 120;
 
     private static readonly HashSet<string> ReservedNames = new(StringComparer.OrdinalIgnoreCase)
@@ -43,114 +42,87 @@ public static class SessionAttachmentPathSanitizer
 
     public static bool TrySanitize(string? input, out string sanitized, out string error)
     {
-
         sanitized = string.Empty;
 
         error = string.Empty;
 
         if (string.IsNullOrWhiteSpace(input))
         {
-
             error = "Name is empty.";
 
             return false;
-
         }
 
         StringBuilder builder = new(input.Length);
 
         foreach (char c in input.Trim())
         {
-
             if (c is '/' or '\\' or ':')
             {
-
                 continue;
-
             }
 
             if (c is '*' or '?' or '"' or '<' or '>' or '|')
             {
-
                 continue;
-
             }
 
             if (char.IsControl(c))
             {
-
                 continue;
-
             }
 
             builder.Append(c);
-
         }
 
         string candidate = builder.ToString();
 
         while (candidate.Contains("..", StringComparison.Ordinal))
         {
-
             candidate = candidate.Replace("..", string.Empty, StringComparison.Ordinal);
-
         }
 
-        candidate = candidate.TrimStart('.');
-
-        // Windows normalization silently drops a trailing '.' or ' ' from a path segment at the
-        // filesystem layer (Path.GetFullPath), so "notes." and "notes" would otherwise sanitize to
-        // two distinct strings that name the same Windows directory. Trimming here, before the
-        // empty and reserved checks re-run below, keeps the sanitizer's output equal to what
-        // Windows would have normalized it to anyway.
-        candidate = candidate.TrimEnd('.', ' ');
+        // Dot removal and unsafe-character filtering can expose whitespace, and vice versa.
+        // Scan both edges once so the persisted key is already a fixed point of sanitization.
+        candidate = TrimNameEdges(candidate);
 
         if (candidate.Length == 0)
         {
-
             error = "Name is empty after sanitization.";
 
             return false;
-
         }
 
         if (candidate.Length > MaxLength)
         {
-
             candidate = candidate[..Utf8Truncation.SafeCharSliceLength(candidate, MaxLength)];
 
             // The cut itself can expose a new trailing '.' or ' ' (or, in principle, empty the
             // candidate) at the character it lands on, so trim and recheck again here for the
             // same reason the first trim runs above: a name Windows would normalize can never
             // differ from its normalized form, including when this method did the cutting.
-            candidate = candidate.TrimEnd('.', ' ');
+            candidate = TrimNameEdges(candidate);
 
             if (candidate.Length == 0)
             {
-
                 error = "Name is empty after sanitization.";
 
                 return false;
-
             }
-
         }
 
         if (IsReserved(candidate))
         {
-
             error = "Name is reserved.";
 
             sanitized = string.Empty;
 
             return false;
-
         }
 
         sanitized = candidate;
 
         return true;
-
     }
 
     /// <summary>
@@ -159,78 +131,80 @@ public static class SessionAttachmentPathSanitizer
     /// </summary>
     public static bool TryValidatePendingTurnId(string? input, out string validated, out string error)
     {
-
         validated = string.Empty;
 
         error = string.Empty;
 
         if (string.IsNullOrWhiteSpace(input))
         {
-
             error = "Pending turn id is empty.";
 
             return false;
-
         }
 
         string trimmed = input.Trim();
 
         if (trimmed.Length > MaxLength)
         {
-
             error = "Pending turn id is too long.";
 
             return false;
-
         }
 
         if (trimmed is "." or "..")
         {
-
             error = "Pending turn id is reserved.";
 
             return false;
-
         }
 
         foreach (char c in trimmed)
         {
-
             if (char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.')
             {
-
                 continue;
-
             }
 
             error = "Pending turn id contains unsafe characters.";
 
             return false;
-
         }
 
         validated = trimmed;
 
         return true;
+    }
 
+    private static string TrimNameEdges(string value)
+    {
+        int start = 0;
+
+        int end = value.Length;
+
+        while (start < end && (value[start] == '.' || char.IsWhiteSpace(value[start])))
+        {
+            start++;
+        }
+
+        while (end > start && (value[end - 1] == '.' || char.IsWhiteSpace(value[end - 1])))
+        {
+            end--;
+        }
+
+        return value[start..end];
     }
 
     private static bool IsReserved(string name)
     {
-
         string stem = name;
 
         int dot = name.IndexOf('.');
 
         if (dot >= 0)
         {
-
             stem = name[..dot];
-
         }
 
         return ReservedNames.Contains(stem);
-
     }
-
 }

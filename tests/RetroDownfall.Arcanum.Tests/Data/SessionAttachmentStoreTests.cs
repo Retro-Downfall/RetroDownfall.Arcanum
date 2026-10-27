@@ -84,6 +84,103 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             new FixedFileEncryptionKeyProvider(),
             new EncryptedBlobStoreOptions { ChunkSize = 64 });
 
+    [SkippableTheory]
+    [InlineData(" notes", 2)]
+    [InlineData(".notes", null)]
+    [InlineData("notes", null)]
+    public async Task Rv266_exact_and_alias_selection_use_one_database_snapshot(string selector, int? version)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid session = Guid.NewGuid();
+
+        await EnsureSessionAsync(session, "single-key-snapshot");
+
+        SessionAttachmentRecord old = await _store!.PersistNewAsync(session, null, null, "old", "old.txt",
+            "legacy"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        await _db!.Database.ExecuteSqlRawAsync("UPDATE SessionAttachments SET LogicalKey = {0} WHERE Id = {1}", " notes", GrimoireEntitySql.Format(old.Id));
+
+        SessionAttachmentRecord canonical = await _store.PersistNewAsync(session, null, null, "notes", "new.txt",
+            "canonical"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        using SqliteStatementTrace trace = new((SqliteConnection)_db.Database.GetDbConnection());
+
+        SessionAttachmentRecord? selected = await _store.GetByLogicalAsync(session, selector, version);
+
+        Assert.Equal(selector == " notes" ? (Guid?)null : canonical.Id, selected?.Id);
+
+        Assert.Single(trace.Statements, statement => statement.Contains("FROM \"SessionAttachments\"", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [SkippableTheory]
+    [InlineData(". notes", "notes")]
+    [InlineData("x\u00a0.", "x")]
+    [InlineData(".\u00a0. notes .", "notes")]
+    [InlineData("notes.txt", "notes.txt")]
+    public async Task Rv266_new_attachment_key_round_trips_index_latest_and_version(string input, string expected)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid session = Guid.NewGuid();
+
+        await EnsureSessionAsync(session, "key-roundtrip");
+
+        SessionAttachmentRecord row = await _store!.PersistNewAsync(session, null, null, input, input,
+            "stable key"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        Assert.Equal(expected, row.LogicalKey);
+
+        Assert.Equal(row.LogicalKey, Assert.Single(await _store.BuildIndexAsync(session, 10)).LogicalKey);
+
+        Assert.Equal(row.Id, (await _store.GetByLogicalAsync(session, row.LogicalKey, null))?.Id);
+
+        Assert.Equal(row.Id, (await _store.GetByLogicalAsync(session, row.LogicalKey, 1))?.Id);
+
+        Assert.Equal("stable key"u8.ToArray(), (await _store.ReadBytesAsync(row)).ToArray());
+    }
+
+    [SkippableTheory]
+    [InlineData(" notes", "notes")]
+    [InlineData("x\u00a0", "x")]
+    [InlineData("\u00a0", "notes")]
+    [InlineData("\u2003", "notes")]
+    public async Task Rv266_legacy_exact_key_wins_without_renaming_or_cross_version_fallback(string legacy, string canonical)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid session = Guid.NewGuid();
+
+        await EnsureSessionAsync(session, "legacy-key");
+
+        SessionAttachmentRecord old = await _store!.PersistNewAsync(session, null, null, "old", "old.txt",
+            "legacy bytes"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        await _db!.Database.ExecuteSqlRawAsync("UPDATE SessionAttachments SET LogicalKey = {0} WHERE Id = {1}", legacy, GrimoireEntitySql.Format(old.Id));
+
+        await _store.PersistNewAsync(session, null, null, canonical, "new.txt", "new v1"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        SessionAttachmentRecord newer = await _store.PersistNewAsync(session, null, null, canonical, "new.txt", "new v2"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        Assert.Equal(2, newer.Version);
+
+        Assert.Equal(old.Id, (await _store.GetByLogicalAsync(session, legacy, null))?.Id);
+
+        Assert.Equal(old.Id, (await _store.GetByLogicalAsync(session, legacy, 1))?.Id);
+
+        Assert.Null(await _store.GetByLogicalAsync(session, legacy, 2));
+
+        Assert.Equal(newer.Id, (await _store.GetByLogicalAsync(session, canonical, null))?.Id);
+
+        Assert.Equal(newer.Id, (await _store.GetByLogicalAsync(session, "." + canonical, null))?.Id);
+
+        Assert.Null(await _store.GetByLogicalAsync(Guid.NewGuid(), legacy, null));
+
+        Assert.Equal(legacy, (await _store.GetByIdAsync(old.Id))?.LogicalKey);
+
+        Assert.Equal("legacy bytes"u8.ToArray(), (await _store.ReadBytesAsync(old)).ToArray());
+    }
+
     [SkippableFact]
 
     public async Task PersistNewAsync_uses_streaming_encrypted_writer()

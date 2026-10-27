@@ -692,6 +692,13 @@ internal sealed partial class DataRetentionService
             return Result<DataRetentionApplyResult>.Failure(
                 new Error(ErrorCodes.Data.Conflict, ex.Message));
         }
+        catch (RetentionAcquisitionBusyException failure)
+        {
+            // Canonical erasure may already be committed; this ordinary BEGIN is not whole-reset authority.
+            LogRetentionAcquisitionFailure(operationId, failure, "FactoryContinuationAcquisition");
+
+            return new Error(ErrorCodes.Data.ReconciliationFailed, "Factory cleanup could not acquire the writer; preserve the current reset owner for durable recovery.");
+        }
         catch (RetentionQuarantineRecoveryRequiredException ex)
         {
             if (ex.InnerException is ManagedTreeInventoryRefusalException refusal)

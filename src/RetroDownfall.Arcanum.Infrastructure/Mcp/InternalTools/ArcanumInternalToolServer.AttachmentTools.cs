@@ -38,7 +38,7 @@ internal sealed partial class ArcanumInternalToolServer
         }
 
         bool byId = args?.AttachmentId is { } id && id != Guid.Empty;
-        bool byLogical = !string.IsNullOrWhiteSpace(args?.LogicalKey);
+        bool byLogical = !string.IsNullOrEmpty(args?.LogicalKey);
         if (byId == byLogical)
         {
             return ToolError("refresh_session_file requires exactly one of 'attachmentId' or 'logicalKey'.");
@@ -69,9 +69,17 @@ internal sealed partial class ArcanumInternalToolServer
                     .GroupBy(static row => row.LogicalKey, StringComparer.Ordinal)
                     .Where(group => string.Equals(
                         group.Key,
-                        args!.LogicalKey!.Trim(),
+                        args!.LogicalKey!,
                         StringComparison.OrdinalIgnoreCase))
                     .ToList();
+                if (matches.Count == 0 && !string.Equals(args!.LogicalKey, args.LogicalKey!.Trim(), StringComparison.Ordinal))
+                {
+                    matches = bound
+                        .GroupBy(static row => row.LogicalKey, StringComparer.Ordinal)
+                        .Where(group => string.Equals(group.Key, args.LogicalKey.Trim(), StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                }
+
                 if (matches.Count > 1)
                 {
                     return ToolError("The logicalKey selector is ambiguous in the current session.");
@@ -126,7 +134,7 @@ internal sealed partial class ArcanumInternalToolServer
             return ToolError("Invalid arguments for attach_session_file.");
         }
 
-        if (args is null || string.IsNullOrWhiteSpace(args.LogicalName))
+        if (args is null || string.IsNullOrEmpty(args.LogicalName))
         {
             return ToolError("attach_session_file requires a non-empty 'logicalName'.");
         }
@@ -138,7 +146,7 @@ internal sealed partial class ArcanumInternalToolServer
             return ToolError("No current session; cannot attach a session file.");
         }
 
-        string logicalName = args.LogicalName.Trim();
+        string logicalName = args.LogicalName;
 
         try
         {

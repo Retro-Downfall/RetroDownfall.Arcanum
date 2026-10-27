@@ -114,13 +114,13 @@ public static class SessionAttachmentToolInjection
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(documentHostFor);
 
-        if (string.IsNullOrWhiteSpace(logicalName))
+        if (string.IsNullOrEmpty(logicalName))
         {
             return new AttachMaterialization(null, null);
         }
 
         SessionAttachmentRecord? record = await store
-            .GetByLogicalAsync(sessionId, logicalName.Trim(), version, cancellationToken)
+            .GetByLogicalAsync(sessionId, logicalName, version, cancellationToken)
             .ConfigureAwait(false);
 
         if (record is null
@@ -526,12 +526,12 @@ public static class SessionAttachmentToolInjection
 
         if (!TryGetArgumentValue(arguments, "logicalName", out object? nameRaw)
             || !TryCoerceString(nameRaw, out string? name)
-            || string.IsNullOrWhiteSpace(name))
+            || string.IsNullOrEmpty(name))
         {
             return false;
         }
 
-        logicalName = name.Trim();
+        logicalName = name;
 
         if (TryGetArgumentValue(arguments, "version", out object? versionRaw)
             && TryCoerceInt(versionRaw, out int parsedVersion))

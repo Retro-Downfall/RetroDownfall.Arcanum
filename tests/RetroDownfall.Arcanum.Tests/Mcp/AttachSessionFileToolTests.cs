@@ -18,6 +18,48 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 
 public sealed class AttachSessionFileToolTests
 {
+    [Theory]
+    [InlineData("attach_session_file", " notes")]
+    [InlineData("attach_session_file", "x\u00a0")]
+    [InlineData("refresh_session_file", " notes")]
+    [InlineData("refresh_session_file", "x\u00a0")]
+    [InlineData("attach_session_file", "notes.txt")]
+    [InlineData("refresh_session_file", "notes.txt")]
+    [InlineData("attach_session_file", "\u00a0")]
+    [InlineData("refresh_session_file", "\u00a0")]
+    [InlineData("attach_session_file", "\u2003")]
+    [InlineData("refresh_session_file", "\u2003")]
+    public async Task Rv266_native_attachment_tools_preserve_stored_logical_identity(string tool, string key)
+    {
+        Guid sessionId = Guid.NewGuid();
+
+        FakeSessionAttachmentStore store = new();
+
+        store.Records.Add(new SessionAttachmentRecord(Guid.NewGuid(), sessionId, null, null,
+            SessionAttachmentState.Bound, key, "legacy.txt", 1, "safe/legacy", "hash", "text/plain", 5,
+            SessionAttachmentKind.Text, DateTimeOffset.UtcNow,
+            new AttachmentSourceMetadata(AttachmentSourceKind.WorkspaceFile, "workspace", "legacy.txt", null, null, null, null, null, AttachmentSourceStatus.Refreshable, null)));
+
+        await using TestMcpSession mcp = await CreateSessionAsync(attachmentsToolEnabled: true, store: store);
+
+        SessionAttachmentToolAmbient.CurrentSessionId = sessionId;
+
+        try
+        {
+            using JsonDocument args = JsonDocument.Parse(tool == "attach_session_file"
+                ? JsonSerializer.Serialize(new Dictionary<string, string> { ["logicalName"] = key }, AdHocJson.Options)
+                : JsonSerializer.Serialize(new Dictionary<string, string> { ["logicalKey"] = key }, AdHocJson.Options));
+
+            McpToolsCallResultWire result = await mcp.CallToolAsync(tool, args.RootElement);
+
+            Assert.False(result.IsError, result.Content?[0].Text);
+        }
+        finally
+        {
+            SessionAttachmentToolAmbient.CurrentSessionId = null;
+        }
+    }
+
     [Fact]
     public async Task ToolsList_AdvertisesAttachSessionFile_WhenEnabled()
     {

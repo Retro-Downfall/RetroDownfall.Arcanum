@@ -784,11 +784,17 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         int? version,
         CancellationToken cancellationToken = default)
     {
-        if (!SessionAttachmentPathSanitizer.TrySanitize(logicalKey, out string sanitizedKey, out _))
+        if (string.IsNullOrEmpty(logicalKey))
         {
             return null;
         }
 
+        string? sanitizedKey = SessionAttachmentPathSanitizer.TrySanitize(logicalKey, out string canonical, out _)
+            ? canonical
+            : null;
+
+        // Resolve the complete exact-key family and its optional normalized alias in one read
+        // snapshot. A missing version can never redirect a legacy key to a different family.
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -807,7 +813,16 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                                "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
                         FROM "SessionAttachments"
                         WHERE "SessionId" = @sessionId
-                          AND "LogicalKey" = @logicalKey
+                          AND "LogicalKey" = CASE
+                              WHEN @logicalKey = @sanitizedKey OR EXISTS (
+                                  SELECT 1
+                                  FROM "SessionAttachments" AS exactKey
+                                  WHERE exactKey."SessionId" = @sessionId
+                                    AND exactKey."LogicalKey" = @logicalKey
+                                    AND exactKey."State" = @state
+                              ) THEN @logicalKey
+                              ELSE @sanitizedKey
+                          END
                           AND "State" = @state
                         ORDER BY "Version" DESC
                         LIMIT 1
@@ -824,7 +839,16 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                                "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
                         FROM "SessionAttachments"
                         WHERE "SessionId" = @sessionId
-                          AND "LogicalKey" = @logicalKey
+                          AND "LogicalKey" = CASE
+                              WHEN @logicalKey = @sanitizedKey OR EXISTS (
+                                  SELECT 1
+                                  FROM "SessionAttachments" AS exactKey
+                                  WHERE exactKey."SessionId" = @sessionId
+                                    AND exactKey."LogicalKey" = @logicalKey
+                                    AND exactKey."State" = @state
+                              ) THEN @logicalKey
+                              ELSE @sanitizedKey
+                          END
                           AND "Version" = @version
                           AND "State" = @state
                         LIMIT 1
@@ -835,7 +859,9 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
                 AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
 
-                AddParameter(cmd, "@logicalKey", sanitizedKey);
+                AddParameter(cmd, "@logicalKey", logicalKey);
+
+                AddParameter(cmd, "@sanitizedKey", (object?)sanitizedKey ?? DBNull.Value);
 
                 AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
 
@@ -1039,7 +1065,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         foreach (string logicalKey in logicalKeys)
         {
-            if (!string.IsNullOrWhiteSpace(logicalKey)
+            if (!string.IsNullOrEmpty(logicalKey)
                 && seenKeys.Add(logicalKey))
             {
                 orderedKeys.Add(logicalKey);

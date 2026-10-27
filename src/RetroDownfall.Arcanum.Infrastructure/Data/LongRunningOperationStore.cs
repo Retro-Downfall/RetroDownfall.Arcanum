@@ -282,7 +282,7 @@ internal sealed partial class LongRunningOperationStore(
             cancellationToken);
     }
 
-    public Task<LongRunningOperation?> TryStartSingleFlightAsync(
+    public async Task<LongRunningOperation?> TryStartSingleFlightAsync(
         LongRunningOperationCreateRequest request,
         string ownerId,
         DateTimeOffset utcNow,
@@ -319,125 +319,120 @@ internal sealed partial class LongRunningOperationStore(
 
         string owner = Bound(ownerId, MaxOwnerLength);
 
-        return SqliteBusyRetry.ExecuteAsync<LongRunningOperation?>(
-            async () =>
-            {
-                DbConnection connection = await OpenConnectionAsync(
-                    cancellationToken).ConfigureAwait(false);
+        void Configure(DbCommand command)
+        {
+            // A single SQLite write statement is an implicit transaction, so competing
 
-                await using DbCommand command = connection.CreateCommand();
+            // connections cannot both pass the active-operation predicate and insert.
 
-                // A single SQLite write statement is an implicit transaction, so competing
+            command.CommandText =
+                """
+                INSERT INTO "LongRunningOperations"
+                    ("Id", "Kind", "State", "RecoveryPolicy", "RootOperationId", "ParentOperationId",
+                     "SessionId", "RunId", "InferenceRunId", "BudgetReservationId", "IdempotencyClaimId",
+                     "CreatedAt", "StartedAt", "HeartbeatAt", "CompletedAt", "LeaseOwner", "LeaseExpiresAt",
+                     "AttemptCount", "CheckpointVersion", "CheckpointPayload", "CheckpointReference",
+                     "PublicSummary", "TerminalErrorCode", "Revision")
+                SELECT
+                    @id, @kind, @running, @policy, @root, @parent,
+                    @session, @run, @inference, @reservation, @claim,
+                    @created, @now, @now, NULL, @owner, @lease,
+                    1, 0, NULL, NULL, @summary, NULL, 1
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM "LongRunningOperations"
+                    WHERE (
+                          "Kind" = @kind
+                          OR (@retentionKind = 1 AND "Kind" LIKE 'data-retention-%'))
+                      AND "State" IN (
+                          @pending,
+                          @running,
+                          @waiting,
+                          @cancelling,
+                          @reconciliation))
+                """;
 
-                // connections cannot both pass the active-operation predicate and insert.
+            Add(command, "@id", Format(id));
 
-                command.CommandText =
-                    """
-                    INSERT INTO "LongRunningOperations"
-                        ("Id", "Kind", "State", "RecoveryPolicy", "RootOperationId", "ParentOperationId",
-                         "SessionId", "RunId", "InferenceRunId", "BudgetReservationId", "IdempotencyClaimId",
-                         "CreatedAt", "StartedAt", "HeartbeatAt", "CompletedAt", "LeaseOwner", "LeaseExpiresAt",
-                         "AttemptCount", "CheckpointVersion", "CheckpointPayload", "CheckpointReference",
-                         "PublicSummary", "TerminalErrorCode", "Revision")
-                    SELECT
-                        @id, @kind, @running, @policy, @root, @parent,
-                        @session, @run, @inference, @reservation, @claim,
-                        @created, @now, @now, NULL, @owner, @lease,
-                        1, 0, NULL, NULL, @summary, NULL, 1
-                    WHERE NOT EXISTS (
-                        SELECT 1
-                        FROM "LongRunningOperations"
-                        WHERE (
-                              "Kind" = @kind
-                              OR (@retentionKind = 1 AND "Kind" LIKE 'data-retention-%'))
-                          AND "State" IN (
-                              @pending,
-                              @running,
-                              @waiting,
-                              @cancelling,
-                              @reconciliation))
-                    """;
+            Add(command, "@kind", kind);
 
-                Add(command, "@id", Format(id));
+            Add(
+                command,
+                "@retentionKind",
+                kind.StartsWith("data-retention-", StringComparison.Ordinal) ? 1 : 0);
 
-                Add(command, "@kind", kind);
+            Add(command, "@running", (int)LongRunningOperationState.Running);
 
-                Add(
-                    command,
-                    "@retentionKind",
-                    kind.StartsWith("data-retention-", StringComparison.Ordinal) ? 1 : 0);
+            Add(command, "@pending", (int)LongRunningOperationState.Pending);
 
-                Add(command, "@running", (int)LongRunningOperationState.Running);
+            Add(command, "@waiting", (int)LongRunningOperationState.Waiting);
 
-                Add(command, "@pending", (int)LongRunningOperationState.Pending);
+            Add(command, "@cancelling", (int)LongRunningOperationState.Cancelling);
 
-                Add(command, "@waiting", (int)LongRunningOperationState.Waiting);
+            Add(
+                command,
+                "@reconciliation",
+                (int)LongRunningOperationState.ReconciliationRequired);
 
-                Add(command, "@cancelling", (int)LongRunningOperationState.Cancelling);
+            Add(command, "@policy", (int)request.RecoveryPolicy);
 
-                Add(
-                    command,
-                    "@reconciliation",
-                    (int)LongRunningOperationState.ReconciliationRequired);
+            Add(command, "@root", FormatNullable(request.RootOperationId));
 
-                Add(command, "@policy", (int)request.RecoveryPolicy);
+            Add(command, "@parent", FormatNullable(request.ParentOperationId));
 
-                Add(command, "@root", FormatNullable(request.RootOperationId));
+            Add(command, "@session", FormatReferenceNullable(request.SessionId));
 
-                Add(command, "@parent", FormatNullable(request.ParentOperationId));
+            Add(command, "@run", FormatReferenceNullable(request.RunId));
 
-                Add(command, "@session", FormatReferenceNullable(request.SessionId));
+            Add(command, "@inference", FormatReferenceNullable(request.InferenceRunId));
 
-                Add(command, "@run", FormatReferenceNullable(request.RunId));
+            Add(command, "@reservation", FormatNullable(request.BudgetReservationId));
 
-                Add(command, "@inference", FormatReferenceNullable(request.InferenceRunId));
+            Add(command, "@claim", FormatNullable(request.IdempotencyClaimId));
 
-                Add(command, "@reservation", FormatNullable(request.BudgetReservationId));
+            _ = UtcInstantSql.AddParameter(command, "@created", request.CreatedAt);
 
-                Add(command, "@claim", FormatNullable(request.IdempotencyClaimId));
+            Add(command, "@now", Format(utcNow));
 
-                _ = UtcInstantSql.AddParameter(command, "@created", request.CreatedAt);
+            Add(command, "@owner", owner);
 
-                Add(command, "@now", Format(utcNow));
+            Add(command, "@lease", Format(leaseExpiresAt));
 
-                Add(command, "@owner", owner);
+            Add(command, "@summary", summary);
+        }
 
-                Add(command, "@lease", Format(leaseExpiresAt));
+        int inserted = await ExecuteLedgerCommandAsync(
+            Configure,
+            cancellationToken,
+            cancellableAttempts: cancellationToken.CanBeCanceled).ConfigureAwait(false);
 
-                Add(command, "@summary", summary);
-
-                int inserted = await command
-                    .ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-                return inserted == 0
-                    ? null
-                    : new LongRunningOperation(
-                        Id: id,
-                        Kind: kind,
-                        State: LongRunningOperationState.Running,
-                        RecoveryPolicy: request.RecoveryPolicy,
-                        RootOperationId: request.RootOperationId,
-                        ParentOperationId: request.ParentOperationId,
-                        SessionId: request.SessionId,
-                        RunId: request.RunId,
-                        InferenceRunId: request.InferenceRunId,
-                        BudgetReservationId: request.BudgetReservationId,
-                        IdempotencyClaimId: request.IdempotencyClaimId,
-                        CreatedAt: request.CreatedAt,
-                        StartedAt: utcNow,
-                        HeartbeatAt: utcNow,
-                        CompletedAt: null,
-                        LeaseOwner: owner,
-                        LeaseExpiresAt: leaseExpiresAt,
-                        AttemptCount: 1,
-                        CheckpointVersion: 0,
-                        CheckpointPayload: null,
-                        CheckpointReference: null,
-                        PublicSummary: summary,
-                        TerminalErrorCode: null,
-                        Revision: 1);
-            },
-            cancellationToken);
+        return inserted == 0
+            ? null
+            : new LongRunningOperation(
+                Id: id,
+                Kind: kind,
+                State: LongRunningOperationState.Running,
+                RecoveryPolicy: request.RecoveryPolicy,
+                RootOperationId: request.RootOperationId,
+                ParentOperationId: request.ParentOperationId,
+                SessionId: request.SessionId,
+                RunId: request.RunId,
+                InferenceRunId: request.InferenceRunId,
+                BudgetReservationId: request.BudgetReservationId,
+                IdempotencyClaimId: request.IdempotencyClaimId,
+                CreatedAt: request.CreatedAt,
+                StartedAt: utcNow,
+                HeartbeatAt: utcNow,
+                CompletedAt: null,
+                LeaseOwner: owner,
+                LeaseExpiresAt: leaseExpiresAt,
+                AttemptCount: 1,
+                CheckpointVersion: 0,
+                CheckpointPayload: null,
+                CheckpointReference: null,
+                PublicSummary: summary,
+                TerminalErrorCode: null,
+                Revision: 1);
     }
 
     public Task<LongRunningOperation?> GetAsync(
@@ -1049,7 +1044,7 @@ internal sealed partial class LongRunningOperationStore(
         CancellationToken cancellationToken = default) =>
         RenewLeaseAsync(operationId, ownerId, utcNow, leaseExpiresAt, cancellationToken);
 
-    public Task<bool> RenewLeaseAsync(
+    public async Task<bool> RenewLeaseAsync(
         Guid operationId,
         string ownerId,
         DateTimeOffset utcNow,
@@ -1063,8 +1058,45 @@ internal sealed partial class LongRunningOperationStore(
             throw new ArgumentOutOfRangeException(nameof(leaseExpiresAt));
         }
 
-        return SqliteBusyRetry.ExecuteAsync(
-            async () =>
+        void Configure(DbCommand command)
+        {
+            command.CommandText =
+                """
+                UPDATE "LongRunningOperations"
+                SET "HeartbeatAt" = @now, "LeaseExpiresAt" = @lease, "Revision" = "Revision" + 1
+                WHERE "Id" = @id AND "LeaseOwner" = @owner
+                  AND "State" IN (@running, @waiting, @cancelling)
+                  AND "LeaseExpiresAt" > @now
+                """;
+
+            Add(command, "@id", Format(operationId));
+
+            Add(command, "@owner", Bound(ownerId, MaxOwnerLength));
+
+            Add(command, "@now", Format(utcNow));
+
+            Add(command, "@lease", Format(leaseExpiresAt));
+
+            Add(command, "@running", (int)LongRunningOperationState.Running);
+
+            Add(command, "@waiting", (int)LongRunningOperationState.Waiting);
+
+            Add(command, "@cancelling", (int)LongRunningOperationState.Cancelling);
+        }
+
+        SqliteBusyRetryCursor retry = SqliteBusyRetry.Begin();
+
+        while (true)
+        {
+            if (cancellationToken.CanBeCanceled) cancellationToken.ThrowIfCancellationRequested();
+
+            int? changed = null;
+
+            Exception? primary = null;
+
+            bool cleanupProved = true;
+
+            try
             {
                 Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
                     .OpenFreshAsync(
@@ -1081,35 +1113,50 @@ internal sealed partial class LongRunningOperationStore(
 
                 SqliteConnection connection = lease.Connection;
 
-                await using SqliteCommand command = connection.CreateCommand();
+                if (cancellationToken.CanBeCanceled)
+                {
+                    (changed, primary, cleanupProved) = await ExecuteShortLedgerAttemptAsync(
+                        connection, Configure, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await using SqliteCommand command = connection.CreateCommand();
 
-                command.CommandText =
-                    """
-                    UPDATE "LongRunningOperations"
-                    SET "HeartbeatAt" = @now, "LeaseExpiresAt" = @lease, "Revision" = "Revision" + 1
-                    WHERE "Id" = @id AND "LeaseOwner" = @owner
-                      AND "State" IN (@running, @waiting, @cancelling)
-                      AND "LeaseExpiresAt" > @now
-                    """;
+                    Configure(command);
 
-                Add(command, "@id", Format(operationId));
+                    changed = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (Exception failure)
+            {
+                // A fresh-lease cleanup failure must not replay a returned UPDATE or replace its primary failure.
+                if (primary is null) primary = failure;
+                else SqliteBusyRetry.ReportShortAttemptCleanupFailure(failure, "HeartbeatLeaseCleanup");
 
-                Add(command, "@owner", Bound(ownerId, MaxOwnerLength));
+                cleanupProved = false;
+            }
 
-                Add(command, "@now", Format(utcNow));
+            if (changed is { } result)
+            {
+                if (primary is not null) SqliteBusyRetry.ReportShortAttemptCleanupFailure(primary, "HeartbeatCleanup");
 
-                Add(command, "@lease", Format(leaseExpiresAt));
+                return result == 1;
+            }
 
-                Add(command, "@running", (int)LongRunningOperationState.Running);
+            if (primary is null) throw new InvalidOperationException("The heartbeat returned no command outcome.");
 
-                Add(command, "@waiting", (int)LongRunningOperationState.Waiting);
+            bool busy = SqliteBusyRetry.IsBusyOrLocked(primary);
 
-                Add(command, "@cancelling", (int)LongRunningOperationState.Cancelling);
+            if (busy) cancellationToken.ThrowIfCancellationRequested();
 
-                return await command.ExecuteNonQueryAsync(
-                    cancellationToken).ConfigureAwait(false) == 1;
-            },
-            cancellationToken);
+            if (!busy || cancellationToken.CanBeCanceled && !cleanupProved)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(primary).Throw();
+            }
+
+            // The fresh lease is already disposed before any backoff or another admitted attempt.
+            await retry.WaitAsync(primary, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public Task<bool> SaveCheckpointAsync(
@@ -1157,7 +1204,7 @@ internal sealed partial class LongRunningOperationStore(
                 Add(cmd, "@running", (int)LongRunningOperationState.Running);
                 Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);
             },
-            cancellationToken);
+            cancellationToken, cancellableAttempts: cancellationToken.CanBeCanceled);
     }
 
     public Task<bool> TryTransitionAsync(
@@ -1207,7 +1254,7 @@ internal sealed partial class LongRunningOperationStore(
                 Add(cmd, "@now", Format(utcNow));
                 Add(cmd, "@error", terminalErrorCode is null ? null : Bound(terminalErrorCode, MaxErrorCodeLength));
             },
-            cancellationToken);
+            cancellationToken, cancellableAttempts: cancellationToken.CanBeCanceled);
     }
 
     /// <summary>
@@ -1358,20 +1405,124 @@ internal sealed partial class LongRunningOperationStore(
             },
             cancellationToken);
 
-    private Task<bool> ExecuteUpdateAsync(
+    private async Task<bool> ExecuteUpdateAsync(
         string sql,
         Action<DbCommand> bind,
-        CancellationToken cancellationToken) =>
-        SqliteBusyRetry.ExecuteAsync(
-            async () =>
+        CancellationToken cancellationToken,
+        bool cancellableAttempts = false) =>
+        await ExecuteLedgerCommandAsync(
+            command =>
             {
-                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-                await using DbCommand cmd = connection.CreateCommand();
-                cmd.CommandText = sql;
-                bind(cmd);
-                return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+                command.CommandText = sql;
+
+                bind(command);
             },
-            cancellationToken);
+            cancellationToken,
+            cancellableAttempts).ConfigureAwait(false) == 1;
+
+    private Task<int> ExecuteLedgerCommandAsync(
+        Action<DbCommand> configure,
+        CancellationToken cancellationToken,
+        bool cancellableAttempts) =>
+        cancellableAttempts
+            ? ExecuteCancellableLedgerCommandAsync(configure, cancellationToken)
+            : SqliteBusyRetry.ExecuteAsync(
+                async () =>
+                {
+                    DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                    await using DbCommand command = connection.CreateCommand();
+
+                    configure(command);
+
+                    return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                },
+                cancellationToken);
+
+    internal Action? BeforeTransitionAttemptRestoreForTesting { get; set; }
+
+    private async Task<int> ExecuteCancellableLedgerCommandAsync(
+        Action<DbCommand> configure,
+        CancellationToken cancellationToken)
+    {
+        SqliteBusyRetryCursor retry = SqliteBusyRetry.Begin();
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            SqliteConnection connection = (SqliteConnection)await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            (int? changed, Exception? primary, bool cleanupProved) = await ExecuteShortLedgerAttemptAsync(
+                connection, configure, cancellationToken).ConfigureAwait(false);
+
+            if (changed is { } result)
+            {
+                if (primary is not null) SqliteBusyRetry.ReportShortAttemptCleanupFailure(primary, "CommandCleanup");
+
+                // A returned native result is authoritative even if resource/settings cleanup failed.
+                // No outer retry may reinterpret it as a second CAS.
+                return result;
+            }
+
+            if (primary is null) throw new InvalidOperationException("The ledger command returned no outcome.");
+
+            bool busy = SqliteBusyRetry.IsBusyOrLocked(primary);
+
+            if (busy) cancellationToken.ThrowIfCancellationRequested();
+
+            if (!cleanupProved || !busy)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(primary).Throw();
+            }
+
+            await retry.WaitAsync(primary, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<(int? Result, Exception? Primary, bool CleanupProved)> ExecuteShortLedgerAttemptAsync(
+        SqliteConnection connection,
+        Action<DbCommand> configure,
+        CancellationToken cancellationToken)
+    {
+        (int ProviderSeconds, int NativeMilliseconds) settings = SqliteBusyRetry.BeginShortAttempt(connection, cancellationToken);
+
+        int? changed = null;
+
+        Exception? primary = null;
+
+        try
+        {
+            await using DbCommand command = connection.CreateCommand();
+
+            command.CommandTimeout = 1;
+
+            configure(command);
+
+            changed = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception failure)
+        {
+            primary = failure;
+        }
+
+        bool cleanupProved = true;
+
+        try
+        {
+            BeforeTransitionAttemptRestoreForTesting?.Invoke();
+        }
+        catch (Exception failure)
+        {
+            cleanupProved = false;
+
+            SqliteBusyRetry.ReportShortAttemptCleanupFailure(failure, "TransitionCleanup");
+        }
+
+        cleanupProved &= SqliteBusyRetry.TryRestoreShortAttempt(connection, settings);
+
+        return (changed, primary, cleanupProved);
+    }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {

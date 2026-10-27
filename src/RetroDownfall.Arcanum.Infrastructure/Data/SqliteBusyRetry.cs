@@ -122,6 +122,107 @@ internal static class SqliteBusyRetry
         return false;
     }
 
+    internal static (int ProviderSeconds, int NativeMilliseconds) BeginShortAttempt(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        int originalProvider = connection.DefaultTimeout;
+
+        int? originalNative = null;
+
+        try
+        {
+            connection.DefaultTimeout = originalProvider <= 0 ? 1 : Math.Min(originalProvider, 1);
+
+            using SqliteCommand command = connection.CreateCommand();
+
+            command.CommandTimeout = 1;
+
+            command.CommandText = "PRAGMA busy_timeout;";
+
+            originalNative = Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+
+            if (SQLitePCL.raw.sqlite3_busy_timeout(connection.Handle, 0) != SQLitePCL.raw.SQLITE_OK)
+            {
+                throw new InvalidOperationException("The native short-attempt busy timeout could not be set.");
+            }
+
+            return (originalProvider, originalNative.Value);
+        }
+        catch
+        {
+            if (originalNative is { } native)
+            {
+                _ = TryRestoreShortAttempt(connection, (originalProvider, native));
+            }
+            else
+            {
+                try
+                {
+                    connection.DefaultTimeout = originalProvider;
+                }
+                catch (Exception restoreFailure)
+                {
+                    ReportShortAttemptCleanupFailure(restoreFailure, "SettingsRestore");
+                }
+            }
+
+            throw;
+        }
+    }
+
+    internal static bool TryRestoreShortAttempt(
+        SqliteConnection connection,
+        (int ProviderSeconds, int NativeMilliseconds) settings)
+    {
+        Exception? failure = null;
+
+        try
+        {
+            connection.DefaultTimeout = settings.ProviderSeconds;
+        }
+        catch (Exception restoreFailure)
+        {
+            failure = restoreFailure;
+        }
+
+        try
+        {
+            if (connection.State != System.Data.ConnectionState.Open
+                || SQLitePCL.raw.sqlite3_busy_timeout(connection.Handle, settings.NativeMilliseconds) != SQLitePCL.raw.SQLITE_OK)
+            {
+                throw new InvalidOperationException("The native busy timeout could not be restored.");
+            }
+        }
+        catch (Exception restoreFailure)
+        {
+            failure ??= restoreFailure;
+        }
+
+        if (failure is null) return true;
+
+        ReportShortAttemptCleanupFailure(failure, "SettingsRestore");
+
+        return false;
+    }
+
+    internal static void ReportShortAttemptCleanupFailure(Exception failure, string stage)
+    {
+        try
+        {
+            // This utility has no service dependency. Diagnostics must neither expose an exception
+            // graph nor replace a known SQL result or the primary failure during cleanup.
+            Serilog.Log.Warning("A SQLite short attempt could not finish {Stage} ({Failure}); its known command result remains authoritative.",
+                stage, Covenant.CovenantStorageFailure.Classify(failure));
+        }
+        catch (Exception)
+        {
+            // A diagnostic sink is never authority to replay a completed command.
+        }
+    }
+
     internal static TimeSpan ComputeDelay(int attempt)
     {
         int cappedAttempt = Math.Min(attempt, 10);

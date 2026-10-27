@@ -861,6 +861,16 @@ public sealed class ToolExecutionPipeline(
                 .Distinct(StringComparer.Ordinal)
                 .Where(key => string.Equals(key, logicalKey, StringComparison.OrdinalIgnoreCase))
                 .ToList();
+            if (matchingKeys.Count == 0 && logicalKey is not null
+                && !string.Equals(logicalKey, logicalKey.Trim(), StringComparison.Ordinal))
+            {
+                matchingKeys = visible
+                    .Select(static row => row.LogicalKey)
+                    .Distinct(StringComparer.Ordinal)
+                    .Where(key => string.Equals(key, logicalKey.Trim(), StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+            }
+
             if (matchingKeys.Count > 1)
             {
                 return RefreshError(
@@ -1079,11 +1089,11 @@ public sealed class ToolExecutionPipeline(
             {
                 logicalKey = raw switch
                 {
-                    JsonElement { ValueKind: JsonValueKind.String } json => json.GetString()?.Trim(),
-                    string value => value.Trim(),
+                    JsonElement { ValueKind: JsonValueKind.String } json => json.GetString(),
+                    string value => value,
                     _ => null,
                 };
-                if (string.IsNullOrWhiteSpace(logicalKey))
+                if (string.IsNullOrEmpty(logicalKey))
                 {
                     error = "logicalKey must be a non-empty string from the session attachment index.";
                     return false;
@@ -1092,7 +1102,7 @@ public sealed class ToolExecutionPipeline(
         }
 
         bool byId = attachmentId is not null;
-        bool byLogical = !string.IsNullOrWhiteSpace(logicalKey);
+        bool byLogical = !string.IsNullOrEmpty(logicalKey);
         return byId != byLogical;
     }
 

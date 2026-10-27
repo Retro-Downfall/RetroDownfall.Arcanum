@@ -1571,6 +1571,62 @@ public sealed class SessionEndpointTests
         Assert.DoesNotContain(page.Data, entry => entry.Id == newest.Id);
     }
 
+    [SkippableTheory]
+    [InlineData(SessionContextPinKind.Attachment, " notes", " notes")]
+    [InlineData(SessionContextPinKind.Attachment, "x\u00a0", "x\u00a0")]
+    [InlineData(SessionContextPinKind.File, " notes ", "notes")]
+    [InlineData(SessionContextPinKind.Attachment, "\u00a0", "\u00a0")]
+    [InlineData(SessionContextPinKind.Attachment, "\u2003", "\u2003")]
+    public async Task Rv266_attachment_context_pin_preserves_legacy_logical_identity(
+        SessionContextPinKind kind, string target, string expected)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionWithEntriesAsync(0);
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync($"/api/sessions/{sessionId:D}/context-pins",
+            new CreateSessionContextPinRequest(kind, target), ArcanumJsonContext.Default.CreateSessionContextPinRequest);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<SessionContextPinDto>? body = await response.Content.ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseSessionContextPinDto);
+
+        Assert.Equal(expected, body?.Data?.TargetIdentifier);
+
+        using IServiceScope scope = _factory.Services.CreateScope();
+
+        ISessionContextPinStore store = scope.ServiceProvider.GetRequiredService<ISessionContextPinStore>();
+
+        Assert.Equal(expected, Assert.Single(await store.ListAsync(sessionId)).TargetIdentifier);
+    }
+
+    [SkippableTheory]
+    [InlineData(SessionContextPinKind.Attachment, "")]
+    [InlineData(SessionContextPinKind.File, "\u00a0")]
+    [InlineData(SessionContextPinKind.Diagnostic, "\u2003")]
+    public async Task Rv266_context_pin_empty_and_non_attachment_whitespace_targets_remain_invalid(
+        SessionContextPinKind kind, string target)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionWithEntriesAsync(0);
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync($"/api/sessions/{sessionId:D}/context-pins",
+            new CreateSessionContextPinRequest(kind, target), ArcanumJsonContext.Default.CreateSessionContextPinRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        using IServiceScope scope = _factory.Services.CreateScope();
+
+        ISessionContextPinStore store = scope.ServiceProvider.GetRequiredService<ISessionContextPinStore>();
+
+        Assert.Empty(await store.ListAsync(sessionId));
+    }
+
     [SkippableFact]
     public async Task DeleteContextPin_missing_returns_envelope_404()
     {

@@ -20,6 +20,38 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed partial class SessionAttachmentToolInjectionTests
 {
+    [Theory]
+    [InlineData(" notes")]
+    [InlineData("x\u00a0")]
+    [InlineData("notes.txt")]
+    [InlineData("\u00a0")]
+    [InlineData("\u2003")]
+    public async Task Rv266_tool_arguments_and_materialization_preserve_stored_logical_identity(string key)
+    {
+        SessionAttachmentTurnBudget.BeginTurn();
+
+        Assert.True(SessionAttachmentToolInjection.TryParseAttachArguments(
+            new Dictionary<string, object?> { ["logicalName"] = key }, out string parsed, out int? version));
+
+        Assert.Equal(key, parsed);
+
+        Guid session = Guid.NewGuid();
+
+        byte[] bytes = "legacy materialization"u8.ToArray();
+
+        SessionAttachmentRecord row = new(Guid.NewGuid(), session, null, null, SessionAttachmentState.Bound,
+            key, "legacy.txt", 1, "safe/legacy", "hash", "text/plain", bytes.Length, SessionAttachmentKind.Text, DateTimeOffset.UtcNow);
+
+        NoOpSessionAttachmentStore store = new(row, readBytes: (_, _) => Task.FromResult<ReadOnlyMemory<byte>>(bytes),
+            openRead: (_, _) => Task.FromResult<Stream>(new MemoryStream(bytes)),
+            logicalLookup: (_, supplied, _) => { Assert.Equal(key, supplied); return row; });
+
+        IReadOnlyList<AIContent>? contents = await SessionAttachmentToolInjection.TryBuildContentsAsync(
+            store, session, key, version, new ArcanumSettings(), null);
+
+        Assert.Contains(Assert.IsAssignableFrom<IReadOnlyList<AIContent>>(contents), content => content is TextContent text && text.Text.Contains("legacy materialization", StringComparison.Ordinal));
+    }
+
     [Fact]
     public Task Comprehension_attach_materializes_only_stored_document_bytes() =>
         AssertComprehensionMaterializationAsync(refresh: false);
