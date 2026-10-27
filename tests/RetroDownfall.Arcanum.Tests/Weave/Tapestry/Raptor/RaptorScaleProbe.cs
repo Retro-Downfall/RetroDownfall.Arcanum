@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry.Raptor;
 using Xunit.Abstractions;
@@ -10,7 +11,7 @@ namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry.Raptor;
 
 /// <summary>Explicit offline numerical measurements; never discovers or calls an embedding provider.</summary>
 [Trait("Category", "RaptorScaleProbe")]
-public sealed class RaptorScaleProbe(ITestOutputHelper output)
+public sealed partial class RaptorScaleProbe(ITestOutputHelper output)
 {
     private const string OptIn = "ARCANUM_RAPTOR_SCALE_PROBE";
 
@@ -231,13 +232,7 @@ public sealed class RaptorScaleProbe(ITestOutputHelper output)
 
         RaptorNeighborProgress observed = default;
 
-        string? markedPhase = null;
-
-        int markedPass = -1;
-
-        int markedWindow = -1;
-
-        int checkpoints = 0;
+        NeighborProgressCheckpoints checkpoints = new();
 
         long canceledAt = 0;
 
@@ -245,19 +240,9 @@ public sealed class RaptorScaleProbe(ITestOutputHelper output)
         {
             observed = value;
 
-            int window = value.ProcessedRows / 4096;
-
-            if (checkpoints < 1024 && (value.Phase != markedPhase || value.Pass != markedPass || window != markedWindow))
+            if (checkpoints.ShouldRecord(value))
             {
                 output.WriteLine(FormattableString.Invariant($"checkpoint elapsed_ms={watch.Elapsed.TotalMilliseconds:F3} phase={value.Phase} pass={value.Pass} initialized_rows={value.InitializedRows} processed_rows={value.ProcessedRows} requests={value.WorkSteps} evaluations={value.DistanceEvaluations} hits={value.MemoHits} evictions={value.MemoEvictions}"));
-
-                markedPhase = value.Phase;
-
-                markedPass = value.Pass;
-
-                markedWindow = window;
-
-                checkpoints++;
             }
 
             if (value.DistanceEvaluations >= evaluationLimit)
@@ -527,7 +512,7 @@ public sealed class RaptorScaleProbe(ITestOutputHelper output)
 
     private void Describe(RaptorPoint[] points, int k) => output.WriteLine($"corpus n={points.Length} d=768 k={k} seed=751 hash={CorpusHash(points)} manifest={RaptorAlgorithmManifest.Current.Fingerprint()} runtime={System.Environment.Version} architecture={System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture} paid_calls=0");
 
-    private T Measure<T>(string stage, int seconds, Func<CancellationToken, T> action, Func<string>? counters = null)
+    private Result<T> Measure<T>(string stage, int seconds, Func<CancellationToken, Result<T>> action, Func<string>? counters = null)
     {
         using var budget = new Budget(seconds);
 
@@ -539,9 +524,9 @@ public sealed class RaptorScaleProbe(ITestOutputHelper output)
 
         try
         {
-            T result = action(budget.Token);
+            Result<T> result = action(budget.Token);
 
-            completed = true;
+            completed = result.IsSuccess;
 
             return result;
         }
@@ -629,16 +614,29 @@ public sealed class RaptorScaleProbe(ITestOutputHelper output)
         Assert.InRange(graph.MemoAllocatedBytes, 1, 260L * 1024 * 1024);
     }
 
-    private void AssertRecall(RaptorPoint[] points, RaptorNeighborGraph graph, int samples)
+    private void AssertRecall(RaptorPoint[] points, RaptorNeighborGraph graph, int samples, CancellationToken cancellationToken = default, Action? oraclePairObserved = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         long hits = 0;
 
         for (int sample = 0; sample < samples; sample++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             int row = sample * (points.Length - 1) / (samples - 1);
 
             int[] expected = Enumerable.Range(0, points.Length).Where(index => index != row)
-                .Select(index => (Index: index, Distance: OracleDistance(points[row].Vector.Span, points[index].Vector.Span)))
+                .Select(index =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    double distance = OracleDistance(points[row].Vector.Span, points[index].Vector.Span);
+
+                    oraclePairObserved?.Invoke();
+
+                    return (Index: index, Distance: distance);
+                })
                 .OrderBy(pair => pair.Distance).ThenBy(pair => points[pair.Index].StableId, StringComparer.Ordinal)
                 .Take(graph.Neighbors - 1).Select(pair => pair.Index).ToArray();
 
@@ -699,6 +697,10 @@ public sealed class RaptorScaleProbe(ITestOutputHelper output)
 
         private readonly Timer _timer;
 
+        private readonly int _seconds;
+
+        private readonly CancellationTokenRegistration _caller;
+
         private readonly long _started = Stopwatch.GetTimestamp();
 
         private long _peak;
@@ -707,13 +709,17 @@ public sealed class RaptorScaleProbe(ITestOutputHelper output)
 
         private string _reason = "none";
 
-        internal Budget(int seconds)
+        internal Budget(int seconds, CancellationToken caller = default)
         {
+            _seconds = seconds;
+
             _process.Refresh();
 
             StartWorkingSet = _process.WorkingSet64;
 
             _peak = StartWorkingSet;
+
+            _caller = caller.Register(() => Cancel("caller"));
 
             _timer = new Timer(_ =>
             {
@@ -730,10 +736,15 @@ public sealed class RaptorScaleProbe(ITestOutputHelper output)
 
                 while (current > previous && Interlocked.CompareExchange(ref _peak, current, previous) != previous);
 
-                if (current > 4L * 1024 * 1024 * 1024) Cancel("memory");
-
-                else if (Stopwatch.GetElapsedTime(_started).TotalSeconds >= seconds) Cancel("time");
+                ObserveResources(current, Stopwatch.GetElapsedTime(_started).TotalSeconds);
             }, null, TimeSpan.Zero, TimeSpan.FromMilliseconds(10));
+        }
+
+        internal void ObserveResources(long current, double elapsedSeconds)
+        {
+            if (current > 4L * 1024 * 1024 * 1024) Cancel("memory");
+
+            else if (elapsedSeconds >= _seconds) Cancel("time");
         }
 
         internal CancellationToken Token => _source.Token;
@@ -759,6 +770,8 @@ public sealed class RaptorScaleProbe(ITestOutputHelper output)
         public void Dispose()
         {
             _timer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+            _caller.Dispose();
 
             _process.Dispose();
 
