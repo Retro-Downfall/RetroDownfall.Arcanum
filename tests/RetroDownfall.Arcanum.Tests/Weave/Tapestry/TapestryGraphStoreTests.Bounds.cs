@@ -148,4 +148,131 @@ public sealed partial class TapestryGraphStoreTests
 
         Assert.True((await _store.GetRetrievableGenerationAsync(other, QueryIdentity, CancellationToken.None)).IsFailure);
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Closure_preserves_origin_keys_and_exact_generation(bool leaves)
+    {
+        (string id, _) = await DiamondAsync();
+
+        (string other, _) = await DiamondAsync();
+
+        Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> Read(string[] ids) => leaves
+            ? _store.GetDescendantLeafIdsAsync(id, ids, CancellationToken.None)
+            : _store.GetAncestorIdsAsync(id, ids, CancellationToken.None);
+
+        Assert.Empty(await Read([]));
+
+        IReadOnlyDictionary<string, IReadOnlyList<string>> result = await Read(
+            [id + "two", id + "root", id + "two", "missing", other + "root"]);
+
+        Assert.Equal(4, result.Count);
+
+        Assert.Empty(result["missing"]);
+
+        Assert.Empty(result[other + "root"]);
+
+        Assert.Equal(leaves ? ["two"] : [id + "a", id + "b", id + "root"], result[id + "two"]);
+
+        Assert.Equal(leaves ? ["one", "three", "two"] : [], result[id + "root"]);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Closure_cancellation_is_observed_and_releases_transaction(bool leaves, bool duringQuery)
+    {
+        (string id, _) = await DiamondAsync();
+
+        SqliteConnection connection = (SqliteConnection)_db.Database.GetDbConnection();
+
+        using CancellationTokenSource caller = new();
+
+        bool enteredClosure = false;
+
+        if (duringQuery)
+        {
+            raw.sqlite3_trace(connection.Handle, (object _, string sql) =>
+            {
+                if (sql.StartsWith("WITH RECURSIVE reach(", StringComparison.Ordinal)) enteredClosure = true;
+            }, null);
+
+            raw.sqlite3_progress_handler(connection.Handle, 1, (object _) =>
+            {
+                if (enteredClosure) caller.Cancel();
+
+                return 0;
+            }, null);
+        }
+        else
+        {
+            caller.Cancel();
+        }
+
+        try
+        {
+            _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => leaves
+                ? _store.GetDescendantLeafIdsAsync(id, [id + "root"], caller.Token)
+                : _store.GetAncestorIdsAsync(id, [id + "two"], caller.Token));
+
+            Assert.True(caller.IsCancellationRequested);
+        }
+        finally
+        {
+            raw.sqlite3_progress_handler(connection.Handle, 0, null, null);
+
+            raw.sqlite3_trace(connection.Handle, (strdelegate_trace)null!, null);
+        }
+
+        Assert.Equal(duringQuery, enteredClosure);
+
+        IReadOnlyDictionary<string, IReadOnlyList<string>> recovered = await _store.GetDescendantLeafIdsAsync(id, [id + "root"], CancellationToken.None);
+
+        Assert.Equal(["one", "three", "two"], recovered[id + "root"]);
+    }
+
+    [Fact]
+    public async Task Checkpoint_cancellation_after_node_insert_rolls_back_all_graph_changes()
+    {
+        (string id, _) = await DiamondAsync();
+
+        SqliteConnection connection = (SqliteConnection)_db.Database.GetDbConnection();
+
+        using CancellationTokenSource caller = new();
+
+        bool inserted = false;
+
+        raw.sqlite3_trace(connection.Handle, (object _, string sql) =>
+        {
+            if (sql.StartsWith("INSERT OR REPLACE INTO \"tapestry_node_embeddings\"", StringComparison.Ordinal))
+            {
+                inserted = true;
+
+                caller.Cancel();
+            }
+        }, null);
+
+        try
+        {
+            _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _store.AppendGraphCheckpointAsync(
+                new(id, [Summary(id, "next", 3)], [Edge(id, "next", "root")]), caller.Token));
+        }
+        finally
+        {
+            raw.sqlite3_trace(connection.Handle, (strdelegate_trace)null!, null);
+        }
+
+        Assert.True(inserted);
+
+        Assert.Equal(6L, await ScalarAsync("SELECT COUNT(*) FROM tapestry_nodes"));
+
+        Assert.Equal(6L, await ScalarAsync("SELECT COUNT(*) FROM tapestry_edges"));
+
+        Assert.Equal(6L, await ScalarAsync("SELECT COUNT(*) FROM tapestry_node_embeddings"));
+
+        Assert.Equal(3L, await ScalarAsync($"SELECT DescendantLeafCount FROM tapestry_nodes WHERE NodeId='{id}root'"));
+    }
 }

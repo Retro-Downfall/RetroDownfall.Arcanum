@@ -540,7 +540,7 @@ public sealed partial class RaptorScaleProbe(ITestOutputHelper output)
 
     private static int Neighbors(int count) => Math.Clamp((int)Math.Floor(Math.Sqrt(count - 1)), 2, count - 1);
 
-    private static RaptorPoint[] Corpus(int count)
+    internal static RaptorPoint[] Corpus(int count)
     {
         // A fixed integer stream and representable float arithmetic keep source bits independent of culture.
         ulong state = 177;
@@ -557,7 +557,7 @@ public sealed partial class RaptorScaleProbe(ITestOutputHelper output)
         return Enumerable.Range(0, count).Select(index => new RaptorPoint("scale-" + index.ToString("D6", CultureInfo.InvariantCulture), Enumerable.Range(0, 768).Select(dimension => centers[index % 8][dimension] + Next() / 4).ToArray())).ToArray();
     }
 
-    private static string CorpusHash(IEnumerable<RaptorPoint> points)
+    internal static string CorpusHash(IEnumerable<RaptorPoint> points)
     {
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 

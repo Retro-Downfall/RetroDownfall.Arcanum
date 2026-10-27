@@ -68,7 +68,11 @@ public sealed class RaptorGmmFit
 public readonly record struct RaptorGmmProgress(int Components, int Iteration, int Samples);
 
 /// <summary>Bounded, content-free outcome of one attempted BIC candidate; no fit or sample content is retained.</summary>
-public sealed record RaptorGmmCandidate(int Components, string? RefusalCode, double? Bic);
+public sealed record RaptorGmmCandidate(int Components, string? RefusalCode, double? Bic)
+{
+    /// <summary>The actual identical-row one-component fit bypassed candidate model selection.</summary>
+    public bool SearchBypassed { get; init; }
+}
 
 /// <summary>
 /// Original managed full-covariance EM implementation of standard Gaussian-mixture equations.
@@ -100,7 +104,22 @@ public sealed class RaptorGaussianMixture(IProgress<RaptorGmmProgress>? progress
 
         double[][] ordered = prepared.Value;
 
-        if (CompareRows(ordered[0], ordered[^1]) == 0) return FitPrepared(ordered, 1, seed, cancellationToken, maximumIterations);
+        if (CompareRows(ordered[0], ordered[^1]) == 0)
+        {
+            var single = FitPrepared(ordered, 1, seed, cancellationToken, maximumIterations);
+
+            if (Diagnostics is { } observer)
+            {
+                observer.Report(new(1, single.IsFailure ? single.Error.Code : null, single.IsSuccess ? single.Value.Bic : null)
+                {
+                    SearchBypassed = true,
+                });
+
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            return single;
+        }
 
         RaptorGmmFit? best = null;
 
