@@ -419,14 +419,18 @@ internal sealed partial class ArtifactSensitivityLedger(ICovenantConnectionSourc
                    ProducingMaintenanceReceiptDigest,
                    CreatedAtUtc
             FROM artifact_sensitivity
-            WHERE ($after IS NULL OR LabelId > $after)
-            ORDER BY LabelId
-            LIMIT $limit;
             """;
 
-        _ = command.Parameters.AddWithValue(
-            "$after",
-            afterLabelId is { } cursor ? Format(cursor) : DBNull.Value);
+        // A nullable-cursor OR scans preceding labels on every page. Keep the first page
+        // unbounded below so malformed leading identities still reach the integrity decoder.
+        if (afterLabelId is { } cursor)
+        {
+            command.CommandText += " WHERE LabelId > $after";
+
+            _ = command.Parameters.AddWithValue("$after", Format(cursor));
+        }
+
+        command.CommandText += " ORDER BY LabelId LIMIT $limit;";
 
         _ = command.Parameters.AddWithValue("$limit", limit);
 
