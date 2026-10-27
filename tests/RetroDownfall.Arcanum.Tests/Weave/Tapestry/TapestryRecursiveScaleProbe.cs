@@ -394,7 +394,7 @@ public sealed partial class TapestryRecursiveScaleProbe(GrimoireFixture fixture,
 
     private readonly record struct Effects(int EmbeddingCalls, int SummaryCalls, int ClusteringCalls);
 
-    private sealed class CountingClusterer : ITapestryClusterer
+    private sealed partial class CountingClusterer : ITapestryClusterer, IProgress<RaptorFitObservation>
     {
         private readonly object _gate = new();
 
@@ -418,7 +418,7 @@ public sealed partial class TapestryRecursiveScaleProbe(GrimoireFixture fixture,
 
         internal string Describe()
         {
-            lock (_gate) return FormattableString.Invariant($"cluster_calls={_calls} max_layer={_maxLayer} last_layer={_layer} last_inputs={_inputCount} cluster_state={_state} membership_paths={_memberships} call_digest={_digest} inner_phase=UNOBSERVED scalar=UNOBSERVED");
+            lock (_gate) return FormattableString.Invariant($"cluster_calls={_calls} max_layer={_maxLayer} last_layer={_layer} last_inputs={_inputCount} cluster_state={_state} membership_paths={_memberships} call_digest={_digest} neighbor_umap_phase=UNOBSERVED scalar=UNOBSERVED {DescribeFits()}");
         }
 
         public Result<RaptorClusterResult> Cluster(IReadOnlyList<RaptorPoint> points, TapestryClusterIdentity identity, CancellationToken cancellationToken)
@@ -443,7 +443,7 @@ public sealed partial class TapestryRecursiveScaleProbe(GrimoireFixture fixture,
 
             try
             {
-                Result<RaptorClusterResult> result = new RaptorClusterer().Cluster(points, identity, cancellationToken);
+                Result<RaptorClusterResult> result = new RaptorClusterer(this).Cluster(points, identity, cancellationToken);
 
                 lock (_gate)
                 {

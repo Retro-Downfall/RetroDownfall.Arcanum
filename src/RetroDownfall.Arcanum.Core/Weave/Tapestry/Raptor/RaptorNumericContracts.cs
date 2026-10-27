@@ -131,3 +131,26 @@ public sealed record TapestryClusterIdentity
 
     public string MemberDigest { get; }
 }
+
+/// <summary>Closed lifecycle facts for one actual default mixture selection.</summary>
+internal enum RaptorFitObservationPhase
+{
+    Started,
+
+    Candidate,
+
+    Completed,
+
+    Refused,
+
+    Canceled,
+
+    Faulted,
+}
+
+/// <summary>Bounded hashed invocation identity and existing scalar diagnostics, never inputs or fits.</summary>
+internal sealed record RaptorFitObservation(RaptorFitObservationPhase Phase, int Layer, RaptorStage Stage,
+    string FitIdentity, int SampleCount, RaptorGmmCandidate? Candidate = null)
+{
+    public long CallOrdinal { get; init; }
+}

@@ -24,9 +24,20 @@ public sealed class RaptorClusterer : ITapestryClusterer
 
     private readonly RaptorFit _fit;
 
+    private readonly IProgress<RaptorFitObservation>? _diagnostics;
+
+    private long _observedCalls;
+
     private static RaptorNumericOptions Options => RaptorAlgorithmManifest.Current.Options;
 
     public RaptorClusterer() : this(Reduce, Fit) { }
+
+    internal RaptorClusterer(IProgress<RaptorFitObservation> diagnostics) : this()
+    {
+        ArgumentNullException.ThrowIfNull(diagnostics);
+
+        _diagnostics = diagnostics;
+    }
 
     internal RaptorClusterer(RaptorReduce reduce, RaptorFit fit)
     {
@@ -45,6 +56,8 @@ public sealed class RaptorClusterer : ITapestryClusterer
 
         if (actual.MemberDigest != identity.MemberDigest) return Invalid();
 
+        long observedCall = _diagnostics is null ? 0 : Interlocked.Increment(ref _observedCalls);
+
         if (points.Count == 0) return new RaptorClusterResult([], []);
 
         int[] order = Enumerable.Range(0, points.Count).ToArray();
@@ -61,7 +74,7 @@ public sealed class RaptorClusterer : ITapestryClusterer
         }
         else
         {
-            var global = Stage(sorted, identity, false, cancellationToken);
+            var global = Stage(sorted, identity, false, cancellationToken, observedCall);
 
             if (global.IsFailure) return global.Error;
 
@@ -84,7 +97,7 @@ public sealed class RaptorClusterer : ITapestryClusterer
                     continue;
                 }
 
-                var local = Stage(subset, localIdentity, true, cancellationToken);
+                var local = Stage(subset, localIdentity, true, cancellationToken, observedCall);
 
                 if (local.IsFailure) return local.Error;
 
@@ -161,7 +174,7 @@ public sealed class RaptorClusterer : ITapestryClusterer
         ["raptor-cluster-v1", RaptorAlgorithmManifest.Current.Fingerprint(), ((int)identity.Scope.Kind).ToString(CultureInfo.InvariantCulture), identity.Scope.Id,
             identity.Layer.ToString(CultureInfo.InvariantCulture), identity.StageKey, new TapestryClusterIdentity(identity.Scope, identity.Layer, RaptorStage.Split, "", members).MemberDigest]);
 
-    private Result<List<Selection[]>> Stage(RaptorPoint[] points, TapestryClusterIdentity identity, bool local, CancellationToken token)
+    private Result<List<Selection[]>> Stage(RaptorPoint[] points, TapestryClusterIdentity identity, bool local, CancellationToken token, long observedCall)
     {
         token.ThrowIfCancellationRequested();
 
@@ -173,7 +186,12 @@ public sealed class RaptorClusterer : ITapestryClusterer
 
         if (reduced.IsFailure) return reduced.Error;
 
-        var fit = _fit(reduced.Value, RaptorAlgorithmManifest.Current.DeriveSeed(identity with { Stage = local ? RaptorStage.LocalMixture : RaptorStage.GlobalMixture }), token);
+        TapestryClusterIdentity fitIdentity = identity with { Stage = local ? RaptorStage.LocalMixture : RaptorStage.GlobalMixture };
+
+        ulong seed = RaptorAlgorithmManifest.Current.DeriveSeed(fitIdentity);
+
+        var fit = _diagnostics is null ? _fit(reduced.Value, seed, token)
+            : ObserveDefaultFit(reduced.Value, seed, fitIdentity, _diagnostics, token, observedCall);
 
         if (fit.IsFailure) return fit.Error;
 
@@ -263,11 +281,119 @@ public sealed class RaptorClusterer : ITapestryClusterer
         return rows;
     }
 
-    private static Result<RaptorPosteriorModel> Fit(double[][] points, ulong seed, CancellationToken token)
+    internal static Result<RaptorPosteriorModel> ObserveDefaultFit(double[][] points, ulong seed,
+        TapestryClusterIdentity identity, IProgress<RaptorFitObservation> diagnostics, CancellationToken token, long callOrdinal = 0)
     {
-        var result = new RaptorGaussianMixture().SelectByBic(points, seed, token);
+        ArgumentNullException.ThrowIfNull(diagnostics);
+
+        token.ThrowIfCancellationRequested();
+
+        FitObserver observer = new(diagnostics, identity, points.Length, token, callOrdinal);
+
+        try
+        {
+            observer.Emit(RaptorFitObservationPhase.Started);
+
+            token.ThrowIfCancellationRequested();
+
+            Result<RaptorPosteriorModel> result = Fit(points, seed, token, observer);
+
+            token.ThrowIfCancellationRequested();
+
+            observer.Emit(result.IsSuccess ? RaptorFitObservationPhase.Completed : RaptorFitObservationPhase.Refused);
+
+            return result;
+        }
+        catch (Exception primary)
+        {
+            // A failed observer cannot reliably accept another notification. Its original fault wins.
+            if (observer.Failed) throw;
+
+            try
+            {
+                observer.Emit(primary is OperationCanceledException && token.IsCancellationRequested
+                    ? RaptorFitObservationPhase.Canceled : RaptorFitObservationPhase.Faulted);
+            }
+            catch (Exception secondary)
+            {
+                throw new AggregateException(primary, secondary);
+            }
+
+            throw;
+        }
+    }
+
+    private static Result<RaptorPosteriorModel> Fit(double[][] points, ulong seed, CancellationToken token) =>
+        Fit(points, seed, token, null);
+
+    private static Result<RaptorPosteriorModel> Fit(double[][] points, ulong seed, CancellationToken token,
+        IProgress<RaptorGmmCandidate>? diagnostics)
+    {
+        var result = new RaptorGaussianMixture(diagnostics: diagnostics).SelectByBic(points, seed, token);
 
         return result.IsFailure ? result.Error : new Fitted(points, result.Value);
+    }
+
+    private sealed class FitObserver : IProgress<RaptorGmmCandidate>
+    {
+        private readonly IProgress<RaptorFitObservation> _diagnostics;
+
+        private readonly CancellationToken _token;
+
+        private readonly int _layer;
+
+        private readonly RaptorStage _stage;
+
+        private readonly string _identity;
+
+        private readonly int _samples;
+
+        private readonly long _callOrdinal;
+
+        internal FitObserver(IProgress<RaptorFitObservation> diagnostics, TapestryClusterIdentity identity,
+            int samples, CancellationToken token, long callOrdinal)
+        {
+            _diagnostics = diagnostics;
+
+            _token = token;
+
+            _layer = identity.Layer;
+
+            _stage = identity.Stage;
+
+            _samples = samples;
+
+            _callOrdinal = callOrdinal;
+
+            _identity = RaptorIdentityHash.OfParts([RaptorAlgorithmManifest.Current.Fingerprint(),
+                ((int)identity.Scope.Kind).ToString(CultureInfo.InvariantCulture), identity.Scope.Id,
+                identity.Layer.ToString(CultureInfo.InvariantCulture), identity.Stage.ToString(), identity.StageKey, identity.MemberDigest]);
+        }
+
+        internal bool Failed { get; private set; }
+
+        public void Report(RaptorGmmCandidate candidate)
+        {
+            // The fitter has already attempted this candidate: retain its truthful diagnostic even
+            // if cancellation arrived after its arithmetic, then honor the supplied token.
+            Emit(RaptorFitObservationPhase.Candidate, candidate);
+
+            _token.ThrowIfCancellationRequested();
+        }
+
+        internal void Emit(RaptorFitObservationPhase phase, RaptorGmmCandidate? candidate = null)
+        {
+            try
+            {
+                _diagnostics.Report(new(phase, _layer, _stage, _identity, _samples, candidate) { CallOrdinal = _callOrdinal });
+            }
+            catch
+            {
+                Failed = true;
+
+                throw;
+            }
+        }
     }
 
     private sealed class Fitted(double[][] points, RaptorGmmFit fit) : RaptorPosteriorModel

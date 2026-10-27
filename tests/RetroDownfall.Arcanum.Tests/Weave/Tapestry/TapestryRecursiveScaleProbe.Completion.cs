@@ -28,7 +28,15 @@ public sealed partial class TapestryRecursiveScaleProbe
         Assert.Contains(lines, line => line.Contains("event=terminal", StringComparison.Ordinal)
             && line.Contains("outcome=accepted", StringComparison.Ordinal));
 
-        Assert.Contains(lines, line => line.Contains("inner_phase=UNOBSERVED scalar=UNOBSERVED", StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.Contains("neighbor_umap_phase=UNOBSERVED scalar=UNOBSERVED", StringComparison.Ordinal));
+
+        string terminal = Assert.Single(lines, line => line.Contains("event=terminal", StringComparison.Ordinal));
+
+        string attempts = Assert.Single(terminal.Split(' '), field => field.StartsWith("bic_attempted=", StringComparison.Ordinal));
+
+        Assert.True(long.Parse(attempts.Split('=')[1], CultureInfo.InvariantCulture) > 0);
+
+        Assert.Contains("bic_measurement=observed", terminal, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -95,6 +103,10 @@ public sealed partial class TapestryRecursiveScaleProbe
             await PhaseAsync("validate-and-unchanged", limits.ValidationSeconds, async token =>
             {
                 await ValidatePublishedAsync(outcome!, count, token);
+
+                _clusterer.AssertFitMeasurementsComplete();
+
+                foreach (string sample in _clusterer.FitSamples) journal.Record(sample);
 
                 TapestryGeneration before = Assert.IsType<TapestryGeneration>(await _store.GetCurrentGenerationAsync(Scope, token));
 
