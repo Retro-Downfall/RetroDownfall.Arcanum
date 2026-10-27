@@ -182,9 +182,9 @@ public sealed class ApiRequestJsonBodyFaultTests
     /// status on the response and returns, whatever <c>ThrowOnBadRequest</c> says: the exception never
     /// reaches <c>ArcanumExceptionHandler</c>, so the response would leave empty with only the status.
     /// The status-code hook behind the exception handler is what puts the envelope on it. A body that ends
-    /// early (400) is not here on purpose: it is indistinguishable from the bodyless 400 a route returns
-    /// deliberately (<c>GET /api/presence</c>), and the client that dropped the connection is no longer
-    /// there to read it.
+    /// early (400) is not included: an empty response on a body-reading route cannot distinguish the
+    /// read fault from a deliberate refusal, and a client that dropped the connection cannot read it.
+    /// Bodyless query binding has a separate contract in ApiRequestBindingDiagnosticsTests.
     /// </remarks>
     [SkippableTheory]
     [InlineData(StatusCodes.Status413PayloadTooLarge, ErrorCodes.Validation.BodyTooLarge, ApiRequestJson.BodyTooLargeMessage)]
@@ -243,9 +243,9 @@ public sealed class ApiRequestJsonBodyFaultTests
     }
 
     /// <summary>
-    /// The hook leaves every other empty status exactly as it was: a bodyless 400 a route returns on
-    /// purpose (<c>GET /api/presence</c>) is not a body fault, and a 408, 413 or 431 with no matched
-    /// endpoint did not come from a route's body read.
+    /// The hook leaves other empty statuses on a body-reading route unchanged. A 408, 413 or 431
+    /// with no matched endpoint did not come from a route's body read. Deliberate anonymous
+    /// protocol refusals disable status-code pages, as the real presence and host-authority tests verify.
     /// </summary>
     [Theory]
     [InlineData(StatusCodes.Status400BadRequest, true, false)]
@@ -271,6 +271,8 @@ public sealed class ApiRequestJsonBodyFaultTests
         };
 
         httpContext.Request.Path = "/api/prompts";
+
+        httpContext.Request.Method = "POST";
 
         httpContext.Response.StatusCode = status;
 

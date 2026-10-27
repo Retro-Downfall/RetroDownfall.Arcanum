@@ -26,15 +26,12 @@ namespace RetroDownfall.Arcanum.Api.A2A;
 /// </remarks>
 internal static class ConclaveEndpoints
 {
-
     public static RouteGroupBuilder MapConclaveEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapGet("/conclave/status", (
             IOptionsSnapshot<ArcanumSettings> settings,
             HttpContext httpContext) =>
         {
-
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
             ConclaveA2AStatus status = ConclaveA2AStatus.Resolve(settings.Value);
@@ -52,7 +49,6 @@ internal static class ConclaveEndpoints
             return Results.Json(
                 ApiResponse<ConclaveStatusDto>.FromResult(Result<ConclaveStatusDto>.Success(dto), traceId),
                 ArcanumJsonContext.Default.ApiResponseConclaveStatusDto);
-
         })
         .WithName("GetConclaveStatus");
 
@@ -61,35 +57,30 @@ internal static class ConclaveEndpoints
             HttpContext httpContext,
             CancellationToken cancellationToken) =>
         {
-
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
             (DispatchSendingRequest? body, IResult? bodyError) = await ApiRequestJson
                 .ReadAsync(
                     httpContext,
                     ArcanumJsonContext.Default.DispatchSendingRequest,
-                    static ctx => ApiRequestJson.InvalidBodyResult(
+                    static (ctx, jsonFailure) => ApiRequestJson.InvalidBodyResult(
                         ctx,
-                        ApiRequestJson.MalformedJsonMessage,
+                        jsonFailure,
                         ArcanumJsonContext.Default.ApiResponseSendingDispatchDto),
                     cancellationToken)
                 .ConfigureAwait(false);
 
             if (bodyError is not null)
             {
-
                 return bodyError;
-
             }
 
             if (body is null || string.IsNullOrWhiteSpace(body.AgentUrl) || string.IsNullOrWhiteSpace(body.Goal))
             {
-
                 return ApiRequestJson.InvalidBodyResult(
                     httpContext,
                     "'agentUrl' and 'goal' are required.",
                     ArcanumJsonContext.Default.ApiResponseSendingDispatchDto);
-
             }
 
             Result<A2ADispatchResult> dispatch = await clientService
@@ -110,7 +101,6 @@ internal static class ConclaveEndpoints
                 statusCode: result.IsSuccess
                     ? StatusCodes.Status200OK
                     : ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
-
         })
         .WithName("DispatchSending");
 
@@ -122,25 +112,22 @@ internal static class ConclaveEndpoints
             HttpContext httpContext,
             CancellationToken cancellationToken) =>
         {
-
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
             (ContinueSendingRequest? body, IResult? bodyError) = await ApiRequestJson
                 .ReadAsync(
                     httpContext,
                     ArcanumJsonContext.Default.ContinueSendingRequest,
-                    static ctx => ApiRequestJson.InvalidBodyResult(
+                    static (ctx, jsonFailure) => ApiRequestJson.InvalidBodyResult(
                         ctx,
-                        ApiRequestJson.MalformedJsonMessage,
+                        jsonFailure,
                         ArcanumJsonContext.Default.ApiResponseSendingDispatchDto),
                     cancellationToken)
                 .ConfigureAwait(false);
 
             if (bodyError is not null)
             {
-
                 return bodyError;
-
             }
 
             if (body is null
@@ -148,12 +135,10 @@ internal static class ConclaveEndpoints
                 || string.IsNullOrWhiteSpace(body.Message)
                 || string.IsNullOrWhiteSpace(taskId))
             {
-
                 return ApiRequestJson.InvalidBodyResult(
                     httpContext,
                     "'agentUrl' and 'message' are required, along with a non-empty task id.",
                     ArcanumJsonContext.Default.ApiResponseSendingDispatchDto);
-
             }
 
             Result<A2ADispatchResult> dispatch = await clientService
@@ -174,12 +159,10 @@ internal static class ConclaveEndpoints
                 statusCode: result.IsSuccess
                     ? StatusCodes.Status200OK
                     : ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
-
         })
         .WithName("ContinueSending");
 
         return apiGroup;
-
     }
 
     /// <summary>
@@ -212,5 +195,4 @@ internal static class ConclaveEndpoints
             : Result<SendingDispatchDto>.Failure(dispatch.Error);
 
     private static DateTimeOffset? Stamp(DateTimeOffset value) => value == default ? null : value;
-
 }

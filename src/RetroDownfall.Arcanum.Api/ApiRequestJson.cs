@@ -2,11 +2,14 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.Extensions.Primitives;
 using Microsoft.Net.Http.Headers;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Api;
@@ -15,7 +18,7 @@ internal static class ApiRequestJson
 {
     public const string DefaultInvalidBodyMessage = "Request body is required.";
 
-    public const string MalformedJsonMessage = "Request body could not be parsed as valid JSON.";
+    public const string MalformedJsonMessage = "Request body is not valid for this route. Check JSON syntax, field types and values.";
 
     public const string UnsupportedMediaTypeMessage =
         "Request body must be sent with 'Content-Type: application/json' and, if it names a charset, one this server can decode (UTF-8 always is).";
@@ -152,7 +155,7 @@ internal static class ApiRequestJson
     public static async ValueTask<(T? Body, IResult? Error)> ReadAsync<T>(
         HttpContext httpContext,
         JsonTypeInfo<T> typeInfo,
-        Func<HttpContext, IResult> invalidJsonResult,
+        Func<HttpContext, Error, IResult> invalidJsonResult,
         CancellationToken cancellationToken)
     {
         // ReadFromJsonAsync throws InvalidOperationException — not JsonException — for a missing or
@@ -173,9 +176,9 @@ internal static class ApiRequestJson
 
             return (body, null);
         }
-        catch (JsonException)
+        catch (JsonException failure)
         {
-            return (default, invalidJsonResult(httpContext));
+            return (default, invalidJsonResult(httpContext, JsonBodyFault(typeInfo, failure)));
         }
         catch (BadHttpRequestException failure)
         {
@@ -205,6 +208,17 @@ internal static class ApiRequestJson
     /// </remarks>
     public static IResult UnreadableBodyResult(HttpContext httpContext, BadHttpRequestException failure)
     {
+        if (failure.StatusCode == StatusCodes.Status400BadRequest && failure.InnerException is JsonException jsonFailure)
+        {
+            Endpoint? endpoint = httpContext.GetEndpoint() ?? httpContext.Features.Get<IExceptionHandlerFeature>()?.Endpoint;
+
+            Type? requestType = endpoint?.Metadata.GetMetadata<IAcceptsMetadata>()?.RequestType;
+
+            JsonTypeInfo? requestInfo = requestType is null ? null : ArcanumJsonContext.Default.GetTypeInfo(requestType);
+
+            return InvalidBodyResult(httpContext, JsonBodyFault(requestInfo, jsonFailure), ArcanumJsonContext.Default.ApiResponseBoolean);
+        }
+
         (string code, string message) = ResolveBodyFault(failure.StatusCode, failure);
 
         return BodyFaultResult(httpContext, failure.StatusCode, code, message);
@@ -339,20 +353,58 @@ internal static class ApiRequestJson
             statusCode: StatusCodes.Status415UnsupportedMediaType);
     }
 
+    internal static Error JsonBodyFault(JsonTypeInfo? requestType, JsonException failure)
+    {
+        // JSON paths may include arbitrary dictionary keys. Report only a declared containing field,
+        // using the generated contract's canonical name rather than echoing an exception's text/path.
+        string? path = failure.Path;
+
+        if (requestType?.Kind != JsonTypeInfoKind.Object || path is null || path.Length > 1024
+            || !path.StartsWith("$.", StringComparison.Ordinal))
+        {
+            return new Error(ErrorCodes.Validation.InvalidBody, MalformedJsonMessage);
+        }
+
+        ReadOnlySpan<char> remaining = path.AsSpan(2);
+
+        int end = remaining.IndexOfAny('.', '[');
+
+        string field = (end < 0 ? remaining : remaining[..end]).ToString();
+
+        JsonPropertyInfo? property = requestType.Properties.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, field, requestType.Options.PropertyNameCaseInsensitive
+                ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
+
+        if (property is null)
+        {
+            return new Error(ErrorCodes.Validation.InvalidBody, MalformedJsonMessage);
+        }
+
+        string pointer = "/" + property.Name.Replace("~", "~0", StringComparison.Ordinal).Replace("/", "~1", StringComparison.Ordinal);
+
+        return new Error(ErrorCodes.Validation.InvalidBody, MalformedJsonMessage,
+            [new ConfigurationValidationError(pointer, "Check this field's JSON syntax, type and allowed values.")]);
+    }
+
     public static IResult InvalidBodyResult<TResponse>(
         HttpContext httpContext,
         string message,
         JsonTypeInfo<ApiResponse<TResponse>> responseTypeInfo)
+        => InvalidBodyResult(httpContext, new Error(ErrorCodes.Validation.InvalidBody, message), responseTypeInfo);
+
+    public static IResult InvalidBodyResult<TResponse>(
+        HttpContext httpContext,
+        Error error,
+        JsonTypeInfo<ApiResponse<TResponse>> responseTypeInfo)
     {
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-        return Results.Json(
-            ApiResponse<TResponse>.FromResult(
-                Result<TResponse>.Failure(new Error(ErrorCodes.Validation.InvalidBody, message)),
-                traceId),
-            responseTypeInfo,
-            statusCode: StatusCodes.Status400BadRequest);
+        return Results.Json(ApiResponse<TResponse>.FromResult(Result<TResponse>.Failure(error), traceId),
+            responseTypeInfo, statusCode: StatusCodes.Status400BadRequest);
     }
+
+    public static IResult InvalidBodyResult(HttpContext httpContext, Error error) =>
+        InvalidBodyResult(httpContext, error, ArcanumJsonContext.Default.ApiResponseBoolean);
 
     public static IResult InvalidBodyResult(
         HttpContext httpContext,

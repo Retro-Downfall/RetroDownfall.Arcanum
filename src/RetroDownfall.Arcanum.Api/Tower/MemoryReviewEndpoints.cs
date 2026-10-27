@@ -506,9 +506,9 @@ internal static class MemoryReviewEndpoints
         await ApiRequestJson.ReadAsync(
             context,
             requestTypeInfo,
-            ctx => ApiRequestJson.InvalidBodyResult(
+            (ctx, jsonFailure) => ApiRequestJson.InvalidBodyResult(
                 ctx,
-                ApiRequestJson.MalformedJsonMessage,
+                jsonFailure,
                 responseTypeInfo),
             context.RequestAborted).ConfigureAwait(false);
 

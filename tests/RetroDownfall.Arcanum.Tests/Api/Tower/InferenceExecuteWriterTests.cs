@@ -377,7 +377,8 @@ public sealed class InferenceExecuteWriterTests
     {
         ServiceCollection services = new();
 
-        services.AddLogging();
+        RecordingLoggerProvider recording = new();
+        services.AddLogging(builder => builder.AddProvider(recording));
 
         ServiceProvider provider = services.BuildServiceProvider();
 
@@ -407,6 +408,7 @@ public sealed class InferenceExecuteWriterTests
 
         Assert.DoesNotContain("error", output, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(InferenceExecuteWriter.PublicStreamFailureMessage, output, StringComparison.Ordinal);
+        Assert.DoesNotContain(recording.Entries, static entry => entry.Level >= LogLevel.Error);
     }
 
     [Fact]
@@ -450,7 +452,8 @@ public sealed class InferenceExecuteWriterTests
     public async Task WriteStreamAsync_OwnershipLoss_CancelsContinueThenReplayWithoutTerminalSuccess()
     {
         ServiceCollection services = new();
-        services.AddLogging();
+        RecordingLoggerProvider logs = new();
+        services.AddLogging(builder => builder.AddProvider(logs));
 
         ServiceProvider provider = services.BuildServiceProvider();
         MemoryStream body = new();
@@ -483,6 +486,7 @@ public sealed class InferenceExecuteWriterTests
 
         Assert.True(intelligence.CancellationObserved);
         Assert.False(TurnContextGuards.IsIdempotencyTerminal(httpContext));
+        Assert.DoesNotContain(logs.Entries, entry => entry.Level == LogLevel.Error);
     }
 
     [Fact]
@@ -632,8 +636,11 @@ public sealed class InferenceExecuteWriterTests
         Assert.Contains(InferenceExecuteWriter.PublicStreamFailureMessage, output, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task WriteStreamAsync_NonOperationCanceledException_WritesSanitizedErrorFrameAndLogsSafeMetadata()
+    [Theory]
+    [InlineData("ordinary")]
+    [InlineData("canceled")]
+    [InlineData("task-canceled")]
+    public async Task WriteStreamAsync_UnexpectedFailure_WritesSanitizedErrorFrameAndLogsSafeMetadata(string failureKind)
     {
         const string canary = "CANARY_PROVIDER_CREDENTIAL_RESPONSE_BODY";
         ServiceCollection services = new();
@@ -663,7 +670,14 @@ public sealed class InferenceExecuteWriterTests
 
         FakeIntelligenceProvider intelligence = new();
 
-        intelligence.NextStreamException = new InvalidOperationException(canary);
+        Exception failure = failureKind switch
+        {
+            "canceled" => new OperationCanceledException(canary),
+            "task-canceled" => new TaskCanceledException(canary),
+            _ => new InvalidOperationException(canary),
+        };
+        intelligence.NextStreamException = failure;
+        httpContext.TraceIdentifier = "stream-failure-trace";
 
         PingRequest request = new(Prompt: string.Empty, WorkingDirectory: string.Empty);
         Serilog.ILogger previousLogger = Serilog.Log.Logger;
@@ -707,7 +721,11 @@ public sealed class InferenceExecuteWriterTests
                 .Select(static entry => entry.RenderMessage() + entry.Exception),
         ];
         string failureLog = Assert.Single(allFailureLogs);
-        Assert.Contains(nameof(InvalidOperationException), failureLog, StringComparison.Ordinal);
+        Assert.Contains(failure.GetType().FullName!, failureLog, StringComparison.Ordinal);
+        Assert.Contains("responseStarted=", failureLog, StringComparison.Ordinal);
+        Assert.Contains("stream-failure-trace", failureLog, StringComparison.Ordinal);
+        Assert.All(recording.Entries, static entry => Assert.Null(entry.Exception));
+        Assert.All(globalRecording.Events, static entry => Assert.Null(entry.Exception));
         Assert.DoesNotContain(canary, failureLog, StringComparison.Ordinal);
     }
 

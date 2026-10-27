@@ -154,9 +154,9 @@ internal static class DaemonEndpoints
                 (body, jsonError) = await ApiRequestJson.ReadAsync(
                     httpContext,
                     ArcanumJsonContext.Default.CommLinkMessageRequestDto,
-                    static ctx => ApiRequestJson.InvalidBodyResult(
+                    static (ctx, jsonFailure) => ApiRequestJson.InvalidBodyResult(
                         ctx,
-                        ApiRequestJson.MalformedJsonMessage),
+                        jsonFailure),
                     cancellationToken).ConfigureAwait(false);
 
                 if (jsonError is not null)
@@ -267,9 +267,9 @@ internal static class DaemonEndpoints
                 (body, jsonError) = await ApiRequestJson.ReadAsync(
                     httpContext,
                     ArcanumJsonContext.Default.AdjustInitiativeRequestDto,
-                    static ctx => ApiRequestJson.InvalidBodyResult<UnseenServantJobStatusDto>(
+                    static (ctx, jsonFailure) => ApiRequestJson.InvalidBodyResult<UnseenServantJobStatusDto>(
                         ctx,
-                        ApiRequestJson.MalformedJsonMessage,
+                        jsonFailure,
                         ArcanumJsonContext.Default.ApiResponseUnseenServantJobStatusDto),
                     cancellationToken).ConfigureAwait(false);
 

@@ -699,10 +699,10 @@ internal static class SessionEndpoints
 
                     ArcanumJsonContext.Default.CreateSessionAttachmentReferenceRequest,
 
-                    static httpContext => ApiRequestJson.InvalidBodyResult<SessionAttachmentDto>(
+                    static (httpContext, jsonFailure) => ApiRequestJson.InvalidBodyResult<SessionAttachmentDto>(
                         httpContext,
 
-                        ApiRequestJson.MalformedJsonMessage,
+                        jsonFailure,
 
                         ArcanumJsonContext.Default.ApiResponseSessionAttachmentDto),
 

@@ -53,9 +53,9 @@ internal static class LoreEndpoints
                 (body, jsonError) = await ApiRequestJson.ReadAsync(
                     httpContext,
                     ArcanumJsonContext.Default.UpsertLoreRequest,
-                    static ctx => ApiRequestJson.InvalidBodyResult<LoreDto>(
+                    static (ctx, jsonFailure) => ApiRequestJson.InvalidBodyResult<LoreDto>(
                         ctx,
-                        ApiRequestJson.MalformedJsonMessage,
+                        jsonFailure,
                         ArcanumJsonContext.Default.ApiResponseLoreDto),
                     cancellationToken).ConfigureAwait(false);
 
