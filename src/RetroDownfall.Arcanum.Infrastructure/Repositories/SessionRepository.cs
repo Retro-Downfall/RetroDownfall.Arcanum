@@ -1279,7 +1279,7 @@ internal sealed class SessionRepository(
             SELECT "ModelUsed", COUNT(*)
             FROM "Entries"
             WHERE "ModelUsed" <> ''
-            GROUP BY "ModelUsed"
+            GROUP BY "ModelUsed" COLLATE BINARY
             ORDER BY "ModelUsed" COLLATE BINARY;
             """,
             cancellationToken).ConfigureAwait(false);

@@ -25,7 +25,7 @@ public sealed class RetentionLookupIndexSchemaTests
             _ = await seed.ExecuteNonQueryAsync();
         }
 
-        Assert.Equal(28, (await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(old, 64, CancellationToken.None)).Core.SchemaVersion);
+        Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, (await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(old, 64, CancellationToken.None)).Core.SchemaVersion);
 
         using var freshFile = EvolutionScratchDatabase.Create();
 

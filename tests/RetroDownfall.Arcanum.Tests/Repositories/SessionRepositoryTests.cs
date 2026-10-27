@@ -18,7 +18,7 @@ using System.Text.Json;
 namespace RetroDownfall.Arcanum.Tests.Repositories;
 
 [Collection("Grimoire")]
-public sealed class SessionRepositoryTests : IAsyncLifetime
+public sealed partial class SessionRepositoryTests : IAsyncLifetime
 {
     private readonly GrimoireFixture _fixture;
 

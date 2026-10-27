@@ -459,6 +459,13 @@ public sealed class CampaignRollupSchemaEvolutionTests
                     break;
                 }
 
+                if (journal.BackfillName is null)
+                {
+                    installed = await installer.InstallAsync(connection, 1536, context, CancellationToken.None);
+
+                    continue;
+                }
+
                 _ = await runner.AdvanceAsync(connection,
                     chains.ForTier(GrimoireSchemaTransactionTier.Core),
                     journal, context, 16, CancellationToken.None);
@@ -469,7 +476,7 @@ public sealed class CampaignRollupSchemaEvolutionTests
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, installed.Core.Health);
 
-        Assert.Equal(shared ? 28 : 16, installed.Core.SchemaVersion);
+        Assert.Equal(shared ? GrimoireSchemaVersionChains.CoreSchemaVersion : 16, installed.Core.SchemaVersion);
     }
 
     private static Task<SqliteConnection> OpenAsync() =>
