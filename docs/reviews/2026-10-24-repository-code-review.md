@@ -4765,3 +4765,14 @@ The approved recursive RAPTOR lineage through `bee8792bd7564cc865d721ea5cb35dc13
 Original findings remain **219/272 integrated;53 remaining**. RV116/RV117/RV135 now have independently approved candidates with1227owningpasses, in addition to approvedRV189; none receives integration credit yet. RV191 has621completeaffectedpasses and finalstaticchecks are running. RetentionRV248/RV250 has1094affectedpasses and causal verification is active. FamilyRV190/RV194 work also covers the discovered invalidlease request.
 
 Real RAPTOR remains11/12stages integrated under its finite acceptance contract: offlineC1/C2/M1 are accepted, while finalintegratedG1/G2/G3 and user-pausedliveL1/L2 remain. FullCI is still open. No installation or liveOllama/embedding test has run.
+
+
+### 2026-10-27 checkpoint — 224 original findings integrated
+
+**224/272 original findings (82.4%) are independently reviewed and integrated; 48 remain.** All 3 Critical and 76 Important findings are integrated, along with 145 Minor findings. This batch integrates RV116/RV117/RV135 (bounded tool-evidence reacquisition and actionable loop diagnostics), RV189 (family-resume erasure checkpoint) and RV191 (explicit rebuild restart and terminal ownership). RV190 remains open for positive family completion; the guard against premature recovery completion alone does not close it.
+
+Runtime `1f2209887ce96f32e6e54d91af42da2f47a9384d`, tested tree `9f713d36591ce9c0c0998d1aab7ad27a65393fcf`, passed **1,628 distinct tests with zero failures/skips**, a zero-warning solution build and all owned house/compact/Roslyn/diff gates. All changed C# files exactly match their independently approved source candidates; automatic documentation merges preserve the current contracts. These are source ports, not additional Git parents. Qualification: `/private/tmp/arcanum-integrated-wave87-qualification.json`. Source catalog and Canonical7/Core29/Accelerator1 are unchanged.
+
+Six originals are active: RV190/RV194 family completion and diagnostics, RV192 Campaign-marker diagnostics, RV248/RV250 retention recovery/inventory, and RV263 erasure-key guidance. The remaining 42 originals are pending. Independent retention review reproduced a private-directory path leak through a post-commit factory-reset exception chain; that adjacent defect is being fixed before candidate approval. The 481-pass erasure-guidance candidate has completed all static gates and awaits independent review.
+
+Real RAPTOR offline10k/50k acceptance and source integration are complete; final fullCI/native/AOT/review gates and the user-paused live phase remain. The final14-job CI run has not started. Full FTS5 grammar and literal memory search remain integrated. No installation or live Ollama/embedding tests have run. Main and Claude's review branch remain unchanged.
