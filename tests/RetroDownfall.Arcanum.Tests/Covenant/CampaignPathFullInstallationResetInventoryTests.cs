@@ -22,7 +22,6 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 
 public sealed class CampaignPathFullInstallationResetInventoryTests
 {
-
     static CampaignPathFullInstallationResetInventoryTests() =>
         SqliteNativeRuntime.Instance.Initialize();
 
@@ -35,7 +34,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
     [Fact]
     public async Task Empty_initial_inventory_is_a_positive_authenticated_vector()
     {
-
         await using InventoryHarness harness = await InventoryHarness.CreateAsync();
 
         Guid ownerOperationId = Guid.NewGuid();
@@ -54,13 +52,11 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
                 ImmutableArray<CampaignMarkerInventoryEntryV1>.Empty).Value,
             inventory.Value.InventoryDigest);
         Assert.Equal(0, harness.RecoveryKeys.Calls);
-
     }
 
     [Fact]
     public async Task Initial_full_reset_inventory_reads_the_complete_registry_from_the_borrowed_core_connection()
     {
-
         await using InventoryHarness harness = await InventoryHarness.CreateAsync();
 
         RegisteredRoot first = await harness.AddMarkedRootAsync(
@@ -88,13 +84,11 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
         Assert.Equal([first.MarkerDigest, second.MarkerDigest],
             inventory.Value.Entries.Select(static entry => entry.MarkerDigest));
         Assert.Equal(0, harness.LiveConnectionSource.Calls);
-
     }
 
     [Fact]
     public async Task Initial_inventory_orders_by_rfc4122_campaign_bytes_not_sqlite_or_guid_runtime_order()
     {
-
         await using InventoryHarness harness = await InventoryHarness.CreateAsync();
 
         Guid firstByRfcBytes = Guid.Parse("00000001-0000-0000-0000-000000000000");
@@ -119,13 +113,11 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
         Assert.Equal(
             [firstByRfcBytes, secondByRfcBytes],
             inventory.Value.Entries.Select(static entry => entry.CampaignId));
-
     }
 
     [SkippableFact]
     public async Task Initial_inventory_opens_each_registered_root_once_without_following_links()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "Creating a directory symlink on Windows needs elevation.");
 
         await using InventoryHarness harness = await InventoryHarness.CreateAsync();
@@ -158,13 +150,11 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
 
         Assert.DoesNotContain("IdentifyExact", source.Text, StringComparison.Ordinal);
         Assert.Equal(1, CountOccurrences(source.Text, ".OpenExistingAsync("));
-
     }
 
     [Fact]
     public async Task Initial_inventory_authenticates_exact_marker_bytes_and_same_handle_root_ownership()
     {
-
         await using InventoryHarness harness = await InventoryHarness.CreateAsync();
 
         RegisteredRoot root = await harness.AddMarkedRootAsync(
@@ -200,7 +190,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
                 root.RootVolumeId,
                 root.RootFileId).Value,
             entry.SameHandleOwnershipEvidenceDigest);
-
     }
 
     [Theory]
@@ -210,7 +199,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
     public async Task Initial_inventory_refuses_before_journal_when_any_root_marker_or_ownership_is_unavailable(
         string unavailable)
     {
-
         await using InventoryHarness harness = await InventoryHarness.CreateAsync();
 
         RegisteredRoot root = await harness.AddMarkedRootAsync(
@@ -234,14 +222,23 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
                 break;
         }
 
+        Guid operationId = Guid.NewGuid();
+
         Result<CampaignPathFullInstallationResetInventory> inventory =
             await harness.Lifecycle.InventoryFullInstallationResetCleanupAsync(
-                Guid.NewGuid(),
+                operationId,
                 harness.Connection,
                 CancellationToken.None);
 
         Assert.True(inventory.IsFailure);
 
+        Assert.Contains(unavailable == "root" ? "RootIdentificationUnproved" : "MarkerOwnershipUnproved", inventory.Error.Message);
+
+        Assert.Contains(root.CampaignId.ToString("D"), inventory.Error.Message);
+
+        Assert.Contains(operationId.ToString("D"), inventory.Error.Message);
+
+        Assert.DoesNotContain(root.DisplayPath, inventory.Error.Message);
     }
 
     [Theory]
@@ -252,7 +249,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
     public async Task Initial_inventory_refuses_physical_identity_marker_campaign_revision_or_root_binding_mismatch(
         string mismatch)
     {
-
         await using InventoryHarness harness = await InventoryHarness.CreateAsync();
 
         RegisteredRoot root = await harness.AddMarkedRootAsync(
@@ -299,7 +295,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
                 CancellationToken.None);
 
         Assert.True(inventory.IsFailure);
-
     }
 
     [Theory]
@@ -316,7 +311,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
     public async Task Initial_inventory_rejects_default_duplicate_zero_revision_and_more_than_4096_entries(
         string invalid)
     {
-
         await using InventoryHarness harness = await InventoryHarness.CreateAsync();
 
         object campaign = Guid.NewGuid().ToString("D");
@@ -368,28 +362,24 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
                     index <= HostToolsMarkerPairResetCheckpointBounds.MaximumVectorCount;
                     index++)
                 {
-
                     await harness.InsertRawRegistryRowAsync(
                         GuidFromIndex(index).ToString("D"),
                         policy,
                         revision,
                         displayPath,
                         digest);
-
                 }
                 break;
         }
 
         if (invalid is not "oversized")
         {
-
             await harness.InsertRawRegistryRowAsync(
                 campaign,
                 policy,
                 revision,
                 displayPath,
                 digest);
-
         }
 
         Result<CampaignPathFullInstallationResetInventory> inventory =
@@ -400,13 +390,11 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
 
         Assert.True(inventory.IsFailure);
         Assert.Equal(0, harness.RecoveryKeys.Calls);
-
     }
 
     [Fact]
     public async Task Nonempty_initial_inventory_with_missing_root_identity_key_makes_no_credential_write_root_open_codec_or_marker_call()
     {
-
         await using InventoryHarness harness = await InventoryHarness.CreateAsync();
 
         RegisteredRoot root = await harness.AddMarkedRootAsync(
@@ -430,13 +418,21 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             TimeProvider.System,
             missingKeys);
 
+        Guid operationId = Guid.NewGuid();
+
         Result<CampaignPathFullInstallationResetInventory> inventory =
             await lifecycle.InventoryFullInstallationResetCleanupAsync(
-                Guid.NewGuid(),
+                operationId,
                 harness.Connection,
                 CancellationToken.None);
 
         Assert.True(inventory.IsFailure);
+
+        Assert.Contains("ExistingRootKeyUnavailable", inventory.Error.Message);
+
+        Assert.Contains(operationId.ToString("D"), inventory.Error.Message);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, inventory.Error.Code);
         Assert.Equal(1, credentials.GetCount);
         Assert.Equal(0, credentials.SetCount);
         Assert.Equal(
@@ -444,13 +440,11 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             await File.ReadAllBytesAsync(
                 harness.MarkerPath(root),
                 CancellationToken.None));
-
     }
 
     [Fact]
     public async Task Empty_initial_inventory_never_reads_or_creates_the_root_identity_key()
     {
-
         await using InventoryHarness harness = await InventoryHarness.CreateAsync();
 
         RecordingCredentialStore credentials = new();
@@ -475,13 +469,11 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
         Assert.Empty(inventory.Value.Entries);
         Assert.Equal(0, credentials.GetCount);
         Assert.Equal(0, credentials.SetCount);
-
     }
 
     [Fact]
     public async Task Full_reset_lifecycle_methods_without_recovery_port_fail_content_free()
     {
-
         await using InventoryHarness harness = await InventoryHarness.CreateAsync();
 
         CampaignPathMarkerLifecycle legacy = new(
@@ -531,13 +523,11 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             Assert.Equal(ErrorCodes.Data.RecoveryRequired, error.Code);
             Assert.DoesNotContain(harness.ScratchPath, error.Message, StringComparison.Ordinal);
         });
-
     }
 
     [Fact]
     public async Task Initial_inventory_refuses_registry_change_before_pair_journal_publication()
     {
-
         await using InventoryHarness harness = await InventoryHarness.CreateAsync();
 
         RegisteredRoot root = await harness.AddMarkedRootAsync(
@@ -566,13 +556,11 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             CancellationToken.None);
 
         Assert.True(changed.IsFailure);
-
     }
 
     [Fact]
     public async Task Initial_inventory_retains_only_runtime_root_authority_and_returns_detached_digest_evidence()
     {
-
         await using InventoryHarness harness = await InventoryHarness.CreateAsync();
 
         RegisteredRoot root = await harness.AddMarkedRootAsync(
@@ -626,7 +614,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
         Assert.Equal(root.CampaignId, retained.CampaignId);
 
         await harness.Lifecycle.ReleaseRetainedRootsAsync(ownerOperationId);
-
     }
 
     [Theory]
@@ -640,7 +627,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
     public async Task Inventory_revalidation_failure_releases_every_attempt_owned_root_exactly_once(
         string change)
     {
-
         await using InventoryHarness harness = await InventoryHarness.CreateAsync();
 
         RegisteredRoot root = await harness.AddMarkedRootAsync(
@@ -719,18 +705,15 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
         await harness.Lifecycle.ReleaseRetainedRootsAsync(ownerOperationId);
 
         Assert.Empty(RetainedFullResetRoots(harness.Lifecycle));
-
     }
 
     private static Guid GuidFromIndex(int index)
     {
-
         Span<byte> bytes = stackalloc byte[16];
 
         System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(bytes[12..], index + 1);
 
         return new Guid(bytes, bigEndian: true);
-
     }
 
     private static CovenantDigest Digest(byte seed) =>
@@ -739,7 +722,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
     private static CampaignPathMarkerRootAuthority[] RetainedFullResetRoots(
         CampaignPathMarkerLifecycle lifecycle)
     {
-
         FieldInfo retainedRootsField = typeof(CampaignPathMarkerLifecycle).GetField(
             "_fullResetRetainedRoots",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -750,7 +732,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
 
         return ((IEnumerable<CampaignPathMarkerRootAuthority>)valuesProperty.GetValue(
             retainedRoots)!).ToArray();
-
     }
 
     private static int CountOccurrences(string text, string value) =>
@@ -761,7 +742,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
 
     private sealed class InventoryHarness : IAsyncDisposable
     {
-
         private readonly string _parent;
 
         private InventoryHarness(
@@ -773,7 +753,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             CampaignPathMarkerCodec codec,
             ForbiddenConnectionSource liveConnectionSource)
         {
-
             _parent = parent;
 
             Connection = connection;
@@ -787,7 +766,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             Codec = codec;
 
             LiveConnectionSource = liveConnectionSource;
-
         }
 
         internal SqliteConnection Connection { get; }
@@ -809,18 +787,15 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
 
         internal string CreateDirectorySymlink(string leaf, string target)
         {
-
             string link = Path.Combine(_parent, leaf);
 
             _ = Directory.CreateSymbolicLink(link, target);
 
             return link;
-
         }
 
         internal async Task UpdateDisplayPathAsync(Guid campaignId, string displayPath)
         {
-
             await using SqliteCommand command = Connection.CreateCommand();
 
             command.CommandText = """
@@ -834,12 +809,10 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             _ = command.Parameters.AddWithValue("$campaignId", campaignId.ToString("D"));
 
             Assert.Equal(1, await command.ExecuteNonQueryAsync(CancellationToken.None));
-
         }
 
         internal async Task DeleteRegistryRowAsync(Guid campaignId)
         {
-
             await using SqliteCommand command = Connection.CreateCommand();
 
             command.CommandText = """
@@ -850,12 +823,10 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             _ = command.Parameters.AddWithValue("$campaignId", campaignId.ToString("D"));
 
             Assert.Equal(1, await command.ExecuteNonQueryAsync(CancellationToken.None));
-
         }
 
         internal async Task UpdateCampaignIdAsync(Guid campaignId, Guid replacementCampaignId)
         {
-
             await using SqliteCommand command = Connection.CreateCommand();
 
             command.CommandText = """
@@ -871,14 +842,12 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             _ = command.Parameters.AddWithValue("$campaignId", campaignId.ToString("D"));
 
             Assert.Equal(1, await command.ExecuteNonQueryAsync(CancellationToken.None));
-
         }
 
         internal async Task UpdateIdentityDigestAsync(
             Guid campaignId,
             CovenantDigest identityDigest)
         {
-
             await using SqliteCommand command = Connection.CreateCommand();
 
             command.CommandText = """
@@ -892,12 +861,10 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             _ = command.Parameters.AddWithValue("$campaignId", campaignId.ToString("D"));
 
             Assert.Equal(1, await command.ExecuteNonQueryAsync(CancellationToken.None));
-
         }
 
         internal async Task UpdateRevisionAsync(Guid campaignId, long revision)
         {
-
             await using SqliteCommand command = Connection.CreateCommand();
 
             command.CommandText = """
@@ -911,7 +878,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             _ = command.Parameters.AddWithValue("$campaignId", campaignId.ToString("D"));
 
             Assert.Equal(1, await command.ExecuteNonQueryAsync(CancellationToken.None));
-
         }
 
         internal async Task InsertRawRegistryRowAsync(
@@ -921,7 +887,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             object displayPath,
             object identityDigest)
         {
-
             await using SqliteCommand command = Connection.CreateCommand();
 
             command.CommandText = """
@@ -954,7 +919,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             _ = command.Parameters.AddWithValue("$identity", identityDigest);
 
             _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         internal async Task ReplaceMarkerAsync(
@@ -964,7 +928,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             ulong rootVolumeId,
             ulong rootFileId)
         {
-
             Result<byte[]> encoded = Codec.Encode(
                 new CampaignPathMarkerContent(
                     CampaignPathMarkerPolicy.Version,
@@ -982,12 +945,10 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
                 MarkerPath(root),
                 encoded.Value,
                 CancellationToken.None);
-
         }
 
         internal (ulong VolumeId, ulong FileId) CreateUnregisteredRootTuple()
         {
-
             string directory = Directory.CreateDirectory(
                 Path.Combine(_parent, $"unregistered-{Guid.NewGuid():N}")).FullName;
 
@@ -996,12 +957,10 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
                 out FileHandleMetadata metadata));
 
             return (metadata.Identity.VolumeId, metadata.Identity.FileId);
-
         }
 
         internal static async Task<InventoryHarness> CreateAsync()
         {
-
             string parent = Directory.CreateTempSubdirectory(
                 "arcanum-full-reset-inventory-").FullName;
 
@@ -1011,7 +970,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
 
             await using (SqliteCommand command = connection.CreateCommand())
             {
-
                 command.CommandText = """
                     CREATE TABLE campaign_path_identities (
                         CampaignId TEXT NOT NULL,
@@ -1025,7 +983,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
                     """;
 
                 _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
             }
 
             StubKeySource rootKeys = new(RootIdentityKey);
@@ -1054,7 +1011,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
                 opener,
                 codec,
                 liveConnectionSource);
-
         }
 
         internal async Task<RegisteredRoot> AddMarkedRootAsync(
@@ -1062,7 +1018,6 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             long revision,
             string leaf)
         {
-
             string directory = Directory.CreateDirectory(Path.Combine(_parent, leaf)).FullName;
 
             CovenantDigest identity = Opener.IdentifyExact(directory)!.Value;
@@ -1153,12 +1108,10 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
                 new CovenantDigest(SHA256.HashData(encoded.Value)),
                 metadata.Identity.VolumeId,
                 metadata.Identity.FileId);
-
         }
 
         public async ValueTask DisposeAsync()
         {
-
             await Connection.DisposeAsync();
 
             try
@@ -1169,9 +1122,7 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             {
                 // A leftover scratch directory is not worth failing a suite over.
             }
-
         }
-
     }
 
     private sealed record RegisteredRoot(
@@ -1186,12 +1137,10 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
     private sealed class RecordingRecoveryKeyProvider(byte[] key)
         : ICampaignRootIdentityRecoveryKeyProvider
     {
-
         internal int Calls { get; private set; }
 
         public bool TryCopyExistingRootIdentityKey(Span<byte> destination)
         {
-
             Calls++;
 
             if (destination.Length != key.Length)
@@ -1202,17 +1151,13 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             key.CopyTo(destination);
 
             return true;
-
         }
-
     }
 
     private sealed class StubKeySource(byte[] key) : ICampaignRootIdentityKeyProvider
     {
-
         public bool TryCopyRootIdentityKey(Span<byte> destination)
         {
-
             if (destination.Length < key.Length)
             {
                 return false;
@@ -1221,36 +1166,29 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
             key.CopyTo(destination);
 
             return true;
-
         }
-
     }
 
     private sealed class ForbiddenConnectionSource : ICovenantConnectionSource
     {
-
         internal int Calls { get; private set; }
 
         public ValueTask<SqliteConnection> GetOpenConnectionAsync(
             CancellationToken cancellationToken)
         {
-
             Calls++;
 
             throw new InvalidOperationException(
                 "The full-reset inventory must borrow its caller's Core connection.");
-
         }
 
         public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(
             CancellationToken cancellationToken) =>
             GetOpenConnectionAsync(cancellationToken);
-
     }
 
     private sealed class RecordingCredentialStore : IOsCredentialStore
     {
-
         internal int GetCount { get; private set; }
 
         internal int SetCount { get; private set; }
@@ -1259,25 +1197,19 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
 
         public OsCredentialStoreResult TryGet(string service, string account)
         {
-
             GetCount++;
 
             return OsCredentialStoreResult.NotFound();
-
         }
 
         public OsCredentialStoreResult Set(string service, string account, string secret)
         {
-
             SetCount++;
 
             return OsCredentialStoreResult.Ok(secret);
-
         }
 
         public OsCredentialStoreResult Delete(string service, string account) =>
             OsCredentialStoreResult.Ok(string.Empty);
-
     }
-
 }

@@ -22,6 +22,101 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
 public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 {
+    [Theory]
+    [InlineData("inventory", true)]
+    [InlineData("inventory", false)]
+    [InlineData("revalidate", true)]
+    [InlineData("revalidate", false)]
+    [InlineData("prepare", true)]
+    [InlineData("prepare", false)]
+    [InlineData("reconcile", true)]
+    [InlineData("reconcile", false)]
+    public async Task Marker_lifecycle_refusal_retains_only_closed_diagnostics(string step, bool typed)
+    {
+        await using CovenantSchemaScratchDatabase database = await CreateMarkerDatabaseAsync();
+
+        string guardedRoot = Path.Combine(Path.GetTempPath(), $"arcanum-marker-diagnostics-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(guardedRoot);
+
+        try
+        {
+            using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+            InstallationResetActivePublication current = Publication();
+
+            FullInstallationResetRemediationClaimV1 claim = Assert.IsType<FullInstallationResetRemediationClaimV1>(current.Payload.FullInstallationResetRemediationClaim);
+
+            Guid campaignId = Guid.NewGuid();
+
+            CampaignMarkerFailureStage stage = step switch
+            {
+                "inventory" => CampaignMarkerFailureStage.FullResetInventory,
+                "revalidate" => CampaignMarkerFailureStage.FullResetRevalidation,
+                "prepare" => CampaignMarkerFailureStage.FullResetPreparation,
+                _ => CampaignMarkerFailureStage.FullResetReconciliation,
+            };
+
+            List<string> events = [];
+
+            RecordingActiveStore store = new(guardedRoot, current, events) { AdvanceSucceeds = true };
+
+            RecordingFullResetLifecycle lifecycle = new(events, Inventory(claim.OperationId))
+            {
+                DiagnosticFailureAt = step,
+                DiagnosticFailure = new Error(ErrorCodes.Data.RecoveryRequired, "PRIVATE_COLLABORATOR_PATH_KEY")
+                {
+                    CampaignMarkerFailure = typed ? new CampaignMarkerFailureDetails(stage,
+                        CampaignMarkerFailureReason.ExistingRootKeyUnavailable, claim.OperationId, campaignId) : null,
+                },
+            };
+
+            HostProcessToolsMatchedPair pair = new(TaintedDatabaseEvidence(), MatchedOsEvidence());
+
+            HostToolsMarkerPairResetCoordinator subject = new(store,
+                new HostToolsMarkerPairResetDatabase(database.MaintenanceConnections(), CovenantSqliteConnectionInitializer.Instance,
+                    new RecordingDatabaseSeam(events)), new SuccessfulReadiness(),
+                new RecordingJoiner(new HostProcessToolsMarkerPairJoinResult(HostProcessToolsMarkerPairDisposition.TaintedMatched, pair)),
+                new AuthorizingVerifier(Authorization(claim)), lifecycle,
+                new RecordingOsPort(events, HostToolsMarkerPairResetOsOpenResult.Opened(pair.OsMarker, new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
+
+            Result<InstallationResetActivePublication> result = await subject.BeginAsync(heldLock, current,
+                Attestation(current.Payload.OperationId), CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
+
+            Assert.Contains(claim.OperationId.ToString("D"), result.Error.Message);
+
+            Assert.Contains(stage.ToString(), result.Error.Message);
+
+            Assert.Contains(typed ? "ExistingRootKeyUnavailable" : "MarkerLifecycleRefused", result.Error.Message);
+
+            Assert.DoesNotContain("PRIVATE_COLLABORATOR_PATH_KEY", result.Error.Message);
+
+            Assert.DoesNotContain(guardedRoot, result.Error.Message);
+
+            if (typed)
+            {
+                Assert.Contains(campaignId.ToString("D"), result.Error.Message);
+            }
+
+            Assert.Equal(1, step switch
+            {
+                "inventory" => lifecycle.InventoryCalls,
+                "revalidate" => lifecycle.RevalidateCalls,
+                "prepare" => lifecycle.PrepareCalls,
+                _ => lifecycle.ReconcileCalls,
+            });
+        }
+        finally
+        {
+            Directory.Delete(guardedRoot, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task Begin_requires_the_callers_exact_held_installation_lock_and_authenticated_claim_publication()
     {
@@ -2098,9 +2193,17 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
             Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
 
-            Assert.Equal(
-                "The full-installation reset marker-pair operation requires recovery.",
-                result.Error.Message);
+            if (sentinel == 4)
+            {
+                Assert.Equal(new CampaignMarkerFailureDetails(CampaignMarkerFailureStage.FullResetRevalidation,
+                    CampaignMarkerFailureReason.MarkerLifecycleRefused, claim.OperationId), result.Error.CampaignMarkerFailure);
+
+                Assert.Contains("MarkerLifecycleRefused", result.Error.Message);
+            }
+            else
+            {
+                Assert.Equal("The full-installation reset marker-pair operation requires recovery.", result.Error.Message);
+            }
 
             Assert.Equal(1, capability.DisposeCalls);
 
@@ -2498,9 +2601,10 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
                 Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
 
-                Assert.Equal(
-                    "The full-installation reset marker-pair operation requires recovery.",
-                    result.Error.Message);
+                Assert.Equal(new CampaignMarkerFailureDetails(CampaignMarkerFailureStage.FullResetRevalidation,
+                    CampaignMarkerFailureReason.MarkerLifecycleRefused, claim.OperationId), result.Error.CampaignMarkerFailure);
+
+                Assert.Contains("MarkerLifecycleRefused", result.Error.Message);
             }
 
             Assert.Equal(1, lifecycle.ReleaseCalls);
@@ -5316,7 +5420,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         internal Func<
             int,
             InstallationResetActivePublication,
-            InstallationResetActivePublication>? RecoveryProjection { get; init; }
+            InstallationResetActivePublication>? RecoveryProjection
+        { get; init; }
 
         internal Action<HostToolsMarkerPairResetPhase?>? BeforeAdvance { get; init; }
 
@@ -5540,7 +5645,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         /// <summary>Replaces the immediate success the port answers a delete with.</summary>
         internal Func<CancellationToken, Task<HostToolsMarkerPairResetOsDeleteStatus>>?
-            DeleteBehavior { get; init; }
+            DeleteBehavior
+        { get; init; }
 
         internal IHostToolsMarkerPairResetOsCapability? DeleteCapability
         {
@@ -5910,6 +6016,10 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         internal ulong ReconciledOrphanCount { get; init; }
 
+        internal string? DiagnosticFailureAt { get; init; }
+
+        internal Error DiagnosticFailure { get; init; }
+
         internal bool FailPrepare { get; init; }
 
         internal bool FailReconcile { get; init; }
@@ -5973,6 +6083,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         {
             InventoryCalls++;
 
+            if (DiagnosticFailureAt == "inventory")
+            {
+                return Task.FromResult(Result<CampaignPathFullInstallationResetInventory>.Failure(DiagnosticFailure));
+            }
+
             if (_throwOnInventory)
             {
                 throw new InvalidOperationException(
@@ -5996,6 +6111,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             CancellationToken cancellationToken)
         {
             RevalidateCalls++;
+
+            if (DiagnosticFailureAt == "revalidate")
+            {
+                return Task.FromResult(Result.Failure(DiagnosticFailure));
+            }
 
             if (_throwOnRevalidate)
             {
@@ -6032,6 +6152,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 CancellationToken cancellationToken)
         {
             PrepareCalls++;
+
+            if (DiagnosticFailureAt == "prepare")
+            {
+                return Task.FromResult(Result<CampaignPathFullInstallationResetCleanupReceipt>.Failure(DiagnosticFailure));
+            }
 
             PrepareAuthority = authority;
 
@@ -6073,6 +6198,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 CancellationToken cancellationToken)
         {
             ReconcileCalls++;
+
+            if (DiagnosticFailureAt == "reconcile")
+            {
+                return Task.FromResult(Result<CampaignPathFullInstallationResetCleanupReceipt>.Failure(DiagnosticFailure));
+            }
 
             ReconcileAuthority = authority;
 

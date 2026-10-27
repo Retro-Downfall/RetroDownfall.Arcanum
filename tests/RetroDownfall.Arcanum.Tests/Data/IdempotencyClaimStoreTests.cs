@@ -804,6 +804,150 @@ public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
         Assert.False(failed.TerminalStreamComplete);
     }
 
+    [SkippableTheory]
+    [InlineData(IdempotencyClaimState.Running, -1L, true)]
+    [InlineData(IdempotencyClaimState.Claimed, -1L, true)]
+    [InlineData(IdempotencyClaimState.Running, 0L, false)]
+    [InlineData(IdempotencyClaimState.Claimed, 0L, false)]
+    [InlineData(IdempotencyClaimState.Running, 1L, false)]
+    [InlineData(IdempotencyClaimState.Claimed, 1L, false)]
+    [InlineData(IdempotencyClaimState.Running, 1728000000000L, false)]
+    [InlineData(IdempotencyClaimState.Claimed, 1728000000000L, false)]
+    public async Task DeleteExpiredAsync_UsesTheLeaseExpiryCutoffForStrandedClaims(
+        IdempotencyClaimState state,
+        long leaseOffsetTicks,
+        bool expired)
+    {
+        RequireSqlCipher();
+
+        IdempotencyClaimStore store = new(_db!);
+
+        DateTimeOffset cutoff = new(2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        IdempotencyClaim before = await SeedExpiryClaimAsync(store, state, cutoff.AddDays(-1), cutoff.AddTicks(leaseOffsetTicks));
+
+        Assert.Equal(expired ? 1 : 0, await store.DeleteExpiredAsync(cutoff));
+
+        Assert.Equal(expired ? null : before, await store.TryGetAsync(before.ClaimKeyHash));
+
+        Assert.Equal(0, await store.DeleteExpiredAsync(cutoff));
+    }
+
+    [SkippableTheory]
+    [InlineData(IdempotencyClaimState.Running, 0L)]
+    [InlineData(IdempotencyClaimState.Claimed, 0L)]
+    [InlineData(IdempotencyClaimState.Running, 1L)]
+    [InlineData(IdempotencyClaimState.Claimed, 1L)]
+    public async Task DeleteExpiredAsync_RetainsClaimsCreatedAtOrAfterTheCutoff(IdempotencyClaimState state, long createdOffsetTicks)
+    {
+        RequireSqlCipher();
+
+        IdempotencyClaimStore store = new(_db!);
+
+        DateTimeOffset cutoff = new(2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        IdempotencyClaim before = await SeedExpiryClaimAsync(store, state, cutoff.AddTicks(createdOffsetTicks), cutoff.AddDays(-1));
+
+        Assert.Equal(0, await store.DeleteExpiredAsync(cutoff));
+
+        Assert.Equal(before, await store.TryGetAsync(before.ClaimKeyHash));
+    }
+
+    [SkippableTheory]
+    [InlineData(IdempotencyClaimState.Completed)]
+    [InlineData(IdempotencyClaimState.Failed)]
+    [InlineData(IdempotencyClaimState.Abandoned)]
+    public async Task DeleteExpiredAsync_PreservesTerminalCreationTimePolicy(IdempotencyClaimState state)
+    {
+        RequireSqlCipher();
+
+        IdempotencyClaimStore store = new(_db!);
+
+        DateTimeOffset cutoff = new(2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        IdempotencyClaim old = await SeedExpiryClaimAsync(store, state, cutoff.AddTicks(-1), cutoff.AddDays(2));
+
+        IdempotencyClaim recent = await SeedExpiryClaimAsync(store, state, cutoff, cutoff.AddDays(-1));
+
+        Assert.Equal(1, await store.DeleteExpiredAsync(cutoff));
+
+        Assert.Null(await store.TryGetAsync(old.ClaimKeyHash));
+
+        Assert.Equal(recent, await store.TryGetAsync(recent.ClaimKeyHash));
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeleteExpiredAsync_RespectsACommittedRenewalOnAnotherConnection(bool reclaim)
+    {
+        RequireSqlCipher();
+
+        IdempotencyClaimStore store = new(_db!);
+
+        DateTimeOffset cutoff = DateTimeOffset.UtcNow.AddDays(-1);
+
+        IdempotencyClaim stale = await SeedExpiryClaimAsync(store, IdempotencyClaimState.Running, cutoff.AddDays(-1), cutoff.AddTicks(-1));
+
+        await using ArcanumDbContext ownerDb = _fixture.CreateContext(_dbPath);
+
+        IdempotencyClaimStore owner = new(ownerDb);
+
+        DateTimeOffset renewedUntil = DateTimeOffset.UtcNow.AddMinutes(5);
+
+        Assert.True(reclaim
+            ? await owner.TryReclaimAsync(stale.Id, "new-owner", renewedUntil)
+            : await owner.HeartbeatAsync(stale.Id, stale.OwnerId, renewedUntil));
+
+        IdempotencyClaim? renewed = await owner.GetByIdAsync(stale.Id);
+
+        Assert.NotNull(renewed);
+
+        Assert.Equal(renewedUntil, renewed.LeaseExpiresAt);
+
+        Assert.Equal(reclaim ? "new-owner" : stale.OwnerId, renewed.OwnerId);
+
+        Assert.Equal(0, await store.DeleteExpiredAsync(cutoff));
+
+        Assert.Equal(renewed, await store.TryGetAsync(stale.ClaimKeyHash));
+    }
+
+    [SkippableFact]
+    public async Task DeleteExpiredAsync_RetainsUnknownStates()
+    {
+        RequireSqlCipher();
+
+        IdempotencyClaimStore store = new(_db!);
+
+        DateTimeOffset cutoff = new(2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        IdempotencyClaim before = await SeedExpiryClaimAsync(store, (IdempotencyClaimState)99, cutoff.AddDays(-2), cutoff.AddDays(-1));
+
+        Assert.Equal(0, await store.DeleteExpiredAsync(cutoff));
+
+        Assert.Equal(before, await store.TryGetAsync(before.ClaimKeyHash));
+    }
+
+    private async Task<IdempotencyClaim> SeedExpiryClaimAsync(
+        IdempotencyClaimStore store,
+        IdempotencyClaimState state,
+        DateTimeOffset createdAt,
+        DateTimeOffset leaseExpiresAt)
+    {
+        IdempotencyClaim claim = await AcquireAsync(store, Guid.NewGuid().ToString("N"), "fingerprint", "owner", leaseExpiresAt, createdAt);
+
+        await ExecuteNonQueryAsync(
+            "UPDATE \"IdempotencyClaims\" SET \"State\" = @state WHERE \"Id\" = @id;",
+            ("@state", (int)state),
+            ("@id", claim.Id.ToString("N")));
+
+        IdempotencyClaim? seeded = await store.TryGetAsync(claim.ClaimKeyHash);
+
+        Assert.NotNull(seeded);
+
+        return seeded;
+    }
+
     private static void RequireSqlCipher() =>
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 

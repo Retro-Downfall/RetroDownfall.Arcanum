@@ -20,7 +20,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// </remarks>
 internal enum CampaignPathMarkerIntentKind : byte
 {
-
     PathMutation = 1,
 
     CampaignDelete = 2,
@@ -28,7 +27,6 @@ internal enum CampaignPathMarkerIntentKind : byte
     RestoreCleanup = 3,
 
     FullInstallationResetCleanup = 4,
-
 }
 
 /// <summary>
@@ -42,7 +40,6 @@ internal enum CampaignPathMarkerIntentKind : byte
 /// </remarks>
 internal enum CampaignPathMarkerPhase : byte
 {
-
     Prepared = 1,
 
     TempCreated = 2,
@@ -74,7 +71,6 @@ internal enum CampaignPathMarkerPhase : byte
     OrphanReopenPending = 15,
 
     Orphaned = 16,
-
 }
 
 /// <summary>
@@ -82,21 +78,20 @@ internal enum CampaignPathMarkerPhase : byte
 /// </summary>
 internal enum CampaignPathCleanupRootBlocker : byte
 {
-
     RootUnavailable = 1,
 
     PhysicalIdentityMismatch = 2,
 
     OwnershipMismatch = 3,
-
 }
 
 /// <summary>
 /// Content-free evidence that a cleanup target could not be opened.
 /// </summary>
 /// <remarks>
-/// Digests and a closed code, never a path or a handle. This value is what a blocked cleanup records
-/// and what an operator later reads, and a blocker that carried a reopenable path would hand file
+/// Digests and a closed code, never a path or a handle. Digests are internal commitments; only the
+/// closed reason and already-held Campaign/operation GUIDs are operator diagnostics. A blocker that
+/// carried a reopenable path would hand file
 /// authority to exactly the branch that just proved it does not have it.
 /// </remarks>
 internal sealed record CampaignPathCleanupRootBlockerEvidence(
@@ -114,7 +109,6 @@ internal sealed record CampaignPathCleanupRootBlockerEvidence(
 /// </remarks>
 internal abstract record CampaignPathCleanupRootObservation
 {
-
     private CampaignPathCleanupRootObservation()
     {
     }
@@ -130,7 +124,6 @@ internal abstract record CampaignPathCleanupRootObservation
     internal sealed record Mismatch(
         CampaignPathCleanupRootBlockerEvidence Evidence)
         : CampaignPathCleanupRootObservation;
-
 }
 
 /// <summary>
@@ -175,7 +168,6 @@ internal sealed record CampaignPathRestoreCleanupPreparationReceipt(
     ulong IntentCount,
     CovenantDigest IntentVectorDigest)
 {
-
     /// <summary>
     /// Compares the children element by element.
     /// </summary>
@@ -197,7 +189,6 @@ internal sealed record CampaignPathRestoreCleanupPreparationReceipt(
     /// <inheritdoc />
     public override int GetHashCode()
     {
-
         HashCode hash = new();
 
         hash.Add(Owner);
@@ -206,15 +197,11 @@ internal sealed record CampaignPathRestoreCleanupPreparationReceipt(
 
         foreach (Guid intentId in OrderedIntentIds.IsDefault ? [] : OrderedIntentIds)
         {
-
             hash.Add(intentId);
-
         }
 
         return hash.ToHashCode();
-
     }
-
 }
 
 /// <summary>
@@ -228,7 +215,6 @@ internal sealed record CampaignPathRestoreCleanupPreparationReceipt(
 /// </remarks>
 internal static class CampaignPathRestoreCleanupIntentVector
 {
-
     internal const string Domain =
         "Arcanum.Covenant.BackupRestore.MarkerIntentVector.v1";
 
@@ -256,39 +242,30 @@ internal static class CampaignPathRestoreCleanupIntentVector
     /// </summary>
     internal static Result<CovenantDigest> Compute(ImmutableArray<Guid> orderedIntentIds)
     {
-
         if (orderedIntentIds.IsDefault)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "An uninitialized marker-intent vector is not a proven empty inventory.");
-
         }
 
         if (orderedIntentIds.Length > MaximumIntents)
         {
-
             return new Error(
                 ErrorCodes.Covenant.CapacityExceeded,
                 "This restore names more Campaign cleanup children than one authenticated journal may carry.");
-
         }
 
         HashSet<Guid> seen = new(orderedIntentIds.Length);
 
         foreach (Guid intentId in orderedIntentIds)
         {
-
             if (intentId == Guid.Empty || !seen.Add(intentId))
             {
-
                 return new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "A marker-intent vector must name distinct, nonempty children.");
-
             }
-
         }
 
         byte[] preimage = new byte[
@@ -309,23 +286,18 @@ internal static class CampaignPathRestoreCleanupIntentVector
 
         foreach (Guid intentId in orderedIntentIds)
         {
-
             if (!intentId.TryWriteBytes(preimage.AsSpan(written), bigEndian: true, out int itemBytes)
                 || itemBytes != 16)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "A marker-intent child could not be encoded in network byte order.");
-
             }
 
             written += itemBytes;
-
         }
 
         return new CovenantDigest(SHA256.HashData(preimage.AsSpan(0, written)));
-
     }
 
     /// <summary>
@@ -333,7 +305,6 @@ internal static class CampaignPathRestoreCleanupIntentVector
     /// </summary>
     internal static CovenantDigest EmptyDigest { get; } =
         new(Convert.FromHexString(EmptyDigestHex));
-
 }
 
 /// <summary>
@@ -349,13 +320,11 @@ internal sealed record CampaignPathMarkerGateReconcileRequest(
 /// </summary>
 internal enum CampaignPathMarkerAggregateOutcome : byte
 {
-
     Committed = 1,
 
     Compensated = 2,
 
     Orphaned = 3,
-
 }
 
 /// <summary>

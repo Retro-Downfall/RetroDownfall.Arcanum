@@ -214,7 +214,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         foreach (CampaignPathRestoreCleanupSeed seed in preparation.OrderedSeeds)
         {
-            Result seedValid = ValidateSeed(seed, campaigns);
+            Result seedValid = ValidateSeed(seed, campaigns, preparation.Owner.OperationId);
 
             if (seedValid.IsFailure)
             {
@@ -563,7 +563,8 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
     private static Result ValidateSeed(
         CampaignPathRestoreCleanupSeed seed,
-        HashSet<Guid> campaigns)
+        HashSet<Guid> campaigns,
+        Guid operationId)
     {
         if (seed is null
             || seed.CampaignId == Guid.Empty
@@ -588,9 +589,23 @@ internal sealed partial class CampaignPathMarkerLifecycle
         // a Campaign the restored installation does not own.
         if (seed.Observation is not CampaignPathCleanupRootObservation.Opened opened)
         {
-            return new Error(
-                ErrorCodes.Covenant.ManualRecoveryRequired,
-                "A restore cannot proceed while a destination Campaign root cannot be opened.");
+            CampaignPathCleanupRootBlocker? blocker = seed.Observation switch
+            {
+                CampaignPathCleanupRootObservation.Unavailable unavailable => unavailable.Evidence?.Blocker,
+                CampaignPathCleanupRootObservation.Mismatch mismatch => mismatch.Evidence?.Blocker,
+                _ => null,
+            };
+
+            CampaignMarkerFailureReason reason = blocker switch
+            {
+                CampaignPathCleanupRootBlocker.RootUnavailable => CampaignMarkerFailureReason.RootUnavailable,
+                CampaignPathCleanupRootBlocker.PhysicalIdentityMismatch => CampaignMarkerFailureReason.PhysicalIdentityMismatch,
+                CampaignPathCleanupRootBlocker.OwnershipMismatch => CampaignMarkerFailureReason.OwnershipMismatch,
+                _ => CampaignMarkerFailureReason.Unknown,
+            };
+
+            return CampaignMarkerDiagnostics.Failure(ErrorCodes.Covenant.ManualRecoveryRequired,
+                CampaignMarkerFailureStage.RestorePreparation, reason, operationId, seed.CampaignId);
         }
 
         return opened.RootAuthority.CampaignId == seed.CampaignId
@@ -1050,6 +1065,58 @@ internal sealed partial class CampaignPathMarkerLifecycle
     }
 }
 
+internal static class CampaignMarkerDiagnostics
+{
+    internal static Error Failure(string code, CampaignMarkerFailureStage stage,
+        CampaignMarkerFailureReason reason, Guid? operationId = null, Guid? campaignId = null,
+        Error? source = null)
+    {
+        CampaignMarkerFailureDetails? supplied = source?.CampaignMarkerFailure;
+
+        bool propagated = supplied is { } candidate && candidate == candidate.Validated();
+
+        CampaignMarkerFailureDetails details = propagated
+            ? supplied!.Value
+            : new CampaignMarkerFailureDetails(stage, reason).Validated();
+
+        details = (details with
+        {
+            OperationId = operationId is { } operation && operation != Guid.Empty ? operation : details.OperationId,
+            CampaignId = campaignId is { } campaign && campaign != Guid.Empty ? campaign : details.CampaignId,
+        }).Validated();
+
+        if (!propagated)
+        {
+            Report(details);
+        }
+
+        return new Error(code, details.ToPublicMessage()) { CampaignMarkerFailure = details };
+    }
+
+    internal static void Report(CampaignMarkerFailureDetails details)
+    {
+        CampaignMarkerFailureDetails safe = details.Validated();
+
+        try
+        {
+            if (safe.Stage == CampaignMarkerFailureStage.RootRelease)
+            {
+                Log.Warning("Campaign marker root release reported {Reason}; CampaignId {CampaignId}. Remaining retained roots will still be released.",
+                    safe.Reason, safe.CampaignId);
+            }
+            else
+            {
+                Log.Warning("Campaign marker refusal at {Stage}: {Reason}; OperationId {OperationId}, CampaignId {CampaignId}. Preserve the profile, marker and recovery journal before retrying recovery.",
+                    safe.Stage, safe.Reason, safe.OperationId, safe.CampaignId);
+            }
+        }
+        catch (Exception)
+        {
+            // Diagnostics never change the refusal or prevent remaining root releases.
+        }
+    }
+}
+
 internal static class CampaignPathRetainedRootRelease
 {
     /// <summary>
@@ -1082,11 +1149,12 @@ internal static class CampaignPathRetainedRootRelease
             {
                 await dispose(retainedRoot).ConfigureAwait(false);
             }
-            catch (Exception exception)
+            catch (Exception)
             {
-                Log.Warning(
-                    exception,
-                    "A retained Campaign root authority reported a disposal failure; remaining roots will still be released.");
+                // Releasing the next root remains mandatory even when the logging bridge fails.
+                CampaignMarkerDiagnostics.Report(new(CampaignMarkerFailureStage.RootRelease,
+                    CampaignMarkerFailureReason.RootReleaseFailed,
+                    CampaignId: retainedRoot is CampaignPathMarkerRootAuthority authority ? authority.CampaignId : null));
             }
         }
     }

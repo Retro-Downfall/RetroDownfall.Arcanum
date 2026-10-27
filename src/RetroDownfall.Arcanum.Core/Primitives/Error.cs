@@ -36,16 +36,114 @@ public readonly record struct Error(
     [JsonIgnore]
     public CovenantInventoryFailureDetails? CovenantInventoryFailure { get; init; }
 
+    /// <summary>Closed marker refusal observations; no capability or persisted/wire state.</summary>
+    [JsonIgnore]
+    public CampaignMarkerFailureDetails? CampaignMarkerFailure { get; init; }
+
     public static readonly Error None = new(string.Empty, string.Empty);
 
     /// <summary>
     /// Whether this error has exactly the field values of <see cref="None"/>: empty code, empty
-    /// message, no details, context overflow, connection failure, startup failure or inventory failure. It is the same
+    /// message, no details, context overflow, connection failure, startup failure, inventory failure or marker failure. It is the same
     /// answer as <c>this == None</c>, read from the fields so a caller never runs the generated record comparison, which would compare
     /// <see cref="Details"/> through its interface.
     /// </summary>
     [JsonIgnore]
-    public bool IsNone => Code is { Length: 0 } && Message is { Length: 0 } && Details is null && ContextOverflow is null && ConnectionFailure is null && CovenantStartupFailure is null && CovenantInventoryFailure is null;
+    public bool IsNone => Code is { Length: 0 } && Message is { Length: 0 } && Details is null && ContextOverflow is null && ConnectionFailure is null && CovenantStartupFailure is null && CovenantInventoryFailure is null && CampaignMarkerFailure is null;
+}
+
+/// <summary>Observation only: no value grants authority or changes marker recovery policy.</summary>
+public enum CampaignMarkerFailureStage
+{
+    Unknown,
+    RestorePreparation,
+    RestartProof,
+    FullResetInventory,
+    FullResetRevalidation,
+    FullResetPreparation,
+    FullResetReconciliation,
+    RootRelease,
+}
+
+/// <summary>Closed refusal facts; no collaborator text, path, digest, or exception data.</summary>
+public enum CampaignMarkerFailureReason
+{
+    Unknown,
+    RootUnavailable,
+    PhysicalIdentityMismatch,
+    OwnershipMismatch,
+    InvalidFacts,
+    DuplicateCampaign,
+    ExistingRootKeyUnavailable,
+    RootIdentificationUnproved,
+    MarkerOwnershipUnproved,
+    RetainedRootUnavailable,
+    InventoryInvalid,
+    InventoryChanged,
+    AuthorityUnproved,
+    ChildVectorMismatch,
+    ReceiptMismatch,
+    JournalReadRefused,
+    JournalWriteRefused,
+    ObservationUnproved,
+    OperationFailed,
+    MarkerLifecycleRefused,
+    RootReleaseFailed,
+}
+
+/// <summary>Existing public correlation GUIDs and closed reasons, excluded from Error serialization.</summary>
+public readonly record struct CampaignMarkerFailureDetails(
+    CampaignMarkerFailureStage Stage,
+    CampaignMarkerFailureReason Reason,
+    Guid? OperationId = null,
+    Guid? CampaignId = null)
+{
+    /// <summary>Unknown values fail closed to fixed observations; empty GUIDs are not correlations.</summary>
+    public CampaignMarkerFailureDetails Validated() => new(
+        Stage switch
+        {
+            CampaignMarkerFailureStage.RestorePreparation => CampaignMarkerFailureStage.RestorePreparation,
+            CampaignMarkerFailureStage.RestartProof => CampaignMarkerFailureStage.RestartProof,
+            CampaignMarkerFailureStage.FullResetInventory => CampaignMarkerFailureStage.FullResetInventory,
+            CampaignMarkerFailureStage.FullResetRevalidation => CampaignMarkerFailureStage.FullResetRevalidation,
+            CampaignMarkerFailureStage.FullResetPreparation => CampaignMarkerFailureStage.FullResetPreparation,
+            CampaignMarkerFailureStage.FullResetReconciliation => CampaignMarkerFailureStage.FullResetReconciliation,
+            CampaignMarkerFailureStage.RootRelease => CampaignMarkerFailureStage.RootRelease,
+            _ => CampaignMarkerFailureStage.Unknown,
+        },
+        Reason switch
+        {
+            CampaignMarkerFailureReason.RootUnavailable => CampaignMarkerFailureReason.RootUnavailable,
+            CampaignMarkerFailureReason.PhysicalIdentityMismatch => CampaignMarkerFailureReason.PhysicalIdentityMismatch,
+            CampaignMarkerFailureReason.OwnershipMismatch => CampaignMarkerFailureReason.OwnershipMismatch,
+            CampaignMarkerFailureReason.InvalidFacts => CampaignMarkerFailureReason.InvalidFacts,
+            CampaignMarkerFailureReason.DuplicateCampaign => CampaignMarkerFailureReason.DuplicateCampaign,
+            CampaignMarkerFailureReason.ExistingRootKeyUnavailable => CampaignMarkerFailureReason.ExistingRootKeyUnavailable,
+            CampaignMarkerFailureReason.RootIdentificationUnproved => CampaignMarkerFailureReason.RootIdentificationUnproved,
+            CampaignMarkerFailureReason.MarkerOwnershipUnproved => CampaignMarkerFailureReason.MarkerOwnershipUnproved,
+            CampaignMarkerFailureReason.RetainedRootUnavailable => CampaignMarkerFailureReason.RetainedRootUnavailable,
+            CampaignMarkerFailureReason.InventoryInvalid => CampaignMarkerFailureReason.InventoryInvalid,
+            CampaignMarkerFailureReason.InventoryChanged => CampaignMarkerFailureReason.InventoryChanged,
+            CampaignMarkerFailureReason.AuthorityUnproved => CampaignMarkerFailureReason.AuthorityUnproved,
+            CampaignMarkerFailureReason.ChildVectorMismatch => CampaignMarkerFailureReason.ChildVectorMismatch,
+            CampaignMarkerFailureReason.ReceiptMismatch => CampaignMarkerFailureReason.ReceiptMismatch,
+            CampaignMarkerFailureReason.JournalReadRefused => CampaignMarkerFailureReason.JournalReadRefused,
+            CampaignMarkerFailureReason.JournalWriteRefused => CampaignMarkerFailureReason.JournalWriteRefused,
+            CampaignMarkerFailureReason.ObservationUnproved => CampaignMarkerFailureReason.ObservationUnproved,
+            CampaignMarkerFailureReason.OperationFailed => CampaignMarkerFailureReason.OperationFailed,
+            CampaignMarkerFailureReason.MarkerLifecycleRefused => CampaignMarkerFailureReason.MarkerLifecycleRefused,
+            CampaignMarkerFailureReason.RootReleaseFailed => CampaignMarkerFailureReason.RootReleaseFailed,
+            _ => CampaignMarkerFailureReason.Unknown,
+        },
+        OperationId is { } operation && operation != Guid.Empty ? operation : null,
+        CampaignId is { } campaign && campaign != Guid.Empty ? campaign : null);
+
+    public string ToPublicMessage()
+    {
+        CampaignMarkerFailureDetails safe = Validated();
+
+        return $"Campaign marker refusal at {safe.Stage}: {safe.Reason}; operation {safe.OperationId?.ToString("D") ?? "unknown"}, Campaign {safe.CampaignId?.ToString("D") ?? "unknown"}. Preserve the installation profile, marker and recovery journal. Restore access to the original Campaign root and required installation key where applicable, then retry the recovery operation.";
+    }
 }
 
 /// <summary>Only configured public identities and numeric context-window accounting, never prompt or response text.</summary>

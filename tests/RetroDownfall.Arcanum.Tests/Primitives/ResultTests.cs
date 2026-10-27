@@ -9,6 +9,44 @@ namespace RetroDownfall.Arcanum.Tests.Primitives;
 public sealed class ResultTests
 {
     [Fact]
+    public void MarkerFailureMetadata_is_value_compared_and_absent_from_source_generated_wire_shape()
+    {
+        CampaignMarkerFailureDetails details = new(CampaignMarkerFailureStage.RestartProof,
+            CampaignMarkerFailureReason.MarkerOwnershipUnproved, Guid.NewGuid(), Guid.NewGuid());
+
+        Error error = Error.None with { CampaignMarkerFailure = details };
+
+        Assert.False(error.IsNone);
+
+        Assert.NotEqual(Error.None, error);
+
+        Assert.Equal(error, Error.None with { CampaignMarkerFailure = details });
+
+        Assert.NotEqual(error, error with { CampaignMarkerFailure = details with { Reason = CampaignMarkerFailureReason.RootUnavailable } });
+
+        Assert.Equal(JsonSerializer.Serialize(Error.None, ArcanumJsonContext.Default.Error),
+            JsonSerializer.Serialize(error, ArcanumJsonContext.Default.Error));
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(999)]
+    public void MarkerFailureMetadata_undefined_values_and_empty_correlations_have_fixed_fallback(int undefined)
+    {
+        CampaignMarkerFailureDetails details = new((CampaignMarkerFailureStage)undefined,
+            (CampaignMarkerFailureReason)undefined, Guid.Empty, Guid.Empty);
+
+        Assert.Equal(new CampaignMarkerFailureDetails(CampaignMarkerFailureStage.Unknown,
+            CampaignMarkerFailureReason.Unknown), details.Validated());
+
+        Assert.Contains("Unknown: Unknown", details.ToPublicMessage());
+
+        Assert.DoesNotContain(undefined.ToString(), details.ToPublicMessage());
+
+        Assert.DoesNotContain(Guid.Empty.ToString("D"), details.ToPublicMessage());
+    }
+
+    [Fact]
     public void InventoryFailureMetadata_is_value_compared_and_absent_from_source_generated_wire_shape()
     {
         CovenantInventoryFailureDetails detail = new(CovenantInventoryFailureReason.MalformedLabel, Guid.NewGuid(), Guid.NewGuid());

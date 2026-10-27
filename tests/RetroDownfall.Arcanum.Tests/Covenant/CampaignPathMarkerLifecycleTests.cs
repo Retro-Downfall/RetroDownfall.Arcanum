@@ -27,6 +27,7 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// does with a no-follow open and what the guard triggers do to an unauthorized write, and a fake of
 /// either would only prove the fake agrees with itself (§10.12).
 /// </remarks>
+[Collection("ProcessEnvironment")]
 public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposable
 {
     private static readonly byte[] RootIdentityKey = Convert.FromHexString(
@@ -373,31 +374,236 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         Assert.Equal(1, await CountIntentsAsync());
     }
 
-    [Fact]
-    public async Task A_seed_whose_root_is_blocked_refuses_the_whole_preparation()
+    [Theory]
+    [InlineData(1, false)]
+    [InlineData(2, false)]
+    [InlineData(3, false)]
+    [InlineData(999, false)]
+    [InlineData(-1, false)]
+    [InlineData(1, true)]
+    [InlineData(2, true)]
+    [InlineData(3, true)]
+    [InlineData(999, true)]
+    [InlineData(-1, true)]
+    public async Task A_seed_whose_root_is_blocked_refuses_the_whole_preparation(int blockerCode, bool mismatch)
     {
-        CampaignRoot marked = await CreateMarkedRootAsync("open", 2);
+        CampaignPathCleanupRootBlocker blocker = (CampaignPathCleanupRootBlocker)blockerCode;
+
+        CampaignRoot marked = await CreateMarkedRootAsync("PRIVATE_ROOT_PATH", 2);
+
+        CovenantExclusiveRecoveryOwner owner = Owner();
+
+        CampaignPathCleanupRootBlockerEvidence? evidence = blockerCode < 0
+            ? null
+            : new(blocker, Digest(4), Digest(5));
 
         CampaignPathRestoreCleanupSeed blocked = marked.Seed with
         {
             CampaignId = Guid.NewGuid(),
 
-            Observation = new CampaignPathCleanupRootObservation.Unavailable(
-                new CampaignPathCleanupRootBlockerEvidence(
-                    CampaignPathCleanupRootBlocker.RootUnavailable,
-                    Digest(4),
-                    Digest(5))),
+            Observation = mismatch
+                ? new CampaignPathCleanupRootObservation.Mismatch(evidence!)
+                : new CampaignPathCleanupRootObservation.Unavailable(evidence!),
         };
 
-        Result<CampaignPathRestoreCleanupPreparationReceipt> prepared =
-            await _lifecycle.PrepareRestoreCleanupInStagedDatabaseAsync(
-                new CampaignPathRestoreCleanupPreparation(Owner(), [marked.Seed, blocked]),
-                _database.Connection,
-                await BeginAsync(),
-                CancellationToken.None);
+        DiagnosticSink sink = new();
+
+        Serilog.ILogger previous = Serilog.Log.Logger;
+
+        using Serilog.Core.Logger logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+
+        Serilog.Log.Logger = logger;
+
+        Result<CampaignPathRestoreCleanupPreparationReceipt> prepared;
+
+        await using SqliteTransaction transaction = await BeginAsync();
+
+        try
+        {
+            prepared = await _lifecycle.PrepareRestoreCleanupInStagedDatabaseAsync(
+                new CampaignPathRestoreCleanupPreparation(owner, [marked.Seed, blocked]),
+                _database.Connection, transaction, CancellationToken.None);
+        }
+        finally
+        {
+            Serilog.Log.Logger = previous;
+        }
 
         Assert.True(prepared.IsFailure);
+
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, prepared.Error.Code);
+
+        Assert.Contains(blocked.CampaignId.ToString("D"), prepared.Error.Message);
+
+        Assert.Contains(owner.OperationId.ToString("D"), prepared.Error.Message);
+
+        Assert.Contains(blockerCode is >= 1 and <= 3 ? blocker.ToString() : "Unknown", prepared.Error.Message);
+
+        Assert.Contains("preserve", prepared.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(0, await CountIntentsAsync());
+
+        Serilog.Events.LogEvent warning = Assert.Single(sink.Events);
+
+        Assert.Null(warning.Exception);
+
+        Assert.Contains(blocked.CampaignId.ToString("D"), warning.RenderMessage());
+
+        Assert.Contains(owner.OperationId.ToString("D"), warning.RenderMessage());
+
+        Assert.DoesNotContain("PRIVATE_ROOT_PATH", prepared.Error.Message + warning.RenderMessage());
+
+        Assert.DoesNotContain(Convert.ToHexString(Enumerable.Repeat((byte)4, 32).ToArray()), prepared.Error.Message + warning.RenderMessage(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Closed_marker_refusal_is_logged_once_across_multiple_wrappers()
+    {
+        DiagnosticSink sink = new();
+
+        Serilog.ILogger previous = Serilog.Log.Logger;
+
+        using Serilog.Core.Logger logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+
+        Serilog.Log.Logger = logger;
+
+        Guid operationId = Guid.NewGuid();
+
+        Guid campaignId = Guid.NewGuid();
+
+        Error forwarded;
+
+        try
+        {
+            Error origin = CampaignMarkerDiagnostics.Failure(ErrorCodes.Covenant.ManualRecoveryRequired,
+                CampaignMarkerFailureStage.RestartProof, CampaignMarkerFailureReason.MarkerOwnershipUnproved,
+                operationId, campaignId);
+
+            Error first = CampaignMarkerDiagnostics.Failure(ErrorCodes.Data.RecoveryRequired,
+                CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.MarkerLifecycleRefused,
+                operationId, source: origin);
+
+            forwarded = CampaignMarkerDiagnostics.Failure(ErrorCodes.Data.RecoveryRequired,
+                CampaignMarkerFailureStage.FullResetReconciliation, CampaignMarkerFailureReason.MarkerLifecycleRefused,
+                operationId, source: first);
+        }
+        finally
+        {
+            Serilog.Log.Logger = previous;
+        }
+
+        Assert.Single(sink.Events);
+
+        Assert.Equal(new CampaignMarkerFailureDetails(CampaignMarkerFailureStage.RestartProof,
+            CampaignMarkerFailureReason.MarkerOwnershipUnproved, operationId, campaignId), forwarded.CampaignMarkerFailure);
+
+        Assert.Contains("MarkerOwnershipUnproved", forwarded.Message);
+    }
+
+    [Fact]
+    public void Undefined_collaborator_marker_metadata_is_a_new_fixed_refusal_not_a_logged_origin()
+    {
+        DiagnosticSink sink = new();
+
+        Serilog.ILogger previous = Serilog.Log.Logger;
+
+        using Serilog.Core.Logger logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+
+        Serilog.Log.Logger = logger;
+
+        Guid operationId = Guid.NewGuid();
+
+        Error refused;
+
+        try
+        {
+            refused = CampaignMarkerDiagnostics.Failure(ErrorCodes.Data.RecoveryRequired,
+                CampaignMarkerFailureStage.FullResetInventory, CampaignMarkerFailureReason.MarkerLifecycleRefused,
+                operationId, source: new Error("PRIVATE_CODE", "PRIVATE_PATH_KEY")
+                {
+                    CampaignMarkerFailure = new((CampaignMarkerFailureStage)999, (CampaignMarkerFailureReason)999),
+                });
+        }
+        finally
+        {
+            Serilog.Log.Logger = previous;
+        }
+
+        Assert.Contains("MarkerLifecycleRefused", refused.Message);
+
+        Assert.Contains(operationId.ToString("D"), refused.Message);
+
+        Assert.DoesNotContain("PRIVATE_", refused.Message);
+
+        Assert.Null(Assert.Single(sink.Events).Exception);
+    }
+
+    [Fact]
+    public async Task Root_release_logs_no_exception_payload_and_continues_after_failure()
+    {
+        DiagnosticSink sink = new();
+
+        Serilog.ILogger previous = Serilog.Log.Logger;
+
+        using Serilog.Core.Logger logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+
+        Serilog.Log.Logger = logger;
+
+        ThrowingAsyncDisposable throwing = new();
+
+        RecordingAsyncDisposable remaining = new();
+
+        try
+        {
+            await CampaignPathRetainedRootRelease.DisposeAllAsync([throwing, remaining]);
+        }
+        finally
+        {
+            Serilog.Log.Logger = previous;
+        }
+
+        Assert.Equal(1, throwing.DisposeCalls);
+
+        Assert.Equal(1, remaining.DisposeCalls);
+
+        Serilog.Events.LogEvent warning = Assert.Single(sink.Events);
+
+        Assert.Null(warning.Exception);
+
+        Assert.DoesNotContain("sentinel", warning.RenderMessage());
+
+        Assert.Contains("RootReleaseFailed", warning.RenderMessage());
+
+        Assert.DoesNotContain("refusal", warning.RenderMessage(), StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("recovery", warning.RenderMessage(), StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("remaining retained roots", warning.RenderMessage(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Root_release_continues_when_the_logger_itself_throws()
+    {
+        Serilog.ILogger previous = Serilog.Log.Logger;
+
+        Serilog.Log.Logger = new ThrowingDiagnosticLogger();
+
+        ThrowingAsyncDisposable throwing = new();
+
+        RecordingAsyncDisposable remaining = new();
+
+        try
+        {
+            await CampaignPathRetainedRootRelease.DisposeAllAsync([throwing, remaining]);
+        }
+        finally
+        {
+            Serilog.Log.Logger = previous;
+        }
+
+        Assert.Equal(1, throwing.DisposeCalls);
+
+        Assert.Equal(1, remaining.DisposeCalls);
     }
 
     /// <summary>
@@ -897,6 +1103,14 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
         Assert.True(completed.IsFailure);
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, completed.Error.Code);
 
+        Assert.Contains(root.Seed.CampaignId.ToString("D"), completed.Error.Message);
+
+        Assert.Contains(owner.OperationId.ToString("D"), completed.Error.Message);
+
+        Assert.Contains("MarkerOwnershipUnproved", completed.Error.Message);
+
+        Assert.DoesNotContain(root.Directory, completed.Error.Message);
+
         Assert.True(File.Exists(MarkerPath(root)));
     }
 
@@ -920,6 +1134,14 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
         Assert.True(completed.IsFailure);
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, completed.Error.Code);
+
+        Assert.Contains(root.Seed.CampaignId.ToString("D"), completed.Error.Message);
+
+        Assert.Contains(owner.OperationId.ToString("D"), completed.Error.Message);
+
+        Assert.Contains("MarkerOwnershipUnproved", completed.Error.Message);
+
+        Assert.DoesNotContain(root.Directory, completed.Error.Message);
 
         Assert.True(File.Exists(MarkerPath(root)));
     }
@@ -997,6 +1219,14 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
 
         Assert.True(completed.IsFailure);
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, completed.Error.Code);
+
+        Assert.Contains(root.Seed.CampaignId.ToString("D"), completed.Error.Message);
+
+        Assert.Contains(owner.OperationId.ToString("D"), completed.Error.Message);
+
+        Assert.Contains("RootIdentificationUnproved", completed.Error.Message);
+
+        Assert.DoesNotContain(root.Directory, completed.Error.Message);
     }
 
     [SkippableFact]
@@ -1269,6 +1499,18 @@ public sealed class CampaignPathMarkerLifecycleTests : IAsyncLifetime, IDisposab
     }
 
     private sealed record CampaignRoot(string Directory, CampaignPathRestoreCleanupSeed Seed);
+
+    private sealed class DiagnosticSink : Serilog.Core.ILogEventSink
+    {
+        internal List<Serilog.Events.LogEvent> Events { get; } = [];
+
+        public void Emit(Serilog.Events.LogEvent logEvent) => Events.Add(logEvent);
+    }
+
+    private sealed class ThrowingDiagnosticLogger : Serilog.ILogger
+    {
+        public void Write(Serilog.Events.LogEvent logEvent) => throw new IOException("PRIVATE_LOGGER_FAILURE");
+    }
 
     private sealed class ThrowingAsyncDisposable : IAsyncDisposable
     {

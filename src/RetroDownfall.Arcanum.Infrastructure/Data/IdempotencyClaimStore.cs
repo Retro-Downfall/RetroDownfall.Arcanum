@@ -381,13 +381,16 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
                     """
                     DELETE FROM "IdempotencyClaims"
                     WHERE "CreatedAt" < @olderThan
-                      AND "State" IN (@completed, @failed, @abandoned)
+                      AND ("State" IN (@completed, @failed, @abandoned)
+                           OR ("State" IN (@running, @claimed) AND "LeaseExpiresAt" < @olderThan))
                     """;
 
                 AddParameter(cmd, "@olderThan", UtcInstantText.Format(olderThan));
                 AddParameter(cmd, "@completed", (int)IdempotencyClaimState.Completed);
                 AddParameter(cmd, "@failed", (int)IdempotencyClaimState.Failed);
                 AddParameter(cmd, "@abandoned", (int)IdempotencyClaimState.Abandoned);
+                AddParameter(cmd, "@running", (int)IdempotencyClaimState.Running);
+                AddParameter(cmd, "@claimed", (int)IdempotencyClaimState.Claimed);
 
                 return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },

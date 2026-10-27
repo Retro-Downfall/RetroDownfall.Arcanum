@@ -17,43 +17,35 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 
 internal sealed partial class CampaignPathMarkerLifecycle
 {
-
     public async Task<Result<CampaignPathFullInstallationResetInventory>>
         InventoryFullInstallationResetCleanupAsync(
             Guid ownerOperationId,
             SqliteConnection liveCoreConnection,
             CancellationToken cancellationToken)
     {
-
         if (_recoveryKeys is null
             || ownerOperationId == Guid.Empty
             || liveCoreConnection is null)
         {
-
-            return Inert<CampaignPathFullInstallationResetInventory>();
-
+            return Inert<CampaignPathFullInstallationResetInventory>(CampaignMarkerFailureStage.FullResetInventory, CampaignMarkerFailureReason.InvalidFacts, ownerOperationId);
         }
 
         bool retainRoots = false;
 
         try
         {
-
             Result<List<FullResetRegisteredRoot>> registered =
                 await ReadFullResetRegisteredRootsAsync(
                     liveCoreConnection,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken, ownerOperationId: ownerOperationId).ConfigureAwait(false);
 
             if (registered.IsFailure)
             {
-
-                return Inert<CampaignPathFullInstallationResetInventory>();
-
+                return Inert<CampaignPathFullInstallationResetInventory>(CampaignMarkerFailureStage.FullResetInventory, CampaignMarkerFailureReason.InventoryInvalid, ownerOperationId, null, registered.Error);
             }
 
             if (registered.Value.Count == 0)
             {
-
                 ImmutableArray<CampaignMarkerInventoryEntryV1> empty = [];
 
                 Result<CovenantDigest> emptyDigest =
@@ -65,19 +57,16 @@ internal sealed partial class CampaignPathMarkerLifecycle
                             ownerOperationId,
                             empty,
                             emptyDigest.Value)
-                        : Inert<CampaignPathFullInstallationResetInventory>();
+                        : Inert<CampaignPathFullInstallationResetInventory>(CampaignMarkerFailureStage.FullResetInventory, CampaignMarkerFailureReason.InventoryInvalid, ownerOperationId);
 
                 retainRoots = emptyInventory.IsSuccess;
 
                 return emptyInventory;
-
             }
 
             if (!TryPreflightExistingRootIdentityKey())
             {
-
-                return Inert<CampaignPathFullInstallationResetInventory>();
-
+                return Inert<CampaignPathFullInstallationResetInventory>(CampaignMarkerFailureStage.FullResetInventory, CampaignMarkerFailureReason.ExistingRootKeyUnavailable, ownerOperationId);
             }
 
             ImmutableArray<CampaignMarkerInventoryEntryV1>.Builder entries =
@@ -86,7 +75,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             foreach (FullResetRegisteredRoot root in registered.Value)
             {
-
                 Result<CampaignPathMarkerRootAuthority> opened = await OpenRegisteredRootExactAsync(
                     root.CampaignId,
                     root.Revision,
@@ -96,9 +84,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
                 if (opened.IsFailure)
                 {
-
-                    return Inert<CampaignPathFullInstallationResetInventory>();
-
+                    return Inert<CampaignPathFullInstallationResetInventory>(CampaignMarkerFailureStage.FullResetInventory, CampaignMarkerFailureReason.RootIdentificationUnproved, ownerOperationId, root.CampaignId);
                 }
 
                 FullResetRetainedRootKey retainedKey = new(
@@ -107,11 +93,9 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
                 if (!TryRetainFullResetRoot(retainedKey, opened.Value))
                 {
-
                     await opened.Value.DisposeAsync().ConfigureAwait(false);
 
-                    return Inert<CampaignPathFullInstallationResetInventory>();
-
+                    return Inert<CampaignPathFullInstallationResetInventory>(CampaignMarkerFailureStage.FullResetInventory, CampaignMarkerFailureReason.RetainedRootUnavailable, ownerOperationId, root.CampaignId);
                 }
 
                 Result<MarkerOwnershipEvidence> proof = await ProveMarkerOwnershipAsync(
@@ -139,9 +123,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
                     || displayPathDigest.IsFailure
                     || ownershipDigest.IsFailure)
                 {
-
-                    return Inert<CampaignPathFullInstallationResetInventory>();
-
+                    return Inert<CampaignPathFullInstallationResetInventory>(CampaignMarkerFailureStage.FullResetInventory, CampaignMarkerFailureReason.MarkerOwnershipUnproved, ownerOperationId, root.CampaignId);
                 }
 
                 entries.Add(new CampaignMarkerInventoryEntryV1(
@@ -151,7 +133,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
                     root.IndexedIdentityDigest,
                     displayPathDigest.Value,
                     ownershipDigest.Value));
-
             }
 
             ImmutableArray<CampaignMarkerInventoryEntryV1> orderedEntries =
@@ -166,18 +147,15 @@ internal sealed partial class CampaignPathMarkerLifecycle
                         ownerOperationId,
                         orderedEntries,
                         inventoryDigest.Value)
-                    : Inert<CampaignPathFullInstallationResetInventory>();
+                    : Inert<CampaignPathFullInstallationResetInventory>(CampaignMarkerFailureStage.FullResetInventory, CampaignMarkerFailureReason.InventoryInvalid, ownerOperationId);
 
             retainRoots = inventory.IsSuccess;
 
             return inventory;
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception exception) when (
             exception is SqliteException
@@ -187,22 +165,15 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 or NotSupportedException
                 or OverflowException)
         {
-
-            return Inert<CampaignPathFullInstallationResetInventory>();
-
+            return Inert<CampaignPathFullInstallationResetInventory>(CampaignMarkerFailureStage.FullResetInventory, CampaignMarkerFailureReason.OperationFailed, ownerOperationId);
         }
         finally
         {
-
             if (!retainRoots)
             {
-
                 await ReleaseRetainedRootsAsync(ownerOperationId).ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -232,31 +203,25 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
     private bool TryPreflightExistingRootIdentityKey()
     {
-
         Span<byte> key = stackalloc byte[32];
 
         try
         {
-
             return _recoveryKeys!.TryCopyExistingRootIdentityKey(key);
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(key);
-
         }
-
     }
 
     private static async Task<Result<List<FullResetRegisteredRoot>>>
         ReadFullResetRegisteredRootsAsync(
             SqliteConnection connection,
             CancellationToken cancellationToken,
-            SqliteTransaction? transaction = null)
+            SqliteTransaction? transaction = null,
+            Guid? ownerOperationId = null)
     {
-
         List<FullResetRegisteredRoot> roots = [];
 
         HashSet<Guid> campaigns = [];
@@ -278,12 +243,9 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             if (roots.Count == HostToolsMarkerPairResetCheckpointBounds.MaximumVectorCount)
             {
-
-                return Inert<List<FullResetRegisteredRoot>>();
-
+                return Inert<List<FullResetRegisteredRoot>>(CampaignMarkerFailureStage.FullResetInventory, CampaignMarkerFailureReason.InventoryInvalid, ownerOperationId);
             }
 
             if (reader.GetValue(0) is not string campaignText
@@ -299,9 +261,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 || reader.GetValue(4) is not byte[] identityBytes
                 || identityBytes.Length != CovenantLimits.DigestBytes)
             {
-
-                return Inert<List<FullResetRegisteredRoot>>();
-
+                return Inert<List<FullResetRegisteredRoot>>(CampaignMarkerFailureStage.FullResetInventory, CampaignMarkerFailureReason.InventoryInvalid, ownerOperationId);
             }
 
             roots.Add(new FullResetRegisteredRoot(
@@ -309,7 +269,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 revision,
                 displayPath,
                 new CovenantDigest(identityBytes)));
-
         }
 
         roots.Sort(static (left, right) =>
@@ -318,12 +277,10 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 right.CampaignId));
 
         return roots;
-
     }
 
     private static bool IsCanonicalDisplayPath(string displayPath)
     {
-
         if (string.IsNullOrWhiteSpace(displayPath) || displayPath.Length > 4096)
         {
             return false;
@@ -331,21 +288,16 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         try
         {
-
             return string.Equals(
                 Path.GetFullPath(displayPath),
                 displayPath,
                 StringComparison.Ordinal);
-
         }
         catch (Exception exception) when (
             exception is ArgumentException or NotSupportedException or PathTooLongException)
         {
-
             return false;
-
         }
-
     }
 
     public async Task<Result> RevalidateFullInstallationResetInventoryAsync(
@@ -353,21 +305,17 @@ internal sealed partial class CampaignPathMarkerLifecycle
         SqliteConnection liveCoreConnection,
         CancellationToken cancellationToken)
     {
-
         Guid ownerOperationId = inventory?.OwnerOperationId ?? Guid.Empty;
 
         bool retainRoots = false;
 
         try
         {
-
             if (_recoveryKeys is null
                 || inventory is null
                 || liveCoreConnection is null)
             {
-
-                return Inert();
-
+                return Inert(CampaignMarkerFailureStage.FullResetRevalidation, CampaignMarkerFailureReason.InvalidFacts, ownerOperationId);
             }
 
             Result<CampaignPathFullInstallationResetInventory> frozen =
@@ -378,22 +326,18 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (frozen.IsFailure)
             {
-
-                return Inert();
-
+                return Inert(CampaignMarkerFailureStage.FullResetRevalidation, CampaignMarkerFailureReason.InventoryInvalid, ownerOperationId);
             }
 
             Result<List<FullResetRegisteredRoot>> registered =
                 await ReadFullResetRegisteredRootsAsync(
                     liveCoreConnection,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken, ownerOperationId: ownerOperationId).ConfigureAwait(false);
 
             if (registered.IsFailure
                 || registered.Value.Count != frozen.Value.Entries.Length)
             {
-
-                return Inert();
-
+                return Inert(CampaignMarkerFailureStage.FullResetRevalidation, CampaignMarkerFailureReason.InventoryChanged, ownerOperationId, null, registered.IsFailure ? registered.Error : null);
             }
 
             ImmutableArray<CampaignMarkerInventoryEntryV1>.Builder reproducedEntries =
@@ -402,7 +346,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             for (int index = 0; index < registered.Value.Count; index++)
             {
-
                 FullResetRegisteredRoot root = registered.Value[index];
 
                 CampaignMarkerInventoryEntryV1 expected = frozen.Value.Entries[index];
@@ -417,9 +360,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
                     || root.IndexedIdentityDigest != expected.IndexedPhysicalIdentityDigest
                     || displayPathDigest.Value != expected.CanonicalDisplayPathDigest)
                 {
-
-                    return Inert();
-
+                    return Inert(CampaignMarkerFailureStage.FullResetRevalidation, CampaignMarkerFailureReason.InventoryChanged, ownerOperationId, root.CampaignId);
                 }
 
                 FullResetRetainedRootKey retainedKey = new(
@@ -433,9 +374,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
                     || retained.PathRevision != root.Revision
                     || retained.PhysicalIdentityDigest != root.IndexedIdentityDigest)
                 {
-
-                    return Inert();
-
+                    return Inert(CampaignMarkerFailureStage.FullResetRevalidation, CampaignMarkerFailureReason.RetainedRootUnavailable, ownerOperationId, root.CampaignId);
                 }
 
                 Result<MarkerOwnershipEvidence> proof = await ProveMarkerOwnershipAsync(
@@ -457,9 +396,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
                 if (proof.IsFailure || ownershipDigest.IsFailure)
                 {
-
-                    return Inert();
-
+                    return Inert(CampaignMarkerFailureStage.FullResetRevalidation, CampaignMarkerFailureReason.MarkerOwnershipUnproved, ownerOperationId, root.CampaignId);
                 }
 
                 reproducedEntries.Add(new CampaignMarkerInventoryEntryV1(
@@ -469,7 +406,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
                     root.IndexedIdentityDigest,
                     displayPathDigest.Value,
                     ownershipDigest.Value));
-
             }
 
             ImmutableArray<CampaignMarkerInventoryEntryV1> entries =
@@ -484,28 +420,23 @@ internal sealed partial class CampaignPathMarkerLifecycle
                         ownerOperationId,
                         entries,
                         inventoryDigest.Value)
-                    : Inert<CampaignPathFullInstallationResetInventory>();
+                    : Inert<CampaignPathFullInstallationResetInventory>(CampaignMarkerFailureStage.FullResetRevalidation, CampaignMarkerFailureReason.InventoryInvalid, ownerOperationId);
 
             if (reproduced.IsFailure
                 || !CampaignPathFullInstallationResetContractComparer.InventoryEquals(
                     frozen.Value,
                     reproduced.Value))
             {
-
-                return Inert();
-
+                return Inert(CampaignMarkerFailureStage.FullResetRevalidation, CampaignMarkerFailureReason.InventoryChanged, ownerOperationId, null, reproduced.IsFailure ? reproduced.Error : null);
             }
 
             retainRoots = true;
 
             return Result.Success();
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception exception) when (
             exception is SqliteException
@@ -515,22 +446,15 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 or NotSupportedException
                 or OverflowException)
         {
-
-            return Inert();
-
+            return Inert(CampaignMarkerFailureStage.FullResetRevalidation, CampaignMarkerFailureReason.OperationFailed, ownerOperationId);
         }
         finally
         {
-
             if (!retainRoots && ownerOperationId != Guid.Empty)
             {
-
                 await ReleaseRetainedRootsAsync(ownerOperationId).ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -562,7 +486,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
             SqliteTransaction liveCoreTransaction,
             CancellationToken cancellationToken)
     {
-
         if (_recoveryKeys is null
             || preparation is null
             || authority is null
@@ -570,14 +493,11 @@ internal sealed partial class CampaignPathMarkerLifecycle
             || liveCoreTransaction is null
             || !ReferenceEquals(liveCoreTransaction.Connection, liveCoreConnection))
         {
-
-            return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+            return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.InvalidFacts, preparation?.OwnerOperationId);
         }
 
         try
         {
-
             // Before any read and any write. The authority re-proves the authenticated checkpoint is
             // still the one this preparation belongs to, and that the caller's expected receipt is
             // the checkpoint's own — so a stale caller cannot drive the journal from a proof that
@@ -589,9 +509,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (revalidated.IsFailure)
             {
-
-                return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+                return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.AuthorityUnproved, preparation.OwnerOperationId);
             }
 
             Result<CampaignPathFullInstallationResetCleanupPreparation> frozen =
@@ -602,9 +520,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (frozen.IsFailure)
             {
-
-                return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+                return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.InventoryInvalid, preparation.OwnerOperationId);
             }
 
             return await PrepareCleanupChildrenAsync(
@@ -613,13 +529,10 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 liveCoreConnection,
                 liveCoreTransaction,
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception exception) when (
             exception is SqliteException
@@ -629,11 +542,8 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 or NotSupportedException
                 or OverflowException)
         {
-
-            return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+            return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.OperationFailed, preparation.OwnerOperationId);
         }
-
     }
 
     private async Task<Result<CampaignPathFullInstallationResetCleanupReceipt>>
@@ -644,7 +554,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
             SqliteTransaction transaction,
             CancellationToken cancellationToken)
     {
-
         Guid owner = preparation.OwnerOperationId;
 
         ImmutableArray<CampaignMarkerInventoryEntryV1> entries = preparation.Inventory.Entries;
@@ -665,9 +574,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (existing.IsFailure)
         {
-
-            return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+            return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.JournalReadRefused, owner);
         }
 
         // The joined read cannot see a kind-four parent whose companion row is absent as anything
@@ -680,9 +587,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (journaled != existing.Value.Count)
         {
-
-            return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+            return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.ChildVectorMismatch, owner);
         }
 
         // A proven-empty inventory is idempotent by construction: there is nothing to journal and
@@ -690,31 +595,25 @@ internal sealed partial class CampaignPathMarkerLifecycle
         // still owns and still commits its transaction — zero effect is not zero protocol.
         if (entries.IsEmpty)
         {
-
             return existing.Value.Count == 0
                 ? CompleteReceipt(preparation, [], expectedReceipt)
-                : Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+                : Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.ChildVectorMismatch, owner);
         }
 
         if (existing.Value.Count > 0)
         {
-
             return await ReplayCleanupChildrenAsync(
                 preparation,
                 expectedReceipt,
                 existing.Value,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         // No children and a receipt the checkpoint already published cannot both be true: the
         // receipt names a vector this journal does not hold.
         if (expectedReceipt is not null)
         {
-
-            return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+            return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.ReceiptMismatch, owner);
         }
 
         return await JournalCleanupChildrenAsync(
@@ -724,7 +623,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
             connection,
             transaction,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -746,7 +644,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
             SqliteTransaction transaction,
             CancellationToken cancellationToken)
     {
-
         Result<List<FullResetCleanupSeed>> seeds = await ObserveCleanupSeedsAsync(
             preparation,
             connection,
@@ -755,9 +652,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (seeds.IsFailure)
         {
-
-            return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+            return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.ObservationUnproved, preparation.OwnerOperationId, null, seeds.Error);
         }
 
         ImmutableArray<Guid>.Builder committed =
@@ -765,7 +660,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         foreach (FullResetCleanupSeed seed in seeds.Value)
         {
-
             Result<Guid> intentId = await intents.InsertFullInstallationResetCleanupAsync(
                 preparation.OwnerOperationId,
                 preparation.OwnerEffectDigest,
@@ -777,9 +671,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (intentId.IsFailure)
             {
-
-                return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+                return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.JournalWriteRefused, preparation.OwnerOperationId, seed.Entry.CampaignId);
             }
 
             Result written = await evidence.InsertAsync(
@@ -796,20 +688,16 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (written.IsFailure)
             {
-
-                return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+                return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.JournalWriteRefused, preparation.OwnerOperationId, seed.Entry.CampaignId);
             }
 
             committed.Add(intentId.Value);
-
         }
 
         return CompleteReceipt(
             preparation,
             committed.MoveToImmutable(),
             expectedReceipt: null);
-
     }
 
     /// <summary>
@@ -828,18 +716,15 @@ internal sealed partial class CampaignPathMarkerLifecycle
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         Result<List<FullResetRegisteredRoot>> registered =
             await ReadFullResetRegisteredRootsAsync(
                 connection,
                 cancellationToken,
-                transaction).ConfigureAwait(false);
+                transaction, preparation.OwnerOperationId).ConfigureAwait(false);
 
         if (registered.IsFailure)
         {
-
-            return Inert<List<FullResetCleanupSeed>>();
-
+            return Inert<List<FullResetCleanupSeed>>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.InventoryInvalid, preparation.OwnerOperationId, null, registered.Error);
         }
 
         Dictionary<Guid, FullResetRegisteredRoot> current =
@@ -851,15 +736,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         foreach (CampaignMarkerInventoryEntryV1 entry in preparation.Inventory.Entries)
         {
-
             Result<CovenantDigest> entryDigest =
                 FullInstallationResetMarkerPairResetDigests.CampaignInventoryEntry(entry);
 
             if (entryDigest.IsFailure)
             {
-
-                return Inert<List<FullResetCleanupSeed>>();
-
+                return Inert<List<FullResetCleanupSeed>>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.InventoryInvalid, preparation.OwnerOperationId, entry.CampaignId);
             }
 
             Result<FullResetCleanupSeed> seed = await ObserveOneCleanupSeedAsync(
@@ -872,19 +754,15 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (seed.IsFailure)
             {
-
-                return Inert<List<FullResetCleanupSeed>>();
-
+                return Inert<List<FullResetCleanupSeed>>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.ObservationUnproved, preparation.OwnerOperationId, entry.CampaignId, seed.Error);
             }
 
             keyProven |= seed.Value.RequiredRootIdentityKey;
 
             seeds.Add(seed.Value);
-
         }
 
         return seeds;
-
     }
 
     private async Task<Result<FullResetCleanupSeed>> ObserveOneCleanupSeedAsync(
@@ -895,18 +773,16 @@ internal sealed partial class CampaignPathMarkerLifecycle
         bool keyAlreadyProven,
         CancellationToken cancellationToken)
     {
-
         // A registration that is simply gone is unavailable, not a mismatch. The distinction is the
         // difference between "there is nothing left to clean up here" and "something is there and it
         // is not what was authenticated", and reconciliation treats them differently.
         if (!current.TryGetValue(entry.CampaignId, out FullResetRegisteredRoot? root))
         {
-
             return Blocked(
+                owner,
                 entry,
                 entryDigest,
                 CampaignPathFullResetCleanupObservationCode.Unavailable);
-
         }
 
         Result<CovenantDigest> displayPathDigest =
@@ -917,12 +793,11 @@ internal sealed partial class CampaignPathMarkerLifecycle
             || root.IndexedIdentityDigest != entry.IndexedPhysicalIdentityDigest
             || displayPathDigest.Value != entry.CanonicalDisplayPathDigest)
         {
-
             return Blocked(
+                owner,
                 entry,
                 entryDigest,
                 CampaignPathFullResetCleanupObservationCode.Mismatch);
-
         }
 
         FullResetRetainedRootKey retainedKey = new(owner, entry.CampaignId);
@@ -935,19 +810,15 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         try
         {
-
             if (!_fullResetRetainedRoots.TryGetValue(retainedKey, out opened))
             {
-
                 // A restarted process retained nothing, so this Campaign needs a fresh exact reopen.
                 // The identity key is the first thing proven, before the opener, the codec, the
                 // marker, or any other filesystem access: without it the reopen could not be
                 // completed anyway, and attempting it would touch the workspace for nothing.
                 if (!keyAlreadyProven && !TryPreflightExistingRootIdentityKey())
                 {
-
-                    return Inert<FullResetCleanupSeed>();
-
+                    return Inert<FullResetCleanupSeed>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.ExistingRootKeyUnavailable, owner, entry.CampaignId);
                 }
 
                 requiredKey = true;
@@ -961,13 +832,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
                 if (reopened.IsFailure)
                 {
-
                     return Blocked(
+                        owner,
                         entry,
                         entryDigest,
                         CampaignPathFullResetCleanupObservationCode.Mismatch,
                         requiredKey);
-
                 }
 
                 opened = reopened.Value;
@@ -976,13 +846,10 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
                 if (!TryRetainFullResetRoot(retainedKey, opened))
                 {
-
-                    return Inert<FullResetCleanupSeed>();
-
+                    return Inert<FullResetCleanupSeed>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.RetainedRootUnavailable, owner, entry.CampaignId);
                 }
 
                 ownsOpened = false;
-
             }
 
             Result<MarkerOwnershipEvidence> proof = await ProveMarkerOwnershipAsync(
@@ -1009,13 +876,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 || ownershipDigest.IsFailure
                 || ownershipDigest.Value != entry.SameHandleOwnershipEvidenceDigest)
             {
-
                 return Blocked(
+                    owner,
                     entry,
                     entryDigest,
                     CampaignPathFullResetCleanupObservationCode.Mismatch,
                     requiredKey);
-
             }
 
             Result<CovenantDigest> observationDigest =
@@ -1033,21 +899,15 @@ internal sealed partial class CampaignPathMarkerLifecycle
                     entry.SameHandleOwnershipEvidenceDigest,
                     observationDigest.Value,
                     requiredKey)
-                : Inert<FullResetCleanupSeed>();
-
+                : Inert<FullResetCleanupSeed>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.ObservationUnproved, owner, entry.CampaignId);
         }
         finally
         {
-
             if (ownsOpened && opened is not null)
             {
-
                 await opened.DisposeAsync().ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -1065,14 +925,11 @@ internal sealed partial class CampaignPathMarkerLifecycle
             IReadOnlyList<CampaignPathFullResetCleanupChildRow> existing,
             CancellationToken cancellationToken)
     {
-
         ImmutableArray<CampaignMarkerInventoryEntryV1> entries = preparation.Inventory.Entries;
 
         if (existing.Count != entries.Length)
         {
-
-            return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+            return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.ChildVectorMismatch, preparation.OwnerOperationId);
         }
 
         Dictionary<Guid, CampaignPathFullResetCleanupChildRow> byCampaign =
@@ -1084,15 +941,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         foreach (CampaignMarkerInventoryEntryV1 entry in entries)
         {
-
             if (!byCampaign.TryGetValue(
                     entry.CampaignId,
                     out CampaignPathFullResetCleanupChildRow? child)
                 || !ChildMatchesEntry(preparation, entry, child))
             {
-
-                return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+                return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.ChildVectorMismatch, preparation.OwnerOperationId, entry.CampaignId);
             }
 
             ordered.Add(child.Intent.IntentId);
@@ -1101,11 +955,8 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 && child.Evidence.ObservationCode
                     is CampaignPathFullResetCleanupObservationCode.Opened)
             {
-
                 rehydratable.Add(child);
-
             }
-
         }
 
         Result<CampaignPathFullInstallationResetCleanupReceipt> receipt = CompleteReceipt(
@@ -1115,9 +966,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (receipt.IsFailure)
         {
-
             return receipt;
-
         }
 
         Result rehydrated = await RehydrateOpenedChildrenAsync(
@@ -1127,8 +976,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         return rehydrated.IsSuccess
             ? receipt
-            : Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+            : Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.ObservationUnproved, preparation.OwnerOperationId, null, rehydrated.Error);
     }
 
     /// <summary>
@@ -1151,7 +999,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
         IReadOnlyList<CampaignPathFullResetCleanupChildRow> children,
         CancellationToken cancellationToken)
     {
-
         List<CampaignPathFullResetCleanupChildRow> pending =
         [
             .. children.Where(child =>
@@ -1161,29 +1008,22 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (pending.Count == 0)
         {
-
             return Result.Success();
-
         }
 
         if (!TryPreflightExistingRootIdentityKey())
         {
-
-            return Inert();
-
+            return Inert(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.ExistingRootKeyUnavailable, owner);
         }
 
         foreach (CampaignPathFullResetCleanupChildRow child in pending)
         {
-
             // The committed hint is believed only because the companion beside it commits to the
             // same path. A hint that no longer hashes to the authenticated display-path digest is a
             // rewritten row, not a location to go looking at.
             if (child.Intent.TargetDisplayPath is not { } hint)
             {
-
                 continue;
-
             }
 
             Result<CovenantDigest> hintDigest =
@@ -1192,9 +1032,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
             if (hintDigest.IsFailure
                 || hintDigest.Value != child.Evidence.CanonicalDisplayPathDigest)
             {
-
-                return Inert();
-
+                return Inert(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.InventoryChanged, owner, child.Intent.CampaignId);
             }
 
             Result<CampaignPathMarkerRootAuthority> reopened = await OpenRegisteredRootExactAsync(
@@ -1206,26 +1044,20 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (reopened.IsFailure)
             {
-
                 continue;
-
             }
 
             if (!TryRetainFullResetRoot(
                     new FullResetRetainedRootKey(owner, child.Intent.CampaignId),
                     reopened.Value))
             {
-
                 await reopened.Value.DisposeAsync().ConfigureAwait(false);
 
-                return Inert();
-
+                return Inert(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.RetainedRootUnavailable, owner, child.Intent.CampaignId);
             }
-
         }
 
         return Result.Success();
-
     }
 
     private static bool ChildMatchesEntry(
@@ -1233,7 +1065,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
         CampaignMarkerInventoryEntryV1 entry,
         CampaignPathFullResetCleanupChildRow child)
     {
-
         Result<CovenantDigest> entryDigest =
             FullInstallationResetMarkerPairResetDigests.CampaignInventoryEntry(entry);
 
@@ -1257,9 +1088,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
             || child.Evidence.SameHandleOwnershipEvidenceDigest
                 != entry.SameHandleOwnershipEvidenceDigest)
         {
-
             return false;
-
         }
 
         Result<CovenantDigest> observationDigest =
@@ -1271,9 +1100,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
         if (observationDigest.IsFailure
             || observationDigest.Value != child.Evidence.ObservationDigest)
         {
-
             return false;
-
         }
 
         // The path hint and the observation arm are one decision. An opened child that lost its hint
@@ -1281,7 +1108,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
         // phase a location its own evidence says was never opened.
         return child.Evidence.ObservationCode switch
         {
-
             CampaignPathFullResetCleanupObservationCode.Opened =>
                 child.Intent.TargetDisplayPath is { } hint
                     && FullInstallationResetMarkerPairResetDigests.CampaignDisplayPath(hint)
@@ -1293,9 +1119,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 child.Intent.TargetDisplayPath is null,
 
             _ => false,
-
         };
-
     }
 
     /// <summary>
@@ -1306,15 +1130,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
         ImmutableArray<Guid> orderedIntentIds,
         CampaignPathFullInstallationResetCleanupReceipt? expectedReceipt)
     {
-
         Result<CovenantDigest> vector =
             FullInstallationResetMarkerPairResetDigests.FullResetIntentVector(orderedIntentIds);
 
         if (vector.IsFailure)
         {
-
-            return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+            return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.ChildVectorMismatch, preparation.OwnerOperationId);
         }
 
         Result<CampaignPathFullInstallationResetCleanupReceipt> receipt =
@@ -1326,9 +1147,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (receipt.IsFailure)
         {
-
-            return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+            return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.ReceiptMismatch, preparation.OwnerOperationId);
         }
 
         // Order matters here and is not incidental: the identifiers follow authenticated Campaign
@@ -1339,17 +1158,16 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 expectedReceipt,
                 receipt.Value)
                 ? receipt
-                : Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+                : Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.ReceiptMismatch, preparation.OwnerOperationId);
     }
 
     private static Result<FullResetCleanupSeed> Blocked(
+        Guid owner,
         CampaignMarkerInventoryEntryV1 entry,
         CovenantDigest entryDigest,
         CampaignPathFullResetCleanupObservationCode code,
         bool requiredRootIdentityKey = false)
     {
-
         Result<CovenantDigest> observationDigest =
             FullInstallationResetMarkerPairResetDigests.CampaignObservation(
                 code,
@@ -1365,8 +1183,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 OpenedSameHandleOwnershipEvidenceDigest: null,
                 observationDigest.Value,
                 requiredRootIdentityKey)
-            : Inert<FullResetCleanupSeed>();
-
+            : Inert<FullResetCleanupSeed>(CampaignMarkerFailureStage.FullResetPreparation, CampaignMarkerFailureReason.ObservationUnproved, owner, entry.CampaignId);
     }
 
     /// <summary>
@@ -1395,20 +1212,16 @@ internal sealed partial class CampaignPathMarkerLifecycle
             SqliteConnection liveCoreConnection,
             CancellationToken cancellationToken)
     {
-
         if (_recoveryKeys is null
             || prepared is null
             || authority is null
             || liveCoreConnection is null)
         {
-
-            return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+            return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetReconciliation, CampaignMarkerFailureReason.InvalidFacts, prepared?.OwnerOperationId);
         }
 
         try
         {
-
             // Before the first read. The receipt has to be the one the authenticated checkpoint
             // published, or the vector about to be walked belongs to a different operation.
             Result revalidated = await authority.RevalidateReceiptAsync(
@@ -1417,9 +1230,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (revalidated.IsFailure)
             {
-
-                return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+                return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetReconciliation, CampaignMarkerFailureReason.AuthorityUnproved, prepared.OwnerOperationId);
             }
 
             Result<List<CampaignPathFullResetCleanupChildRow>> ordered =
@@ -1430,9 +1241,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (ordered.IsFailure)
             {
-
-                return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+                return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetReconciliation, CampaignMarkerFailureReason.ChildVectorMismatch, prepared.OwnerOperationId, null, ordered.Error);
             }
 
             return await TerminalizeCleanupChildrenAsync(
@@ -1441,13 +1250,10 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 authority,
                 liveCoreConnection,
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception exception) when (
             exception is SqliteException
@@ -1458,11 +1264,8 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 or ObjectDisposedException
                 or OverflowException)
         {
-
-            return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+            return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetReconciliation, CampaignMarkerFailureReason.OperationFailed, prepared.OwnerOperationId);
         }
-
     }
 
     /// <summary>
@@ -1480,7 +1283,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
             SqliteConnection connection,
             CancellationToken cancellationToken)
     {
-
         await using SqliteTransaction transaction =
             (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -1512,9 +1314,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
             || journaled != existing.Value.Count
             || existing.Value.Count != prepared.OrderedMarkerIntentIds.Length)
         {
-
-            return Inert<List<CampaignPathFullResetCleanupChildRow>>();
-
+            return Inert<List<CampaignPathFullResetCleanupChildRow>>(CampaignMarkerFailureStage.FullResetReconciliation, CampaignMarkerFailureReason.ChildVectorMismatch, prepared.OwnerOperationId);
         }
 
         Dictionary<Guid, CampaignPathFullResetCleanupChildRow> byIntent =
@@ -1525,23 +1325,18 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         foreach (Guid intentId in prepared.OrderedMarkerIntentIds)
         {
-
             if (!byIntent.TryGetValue(
                     intentId,
                     out CampaignPathFullResetCleanupChildRow? child)
                 || !CleanupChildMatchesReceipt(prepared, child))
             {
-
-                return Inert<List<CampaignPathFullResetCleanupChildRow>>();
-
+                return Inert<List<CampaignPathFullResetCleanupChildRow>>(CampaignMarkerFailureStage.FullResetReconciliation, CampaignMarkerFailureReason.ChildVectorMismatch, prepared.OwnerOperationId);
             }
 
             ordered.Add(child);
-
         }
 
         return ordered;
-
     }
 
     /// <summary>
@@ -1557,7 +1352,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
         CampaignPathFullInstallationResetCleanupReceipt prepared,
         CampaignPathFullResetCleanupChildRow child)
     {
-
         if (child.Intent.IntentId == Guid.Empty
             || child.Intent.OwnerOperationId != prepared.OwnerOperationId
             || child.Intent.Kind is not CampaignPathMarkerIntentKind.FullInstallationResetCleanup
@@ -1571,9 +1365,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 or CampaignPathMarkerPhase.ManualBlocker)
             || child.Evidence.IntentId != child.Intent.IntentId)
         {
-
             return false;
-
         }
 
         Result<CovenantDigest> observationDigest =
@@ -1585,14 +1377,11 @@ internal sealed partial class CampaignPathMarkerLifecycle
         if (observationDigest.IsFailure
             || observationDigest.Value != child.Evidence.ObservationDigest)
         {
-
             return false;
-
         }
 
         return child.Evidence.ObservationCode switch
         {
-
             CampaignPathFullResetCleanupObservationCode.Opened =>
                 child.Evidence.OpenedSameHandleOwnershipEvidenceDigest
                     == child.Evidence.SameHandleOwnershipEvidenceDigest
@@ -1607,9 +1396,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
                 && child.Intent.TargetDisplayPath is null,
 
             _ => false,
-
         };
-
     }
 
     /// <summary>
@@ -1623,23 +1410,19 @@ internal sealed partial class CampaignPathMarkerLifecycle
             SqliteConnection connection,
             CancellationToken cancellationToken)
     {
-
         ulong deleted = 0;
 
         ulong orphaned = 0;
 
         foreach (CampaignPathFullResetCleanupChildRow child in ordered)
         {
-
             Result revalidated = await authority.RevalidateReceiptAsync(
                 prepared,
                 cancellationToken).ConfigureAwait(false);
 
             if (revalidated.IsFailure)
             {
-
-                return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+                return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetReconciliation, CampaignMarkerFailureReason.AuthorityUnproved, prepared.OwnerOperationId, child.Intent.CampaignId);
             }
 
             // A child that is already terminal is counted from its durable phase and skipped
@@ -1647,20 +1430,16 @@ internal sealed partial class CampaignPathMarkerLifecycle
             // reach the identical receipt without opening a single handle.
             if (child.Intent.Phase is CampaignPathMarkerPhase.Completed)
             {
-
                 deleted = checked(deleted + 1);
 
                 continue;
-
             }
 
             if (child.Intent.Phase is CampaignPathMarkerPhase.ManualBlocker)
             {
-
                 orphaned = checked(orphaned + 1);
 
                 continue;
-
             }
 
             Result<bool> terminalized = await TerminalizeOneCleanupChildAsync(
@@ -1672,24 +1451,17 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (terminalized.IsFailure)
             {
-
-                return Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+                return Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetReconciliation, CampaignMarkerFailureReason.JournalWriteRefused, prepared.OwnerOperationId, child.Intent.CampaignId, terminalized.Error);
             }
 
             if (terminalized.Value)
             {
-
                 deleted = checked(deleted + 1);
-
             }
             else
             {
-
                 orphaned = checked(orphaned + 1);
-
             }
-
         }
 
         Result<CampaignPathFullInstallationResetCleanupReceipt> terminal =
@@ -1703,8 +1475,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         return terminal.IsSuccess
             ? terminal
-            : Inert<CampaignPathFullInstallationResetCleanupReceipt>();
-
+            : Inert<CampaignPathFullInstallationResetCleanupReceipt>(CampaignMarkerFailureStage.FullResetReconciliation, CampaignMarkerFailureReason.ReceiptMismatch, prepared.OwnerOperationId);
     }
 
     /// <summary>
@@ -1729,18 +1500,15 @@ internal sealed partial class CampaignPathMarkerLifecycle
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         if (child.Evidence.ObservationCode
             is not CampaignPathFullResetCleanupObservationCode.Opened)
         {
-
             return await BlockCleanupChildAsync(
                 prepared,
                 child,
                 authority,
                 connection,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         if (!_fullResetRetainedRoots.TryGetValue(
@@ -1750,14 +1518,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
             || root.PathRevision != child.Intent.PriorRevision
             || root.PhysicalIdentityDigest != child.Evidence.IndexedPhysicalIdentityDigest)
         {
-
             return await BlockCleanupChildAsync(
                 prepared,
                 child,
                 authority,
                 connection,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         Result<PhysicalCampaignMarkerOpenResult> opened =
@@ -1766,14 +1532,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (opened.IsFailure)
         {
-
             return await BlockCleanupChildAsync(
                 prepared,
                 child,
                 authority,
                 connection,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         // Absence is this operation's own completed delete, not a missing target: preparation proved
@@ -1781,14 +1545,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
         // that directory. Treating it as a blocker would strand a Campaign that is already clean.
         if (opened.Value is PhysicalCampaignMarkerOpenResult.Absent)
         {
-
             return await CompleteCleanupChildAsync(
                 prepared,
                 child,
                 authority,
                 connection,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         PhysicalCampaignRootOpener.MarkerHandleCapability marker =
@@ -1796,7 +1558,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         await using (marker.ConfigureAwait(false))
         {
-
             Result<PhysicalCampaignRootOpener.MarkerCodecBytesLease> read =
                 await marker.ReadAllBoundedAsync(
                     _codec.MaximumMarkerByteCount,
@@ -1804,14 +1565,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (read.IsFailure)
             {
-
                 return await BlockCleanupChildAsync(
                     prepared,
                     child,
                     authority,
                     connection,
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             using PhysicalCampaignRootOpener.MarkerCodecBytesLease lease = read.Value;
@@ -1829,14 +1588,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
             // halves disagree, which is exactly the case the companion cannot report on itself.
             if (proof.IsFailure || proof.Value.MarkerDigest != child.Intent.MarkerDigest)
             {
-
                 return await BlockCleanupChildAsync(
                     prepared,
                     child,
                     authority,
                     connection,
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             Result<CovenantDigest> ownership =
@@ -1852,14 +1609,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
             if (ownership.IsFailure
                 || ownership.Value != child.Evidence.SameHandleOwnershipEvidenceDigest)
             {
-
                 return await BlockCleanupChildAsync(
                     prepared,
                     child,
                     authority,
                     connection,
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             Result removed = await root.CompareDeleteMarkerAsync(
@@ -1870,14 +1625,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (removed.IsFailure)
             {
-
                 return await BlockCleanupChildAsync(
                     prepared,
                     child,
                     authority,
                     connection,
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             // The parent directory barrier is part of the delete, not a follow-up to it. A child
@@ -1888,16 +1641,13 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
             if (flushed.IsFailure)
             {
-
                 return await BlockCleanupChildAsync(
                     prepared,
                     child,
                     authority,
                     connection,
                     cancellationToken).ConfigureAwait(false);
-
             }
-
         }
 
         return await CompleteCleanupChildAsync(
@@ -1906,7 +1656,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
             authority,
             connection,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<Result<bool>> CompleteCleanupChildAsync(
@@ -1916,7 +1665,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         Result advanced = await AdvanceCleanupChildAsync(
             prepared,
             child,
@@ -1925,8 +1673,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
             connection,
             cancellationToken).ConfigureAwait(false);
 
-        return advanced.IsSuccess ? true : Inert<bool>();
-
+        return advanced.IsSuccess ? true : Inert<bool>(CampaignMarkerFailureStage.FullResetReconciliation, CampaignMarkerFailureReason.JournalWriteRefused, prepared.OwnerOperationId, child.Intent.CampaignId, advanced.Error);
     }
 
     private async Task<Result<bool>> BlockCleanupChildAsync(
@@ -1936,7 +1683,6 @@ internal sealed partial class CampaignPathMarkerLifecycle
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         Result advanced = await AdvanceCleanupChildAsync(
             prepared,
             child,
@@ -1945,8 +1691,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
             connection,
             cancellationToken).ConfigureAwait(false);
 
-        return advanced.IsSuccess ? false : Inert<bool>();
-
+        return advanced.IsSuccess ? false : Inert<bool>(CampaignMarkerFailureStage.FullResetReconciliation, CampaignMarkerFailureReason.JournalWriteRefused, prepared.OwnerOperationId, child.Intent.CampaignId, advanced.Error);
     }
 
     /// <summary>
@@ -1966,16 +1711,13 @@ internal sealed partial class CampaignPathMarkerLifecycle
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         Result revalidated = await authority.RevalidateReceiptAsync(
             prepared,
             cancellationToken).ConfigureAwait(false);
 
         if (revalidated.IsFailure)
         {
-
-            return Inert();
-
+            return Inert(CampaignMarkerFailureStage.FullResetReconciliation, CampaignMarkerFailureReason.AuthorityUnproved, prepared.OwnerOperationId, child.Intent.CampaignId);
         }
 
         await using SqliteTransaction transaction =
@@ -1998,28 +1740,23 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
         if (advanced.IsFailure)
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
-            return Inert();
-
+            return Inert(CampaignMarkerFailureStage.FullResetReconciliation, CampaignMarkerFailureReason.JournalWriteRefused, prepared.OwnerOperationId, child.Intent.CampaignId);
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         return Result.Success();
-
     }
 
-    private static Result Inert() =>
-        Result.Failure(new Error(
-            ErrorCodes.Data.RecoveryRequired,
-            "The full-installation reset Campaign cleanup is not available."));
+    private static Result Inert(CampaignMarkerFailureStage stage, CampaignMarkerFailureReason reason,
+        Guid? operationId = null, Guid? campaignId = null, Error? source = null) =>
+        CampaignMarkerDiagnostics.Failure(ErrorCodes.Data.RecoveryRequired, stage, reason, operationId, campaignId, source);
 
-    private static Result<T> Inert<T>() =>
-        Result<T>.Failure(new Error(
-            ErrorCodes.Data.RecoveryRequired,
-            "The full-installation reset Campaign cleanup is not available."));
+    private static Result<T> Inert<T>(CampaignMarkerFailureStage stage, CampaignMarkerFailureReason reason,
+        Guid? operationId = null, Guid? campaignId = null, Error? source = null) =>
+        CampaignMarkerDiagnostics.Failure(ErrorCodes.Data.RecoveryRequired, stage, reason, operationId, campaignId, source);
 
     private sealed record FullResetRegisteredRoot(
         Guid CampaignId,
@@ -2044,5 +1781,4 @@ internal sealed partial class CampaignPathMarkerLifecycle
         CovenantDigest? OpenedSameHandleOwnershipEvidenceDigest,
         CovenantDigest ObservationDigest,
         bool RequiredRootIdentityKey);
-
 }

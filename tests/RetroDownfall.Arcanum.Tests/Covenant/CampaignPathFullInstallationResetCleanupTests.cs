@@ -316,7 +316,7 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
 
         PreparedOperation replay = await harness.ResumeAsync(first, reordered);
 
-        AssertRefused(await replay.RunAsync());
+        AssertRefused(await replay.RunAsync(), CampaignMarkerFailureReason.ReceiptMismatch);
 
         await replay.RollbackAsync();
     }
@@ -352,7 +352,7 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             first.OwnerOperationId,
             resumed);
 
-        AssertRefused(await replay.RunAsync(resumed));
+        AssertRefused(await replay.RunAsync(resumed), CampaignMarkerFailureReason.ChildVectorMismatch);
 
         await replay.RollbackAsync();
     }
@@ -395,7 +395,7 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             first.OwnerOperationId,
             harness.CreateFreshProcessLifecycle());
 
-        AssertRefused(await replay.RunAsync());
+        AssertRefused(await replay.RunAsync(), CampaignMarkerFailureReason.ChildVectorMismatch);
 
         await replay.RollbackAsync();
     }
@@ -459,7 +459,7 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
 
         Assert.True(receipt.IsSuccess, Describe(receipt));
 
-        AssertRefused(await operation.RunAsync(expectedReceipt: receipt.Value));
+        AssertRefused(await operation.RunAsync(expectedReceipt: receipt.Value), CampaignMarkerFailureReason.AuthorityUnproved);
 
         await operation.RollbackAsync();
     }
@@ -479,7 +479,7 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         // The authenticated record moves on underneath the authority this preparation holds.
         harness.AdvancePublishedPhase(HostToolsMarkerPairResetPhase.OsMarkerCompareDeleted);
 
-        AssertRefused(await operation.RunAsync());
+        AssertRefused(await operation.RunAsync(), CampaignMarkerFailureReason.AuthorityUnproved);
 
         Assert.Equal(0L, await operation.CountChildrenInTransactionAsync());
 
@@ -504,7 +504,7 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                 new CovenantDigest([.. Enumerable.Repeat((byte)0x5C, 32)]),
                 operation.Inventory));
 
-        AssertRefused(await operation.RunAsync(preparation: substituted));
+        AssertRefused(await operation.RunAsync(preparation: substituted), CampaignMarkerFailureReason.AuthorityUnproved);
 
         Assert.Equal(0L, await operation.CountChildrenInTransactionAsync());
 
@@ -531,7 +531,7 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
 
         RecordingRecoveryKeyProvider keys = new(available: false);
 
-        AssertRefused(await operation.RunAsync(harness.CreateFreshProcessLifecycle(keys)));
+        AssertRefused(await operation.RunAsync(harness.CreateFreshProcessLifecycle(keys)), CampaignMarkerFailureReason.ExistingRootKeyUnavailable);
 
         Assert.Equal(1, keys.Calls);
 
@@ -562,7 +562,7 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
 
         PreparedOperation replay = await harness.ResumeAsync(first, prepared.Value);
 
-        AssertRefused(await replay.RunAsync(harness.CreateFreshProcessLifecycle(keys)));
+        AssertRefused(await replay.RunAsync(harness.CreateFreshProcessLifecycle(keys)), CampaignMarkerFailureReason.ExistingRootKeyUnavailable);
 
         Assert.Equal(1, keys.Calls);
 
@@ -633,7 +633,7 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
 
         PreparedOperation replay = await harness.ResumeAsync(first, prepared.Value);
 
-        AssertRefused(await replay.RunAsync());
+        AssertRefused(await replay.RunAsync(), CampaignMarkerFailureReason.ReceiptMismatch);
 
         Assert.Equal(0L, await replay.CountChildrenInTransactionAsync());
 
@@ -733,15 +733,21 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         Assert.Equal(CampaignPathMarkerPhase.Prepared, child.Intent.Phase);
     }
 
-    private static void AssertRefused<T>(Result<T> result)
+    private static void AssertRefused<T>(Result<T> result, CampaignMarkerFailureReason reason)
     {
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
 
-        Assert.Equal(
-            "The full-installation reset Campaign cleanup is not available.",
-            result.Error.Message);
+        CampaignMarkerFailureDetails details = Assert.IsType<CampaignMarkerFailureDetails>(result.Error.CampaignMarkerFailure);
+
+        Assert.Equal(reason, details.Reason);
+
+        Assert.NotEqual(CampaignMarkerFailureStage.Unknown, details.Stage);
+
+        Assert.True(details.OperationId is { } operationId && operationId != Guid.Empty);
+
+        Assert.Equal(details.ToPublicMessage(), result.Error.Message);
     }
 
     private static string Describe<T>(Result<T> result) =>

@@ -266,8 +266,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
             if (inventory.IsFailure)
             {
-                return PreJournalRefusal<InstallationResetActivePublication>(
-                    cancellationToken);
+                return CampaignRefusal<InstallationResetActivePublication>(inventory.Error, CampaignMarkerFailureStage.FullResetInventory, claim.OperationId, cancellationToken);
             }
 
             if (inventory.Value.OwnerOperationId != claim.OperationId)
@@ -324,8 +323,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
             if (inventoryRevalidated.IsFailure)
             {
-                return PreJournalRefusal<InstallationResetActivePublication>(
-                    cancellationToken);
+                return CampaignRefusal<InstallationResetActivePublication>(inventoryRevalidated.Error, CampaignMarkerFailureStage.FullResetRevalidation, claim.OperationId, cancellationToken);
             }
 
             HostToolsMarkerPairResetCheckpointV1 journaled = new(
@@ -1332,7 +1330,11 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
             if (journaledVector.IsFailure)
             {
-                return Inert<InstallationResetActivePublication>();
+                return journaledVector.Error.CampaignMarkerFailure is not null
+                    ? CampaignRefusal<InstallationResetActivePublication>(journaledVector.Error,
+                        CampaignMarkerFailureStage.FullResetPreparation,
+                        state.Checkpoint.RestartProof.SignedAttestation.OperationId, CancellationToken.None)
+                    : Inert<InstallationResetActivePublication>();
             }
 
             state = journaledVector.Value;
@@ -1365,7 +1367,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         if (terminal.IsFailure)
         {
-            return Inert<InstallationResetActivePublication>();
+            return CampaignRefusal<InstallationResetActivePublication>(terminal.Error, CampaignMarkerFailureStage.FullResetReconciliation, prepared.OwnerOperationId, CancellationToken.None);
         }
 
         // An authenticated retry whose children are all already terminal reaches the identical
@@ -1515,7 +1517,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             {
                 await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
-                return Inert<CleanupJournalState>();
+                return CampaignRefusal<CleanupJournalState>(committed.Error, CampaignMarkerFailureStage.FullResetPreparation, preparation.Value.OwnerOperationId, CancellationToken.None);
             }
 
             await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
@@ -2096,6 +2098,15 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             InvalidOperationException => nameof(InvalidOperationException),
             _ => "Other",
         };
+
+    private static Result<T> CampaignRefusal<T>(Error source, CampaignMarkerFailureStage stage,
+        Guid operationId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return CampaignMarkerDiagnostics.Failure(ErrorCodes.Data.RecoveryRequired, stage,
+            CampaignMarkerFailureReason.MarkerLifecycleRefused, operationId, source: source);
+    }
 
     private static Result Inert() =>
         Result.Failure(new Error(

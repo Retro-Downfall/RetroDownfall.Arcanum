@@ -25,7 +25,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// </remarks>
 internal sealed partial class CampaignPathMarkerLifecycle
 {
-
     /// <summary>
     /// Reopens the recorded display path and proves it is the root this child's marker was written
     /// into, or keeps admission closed.
@@ -39,17 +38,14 @@ internal sealed partial class CampaignPathMarkerLifecycle
         CampaignPathMarkerIntentRow row,
         CancellationToken cancellationToken)
     {
-
         // The column is nullable only for a full installation reset cleanup child, and this arm is
         // reached by the legacy kinds alone. Proving it here rather than trusting the table means a
         // malformed row cannot reach filesystem authority with a manufactured path, and the narrowed
         // local below is the only value the seams ever see.
         if (row.TargetDisplayPath is not { } recordedDisplayPath)
         {
-
             return UnprovenRestartRoot(
-                "The Campaign path marker intent records no display path to reopen.");
-
+                CampaignMarkerFailureReason.InvalidFacts, owner.OperationId, row.CampaignId);
         }
 
         // The single no-follow resolution of the recorded path. It answers "what is there", never "may
@@ -57,10 +53,8 @@ internal sealed partial class CampaignPathMarkerLifecycle
         // all report nothing at all rather than a candidate to be argued with.
         if (_rootOpener.IdentifyExact(recordedDisplayPath) is not { } reopenedIdentity)
         {
-
             return UnprovenRestartRoot(
-                "The Campaign root this restore recorded could not be reopened and identified.");
-
+                CampaignMarkerFailureReason.RootIdentificationUnproved, owner.OperationId, row.CampaignId);
         }
 
         Result<CampaignPathMarkerRootAuthority> opened =
@@ -79,24 +73,20 @@ internal sealed partial class CampaignPathMarkerLifecycle
         // case where the proof below then refuses for want of a marker to read.
         if (opened.IsFailure)
         {
-
             return UnprovenRestartRoot(
-                "The Campaign root this restore recorded could not be opened under its own identity.");
-
+                CampaignMarkerFailureReason.RootIdentificationUnproved, owner.OperationId, row.CampaignId);
         }
 
         CampaignPathMarkerRootAuthority authority = opened.Value;
 
-        Result proven = await ProveMarkerBindsThisRootAsync(authority, row, cancellationToken)
+        Result proven = await ProveMarkerBindsThisRootAsync(authority, row, owner.OperationId, cancellationToken)
             .ConfigureAwait(false);
 
         if (proven.IsFailure)
         {
-
             await authority.DisposeAsync().ConfigureAwait(false);
 
             return proven.Error;
-
         }
 
         RetainedRoot retained = new(owner.OperationId, authority);
@@ -105,24 +95,19 @@ internal sealed partial class CampaignPathMarkerLifecycle
         // dropping it without disposal would leak the descriptors it holds.
         if (!TryRetainRoot(row.IntentId, retained, out RetainedRoot? displaced))
         {
-
             await authority.DisposeAsync().ConfigureAwait(false);
 
             return UnprovenRestartRoot(
-                "Campaign marker lifecycle authority is no longer available.");
-
+                CampaignMarkerFailureReason.RetainedRootUnavailable, owner.OperationId, row.CampaignId);
         }
 
         if (displaced is not null)
         {
-
             await CampaignPathRetainedRootRelease.DisposeAllAsync(
                 [displaced.Authority]).ConfigureAwait(false);
-
         }
 
         return retained;
-
     }
 
     /// <summary>
@@ -136,9 +121,9 @@ internal sealed partial class CampaignPathMarkerLifecycle
     private async Task<Result> ProveMarkerBindsThisRootAsync(
         CampaignPathMarkerRootAuthority authority,
         CampaignPathMarkerIntentRow row,
+        Guid operationId,
         CancellationToken cancellationToken)
     {
-
         Result<MarkerOwnershipEvidence> proof = await ProveMarkerOwnershipAsync(
             authority,
             row.CampaignId,
@@ -148,8 +133,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
         return proof.IsSuccess
             ? Result.Success()
             : UnprovenRestartRoot(
-                "The marker inside the reopened Campaign root did not prove its ownership.");
-
+                CampaignMarkerFailureReason.MarkerOwnershipUnproved, operationId, row.CampaignId);
     }
 
     /// <summary>
@@ -160,9 +144,9 @@ internal sealed partial class CampaignPathMarkerLifecycle
     /// treat one reason as softer than another: an unproven root is not authority to delete a file
     /// whichever way it went unproven, and admission stays closed in every case. The message differs
     /// because the reader is the operator who now has to look at the directory, and it names no path,
-    /// identity, or Campaign — only what could not be established.
+    /// identity digest — only the existing Campaign/operation GUIDs and what could not be established.
     /// </remarks>
-    private static Error UnprovenRestartRoot(string message) =>
-        new(ErrorCodes.Covenant.ManualRecoveryRequired, message);
-
+    private static Error UnprovenRestartRoot(CampaignMarkerFailureReason reason, Guid operationId, Guid campaignId) =>
+        CampaignMarkerDiagnostics.Failure(ErrorCodes.Covenant.ManualRecoveryRequired,
+            CampaignMarkerFailureStage.RestartProof, reason, operationId, campaignId);
 }
