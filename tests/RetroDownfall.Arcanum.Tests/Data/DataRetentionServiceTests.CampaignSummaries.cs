@@ -346,8 +346,10 @@ public sealed partial class DataRetentionServiceTests
         return keys;
     }
 
-    private async Task<(Guid ArtifactId, Guid CampaignId)> SeedRetentionSummaryAsync(bool contribution, string created, Guid? existingCampaign = null)
+    private async Task<(Guid ArtifactId, Guid CampaignId)> SeedRetentionSummaryAsync(bool contribution, string created, Guid? existingCampaign = null, bool sensitive = false)
     {
+        created = UtcInstantText.Format(DateTimeOffset.Parse(created, System.Globalization.CultureInfo.InvariantCulture));
+
         Guid campaign = existingCampaign ?? Guid.NewGuid();
 
         Guid session = Guid.NewGuid();
@@ -396,8 +398,8 @@ public sealed partial class DataRetentionServiceTests
 
         string frontierColumn = contribution ? "SummarizedThroughSequence" : "SourceCount";
 
-        await ExecuteAsync($"INSERT INTO {table}(ArtifactId,CampaignId{ownerColumn},Revision,Content,ContentDigest,SensitivityCode,SensitivityDigest,SourceManifestDigest,SourceGeneration,{frontierColumn},CreatedAtUtc) VALUES(@artifact,@campaign{ownerValue},1,'persisted project decision',@digest,0,@digest,@digest,0,0,@now);",
-            ("@artifact", a), ("@campaign", c), ("@session", s), ("@digest", digest), ("@now", created));
+        await ExecuteAsync($"INSERT INTO {table}(ArtifactId,CampaignId{ownerColumn},Revision,Content,ContentDigest,SensitivityCode,SensitivityDigest,SourceManifestDigest,SourceGeneration,{frontierColumn},CreatedAtUtc) VALUES(@artifact,@campaign{ownerValue},1,'persisted project decision',@digest,@sensitivity,@digest,@digest,0,0,@now);",
+            ("@artifact", a), ("@campaign", c), ("@session", s), ("@digest", digest), ("@now", created), ("@sensitivity", sensitive ? 1 : 0));
 
         if (contribution)
         {
