@@ -473,7 +473,7 @@ internal static partial class HostedGrimoireProducerInventory
                         return canonical.ToMetadataReference();
                     }
 
-                    return MetadataReference.CreateFromFile(file);
+                    return CreateProductionMetadataReference(file);
                 })
                 .ToArray();
 
