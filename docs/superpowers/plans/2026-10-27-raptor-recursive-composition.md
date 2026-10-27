@@ -89,3 +89,8 @@ Controller ruling2026-10-27 retains the original specification's50k BIC candidat
 - TDD must prove off/on exact membership bits on small real corpora, actual candidate ranges and fast-path diagnostics, global/local/layer identity, repeated/parallel call isolation, cancellation/refusal/fault outcomes, bounded metadata retention and the real consumer's measured receipt. Add causal mutations and exact restoration, then normal build/full affected classes/styles and an immutable source packet. No expensive consumer process before independent source approval.
 
 The two Core implementation files and contracts file therefore have new source hashes. Earlier numerical receipts remain evidence for their recorded versions; do not claim all kernels are byte-identical to the earlier packet. Numerical/default equivalence is established by unchanged manifest/recipes, reviewed arithmetic paths, off/on bitwise comparisons and complete reference/quality regressions.
+
+
+### Terminal-callback cancellation correction
+
+Independent review of8fa12c6b found that Completed/Refused callbacks could cancel the supplied token after the fitter's last check. Two real default-fitter regressions reproduced missing cancellation (2RED/10controls). Check the token after those synchronous callbacks too, retaining the truthful completed/refused fit fact and never emitting another terminal fit outcome. Original observer/dual-fault behavior, seeds, numerical options, fixed scale ceilings and source-review-before-scale remain unchanged. Preserve8fa's independent578-pass/24-class qualification as earlier-source evidence; the correction requires fresh exact-source qualification.

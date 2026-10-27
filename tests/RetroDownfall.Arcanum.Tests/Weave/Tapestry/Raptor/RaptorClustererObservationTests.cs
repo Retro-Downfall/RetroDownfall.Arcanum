@@ -278,6 +278,38 @@ public sealed class RaptorClustererObservationTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_terminal_callback_cancellation_is_honored_without_inventing_another_fit_outcome(bool refused)
+    {
+        RaptorPoint[] points = RaptorScaleProbe.Corpus(16);
+
+        double[][] rows = Enumerable.Range(0, 16).Select(_ => new double[] { refused ? double.NaN : 1, 1 }).ToArray();
+
+        RaptorFitObservationPhase terminal = refused ? RaptorFitObservationPhase.Refused : RaptorFitObservationPhase.Completed;
+
+        using CancellationTokenSource caller = new();
+
+        RecordingObserver observer = new(value =>
+        {
+            if (value.Phase == terminal) caller.Cancel();
+        });
+
+        Exception? failure = Record.Exception(() => RaptorClusterer.ObserveDefaultFit(rows, 71,
+            Identity(points, 1) with { Stage = RaptorStage.GlobalMixture }, observer, caller.Token));
+
+        Assert.True(caller.IsCancellationRequested);
+
+        _ = Assert.Single(observer.Events, value => value.Phase == terminal);
+
+        Assert.DoesNotContain(observer.Events, value => value.Phase is RaptorFitObservationPhase.Canceled or RaptorFitObservationPhase.Faulted);
+
+        OperationCanceledException canceled = Assert.IsAssignableFrom<OperationCanceledException>(failure);
+
+        Assert.Equal(caller.Token, canceled.CancellationToken);
+    }
+
     private static TapestryClusterIdentity Identity(IReadOnlyList<RaptorPoint> points, int layer) =>
         new(Scope, layer, RaptorStage.Split, "observed-split-v1", points.Select(point => point.StableId));
 

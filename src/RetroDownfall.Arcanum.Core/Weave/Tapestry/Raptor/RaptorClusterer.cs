@@ -290,6 +290,8 @@ public sealed class RaptorClusterer : ITapestryClusterer
 
         FitObserver observer = new(diagnostics, identity, points.Length, token, callOrdinal);
 
+        bool terminalObserved = false;
+
         try
         {
             observer.Emit(RaptorFitObservationPhase.Started);
@@ -302,12 +304,16 @@ public sealed class RaptorClusterer : ITapestryClusterer
 
             observer.Emit(result.IsSuccess ? RaptorFitObservationPhase.Completed : RaptorFitObservationPhase.Refused);
 
+            terminalObserved = true;
+
+            token.ThrowIfCancellationRequested();
+
             return result;
         }
         catch (Exception primary)
         {
-            // A failed observer cannot reliably accept another notification. Its original fault wins.
-            if (observer.Failed) throw;
+            // Preserve the terminal fit fact and any original observer fault without another outcome.
+            if (observer.Failed || terminalObserved) throw;
 
             try
             {
