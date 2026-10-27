@@ -16,10 +16,23 @@ public sealed record RaptorNeighborGraph(
     ReadOnlyMemory<double> Distances,
     long DistanceEvaluations,
     int DescentIterations,
-    ImmutableArray<string> StableIds = default);
+    ImmutableArray<string> StableIds = default)
+{
+    /// <summary>Logical pair requests, distinct from actual scalar distance calculations.</summary>
+    public long DistanceRequests { get; init; }
+
+    public long MemoLookups { get; init; }
+
+    public long MemoHits { get; init; }
+
+    public long MemoEvictions { get; init; }
+
+    /// <summary>Bounded flat-array payload bytes; excludes ordinary object/array headers.</summary>
+    public long MemoAllocatedBytes { get; init; }
+}
 
 /// <summary>Content-free bounded search progress; optional observers do not participate in arithmetic.</summary>
-public readonly record struct RaptorNeighborProgress(string Phase, long DistanceEvaluations);
+public readonly record struct RaptorNeighborProgress(string Phase, long DistanceEvaluations, long WorkSteps = 0, long MemoHits = 0, long MemoEvictions = 0, int InitializedRows = 0, int ProcessedRows = 0, int Pass = 0);
 
 /// <summary>
 /// First-party scalar cosine kNN. Large inputs use seeded median random-projection trees followed
@@ -124,7 +137,7 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
 
         int width = exact ? neighbors - 1 : (int)Math.Min(count - 1L, Math.Max(Options.NeighborMinimumSearchWidth, (long)(neighbors - 1) * Options.NeighborSearchMultiplier));
 
-        Search search = new(vectors, width, cancellationToken, progress);
+        Search search = new(vectors, width, !exact && neighbors > 1, cancellationToken, progress);
 
         int iterations = 0;
 
@@ -176,7 +189,14 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
 
         offsets[count] = indices.Length;
 
-        return new RaptorNeighborGraph(count, neighbors, offsets, indices, distances, search.Evaluations, iterations, [.. points.Select(point => point.StableId)]);
+        return new RaptorNeighborGraph(count, neighbors, offsets, indices, distances, search.Evaluations, iterations, [.. points.Select(point => point.StableId)])
+        {
+            DistanceRequests = search.Requests,
+            MemoLookups = search.MemoLookups,
+            MemoHits = search.MemoHits,
+            MemoEvictions = search.MemoEvictions,
+            MemoAllocatedBytes = search.MemoAllocatedBytes,
+        };
     }
 
     private static bool IsValidId(string id)
@@ -204,17 +224,54 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
         return true;
     }
 
-    private sealed class Search(double[][] vectors, int width, CancellationToken cancellationToken, IProgress<RaptorNeighborProgress>? observer)
+    private sealed class Search(double[][] vectors, int width, bool useMemo, CancellationToken cancellationToken, IProgress<RaptorNeighborProgress>? observer)
     {
         internal Heap[] Heaps { get; } = Enumerable.Range(0, vectors.Length).Select(_ => new Heap(width)).ToArray();
 
         internal long Evaluations { get; private set; }
+
+        private readonly PairMemo? _memo = useMemo ? new(vectors.Length, width, vectors[0].Length) : null;
+
+        internal long Requests { get; private set; }
+
+        internal long MemoLookups { get; private set; }
+
+        internal long MemoHits { get; private set; }
+
+        internal long MemoAllocatedBytes => _memo?.AllocatedBytes ?? 0;
+
+        internal long MemoEvictions => _memo?.Evictions ?? 0;
+
+        private int _processedRows;
+
+        private int _pass;
 
         private string _phase = "exact";
 
         private double Distance(int left, int right)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            Requests++;
+
+            // The normalized buffers are immutable for this Search. Finite scalar multiplication
+            // is symmetric, with the same dimension/accumulation order in either orientation.
+            // Cache keys identify exact canonical indices, never vector/content equality.
+            ulong key = ((ulong)(uint)Math.Min(left, right) << 32 | (uint)Math.Max(left, right)) + 1;
+
+            if (_memo is not null)
+            {
+                MemoLookups++;
+
+                if (_memo.TryGet(key, out double cached))
+                {
+                    MemoHits++;
+
+                    ReportWork();
+
+                    return cached;
+                }
+            }
 
             double dot = 0;
 
@@ -233,14 +290,41 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
 
             Evaluations++;
 
-            if (observer is not null && Evaluations % Options.NeighborProgressInterval == 0)
+            double distance = identical ? 0 : Math.Clamp(1 - dot, 0, 2);
+
+            _memo?.Store(key, distance);
+
+            ReportWork();
+
+            return distance;
+        }
+
+        private void ReportWork()
+        {
+            // Logical requests still advance on a long hit-only run. Actual scalar evaluations
+            // remain truthful and must not be used as the sole progress/cancellation clock.
+            if (observer is not null && Requests % Options.NeighborProgressInterval == 0)
             {
-                observer.Report(new(_phase, Evaluations));
+                observer.Report(new(_phase, Evaluations, Requests, MemoHits, MemoEvictions, vectors.Length, _processedRows, _pass));
 
                 cancellationToken.ThrowIfCancellationRequested();
             }
+        }
 
-            return identical ? 0 : Math.Clamp(1 - dot, 0, 2);
+        private void ReportRows(string phase, int rows, int pass)
+        {
+            _phase = phase;
+
+            _processedRows = rows;
+
+            _pass = pass;
+
+            if (observer is not null && rows % Options.NeighborProgressInterval == 0)
+            {
+                observer.Report(new(_phase, Evaluations, Requests, MemoHits, MemoEvictions, vectors.Length, rows, pass));
+
+                cancellationToken.ThrowIfCancellationRequested();
+            }
         }
 
         private int Join(int left, int right)
@@ -266,6 +350,8 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
 
                 for (int left = block; left < end; left++)
                 {
+                    ReportRows("exact", left, 0);
+
                     for (int right = left + 1; right < vectors.Length; right++)
                     {
                         Join(left, right);
@@ -290,6 +376,8 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
 
             for (int tree = 0; tree < Options.NeighborProjectionTrees; tree++)
             {
+                ReportRows("initialization", 0, tree + 1);
+
                 for (int row = 0; row < vectors.Length; row++)
                 {
                     projections[row] = new(row, 0);
@@ -302,6 +390,8 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
             // cannot spin on duplicate vectors or a nearly full neighborhood.
             for (int row = 0; row < vectors.Length; row++)
             {
+                ReportRows("initialization", row, Options.NeighborProjectionTrees + 1);
+
                 int candidate = (int)(random.NextUInt64() % (ulong)vectors.Length);
 
                 int stride = 1 + (int)(random.NextUInt64() % (ulong)(vectors.Length - 1));
@@ -331,6 +421,8 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
                         {
                             Join(projections[left].Index, projections[right].Index);
                         }
+
+                        ReportRows("initialization", _processedRows + 1, _pass);
                     }
 
                     return;
@@ -413,6 +505,8 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
 
                 for (int row = start; row < end; row++)
                 {
+                    ReportRows("initialization", row, 0);
+
                     for (int anchor = start; anchor < anchorEnd; anchor++)
                     {
                         Join(equalOrder[row], equalOrder[anchor]);
@@ -425,7 +519,7 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
 
         internal int Descend()
         {
-            _phase = "descent";
+            ReportRows("descent-allocation", 0, 0);
 
             Heap[] reverse = Enumerable.Range(0, vectors.Length).Select(_ => new Heap(width)).ToArray();
 
@@ -437,12 +531,16 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
             {
                 for (int row = 0; row < vectors.Length; row++)
                 {
+                    ReportRows("descent-clear", row, iteration + 1);
+
                     reverse[row].Clear();
                 }
 
                 for (int row = 0; row < vectors.Length; row++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+
+                    ReportRows("descent-reverse", row, iteration + 1);
 
                     foreach (Entry entry in Heaps[row].Entries)
                     {
@@ -453,6 +551,8 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
                 for (int row = 0; row < vectors.Length; row++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+
+                    ReportRows("descent-candidates", row, iteration + 1);
 
                     int offset = row * width * 2;
 
@@ -495,6 +595,13 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
 
                     int offset = row * width * 2;
 
+                    // Only actual join work reports the established "descent" phase.
+                    _phase = "descent";
+
+                    _processedRows = row;
+
+                    _pass = iteration + 1;
+
                     for (int left = 0; left < sizes[row]; left++)
                     {
                         for (int right = left + 1; right < sizes[row]; right++)
@@ -528,6 +635,105 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
             }
 
             return a;
+        }
+    }
+
+    /// <summary>
+    /// Four-way exact-key memo. Eviction/collision only loses reuse, never changes a distance.
+    /// Payload is at most 260 MiB, O(n*k), also scaled down for narrow input vectors. Sizing
+    /// saturates before multiplication, and power-of-two growth stays below the explicit cap.
+    /// These are implementation storage bounds, not numerical/search recipe constants.
+    /// </summary>
+    private sealed class PairMemo
+    {
+        private const int MaximumEntries = 1 << 24;
+
+        private readonly ulong[] _keys;
+
+        private readonly double[] _distances;
+
+        private readonly byte[] _replacement;
+
+        private readonly int _bucketMask;
+
+        internal PairMemo(int count, int width, int dimensions)
+        {
+            long byNeighbors = Math.Min((long)count * width, MaximumEntries / 16) * 16;
+
+            long byDimensions = Math.Min((long)count * dimensions, MaximumEntries / 8) * 8;
+
+            long requested = Math.Min(byNeighbors, byDimensions);
+
+            int entries = 4;
+
+            while (entries < requested) entries *= 2;
+
+            _keys = new ulong[entries];
+
+            _distances = new double[entries];
+
+            _replacement = new byte[entries / 4];
+
+            _bucketMask = _replacement.Length - 1;
+        }
+
+        internal long Evictions { get; private set; }
+
+        internal long AllocatedBytes => (long)_keys.Length * (sizeof(ulong) + sizeof(double)) + _replacement.Length;
+
+        internal bool TryGet(ulong key, out double distance)
+        {
+            int start = Bucket(key) * 4;
+
+            for (int offset = 0; offset < 4; offset++)
+            {
+                if (_keys[start + offset] == key)
+                {
+                    distance = _distances[start + offset];
+
+                    return true;
+                }
+            }
+
+            distance = 0;
+
+            return false;
+        }
+
+        internal void Store(ulong key, double distance)
+        {
+            int bucket = Bucket(key);
+
+            int start = bucket * 4;
+
+            int offset = 0;
+
+            while (offset < 4 && _keys[start + offset] != 0) offset++;
+
+            if (offset == 4)
+            {
+                Evictions++;
+
+                offset = _replacement[bucket];
+
+                _replacement[bucket] = (byte)((offset + 1) & 3);
+            }
+
+            _keys[start + offset] = key;
+
+            _distances[start + offset] = distance;
+        }
+
+        private int Bucket(ulong key)
+        {
+            // Integer mixing affects eviction only; every hit still checks the complete pair key.
+            ulong mixed = key;
+
+            mixed = unchecked((mixed ^ (mixed >> 33)) * 0xff51afd7ed558ccdUL);
+
+            mixed = unchecked((mixed ^ (mixed >> 33)) * 0xc4ceb9fe1a85ec53UL);
+
+            return (int)((mixed ^ (mixed >> 33)) & (uint)_bucketMask);
         }
     }
 
