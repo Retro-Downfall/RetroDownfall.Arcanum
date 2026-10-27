@@ -14,18 +14,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// the server. The output schemas carry no secret, no raw provenance content, and no operator
 /// authority field (§10.14).
 ///
-/// <para>Both tools are withheld from <c>tools/list</c> in this build, so these schemas are built
-/// and held rather than advertised. They are kept exact anyway: the omissions are the contract the
-/// wire has to keep whenever either tool is advertised again, and a schema that decayed while
-/// nobody could see it would be the wrong thing to turn back on.</para>
+/// <para>Advertisement follows the existing Covenant feature and capability checks. The schema
+/// describes only proposed content or a disclosed retirement target; it never grants authority.</para>
 /// </remarks>
 internal sealed partial class ArcanumInternalToolServer
 {
-
     /// <summary>
-    /// Visible to tests for the same reason the retirement schema is: neither tool is advertised in
-    /// this build, so nothing else can reach the shape to prove it still refuses to represent scope,
-    /// Campaign id, origin, lifecycle, revision, or attachment identity on the wire.
+    /// Pins the authority fields this tool must never represent: scope, Campaign id, origin,
+    /// lifecycle, revision and attachment identity remain host-owned.
     /// </summary>
     internal static JsonElement BuildProposeCovenantSchema()
     {
@@ -39,14 +35,15 @@ internal sealed partial class ArcanumInternalToolServer
                 w,
                 "key",
                 "Short stable identity for this standing preference, such as \"response.style\" or "
-                + "\"build.commands\". Reusing a key replaces the proposal stored under it.");
+                + "\"build.commands\". Match [a-z0-9][a-z0-9._-]{0,127}. Reusing a key replaces the proposal stored under it.");
 
             WriteStringProperty(
                 w,
                 "content",
                 "The preference itself, in one plain sentence and the operator's own terms. It is stored "
                 + "for the operator to review and confirm; it is never treated as an instruction until "
-                + "they do.");
+                + "they do. Use 1 through 2048 strict UTF-8 bytes, not whitespace-only. Unicode 17 Format scalars "
+                + "and control scalars other than tab, LF and CR are refused; remove any reported code point.");
 
             w.WriteEndObject();
 
@@ -63,9 +60,8 @@ internal sealed partial class ArcanumInternalToolServer
     }
 
     /// <summary>
-    /// Visible to tests because the shape it forbids outlives the advertisement that carried it: the
-    /// retirement tool is withheld from <c>tools/list</c> in this build, so nothing else can reach the
-    /// schema to prove it still refuses to represent scope, origin, or authority on the wire.
+    /// Pins the retirement shape independently of the feature/capability advertisement conditions,
+    /// so neither scope, origin nor authority can enter it from model input.
     /// </summary>
     internal static JsonElement BuildRetireCovenantSchema()
     {
@@ -185,5 +181,4 @@ internal sealed partial class ArcanumInternalToolServer
             w.WriteBoolean("additionalProperties", false);
         });
     }
-
 }

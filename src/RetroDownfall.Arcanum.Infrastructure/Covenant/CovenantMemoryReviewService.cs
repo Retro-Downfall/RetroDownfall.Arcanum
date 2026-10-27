@@ -1009,9 +1009,10 @@ internal sealed partial class CovenantMemoryReviewService(
             {
                 _ = compiler.Compile(row.Key, decision.ReplacementContent!);
             }
-            catch (ArgumentException)
+            catch (ArgumentException failure)
             {
-                return new Error(ErrorCodes.Validation.InvalidBody, "The replacement content cannot be compiled as Covenant content. Check its size and remove invalid Unicode or format characters, then correct this decision.");
+                return new Error(ErrorCodes.Validation.InvalidBody,
+                    CovenantCompilationFailure.Describe(failure, CovenantCompilationField.ReplacementContent));
             }
         }
 
@@ -1522,9 +1523,10 @@ internal sealed partial class CovenantMemoryReviewService(
                     {
                         compiled = compiler.Compile(target.Key, request.Decisions[ordinal].ReplacementContent!);
                     }
-                    catch (ArgumentException)
+                    catch (ArgumentException failure)
                     {
-                        return new Error(ErrorCodes.Validation.InvalidBody, "The replacement content cannot be compiled as Covenant content. Check its size and remove invalid Unicode or format characters, then correct this decision.");
+                        return new Error(ErrorCodes.Validation.InvalidBody,
+                            CovenantCompilationFailure.Describe(failure, CovenantCompilationField.ReplacementContent));
                     }
 
                     Result<CovenantMutationReceipt> mutation = await ApplyMutationAsync(

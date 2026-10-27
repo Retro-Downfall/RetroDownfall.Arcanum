@@ -139,6 +139,7 @@ R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantAgentMutationFactory.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantAvailabilitySnapshot.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantCanonicalEncoder.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantCanonicalStateCodes.cs
+R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantCompilationFailure.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantCompiler.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantCurationContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantCursorBodyCodec.cs
@@ -765,12 +766,16 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMemoryReviewService.
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMemoryReviewService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMutationService.Correction.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMutationService.Curation.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMutationService.Storage.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMutationService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantOperationGate.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantRequestedOperationStarter.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantReviewSql.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantSchemaRepairDiagnostics.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantSchemaRepairExecution.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantSchemaRepairExecutor.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantSchemaRepairJournal.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantSchemaRepairResult.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantSchemaRepairStartupRecovery.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantTurnHeadProbe.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/DeferredCampaignPathMarkerConnectionSource.cs

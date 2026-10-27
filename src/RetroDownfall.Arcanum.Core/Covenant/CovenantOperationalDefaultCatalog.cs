@@ -143,7 +143,7 @@ public static class CovenantOperationalDefaultCatalog
         {
             TemperatureKey => 2,
             TopPKey => 1,
-            _ => throw new ArgumentException("The Covenant operational default kind or consumer is unsupported.", nameof(key))
+            _ => throw CovenantCompilationFailure.Argument(CovenantCompilationFailureReason.OperationalDefaultKey, nameof(key))
         };
 
     private static float ParseScalar(string content, int maximum)
@@ -181,7 +181,7 @@ public static class CovenantOperationalDefaultCatalog
     }
 
     private static ArgumentException InvalidValue() =>
-        new("A Covenant operational default requires a finite bounded unsigned decimal scalar.", "content");
+        CovenantCompilationFailure.Argument(CovenantCompilationFailureReason.OperationalDefaultValue, "content");
 }
 
 /// <summary>A reserved Confirmed artifact cannot satisfy the operational catalog contract.</summary>

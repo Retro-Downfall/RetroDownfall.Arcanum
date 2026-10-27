@@ -457,7 +457,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             if (!TryInstallClosure(closure))
             {
                 throw new InvalidOperationException(
-                    "Another Covenant recovery owner already holds this scope.");
+                    BlockedScopeMessage(FindExclusiveBlocker(slot, scope)));
             }
         }
     }
@@ -632,11 +632,11 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
         lock (_sync)
         {
-            if (IsAcquisitionBlocked(coverage, scope))
+            if (FindAcquisitionBlocker(coverage, scope) is { } blocker)
             {
                 return new Error(
                     ErrorCodes.Covenant.Unavailable,
-                    "A Covenant operation is closing this scope, so no new lease may be taken over it.");
+                    BlockedScopeMessage(blocker));
             }
 
             registration = new ScopedRegistration(
@@ -704,7 +704,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             {
                 return new Error(
                     ErrorCodes.Covenant.Unavailable,
-                    "Another Covenant operation already owns this scope.");
+                    BlockedScopeMessage(FindExclusiveBlocker(closure.Slot, closure.Scope)));
             }
 
             draining = [.. _registrations.Values.Where(closure.Covers)];
@@ -735,7 +735,9 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             {
                 return new Error(
                     ErrorCodes.Covenant.ManualRecoveryRequired,
-                    "No Covenant operation with this exact recovery identity holds this scope closed.");
+                    closure is null
+                        ? "No Covenant operation with this exact recovery identity holds this scope closed."
+                        : BlockedScopeMessage(closure) + " Only its exact recovery owner may resume it.");
             }
 
             if (closure.LiveRegistration is not null || closure.AcquisitionInProgress)
@@ -787,7 +789,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 {
                     return new Error(
                         ErrorCodes.Covenant.ManualRecoveryRequired,
-                        "Another Covenant recovery owner already holds this scope closed.");
+                        BlockedScopeMessage(existing));
                 }
 
                 if (existing.LiveRegistration is not null || existing.AcquisitionInProgress)
@@ -834,7 +836,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             {
                 return new Error(
                     ErrorCodes.Covenant.Unavailable,
-                    "Another Covenant operation already owns this scope.");
+                    BlockedScopeMessage(FindExclusiveBlocker(acquiredClosure.Slot, acquiredClosure.Scope)));
             }
 
             draining = [.. _registrations.Values.Where(acquiredClosure.Covers)];
@@ -992,23 +994,62 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         }
     }
 
-    private bool IsAcquisitionBlocked(CovenantLeaseCoverage coverage, CovenantOperationScope? scope)
+    // These helpers run under _sync. They describe an existing blocker; they never decide whether
+    // a closure may be installed, resumed or removed.
+    private Closure? FindAcquisitionBlocker(CovenantLeaseCoverage coverage, CovenantOperationScope? scope)
     {
         if (_installationClosure is not null)
         {
-            return true;
+            return _installationClosure;
         }
 
         if (coverage == CovenantLeaseCoverage.Installation)
         {
-            // Installation coverage spans every scope, so any pending close excludes it.
-            return _globalScopeClosure is not null || _campaignClosures.Count > 0;
+            Closure? blocker = _globalScopeClosure;
+
+            foreach (Closure candidate in _campaignClosures.Values)
+            {
+                blocker = PreferBlocker(blocker, candidate);
+            }
+
+            return blocker;
         }
 
         return scope!.Value.Kind == CovenantScope.Global
-            ? _globalScopeClosure is not null
-            : _campaignClosures.ContainsKey(scope.Value.CampaignId!.Value);
+            ? _globalScopeClosure
+            : _campaignClosures.GetValueOrDefault(scope.Value.CampaignId!.Value);
     }
+
+    private Closure? FindExclusiveBlocker(ClosureSlot slot, CovenantOperationScope? scope) =>
+        FindAcquisitionBlocker(slot == ClosureSlot.Installation
+            ? CovenantLeaseCoverage.Installation : CovenantLeaseCoverage.Scoped, scope);
+
+    private static Closure PreferBlocker(Closure? current, Closure candidate)
+    {
+        if (current is null)
+        {
+            return candidate;
+        }
+
+        bool currentLive = IsLiveClosure(current);
+
+        bool candidateLive = IsLiveClosure(candidate);
+
+        // Waiting cannot clear a kept-closed owner. Prefer its recovery guidance, then a stable
+        // operation code; ties render the same message and disclose no scope or owner identity.
+        return currentLive != candidateLive
+            ? currentLive ? candidate : current
+            : (byte)candidate.Owner.Operation < (byte)current.Owner.Operation ? candidate : current;
+    }
+
+    private static bool IsLiveClosure(Closure closure) => closure.AcquisitionInProgress
+        || closure.LiveRegistration is { IsDispositionClaimed: false, IsReleased: false };
+
+    private static string BlockedScopeMessage(Closure? blocker) => blocker is null
+        ? "A Covenant operation holds this scope closed. Resolve its reported recovery condition before retrying."
+        : IsLiveClosure(blocker)
+            ? $"Covenant {blocker.Owner.Operation} is in progress over this scope. Wait for it to finish before retrying."
+            : $"Covenant {blocker.Owner.Operation} keeps this scope closed pending recovery. Resolve that operation's reported recovery condition before retrying; restarting alone may not clear it.";
 
     private bool TryInstallClosure(Closure closure)
     {

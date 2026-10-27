@@ -66,9 +66,27 @@ internal sealed class CovenantMaintenanceService(
             return Result<CovenantSchemaRepairResultDto>.Failure(valid.Error);
         }
 
-        SqliteConnection connection = await _connections
-            .GetOpenConnectionAsync(cancellationToken)
-            .ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        SqliteConnection connection;
+
+        try
+        {
+            connection = await _connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception failure) when (failure is SqliteException or IOException or UnauthorizedAccessException)
+        {
+            if (failure is SqliteException sqlite && (sqlite.SqliteErrorCode & 0xff) == 9)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            CovenantSchemaRepairDiagnostics.Warn(CovenantSchemaRepairStage.Acquisition,
+                CovenantSchemaRepairFailure.Storage, cause: failure);
+
+            return Result<CovenantSchemaRepairResultDto>.Failure(new Error(ErrorCodes.Covenant.MaintenanceFailed,
+                "Covenant schema-repair connection acquisition failed. The repair action was not dispatched; inspect the safe storage diagnostic before retrying inspection."));
+        }
 
         if (connection.GetType() != typeof(SqliteConnection))
         {
@@ -76,13 +94,18 @@ internal sealed class CovenantMaintenanceService(
                 "Schema repair requires an exact SQLite connection.");
         }
 
-        Result<CovenantSchemaRepairInspection> inspected = await _executor
+        CovenantSchemaRepairResult<CovenantSchemaRepairInspection> inspected = await _executor
             .InspectAsync(connection, cancellationToken)
             .ConfigureAwait(false);
 
         if (inspected.IsFailure)
         {
-            return Result<CovenantSchemaRepairResultDto>.Failure(inspected.Error);
+            CovenantSchemaRepairDiagnostics.Warn(CovenantSchemaRepairStage.Inspect,
+                CovenantSchemaRepairFailure.Storage, error: inspected.Error, fault: inspected.Fault);
+
+            return Result<CovenantSchemaRepairResultDto>.Failure(new Error(
+                CovenantSchemaRepairDiagnostics.SafeCode(inspected.Error.Code),
+                "Covenant schema inspection could not be completed. Preserve the profile and inspect the safe storage diagnostic before recovery."));
         }
 
         Guid operationId = Guid.NewGuid();
@@ -119,14 +142,18 @@ internal sealed class CovenantMaintenanceService(
         // The journal is committed before the first repair statement. A journal written afterwards
         // would be a record of an operation that already happened, which recovery cannot tell apart
         // from one that never started.
-        Result committed = await CovenantSchemaRepairJournal
+        CovenantSchemaRepairResult<bool> committed = await CovenantSchemaRepairJournal
             .CommitPreparedAsync(connection, _initializer, intent, _time.GetUtcNow(), cancellationToken)
             .ConfigureAwait(false);
 
         if (committed.IsFailure)
         {
-            _ = await lease
-                .CompleteAsync(CovenantExclusiveLeaseDisposition.RollbackAndReopen, CancellationToken.None)
+            // A failed journal transaction is not proof that its COMMIT had no effect. No repair
+            // dispatch occurred, but this process must retain its owner until the journal is inspected.
+            CovenantSchemaRepairDiagnostics.Warn(CovenantSchemaRepairStage.JournalPrepare,
+                CovenantSchemaRepairFailure.Storage, intent, committed.Error.Code, error: committed.Error, fault: committed.Fault);
+
+            _ = await lease.CompleteAsync(CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None)
                 .ConfigureAwait(false);
 
             return Result<CovenantSchemaRepairResultDto>.Failure(committed.Error);
@@ -210,29 +237,28 @@ internal sealed class CovenantMaintenanceService(
         CovenantSchemaRepairInspection inspected,
         CancellationToken cancellationToken)
     {
-        Result<bool> repaired = await _executor
+        CovenantSchemaRepairExecution repaired = await _executor
             .RepairAsync(connection, intent.Action, inspected, cancellationToken)
             .ConfigureAwait(false);
 
-        if (repaired.IsFailure)
+        if (!repaired.IsSuccess)
         {
-            return await FinishAsync(
-                connection,
-                lease,
-                intent,
-                CovenantExclusiveDisposition.Select(
-                    new CovenantExclusiveDispositionEvidence(true, true, false, true)),
-                CovenantSchemaRepairDisposition.ManualRecoveryRequired,
-                inspected,
-                repaired.Error.Code,
+            CovenantSchemaRepairDiagnostics.Warn(CovenantSchemaRepairStage.Execute, repaired.Failure,
+                intent, execution: repaired);
+        }
+
+        if (repaired.Effects == CovenantSchemaRepairEffects.Unknown)
+        {
+            return await FinishAsync(connection, lease, intent, CovenantExclusiveLeaseDisposition.KeepClosed,
+                CovenantSchemaRepairDisposition.ManualRecoveryRequired, inspected, repaired.ErrorCode,
                 cancellationToken).ConfigureAwait(false);
         }
 
         CovenantSchemaRepairIntent current = intent;
 
-        if (repaired.Value)
+        if (repaired.Effects == CovenantSchemaRepairEffects.MutationCompleted)
         {
-            Result<CovenantSchemaRepairIntent?> committed = await AdvanceAsync(
+            CovenantSchemaRepairResult<CovenantSchemaRepairIntent?> committed = await AdvanceAsync(
                 connection,
                 current,
                 CovenantSchemaRepairPhase.CatalogCommitted,
@@ -240,6 +266,9 @@ internal sealed class CovenantMaintenanceService(
 
             if (committed.IsFailure || committed.Value is not { } afterCommit)
             {
+                CovenantSchemaRepairDiagnostics.Warn(CovenantSchemaRepairStage.AdvanceAfterRepair,
+                    CovenantSchemaRepairFailure.Storage, current, error: committed.IsFailure ? committed.Error : null, fault: committed.Fault);
+
                 return await FinishAsync(
                     connection,
                     lease,
@@ -253,12 +282,15 @@ internal sealed class CovenantMaintenanceService(
 
             current = afterCommit;
 
-            Result<CovenantSchemaRepairInspection> verified = await _executor
+            CovenantSchemaRepairResult<CovenantSchemaRepairInspection> verified = await _executor
                 .InspectAsync(connection, cancellationToken)
                 .ConfigureAwait(false);
 
             if (verified.IsFailure || !verified.Value.CanonicalValid)
             {
+                CovenantSchemaRepairDiagnostics.Warn(CovenantSchemaRepairStage.Reinspect,
+                    CovenantSchemaRepairFailure.CanonicalUnhealthy, current, error: verified.IsFailure ? verified.Error : null, fault: verified.Fault);
+
                 return await FinishAsync(
                     connection,
                     lease,
@@ -272,7 +304,7 @@ internal sealed class CovenantMaintenanceService(
 
             inspected = verified.Value;
 
-            Result<CovenantSchemaRepairIntent?> healthy = await AdvanceAsync(
+            CovenantSchemaRepairResult<CovenantSchemaRepairIntent?> healthy = await AdvanceAsync(
                 connection,
                 current,
                 CovenantSchemaRepairPhase.HealthVerified,
@@ -280,6 +312,9 @@ internal sealed class CovenantMaintenanceService(
 
             if (healthy.IsFailure || healthy.Value is not { } afterHealth)
             {
+                CovenantSchemaRepairDiagnostics.Warn(CovenantSchemaRepairStage.AdvanceAfterHealth,
+                    CovenantSchemaRepairFailure.Storage, current, error: healthy.IsFailure ? healthy.Error : null, fault: healthy.Fault);
+
                 return await FinishAsync(
                     connection,
                     lease,
@@ -294,7 +329,7 @@ internal sealed class CovenantMaintenanceService(
             current = afterHealth;
         }
 
-        Result<CovenantSchemaRepairIntent?> pending = await AdvanceAsync(
+        CovenantSchemaRepairResult<CovenantSchemaRepairIntent?> pending = await AdvanceAsync(
             connection,
             current,
             CovenantSchemaRepairPhase.ReopenPending,
@@ -302,6 +337,9 @@ internal sealed class CovenantMaintenanceService(
 
         if (pending.IsFailure || pending.Value is not { } afterPending)
         {
+            CovenantSchemaRepairDiagnostics.Warn(CovenantSchemaRepairStage.AdvanceToReopen,
+                CovenantSchemaRepairFailure.Storage, current, error: pending.IsFailure ? pending.Error : null, fault: pending.Fault);
+
             return await FinishAsync(
                 connection,
                 lease,
@@ -317,7 +355,7 @@ internal sealed class CovenantMaintenanceService(
             new CovenantExclusiveDispositionEvidence(
                 StorageVerified: true,
                 AuthorityVerified: true,
-                DurablyMutated: repaired.Value,
+                DurablyMutated: repaired.Effects == CovenantSchemaRepairEffects.MutationCompleted,
                 HealthPublished: true));
 
         return await FinishAsync(
@@ -325,11 +363,11 @@ internal sealed class CovenantMaintenanceService(
             lease,
             afterPending,
             disposition,
-            repaired.Value
-                ? CovenantSchemaRepairDisposition.Repaired
-                : CovenantSchemaRepairDisposition.AlreadyHealthy,
+            !repaired.IsSuccess ? CovenantSchemaRepairDisposition.ManualRecoveryRequired
+                : repaired.Effects == CovenantSchemaRepairEffects.MutationCompleted
+                    ? CovenantSchemaRepairDisposition.Repaired : CovenantSchemaRepairDisposition.AlreadyHealthy,
             inspected,
-            blockingCode: null,
+            blockingCode: repaired.IsSuccess ? null : repaired.ErrorCode,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -352,18 +390,30 @@ internal sealed class CovenantMaintenanceService(
                 "Schema repair finalization requires an exact SQLite connection.");
         }
 
-        CovenantSchemaRepairPostDispositionFinalizer finalizer = new(
-            (phase, token) => AdvanceToTerminalAsync(connection, intent, phase, token));
+        CovenantSchemaRepairResult<bool>? finalization = null;
+
+        CovenantSchemaRepairPostDispositionFinalizer finalizer = new(async (phase, token) =>
+        {
+            finalization = await AdvanceToTerminalAsync(connection, intent, phase, token).ConfigureAwait(false);
+
+            return finalization;
+        });
 
         Result closed = await lease
             .CompleteAsync(disposition, finalizer, CancellationToken.None)
             .ConfigureAwait(false);
 
-        CovenantSchemaRepairPhase phase = closed.IsSuccess && finalizer.WasInvoked
+        CovenantSchemaRepairPhase phase = closed.IsSuccess && finalizer.WasInvoked && CovenantExclusiveDisposition.IsTerminalizing(disposition)
             ? disposition == CovenantExclusiveLeaseDisposition.CommitAndReopen
                 ? CovenantSchemaRepairPhase.Completed
                 : CovenantSchemaRepairPhase.Abandoned
-            : CovenantSchemaRepairPhase.ReopenPending;
+            : intent.Phase;
+
+        if (closed.IsFailure)
+        {
+            CovenantSchemaRepairDiagnostics.Warn(CovenantSchemaRepairStage.Complete,
+                CovenantSchemaRepairFailure.RecoveryRefused, intent, closed.Error.Code, error: closed.Error, fault: finalization?.Fault);
+        }
 
         CovenantAvailabilitySnapshot snapshot = _availability.Current;
 
@@ -376,16 +426,16 @@ internal sealed class CovenantMaintenanceService(
                 inspected.AcceleratorValid,
                 snapshot.Generation,
                 inspected.CatalogFingerprint,
-                closed.IsSuccess ? blockingCode : closed.Error.Code));
+                closed.IsSuccess ? blockingCode : CovenantSchemaRepairDiagnostics.SafeCode(closed.Error.Code)));
     }
 
-    private async Task<Result<CovenantSchemaRepairIntent?>> AdvanceAsync(
+    private async Task<CovenantSchemaRepairResult<CovenantSchemaRepairIntent?>> AdvanceAsync(
         SqliteConnection connection,
         CovenantSchemaRepairIntent intent,
         CovenantSchemaRepairPhase next,
         CancellationToken cancellationToken)
     {
-        Result<bool> advanced = await CovenantSchemaRepairJournal.TryAdvanceAsync(
+        CovenantSchemaRepairResult<bool> advanced = await CovenantSchemaRepairJournal.TryAdvanceAsync(
             connection,
             _initializer,
             intent,
@@ -396,7 +446,7 @@ internal sealed class CovenantMaintenanceService(
 
         if (advanced.IsFailure)
         {
-            return Result<CovenantSchemaRepairIntent?>.Failure(advanced.Error);
+            return CovenantSchemaRepairResult<CovenantSchemaRepairIntent?>.Failure(advanced.Error, advanced.Fault);
         }
 
         return Result<CovenantSchemaRepairIntent?>.Success(
@@ -405,29 +455,24 @@ internal sealed class CovenantMaintenanceService(
                 : null);
     }
 
-    private async Task<Result> AdvanceToTerminalAsync(
+    private async Task<CovenantSchemaRepairResult<bool>> AdvanceToTerminalAsync(
         SqliteConnection connection,
         CovenantSchemaRepairIntent intent,
         CovenantSchemaRepairPhase terminal,
         CancellationToken cancellationToken)
     {
-        Result<CovenantSchemaRepairIntent?> advanced = await AdvanceAsync(
-            connection,
-            intent,
-            terminal,
-            cancellationToken).ConfigureAwait(false);
+        CovenantSchemaRepairResult<CovenantSchemaRepairIntent?> advanced = await AdvanceAsync(
+            connection, intent, terminal, cancellationToken).ConfigureAwait(false);
 
         if (advanced.IsFailure)
         {
-            return Result.Failure(advanced.Error);
+            return CovenantSchemaRepairResult<bool>.Failure(advanced.Error, advanced.Fault);
         }
 
         return advanced.Value is null
-            ? Result.Failure(
-                new Error(
-                    ErrorCodes.Covenant.RevisionConflict,
-                    "The schema repair journal moved before its finalizer ran."))
-            : Result.Success();
+            ? Result<bool>.Failure(new Error(ErrorCodes.Covenant.RevisionConflict,
+                "The schema repair journal moved before its finalizer ran."))
+            : Result<bool>.Success(true);
     }
 }
 

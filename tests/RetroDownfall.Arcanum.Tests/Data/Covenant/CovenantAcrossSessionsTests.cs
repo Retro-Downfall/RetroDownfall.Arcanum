@@ -33,7 +33,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 [Trait("Category", "Integration")]
 public sealed class CovenantAcrossSessionsTests
 {
-
     private const string GlobalPreference = "Run build commands from the repository root.";
 
     private const string CampaignPreference = "This Campaign ships its migrations by hand.";
@@ -51,7 +50,6 @@ public sealed class CovenantAcrossSessionsTests
     [Fact]
     public async Task A_global_preference_written_in_one_session_is_rendered_in_the_next()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(SessionACampaign, "Session A", Token);
@@ -94,13 +92,11 @@ public sealed class CovenantAcrossSessionsTests
             await BeginTurnAsync(fixture.Store, gate, availability, authority, SessionACampaign);
 
         Assert.Contains(GlobalPreference, elsewhere.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task A_global_and_a_campaign_preference_are_rendered_in_the_same_turn()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(SessionACampaign, "Session A", Token);
@@ -123,13 +119,11 @@ public sealed class CovenantAcrossSessionsTests
         Assert.Contains(GlobalPreference, turn.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
 
         Assert.Contains(CampaignPreference, turn.PlanContent.CampaignConfirmed, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Retiring_a_campaign_override_gives_the_global_statement_back()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(SessionACampaign, "Session A", Token);
@@ -162,13 +156,11 @@ public sealed class CovenantAcrossSessionsTests
         Assert.Contains(GlobalPreference, restored.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
 
         Assert.DoesNotContain(CampaignOverride, restored.PlanContent.CampaignConfirmed, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task A_campaign_preference_does_not_follow_the_operator_into_another_campaign()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(SessionACampaign, "Session A", Token);
@@ -200,13 +192,11 @@ public sealed class CovenantAcrossSessionsTests
         Assert.DoesNotContain(CampaignPreference, other.PlanContent.CampaignConfirmed, StringComparison.Ordinal);
 
         Assert.DoesNotContain(CampaignPreference, other.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task A_retired_preference_stops_being_rendered_in_later_sessions()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(SessionBCampaign, "Session B", Token);
@@ -236,13 +226,11 @@ public sealed class CovenantAcrossSessionsTests
         // Withdrawal has to travel exactly as far as the statement did. A preference an operator
         // retired and a model still honors is worse than one that never arrived.
         Assert.DoesNotContain(GlobalPreference, after.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task A_retired_key_refuses_to_come_back_without_an_explicit_operator_action()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(SessionBCampaign, "Session B", Token);
@@ -280,13 +268,11 @@ public sealed class CovenantAcrossSessionsTests
         CovenantTurnContext still = await BeginTurnAsync(reader, gate, availability, authority, SessionBCampaign);
 
         Assert.DoesNotContain("Quietly back again.", still.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task An_operator_who_asks_for_reactivation_gets_it()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(SessionBCampaign, "Session B", Token);
@@ -321,7 +307,6 @@ public sealed class CovenantAcrossSessionsTests
         CovenantTurnContext after = await BeginTurnAsync(reader, gate, availability, authority, SessionBCampaign);
 
         Assert.Contains("Deliberately back again.", after.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
-
     }
 
     private static async Task<Result<CovenantMutationResultDto>> SetGlobalAsync(
@@ -331,7 +316,6 @@ public sealed class CovenantAcrossSessionsTests
         bool reactivate,
         string content)
     {
-
         CovenantMutationService service = Service(fixture);
 
         Guid mutationId = Guid.CreateVersion7();
@@ -341,7 +325,6 @@ public sealed class CovenantAcrossSessionsTests
         await using (CovenantInstallationReadLease read =
             (await gate.AcquireInstallationReadAsync(Token)).Value)
         {
-
             Result<CovenantMutationPreflightDto> prepared = await service.PrepareSetAsync(
                 new CovenantSetPrepareRequest(
                     CovenantScope.Global,
@@ -356,13 +339,10 @@ public sealed class CovenantAcrossSessionsTests
 
             if (prepared.IsFailure)
             {
-
                 return prepared.Error;
-
             }
 
             preflight = prepared.Value.PreflightToken;
-
         }
 
         await using CovenantWriteLease write =
@@ -380,12 +360,10 @@ public sealed class CovenantAcrossSessionsTests
                 preflight),
             write,
             Token);
-
     }
 
     private static async Task WriteGlobalAsync(CovenantCanonicalFixture fixture, CovenantOperationGate gate)
     {
-
         CovenantMutationService service = Service(fixture);
 
         Guid mutationId = Guid.CreateVersion7();
@@ -395,7 +373,6 @@ public sealed class CovenantAcrossSessionsTests
         await using (CovenantInstallationReadLease read =
             (await gate.AcquireInstallationReadAsync(Token)).Value)
         {
-
             Result<CovenantMutationPreflightDto> prepared = await service.PrepareSetAsync(
                 new CovenantSetPrepareRequest(
                     CovenantScope.Global,
@@ -411,7 +388,6 @@ public sealed class CovenantAcrossSessionsTests
             Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
 
             preflight = prepared.Value.PreflightToken;
-
         }
 
         await using CovenantWriteLease write =
@@ -431,7 +407,6 @@ public sealed class CovenantAcrossSessionsTests
             Token);
 
         Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
-
     }
 
     private static async Task WriteCampaignAsync(
@@ -441,7 +416,6 @@ public sealed class CovenantAcrossSessionsTests
         string key = "preference.migrations",
         string content = CampaignPreference)
     {
-
         CovenantMutationService service = Service(fixture);
 
         Guid mutationId = Guid.CreateVersion7();
@@ -451,7 +425,6 @@ public sealed class CovenantAcrossSessionsTests
         await using (CovenantReadLease read =
             (await gate.AcquireReadAsync(CovenantOperationScope.ForCampaign(campaignId), Token)).Value)
         {
-
             Result<CovenantMutationPreflightDto> prepared = await service.PrepareSetAsync(
                 new CovenantSetPrepareRequest(
                     CovenantScope.Campaign,
@@ -467,7 +440,6 @@ public sealed class CovenantAcrossSessionsTests
             Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
 
             preflight = prepared.Value.PreflightToken;
-
         }
 
         await using CovenantWriteLease write =
@@ -487,7 +459,6 @@ public sealed class CovenantAcrossSessionsTests
             Token);
 
         Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
-
     }
 
     private static async Task RetireCampaignAsync(
@@ -496,7 +467,6 @@ public sealed class CovenantAcrossSessionsTests
         Guid campaignId,
         string key)
     {
-
         CovenantMutationService service = Service(fixture);
 
         Guid mutationId = Guid.CreateVersion7();
@@ -507,7 +477,6 @@ public sealed class CovenantAcrossSessionsTests
 
         await using (CovenantReadLease read = (await gate.AcquireReadAsync(scope, Token)).Value)
         {
-
             Result<CovenantMutationPreflightDto> prepared = await service.PrepareRetireAsync(
                 new CovenantRetirePrepareRequest(
                     CovenantScope.Campaign,
@@ -522,7 +491,6 @@ public sealed class CovenantAcrossSessionsTests
             Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
 
             preflight = prepared.Value.PreflightToken;
-
         }
 
         await using CovenantWriteLease write = (await gate.AcquireWriteAsync(scope, Token)).Value;
@@ -540,12 +508,10 @@ public sealed class CovenantAcrossSessionsTests
             Token);
 
         Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
-
     }
 
     private static async Task RetireGlobalAsync(CovenantCanonicalFixture fixture, CovenantOperationGate gate)
     {
-
         CovenantMutationService service = Service(fixture);
 
         Guid mutationId = Guid.CreateVersion7();
@@ -555,7 +521,6 @@ public sealed class CovenantAcrossSessionsTests
         await using (CovenantInstallationReadLease read =
             (await gate.AcquireInstallationReadAsync(Token)).Value)
         {
-
             Result<CovenantMutationPreflightDto> prepared = await service.PrepareRetireAsync(
                 new CovenantRetirePrepareRequest(
                     CovenantScope.Global,
@@ -570,7 +535,6 @@ public sealed class CovenantAcrossSessionsTests
             Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
 
             preflight = prepared.Value.PreflightToken;
-
         }
 
         await using CovenantWriteLease write =
@@ -589,7 +553,6 @@ public sealed class CovenantAcrossSessionsTests
             Token);
 
         Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
-
     }
 
     /// <summary>
@@ -609,7 +572,6 @@ public sealed class CovenantAcrossSessionsTests
         FakeCovenantAuthorityProvider authority,
         Guid campaignId)
     {
-
         CovenantContextProvider provider = new(
             availability,
             gate,
@@ -649,7 +611,6 @@ public sealed class CovenantAcrossSessionsTests
         Assert.True(context.IsSuccess, context.IsFailure ? context.Error.Message : string.Empty);
 
         return context.Value;
-
     }
 
     private static CovenantMutationService Service(CovenantCanonicalFixture fixture) =>
@@ -662,7 +623,8 @@ public sealed class CovenantAcrossSessionsTests
             new CovenantCurationKernel(),
             new FixedAuthority(),
             TimeProvider.System,
-            DetachedAvailabilityRepublisher.Create());
+            DetachedAvailabilityRepublisher.Create(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<CovenantMutationService>.Instance);
 
     /// <summary>
     /// A codec that authenticates by construction rather than by key material.
@@ -674,7 +636,6 @@ public sealed class CovenantAcrossSessionsTests
     /// </remarks>
     private sealed class PassthroughEnvelopeCodec : ICovenantEnvelopeCodec
     {
-
         private readonly Dictionary<string, CovenantEnvelopeBody> _issued = new(StringComparer.Ordinal);
 
         public CovenantEnvelopeKeySnapshot KeySnapshot { get; } =
@@ -686,7 +647,6 @@ public sealed class CovenantAcrossSessionsTests
             TimeSpan lifetime,
             DateTimeOffset? issuedAtUtc = null)
         {
-
             string token = Convert.ToHexStringLower(Guid.NewGuid().ToByteArray());
 
             // Honoured, not ignored: a stand-in that stamped its own clock would let the body and
@@ -703,7 +663,6 @@ public sealed class CovenantAcrossSessionsTests
                 payload.ToArray());
 
             return Result<string>.Success(token);
-
         }
 
         public Result<CovenantEnvelopeBody> Decode(CovenantEnvelopePurpose expectedPurpose, string? token) =>
@@ -713,12 +672,10 @@ public sealed class CovenantAcrossSessionsTests
                 : Result<CovenantEnvelopeBody>.Failure(new Error(
                     ErrorCodes.Covenant.ForbiddenAuthority,
                     "This Covenant token is not valid for this purpose."));
-
     }
 
     private sealed class FixedAuthority : ICovenantAuthoritySnapshotProvider
     {
-
         public CovenantAuthoritySnapshot? Current { get; } = new(
             1,
             Guid.Parse("11111111-2222-3333-4444-555555555555").ToString("D"),
@@ -727,7 +684,5 @@ public sealed class CovenantAcrossSessionsTests
             RecoveryEnvelopeEpoch: 1,
             CovenantHostToolsState.Clean,
             null);
-
     }
-
 }

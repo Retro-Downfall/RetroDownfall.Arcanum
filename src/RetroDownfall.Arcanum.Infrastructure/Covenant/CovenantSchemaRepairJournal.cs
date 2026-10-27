@@ -89,6 +89,8 @@ internal static class CovenantSchemaRepairJournal
 
                     if (parsed.IsFailure)
                     {
+                        CovenantSchemaRepairDiagnostics.Warn(CovenantSchemaRepairStage.JournalRead, CovenantSchemaRepairFailure.JournalMalformed);
+
                         return Result<CovenantSchemaRepairIntent?>.Failure(parsed.Error);
                     }
 
@@ -99,16 +101,20 @@ internal static class CovenantSchemaRepairJournal
             // Two live intents mean two operations each believe they closed admission, and neither can
             // safely finish the other's work. That is an operator's problem, not a recovery pass's.
             return intents.Count > 1
-                ? ReadFailure()
+                ? ReadFailure(CovenantSchemaRepairFailure.MultipleActiveJournals)
                 : Result<CovenantSchemaRepairIntent?>.Success(intents.FirstOrDefault());
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
-        catch (Exception)
+        catch (SqliteException exception) when ((exception.SqliteErrorCode & 0xff) == 9 && cancellationToken.IsCancellationRequested)
         {
-            return ReadFailure();
+            throw new OperationCanceledException(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            return ReadFailure(CovenantSchemaRepairFailure.JournalUnreadable, exception);
         }
     }
 
@@ -137,7 +143,7 @@ internal static class CovenantSchemaRepairJournal
                 and not CovenantSchemaRepairPhase.HealthVerified
                 and not CovenantSchemaRepairPhase.ReopenPending
             || reader.GetValue(8) is not long revision
-            || revision < 0)
+            || !HasReachableRevision((CovenantSchemaRepairPhase)(byte)rawPhase, revision))
         {
             return IntentFailure();
         }
@@ -179,17 +185,30 @@ internal static class CovenantSchemaRepairJournal
                 revision));
     }
 
-    private static Result<CovenantSchemaRepairIntent?> ReadFailure() =>
-        Result<CovenantSchemaRepairIntent?>.Failure(
-            new Error(
-                ErrorCodes.Covenant.MaintenanceFailed,
-                "The Covenant schema-repair journal could not be read safely."));
+    // The immutable intent begins at revision zero and the trigger permits only these edges.
+    // In particular ReopenPending revision one proves no mutation, while revision three follows commit.
+    private static bool HasReachableRevision(CovenantSchemaRepairPhase phase, long revision) => phase switch
+    {
+        CovenantSchemaRepairPhase.Prepared => revision == 0,
+        CovenantSchemaRepairPhase.CatalogCommitted => revision == 1,
+        CovenantSchemaRepairPhase.HealthVerified => revision == 2,
+        CovenantSchemaRepairPhase.ReopenPending => revision is 1 or 3,
+        _ => false,
+    };
+
+    private static Result<CovenantSchemaRepairIntent?> ReadFailure(CovenantSchemaRepairFailure reason, Exception? cause = null)
+    {
+        CovenantSchemaRepairDiagnostics.Warn(CovenantSchemaRepairStage.JournalRead, reason, cause: cause);
+
+        return Result<CovenantSchemaRepairIntent?>.Failure(JournalReadError());
+    }
+
+    private static Error JournalReadError() => new(ErrorCodes.Covenant.MaintenanceFailed,
+        "The Covenant schema-repair journal could not be read safely. Preserve the profile and inspect the safe journal diagnostic before manual recovery; do not clear the journal blindly.");
 
     private static Result<CovenantSchemaRepairIntent> IntentFailure() =>
         Result<CovenantSchemaRepairIntent>.Failure(
-            new Error(
-                ErrorCodes.Covenant.MaintenanceFailed,
-                "The Covenant schema-repair journal could not be read safely."));
+            JournalReadError());
 
     /// <summary>
     /// Commits the <c>Prepared</c> intent that authorizes the first repair statement.
@@ -199,7 +218,7 @@ internal static class CovenantSchemaRepairJournal
     /// describes would be a record of an operation that already happened, which is exactly the state
     /// recovery cannot tell apart from one that never started.
     /// </remarks>
-    internal static async Task<Result> CommitPreparedAsync(
+    internal static async Task<CovenantSchemaRepairResult<bool>> CommitPreparedAsync(
         SqliteConnection connection,
         ICovenantSqliteConnectionInitializer initializer,
         CovenantSchemaRepairIntent intent,
@@ -254,18 +273,20 @@ internal static class CovenantSchemaRepairJournal
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-            return Result.Success();
+            return Result<bool>.Success(true);
         }
         catch (SqliteException exception)
         {
-            return Result.Failure(new Error(ErrorCodes.Covenant.MaintenanceFailed, exception.Message));
+            PropagateNativeCancellation(exception, cancellationToken);
+
+            return CovenantSchemaRepairResult<bool>.Failure(StorageError(), CovenantSchemaRepairStorageFault.From(exception));
         }
     }
 
     /// <summary>
     /// Advances one intent by exactly one edge, compare-and-swapping on its phase and revision.
     /// </summary>
-    internal static async Task<Result<bool>> TryAdvanceAsync(
+    internal static async Task<CovenantSchemaRepairResult<bool>> TryAdvanceAsync(
         SqliteConnection connection,
         ICovenantSqliteConnectionInitializer initializer,
         CovenantSchemaRepairIntent intent,
@@ -331,9 +352,23 @@ internal static class CovenantSchemaRepairJournal
         }
         catch (SqliteException exception)
         {
-            return Result<bool>.Failure(new Error(ErrorCodes.Covenant.MaintenanceFailed, exception.Message));
+            PropagateNativeCancellation(exception, cancellationToken);
+
+            return CovenantSchemaRepairResult<bool>.Failure(StorageError(), CovenantSchemaRepairStorageFault.From(exception));
         }
     }
+
+    private static void PropagateNativeCancellation(SqliteException failure, CancellationToken cancellationToken)
+    {
+        if ((failure.SqliteErrorCode & 0xff) == 9)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+    }
+
+    private static Error StorageError() =>
+        new(ErrorCodes.Covenant.MaintenanceFailed,
+            "Covenant schema-repair journal storage failed. Preserve the profile and inspect storage contention, permissions and free space before recovery.");
 
     private static string Iso(DateTimeOffset value) =>
         UtcInstantText.Format(value);

@@ -1,4 +1,5 @@
 using System.Data;
+using Microsoft.Extensions.Logging;
 
 using Microsoft.Data.Sqlite;
 
@@ -46,6 +47,7 @@ internal sealed partial class CovenantMutationService(
     ICovenantAuthoritySnapshotProvider authority,
     TimeProvider timeProvider,
     CovenantAvailabilityRepublisher availabilityRepublisher,
+    ILogger<CovenantMutationService> logger,
     IMemoryDelegationMutationBarrier? memoryDelegation = null) : ICovenantMutationService
 {
     /// <summary>How long a prepared mutation stays committable.</summary>
@@ -54,6 +56,10 @@ internal sealed partial class CovenantMutationService(
     /// operator can read what they are about to do, which is the entire reason the step exists.
     /// </remarks>
     private static readonly TimeSpan PreflightLifetime = TimeSpan.FromMinutes(5);
+
+    internal TimeSpan? BusyRetryDeadlineForTesting { get; init; }
+
+    internal Func<TimeSpan, CancellationToken, Task>? BusyRetryDelayForTesting { get; init; }
 
     /// <summary>Test seam: runs once the commit's receipt probe has found no receipt.</summary>
     internal Func<CancellationToken, Task>? AfterReplayProbeForTesting { get; init; }
@@ -422,6 +428,37 @@ internal sealed partial class CovenantMutationService(
         Guid? targetVersionId = null,
         CovenantDigest? targetRenderedHash = null)
     {
+        try
+        {
+            return await ApplyCoreAsync(scope, normalizedKey, lane, operation, mutationId, expectedRevision,
+                reactivate, compiled, preflightToken, writeLease, cancellationToken, targetVersionId, targetRenderedHash)
+                .ConfigureAwait(false);
+        }
+        catch (Exception failure) when (IsOperatorStorageFailure(failure))
+        {
+            PropagateOperatorCancellation(failure, cancellationToken);
+
+            return MapOperatorFailure<CovenantMutationResultDto>(failure,
+                targetVersionId is not null ? OperatorAction.Correct
+                    : operation == CovenantOperation.Retire ? OperatorAction.Retire : OperatorAction.Set, mutationId);
+        }
+    }
+
+    private async ValueTask<Result<CovenantMutationResultDto>> ApplyCoreAsync(
+        CovenantOperationScope scope,
+        string normalizedKey,
+        CovenantLane lane,
+        CovenantOperation operation,
+        Guid mutationId,
+        long expectedRevision,
+        bool reactivate,
+        CovenantCompiledContent? compiled,
+        string preflightToken,
+        CovenantWriteLease writeLease,
+        CancellationToken cancellationToken,
+        Guid? targetVersionId = null,
+        CovenantDigest? targetRenderedHash = null)
+    {
         ArgumentNullException.ThrowIfNull(writeLease);
 
         Result revalidated = await writeLease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
@@ -539,7 +576,7 @@ internal sealed partial class CovenantMutationService(
             return intent.Error;
         }
 
-        return await CommitAsync(intent.Value, body.Value, scope, normalizedKey, lane, cancellationToken)
+        return await CommitAsync(intent.Value, body.Value, scope, normalizedKey, lane, writeLease, cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -549,86 +586,180 @@ internal sealed partial class CovenantMutationService(
         CovenantOperationScope scope,
         string normalizedKey,
         CovenantLane lane,
+        CovenantWriteLease writeLease,
         CancellationToken cancellationToken)
     {
-        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+        SqliteConnection connection = await OpenOperatorConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-        // Every batch carries the gate its caller read from the latch before BEGIN, this operator path
-        // included. Operator intents never consult it, so an operator write is never refused by it; this
-        // path reads its key to release the fingerprint of the identity the write re-creates.
-        using CovenantAgentErasureGate erasureGate = kernel.CaptureErasureGate();
+        SqliteBusyRetryCursor retry = SqliteBusyRetry.Begin(BusyRetryDeadlineForTesting);
 
-        SqliteConnection connection = await connections
-            .GetOpenConnectionAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        await using SqliteTransaction transaction = (SqliteTransaction)await connection
-            .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
-            .ConfigureAwait(false);
-
-        CovenantMutationBatch batch = new(
-            body.DatasetGeneration,
-            checked((long)body.KeyReclamationEpoch),
-            body.CampaignRegistryEpoch is { } bodyRegistryEpoch ? checked((long)bodyRegistryEpoch) : null,
-            timeProvider.GetUtcNow(),
-            [intent]);
-
-        Result<IReadOnlyList<CovenantMutationReceipt>> applied = await kernel
-            .ApplyBatchAsync(
-                batch,
-                new CovenantMutationTransaction(connection, transaction),
-                erasureGate,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        if (applied.IsFailure)
+        while (true)
         {
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            Result live = await writeLease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
 
-            return applied.Error;
+            if (live.IsFailure)
+            {
+                return live.Error;
+            }
+
+            Result<CovenantMutationResultDto> result;
+
+            try
+            {
+                result = await CommitAttemptAsync(intent, body, scope, normalizedKey, lane,
+                    connection, writeLease, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperatorAttemptFailure failure) when (failure.RetryableBusy)
+            {
+                try
+                {
+                    await retry.WaitAsync(failure.Failure, cancellationToken, delayAsync: BusyRetryDelayForTesting)
+                        .ConfigureAwait(false);
+                }
+                catch (GrimoireBusyTimeoutException exhausted)
+                {
+                    throw new OperatorAttemptFailure(exhausted, failure.Stage, retryableBusy: false);
+                }
+
+                continue;
+            }
+
+            if (result.IsSuccess && !result.Value.Replayed)
+            {
+                try
+                {
+                    await availabilityRepublisher.RepublishAsync(connection, CovenantHealthTransition.CanonicalMutation)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception failure) when (IsOperatorStorageFailure(failure))
+                {
+                    // This is beyond COMMIT and the attempt's resource cleanup. It can never retry.
+                    throw new OperatorAttemptFailure(failure, OperatorStage.Publication, retryableBusy: false);
+                }
+            }
+
+            return result;
         }
+    }
 
-        CovenantMutationReceipt receipt = applied.Value[0];
+    private async ValueTask<Result<CovenantMutationResultDto>> CommitAttemptAsync(
+        CovenantMutationIntent intent,
+        CovenantOperatorPreflightBody body,
+        CovenantOperationScope scope,
+        string normalizedKey,
+        CovenantLane lane,
+        SqliteConnection connection,
+        CovenantWriteLease writeLease,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using MemoryDelegationMutation? memoryMutation = await BeginOperatorDelegationAsync(cancellationToken).ConfigureAwait(false);
 
-        // Inside the mutation's transaction, after the kernel accepted it, so a refused write releases
-        // nothing and a committed one cannot leave the fingerprint behind.
-        bool? releasedErasureFingerprint = receipt.Kind is CovenantMutationKind.OperatorSet && !receipt.Replayed
-            ? await MemoryErasureFingerprintRelease
-                .ReleaseForOperatorWriteAsync(
-                    connection,
-                    transaction,
-                    MemoryReviewStore.Covenant,
-                    ErasureIdentity(scope, normalizedKey),
-                    erasureGate.Key,
-                    cancellationToken)
-                .ConfigureAwait(false)
-            : false;
+            // Every batch carries the gate its caller read from the latch before BEGIN, this operator path
+            // included. Operator intents never consult it, so an operator write is never refused by it; this
+            // path reads its key to release the fingerprint of the identity the write re-creates.
+            using CovenantAgentErasureGate erasureGate = CaptureOperatorErasureGate();
 
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await using SqliteTransaction transaction = BeginOperatorTransaction(connection);
 
-        // After COMMIT, under the caller's write lease: the batch advanced the canonical search sequence,
-        // so the accelerator owes this write a projection until the outbox applies it.
-        await availabilityRepublisher
-            .RepublishAsync(connection, CovenantHealthTransition.CanonicalMutation)
-            .ConfigureAwait(false);
+            OperatorStage stage = OperatorStage.Write;
 
-        return new CovenantMutationResultDto(
-            receipt.MutationId,
-            receipt.Outcome,
-            receipt.Kind is CovenantMutationKind.OperatorRetire or CovenantMutationKind.AgentRetire
-                ? CovenantOperation.Retire
-                : CovenantOperation.Set,
-            scope.CampaignId is null ? CovenantScope.Global : CovenantScope.Campaign,
-            scope.CampaignId,
-            normalizedKey,
-            lane,
-            receipt.EntryId,
-            receipt.ResultingVersionId,
-            receipt.ResultingLaneRevision,
-            Hex(receipt.RequestIdempotencyDigest),
-            Hex(receipt.ResponseReceiptDigest),
-            receipt.Replayed,
-            releasedErasureFingerprint);
+            bool committed = false;
+
+            try
+            {
+                CovenantMutationBatch batch = new(
+                    body.DatasetGeneration,
+                    checked((long)body.KeyReclamationEpoch),
+                    body.CampaignRegistryEpoch is { } bodyRegistryEpoch ? checked((long)bodyRegistryEpoch) : null,
+                    timeProvider.GetUtcNow(),
+                    [intent]);
+
+                Result<IReadOnlyList<CovenantMutationReceipt>> applied = await kernel
+                    .ApplyBatchAsync(
+                        batch,
+                        new CovenantMutationTransaction(connection, transaction),
+                        erasureGate,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (applied.IsFailure)
+                {
+                    stage = OperatorStage.Rollback;
+
+                    await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+                    return applied.Error;
+                }
+
+                CovenantMutationReceipt receipt = applied.Value[0];
+
+                // Inside the mutation's transaction, after the kernel accepted it, so a refused write releases
+                // nothing and a committed one cannot leave the fingerprint behind.
+                bool? releasedErasureFingerprint = receipt.Kind is CovenantMutationKind.OperatorSet && !receipt.Replayed
+                    ? await MemoryErasureFingerprintRelease
+                        .ReleaseForOperatorWriteAsync(
+                            connection,
+                            transaction,
+                            MemoryReviewStore.Covenant,
+                            ErasureIdentity(scope, normalizedKey),
+                            erasureGate.Key,
+                            cancellationToken)
+                        .ConfigureAwait(false)
+                    : false;
+
+                Result live = await writeLease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
+
+                if (live.IsFailure)
+                {
+                    stage = OperatorStage.Rollback;
+
+                    await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+                    return live.Error;
+                }
+
+                stage = OperatorStage.Commit;
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                committed = true;
+
+                return new CovenantMutationResultDto(
+                    receipt.MutationId,
+                    receipt.Outcome,
+                    receipt.Kind is CovenantMutationKind.OperatorRetire or CovenantMutationKind.AgentRetire
+                        ? CovenantOperation.Retire
+                        : CovenantOperation.Set,
+                    scope.CampaignId is null ? CovenantScope.Global : CovenantScope.Campaign,
+                    scope.CampaignId,
+                    normalizedKey,
+                    lane,
+                    receipt.EntryId,
+                    receipt.ResultingVersionId,
+                    receipt.ResultingLaneRevision,
+                    Hex(receipt.RequestIdempotencyDigest),
+                    Hex(receipt.ResponseReceiptDigest),
+                    receipt.Replayed,
+                    releasedErasureFingerprint);
+            }
+            catch (Exception failure) when (IsOperatorStorageFailure(failure))
+            {
+                throw new OperatorAttemptFailure(failure, stage,
+                    retryableBusy: !committed && stage == OperatorStage.Write && SqliteBusyRetry.IsBusyOrLocked(failure));
+            }
+        }
+        catch (OperatorAttemptFailure)
+        {
+            throw;
+        }
+        catch (Exception failure) when (IsOperatorStorageFailure(failure))
+        {
+            // A body failure was already wrapped inside every using scope. A different exception
+            // escaping here came from resource release; its outcome is uncertain and cannot retry.
+            throw new OperatorAttemptFailure(failure, OperatorStage.ResourceCleanup, retryableBusy: false);
+        }
     }
 
     /// <summary>
@@ -790,11 +921,11 @@ internal sealed partial class CovenantMutationService(
         {
             return Result<CovenantCompiledContent>.Success(compiler.Compile(key, content));
         }
-        catch (Exception exception) when (exception is ArgumentException or ArgumentOutOfRangeException)
+        catch (ArgumentException exception)
         {
             return Result<CovenantCompiledContent>.Failure(new Error(
                 ErrorCodes.Covenant.InvalidContent,
-                exception.Message));
+                CovenantCompilationFailure.Describe(exception, CovenantCompilationField.Content)));
         }
     }
 

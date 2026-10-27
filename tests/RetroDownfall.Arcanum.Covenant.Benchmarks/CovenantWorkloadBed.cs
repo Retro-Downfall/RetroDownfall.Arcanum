@@ -228,7 +228,8 @@ internal sealed class CovenantWorkloadBed : IAsyncDisposable
 
             // Detached from the bed's own availability, which the bed controls, while still paying the
             // post-commit read every operator write makes.
-            new CovenantAvailabilityRepublisher(new CovenantAvailability(), NullLogger<CovenantAvailabilityRepublisher>.Instance));
+            new CovenantAvailabilityRepublisher(new CovenantAvailability(), NullLogger<CovenantAvailabilityRepublisher>.Instance),
+            NullLogger<CovenantMutationService>.Instance);
 
         Management = new CovenantManagementService(
             Store,
