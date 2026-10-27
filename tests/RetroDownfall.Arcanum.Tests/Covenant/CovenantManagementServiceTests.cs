@@ -242,6 +242,52 @@ public sealed class CovenantManagementServiceTests
         }
     }
 
+    [Theory]
+    [InlineData("admission", false)]
+    [InlineData("admission", true)]
+    [InlineData("totals", false)]
+    [InlineData("totals", true)]
+    [InlineData("sections", false)]
+    [InlineData("sections", true)]
+    public async Task Explain_distinguishes_unmeasured_admission_and_tokens_from_a_real_zero(string field, bool empty)
+    {
+        CovenantCompiledContent compiled = new CovenantCompiler().Compile("preference.tone", "PRIVATE-use-plain-language");
+        CovenantSnapshotCandidate candidate = CovenantTask6Fixture.CreateCandidate(
+            compiled.NormalizedKey, CovenantTask6Fixture.G1, CovenantTask6Fixture.G2, 7,
+            CovenantScope.Global, null, CovenantLane.Confirmed, CovenantOperation.Set, CovenantOrigin.Operator,
+            CovenantCompiler.CompilerPolicyVersion, 0, CovenantSnapshotCandidateIntegrity.Verified,
+            compiledFragment: [.. compiled.FragmentUtf8]);
+        CovenantTurnSnapshot snapshot = new(new CovenantGenerationId(CovenantOperationGateFixture.DatasetGeneration),
+            keyReclamationEpoch: 1, canonicalCampaignId: null, canonicalSearchSequence: 12,
+            empty ? [] : [candidate]);
+        CovenantManagementService service = new(new ExplanationStore(snapshot), new CovenantLinker(),
+            CovenantOperationGateFixture.CreateGate(), new FakeCovenantAvailability(),
+            new UnreachableCodec(), new ExplanationCampaignReader());
+        CovenantLeasedServiceResult<CovenantExplainDto> response = await service.ExplainAsync(
+            new CovenantExplainRequest(null, ShowContent: false), CancellationToken.None);
+        (Result<CovenantExplainDto> result, ICovenantOperationLease lease) = response.Take();
+        await using (lease)
+        {
+            Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+            string json = JsonSerializer.Serialize(result.Value, ArcanumJsonContext.Default.CovenantExplainDto);
+            using JsonDocument document = JsonDocument.Parse(json);
+            JsonElement root = document.RootElement;
+            Assert.DoesNotContain("PRIVATE", json, StringComparison.Ordinal);
+            Assert.Equal(empty, result.Value.Sections.All(section => section.RenderedBytes == 0));
+            if (field == "admission") Assert.Equal("NotEvaluated", root.GetProperty("admission").GetString());
+            else if (field == "totals")
+            {
+                Assert.Equal(JsonValueKind.Null, root.GetProperty("confirmedTokens").ValueKind);
+                Assert.Equal(JsonValueKind.Null, root.GetProperty("proposedTokens").ValueKind);
+            }
+            else
+            {
+                foreach (JsonElement section in root.GetProperty("sections").EnumerateArray())
+                    Assert.Equal(JsonValueKind.Null, section.GetProperty("estimatedTokens").ValueKind);
+            }
+        }
+    }
+
     private sealed class ExplanationCampaignReader : ICampaignAvailabilityReader
     {
         public ValueTask<Result<long?>> FindAvailabilityGenerationAsync(

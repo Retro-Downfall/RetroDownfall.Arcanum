@@ -21,13 +21,11 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 [Trait("Category", "Integration")]
 public sealed class CovenantStatusTests
 {
-
     private static CancellationToken Token => CancellationToken.None;
 
     [Fact]
     public async Task Status_reports_the_entries_the_installation_actually_holds()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(CovenantOperationGateFixture.CampaignOne, "Status", Token);
@@ -83,13 +81,11 @@ public sealed class CovenantStatusTests
         Assert.Equal(0, status.MaxCampaignConfirmedRenderedBytes);
 
         Assert.Equal(CovenantLimits.MaxGlobalConfirmedRenderedBytes, status.RenderedByteCeilingPerSection);
-
     }
 
     [Fact]
     public async Task An_empty_installation_is_reported_as_available_and_holding_nothing()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         CovenantStatusDto status = await StatusAsync(fixture);
@@ -105,7 +101,6 @@ public sealed class CovenantStatusTests
         Assert.Empty(status.Counts);
 
         Assert.Null(status.DegradationCode);
-
     }
 
     /// <summary>
@@ -125,7 +120,6 @@ public sealed class CovenantStatusTests
     [Fact]
     public async Task A_disabled_installation_is_answered_without_scanning_the_canonical_tier()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         // Seeded so a census that did run would have something to report, and the empty result below
@@ -160,18 +154,21 @@ public sealed class CovenantStatusTests
         // Health is still the answer an operator gets; the count beside it says it was never measured.
         Assert.True(status.Value.Available);
 
-        Assert.Equal(CovenantCensusReadState.Refused, status.Value.Census);
+        Assert.Equal("Disabled", status.Value.Census.ToString());
+
+        string json = System.Text.Json.JsonSerializer.Serialize(status.Value,
+            RetroDownfall.Arcanum.Api.Serialization.ArcanumJsonContext.Default.CovenantStatusDto);
+
+        Assert.Contains("\"census\":\"Disabled\"", json, StringComparison.Ordinal);
 
         Assert.Empty(status.Value.Counts);
 
         Assert.Equal(0, status.Value.GlobalConfirmedRenderedBytes);
-
     }
 
     [Fact]
     public async Task An_unreadable_tier_reports_zero_beside_health_that_says_why()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         _ = await fixture.SeedHeadAsync(
@@ -204,7 +201,6 @@ public sealed class CovenantStatusTests
         Assert.False(status.Available);
 
         Assert.Equal("canonical-unavailable", status.DegradationCode);
-
     }
 
     /// <summary>
@@ -220,7 +216,6 @@ public sealed class CovenantStatusTests
     [Fact]
     public async Task A_closing_exclusive_operation_is_not_reported_as_an_installation_holding_nothing()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         _ = await fixture.SeedHeadAsync(
@@ -253,13 +248,11 @@ public sealed class CovenantStatusTests
         Assert.Empty(status.Value.Counts);
 
         Assert.NotEqual(CovenantCensusReadState.Read, status.Value.Census);
-
     }
 
     [Fact]
     public async Task A_synchronized_accelerator_is_reported_as_healthy_indexed_search()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         CovenantStatusDto status = await StatusAsync(fixture);
@@ -271,13 +264,11 @@ public sealed class CovenantStatusTests
         Assert.Equal(CovenantSearchExecutionMode.Fts, status.Search.ExecutionMode);
 
         Assert.Equal(CovenantSearchRebuildGuidance.None, status.Search.Guidance);
-
     }
 
     [Fact]
     public async Task An_accelerator_that_needs_rebuilding_says_so_rather_than_reporting_none()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         FakeCovenantAvailability availability = new();
@@ -307,13 +298,11 @@ public sealed class CovenantStatusTests
         // The accelerator code is the only one there is here, and reporting only the canonical code
         // would leave a real degradation with no code at all beside it.
         Assert.Equal("accelerator-dirty", status.DegradationCode);
-
     }
 
     [Fact]
     public async Task A_projection_pending_behind_a_published_tuple_is_something_to_wait_out_whatever_rebuild_is_recorded()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         FakeCovenantAvailability availability = new();
@@ -333,13 +322,11 @@ public sealed class CovenantStatusTests
         Assert.Equal(CovenantSearchExecutionMode.CanonicalFallback, status.Search.ExecutionMode);
 
         Assert.Equal(CovenantSearchRebuildGuidance.WaitForSynchronization, status.Search.Guidance);
-
     }
 
     [Fact]
     public async Task An_unpublished_tuple_with_no_rebuild_recorded_is_something_to_wait_out()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         FakeCovenantAvailability availability = new();
@@ -358,13 +345,11 @@ public sealed class CovenantStatusTests
         Assert.Equal(CovenantSearchHealthState.Synchronizing, status.Search.State);
 
         Assert.Equal(CovenantSearchRebuildGuidance.WaitForSynchronization, status.Search.Guidance);
-
     }
 
     [Fact]
     public async Task An_unavailable_accelerator_is_never_reported_as_something_to_wait_out()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         FakeCovenantAvailability availability = new();
@@ -380,13 +365,11 @@ public sealed class CovenantStatusTests
         Assert.Equal(CovenantSearchHealthState.Unavailable, status.Search.State);
 
         Assert.Equal(CovenantSearchRebuildGuidance.AcceleratorUnavailable, status.Search.Guidance);
-
     }
 
     [Fact]
     public async Task Status_does_not_hold_the_installation_capability_after_it_answers()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         FakeCovenantAvailability availability = new();
@@ -409,14 +392,12 @@ public sealed class CovenantStatusTests
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : string.Empty);
 
         await drained.Value.DisposeAsync();
-
     }
 
     private static async Task<CovenantStatusDto> StatusAsync(
         CovenantCanonicalFixture fixture,
         FakeCovenantAvailability? availability = null)
     {
-
         FakeCovenantAvailability resolved = availability ?? new FakeCovenantAvailability();
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(resolved);
@@ -426,7 +407,6 @@ public sealed class CovenantStatusTests
         Assert.True(status.IsSuccess, status.IsFailure ? status.Error.Message : string.Empty);
 
         return status.Value;
-
     }
 
     private static ICovenantManagementService Management(
@@ -444,7 +424,6 @@ public sealed class CovenantStatusTests
     /// <summary>A codec that fails loudly, because status issues and accepts no envelope.</summary>
     private sealed class UnreachableEnvelopeCodec : ICovenantEnvelopeCodec
     {
-
         public CovenantEnvelopeKeySnapshot KeySnapshot =>
             throw new NotSupportedException("A status read touches no envelope.");
 
@@ -457,18 +436,14 @@ public sealed class CovenantStatusTests
 
         public Result<CovenantEnvelopeBody> Decode(CovenantEnvelopePurpose expectedPurpose, string? token) =>
             throw new NotSupportedException("A status read accepts no envelope.");
-
     }
 
     /// <summary>A reader that fails loudly, because status resolves no evaluation Campaign.</summary>
     private sealed class UnreachableCampaignAvailabilityReader : ICampaignAvailabilityReader
     {
-
         public ValueTask<Result<long?>> FindAvailabilityGenerationAsync(
             Guid campaignId,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException("A status read resolves no Campaign.");
-
     }
-
 }

@@ -248,6 +248,17 @@ public sealed class CovenantAdmissionReceiptTests
             valid.SetItem(0, valid[0] with { Decision = (CovenantAdmissionDecision)0 })));
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public void Unevaluated_explanation_cannot_become_a_live_admission_receipt(int index)
+    {
+        CovenantTurnPlan plan = CovenantTask6Fixture.IntegrationPlan();
+        ImmutableArray<CovenantAdmissionCandidateDecision> valid = AllAdmitted(plan, 1);
+        Assert.Throws<ArgumentOutOfRangeException>(() => Receipt(plan, CovenantTask6Fixture.ProviderCall(),
+            valid.SetItem(index, valid[index] with { Decision = CovenantAdmissionDecision.NotEvaluated })));
+    }
+
     [Fact]
     public void Token_and_rendered_byte_totals_use_checked_exact_counts()
     {

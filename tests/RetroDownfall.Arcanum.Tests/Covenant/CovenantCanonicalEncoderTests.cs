@@ -442,6 +442,12 @@ public sealed class CovenantCanonicalEncoderTests
     }
 
     [Fact]
+    public void Unevaluated_explanation_cannot_enter_the_frozen_policy_admission_encoding()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => CovenantPolicyV1Manifest.GetCode(CovenantAdmissionDecision.NotEvaluated));
+    }
+
+    [Fact]
     public void Unsupported_wider_backed_enum_fails_before_code_encoding()
     {
         Assert.Throws<ArgumentException>(

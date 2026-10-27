@@ -248,7 +248,7 @@ public sealed record CovenantDetailDto(
 /// </summary>
 /// <remarks>
 /// <paramref name="Content"/> is present only under the existing <c>showContent</c> privacy gate plus
-/// clean Covenant read authority. Default inspection reports hashes, byte and token counts, placement,
+/// clean Covenant read authority. Default inspection reports hashes, measured byte counts, unmeasured token costs, placement,
 /// and typed decisions, because those answer "why is my preference not being honoured" without
 /// disclosing anything.
 /// </remarks>
@@ -256,7 +256,7 @@ public sealed record CovenantExplainSectionDto(
     CovenantPlacement Placement,
     long ItemCount,
     long RenderedBytes,
-    long EstimatedTokens,
+    long? EstimatedTokens,
     string SectionDigest,
     string? Content);
 
@@ -296,8 +296,9 @@ public sealed record CovenantExplainOperationalDefaultDto(
 /// One fresh diagnostic snapshot and plan for one explicit evaluation.
 /// </summary>
 /// <remarks>
-/// It runs the same loader, linker, and admission code as a live turn and publishes no mutation, so
-/// an explanation cannot disagree with the thing it explains. It never enters the live turn cache:
+/// It runs the same loader and linker as a live turn and publishes no mutation. Admission and token
+/// costs are not evaluated without an attempt budget and tokenizer; their counts are null.
+/// It never enters the live turn cache:
 /// a diagnostic that warmed the cache would change the behaviour it was asked to describe.
 /// </remarks>
 public sealed record CovenantExplainDto(
@@ -308,8 +309,8 @@ public sealed record CovenantExplainDto(
     string PlanDigest,
     CovenantExplainSectionDto[] Sections,
     CovenantExplainDecisionDto[] Decisions,
-    long ConfirmedTokens,
-    long ProposedTokens,
+    long? ConfirmedTokens,
+    long? ProposedTokens,
     CovenantAdmissionDecision Admission,
     bool ContentIncluded,
     CovenantExplainOperationalDefaultDto[] OperationalDefaults);
@@ -344,6 +345,9 @@ public enum CovenantCensusReadState : byte
 
     /// <summary>The capability was held and the read itself failed, so nothing was counted.</summary>
     Failed = 3,
+
+    /// <summary>The feature is disabled, so no capability or census was attempted.</summary>
+    Disabled = 4,
 }
 
 /// <summary>

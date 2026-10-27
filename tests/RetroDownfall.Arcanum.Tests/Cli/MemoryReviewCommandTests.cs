@@ -11,6 +11,8 @@ using RetroDownfall.Arcanum.Cli.Commands.Tower;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Annals;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -516,6 +518,105 @@ public sealed class MemoryReviewCommandTests
             Assert.Contains("process restart", output.ToString(), StringComparison.OrdinalIgnoreCase);
 
             Assert.Contains("Run arcanum memory covenant review list again", output.ToString(), StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("saga", false, false, false)]
+    [InlineData("lexicon", false, false, false)]
+    [InlineData("covenant", false, false, false)]
+    [InlineData("saga", false, false, true)]
+    [InlineData("lexicon", false, false, true)]
+    [InlineData("covenant", false, false, true)]
+    [InlineData("saga", true, false, false)]
+    [InlineData("lexicon", true, false, false)]
+    [InlineData("covenant", true, false, false)]
+    [InlineData("saga", false, true, false)]
+    [InlineData("lexicon", false, true, false)]
+    [InlineData("covenant", false, true, false)]
+    [InlineData("saga", true, true, false)]
+    [InlineData("lexicon", true, true, false)]
+    [InlineData("covenant", true, true, false)]
+    public async Task Review_content_is_explicitly_discoverable_without_entering_default_terminal_output(
+        string store, bool json, bool empty, bool plain)
+    {
+        const string content = "PRIVATE-review-body\n[red]literal-markup[/]";
+        Guid id = Guid.Parse("582fe9f8-2863-4939-87ee-e4a776918b11");
+        LexiconCurationScope scope = new(LexiconScopeKind.Global, null);
+        string digest = new('a', 64);
+        SagaReviewCurrentDto sagaCurrent = new(
+            new("memory", content, DateTimeOffset.UnixEpoch, null, null, null, ScopeKind: SagaMemoryScopeKind.Global),
+            digest, new(null, null), SagaRetrievalEligibility.Eligible, null);
+        LexiconEntryLifecycle lexiconLifecycle = new(null, null);
+        LexiconCurationTarget lexiconTarget = new(scope, "review-entry", id, 1, digest, lexiconLifecycle,
+            new(true, "claim", "version", 1, AnnalOperation.Assert, AnnalContentHashFormat.LexiconStructuredSnapshot, digest),
+            new(false, null, null, null, null));
+        Assert.True(lexiconTarget.Validate().IsSuccess);
+        LexiconReviewCurrentDto lexiconCurrent = new(
+            new(id, "review-entry", "concept", [content], DateTimeOffset.UnixEpoch), scope,
+            AnnalOrigin.AgentExtracted, lexiconLifecycle, LexiconRetrievalEligibility.Eligible, 1, digest, lexiconTarget);
+        string body = store switch
+        {
+            "saga" => JsonSerializer.Serialize(ApiResponse<SagaReviewPageDto>.FromResult(Result<SagaReviewPageDto>.Success(
+                new(empty ? [] : [new(1, "memory", "version", 1, AnnalOperation.Assert, AnnalOrigin.AgentExtracted,
+                    SagaMemoryScopeKind.Global, null, null, null, digest, true, sagaCurrent, "observation")], 0, 1, null, false))),
+                ArcanumJsonContext.Default.ApiResponseSagaReviewPageDto),
+            "lexicon" => JsonSerializer.Serialize(ApiResponse<LexiconReviewPageDto>.FromResult(Result<LexiconReviewPageDto>.Success(
+                new(empty ? [] : [new(1, id, "version", 1, AnnalOperation.Assert, AnnalOrigin.AgentExtracted,
+                    scope, null, digest, true, lexiconCurrent, "observation")], 0, 1, null, false, false))),
+                ArcanumJsonContext.Default.ApiResponseLexiconReviewPageDto),
+            _ => JsonSerializer.Serialize(ApiResponse<CovenantReviewPageDto>.FromResult(Result<CovenantReviewPageDto>.Success(
+                new(empty ? [] : [new(1, id, id, CovenantOperation.Set, CovenantOrigin.AgentProposed, CovenantScope.Global,
+                    null, CovenantLane.Proposed, "preference.tone", content, null, null, true, null, [], "observation")],
+                    0, 1, null, false))), ArcanumJsonContext.Default.ApiResponseCovenantReviewPageDto),
+        };
+        RecordingHandler handler = new(new MemoryReviewBulkPlanDto(MemoryReviewStore.Covenant, id,
+            MemoryReviewAction.Confirm, [], default, default, "unused"))
+        { PageJson = body };
+        CliInvocationOptions options = new(Json: json, Plain: plain, Yes: false);
+        StringWriter output = new();
+        StringWriter error = new();
+        MemoryCommands commands = new(new ArcanumApiClient(new SingleHandlerFactory(handler),
+            ArcanumApiCredentialLeaseTestFactory.Create(FixedSecretStore.Key)), null!,
+            new ConsoleDispatcher(output, error, options), new FixedConfirmation(false), Options.Create(new ArcanumSettings()), null!);
+        using IDisposable invocation = CliInvocationContext.Push(options);
+        int exit = store switch
+        {
+            "saga" => await commands.SagaReviewList(null, false, 25, null, CancellationToken.None),
+            "lexicon" => await commands.LexiconReviewList(null, 25, null, CancellationToken.None),
+            _ => await commands.CovenantReviewList(null, "proposed", 25, null, CancellationToken.None),
+        };
+        Assert.True(exit == 0, error.ToString());
+        Assert.Single(handler.Paths);
+        string text = output.ToString();
+        if (json)
+        {
+            using JsonDocument document = JsonDocument.Parse(text);
+            Assert.Equal(empty ? 0 : 1, document.RootElement.GetProperty("items").GetArrayLength());
+            Assert.DoesNotContain("--json", text, StringComparison.Ordinal);
+            if (!empty)
+            {
+                JsonElement item = document.RootElement.GetProperty("items")[0];
+                string? actual = store switch
+                {
+                    "saga" => item.GetProperty("current").GetProperty("memory").GetProperty("content").GetString(),
+                    "lexicon" => item.GetProperty("current").GetProperty("entry").GetProperty("facts")[0].GetString(),
+                    _ => item.GetProperty("compiledContent").GetString(),
+                };
+                Assert.Equal(content, actual);
+            }
+        }
+        else
+        {
+            Assert.DoesNotContain("PRIVATE-review-body", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("literal-markup", text, StringComparison.Ordinal);
+            if (empty) Assert.DoesNotContain("--json", text, StringComparison.Ordinal);
+            else
+            {
+                Assert.Contains($"arcanum memory {store} review list", text, StringComparison.Ordinal);
+                Assert.Contains("--json", text, StringComparison.Ordinal);
+                Assert.Contains("same scope", text, StringComparison.OrdinalIgnoreCase);
+            }
         }
     }
 

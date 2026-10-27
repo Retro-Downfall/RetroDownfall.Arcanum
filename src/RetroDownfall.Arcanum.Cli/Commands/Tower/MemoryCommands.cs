@@ -178,6 +178,12 @@ public sealed partial class MemoryCommands(
         // An unread census is reported as unread. Every count and byte total below it is zero in that
         // case, and "you have no standing preferences" is the one sentence this surface must never say
         // about an installation nobody counted.
+        if (!covenant.Enabled)
+        {
+            dispatcher.WritePayload("  Covenant is disabled, so its entries were not counted.");
+            return;
+        }
+
         if (covenant.Census is not CovenantCensusReadState.Read)
         {
             dispatcher.WritePayload(

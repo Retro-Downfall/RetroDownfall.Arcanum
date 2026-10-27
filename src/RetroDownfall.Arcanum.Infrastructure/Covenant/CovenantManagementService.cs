@@ -507,7 +507,8 @@ internal sealed class CovenantManagementService(
 
         CovenantScopeCensus census = CovenantScopeCensus.Empty;
 
-        CovenantCensusReadState state = CovenantCensusReadState.Refused;
+        CovenantCensusReadState state = snapshot.FeatureEnabled
+            ? CovenantCensusReadState.Refused : CovenantCensusReadState.Disabled;
 
         // Gated on the feature, and deliberately not on reported health. The gate already refuses a
         // capability over a tier it cannot serve, so a health check here would only duplicate that
@@ -639,13 +640,13 @@ internal sealed class CovenantManagementService(
                 Section(plan.CampaignProposedSection, request.ShowContent),
             ],
             [.. plan.Decisions.Select(Decision)],
-            ConfirmedTokens: 0,
-            ProposedTokens: 0,
+            ConfirmedTokens: null,
+            ProposedTokens: null,
 
             // The plan alone cannot say what a provider attempt admitted: admission depends on the
             // attempt's own budget and tokenizer. Reporting the plan's decisions and leaving admission
             // unclaimed is the honest shape for a question asked outside any turn.
-            CovenantAdmissionDecision.Admitted,
+            CovenantAdmissionDecision.NotEvaluated,
             request.ShowContent,
             [.. plan.OperationalDefaults.Select(value => new CovenantExplainOperationalDefaultDto(
                 value.EntryId,
@@ -664,7 +665,7 @@ internal sealed class CovenantManagementService(
             section.Placement,
             section.Candidates.Length,
             section.RenderedBytes.Length,
-            EstimatedTokens: 0,
+            EstimatedTokens: null,
             Hex(section.Digest),
             showContent && !section.RenderedBytes.IsEmpty
                 ? System.Text.Encoding.UTF8.GetString(section.RenderedBytes.AsSpan())
