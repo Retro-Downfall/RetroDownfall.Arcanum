@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -128,8 +129,7 @@ public sealed class PromptRepository : IPromptRepository
             $"""
             SELECT {GrimoireEntitySql.PromptColumns}
             FROM "Prompts"
-            WHERE "CampaignId" = $campaignId
-               OR ("CampaignId" IS NULL AND $campaignId IS NULL)
+            WHERE "CampaignId" IS $campaignId
             ORDER BY "Name", "UpdatedAt" DESC, "Id" DESC
             LIMIT $take OFFSET $skip;
             """,
@@ -153,6 +153,91 @@ public sealed class PromptRepository : IPromptRepository
         int? nextOffset = hasMore ? skip + pageSize : null;
 
         return new ListPageResult<Prompt>(page, hasMore, nextOffset);
+    }
+
+    public async Task<ListPageResult<PromptSummary>> ListSummariesAsync(
+        Guid? campaignId,
+        string? query = null,
+        string? tag = null,
+        int? limit = null,
+        int offset = 0,
+        CancellationToken cancellationToken = default)
+    {
+        int pageSize = ArcanumSettingClamps.ListQueryLimit(limit ?? DefaultListLimit);
+
+        int skip = Math.Max(0, offset);
+
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(_db, """
+            SELECT "Id", "CampaignId", "Name", "Version", "Description", "Tags", "UpdatedAt"
+            FROM "Prompts"
+            WHERE "CampaignId" IS $campaignId
+                AND ($query IS NULL OR arcanum_ordinal_contains("Name", $query)
+                    OR arcanum_ordinal_contains("Description", $query)
+                    OR arcanum_prompt_tags_match("Tags", $query, NULL))
+                AND ($tag IS NULL OR arcanum_prompt_tags_match("Tags", NULL, $tag))
+            ORDER BY "Name", "UpdatedAt" DESC, "Id" DESC
+            LIMIT $take OFFSET $skip;
+            """, cancellationToken).ConfigureAwait(false);
+
+        // Preserve the existing JSON decoder and OrdinalIgnoreCase semantics, including embedded
+        // NUL, without bringing templates or parameter documents into the list projection.
+        command.Connection!.CreateFunction<byte[]?, byte[]?, byte[]?, bool>(
+            "arcanum_prompt_tags_match", MatchesStoredTags, isDeterministic: true);
+
+        GrimoireEntitySql.AddParameter(command, "$campaignId", campaignId is { } id ? GrimoireEntitySql.Format(id) : null);
+
+        GrimoireEntitySql.AddParameter(command, "$query", string.IsNullOrWhiteSpace(query) ? null : query.Trim());
+
+        GrimoireEntitySql.AddParameter(command, "$tag", string.IsNullOrWhiteSpace(tag) ? null : tag);
+
+        GrimoireEntitySql.AddParameter(command, "$take", pageSize + 1);
+
+        GrimoireEntitySql.AddParameter(command, "$skip", skip);
+
+        List<PromptSummary> rows = [];
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            rows.Add(new PromptSummary(
+                Guid.Parse(reader.GetString(0)),
+                reader.IsDBNull(1) ? null : Guid.Parse(reader.GetString(1)),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.GetString(5),
+                UtcInstantText.Parse(reader.GetString(6))));
+        }
+
+        bool hasMore = rows.Count > pageSize;
+
+        return new ListPageResult<PromptSummary>(hasMore ? [.. rows.Take(pageSize)] : [.. rows], hasMore,
+            hasMore ? skip + pageSize : null);
+    }
+
+    public async Task<IReadOnlyList<Prompt>> ReadForExportAsync(Guid campaignId, CancellationToken cancellationToken = default) =>
+        await ReadManyAsync(
+            $"""
+            SELECT {GrimoireEntitySql.PromptColumns}
+            FROM "Prompts"
+            WHERE "CampaignId" IS $campaignId
+            ORDER BY "Name", "UpdatedAt" DESC, "Id" DESC;
+            """,
+            command => GrimoireEntitySql.AddParameter(command, "$campaignId", GrimoireEntitySql.Format(campaignId)),
+            cancellationToken).ConfigureAwait(false);
+
+    private static bool MatchesStoredTags(byte[]? storedTags, byte[]? containsTerm, byte[]? exactTag)
+    {
+        string[] values = DeserializeTags(Encoding.UTF8.GetString(
+            storedTags ?? throw new InvalidDataException("The prompt tag metadata is missing.")));
+
+        string? term = containsTerm is null ? null : Encoding.UTF8.GetString(containsTerm);
+
+        string? tag = exactTag is null ? null : Encoding.UTF8.GetString(exactTag);
+
+        return (term is null || values.Any(value => value.Contains(term, StringComparison.OrdinalIgnoreCase)))
+            && (tag is null || values.Any(value => string.Equals(value, tag, StringComparison.OrdinalIgnoreCase)));
     }
 
     public async Task<Result<Prompt>> AddAsync(Prompt prompt, CancellationToken cancellationToken = default)
