@@ -1,4 +1,5 @@
 using System.Data.Common;
+using Xunit.Abstractions;
 using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -35,7 +36,14 @@ public sealed partial class TapestryStoreTests : IAsyncLifetime
 
     private TapestryStore? _store;
 
-    public TapestryStoreTests(GrimoireFixture fixture) => _fixture = fixture;
+    private readonly ITestOutputHelper _output;
+
+    public TapestryStoreTests(GrimoireFixture fixture, ITestOutputHelper output)
+    {
+        _fixture = fixture;
+
+        _output = output;
+    }
 
     public Task InitializeAsync()
     {

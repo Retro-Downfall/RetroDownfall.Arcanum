@@ -119,12 +119,13 @@ internal sealed partial class TapestryStore
 
                 count.Transaction = transaction;
 
+                // Drive indexed seeks from the reachable frontier, not all generation rows.
                 count.CommandText = """
                     WITH RECURSIVE reachable(NodeId) AS (
-                        SELECT @id UNION SELECT e.ChildNodeId FROM tapestry_edges e
-                        JOIN reachable r ON e.ParentNodeId=r.NodeId WHERE e.GenerationId=@generation)
+                        SELECT @id UNION SELECT e.ChildNodeId FROM reachable r
+                        CROSS JOIN tapestry_edges e ON e.ParentNodeId=r.NodeId WHERE e.GenerationId=@generation)
                     UPDATE tapestry_nodes SET DescendantLeafCount=(
-                        SELECT COUNT(DISTINCT n.SourceId) FROM reachable r JOIN tapestry_nodes n ON n.NodeId=r.NodeId
+                        SELECT COUNT(DISTINCT n.SourceId) FROM reachable r CROSS JOIN tapestry_nodes n ON n.NodeId=r.NodeId
                         WHERE n.GenerationId=@generation AND n.NodeKind='Leaf')
                     WHERE GenerationId=@generation AND NodeId=@id
                     """;
@@ -255,14 +256,15 @@ internal sealed partial class TapestryStore
 
             string next = leaves ? "e.ChildNodeId" : "e.ParentNodeId";
 
+            // CROSS JOIN pins the frontier first; ordinary JOIN can scan the generation per origin.
             string output = leaves
-                ? "SELECT DISTINCT r.Origin,n.SourceId FROM reach r JOIN tapestry_nodes n ON n.NodeId=r.NodeId WHERE n.GenerationId=@generation AND n.NodeKind='Leaf' ORDER BY r.Origin,n.SourceId"
+                ? "SELECT DISTINCT r.Origin,n.SourceId FROM reach r CROSS JOIN tapestry_nodes n ON n.NodeId=r.NodeId WHERE n.GenerationId=@generation AND n.NodeKind='Leaf' ORDER BY r.Origin,n.SourceId"
                 : "SELECT Origin,NodeId FROM reach WHERE Origin<>NodeId ORDER BY Origin,NodeId";
 
             command.CommandText = $"""
                 WITH RECURSIVE reach(Origin,NodeId) AS (
                     SELECT NodeId,NodeId FROM tapestry_nodes WHERE GenerationId=@generation AND NodeId IN ({BindIdList(command, page)})
-                    UNION SELECT r.Origin,{next} FROM reach r JOIN tapestry_edges e ON {join} WHERE e.GenerationId=@generation)
+                    UNION SELECT r.Origin,{next} FROM reach r CROSS JOIN tapestry_edges e ON {join} WHERE e.GenerationId=@generation)
                 {output}
                 """;
 
