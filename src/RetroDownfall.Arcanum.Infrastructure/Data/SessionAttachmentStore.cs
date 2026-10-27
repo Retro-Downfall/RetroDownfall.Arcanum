@@ -562,6 +562,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         bool NewVersionCreated);
 
     private sealed record ForkBlobAuthority(
+        Guid ForkSessionId,
+        byte[] PlanDigest,
         IdentityOwnedFileSystemArtifact Artifact);
 
     public async Task PromotePendingAsync(

@@ -2635,6 +2635,110 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.Equal(mapped.Id, cutoffRecord.Id);
     }
 
+    [SkippableTheory]
+    [InlineData("entry")]
+    [InlineData("metadata")]
+    [InlineData("foreign")]
+    [InlineData("missing")]
+    [InlineData("disposed")]
+    [InlineData("complete")]
+    [InlineData("unscoped-clone")]
+    [InlineData("scoped-equivalent")]
+    [InlineData("unscoped-original")]
+    public async Task Fork_copy_authority_is_bound_to_verified_plan_fork_and_live_scope(string scenario)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sourceId = Guid.NewGuid();
+
+        Guid forkId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sourceId, "authority-source");
+
+        await EnsureSessionAsync(forkId, "authority-fork");
+
+        SessionAttachmentRecord source = await _store!.PersistNewAsync(
+            sourceId, null, null, "proof", "proof.txt", "verified copy"u8.ToArray(),
+            "text/plain", SessionAttachmentKind.Text);
+
+        SessionAttachmentForkCopyPlan plan = new(source, Guid.NewGuid(), null);
+
+        bool unscoped = scenario.StartsWith("unscoped-", StringComparison.Ordinal);
+
+        using SessionAttachmentForkScope? scope = unscoped ? null : _store.BeginForkCopyScope(forkId);
+
+        if (scenario != "missing")
+        {
+            await _store.CopyBytesForForkAsync(forkId, [plan]);
+        }
+
+        string copy = Path.Combine(_attachmentsRoot, forkId.ToString("N"), plan.NewAttachmentId.ToString("N"));
+
+        if (scenario == "disposed")
+        {
+            byte[] ciphertext = await File.ReadAllBytesAsync(copy);
+
+            scope!.Dispose();
+
+            Assert.False(File.Exists(copy));
+
+            await File.WriteAllBytesAsync(copy, ciphertext);
+        }
+        else if (scenario == "complete")
+        {
+            scope!.Complete();
+        }
+        else if (scenario is "missing" or "foreign")
+        {
+            if (scenario == "foreign")
+            {
+                forkId = Guid.NewGuid();
+
+                await EnsureSessionAsync(forkId, "other-fork");
+            }
+
+            copy = Path.Combine(_attachmentsRoot, forkId.ToString("N"), plan.NewAttachmentId.ToString("N"));
+
+            Directory.CreateDirectory(Path.GetDirectoryName(copy)!);
+
+            File.Copy(Path.Combine(_attachmentsRoot, source.RelativePath), copy);
+        }
+
+        SessionAttachmentForkCopyPlan insertion = scenario switch
+        {
+            "entry" => plan with { NewEntryId = Guid.NewGuid() },
+            "metadata" => plan with { Source = source with { OriginalFileName = "altered.txt" } },
+            "scoped-equivalent" or "unscoped-clone" => plan with { Source = source with { } },
+            _ => plan,
+        };
+
+        await using IDbContextTransaction transaction = await _db!.Database.BeginTransactionAsync();
+
+        if (scenario is "scoped-equivalent" or "unscoped-original")
+        {
+            await _store.InsertForkRowsInAmbientTransactionAsync(forkId, [insertion]);
+
+            await transaction.CommitAsync();
+
+            scope?.Complete();
+
+            Assert.Single(await _store.ListBoundAsync(forkId));
+        }
+        else
+        {
+            InvalidOperationException refused = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => _store.InsertForkRowsInAmbientTransactionAsync(forkId, [insertion]));
+
+            Assert.Contains("copy-time authority", refused.Message, StringComparison.Ordinal);
+
+            Assert.Empty(await _store.ListBoundAsync(forkId));
+
+            await transaction.RollbackAsync();
+        }
+
+        Assert.Equal("verified copy"u8.ToArray(), (await _store.ReadBytesAsync(source)).ToArray());
+    }
+
     [SkippableFact]
     public async Task CopyBytesForForkAsync_then_InsertForkRows_remaps_and_hash_matches()
     {

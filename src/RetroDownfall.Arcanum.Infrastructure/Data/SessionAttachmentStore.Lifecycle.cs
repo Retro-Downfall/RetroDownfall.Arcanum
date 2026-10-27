@@ -3,10 +3,12 @@ using System.Data.Common;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
@@ -252,6 +254,8 @@ internal sealed partial class SessionAttachmentStore
     {
         private readonly List<IdentityOwnedFileSystemArtifact> _copies = [];
 
+        private readonly Dictionary<Guid, ForkBlobAuthority> _authorities = [];
+
         private bool _completed;
 
         private int _disposed;
@@ -268,11 +272,32 @@ internal sealed partial class SessionAttachmentStore
             _copies.Add(copy);
         }
 
+        public void Remember(Guid attachmentId, ForkBlobAuthority authority)
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+
+            if (_completed)
+            {
+                throw new InvalidOperationException("A completed fork cannot register more copies.");
+            }
+
+            _authorities.Add(attachmentId, authority);
+        }
+
+        public ForkBlobAuthority? Find(Guid attachmentId) =>
+            _disposed == 0 && !_completed && _authorities.TryGetValue(attachmentId, out ForkBlobAuthority? authority)
+                ? authority
+                : null;
+
+        public void Forget(Guid attachmentId) => _authorities.Remove(attachmentId);
+
         public override void Complete()
         {
             ObjectDisposedException.ThrowIf(_disposed != 0, this);
 
             _completed = true;
+
+            _authorities.Clear();
         }
 
         public override void Dispose()
@@ -308,6 +333,8 @@ internal sealed partial class SessionAttachmentStore
             }
 
             _copies.Clear();
+
+            _authorities.Clear();
         }
     }
 
@@ -372,11 +399,18 @@ internal sealed partial class SessionAttachmentStore
 
                 await VerifyCopiedFileAsync(destAbsolute, plan.Source, cancellationToken).ConfigureAwait(false);
 
-                _forkBlobAuthorities.Remove(plan);
+                ForkBlobAuthority authority = new(forkSessionId, ComputeForkPlanDigest(plan), blobAuthority);
 
-                _forkBlobAuthorities.Add(
-                    plan,
-                    new ForkBlobAuthority(blobAuthority));
+                if (scope is not null)
+                {
+                    scope.Remember(plan.NewAttachmentId, authority);
+                }
+                else
+                {
+                    _forkBlobAuthorities.Remove(plan);
+
+                    _forkBlobAuthorities.Add(plan, authority);
+                }
             }
         }
         catch
@@ -384,6 +418,11 @@ internal sealed partial class SessionAttachmentStore
             foreach (SessionAttachmentForkCopyPlan plan in plans)
             {
                 _forkBlobAuthorities.Remove(plan);
+
+                if (_forkCopyScopes.TryGetValue(forkSessionId, out ForkCopyScope? scope))
+                {
+                    scope.Forget(plan.NewAttachmentId);
+                }
             }
 
             if (!_forkCopyScopes.ContainsKey(forkSessionId))
@@ -420,33 +459,18 @@ internal sealed partial class SessionAttachmentStore
                     pendingTurnId: null,
                     plan.NewAttachmentId));
 
-                ForkBlobAuthority authority;
+                ForkBlobAuthority? authority = _forkCopyScopes.TryGetValue(forkSessionId, out ForkCopyScope? scope)
+                    ? scope.Find(plan.NewAttachmentId)
+                    : _forkBlobAuthorities.TryGetValue(plan, out ForkBlobAuthority? retainedAuthority)
+                        ? retainedAuthority
+                        : null;
 
-                if (_forkBlobAuthorities.TryGetValue(
-                        plan,
-                        out ForkBlobAuthority? retainedAuthority))
+                if (authority is null
+                    || authority.ForkSessionId != forkSessionId
+                    || !CryptographicOperations.FixedTimeEquals(authority.PlanDigest, ComputeForkPlanDigest(plan)))
                 {
-                    authority = retainedAuthority;
-                }
-                else
-                {
-                    string absolutePath = ResolveUnderRoot(relativePath);
-
-                    await VerifyCopiedFileAsync(
-                        absolutePath,
-                        plan.Source,
-                        cancellationToken).ConfigureAwait(false);
-
-                    if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
-                            absolutePath,
-                            FileSystemObjectKind.RegularFile,
-                            out IdentityOwnedFileSystemArtifact recapturedArtifact))
-                    {
-                        throw new IOException(
-                            "Fork attachment row insertion could not recapture the copied blob identity.");
-                    }
-
-                    authority = new ForkBlobAuthority(recapturedArtifact);
+                    throw new InvalidOperationException(
+                        "Fork attachment row insertion requires the verified copy-time authority for this plan and Session.");
                 }
 
                 SessionAttachmentRecord row = new(
@@ -479,9 +503,19 @@ internal sealed partial class SessionAttachmentStore
             foreach (SessionAttachmentForkCopyPlan plan in plans)
             {
                 _forkBlobAuthorities.Remove(plan);
+
+                if (_forkCopyScopes.TryGetValue(forkSessionId, out ForkCopyScope? scope))
+                {
+                    scope.Forget(plan.NewAttachmentId);
+                }
             }
         }
     }
+
+    // Keep only a fixed-size metadata binding with each copy identity. Source records still live
+    // for one page, and equivalent plans reconstructed from the second paged read retain authority.
+    private static byte[] ComputeForkPlanDigest(SessionAttachmentForkCopyPlan plan) =>
+        SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(plan, GrimoireJsonContext.Default.SessionAttachmentForkCopyPlan));
 
     private async Task ReconcileCoreAsync(TimeSpan pendingOlderThan, CancellationToken cancellationToken)
     {
