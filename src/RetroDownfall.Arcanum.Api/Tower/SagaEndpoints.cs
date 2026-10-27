@@ -315,21 +315,15 @@ internal static class SagaEndpoints
                 // Bounded stable identity pages, dispatched before the set-based delete runs. A bulk
                 // `DELETE FROM saga_memories` would remove labelled rows nothing ever examined, which is
                 // exactly the legacy path this boundary exists to close (§10.20.2).
-                Result<CovenantSensitivePurgeOutcome> purgedAll = await PurgeEveryLabeledSagaAsync(
+                Result purgedAll = await PurgeEveryLabeledSagaAsync(
                     store,
                     purger,
+                    ctx,
                     ctx.RequestAborted).ConfigureAwait(false);
 
                 if (purgedAll.IsFailure)
                 {
                     return SagaPurgeRefusal(ctx, purgedAll.Error);
-                }
-
-                CovenantSensitiveDeletion.MarkProtectedWhenPurged(ctx, purgedAll.Value);
-
-                if (purgedAll.Value.IsBlocked)
-                {
-                    return SagaPurgeRefusal(ctx, CovenantSensitiveDeletion.BlockedError(purgedAll.Value));
                 }
 
                 // A label written since the dispatch above is refused inside the store's own transaction,
@@ -379,16 +373,13 @@ internal static class SagaEndpoints
     /// what has since been removed, never revisits a removed row, and reads an unlabelled row exactly
     /// once.</para>
     /// </remarks>
-    private static async Task<Result<CovenantSensitivePurgeOutcome>> PurgeEveryLabeledSagaAsync(
+    private static async Task<Result> PurgeEveryLabeledSagaAsync(
         ISagaMemoryStore store,
         ICovenantSensitiveArtifactPurger purger,
+        HttpContext context,
         CancellationToken cancellationToken)
     {
         const int PageSize = 128;
-
-        List<CovenantSensitivePurgeResult> results = [];
-
-        CovenantArtifactErasureProgress progress = CovenantArtifactErasureProgress.Empty;
 
         SagaMemoryPosition? after = null;
 
@@ -423,14 +414,13 @@ internal static class SagaEndpoints
                     return purged.Error;
                 }
 
-                results.AddRange(purged.Value.Results);
-
-                progress = progress.Add(purged.Value.Progress);
+                // Keep the protection decision even if a later page fails. No earlier page's
+                // item outcomes are needed after this decision and the blocker check.
+                CovenantSensitiveDeletion.MarkProtectedWhenPurged(context, purged.Value);
 
                 if (purged.Value.IsBlocked)
                 {
-                    return Result<CovenantSensitivePurgeOutcome>.Success(
-                        new CovenantSensitivePurgeOutcome(results, progress));
+                    return CovenantSensitiveDeletion.BlockedError(purged.Value);
                 }
             }
 
@@ -441,8 +431,7 @@ internal static class SagaEndpoints
             after = page[^1];
         }
 
-        return Result<CovenantSensitivePurgeOutcome>.Success(
-            new CovenantSensitivePurgeOutcome(results, progress));
+        return Result.Success();
     }
 
     private static IResult SagaPurgeRefusal(HttpContext context, Error error)

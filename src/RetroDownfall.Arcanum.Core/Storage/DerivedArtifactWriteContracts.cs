@@ -18,7 +18,6 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 /// </remarks>
 public sealed record DerivedArtifactWrite
 {
-
     public DerivedArtifactWrite(
         SensitiveArtifactKind artifactKind,
         Guid artifactId,
@@ -33,7 +32,6 @@ public sealed record DerivedArtifactWrite
         CovenantDigest? producingAdmissionDigest = null,
         CovenantDigest? producingMaintenanceReceiptDigest = null)
     {
-
         ArgumentNullException.ThrowIfNull(provenance);
 
         ArtifactKind = Enum.IsDefined(artifactKind)
@@ -66,21 +64,17 @@ public sealed record DerivedArtifactWrite
 
         if (producingPlanDigest.HasValue != producingAdmissionDigest.HasValue)
         {
-
             throw new ArgumentException(
                 "A producing Covenant plan and its admission are recorded as a pair or not at all.",
                 nameof(producingPlanDigest));
-
         }
 
         if (sensitivity is ContentSensitivity.None
             && (producingPlanDigest.HasValue || producingMaintenanceReceiptDigest.HasValue))
         {
-
             throw new ArgumentException(
                 "Untainted content cannot claim producing Covenant evidence.",
                 nameof(sensitivity));
-
         }
 
         ProducingPlanDigest = producingPlanDigest;
@@ -88,7 +82,6 @@ public sealed record DerivedArtifactWrite
         ProducingAdmissionDigest = producingAdmissionDigest;
 
         ProducingMaintenanceReceiptDigest = producingMaintenanceReceiptDigest;
-
     }
 
     public SensitiveArtifactKind ArtifactKind { get; }
@@ -140,7 +133,6 @@ public sealed record DerivedArtifactWrite
         value == Guid.Empty
             ? throw new ArgumentException("An optional identifier cannot be empty when present.", parameterName)
             : value;
-
 }
 
 /// <summary>What one labelled write durably resolved to.</summary>
@@ -171,10 +163,8 @@ public sealed record SessionSensitivityProjection(
     CovenantDigest GenerationProvenanceDigest,
     long Revision)
 {
-
     public bool IsTainted =>
         TaintedArtifactCount > 0 || MaximumSensitivity is not ContentSensitivity.None;
-
 }
 
 /// <summary>
@@ -188,7 +178,6 @@ public sealed record SessionSensitivityProjection(
 /// </remarks>
 public interface IArtifactSensitivityLedger
 {
-
     /// <summary>
     /// Persists the label for one derived artifact, or proves that none is required.
     /// </summary>
@@ -207,9 +196,52 @@ public interface IArtifactSensitivityLedger
         Guid artifactId,
         CancellationToken cancellationToken);
 
+    /// <summary>The largest number of same-kind artifact identities in one label read.</summary>
+    public const int MaxReadTargets = 256;
+
+    /// <summary>
+    /// Reads the labels that exist for a bounded set of same-kind artifacts, in input order.
+    /// Missing labels are omitted; malformed selected labels refuse the entire read.
+    /// </summary>
+    async Task<Result<IReadOnlyList<ArtifactSensitivityLabel>>> ReadLabelsAsync(
+        SensitiveArtifactKind artifactKind,
+        IReadOnlyList<Guid> artifactIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(artifactIds);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (artifactIds.Count > MaxReadTargets)
+        {
+            return new Error(ErrorCodes.Covenant.InvalidScope, "A sensitivity-label read exceeds the bounded target count.");
+        }
+
+        // Custom ledgers retain their point-read behavior. The production ledger overrides this
+        // compatibility lane with one indexed native read for the whole bounded set.
+        List<ArtifactSensitivityLabel> found = new(artifactIds.Count);
+
+        foreach (Guid artifactId in artifactIds)
+        {
+            Result<ArtifactSensitivityLabel?> read = await TryReadLabelAsync(artifactKind, artifactId, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (read.IsFailure)
+            {
+                return read.Error;
+            }
+
+            if (read.Value is { } label)
+            {
+                found.Add(label);
+            }
+        }
+
+        return Result<IReadOnlyList<ArtifactSensitivityLabel>>.Success(found);
+    }
+
     /// <summary>Reads the Session's content-free sensitivity projection.</summary>
     Task<Result<SessionSensitivityProjection>> ReadSessionProjectionAsync(
         Guid sessionId,
         CancellationToken cancellationToken);
-
 }
