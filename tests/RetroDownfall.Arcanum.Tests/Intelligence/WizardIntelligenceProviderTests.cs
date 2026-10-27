@@ -3163,9 +3163,15 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         FakeMcpConnectionManager mcp = new();
 
-        mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
+        using ArcanumTestHomeScope home = new("readonly-legacy-positive");
 
-        mcp.Tools.Add(CreateMcpTool("search_workspace"));
+        await using var actualManager = McpConnectionManagerHarness.Create();
+
+        IReadOnlyList<AITool> internalTools = await actualManager.GetAvailableToolsAsync(_workspace.Root);
+
+        mcp.Tools.Add(internalTools.Single(static tool => tool.Name == "read_file_chunk"));
+
+        mcp.Tools.Add(internalTools.Single(static tool => tool.Name == "search_workspace"));
 
         mcp.Tools.Add(CreateMcpTool("write_file"));
 

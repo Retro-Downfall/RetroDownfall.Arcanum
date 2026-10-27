@@ -796,6 +796,10 @@ public sealed partial class McpConnectionManager
 
                 server.IssueCacheProvenance(trustedTool);
 
+                // The exact immutable wrapper is bound to this in-process server, after all final
+                // transformations. Copies/client replacements/fallbacks acquire no observation proof.
+                ReadOnlyToolProvenance.IssueFinalInternalTool(trustedTool);
+
                 tagged.Add(
                     new LoadedMcpToolRow(
                         trustedTool,

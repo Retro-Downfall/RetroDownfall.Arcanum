@@ -5338,7 +5338,9 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (overrideSpell is null)
             {
-                return Result<ResolvedSpell?>.Success(null);
+                return Result<ResolvedSpell?>.Failure(new Error(
+                    "Validation.SpellOverride",
+                    "The explicitly selected Spell version could not be loaded. Check that the requested version is available, within the Spell file size limit, and has valid frontmatter."));
             }
 
             ResolvedSpell resolvedOverride = await SpellDependencyResolver
@@ -7050,8 +7052,6 @@ public sealed partial class WizardIntelligenceProvider(
             return [];
         }
 
-        logger.LogWarning("Client-supplied tools detected. These bypass Arcanum's tool loop and security controls.");
-
         var forwarded = new List<AITool>(tools.Length);
 
         foreach (OpenAiToolDefinition? tool in tools)
@@ -7063,6 +7063,8 @@ public sealed partial class WizardIntelligenceProvider(
 
             forwarded.Add(new ClientForwardedFunction(tool.Function));
         }
+
+        logger.LogDebug("Prepared {ToolCount} client-supplied tool definitions for client execution.", forwarded.Count);
 
         return forwarded;
     }
@@ -7122,7 +7124,7 @@ public sealed partial class WizardIntelligenceProvider(
         {
             null or ToolPolicy.AllTools => tools,
             ToolPolicy.NoTools => [],
-            ToolPolicy.ReadOnlyTools => FilterToolsToAllowlist(tools, ReadOnlyToolNames),
+            ToolPolicy.ReadOnlyTools => FilterReadOnlyTools(tools),
             ToolPolicy.NoForbiddenArts => FilterToolsExcludingNames(
                 tools,
                 ToolRiskClassifier.BuildForbiddenToolNames(
@@ -7130,32 +7132,19 @@ public sealed partial class WizardIntelligenceProvider(
             _ => [],
         };
 
-    private static readonly HashSet<string> ReadOnlyToolNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "read_file_chunk",
-        "list_directory",
-        "read_lore",
-        "search_archives",
-        ArcanumBuiltInToolNames.RecallMemory,
-        "attach_session_file",
-        "refresh_session_file",
-        ToolRiskClassifier.SearchWorkspaceToolName,
-        ToolRiskClassifier.ReadCommandOutputToolName,
-        "ask_human",
-        "send_commlink_alert",
-        "petition_dungeon_master",
-        ArcanumLocalTimeTool.ToolName,
-        ArcanumSystemInfoTool.ToolName,
-        ArcanumBuiltInToolNames.DelegateTask,
-    };
-
-    private static IReadOnlyList<AITool> FilterToolsToAllowlist(IReadOnlyList<AITool> tools, HashSet<string> allowlist)
+    /// <summary>
+    /// A closed observation surface, not a claim supplied by tool metadata or a matching name.
+    /// Existing invocation/source/egress authority is still required by every admitted tool.
+    /// </summary>
+    private static IReadOnlyList<AITool> FilterReadOnlyTools(IReadOnlyList<AITool> tools)
     {
         var filtered = new List<AITool>(tools.Count);
 
         foreach (AITool tool in tools)
         {
-            if (tool is AIFunction function && allowlist.Contains(function.Name))
+            if (tool is ArcanumLocalTimeTool or ArcanumSystemInfoTool or ArcanumMemoryRecallTool
+                or ArcanumWebSearchTool or ArcanumReadUrlTool or ArcanumBrowseWebTool
+                || ReadOnlyToolProvenance.IsCurrent(tool))
             {
                 filtered.Add(tool);
             }

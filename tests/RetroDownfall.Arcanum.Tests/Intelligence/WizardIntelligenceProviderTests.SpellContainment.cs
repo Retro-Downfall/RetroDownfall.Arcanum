@@ -84,11 +84,22 @@ public sealed partial class WizardIntelligenceProviderTests
 
             Assert.True(pivoted);
 
-            Assert.True(result.IsSuccess);
+            if (explicitPath)
+            {
+                Assert.True(result.IsFailure);
+
+                Assert.Equal("Validation.SpellOverride", result.Error.Code);
+
+                Assert.Empty(chat.AllBufferedCalls);
+            }
+            else
+            {
+                Assert.True(result.IsSuccess);
+
+                Assert.NotEmpty(chat.AllBufferedCalls);
+            }
 
             Assert.Equal(0, sidecarReads);
-
-            Assert.NotEmpty(chat.AllBufferedCalls);
 
             Assert.All(chat.AllBufferedCalls.SelectMany(call => call), message =>
             {

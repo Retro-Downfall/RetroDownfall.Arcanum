@@ -3,7 +3,6 @@ using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using System.Net;
-using System.Text;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using Microsoft.Extensions.AI;
@@ -181,6 +180,12 @@ public sealed partial class WizardIntelligenceProviderTests
         ExerciseDagInvocationAsync(entry, false, nativeRetry: true);
 
     [Theory]
+    [InlineData("buffered")]
+    [InlineData("streamed")]
+    public Task TapestryAuthority_ActualDefaultSdkDoesNotRetryTheFirstFailedPhysicalAttempt(string entry) =>
+        ExerciseDagInvocationAsync(entry, false, nativeRetry: true, actualDefaultSdk: true);
+
+    [Theory]
     [InlineData("buffered", "tool", false)]
     [InlineData("streamed", "tool", false)]
     [InlineData("buffered", "structured", false)]
@@ -201,7 +206,8 @@ public sealed partial class WizardIntelligenceProviderTests
         ExerciseDagInvocationAsync(entry, false, reentry: reentry, changeAfterFirstCall: change);
 
     private async Task ExerciseDagInvocationAsync(string entry, bool covenant, bool explicitRaw = false,
-        bool invalidateAfterRender = false, bool nativeRetry = false, string? reentry = null, bool changeAfterFirstCall = false)
+        bool invalidateAfterRender = false, bool nativeRetry = false, string? reentry = null, bool changeAfterFirstCall = false,
+        bool actualDefaultSdk = false)
     {
         using GrimoireFixture fixture = new();
 
@@ -326,8 +332,17 @@ public sealed partial class WizardIntelligenceProviderTests
             _ = command.ExecuteNonQuery();
         });
 
-        IChatClientFactory? nativeFactory = nativeRetry ? new ChatClientFactory(new Task10HttpFactory(native),
-            new TestOptionsMonitor<ArcanumSettings>(configuration), new Task10NoKeys()) : null;
+        IChatClientFactory? nativeFactory = null;
+
+        if (nativeRetry)
+        {
+            ChatClientFactory productionFactory = new(new Task10HttpFactory(native),
+                new TestOptionsMonitor<ArcanumSettings>(configuration), new Task10NoKeys());
+
+            // Intentional SDK-retry stress reuses actual production binding stamps and dispatch policy.
+            // The separate default control exercises the production zero-retry factory unchanged.
+            nativeFactory = actualDefaultSdk ? productionFactory : new Task10RetryingSdkFactory(productionFactory, native);
+        }
 
         DelegationCandidateFactory? candidates = null;
 
@@ -444,6 +459,17 @@ public sealed partial class WizardIntelligenceProviderTests
                 Assert.Empty(writer.Operations);
 
                 Assert.Equal(InferenceRunStatus.Failed, Assert.Single(writer.CompletedRuns).Status);
+
+                if (actualDefaultSdk)
+                {
+                    Assert.True(reservations.WasReleased);
+
+                    Assert.Equal(0, reservations.UncertainCalls);
+
+                    Assert.Equal(0, reservations.ReconcileCount);
+
+                    return;
+                }
 
                 // One physical attempt may have been billed without returning usage. No zero-spend assertion is justified.
                 Assert.False(reservations.WasReleased);
@@ -748,6 +774,23 @@ public sealed partial class WizardIntelligenceProviderTests
             ValueTask.FromResult(Result<RegisteredCampaignIdentity?>.Success(new(campaignA, 1, 1, 1, RootDigest)));
     }
 
+    private sealed class Task10RetryingSdkFactory(ChatClientFactory production, HttpMessageHandler handler) : IChatClientFactory
+    {
+        public async Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken)
+        {
+            using ChatClientLease captured = await production.ResolveClientAsync(targetModel, cancellationToken);
+
+            return ProviderSdkTestTransport.RetryChat(captured, handler);
+        }
+
+        public async Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken)
+        {
+            using ChatClientLease captured = await production.ResolveClientAsync(provider, resolvedModel, cancellationToken);
+
+            return ProviderSdkTestTransport.RetryChat(captured, handler);
+        }
+    }
+
     private sealed class Task10NoKeys : IProviderApiKeyResolver
     {
         public Task<string?> ResolveAsync(ProviderSettings provider, CancellationToken token = default) => Task.FromResult<string?>(null);
@@ -776,7 +819,7 @@ public sealed partial class WizardIntelligenceProviderTests
             {
                 mutate();
 
-                HttpResponseMessage retry = new(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("{}") };
+                HttpResponseMessage retry = new(HttpStatusCode.ServiceUnavailable) { Content = ProviderSdkTestTransport.Content("{}", "text/plain") };
 
                 retry.Headers.Add("retry-after-ms", "1");
 
@@ -789,7 +832,7 @@ public sealed partial class WizardIntelligenceProviderTests
                 ? "data: {\"id\":\"chat-test\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"wizard-test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"
                 : completion;
 
-            return new(HttpStatusCode.OK) { Content = new StringContent(content, Encoding.UTF8, content == completion ? "application/json" : "text/event-stream") };
+            return new(HttpStatusCode.OK) { Content = ProviderSdkTestTransport.Content(content, content == completion ? "application/json" : "text/event-stream") };
         }
     }
 

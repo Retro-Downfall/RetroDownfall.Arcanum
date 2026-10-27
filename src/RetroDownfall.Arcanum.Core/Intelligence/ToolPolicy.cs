@@ -16,17 +16,19 @@ namespace RetroDownfall.Arcanum.Core.Intelligence;
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<ToolPolicy>))]
 public enum ToolPolicy
 {
-
     [JsonStringEnumMemberName("allTools")]
     AllTools,
 
     [JsonStringEnumMemberName("noTools")]
     NoTools,
 
+    /// <summary>
+    /// Advertise code-owned observation/query tools only. Ordinary query egress, accounting and audit
+    /// remain permitted; no source, execution, or network authority is granted by this policy.
+    /// </summary>
     [JsonStringEnumMemberName("readOnlyTools")]
     ReadOnlyTools,
 
     [JsonStringEnumMemberName("noForbiddenArts")]
     NoForbiddenArts,
-
 }

@@ -45,6 +45,35 @@ public sealed partial class SpellScannerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Catalog_generation_capacity_preserves_the_pair_used_by_a_fresh_cache_entry()
+    {
+        using ArcanumTestHomeScope home = new("spell-generation-pair");
+
+        // More distinct roots than the bounded generation registry retains makes its eviction
+        // path unavoidable, independently of the roots visited by earlier tests in this process.
+        for (int index = 0; index < 130; index++)
+        {
+            string workspace = Path.Combine(_workspace.Root, "pair-" + index);
+
+            Directory.CreateDirectory(workspace);
+
+            await File.WriteAllTextAsync(Path.Combine(workspace, "SPELL.md"), "---\nname: pair-test\n---\nbody");
+
+            IReadOnlyList<SpellMetadata> first = await SpellScanner.ScanMetadataAsync(
+                workspace, CancellationToken.None, MaxFileSizeBytes,
+                Core.Configuration.ArcanumRuntimeDefaults.Spells.MetadataScanCacheTtlSeconds);
+
+            Assert.Single(first);
+
+            IReadOnlyList<SpellMetadata> second = await SpellScanner.ScanMetadataAsync(
+                workspace, CancellationToken.None, MaxFileSizeBytes,
+                Core.Configuration.ArcanumRuntimeDefaults.Spells.MetadataScanCacheTtlSeconds);
+
+            Assert.Same(first, second);
+        }
+    }
+
+    [Fact]
     public async Task Catalog_default_routing_ttl_reuses_metadata_after_a_human_paced_gap()
     {
         IReadOnlyList<SpellMetadata> first = await SpellScanner.ScanMetadataAsync(

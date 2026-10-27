@@ -96,29 +96,47 @@ internal static class SpellScanner
 
     private static long _nextMetadataGeneration;
 
-    private static long GetMetadataGeneration(string root)
+    private static (long Global, long Local) GetMetadataGenerations(string globalRoot, string localRoot)
     {
-        string normalized = NormalizeMetadataRoot(root);
+        string global = NormalizeMetadataRoot(globalRoot);
+
+        string local = NormalizeMetadataRoot(localRoot);
 
         lock (MetadataGenerationGate)
         {
-            if (MetadataRootGenerations.TryGetValue(normalized, out long generation))
+            return (GetOrAdd(global), GetOrAdd(local));
+
+            long GetOrAdd(string root)
             {
+                if (MetadataRootGenerations.TryGetValue(root, out long generation))
+                {
+                    return generation;
+                }
+
+                if (MetadataRootGenerations.Count == MetadataScanCacheCapacity * 2)
+                {
+                    // Both tokens belong to one cache key. Registering either root must not
+                    // evict the other, including when it is the oldest retained global root.
+                    string evicted = MetadataRootGenerationOrder.Dequeue();
+
+                    while (evicted == global || evicted == local)
+                    {
+                        MetadataRootGenerationOrder.Enqueue(evicted);
+
+                        evicted = MetadataRootGenerationOrder.Dequeue();
+                    }
+
+                    MetadataRootGenerations.Remove(evicted);
+                }
+
+                generation = ++_nextMetadataGeneration;
+
+                MetadataRootGenerations.Add(root, generation);
+
+                MetadataRootGenerationOrder.Enqueue(root);
+
                 return generation;
             }
-
-            if (MetadataRootGenerations.Count == MetadataScanCacheCapacity * 2)
-            {
-                MetadataRootGenerations.Remove(MetadataRootGenerationOrder.Dequeue());
-            }
-
-            generation = ++_nextMetadataGeneration;
-
-            MetadataRootGenerations.Add(normalized, generation);
-
-            MetadataRootGenerationOrder.Enqueue(normalized);
-
-            return generation;
         }
     }
 
@@ -449,8 +467,10 @@ internal static class SpellScanner
 
         cancellationToken.ThrowIfCancellationRequested();
 
+        (long globalGeneration, long localGeneration) = GetMetadataGenerations(globalRoot, localRoot);
+
         MetadataScanCacheKey cacheKey = new(
-            globalRoot, localRoot, GetMetadataGeneration(globalRoot), GetMetadataGeneration(localRoot), maxFileSizeBytes);
+            globalRoot, localRoot, globalGeneration, localGeneration, maxFileSizeBytes);
 
         if (ttlSeconds > 0
             && MetadataScanCache.TryGetValue(cacheKey, out MetadataScanCacheEntry? cachedEntry)

@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
@@ -277,4 +278,40 @@ internal static class McpToolResultFormatter
 
         return sb.ToString();
     }
+}
+
+/// <summary>
+/// Closed observation semantics of exact final in-process wrappers. This is neither a cache proof
+/// nor execution/source/network authority, and no wire annotation or copied name can issue it.
+/// </summary>
+internal static class ReadOnlyToolProvenance
+{
+    private sealed record Definition(string Name);
+
+    private static readonly ConditionalWeakTable<McpBridgeTool, Definition> Proofs = new();
+
+    internal static IReadOnlyList<string> InternalObservationNames { get; } = Array.AsReadOnly<string>(
+    [
+        "read_file_chunk", "list_directory", "search_workspace", "read_command_output",
+        "read_saga", "search_archives", "ask_human",
+    ]);
+
+    /// <summary>Called only after the actual in-process server's final wrapper has been constructed.</summary>
+    internal static void IssueFinalInternalTool(McpBridgeTool tool)
+    {
+        foreach (string name in InternalObservationNames)
+        {
+            if (string.Equals(name, tool.Name, StringComparison.Ordinal))
+            {
+                Proofs.AddOrUpdate(tool, new Definition(name));
+
+                return;
+            }
+        }
+    }
+
+    internal static bool IsCurrent(AITool tool) =>
+        tool is McpBridgeTool bridge
+        && Proofs.TryGetValue(bridge, out Definition? proof)
+        && string.Equals(proof.Name, bridge.Name, StringComparison.Ordinal);
 }
