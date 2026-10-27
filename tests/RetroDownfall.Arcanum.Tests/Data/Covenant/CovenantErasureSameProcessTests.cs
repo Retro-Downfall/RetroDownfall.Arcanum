@@ -56,7 +56,7 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </summary>
 [Collection("ProcessEnvironment")]
 [Trait("Category", "Integration")]
-public sealed class CovenantErasureSameProcessTests
+public sealed partial class CovenantErasureSameProcessTests
 {
     [Theory]
     [InlineData(CovenantExclusiveLeaseDisposition.CommitAndReopen, "Admission reopened after verified commit")]
@@ -2489,9 +2489,11 @@ public sealed class CovenantErasureSameProcessTests
 
         int closedPeriod = faults.RenewalAttempts;
 
+        Guid operationId;
+
         try
         {
-            await harness.ReplaceRunningFactoryLeaseOwnerAsync("review-replacement-owner");
+            operationId = await harness.ReplaceRunningFactoryLeaseOwnerAsync("review-replacement-owner");
         }
         finally
         {
@@ -2508,13 +2510,7 @@ public sealed class CovenantErasureSameProcessTests
             retentionLog.Entries,
             static entry => entry.Level >= LogLevel.Error);
 
-        Assert.Contains(
-            retentionLog.Entries,
-            static entry => entry.Level == LogLevel.Warning
-                && entry.Exception is DataRetentionLeaseLostException
-                {
-                    Message: "Factory reset no longer owns the durable operation it was launched under.",
-                });
+        AssertFactoryDiagnostic(retentionLog, "OrdinaryContinuationLease", operationId, LogLevel.Warning);
 
         Assert.Equal(0, faults.MaintenanceFailureTransitionAttempts);
 
@@ -3975,7 +3971,7 @@ public sealed class CovenantErasureSameProcessTests
         /// Hands the running factory launch row to another owner through the fixture's own unpooled
         /// handle, which ordinary admission does not govern, and lets that handle go again.
         /// </summary>
-        internal async Task ReplaceRunningFactoryLeaseOwnerAsync(string ownerId)
+        internal async Task<Guid> ReplaceRunningFactoryLeaseOwnerAsync(string ownerId)
         {
             await _fixture.ReopenAsync(CancellationToken.None);
 
@@ -3988,6 +3984,7 @@ public sealed class CovenantErasureSameProcessTests
                     SET LeaseOwner = $owner
                     WHERE Kind = $kind
                       AND State = $running
+                    RETURNING Id
                     """;
 
                 _ = command.Parameters.AddWithValue("$owner", ownerId);
@@ -3996,7 +3993,15 @@ public sealed class CovenantErasureSameProcessTests
 
                 _ = command.Parameters.AddWithValue("$running", (int)LongRunningOperationState.Running);
 
-                Assert.Equal(1, await command.ExecuteNonQueryAsync());
+                await using SqliteDataReader reader = await command.ExecuteReaderAsync();
+
+                Assert.True(await reader.ReadAsync());
+
+                Guid operationId = Guid.Parse(reader.GetString(0));
+
+                Assert.False(await reader.ReadAsync());
+
+                return operationId;
             }
             finally
             {

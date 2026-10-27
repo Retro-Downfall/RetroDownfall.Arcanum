@@ -42,7 +42,7 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Collection("GlobalConsole")]
 
-public sealed class DataRetentionCommandTests
+public sealed partial class DataRetentionCommandTests
 {
     [Fact]
     public void Campaign_summary_reset_sends_the_selected_campaign_and_confirmed_plan()

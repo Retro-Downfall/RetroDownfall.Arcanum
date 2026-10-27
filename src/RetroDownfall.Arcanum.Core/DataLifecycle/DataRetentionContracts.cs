@@ -257,7 +257,9 @@ public sealed record DataRetentionStatus(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     DataRetentionCovenantInventory? Covenant = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    DataRetentionMemoryErasureInventory? MemoryErasure = null);
+    DataRetentionMemoryErasureInventory? MemoryErasure = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? CovenantInventoryErrorCode = null);
 
 public sealed record DataRetentionPlanItem(
     RetentionDataClass DataClass,
@@ -378,56 +380,96 @@ public interface IDataRetentionService
 
 public static class DataRetentionSettingsCatalog
 {
-    public static RetentionRuleSettings? ResolveRule(
-        RetentionSettings settings,
-        RetentionDataClass dataClass) =>
+    public static RetentionRuleSettings? ResolveRule(RetentionSettings settings, RetentionDataClass dataClass) =>
+        GetRuleName(dataClass) switch
+        {
+            "active-sessions" => settings.ActiveSessions,
+
+            "archived-sessions" => settings.ArchivedSessions,
+
+            "entries" => settings.Entries,
+
+            "attachments" => settings.Attachments,
+
+            "uploaded-files" => settings.UploadedFiles,
+
+            "completed-batches" => settings.CompletedBatches,
+
+            "saga-memories" => settings.SagaMemories,
+
+            "lexicon-entries" => settings.LexiconEntries,
+
+            "campaign-summaries" => settings.CampaignSummaries,
+
+            "workspace-indexes" => settings.WorkspaceIndexes,
+
+            "session-entry-embeddings" => settings.SessionEntryEmbeddings,
+
+            "audit-logs" => settings.AuditLogs,
+
+            "guardrail-logs" => settings.GuardrailLogs,
+
+            "idempotency-claims" => settings.IdempotencyClaims,
+
+            "accounting" => settings.Accounting,
+
+            "long-running-operations" => settings.LongRunningOperations,
+
+            "sanctum-breaches" => settings.SanctumBreaches,
+
+            "daemon-history" => settings.DaemonHistory,
+
+            _ => null,
+        };
+
+    public static string? GetRuleName(RetentionDataClass dataClass) =>
         dataClass switch
         {
-            RetentionDataClass.ActiveSessions => settings.ActiveSessions,
+            RetentionDataClass.ActiveSessions => "active-sessions",
 
-            RetentionDataClass.ArchivedSessions => settings.ArchivedSessions,
+            RetentionDataClass.ArchivedSessions => "archived-sessions",
 
-            RetentionDataClass.Entries => settings.Entries,
+            RetentionDataClass.Entries => "entries",
 
             RetentionDataClass.AttachmentVersions
                 or RetentionDataClass.AttachmentBytes
                 or RetentionDataClass.AttachmentChunks
-                or RetentionDataClass.AttachmentEmbeddings => settings.Attachments,
+                or RetentionDataClass.AttachmentEmbeddings => "attachments",
 
             RetentionDataClass.UploadedFiles
                 or RetentionDataClass.BatchInputFiles
                 or RetentionDataClass.BatchOutputFiles
-                or RetentionDataClass.BatchErrorFiles => settings.UploadedFiles,
+                or RetentionDataClass.BatchErrorFiles => "uploaded-files",
 
-            RetentionDataClass.CompletedBatches => settings.CompletedBatches,
+            RetentionDataClass.CompletedBatches => "completed-batches",
 
-            RetentionDataClass.SagaMemories => settings.SagaMemories,
+            RetentionDataClass.SagaMemories => "saga-memories",
 
-            RetentionDataClass.LexiconEntries => settings.LexiconEntries,
+            RetentionDataClass.LexiconEntries => "lexicon-entries",
 
-            RetentionDataClass.CampaignSummaries => settings.CampaignSummaries,
+            RetentionDataClass.CampaignSummaries => "campaign-summaries",
 
             RetentionDataClass.WorkspaceChunks
-                or RetentionDataClass.WorkspaceEmbeddings => settings.WorkspaceIndexes,
+                or RetentionDataClass.WorkspaceEmbeddings => "workspace-indexes",
 
-            RetentionDataClass.SessionEntryEmbeddings => settings.SessionEntryEmbeddings,
+            RetentionDataClass.SessionEntryEmbeddings => "session-entry-embeddings",
 
-            RetentionDataClass.AuditLogs => settings.AuditLogs,
+            RetentionDataClass.AuditLogs => "audit-logs",
 
-            RetentionDataClass.GuardrailLogs => settings.GuardrailLogs,
+            RetentionDataClass.GuardrailLogs => "guardrail-logs",
 
-            RetentionDataClass.IdempotencyClaims => settings.IdempotencyClaims,
+            RetentionDataClass.IdempotencyClaims => "idempotency-claims",
 
             RetentionDataClass.InferenceRuns
                 or RetentionDataClass.BillableOperations
                 or RetentionDataClass.BudgetReservations
-                or RetentionDataClass.CostAdjustments => settings.Accounting,
+                or RetentionDataClass.CostAdjustments => "accounting",
 
-            RetentionDataClass.LongRunningOperations => settings.LongRunningOperations,
+            RetentionDataClass.LongRunningOperations => "long-running-operations",
 
-            RetentionDataClass.SanctumBreaches => settings.SanctumBreaches,
+            RetentionDataClass.SanctumBreaches => "sanctum-breaches",
 
-            RetentionDataClass.DaemonExecutions => settings.DaemonHistory,
+            RetentionDataClass.DaemonExecutions => "daemon-history",
 
             // Explicit, not a fall-through. The Covenant family is inventoried and never aged out, and
             // an arm that says so cannot be mistaken for a rule somebody forgot to wire.
@@ -443,6 +485,59 @@ public static class DataRetentionSettingsCatalog
 
             _ => null,
         };
+
+    /// <summary>Every class governed by the same rule, in the persisted class order.</summary>
+    public static IReadOnlyList<RetentionDataClass> GetAffectedClasses(RetentionDataClass dataClass)
+    {
+        string? rule = GetRuleName(dataClass);
+
+        return rule is null ? [] : Enum.GetValues<RetentionDataClass>()
+            .Where(candidate => GetRuleName(candidate) == rule).ToArray();
+    }
+
+    /// <summary>Operator scope, including accounting history without its own class selector.</summary>
+    public static string DescribeAffectedClasses(RetentionDataClass dataClass) =>
+        string.Join(", ", GetAffectedClasses(dataClass).Select(DataRetentionDataClassParser.Format))
+        + (GetRuleName(dataClass) == "accounting" ? " (including budget-alert history)" : string.Empty);
+
+    /// <summary>Shared CLI and API validation, including the deliberately ruleless families.</summary>
+    public static Result<RetentionDataClass> ParseConfigurableClass(string? selector)
+    {
+        string reason;
+
+        if (!DataRetentionDataClassParser.TryParse(selector, out RetentionDataClass dataClass))
+        {
+            reason = $"Retention data class '{DataRetentionDataClassParser.DescribeInput(selector)}' is not recognized.";
+        }
+        else if (GetRuleName(dataClass) is not null)
+        {
+            return Result<RetentionDataClass>.Success(dataClass);
+        }
+        else
+        {
+            reason = dataClass switch
+            {
+                RetentionDataClass.Covenant => "The Covenant has no time-based retention rule and cannot be given one. It is inventoried by 'data status' and removed only by an explicit reset.",
+
+                RetentionDataClass.MemoryErasureEvidence => "Erasure evidence has no time-based retention rule and cannot be given one. It is inventoried by 'data status' and removed only by a release, an operator re-creation of the erased item, 'memory erasure reset-key', a restore's destination-authoritative join, or a full installation reset.",
+
+                RetentionDataClass.Annals => "The Annals have no time-based retention rule. An Annals claim follows its subject's lifecycle.",
+
+                _ => "The retention data class has no configurable rule.",
+            };
+
+            reason += $" Selector: '{DataRetentionDataClassParser.DescribeInput(selector)}'.";
+        }
+
+        string choices = string.Join(", ", Enum.GetValues<RetentionDataClass>()
+            .Where(candidate => GetRuleName(candidate) is not null)
+            .Select(DataRetentionDataClassParser.Format)
+            .Concat(Enum.GetValues<RetentionDataClass>().Select(GetRuleName).OfType<string>())
+            .Distinct(StringComparer.Ordinal));
+
+        return Result<RetentionDataClass>.Failure(new Error(ErrorCodes.Data.InvalidRequest,
+            $"{reason} Configurable classes: {choices}."));
+    }
 }
 
 /// <summary>The closed managed root whose factory inventory was refused.</summary>

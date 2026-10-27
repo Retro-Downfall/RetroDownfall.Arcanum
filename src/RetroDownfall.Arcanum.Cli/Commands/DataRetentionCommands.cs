@@ -56,12 +56,11 @@ internal sealed class DataRetentionCommands(
         string value,
         CancellationToken cancellationToken)
     {
-        if (!DataRetentionDataClassParser.TryParse(
-                dataClass,
-                out _))
+        Result<RetentionDataClass> parsed = DataRetentionSettingsCatalog.ParseConfigurableClass(dataClass);
+
+        if (parsed.IsFailure)
         {
-            dispatcher.WriteDiagnostic(
-                "<data-class> must name a supported retention data class.");
+            dispatcher.WriteDiagnostic(parsed.Error.Message);
 
             return (int)CliExitCode.ConfigurationError;
         }
@@ -69,13 +68,21 @@ internal sealed class DataRetentionCommands(
         if (!TryParseRetentionValue(value, out bool enabled, out int days))
         {
             dispatcher.WriteDiagnostic(
-                "<days|disabled> must be an integer number of days or 'disabled'.");
+                 $"Retention value '{DataRetentionDataClassParser.DescribeInput(value)}' must be an integer number of days or 'disabled'.");
 
             return (int)CliExitCode.ConfigurationError;
         }
 
+        string rule = DataRetentionSettingsCatalog.GetRuleName(parsed.Value)!;
+
+        string affected = DataRetentionSettingsCatalog.DescribeAffectedClasses(parsed.Value);
+
+        string requested = enabled
+            ? ArcanumSettingClamps.RetentionRuleDays(days).ToString(CultureInfo.InvariantCulture) + " days"
+            : "disabled";
+
         if (!await ConfirmMutationAsync(
-                $"Update the {dataClass} retention rule?",
+                $"Set the {rule} retention rule to {requested}? Affects: {affected}.",
                 cancellationToken)
             .ConfigureAwait(false))
         {
@@ -96,7 +103,12 @@ internal sealed class DataRetentionCommands(
         return WriteResult(
             result,
             ArcanumJsonContext.Default.RetentionSettings,
-            WriteSettings);
+            settings =>
+            {
+                dispatcher.WritePayload($"Updated the {rule} retention rule. Affects: {affected}.");
+
+                WriteSettings(settings);
+            });
     }
 
     public async Task<int> Prune(
@@ -321,6 +333,11 @@ internal sealed class DataRetentionCommands(
                 + $"policy {policy}; store {item.Store}; provenance {item.Provenance}");
         }
 
+        if (status.CovenantInventoryErrorCode is { } inventoryError)
+        {
+            dispatcher.WritePayload($"Covenant inventory: unmeasured ({inventoryError})");
+        }
+
         if (status.MemoryErasure is { } erasure)
         {
             dispatcher.WritePayload(
@@ -492,26 +509,7 @@ internal sealed class DataRetentionCommands(
     private static string FormatEnabled(bool enabled) =>
         enabled ? "enabled" : "disabled";
 
-    private static string FormatName(RetentionDataClass dataClass)
-    {
-        string name = dataClass.ToString();
-
-        StringBuilder formatted = new(name.Length + 4);
-
-        for (int index = 0; index < name.Length; index++)
-        {
-            char character = name[index];
-
-            if (index > 0 && char.IsUpper(character))
-            {
-                formatted.Append('-');
-            }
-
-            formatted.Append(char.ToLowerInvariant(character));
-        }
-
-        return formatted.ToString();
-    }
+    private static string FormatName(RetentionDataClass dataClass) => DataRetentionDataClassParser.Format(dataClass);
 
     private int WriteError(Error error)
     {

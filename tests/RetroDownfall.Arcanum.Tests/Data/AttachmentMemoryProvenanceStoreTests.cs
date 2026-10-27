@@ -7,9 +7,8 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
-public sealed class AttachmentMemoryProvenanceStoreTests : IAsyncLifetime
+public sealed partial class AttachmentMemoryProvenanceStoreTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -18,46 +17,35 @@ public sealed class AttachmentMemoryProvenanceStoreTests : IAsyncLifetime
 
     public AttachmentMemoryProvenanceStoreTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [SkippableFact]
 
     public async Task Consultations_RoundTripMetadataAndRemainUnresolvedAfterSourceDeletion()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -122,7 +110,5 @@ public sealed class AttachmentMemoryProvenanceStoreTests : IAsyncLifetime
         Assert.Equal("content-hash", reloaded.ContentHash);
 
         Assert.Equal(AttachmentSourceAvailability.Unavailable, reloaded.Availability);
-
     }
-
 }

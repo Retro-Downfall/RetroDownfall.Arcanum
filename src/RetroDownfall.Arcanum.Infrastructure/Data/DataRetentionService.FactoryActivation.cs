@@ -334,8 +334,8 @@ internal sealed partial class DataRetentionService
             catch (DataRetentionLeaseLostException ex)
             {
                 logger.LogWarning(
-                    ex,
-                    "Healthy-catalog factory erasure lost its exact durable owner; recovery must reconcile it.");
+                    "Healthy-catalog factory erasure lost its durable owner at {DiagnosticStage} for operation {OperationId} ({ExceptionType}); recovery must reconcile it.",
+                    "LaunchLease", operation.Id, ex.GetType().Name);
 
                 return Result<DataRetentionApplyResult>.Failure(CovenantMaintenanceFailure());
             }
@@ -463,8 +463,8 @@ internal sealed partial class DataRetentionService
                 // failure: there is no owner left to record a typed failure under, so recovery
                 // reconciles the row, exactly as the recovery arms report the same loss.
                 logger.LogWarning(
-                    ex,
-                    "Healthy-catalog factory erasure lost its exact durable owner; recovery must reconcile it.");
+                    "Healthy-catalog factory erasure lost its durable owner at {DiagnosticStage} for operation {OperationId} ({ExceptionType}); recovery must reconcile it.",
+                    "OrdinaryContinuationLease", operation.Id, ex.GetType().Name);
 
                 return Result<DataRetentionApplyResult>.Failure(CovenantMaintenanceFailure());
             }
@@ -544,8 +544,8 @@ internal sealed partial class DataRetentionService
         catch (Exception ex)
         {
             logger.LogError(
-                ex,
-                "Healthy-catalog factory erasure failed unexpectedly after durable operation admission.");
+                "Healthy-catalog factory erasure failed unexpectedly at {DiagnosticStage} for operation {OperationId} ({ExceptionType}).",
+                "UnexpectedFailure", operation?.Id, ex.GetType().Name);
 
             if (operation is null || string.IsNullOrWhiteSpace(ownerId))
             {

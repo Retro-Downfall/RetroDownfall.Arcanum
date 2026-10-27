@@ -627,19 +627,19 @@ public sealed class MemoryErasureLifecycleSurvivalTests
                     return;
 
                 case MemoryErasureLifecyclePath.AgentLexiconDelete:
-                {
-                    await using AsyncServiceScope scope = Factory.Services.CreateAsyncScope();
+                    {
+                        await using AsyncServiceScope scope = Factory.Services.CreateAsyncScope();
 
-                    Result<bool> deleted = await scope.ServiceProvider
-                        .GetRequiredService<ILexiconService>()
-                        .DeleteByNameAsync(victim.Id, LexiconScope.Global, LexiconDeletionOrigin.Agent, Token);
+                        Result<bool> deleted = await scope.ServiceProvider
+                            .GetRequiredService<ILexiconService>()
+                            .DeleteByNameAsync(victim.Id, LexiconScope.Global, LexiconDeletionOrigin.Agent, Token);
 
-                    Assert.True(deleted.IsSuccess, deleted.IsFailure ? deleted.Error.Message : null);
+                        Assert.True(deleted.IsSuccess, deleted.IsFailure ? deleted.Error.Message : null);
 
-                    Assert.True(deleted.Value);
+                        Assert.True(deleted.Value);
 
-                    return;
-                }
+                        return;
+                    }
 
                 case MemoryErasureLifecyclePath.ResetEntry:
                     RequireRemoved(await ResetMemoryAsync(new MemoryResetRequest(MemoryResetScope.Entry)));
@@ -701,17 +701,17 @@ public sealed class MemoryErasureLifecycleSurvivalTests
                     return;
 
                 case MemoryErasureLifecyclePath.SessionDeletion:
-                {
-                    using HttpResponseMessage deleted = await Client.DeleteAsync($"/api/data/sessions/{victim.Id}", Token);
+                    {
+                        using HttpResponseMessage deleted = await Client.DeleteAsync($"/api/data/sessions/{victim.Id}", Token);
 
-                    Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
+                        Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
 
-                    RequireApplied(await MemoryErasureRouteDriver.ReadDataAsync(
-                        deleted,
-                        ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult));
+                        RequireApplied(await MemoryErasureRouteDriver.ReadDataAsync(
+                            deleted,
+                            ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult));
 
-                    return;
-                }
+                        return;
+                    }
 
                 case MemoryErasureLifecyclePath.FactoryReset:
                     RequireApplied(await FactoryResetAsync());
@@ -789,11 +789,11 @@ public sealed class MemoryErasureLifecycleSurvivalTests
                         victim.Id) == 0;
 
                 case MemoryErasureLifecyclePath.CampaignDeletion:
-                {
-                    using HttpResponseMessage shown = await Client.GetAsync($"/api/campaigns/{victim.Id}", Token);
+                    {
+                        using HttpResponseMessage shown = await Client.GetAsync($"/api/campaigns/{victim.Id}", Token);
 
-                    return shown.StatusCode == HttpStatusCode.NotFound;
-                }
+                        return shown.StatusCode == HttpStatusCode.NotFound;
+                    }
 
                 case MemoryErasureLifecyclePath.SessionDeletion
                     or MemoryErasureLifecyclePath.FactoryReset:
@@ -824,7 +824,7 @@ public sealed class MemoryErasureLifecycleSurvivalTests
         /// Every rule the policy store accepts is enabled, so every prune executor that has a candidate
         /// runs once with erasure evidence present. Entries keep ten days rather than one, so the entry
         /// aged three days for the embedding rule is selected by that rule alone; accounting ages by its
-        /// own floor whatever its rule says.
+        /// own floor, explicitly requested because a shorter API request is refused.
         /// </remarks>
         private async Task PruneEveryRuleAsync()
         {
@@ -1165,7 +1165,7 @@ public sealed class MemoryErasureLifecycleSurvivalTests
             ("audit-logs", 1),
             ("guardrail-logs", 1),
             ("idempotency-claims", 1),
-            ("accounting", 1),
+            ("accounting", 365),
             ("long-running-operations", 1),
             ("sanctum-breaches", 1),
             ("daemon-history", 1),

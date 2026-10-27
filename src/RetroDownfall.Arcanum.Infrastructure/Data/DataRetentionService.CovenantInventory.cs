@@ -2,6 +2,8 @@ using System.Data.Common;
 
 using System.Globalization;
 
+using Microsoft.Extensions.Logging;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -32,7 +34,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </remarks>
 internal sealed partial class DataRetentionService
 {
-
     /// <summary>
     /// Every Covenant-family table whose rows the inventory counts.
     /// </summary>
@@ -64,39 +65,32 @@ internal sealed partial class DataRetentionService
     /// Takes the one installation-wide read capability, or reports that none was available.
     /// </summary>
     /// <remarks>
-    /// A null return is not an error path. An installation with the feature off, the tier uninstalled,
-    /// or the family unhealthy has nothing to inventory, and every caller reports absence rather than a
-    /// row of zeroes — a zero is a measurement, and the honest answer there is that nothing was
-    /// measured (§10.19.11 applies the same rule to a Campaign export's exclusion counts).
+    /// A successful null means this composition has no Covenant gate. A configured gate's refusal
+    /// remains a typed failure: an unmeasured family must never appear to be absent or empty.
     /// </remarks>
-    private async ValueTask<CovenantInstallationReadLease?> TryAcquireCovenantInstallationReadAsync(
+    private async ValueTask<Result<CovenantInstallationReadLease?>> TryAcquireCovenantInstallationReadAsync(
         CancellationToken cancellationToken)
     {
-
         if (covenantGate is null)
         {
-
-            return null;
-
+            return Result<CovenantInstallationReadLease?>.Success(null);
         }
 
         Result<CovenantInstallationReadLease> lease = await covenantGate
             .AcquireInstallationReadAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        return lease.IsSuccess ? lease.Value : null;
-
+        return lease.IsSuccess
+            ? Result<CovenantInstallationReadLease?>.Success(lease.Value)
+            : Result<CovenantInstallationReadLease?>.Failure(ReportCovenantInventoryFailure(lease.Error, "Admission"));
     }
 
     private async ValueTask<Result<ICovenantSnapshotReadLease?>> AcquireCovenantInstallationPlanningAdmissionAsync(
         CancellationToken cancellationToken)
     {
-
         if (covenantGate is null)
         {
-
             return CovenantPlanningCapabilityUnavailable();
-
         }
 
         Result<CovenantInstallationReadLease> lease = await covenantGate
@@ -106,7 +100,6 @@ internal sealed partial class DataRetentionService
         return lease.IsFailure
             ? Result<ICovenantSnapshotReadLease?>.Failure(lease.Error)
             : Result<ICovenantSnapshotReadLease?>.Success(lease.Value);
-
     }
 
     /// <summary>
@@ -116,12 +109,9 @@ internal sealed partial class DataRetentionService
         Guid campaignId,
         CancellationToken cancellationToken)
     {
-
         if (covenantGate is null || campaignId == Guid.Empty)
         {
-
             return null;
-
         }
 
         Result<CovenantReadLease> lease = await covenantGate
@@ -131,29 +121,23 @@ internal sealed partial class DataRetentionService
             .ConfigureAwait(false);
 
         return lease.IsSuccess ? lease.Value : null;
-
     }
 
     private async ValueTask<Result<ICovenantSnapshotReadLease?>> AcquireCovenantScopedPlanningAdmissionAsync(
         Guid campaignId,
         CancellationToken cancellationToken)
     {
-
         if (campaignId == Guid.Empty)
         {
-
             return Result<ICovenantSnapshotReadLease?>.Failure(
                 new Error(
                     ErrorCodes.Data.InvalidRequest,
                     "A scoped Covenant planning capability requires a Campaign identity."));
-
         }
 
         if (covenantGate is null)
         {
-
             return CovenantPlanningCapabilityUnavailable();
-
         }
 
         Result<CovenantReadLease> lease = await covenantGate
@@ -165,7 +149,6 @@ internal sealed partial class DataRetentionService
         return lease.IsFailure
             ? Result<ICovenantSnapshotReadLease?>.Failure(lease.Error)
             : Result<ICovenantSnapshotReadLease?>.Success(lease.Value);
-
     }
 
     private static Result<ICovenantSnapshotReadLease?> CovenantPlanningCapabilityUnavailable() =>
@@ -182,14 +165,13 @@ internal sealed partial class DataRetentionService
     /// second capability inside a planner that already took one is not merely discouraged — there is no
     /// overload that would let it happen.
     ///
-    /// <para>Returns null when the capability no longer revalidates, which is reported exactly as an
-    /// absent Covenant arm is.</para>
+    /// <para>A stale capability or failed disclosure fold retains its typed cause. Status can still
+    /// report unrelated families; a destructive planner must refuse the unmeasured inventory.</para>
     /// </remarks>
-    private async Task<DataRetentionCovenantInventory?> InventoryCovenantAsync(
+    private async Task<Result<DataRetentionCovenantInventory>> InventoryCovenantAsync(
         ICovenantSnapshotReadLease heldLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldLease);
 
         // Revalidated immediately before the first read, not merely accepted. The gate's whole purpose
@@ -201,25 +183,18 @@ internal sealed partial class DataRetentionService
 
         if (current.IsFailure)
         {
-
-            // Null rather than zeroes, and rather than a throw. The capability went stale mid-read, so
-            // this installation was not measured — which is the same fact as having no Covenant arm and
-            // is reported the same way. Failing the whole status call instead would let a Covenant
-            // generation change take down an inventory of seventeen unrelated classes.
-            return null;
-
+            return Result<DataRetentionCovenantInventory>.Failure(
+                ReportCovenantInventoryFailure(current.Error, "Revalidation"));
         }
 
         long rows = 0;
 
         foreach (string table in CovenantInventoryRowTables)
         {
-
             rows += await CountTableAsync(
                 table,
                 null,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         long managedFiles = await CountTableAsync(
@@ -237,14 +212,12 @@ internal sealed partial class DataRetentionService
             "TaintedArtifactCount > 0",
             cancellationToken).ConfigureAwait(false);
 
-        CovenantDisclosureExposure? exposure =
+        Result<CovenantDisclosureExposure> exposure =
             await ReadNonrevocableDisclosureExposureAsync(cancellationToken).ConfigureAwait(false);
 
-        if (exposure is null)
+        if (exposure.IsFailure)
         {
-
-            return null;
-
+            return Result<DataRetentionCovenantInventory>.Failure(exposure.Error);
         }
 
         return new DataRetentionCovenantInventory(
@@ -252,9 +225,8 @@ internal sealed partial class DataRetentionService
             managedFiles,
             localArtifacts,
             affectedSessions,
-            exposure.PossibleAttempts,
-            exposure.CountKind);
-
+            exposure.Value.PossibleAttempts,
+            exposure.Value.CountKind);
     }
 
     /// <summary>
@@ -271,7 +243,6 @@ internal sealed partial class DataRetentionService
         DataRetentionPlan plan,
         DataRetentionCovenantInventory inventory)
     {
-
         ArgumentNullException.ThrowIfNull(plan);
 
         ArgumentNullException.ThrowIfNull(inventory);
@@ -279,22 +250,19 @@ internal sealed partial class DataRetentionService
         DataRetentionPlan attached = plan with { Covenant = inventory };
 
         bool bindsInventory = plan.Request is
-            {
-                Operation: DataRetentionOperation.ResetMemory,
-                MemoryScope: MemoryResetScope.Covenant,
-            }
+        {
+            Operation: DataRetentionOperation.ResetMemory,
+            MemoryScope: MemoryResetScope.Covenant,
+        }
             or { Operation: DataRetentionOperation.FactoryReset };
 
         if (!bindsInventory)
         {
-
             return attached;
-
         }
 
         return attached with
         {
-
             PlanId = ComputePlanId(
                 attached.Request,
                 attached.Items,
@@ -302,9 +270,7 @@ internal sealed partial class DataRetentionService
                 attached.Conflicts,
                 attached.CandidateIds,
                 CovenantErasureInventoryAuthority(inventory)),
-
         };
-
     }
 
     private static string CovenantErasureInventoryAuthority(
@@ -326,40 +292,36 @@ internal sealed partial class DataRetentionService
     /// <see cref="BackupRestoreProtectedStateInspector"/> performs over an archive, applied to the live
     /// installation instead.</para>
     /// </remarks>
-    private async Task<CovenantDisclosureExposure?>
+    private async Task<Result<CovenantDisclosureExposure>>
         ReadNonrevocableDisclosureExposureAsync(CancellationToken cancellationToken)
     {
-
-        if (!await TableExistsAsync(
-                "external_disclosure_state",
-                cancellationToken).ConfigureAwait(false))
-        {
-
-            return new CovenantDisclosureExposure(0, CovenantDisclosureCountKind.Exact);
-
-        }
-
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
         if (connection is not Microsoft.Data.Sqlite.SqliteConnection sqlite)
         {
-
-            return null;
-
+            return Result<CovenantDisclosureExposure>.Failure(ReportCovenantInventoryFailure(
+                new Error(ErrorCodes.Covenant.IntegrityFailure, "The Covenant disclosure inventory requires a native SQLite connection."),
+                "DisclosureExposure"));
         }
 
         Result<CovenantDisclosureExposure> exposure = await _covenantExposureReader
             .ReadWithinAsync(sqlite, transaction: null, cancellationToken)
             .ConfigureAwait(false);
 
-        return exposure.IsSuccess ? exposure.Value : null;
-
+        return exposure.IsSuccess
+            ? exposure
+            : Result<CovenantDisclosureExposure>.Failure(ReportCovenantInventoryFailure(exposure.Error, "DisclosureExposure"));
     }
 
-    /// <summary>
-    /// The status row an operator sees for a family that has no rule and never will.
-    /// </summary>
+    private Error ReportCovenantInventoryFailure(Error error, string stage)
+    {
+        logger.LogWarning("Covenant inventory is unmeasured at {DiagnosticStage} with {ErrorCode}.", stage, error.Code);
+
+        return error;
+    }
+
+    /// <summary>The status row for a measured family with no time-based retention rule.</summary>
     private static DataRetentionStatusItem CovenantStatusItem(
         DataRetentionCovenantInventory inventory) =>
         new(
@@ -372,5 +334,4 @@ internal sealed partial class DataRetentionService
             "Covenant canonical, accelerator, sensitivity, and disclosure evidence",
             "Immutable operator-and-agent agreement state. Inventoried, never aged out; erasure is an "
                 + "explicit reset, not a retention rule.");
-
 }

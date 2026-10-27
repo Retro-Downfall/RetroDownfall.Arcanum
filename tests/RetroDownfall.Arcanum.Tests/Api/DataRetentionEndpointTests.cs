@@ -49,7 +49,7 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 
 [Collection("ApiHost")]
 
-public sealed class DataRetentionEndpointTests
+public sealed partial class DataRetentionEndpointTests
 {
     [SkippableFact]
     public async Task Prune_routes_serialize_Lexicon_pin_inventory_and_exact_apply_conflict()

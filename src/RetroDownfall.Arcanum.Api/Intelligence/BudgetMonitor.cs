@@ -65,7 +65,7 @@ public sealed class BudgetMonitor(
 
             return Result.Failure(new Error(
                 ErrorCodes.Budget.Exceeded,
-                $"Daily budget limit of ${dailyLimit:0.00} USD has been reached (current spend: ${spend:0.00} USD)."
+                $"Daily budget limit of ${BudgetErrorMessages.FormatUsd(dailyLimit)} USD has been reached (current spend: ${BudgetErrorMessages.FormatUsd(spend)} USD)."
                 + DescribeUnpricedDelegation(external) + " " + BudgetErrorMessages.Guidance));
         }
 

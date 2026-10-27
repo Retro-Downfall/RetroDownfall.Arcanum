@@ -314,7 +314,7 @@ Clean scheduling never fails a Session turn. A clean request refused with a `Lon
 | `retention.idempotencyClaims.enabled` | `bool`, `true` | — | Enables policy retention for terminal idempotency claims; active leases are never eligible. |
 | `retention.idempotencyClaims.days` | `int`, `7` | 1–3,650 | Age threshold for terminal idempotency claims. |
 | `retention.accounting.enabled` | `bool`, `true` | — | Enables policy retention for authoritative accounting chains, subject to the accounting floor and outstanding-reservation blockers. `Sessions.TotalCostUsd` is not accounting authority. |
-| `retention.accounting.days` | `int`, `365` | 1–3,650; effective value is at least `accountingMinimumDays` | Requested age threshold for accounting rows. |
+| `retention.accounting.days` | `int`, `365` | 1–3,650; effective value is at least `accountingMinimumDays` | Age threshold for accounting rows and budget-alert history. Existing configuration normalizes to the floor; an explicit enabled `data retention set` or retention API request below that floor is refused with both ages and the governing setting instead of silently replacing the request. |
 | `retention.longRunningOperations.enabled` | `bool`, `true` | — | Enables policy retention for terminal durable-operation history; active and repair-required operations remain conflicts. |
 | `retention.longRunningOperations.days` | `int`, `90` | 1–3,650 | Age threshold for terminal operation history. |
 | `retention.sanctumBreaches.enabled` | `bool`, `true` | — | Enables unified policy retention for durable Sanctum breach history. |

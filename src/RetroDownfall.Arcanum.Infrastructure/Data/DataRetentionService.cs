@@ -496,16 +496,22 @@ internal sealed partial class DataRetentionService(
 
         DataRetentionCovenantInventory? covenant = null;
 
-        CovenantInstallationReadLease? covenantLease =
+        Result<CovenantInstallationReadLease?> covenantAdmission =
             await TryAcquireCovenantInstallationReadAsync(cancellationToken).ConfigureAwait(false);
 
-        if (covenantLease is not null)
+        string? covenantInventoryErrorCode = covenantAdmission.IsFailure ? covenantAdmission.Error.Code : null;
+
+        if (covenantAdmission.IsSuccess && covenantAdmission.Value is { } covenantLease)
         {
             await using (covenantLease.ConfigureAwait(false))
             {
-                covenant = await InventoryCovenantAsync(
+                Result<DataRetentionCovenantInventory> measured = await InventoryCovenantAsync(
                     covenantLease,
                     cancellationToken).ConfigureAwait(false);
+
+                covenant = measured.IsSuccess ? measured.Value : null;
+
+                covenantInventoryErrorCode = measured.IsFailure ? measured.Error.Code : null;
             }
 
             if (covenant is not null)
@@ -539,7 +545,7 @@ internal sealed partial class DataRetentionService(
                 "Registered workspaces outside the Arcanum data root",
             ],
             covenant) with
-        { MemoryErasure = memoryErasure };
+        { MemoryErasure = memoryErasure, CovenantInventoryErrorCode = covenantInventoryErrorCode };
     }
 
     /// <summary>
@@ -652,26 +658,33 @@ internal sealed partial class DataRetentionService(
                     ReadLease: null));
         }
 
+        bool leaseTransferred = false;
+
         try
         {
             DataRetentionPlan plan = await BuildPlanAsync(
                 request,
                 cancellationToken).ConfigureAwait(false);
 
-            DataRetentionCovenantInventory? inventory = await InventoryCovenantAsync(
+            Result<DataRetentionCovenantInventory> inventory = await InventoryCovenantAsync(
                 lease,
                 cancellationToken).ConfigureAwait(false);
 
-            return Result<DataRetentionPlanAdmission>.Success(
-                new DataRetentionPlanAdmission(
-                    inventory is null ? plan : BindCovenantErasurePlanIdentity(plan, inventory),
-                    lease));
-        }
-        catch
-        {
-            await lease.DisposeAsync().ConfigureAwait(false);
+            if (inventory.IsFailure)
+            {
+                return Result<DataRetentionPlanAdmission>.Failure(inventory.Error);
+            }
 
-            throw;
+            DataRetentionPlanAdmission admitted = new(BindCovenantErasurePlanIdentity(plan, inventory.Value), lease);
+
+            leaseTransferred = true;
+
+            return Result<DataRetentionPlanAdmission>.Success(
+                admitted);
+        }
+        finally
+        {
+            if (!leaseTransferred) await lease.DisposeAsync().ConfigureAwait(false);
         }
     }
 

@@ -24,7 +24,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 /// </remarks>
 internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
 {
-
     private readonly List<string> _acquisitions = [];
 
     private readonly List<string> _refused = [];
@@ -37,22 +36,18 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
 
     internal Error? InstallationReadFailure { get; init; }
 
+    internal Error? RevalidationFailure { get; init; }
+
     /// <summary>Every granted capability, in acquisition order.</summary>
     internal IReadOnlyList<string> Acquisitions
     {
-
         get
         {
-
             lock (_sync)
             {
-
                 return [.. _acquisitions];
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -61,83 +56,60 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
     /// </summary>
     internal IReadOnlyList<string> RefusedAttempts
     {
-
         get
         {
-
             lock (_sync)
             {
-
                 return [.. _refused];
-
             }
-
         }
-
     }
 
     /// <summary>How many leases are still held right now.</summary>
     internal int LiveLeases
     {
-
         get
         {
-
             lock (_sync)
             {
-
                 return _live;
-
             }
-
         }
-
     }
 
     /// <summary>The greatest number ever held at the same instant. Two means something nested.</summary>
     internal int PeakConcurrentLeases
     {
-
         get
         {
-
             lock (_sync)
             {
-
                 return _peak;
-
             }
-
         }
-
     }
 
     public ValueTask<Result<CovenantInstallationReadLease>> AcquireInstallationReadAsync(
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (InstallationReadFailure is { } failure)
         {
-
             return ValueTask.FromResult(
                 Result<CovenantInstallationReadLease>.Failure(failure));
-
         }
 
         return ValueTask.FromResult(
             Result<CovenantInstallationReadLease>.Success(
                 new CovenantInstallationReadLease(
                     Register("installation-read", CovenantLeaseKind.InstallationRead, null))));
-
     }
 
     public ValueTask<Result<CovenantReadLease>> AcquireReadAsync(
         CovenantOperationScope scope,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         string label = scope.Kind is CovenantScope.Global
@@ -147,7 +119,6 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
         return ValueTask.FromResult(
             Result<CovenantReadLease>.Success(
                 new CovenantReadLease(Register(label, CovenantLeaseKind.Read, scope))));
-
     }
 
     public ValueTask<Result<CovenantWriteLease>> AcquireWriteAsync(
@@ -223,12 +194,9 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
     private ValueTask<Result<T>> Refuse<T>(string capability)
         where T : class
     {
-
         lock (_sync)
         {
-
             _refused.Add(capability);
-
         }
 
         return ValueTask.FromResult(
@@ -236,7 +204,6 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
                 new Error(
                     ErrorCodes.Covenant.ForbiddenAuthority,
                     $"Issue #116 planning must not acquire a {capability} capability.")));
-
     }
 
     private RecordingRegistration Register(
@@ -244,37 +211,27 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
         CovenantLeaseKind kind,
         CovenantOperationScope? scope)
     {
-
         lock (_sync)
         {
-
             _acquisitions.Add(label);
 
             _live++;
 
             if (_live > _peak)
             {
-
                 _peak = _live;
-
             }
-
         }
 
         return new RecordingRegistration(this, kind, scope);
-
     }
 
     private void Release()
     {
-
         lock (_sync)
         {
-
             _live--;
-
         }
-
     }
 
     private sealed class RecordingRegistration(
@@ -282,7 +239,6 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
         CovenantLeaseKind kind,
         CovenantOperationScope? scope) : ICovenantLeaseRegistration
     {
-
         private int _released;
 
         public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
@@ -307,25 +263,19 @@ internal sealed class RecordingCovenantOperationGate : ICovenantOperationGate
         public CancellationToken Revocation => CancellationToken.None;
 
         public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken) =>
-            ValueTask.FromResult(Result.Success());
+            ValueTask.FromResult(owner.RevalidationFailure is { } failure ? Result.Failure(failure) : Result.Success());
 
         public ValueTask ReleaseAsync()
         {
-
             if (Interlocked.Exchange(ref _released, 1) == 0)
             {
-
                 owner.Release();
-
             }
 
             return ValueTask.CompletedTask;
-
         }
-
     }
 
     private static readonly Guid CovenantOperationGateFixtureDatasetGeneration =
         new("11111111-1111-4111-8111-111111111111");
-
 }

@@ -11,7 +11,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
-public sealed class BudgetMonitorTests
+public sealed partial class BudgetMonitorTests
 {
     [Fact]
     public async Task A_stale_precheck_does_not_bypass_insert_before_notification()
