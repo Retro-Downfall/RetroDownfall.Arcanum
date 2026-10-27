@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence;
@@ -21,7 +22,7 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 /// The two Covenant MCP mutation tools: what they advertise, what they refuse, and what a staged
 /// mutation is allowed to say back to the model (§10.14).
 /// </summary>
-public sealed class CovenantMutationToolTests
+public sealed partial class CovenantMutationToolTests
 {
     /// <summary>The refusal a pinned lane and an erased key share.</summary>
     private const string OperatorManaged = "This Covenant key is managed by the operator in this scope.";
@@ -52,9 +53,8 @@ public sealed class CovenantMutationToolTests
     [Fact]
     public void The_hand_authored_schemas_still_refuse_to_represent_authority()
     {
-        // Both tools are withheld from tools/list, so the schemas are read from the builders rather
-        // than off the wire. The omissions are the contract that has to survive the withdrawal: a
-        // schema that decayed while nobody could see it would be the wrong thing to advertise again.
+        // Read the same hand-authored builders the eligible tools advertise. Capability and feature
+        // gates never permit authority fields to enter either schema.
         JsonElement propose = ArcanumInternalToolServer.BuildProposeCovenantSchema();
         JsonElement retire = ArcanumInternalToolServer.BuildRetireCovenantSchema();
 
@@ -404,7 +404,7 @@ public sealed class CovenantMutationToolTests
 
         McpToolsCallResultWire result = await session.CallRetireAsync("Campaign.A", nameof(CovenantLane.Proposed));
 
-        Assert.Equal(ErrorCodes.Covenant.InvalidScope, Failure(result).Code);
+        Assert.Equal(ErrorCodes.Covenant.InvalidKey, Failure(result).Code);
         Assert.Equal(0, session.Collector.StagedCount);
     }
 
@@ -579,11 +579,13 @@ public sealed class CovenantMutationToolTests
 
         public static async Task<CovenantToolSession> CreateAsync(
             bool featureEnabled = true,
-            CovenantCapabilityState canonical = CovenantCapabilityState.Healthy)
+            CovenantCapabilityState canonical = CovenantCapabilityState.Healthy,
+            ICovenantCompiler? compiler = null,
+            ILogger<ArcanumInternalToolServer>? logger = null)
         {
             ServiceCollection services = [];
 
-            services.AddSingleton<ICovenantCompiler, CovenantCompiler>();
+            services.AddSingleton<ICovenantCompiler>(compiler ?? new CovenantCompiler());
 
             services.AddSingleton<CovenantToolCapabilityRegistry>();
 
@@ -620,7 +622,7 @@ public sealed class CovenantMutationToolTests
                 a2aClientEnabled: false,
                 attachmentsToolEnabled: false,
                 maxJsonRpcLineBytes: 2_097_152,
-                logger: NullLogger<ArcanumInternalToolServer>.Instance,
+                logger: logger ?? NullLogger<ArcanumInternalToolServer>.Instance,
                 allowHostProcessTools: true);
 
             CancellationTokenSource lifetime = new();

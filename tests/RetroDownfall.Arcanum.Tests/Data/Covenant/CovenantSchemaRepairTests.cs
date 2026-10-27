@@ -24,7 +24,7 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// time, and a terminal phase only after a disposition actually succeeded (§10.17).
 /// </remarks>
 [Collection(ProcessGlobalSeamCollectionName.Value)]
-public sealed class CovenantSchemaRepairTests
+public sealed partial class CovenantSchemaRepairTests
 {
     private static CancellationToken Token => CancellationToken.None;
 
@@ -278,6 +278,10 @@ public sealed class CovenantSchemaRepairTests
 
         CovenantSchemaRepairIntent prepared = await fixture.CommitAsync();
 
+        Assert.True((await fixture.AdvanceAsync(prepared, CovenantSchemaRepairPhase.CatalogCommitted)).Value);
+
+        prepared = prepared with { Phase = CovenantSchemaRepairPhase.CatalogCommitted, Revision = prepared.Revision + 1 };
+
         using MaintenanceLockScope heldLock = fixture.AcquireLock();
 
         StubSchemaRepairExecutor executor = new()
@@ -290,6 +294,8 @@ public sealed class CovenantSchemaRepairTests
         Result<CovenantSchemaRepairStartupRecoveryOutcome> recovered = await fixture
             .Recovery(executor)
             .RecoverBeforeReadinessAsync(heldLock.Lock, heldLock.Directory, fixture.Connection, Token);
+
+        Assert.Equal(0, executor.RepairCalls);
 
         Assert.True(recovered.IsSuccess);
 
@@ -320,16 +326,16 @@ public sealed class CovenantSchemaRepairTests
     }
 
     [Fact]
-    public async Task Recovery_health_checks_the_repaired_catalog_not_the_snapshot_that_justified_the_repair()
+    public async Task Fresh_repair_health_checks_the_repaired_catalog_not_the_snapshot_that_justified_the_repair()
     {
         await using RepairFixture fixture = await RepairFixture.CreateAsync();
 
-        CovenantSchemaRepairIntent prepared = await fixture.CommitAsync();
+        CovenantSchemaRepairIntent prepared = fixture.Intent(CovenantSchemaRepairPhase.Prepared);
 
         using MaintenanceLockScope heldLock = fixture.AcquireLock();
 
         // The pre-state an active repair intent actually implies: the canonical tier was invalid, which is
-        // the whole reason the repair exists. The resumed repair then succeeds, so the CatalogCommitted
+        // the whole reason the repair exists. The fresh repair then succeeds, so the CatalogCommitted
         // health gate has to read the catalog the repair produced — re-reading the snapshot that justified
         // the repair can only ever say "still invalid" and keep admission shut for the rest of the process
         // on a repair that in fact completed (§10.17).
@@ -342,13 +348,16 @@ public sealed class CovenantSchemaRepairTests
             Mutated = true,
         };
 
-        Result<CovenantSchemaRepairStartupRecoveryOutcome> recovered = await fixture
-            .Recovery(executor)
-            .RecoverBeforeReadinessAsync(heldLock.Lock, heldLock.Directory, fixture.Connection, Token);
+        FakeCovenantAvailability availability = new();
+
+        CovenantMaintenanceService service = CreateMaintenanceService(new FixedConnectionSource(fixture.Connection), fixture.Gate, executor, availability);
+
+        Result<CovenantSchemaRepairResultDto> recovered = await service.RepairSchemaAsync(
+            new CovenantSchemaRepairRequest(CovenantSchemaRepairAction.RepairExistingFamily), Token);
 
         Assert.True(recovered.IsSuccess);
 
-        Assert.Equal(CovenantSchemaRepairStartupRecoveryOutcome.RecoveredReady, recovered.Value);
+        Assert.Equal(CovenantSchemaRepairDisposition.Repaired, recovered.Value.Disposition);
 
         Assert.Equal(2, executor.InspectCalls);
 
@@ -358,11 +367,11 @@ public sealed class CovenantSchemaRepairTests
     }
 
     [Fact]
-    public async Task Recovery_keeps_a_repair_whose_catalog_is_still_invalid_afterwards_closed()
+    public async Task Fresh_repair_keeps_a_repair_whose_catalog_is_still_invalid_afterwards_closed()
     {
         await using RepairFixture fixture = await RepairFixture.CreateAsync();
 
-        CovenantSchemaRepairIntent prepared = await fixture.CommitAsync();
+        CovenantSchemaRepairIntent prepared = fixture.Intent(CovenantSchemaRepairPhase.Prepared);
 
         using MaintenanceLockScope heldLock = fixture.AcquireLock();
 
@@ -377,13 +386,16 @@ public sealed class CovenantSchemaRepairTests
             Mutated = true,
         };
 
-        Result<CovenantSchemaRepairStartupRecoveryOutcome> recovered = await fixture
-            .Recovery(executor)
-            .RecoverBeforeReadinessAsync(heldLock.Lock, heldLock.Directory, fixture.Connection, Token);
+        FakeCovenantAvailability availability = new();
+
+        CovenantMaintenanceService service = CreateMaintenanceService(new FixedConnectionSource(fixture.Connection), fixture.Gate, executor, availability);
+
+        Result<CovenantSchemaRepairResultDto> recovered = await service.RepairSchemaAsync(
+            new CovenantSchemaRepairRequest(CovenantSchemaRepairAction.RepairExistingFamily), Token);
 
         Assert.True(recovered.IsSuccess);
 
-        Assert.Equal(CovenantSchemaRepairStartupRecoveryOutcome.KeptClosed, recovered.Value);
+        Assert.Equal(CovenantSchemaRepairDisposition.ManualRecoveryRequired, recovered.Value.Disposition);
 
         Assert.Equal(
             (long)CovenantSchemaRepairPhase.CatalogCommitted,
@@ -396,6 +408,10 @@ public sealed class CovenantSchemaRepairTests
         await using RepairFixture fixture = await RepairFixture.CreateAsync();
 
         CovenantSchemaRepairIntent prepared = await fixture.CommitAsync();
+
+        Assert.True((await fixture.AdvanceAsync(prepared, CovenantSchemaRepairPhase.ReopenPending)).Value);
+
+        prepared = prepared with { Phase = CovenantSchemaRepairPhase.ReopenPending, Revision = prepared.Revision + 1 };
 
         using MaintenanceLockScope heldLock = fixture.AcquireLock();
 
@@ -546,6 +562,10 @@ public sealed class CovenantSchemaRepairTests
 
         CovenantSchemaRepairIntent intent = await fixture.CommitAsync();
 
+        Assert.True((await fixture.AdvanceAsync(intent, CovenantSchemaRepairPhase.ReopenPending)).Value);
+
+        intent = intent with { Phase = CovenantSchemaRepairPhase.ReopenPending, Revision = 1 };
+
         using MaintenanceLockScope heldLock = fixture.AcquireLock();
 
         StubSchemaRepairExecutor executor = new()
@@ -608,7 +628,7 @@ public sealed class CovenantSchemaRepairTests
 
         Assert.Equal(1, executor.InspectCalls);
 
-        Assert.Equal(1, executor.RepairCalls);
+        Assert.Equal(0, executor.RepairCalls);
     }
 
     [Fact]
@@ -645,6 +665,10 @@ public sealed class CovenantSchemaRepairTests
 
         CovenantSchemaRepairIntent intent = await fixture.CommitAsync();
 
+        Assert.True((await fixture.AdvanceAsync(intent, CovenantSchemaRepairPhase.ReopenPending)).Value);
+
+        intent = intent with { Phase = CovenantSchemaRepairPhase.ReopenPending, Revision = intent.Revision + 1 };
+
         using MaintenanceLockScope heldLock = fixture.AcquireLock();
 
         StubSchemaRepairExecutor executor = new()
@@ -654,7 +678,7 @@ public sealed class CovenantSchemaRepairTests
             Mutated = false,
         };
 
-        // The pass advances the journal to ReopenPending itself; the write that follows the disposition is
+        // The journal already records positive no-mutation evidence; the write after the disposition is
         // the finalizer's, and that is the one this makes fail.
         await using (SqliteCommand trigger = fixture.Connection.CreateCommand())
         {
@@ -696,7 +720,9 @@ public sealed class CovenantSchemaRepairTests
 
         string rendered = warning.RenderMessage(CultureInfo.InvariantCulture);
 
-        Assert.Contains("complete", rendered, StringComparison.Ordinal);
+        Assert.Equal(CovenantSchemaRepairStage.Complete, Assert.IsType<Serilog.Events.ScalarValue>(warning.Properties["Stage"]).Value);
+
+        Assert.Equal(19, Assert.IsType<Serilog.Events.ScalarValue>(warning.Properties["SqliteErrorCode"]).Value);
 
         // The journal's own failure code. Its message carries the driver's text, which the line must not.
         Assert.Contains(ErrorCodes.Covenant.MaintenanceFailed, rendered, StringComparison.Ordinal);
@@ -786,7 +812,7 @@ public sealed class CovenantSchemaRepairTests
 
         internal int InspectCalls { get; private set; }
 
-        public Task<Result<CovenantSchemaRepairInspection>> InspectAsync(
+        public Task<CovenantSchemaRepairResult<CovenantSchemaRepairInspection>> InspectAsync(
             SqliteConnection connection,
             CancellationToken cancellationToken)
         {
@@ -796,14 +822,14 @@ public sealed class CovenantSchemaRepairTests
                 ? repaired
                 : Inspection;
 
-            return Task.FromResult(
+            return Task.FromResult<CovenantSchemaRepairResult<CovenantSchemaRepairInspection>>(
                 answer is { } inspection
                     ? Result<CovenantSchemaRepairInspection>.Success(inspection)
                     : Result<CovenantSchemaRepairInspection>.Failure(
                         new Error(ErrorCodes.Covenant.MaintenanceFailed, "no inspection")));
         }
 
-        public Task<Result<bool>> RepairAsync(
+        public Task<CovenantSchemaRepairExecution> RepairAsync(
             SqliteConnection connection,
             CovenantSchemaRepairAction action,
             CovenantSchemaRepairInspection inspected,
@@ -813,9 +839,8 @@ public sealed class CovenantSchemaRepairTests
 
             return Task.FromResult(
                 RepairFails
-                    ? Result<bool>.Failure(
-                        new Error(ErrorCodes.Covenant.ManualRecoveryRequired, "not repairable"))
-                    : Result<bool>.Success(Mutated));
+                    ? CovenantSchemaRepairExecution.Unknown(CovenantSchemaRepairFailure.SchemaRefused)
+                    : Mutated ? CovenantSchemaRepairExecution.MutationCompleted() : CovenantSchemaRepairExecution.NoMutation());
         }
     }
 
@@ -947,7 +972,7 @@ public sealed class CovenantSchemaRepairTests
             return intent;
         }
 
-        internal Task<Result<bool>> AdvanceAsync(
+        internal Task<CovenantSchemaRepairResult<bool>> AdvanceAsync(
             CovenantSchemaRepairIntent intent,
             CovenantSchemaRepairPhase next) =>
             CovenantSchemaRepairJournal.TryAdvanceAsync(
@@ -970,9 +995,9 @@ public sealed class CovenantSchemaRepairTests
             {
                 Directory.Delete(_root, recursive: true);
 
-            // The maintenance lock lives beside the directory it guards, not inside it, so removing
-            // the guarded root leaves the lock file behind at the temp root. Enough of those and the
-            // suite stalls on lock contention rather than failing.
+                // The maintenance lock lives beside the directory it guards, not inside it, so removing
+                // the guarded root leaves the lock file behind at the temp root. Enough of those and the
+                // suite stalls on lock contention rather than failing.
                 File.Delete(RetroDownfall.Arcanum.Infrastructure.Backup.ArcanumMaintenanceLock.LockPathFor(_root));
             }
             catch (IOException)

@@ -1245,7 +1245,8 @@ public sealed partial class CovenantOperatorJourneyTests : IAsyncLifetime
             new CovenantCurationKernel(),
             _authority,
             TimeProvider.System,
-            DetachedAvailabilityRepublisher.Create());
+            DetachedAvailabilityRepublisher.Create(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<CovenantMutationService>.Instance);
 
     private CovenantStore Store() => new(new FixedCovenantConnectionSource(Connection()), MemoryErasureTestKeys.Isolated());
 

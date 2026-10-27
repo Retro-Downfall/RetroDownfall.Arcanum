@@ -5,8 +5,6 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
-using Serilog;
-
 namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 
 /// <summary>
@@ -16,8 +14,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// <see cref="KeptClosed"/> is not a failure code. It is the verdict that the journal is still active,
 /// which is the only safe state when a repair's durable outcome cannot be established. Startup does not
 /// stop on it: the bootstrapper logs one warning and goes on to publish readiness, so the process serves
-/// with Covenant admission shut behind the recovery owner this pass adopted, and the next start resumes
-/// the journal. (A restore's kept-closed verdict is the one that stops startup.) Admission is shut in
+/// with Covenant admission shut behind the recovery owner this pass adopted. A later start resumes
+/// only a proven health/finalization suffix; unresolved Prepared effects need manual recovery and are
+/// never re-executed. (A restore's kept-closed verdict is the one that stops startup.) Admission is shut in
 /// every case but one: when only the one-shot post-disposition finalizer failed after the gate had
 /// already applied a reopening disposition, the gate is open in this process and serves, and the journal
 /// stays at <c>ReopenPending</c> for the next start to finish.
@@ -127,13 +126,22 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
         {
             _gate.AdoptDurableRecoveryOwner(intent.Owner, scope: null, cleanupOnlyHistoricalCampaign: false);
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException exception)
         {
+            CovenantSchemaRepairDiagnostics.Warn(CovenantSchemaRepairStage.OwnerAdoption,
+                CovenantSchemaRepairFailure.OwnerAdoptionRefused, intent, cause: exception);
+
             return PreparationFailure();
         }
-        catch (ArgumentException refused)
+        catch (ArgumentException exception)
         {
-            return PreparationFailure(refused.Message);
+            bool emptyIdentifier = intent.OperationId == Guid.Empty;
+
+            CovenantSchemaRepairDiagnostics.Warn(CovenantSchemaRepairStage.OwnerAdoption,
+                emptyIdentifier ? CovenantSchemaRepairFailure.InvalidOwnerIdentifier : CovenantSchemaRepairFailure.OwnerAdoptionRefused,
+                intent, cause: exception);
+
+            return PreparationFailure(emptyIdentifier);
         }
 
         return Result<CovenantSchemaRepairStartupRecoveryPreparation>.Success(
@@ -173,23 +181,24 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
         if (resumed.IsFailure)
         {
-            return Kept("resume", resumed.Error);
+            return Kept(CovenantSchemaRepairStage.Resume, resumed.Error, intent);
         }
 
         await using CovenantExclusiveLease lease = resumed.Value;
 
-        Result<CovenantSchemaRepairInspection> inspected = await _executor
+        CovenantSchemaRepairResult<CovenantSchemaRepairInspection> inspected = await _executor
             .InspectAsync(connection, cancellationToken)
             .ConfigureAwait(false);
 
         if (inspected.IsFailure)
         {
-            return Kept("inspect", inspected.Error);
+            return Kept(CovenantSchemaRepairStage.Inspect, inspected.Error, intent, inspected.Fault);
         }
 
         CovenantSchemaRepairIntent current = intent;
 
-        bool durablyMutated = current.Phase is not CovenantSchemaRepairPhase.Prepared;
+        bool durablyMutated = current.Phase is CovenantSchemaRepairPhase.CatalogCommitted or CovenantSchemaRepairPhase.HealthVerified
+            || current.Phase == CovenantSchemaRepairPhase.ReopenPending && current.Revision == 3;
 
         if (current.Phase == CovenantSchemaRepairPhase.Prepared)
         {
@@ -198,40 +207,17 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
             // reality.
             if (inspected.Value.CatalogDigest != current.InspectedCatalogDigest)
             {
-                return Kept("catalog-moved");
+                return Kept(CovenantSchemaRepairStage.CatalogMoved, intent: current);
             }
 
-            Result<bool> repaired = await _executor
-                .RepairAsync(connection, current.Action, inspected.Value, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (repaired.IsFailure)
+            // A matching catalog does not prove an interrupted action had no data effects.
+            // Only this pure dispatch refusal proves that the original action could not enter a mutator.
+            if (!CovenantSchemaRepairExecution.RefusesBeforeAnyMutator(current.Action, inspected.Value))
             {
-                return Kept("repair", repaired.Error);
+                return Kept(CovenantSchemaRepairStage.PreparedEffectsUnknown, intent: current);
             }
 
-            durablyMutated = repaired.Value;
-
-            if (durablyMutated)
-            {
-                // The health gate below decides whether admission may reopen, and the snapshot taken
-                // above is the catalog the repair was needed for — it says "invalid" for every repair
-                // that had anything to do. Re-inspect so the gate reads what the repair actually wrote,
-                // exactly as the in-request sibling CovenantMaintenanceService.ExecuteRepairAsync does;
-                // an inspection that cannot be taken is still uncertainty, and uncertainty keeps closed.
-                Result<CovenantSchemaRepairInspection> verified = await _executor
-                    .InspectAsync(connection, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (verified.IsFailure)
-                {
-                    return Kept("reinspect", verified.Error);
-                }
-
-                inspected = verified;
-            }
-
-            Result<CovenantSchemaRepairIntent?> advanced = await AdvanceAsync(
+            CovenantSchemaRepairResult<CovenantSchemaRepairIntent?> advanced = await AdvanceAsync(
                 connection,
                 current,
                 durablyMutated
@@ -241,7 +227,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
             if (advanced.IsFailure || advanced.Value is not { } afterRepair)
             {
-                return Kept("advance-after-repair", advanced.IsFailure ? advanced.Error : null);
+                return Kept(CovenantSchemaRepairStage.AdvanceAfterRepair, advanced.IsFailure ? advanced.Error : null, current, advanced.Fault);
             }
 
             current = afterRepair;
@@ -251,10 +237,10 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
         {
             if (!inspected.Value.CanonicalValid)
             {
-                return Kept("canonical-invalid");
+                return Kept(CovenantSchemaRepairStage.CanonicalInvalid, intent: current);
             }
 
-            Result<CovenantSchemaRepairIntent?> verified = await AdvanceAsync(
+            CovenantSchemaRepairResult<CovenantSchemaRepairIntent?> verified = await AdvanceAsync(
                 connection,
                 current,
                 CovenantSchemaRepairPhase.HealthVerified,
@@ -262,7 +248,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
             if (verified.IsFailure || verified.Value is not { } afterHealth)
             {
-                return Kept("advance-after-health", verified.IsFailure ? verified.Error : null);
+                return Kept(CovenantSchemaRepairStage.AdvanceAfterHealth, verified.IsFailure ? verified.Error : null, current, verified.Fault);
             }
 
             current = afterHealth;
@@ -270,7 +256,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
         if (current.Phase == CovenantSchemaRepairPhase.HealthVerified)
         {
-            Result<CovenantSchemaRepairIntent?> pending = await AdvanceAsync(
+            CovenantSchemaRepairResult<CovenantSchemaRepairIntent?> pending = await AdvanceAsync(
                 connection,
                 current,
                 CovenantSchemaRepairPhase.ReopenPending,
@@ -278,7 +264,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
             if (pending.IsFailure || pending.Value is not { } afterPending)
             {
-                return Kept("advance-to-reopen", pending.IsFailure ? pending.Error : null);
+                return Kept(CovenantSchemaRepairStage.AdvanceToReopen, pending.IsFailure ? pending.Error : null, current, pending.Fault);
             }
 
             current = afterPending;
@@ -293,8 +279,14 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
         CovenantSchemaRepairIntent terminal = current;
 
-        CovenantSchemaRepairPostDispositionFinalizer finalizer = new(
-            (phase, token) => AdvanceToTerminalAsync(connection, terminal, phase, token));
+        CovenantSchemaRepairResult<bool>? finalization = null;
+
+        CovenantSchemaRepairPostDispositionFinalizer finalizer = new(async (phase, token) =>
+        {
+            finalization = await AdvanceToTerminalAsync(connection, terminal, phase, token).ConfigureAwait(false);
+
+            return finalization;
+        });
 
         // The repair is over and its evidence selected this disposition, so completing it takes no token.
         Result closed = await lease.CompleteAsync(disposition, finalizer, CancellationToken.None).ConfigureAwait(false);
@@ -304,11 +296,11 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
         // exception type, so the code is the one record of why this verdict is KeptClosed.
         if (closed.IsFailure)
         {
-            return Kept("complete", closed.Error);
+            return Kept(CovenantSchemaRepairStage.Complete, closed.Error, current, finalization?.Fault);
         }
 
         return disposition == CovenantExclusiveLeaseDisposition.KeepClosed
-            ? Kept("evidence-selected-keep-closed")
+            ? Kept(CovenantSchemaRepairStage.EvidenceSelectedKeepClosed, intent: current)
             : Result<CovenantSchemaRepairStartupRecoveryOutcome>.Success(
                 CovenantSchemaRepairStartupRecoveryOutcome.RecoveredReady);
     }
@@ -339,13 +331,13 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
                 cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<Result<CovenantSchemaRepairIntent?>> AdvanceAsync(
+    private async Task<CovenantSchemaRepairResult<CovenantSchemaRepairIntent?>> AdvanceAsync(
         SqliteConnection connection,
         CovenantSchemaRepairIntent intent,
         CovenantSchemaRepairPhase next,
         CancellationToken cancellationToken)
     {
-        Result<bool> advanced = await CovenantSchemaRepairJournal.TryAdvanceAsync(
+        CovenantSchemaRepairResult<bool> advanced = await CovenantSchemaRepairJournal.TryAdvanceAsync(
             connection,
             _initializer,
             intent,
@@ -356,7 +348,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
         if (advanced.IsFailure)
         {
-            return Result<CovenantSchemaRepairIntent?>.Failure(advanced.Error);
+            return CovenantSchemaRepairResult<CovenantSchemaRepairIntent?>.Failure(advanced.Error, advanced.Fault);
         }
 
         return Result<CovenantSchemaRepairIntent?>.Success(
@@ -365,58 +357,48 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
                 : null);
     }
 
-    private async Task<Result> AdvanceToTerminalAsync(
+    private async Task<CovenantSchemaRepairResult<bool>> AdvanceToTerminalAsync(
         SqliteConnection connection,
         CovenantSchemaRepairIntent intent,
         CovenantSchemaRepairPhase terminal,
         CancellationToken cancellationToken)
     {
-        Result<CovenantSchemaRepairIntent?> advanced = await AdvanceAsync(
-            connection,
-            intent,
-            terminal,
-            cancellationToken).ConfigureAwait(false);
+        CovenantSchemaRepairResult<CovenantSchemaRepairIntent?> advanced = await AdvanceAsync(
+            connection, intent, terminal, cancellationToken).ConfigureAwait(false);
 
         if (advanced.IsFailure)
         {
-            return Result.Failure(advanced.Error);
+            return CovenantSchemaRepairResult<bool>.Failure(advanced.Error, advanced.Fault);
         }
 
         return advanced.Value is null
-            ? Result.Failure(
-                new Error(
-                    ErrorCodes.Covenant.RevisionConflict,
-                    "The schema repair journal moved before its finalizer ran."))
-            : Result.Success();
+            ? Result<bool>.Failure(new Error(ErrorCodes.Covenant.RevisionConflict,
+                "The schema repair journal moved before its finalizer ran."))
+            : Result<bool>.Success(true);
     }
 
     /// <summary>
-    /// Reports the closed verdict and says where and why, by stage and error code only: a driver message
-    /// can carry paths or content.
+    /// Reports closed stage/reason and validated owner facts with numerical storage diagnostics.
+    /// Driver messages, journal bytes and arbitrary collaborator data never enter the warning.
     /// </summary>
-    private static Result<CovenantSchemaRepairStartupRecoveryOutcome> Kept(string stage, Error? error = null)
+    private static Result<CovenantSchemaRepairStartupRecoveryOutcome> Kept(
+        CovenantSchemaRepairStage stage, Error? error = null, CovenantSchemaRepairIntent? intent = null,
+        CovenantSchemaRepairStorageFault? fault = null)
     {
-        Log.Warning(
-            "An interrupted Covenant schema repair did not finish at {Stage}, so its journal stays active for the next start: {ErrorCode}",
-            stage,
-            error?.Code ?? "none");
+        CovenantSchemaRepairDiagnostics.Warn(stage,
+            stage == CovenantSchemaRepairStage.PreparedEffectsUnknown
+                ? CovenantSchemaRepairFailure.EffectsUnproven : CovenantSchemaRepairFailure.RecoveryRefused,
+            intent, error?.Code, error: error, fault: fault);
 
         return Result<CovenantSchemaRepairStartupRecoveryOutcome>.Success(
             CovenantSchemaRepairStartupRecoveryOutcome.KeptClosed);
     }
 
-    /// <summary>
-    /// <paramref name="refusedInvariant"/> is the message of the ArgumentException the durable owner
-    /// or its scope classification refused with, when one is available - an operator refused at
-    /// startup otherwise sees only "could not be reconstructed safely" with no way to tell a malformed
-    /// owner apart from a scope-classification disagreement.
-    /// </summary>
     private static Result<CovenantSchemaRepairStartupRecoveryPreparation> PreparationFailure(
-        string? refusedInvariant = null) =>
+        bool emptyIdentifier = false) =>
         Result<CovenantSchemaRepairStartupRecoveryPreparation>.Failure(
-            new Error(
-                ErrorCodes.Covenant.MaintenanceFailed,
-                refusedInvariant is null
-                    ? "Covenant schema-repair ownership could not be reconstructed safely."
-                    : $"Covenant schema-repair ownership could not be reconstructed safely: {refusedInvariant}"));
+            new Error(ErrorCodes.Covenant.MaintenanceFailed,
+                emptyIdentifier
+                    ? "Covenant schema-repair ownership could not be reconstructed safely: operation identifier cannot be empty. Preserve the profile and seek manual recovery."
+                    : "Covenant schema-repair ownership could not be reconstructed safely. Preserve the profile and seek manual recovery."));
 }

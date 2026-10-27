@@ -2225,6 +2225,7 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<ICovenantAuthoritySnapshotProvider>(),
             sp.GetRequiredService<TimeProvider>(),
             sp.GetRequiredService<CovenantAvailabilityRepublisher>(),
+            sp.GetRequiredService<ILogger<CovenantMutationService>>(),
             sp.GetRequiredService<IMemoryDelegationMutationBarrier>()));
 
         services.AddScoped<ICovenantMemoryReviewService>(static sp => new CovenantMemoryReviewService(

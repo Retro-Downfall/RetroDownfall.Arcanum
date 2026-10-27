@@ -33,7 +33,7 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// about a world neither of them read.
 /// </remarks>
 [Trait("Category", "Integration")]
-public sealed class CovenantMutationServiceTests
+public sealed partial class CovenantMutationServiceTests
 {
     private static CancellationToken Token => CancellationToken.None;
 
@@ -888,7 +888,8 @@ public sealed class CovenantMutationServiceTests
             new CovenantCurationKernel(),
             new StubAuthority(),
             clock,
-            DetachedAvailabilityRepublisher.Create());
+            DetachedAvailabilityRepublisher.Create(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<CovenantMutationService>.Instance);
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
@@ -938,7 +939,8 @@ public sealed class CovenantMutationServiceTests
             new CovenantCurationKernel(),
             new StubAuthority(),
             clock,
-            DetachedAvailabilityRepublisher.Create());
+            DetachedAvailabilityRepublisher.Create(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<CovenantMutationService>.Instance);
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
@@ -1137,7 +1139,8 @@ public sealed class CovenantMutationServiceTests
             new CovenantCurationKernel(),
             new StubAuthority(),
             clock,
-            DetachedAvailabilityRepublisher.Create());
+            DetachedAvailabilityRepublisher.Create(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<CovenantMutationService>.Instance);
     }
 
     /// <summary>Prepares one Global curation change and builds the commit that carries its token.</summary>
@@ -1402,7 +1405,8 @@ public sealed class CovenantMutationServiceTests
             new CovenantCurationKernel(),
             new StubAuthority(),
             TimeProvider.System,
-            DetachedAvailabilityRepublisher.Create());
+            DetachedAvailabilityRepublisher.Create(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<CovenantMutationService>.Instance);
 
     private static async Task<long> CountAsync(CovenantCanonicalFixture fixture, string sql)
     {

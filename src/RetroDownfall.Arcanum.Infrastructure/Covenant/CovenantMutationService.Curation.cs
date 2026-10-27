@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
@@ -19,31 +20,25 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// </remarks>
 internal sealed partial class CovenantMutationService
 {
-
     public async ValueTask<Result<CovenantCurationPreflightDto>> PrepareCurationAsync(
         CovenantCurationPrepareRequest request,
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result validated = request.Validate();
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         Result<ulong> authorityEpoch = ResolveAuthorityEpoch();
 
         if (authorityEpoch.IsFailure)
         {
-
             return authorityEpoch.Error;
-
         }
 
         CovenantOperationScope scope = Scope(request.Scope, request.CampaignId);
@@ -59,9 +54,7 @@ internal sealed partial class CovenantMutationService
 
         if (effect.IsFailure)
         {
-
             return effect.Error;
-
         }
 
         CovenantCurationSubject subject = new(
@@ -107,9 +100,7 @@ internal sealed partial class CovenantMutationService
 
         if (token.IsFailure)
         {
-
             return token.Error;
-
         }
 
         return new CovenantCurationPreflightDto(
@@ -131,7 +122,6 @@ internal sealed partial class CovenantMutationService
             issuedAt,
             expiresAt,
             token.Value);
-
     }
 
     public async ValueTask<Result<CovenantCurationResultDto>> CurateAsync(
@@ -139,7 +129,25 @@ internal sealed partial class CovenantMutationService
         CovenantWriteLease writeLease,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(request);
 
+        try
+        {
+            return await CurateCoreAsync(request, writeLease, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception failure) when (IsOperatorStorageFailure(failure))
+        {
+            PropagateOperatorCancellation(failure, cancellationToken);
+
+            return MapOperatorFailure<CovenantCurationResultDto>(failure, OperatorAction.Curate, request.MutationId);
+        }
+    }
+
+    private async ValueTask<Result<CovenantCurationResultDto>> CurateCoreAsync(
+        CovenantCurationRequest request,
+        CovenantWriteLease writeLease,
+        CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(writeLease);
@@ -148,18 +156,14 @@ internal sealed partial class CovenantMutationService
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         Result revalidated = await writeLease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
 
         if (revalidated.IsFailure)
         {
-
             return revalidated.Error;
-
         }
 
         CovenantOperationScope scope = Scope(request.Scope, request.CampaignId);
@@ -179,25 +183,19 @@ internal sealed partial class CovenantMutationService
 
         if (replayed.IsFailure)
         {
-
             return replayed.Error;
-
         }
 
         if (replayed.Value is { } committed)
         {
-
             return committed;
-
         }
 
         Result<ulong> authorityEpoch = ResolveAuthorityEpoch();
 
         if (authorityEpoch.IsFailure)
         {
-
             return authorityEpoch.Error;
-
         }
 
         Result<CovenantEnvelopeBody> envelope =
@@ -205,9 +203,7 @@ internal sealed partial class CovenantMutationService
 
         if (envelope.IsFailure)
         {
-
             return envelope.Error;
-
         }
 
         Result<CovenantOperatorPreflightBody> body =
@@ -215,9 +211,7 @@ internal sealed partial class CovenantMutationService
 
         if (body.IsFailure)
         {
-
             return body.Error;
-
         }
 
         // The subject's dependency epoch is the token's, never the request's. A commit that could
@@ -237,11 +231,9 @@ internal sealed partial class CovenantMutationService
 
         if (body.Value.RequestDigest != committedRequestDigest)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "This Covenant preflight token was issued for a different request.");
-
         }
 
         // The token's own lifetime is not judged here. The codec already refused an expired token when
@@ -249,20 +241,16 @@ internal sealed partial class CovenantMutationService
         if (body.Value.IssuedAt != envelope.Value.IssuedAtUtc.ToUnixTimeMilliseconds()
             || body.Value.ExpiresAt != envelope.Value.ExpiresAtUtc.ToUnixTimeMilliseconds())
         {
-
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "This Covenant preflight token is internally inconsistent.");
-
         }
 
         if (authorityEpoch.Value != body.Value.OperatorAuthorityEpoch)
         {
-
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "Operator authority changed after this curation change was prepared.");
-
         }
 
         Result<CovenantCurationIntent> intent = CovenantOperatorCurationFactory.Curate(
@@ -275,52 +263,120 @@ internal sealed partial class CovenantMutationService
 
         if (intent.IsFailure)
         {
-
             return intent.Error;
-
         }
 
-        return await CommitCurationAsync(intent.Value, body.Value, cancellationToken).ConfigureAwait(false);
-
+        return await CommitCurationAsync(intent.Value, body.Value, writeLease, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask<Result<CovenantCurationResultDto>> CommitCurationAsync(
         CovenantCurationIntent intent,
         CovenantOperatorPreflightBody body,
+        CovenantWriteLease writeLease,
         CancellationToken cancellationToken)
     {
+        SqliteConnection connection = await OpenOperatorConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-        SqliteConnection connection = await connections
-            .GetOpenConnectionAsync(cancellationToken)
-            .ConfigureAwait(false);
+        SqliteBusyRetryCursor retry = SqliteBusyRetry.Begin(BusyRetryDeadlineForTesting);
 
-        await using SqliteTransaction transaction = (SqliteTransaction)await connection
-            .BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
-            .ConfigureAwait(false);
-
-        CovenantCurationCommit commit = new(
-            body.DatasetGeneration,
-            checked((long)body.KeyReclamationEpoch),
-            timeProvider.GetUtcNow(),
-            intent);
-
-        Result<CovenantCurationReceipt> applied = await curationKernel
-            .ApplyAsync(commit, new CovenantMutationTransaction(connection, transaction), cancellationToken)
-            .ConfigureAwait(false);
-
-        if (applied.IsFailure)
+        while (true)
         {
+            Result live = await writeLease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
 
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            if (live.IsFailure)
+            {
+                return live.Error;
+            }
 
-            return applied.Error;
-
+            try
+            {
+                return await CommitCurationAttemptAsync(intent, body, connection, writeLease, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperatorAttemptFailure failure) when (failure.RetryableBusy)
+            {
+                try
+                {
+                    await retry.WaitAsync(failure.Failure, cancellationToken, delayAsync: BusyRetryDelayForTesting)
+                        .ConfigureAwait(false);
+                }
+                catch (GrimoireBusyTimeoutException exhausted)
+                {
+                    throw new OperatorAttemptFailure(exhausted, failure.Stage, retryableBusy: false);
+                }
+            }
         }
+    }
 
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    private async ValueTask<Result<CovenantCurationResultDto>> CommitCurationAttemptAsync(
+        CovenantCurationIntent intent,
+        CovenantOperatorPreflightBody body,
+        SqliteConnection connection,
+        CovenantWriteLease writeLease,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using SqliteTransaction transaction = BeginOperatorTransaction(connection);
 
-        return Dto(applied.Value);
+            OperatorStage stage = OperatorStage.Write;
 
+            bool committed = false;
+
+            try
+            {
+                CovenantCurationCommit commit = new(
+                    body.DatasetGeneration,
+                    checked((long)body.KeyReclamationEpoch),
+                    timeProvider.GetUtcNow(),
+                    intent);
+
+                Result<CovenantCurationReceipt> applied = await curationKernel
+                    .ApplyAsync(commit, new CovenantMutationTransaction(connection, transaction), cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (applied.IsFailure)
+                {
+                    stage = OperatorStage.Rollback;
+
+                    await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+                    return applied.Error;
+                }
+
+                Result live = await writeLease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
+
+                if (live.IsFailure)
+                {
+                    stage = OperatorStage.Rollback;
+
+                    await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+                    return live.Error;
+                }
+
+                stage = OperatorStage.Commit;
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                committed = true;
+
+                return Dto(applied.Value);
+            }
+            catch (Exception failure) when (IsOperatorStorageFailure(failure))
+            {
+                throw new OperatorAttemptFailure(failure, stage,
+                    retryableBusy: !committed && stage == OperatorStage.Write && SqliteBusyRetry.IsBusyOrLocked(failure));
+            }
+        }
+        catch (OperatorAttemptFailure)
+        {
+            throw;
+        }
+        catch (Exception failure) when (IsOperatorStorageFailure(failure))
+        {
+            throw new OperatorAttemptFailure(failure, OperatorStage.ResourceCleanup, retryableBusy: false);
+        }
     }
 
     /// <summary>
@@ -348,7 +404,6 @@ internal sealed partial class CovenantMutationService
         string normalizedKey,
         CancellationToken cancellationToken)
     {
-
         SqliteConnection connection = await connections
             .GetOpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -375,9 +430,7 @@ internal sealed partial class CovenantMutationService
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return Result<CovenantCurationResultDto?>.Success(null);
-
         }
 
         CovenantDigest storedRequest = new((byte[])reader.GetValue(0));
@@ -390,11 +443,9 @@ internal sealed partial class CovenantMutationService
 
         if (storedRequest != requestDigest)
         {
-
             return new Error(
                 "Security.IdempotencyConflict",
                 "This Covenant curation ID was already used with different client input.");
-
         }
 
         return Result<CovenantCurationResultDto?>.Success(new CovenantCurationResultDto(
@@ -414,7 +465,6 @@ internal sealed partial class CovenantMutationService
             Hex(storedRequest),
             Hex(new CovenantDigest((byte[])reader.GetValue(1))),
             Replayed: true));
-
     }
 
     private static CovenantCurationResultDto Dto(CovenantCurationReceipt receipt) =>
@@ -476,5 +526,4 @@ internal sealed partial class CovenantMutationService
             projected.IsMasked,
             effect.GlobalConfirmedSuppressed,
             effect.GlobalConfirmedResurfaces));
-
 }

@@ -28,7 +28,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 internal sealed class CovenantServiceHarness : IAsyncDisposable
 {
-
     private readonly CovenantCanonicalFixture _fixture;
 
     private readonly HarnessClock _clock;
@@ -39,7 +38,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
         CovenantOperationGate gate,
         HarnessClock clock)
     {
-
         _fixture = fixture;
 
         _clock = clock;
@@ -47,7 +45,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
         Service = service;
 
         Gate = gate;
-
     }
 
     internal CovenantMutationService Service { get; }
@@ -82,9 +79,11 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
         bool withErasureEvidence = false,
         IReadOnlyList<string>? coreObjects = null,
         bool withAccelerator = false,
-        Func<CancellationToken, Task>? afterReplayProbeForTesting = null)
+        Func<CancellationToken, Task>? afterReplayProbeForTesting = null,
+        TimeSpan? busyRetryDeadlineForTesting = null,
+        Func<TimeSpan, CancellationToken, Task>? busyRetryDelayForTesting = null,
+        Microsoft.Extensions.Logging.ILogger<CovenantMutationService>? mutationLoggerForTesting = null)
     {
-
         CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(
             cancellationToken,
             withAccelerator: withAccelerator,
@@ -109,7 +108,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
 
         if (withOwnerCleanup)
         {
-
             await using Microsoft.Data.Sqlite.SqliteCommand seed = fixture.Connection.CreateCommand();
 
             seed.CommandText = """
@@ -119,7 +117,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
                 """;
 
             _ = await seed.ExecuteNonQueryAsync(cancellationToken);
-
         }
 
         HarnessClock clock = new();
@@ -133,13 +130,15 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
             new CovenantCurationKernel(),
             new HarnessAuthority(),
             clock,
-            DetachedAvailabilityRepublisher.Create())
+            DetachedAvailabilityRepublisher.Create(),
+            mutationLoggerForTesting ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<CovenantMutationService>.Instance)
         {
             AfterReplayProbeForTesting = afterReplayProbeForTesting,
+            BusyRetryDeadlineForTesting = busyRetryDeadlineForTesting,
+            BusyRetryDelayForTesting = busyRetryDelayForTesting,
         };
 
         return new CovenantServiceHarness(fixture, service, CovenantOperationGateFixture.CreateGate(), clock);
-
     }
 
     internal void Advance(TimeSpan amount) => _clock.Advance(amount);
@@ -165,7 +164,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
     /// </remarks>
     internal async Task SeedUpgradedKeyAsync(string key, long epoch, CancellationToken cancellationToken)
     {
-
         await using Microsoft.Data.Sqlite.SqliteCommand command = _fixture.Connection.CreateCommand();
 
         command.CommandText = """
@@ -178,7 +176,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
         _ = command.Parameters.AddWithValue("$epoch", epoch);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
     }
 
     /// <summary>
@@ -196,7 +193,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
         string key,
         CancellationToken cancellationToken)
     {
-
         MemoryErasureKeyOpenResult opened = _fixture.ErasureKeys.OpenOrCreate(evidenceRowsExist: false);
 
         Assert.Equal(MemoryErasureKeyState.Present, opened.State);
@@ -208,7 +204,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
             erasureKey,
             MemoryErasureIdentity.ForCovenant(scope, campaignId, key),
             cancellationToken);
-
     }
 
     /// <summary>
@@ -226,12 +221,10 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
     /// </remarks>
     internal MemoryErasureKeyring KeyringInState(MemoryErasureKeyState state)
     {
-
         MemoryErasureKeyring keyring = MemoryErasureTestKeys.Isolated(_fixture.Credentials);
 
         switch (state)
         {
-
             case MemoryErasureKeyState.Unresolved:
 
                 break;
@@ -266,12 +259,10 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
             default:
 
                 throw new ArgumentOutOfRangeException(nameof(state), state, "A recognized key state is required.");
-
         }
 
         if (state is not MemoryErasureKeyState.Unresolved)
         {
-
             MemoryErasureKeyOpenResult probed = keyring.OpenExisting(MemoryErasureKeyProbe.Reprobe);
 
             probed.Key?.Dispose();
@@ -279,13 +270,11 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
             _fixture.Credentials.FailWith = null;
 
             Assert.Equal(state, probed.State);
-
         }
 
         Assert.Equal(state, keyring.Latch.State);
 
         return keyring;
-
     }
 
     /// <summary>Writes one entry through the production prepare-and-commit path.</summary>
@@ -296,19 +285,16 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
         string content,
         CancellationToken cancellationToken)
     {
-
         Guid mutationId = Guid.CreateVersion7();
 
         Result<CovenantMutationPreflightDto> prepared;
 
         await using (ICovenantSnapshotReadLease read = await AcquireReadAsync(scope, campaignId, cancellationToken))
         {
-
             prepared = await Service.PrepareSetAsync(
                 new CovenantSetPrepareRequest(scope, campaignId, key, content, 0, mutationId, false),
                 read,
                 cancellationToken);
-
         }
 
         Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
@@ -321,7 +307,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
             cancellationToken);
 
         Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
-
     }
 
     /// <summary>Retires one lane head through the production prepare-and-commit path.</summary>
@@ -332,14 +317,12 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
         long expectedRevision,
         CancellationToken cancellationToken)
     {
-
         Guid mutationId = Guid.CreateVersion7();
 
         Result<CovenantMutationPreflightDto> prepared;
 
         await using (ICovenantSnapshotReadLease read = await AcquireReadAsync(scope, campaignId, cancellationToken))
         {
-
             prepared = await Service.PrepareRetireAsync(
                 new CovenantRetirePrepareRequest(
                     scope,
@@ -350,7 +333,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
                     mutationId),
                 read,
                 cancellationToken);
-
         }
 
         Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
@@ -371,7 +353,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
             cancellationToken);
 
         Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
-
     }
 
     internal async Task<Result<CovenantMutationPreflightDto>> PrepareCorrectAsync(
@@ -386,7 +367,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
         Guid? mutationId = null,
         CovenantLane targetLane = CovenantLane.Confirmed)
     {
-
         await using ICovenantSnapshotReadLease read = await AcquireReadAsync(scope, campaignId, cancellationToken);
 
         return await Service.PrepareCorrectAsync(
@@ -402,19 +382,16 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
                 mutationId ?? Guid.CreateVersion7()),
             read,
             cancellationToken);
-
     }
 
     internal async Task<Result<CovenantMutationResultDto>> CommitCorrectAsync(
         CovenantCorrectRequest request,
         CancellationToken cancellationToken)
     {
-
         await using CovenantWriteLease write =
             (await Gate.AcquireWriteAsync(Scope(request.Scope, request.CampaignId), cancellationToken)).Value;
 
         return await Service.CorrectAsync(request, write, cancellationToken);
-
     }
 
     /// <summary>Corrects the live Confirmed head of one key through the production path.</summary>
@@ -429,7 +406,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
         string content,
         CancellationToken cancellationToken)
     {
-
         Guid targetVersionId;
 
         long revision;
@@ -438,7 +414,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
 
         await using (Microsoft.Data.Sqlite.SqliteCommand command = _fixture.Connection.CreateCommand())
         {
-
             command.CommandText = """
                 SELECT h.CurrentVersionId, h.CurrentLaneRevision, v.RenderedHash
                 FROM covenant_heads h
@@ -462,7 +437,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
             revision = reader.GetInt64(1);
 
             renderedHash = Convert.ToHexStringLower((byte[])reader.GetValue(2));
-
         }
 
         Guid mutationId = Guid.CreateVersion7();
@@ -495,7 +469,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
             cancellationToken);
 
         Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
-
     }
 
     internal async Task<Result<CovenantCurationPreflightDto>> PrepareCurationAsync(
@@ -508,7 +481,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
         Guid? mutationId = null,
         CovenantLane lane = CovenantLane.Confirmed)
     {
-
         await using ICovenantSnapshotReadLease read = await AcquireReadAsync(scope, campaignId, cancellationToken);
 
         return await Service.PrepareCurationAsync(
@@ -522,19 +494,16 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
                 mutationId ?? Guid.CreateVersion7()),
             read,
             cancellationToken);
-
     }
 
     internal async Task<Result<CovenantCurationResultDto>> CommitCurationAsync(
         CovenantCurationRequest request,
         CancellationToken cancellationToken)
     {
-
         await using CovenantWriteLease write =
             (await Gate.AcquireWriteAsync(Scope(request.Scope, request.CampaignId), cancellationToken)).Value;
 
         return await Service.CurateAsync(request, write, cancellationToken);
-
     }
 
     /// <summary>Prepares and commits one curation change, the way a CLI verb does.</summary>
@@ -547,7 +516,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
         long expectedRevision = 0,
         CovenantLane lane = CovenantLane.Confirmed)
     {
-
         Guid mutationId = Guid.CreateVersion7();
 
         Result<CovenantCurationPreflightDto> prepared = await PrepareCurationAsync(
@@ -562,9 +530,7 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
 
         if (prepared.IsFailure)
         {
-
             return prepared.Error;
-
         }
 
         return await CommitCurationAsync(
@@ -578,13 +544,11 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
                 mutationId,
                 prepared.Value.PreflightToken),
             cancellationToken);
-
     }
 
     /// <summary>Runs one owner-cleanup batch the way the maintenance host does.</summary>
     internal async Task<CovenantCleanupOutcome> RunCleanupAsync(CancellationToken cancellationToken)
     {
-
         Guid generation = await _fixture.ReadDatasetGenerationAsync(cancellationToken);
 
         FakeCovenantAvailability availability = new();
@@ -606,7 +570,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
         Assert.True(outcome.IsSuccess, outcome.IsFailure ? outcome.Error.Message : string.Empty);
 
         return outcome.Value;
-
     }
 
     public ValueTask DisposeAsync() => _fixture.DisposeAsync();
@@ -631,19 +594,16 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
     /// <summary>A clock the suite can move, so token expiry is stated rather than waited for.</summary>
     private sealed class HarnessClock : TimeProvider
     {
-
         private long _ticks = DateTimeOffset.UnixEpoch.UtcTicks + TimeSpan.TicksPerDay;
 
         public override DateTimeOffset GetUtcNow() =>
             new(Interlocked.Add(ref _ticks, TimeSpan.TicksPerSecond), TimeSpan.Zero);
 
         internal void Advance(TimeSpan amount) => _ = Interlocked.Add(ref _ticks, amount.Ticks);
-
     }
 
     private sealed class HarnessEnvelopeCodec(HarnessClock clock) : ICovenantEnvelopeCodec
     {
-
         private readonly Dictionary<string, CovenantEnvelopeBody> _issued = new(StringComparer.Ordinal);
 
         public CovenantEnvelopeKeySnapshot KeySnapshot { get; } =
@@ -655,7 +615,6 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
             TimeSpan lifetime,
             DateTimeOffset? issuedAtUtc = null)
         {
-
             string token = Convert.ToHexStringLower(Guid.NewGuid().ToByteArray());
 
             // Honoured, not ignored: a stand-in that stamped its own clock would let the body and the
@@ -672,21 +631,17 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
                 payload.ToArray());
 
             return Result<string>.Success(token);
-
         }
 
         public Result<CovenantEnvelopeBody> Decode(CovenantEnvelopePurpose expectedPurpose, string? token)
         {
-
             if (token is null
                 || !_issued.TryGetValue(token, out CovenantEnvelopeBody? body)
                 || body.Purpose != expectedPurpose)
             {
-
                 return Result<CovenantEnvelopeBody>.Failure(new Error(
                     ErrorCodes.Covenant.ForbiddenAuthority,
                     "This Covenant token is not valid for this purpose."));
-
             }
 
             // The production codec's rule, stated on the harness clock. A stand-in that decoded an
@@ -694,21 +649,16 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
             // accepted a token the real codec refuses.
             if (clock.GetUtcNow() >= body.ExpiresAtUtc)
             {
-
                 return Result<CovenantEnvelopeBody>.Failure(
                     CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Expired));
-
             }
 
             return Result<CovenantEnvelopeBody>.Success(body);
-
         }
-
     }
 
     private sealed class HarnessAuthority : ICovenantAuthoritySnapshotProvider
     {
-
         public CovenantAuthoritySnapshot? Current { get; } = new(
             1,
             Guid.Parse("11111111-2222-3333-4444-555555555555").ToString("D"),
@@ -717,7 +667,5 @@ internal sealed class CovenantServiceHarness : IAsyncDisposable
             RecoveryEnvelopeEpoch: 1,
             CovenantHostToolsState.Clean,
             null);
-
     }
-
 }

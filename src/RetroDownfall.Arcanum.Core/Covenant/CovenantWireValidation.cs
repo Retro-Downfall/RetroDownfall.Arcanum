@@ -201,8 +201,14 @@ internal static class CovenantWireValidation
         // character bound would admit four times the declared cost for astral text.
         // Strict: an unpaired surrogate has no UTF-8 form, and the lenient encoder would count it as
         // a three-byte U+FFFD and admit text the compiler then refuses.
-        return TryGetStrictByteCount(content, out int byteCount)
-            && byteCount is > 0 and <= CovenantLimits.MaxAuthoredContentBytes
+        if (!TryGetStrictByteCount(content, out int byteCount))
+        {
+            return new Error(ErrorCodes.Covenant.InvalidContent, CovenantCompilationFailure.Describe(
+                CovenantCompilationFailure.Argument(CovenantCompilationFailureReason.InvalidUnicode, "content"),
+                CovenantCompilationField.Content));
+        }
+
+        return byteCount is > 0 and <= CovenantLimits.MaxAuthoredContentBytes
             ? Result.Success()
             : new Error(
                 ErrorCodes.Covenant.InvalidContent,

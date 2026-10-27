@@ -75,11 +75,19 @@ internal sealed partial class ArcanumInternalToolServer
             return CovenantFailure(ErrorCodes.Covenant.InvalidScope, "Invalid arguments for propose_covenant.");
         }
 
-        if (args is null || string.IsNullOrWhiteSpace(args.Key) || string.IsNullOrWhiteSpace(args.Content))
+        if (args is null)
         {
-            return CovenantFailure(
-                ErrorCodes.Covenant.InvalidScope,
-                "propose_covenant requires a non-empty 'key' and 'content'.");
+            return CovenantFailure(ErrorCodes.Covenant.InvalidScope, "propose_covenant requires an argument object.");
+        }
+
+        if (string.IsNullOrWhiteSpace(args.Key))
+        {
+            return CovenantFailure(ErrorCodes.Covenant.InvalidKey, CovenantCompilationFailure.KeyPolicy);
+        }
+
+        if (args.Content is null)
+        {
+            return CovenantFailure(ErrorCodes.Covenant.InvalidContent, "The content is required.");
         }
 
         CovenantToolInvocationContext capability = grant!.Capability;
@@ -107,15 +115,14 @@ internal sealed partial class ArcanumInternalToolServer
             }
             catch (ArgumentException ex)
             {
-                // The compiler's rejection reason is about the operator's own text, so the model gets
-                // the typed code and a fixed sentence rather than an echo of what it just sent.
-                _logger?.LogInformation(
-                    "propose_covenant rejected content that failed compilation: {Reason}.",
-                    ex.GetType().Name);
+                CovenantCompilationFailureReason reason = CovenantCompilationFailure.ReasonOf(ex);
+
+                _logger?.LogInformation("propose_covenant refused declared compilation policy {Reason}.", reason);
 
                 return CovenantFailure(
-                    ErrorCodes.Covenant.InvalidScope,
-                    "propose_covenant could not compile that key and content under the Covenant text policy.");
+                    reason == CovenantCompilationFailureReason.KeyGrammar
+                        ? ErrorCodes.Covenant.InvalidKey : ErrorCodes.Covenant.InvalidContent,
+                    CovenantCompilationFailure.Describe(ex, CovenantCompilationField.Content));
             }
 
             Result<CovenantProposedLaneExpectation> expectation = await ResolveProposedLaneAsync(
@@ -220,8 +227,8 @@ internal sealed partial class ArcanumInternalToolServer
         catch (ArgumentException)
         {
             return Task.FromResult(CovenantFailure(
-                ErrorCodes.Covenant.InvalidScope,
-                "retire_covenant requires a well-formed Covenant key."));
+                ErrorCodes.Covenant.InvalidKey,
+                CovenantCompilationFailure.KeyPolicy));
         }
 
         // The Ward was shown one exact target. A call that now names a different key or lane is not

@@ -15,7 +15,21 @@ public sealed class CovenantCompiler : ICovenantCompiler
 
     public CovenantCompiledContent Compile(string key, string authoredContent)
     {
-        CovenantKey normalizedKey = new(key);
+        CovenantKey normalizedKey;
+
+        try
+        {
+            normalizedKey = new CovenantKey(key);
+        }
+        catch (ArgumentNullException)
+        {
+            throw;
+        }
+        catch (ArgumentException failure)
+        {
+            throw CovenantCompilationFailure.Argument(CovenantCompilationFailureReason.KeyGrammar,
+                nameof(key), cause: failure);
+        }
 
         ArgumentNullException.ThrowIfNull(authoredContent);
 
@@ -30,7 +44,7 @@ public sealed class CovenantCompiler : ICovenantCompiler
 
         if (collapsed.Length == 0)
         {
-            throw new ArgumentException("Covenant authored content cannot be empty or whitespace-only.", nameof(authoredContent));
+            throw CovenantCompilationFailure.Argument(CovenantCompilationFailureReason.WhitespaceOnly, nameof(authoredContent));
         }
 
         string fragment = RenderFragment(normalizedKey.Value, collapsed);
@@ -114,14 +128,12 @@ public sealed class CovenantCompiler : ICovenantCompiler
         }
         catch (EncoderFallbackException exception)
         {
-            throw new ArgumentException("Covenant authored content must contain valid Unicode scalar values.", nameof(authoredContent), exception);
+            throw CovenantCompilationFailure.Argument(CovenantCompilationFailureReason.InvalidUnicode, nameof(authoredContent), cause: exception);
         }
 
         if (byteCount > CovenantLimits.MaxAuthoredContentBytes)
         {
-            throw new ArgumentException(
-                $"Covenant authored content cannot exceed {CovenantLimits.MaxAuthoredContentBytes} strict UTF-8 bytes.",
-                nameof(authoredContent));
+            throw CovenantCompilationFailure.Argument(CovenantCompilationFailureReason.ByteLimit, nameof(authoredContent));
         }
 
         byte[] encoded = new byte[byteCount];
@@ -133,7 +145,7 @@ public sealed class CovenantCompiler : ICovenantCompiler
         catch (EncoderFallbackException exception)
         {
             encoded.AsSpan().Clear();
-            throw new ArgumentException("Covenant authored content must contain valid Unicode scalar values.", nameof(authoredContent), exception);
+            throw CovenantCompilationFailure.Argument(CovenantCompilationFailureReason.InvalidUnicode, nameof(authoredContent), cause: exception);
         }
 
         return encoded;
@@ -143,28 +155,32 @@ public sealed class CovenantCompiler : ICovenantCompiler
     {
         ReadOnlySpan<char> remaining = authoredContent.AsSpan();
 
+        int position = 1;
+
         while (!remaining.IsEmpty)
         {
             OperationStatus status = Rune.DecodeFromUtf16(remaining, out Rune rune, out int charsConsumed);
 
             if (status != OperationStatus.Done)
             {
-                throw new ArgumentException("Covenant authored content must contain valid Unicode scalar values.", nameof(authoredContent));
+                throw CovenantCompilationFailure.Argument(CovenantCompilationFailureReason.InvalidUnicode, nameof(authoredContent));
             }
 
             int scalar = rune.Value;
 
             if (IsProhibitedControl(scalar))
             {
-                throw new ArgumentException("Covenant authored content contains a prohibited control scalar.", nameof(authoredContent));
+                throw CovenantCompilationFailure.Argument(CovenantCompilationFailureReason.ControlScalar, nameof(authoredContent), scalar, position);
             }
 
             if (CovenantUnicodePolicyV1.IsFormatScalar(scalar))
             {
-                throw new ArgumentException("Covenant authored content contains a Unicode 17 Format scalar.", nameof(authoredContent));
+                throw CovenantCompilationFailure.Argument(CovenantCompilationFailureReason.FormatScalar, nameof(authoredContent), scalar, position);
             }
 
             remaining = remaining[charsConsumed..];
+
+            position++;
         }
     }
 

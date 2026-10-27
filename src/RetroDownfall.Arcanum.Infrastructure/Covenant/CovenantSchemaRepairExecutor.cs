@@ -14,9 +14,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// What one inspection observed about the Covenant tiers, without changing anything.
 /// </summary>
 /// <remarks>
-/// The catalog digest is the whole answer to "is this still the schema the journal described". Repair
-/// resumes only against the exact digest it recorded, so a catalog somebody else changed in the
-/// meantime stops recovery instead of being repaired on top of.
+/// The digest answers whether this is still the catalog the journal described. Equality is necessary
+/// for a pure original dispatch-refusal proof, but cannot establish that an interrupted action had no
+/// data effects. Recovery never re-executes an unresolved Prepared repair.
 /// </remarks>
 internal sealed record CovenantSchemaRepairInspection(
     CovenantDigest CatalogDigest,
@@ -37,20 +37,18 @@ internal sealed record CovenantSchemaRepairInspection(
 /// </remarks>
 internal interface ICovenantSchemaRepairExecutor
 {
-
-    Task<Result<CovenantSchemaRepairInspection>> InspectAsync(
+    Task<CovenantSchemaRepairResult<CovenantSchemaRepairInspection>> InspectAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Performs the one permitted repair, and reports whether anything durable actually changed.
+    /// Performs the one permitted repair, and reports positive no-mutation evidence, completed mutation, or unknown effects.
     /// </summary>
-    Task<Result<bool>> RepairAsync(
+    Task<CovenantSchemaRepairExecution> RepairAsync(
         SqliteConnection connection,
         CovenantSchemaRepairAction action,
         CovenantSchemaRepairInspection inspected,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -69,7 +67,6 @@ internal sealed partial class CovenantSchemaRepairExecutor(
     GrimoireSchemaInitializationContext initializationContext,
     int embeddingDimensions) : ICovenantSchemaRepairExecutor
 {
-
     private readonly GrimoireSchemaManifestInspector _inspector =
         inspector ?? throw new ArgumentNullException(nameof(inspector));
 
@@ -85,11 +82,34 @@ internal sealed partial class CovenantSchemaRepairExecutor(
 
     private const char RowSeparator = '\u001E';
 
-    public async Task<Result<CovenantSchemaRepairInspection>> InspectAsync(
+    public async Task<CovenantSchemaRepairResult<CovenantSchemaRepairInspection>> InspectAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(connection);
 
+        try
+        {
+            return await InspectCoreAsync(connection, cancellationToken).ConfigureAwait(false);
+        }
+        catch (SqliteException failure)
+        {
+            if ((failure.SqliteErrorCode & 0xff) == 9)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            return CovenantSchemaRepairResult<CovenantSchemaRepairInspection>.Failure(
+                new Error(ErrorCodes.Covenant.MaintenanceFailed,
+                    "Covenant schema inspection could not be completed. Preserve the profile and inspect the safe storage diagnostic before recovery."),
+                CovenantSchemaRepairStorageFault.From(failure));
+        }
+    }
+
+    private async Task<Result<CovenantSchemaRepairInspection>> InspectCoreAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(connection);
 
         GrimoireSchemaInspectionResult canonical = await _inspector.InspectAsync(
@@ -122,33 +142,28 @@ internal sealed partial class CovenantSchemaRepairExecutor(
                 accelerator.IsValid,
                 missingIndexes,
                 canonical.DiagnosticCode ?? accelerator.DiagnosticCode));
-
     }
 
-    public async Task<Result<bool>> RepairAsync(
+    public async Task<CovenantSchemaRepairExecution> RepairAsync(
         SqliteConnection connection,
         CovenantSchemaRepairAction action,
         CovenantSchemaRepairInspection inspected,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(inspected);
 
+        if (CovenantSchemaRepairExecution.RefusesBeforeAnyMutator(action, inspected))
+        {
+            return CovenantSchemaRepairExecution.NoMutation(CovenantSchemaRepairFailure.ActionNotApplicable);
+        }
+
         switch (action)
         {
-
-            case CovenantSchemaRepairAction.InstallAbsentCanonicalFamily when inspected.CanonicalObjectsPresent:
-
-                // The family is not absent. Installing over an existing one under this action would be
-                // a different repair than the operator asked for, performed on data they did not know
-                // was there.
-                return ManualRecovery();
-
             case CovenantSchemaRepairAction.RepairOrdinaryIndex when inspected.MissingOrdinaryIndexes.Count == 0:
 
-                return Result<bool>.Success(false);
+                return CovenantSchemaRepairExecution.NoMutation();
 
             case CovenantSchemaRepairAction.RepairOrdinaryIndex:
 
@@ -160,10 +175,6 @@ internal sealed partial class CovenantSchemaRepairExecutor(
                     inspected.MissingOrdinaryIndexes,
                     cancellationToken).ConfigureAwait(false);
 
-            case CovenantSchemaRepairAction.RepairExistingFamily when !inspected.CanonicalObjectsPresent:
-
-                return ManualRecovery();
-
             case CovenantSchemaRepairAction.InstallAbsentCanonicalFamily:
             case CovenantSchemaRepairAction.RepairExistingFamily:
 
@@ -171,13 +182,11 @@ internal sealed partial class CovenantSchemaRepairExecutor(
 
             default:
 
-                return ManualRecovery();
-
+                return CovenantSchemaRepairExecution.NoMutation(CovenantSchemaRepairFailure.ActionNotApplicable);
         }
 
         try
         {
-
             GrimoireSchemaInstallResult installed = await _installer.InstallAsync(
                 connection,
                 embeddingDimensions,
@@ -185,23 +194,22 @@ internal sealed partial class CovenantSchemaRepairExecutor(
                 cancellationToken).ConfigureAwait(false);
 
             return installed.CovenantCanonical.IsHealthy
-                ? Result<bool>.Success(true)
-                : ManualRecovery();
-
+                ? CovenantSchemaRepairExecution.MutationCompleted()
+                : CovenantSchemaRepairExecution.Unknown(CovenantSchemaRepairFailure.CanonicalUnhealthy);
         }
         catch (SqliteException exception)
         {
+            if ((exception.SqliteErrorCode & 0xff) == 9)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
 
-            return Result<bool>.Failure(new Error(ErrorCodes.Covenant.MaintenanceFailed, exception.Message));
-
+            return CovenantSchemaRepairExecution.Unknown(CovenantSchemaRepairFailure.Storage, exception);
         }
-        catch (GrimoireSchemaRefusedException)
+        catch (GrimoireSchemaRefusedException exception)
         {
-
-            return ManualRecovery();
-
+            return CovenantSchemaRepairExecution.Unknown(CovenantSchemaRepairFailure.SchemaRefused, exception);
         }
-
     }
 
     /// <summary>
@@ -214,41 +222,33 @@ internal sealed partial class CovenantSchemaRepairExecutor(
     /// statement text, and no other object type is eligible: a missing table, trigger, or virtual
     /// table is not an ordinary index and this action must not create one.
     /// </remarks>
-    private static async Task<Result<bool>> RecreateOrdinaryIndexesAsync(
+    private static async Task<CovenantSchemaRepairExecution> RecreateOrdinaryIndexesAsync(
         SqliteConnection connection,
         IReadOnlyList<string> missing,
         CancellationToken cancellationToken)
     {
-
         HashSet<string> wanted = new(missing, StringComparer.Ordinal);
 
         bool changed = false;
 
         foreach (GrimoireSchemaObject definition in GrimoireSchemaCatalog.CovenantCanonicalObjects)
         {
-
             if (definition.Category != GrimoireSchemaCategory.Tables)
             {
-
                 continue;
-
             }
 
             string sql = GrimoireSchemaCatalog.Resolve(definition, embeddingDimensions: null);
 
             foreach (Match match in OrdinaryIndexStatement().Matches(sql))
             {
-
                 if (!wanted.Contains(match.Groups["name"].Value))
                 {
-
                     continue;
-
                 }
 
                 try
                 {
-
                     await using SqliteCommand command = connection.CreateCommand();
 
                     command.CommandText = match.Value;
@@ -256,22 +256,21 @@ internal sealed partial class CovenantSchemaRepairExecutor(
                     _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
                     changed = true;
-
                 }
                 catch (SqliteException exception)
                 {
+                    if ((exception.SqliteErrorCode & 0xff) == 9)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
 
-                    return Result<bool>.Failure(
-                        new Error(ErrorCodes.Covenant.MaintenanceFailed, exception.Message));
-
+                    return CovenantSchemaRepairExecution.Unknown(CovenantSchemaRepairFailure.Storage, exception);
                 }
-
             }
-
         }
 
-        return changed ? Result<bool>.Success(true) : ManualRecovery();
-
+        return changed ? CovenantSchemaRepairExecution.MutationCompleted()
+            : CovenantSchemaRepairExecution.NoMutation(CovenantSchemaRepairFailure.IndexDefinitionMissing);
     }
 
     [GeneratedRegex(
@@ -286,7 +285,6 @@ internal sealed partial class CovenantSchemaRepairExecutor(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = """
@@ -304,7 +302,6 @@ internal sealed partial class CovenantSchemaRepairExecutor(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             _ = catalog
                 .Append(reader.GetString(0))
                 .Append(FieldSeparator)
@@ -312,11 +309,9 @@ internal sealed partial class CovenantSchemaRepairExecutor(
                 .Append(FieldSeparator)
                 .Append(reader.GetString(2))
                 .Append(RowSeparator);
-
         }
 
         return new CovenantDigest(SHA256.HashData(Encoding.UTF8.GetBytes(catalog.ToString())));
-
     }
 
     /// <summary>
@@ -345,12 +340,9 @@ internal sealed partial class CovenantSchemaRepairExecutor(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         if (CanonicalTableNames.Length == 0)
         {
-
             return false;
-
         }
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -364,15 +356,12 @@ internal sealed partial class CovenantSchemaRepairExecutor(
 
         for (int index = 0; index < CanonicalTableNames.Length; index++)
         {
-
             _ = command.Parameters.AddWithValue($"@name{index}", CanonicalTableNames[index]);
-
         }
 
         return Convert.ToInt64(
             await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             System.Globalization.CultureInfo.InvariantCulture) == 1;
-
     }
 
     /// <summary>
@@ -386,12 +375,10 @@ internal sealed partial class CovenantSchemaRepairExecutor(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         HashSet<string> installed = new(StringComparer.Ordinal);
 
         await using (SqliteCommand command = connection.CreateCommand())
         {
-
             command.CommandText = """
                 SELECT "name" FROM sqlite_master WHERE "type" = 'index' AND "name" LIKE '%covenant%';
                 """;
@@ -402,11 +389,8 @@ internal sealed partial class CovenantSchemaRepairExecutor(
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 _ = installed.Add(reader.GetString(0));
-
             }
-
         }
 
         return
@@ -418,13 +402,5 @@ internal sealed partial class CovenantSchemaRepairExecutor(
                 .Distinct(StringComparer.Ordinal)
                 .Order(StringComparer.Ordinal),
         ];
-
     }
-
-    private static Result<bool> ManualRecovery() =>
-        Result<bool>.Failure(
-            new Error(
-                ErrorCodes.Covenant.ManualRecoveryRequired,
-                "This Covenant catalog defect is not repairable without operator action."));
-
 }

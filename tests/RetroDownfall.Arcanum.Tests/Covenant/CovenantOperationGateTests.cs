@@ -11,7 +11,7 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// <summary>
 /// Lifecycle, coverage, and recovery behaviour of the generation-bound Covenant operation gate.
 /// </summary>
-public sealed class CovenantOperationGateTests
+public sealed partial class CovenantOperationGateTests
 {
     private static CancellationToken Token => CancellationToken.None;
 
