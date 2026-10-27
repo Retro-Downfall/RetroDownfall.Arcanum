@@ -686,7 +686,7 @@ public sealed class PromptCacheDispatchValidatorTests
 
         private readonly ServiceProvider services;
 
-        internal Fixture(CampaignReader? reader = null)
+        internal Fixture(CampaignReader? reader = null, IPromptCacheAuthoritySnapshotProvider? authorityProvider = null)
         {
             Epoch = new(new LongRestConfigurationEpochTests.NotifyingOptions(Settings), Guid.NewGuid());
 
@@ -701,7 +701,7 @@ public sealed class PromptCacheDispatchValidatorTests
 
             services = registrations.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
 
-            Validator = new(Epoch, Credentials, Authority, Estimator, services.GetRequiredService<IServiceScopeFactory>());
+            Validator = new(Epoch, Credentials, authorityProvider ?? Authority, Estimator, services.GetRequiredService<IServiceScopeFactory>());
 
             Lease = new(Chat, Provider, "gpt-5", null, new PromptCacheClientIdentity(Chat, Provider, "gpt-5", Epoch.Capture().Stamp, Credentials.Stamp));
         }

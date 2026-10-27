@@ -52,7 +52,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal static class CovenantPersistedAvailabilityPublisher
 {
-
     private const string CampaignOwnerKindCode = "1";
 
     /// <summary>
@@ -79,7 +78,7 @@ internal static class CovenantPersistedAvailabilityPublisher
         """;
 
     /// <summary>
-    /// Publishes the persisted canonical and accelerator positions, and reports whether it did.
+    /// Reads the persisted positions and publishes them when they differ, reporting a successful read.
     /// </summary>
     /// <param name="acceleratorHealthy">
     /// Whether the accelerator tier installed healthily. A degraded tier publishes
@@ -87,7 +86,8 @@ internal static class CovenantPersistedAvailabilityPublisher
     /// looks, because the canonical fallback is the only thing answering queries.
     /// </param>
     /// <returns>
-    /// <see langword="false"/> when the canonical tier is absent, so nothing was published. An
+    /// <see langword="true"/> when facts were read, including an equivalent tuple that retains the
+    /// current snapshot; <see langword="false"/> when the canonical tier is absent. An
     /// installation without the canonical tier has no dataset generation, and inventing one would
     /// defeat the gate's refusal rather than satisfy it.
     /// </returns>
@@ -98,7 +98,6 @@ internal static class CovenantPersistedAvailabilityPublisher
         CovenantHealthTransition transition,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(availability);
 
         ArgumentNullException.ThrowIfNull(connection);
@@ -107,9 +106,7 @@ internal static class CovenantPersistedAvailabilityPublisher
 
         if (state is null)
         {
-
             return false;
-
         }
 
         // Idle is the only state that owes nothing. A rebuild that is in progress is still owed
@@ -142,17 +139,14 @@ internal static class CovenantPersistedAvailabilityPublisher
             transition);
 
         return true;
-
     }
 
     private static async Task<PersistedState?> TryReadAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             await using SqliteCommand command = connection.CreateCommand();
 
             command.CommandText = SelectPersistedState;
@@ -163,9 +157,7 @@ internal static class CovenantPersistedAvailabilityPublisher
 
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 return null;
-
             }
 
             return new PersistedState(
@@ -177,28 +169,21 @@ internal static class CovenantPersistedAvailabilityPublisher
                 reader.IsDBNull(5) ? null : reader.GetInt64(5),
                 (ulong)reader.GetInt64(6),
                 (CovenantFtsRebuildState)reader.GetInt32(7));
-
         }
         catch (SqliteException)
         {
-
             // The canonical tier is absent, so covenant_state does not exist. A failed or skipped
             // canonical install is exactly the case the gate's refusal is right about; there is
             // nothing to publish and nothing to invent.
             return null;
-
         }
-
     }
 
     private static Guid? ReadGuid(SqliteDataReader reader, int ordinal)
     {
-
         if (reader.IsDBNull(ordinal))
         {
-
             return null;
-
         }
 
         byte[] raw = new byte[16];
@@ -206,7 +191,6 @@ internal static class CovenantPersistedAvailabilityPublisher
         _ = reader.GetBytes(ordinal, 0, raw, 0, raw.Length);
 
         return new Guid(raw);
-
     }
 
     private sealed record PersistedState(
@@ -218,7 +202,6 @@ internal static class CovenantPersistedAvailabilityPublisher
         long? AppliedCampaignDeletionSequence,
         ulong AcceleratorEpoch,
         CovenantFtsRebuildState RebuildState);
-
 }
 
 /// <summary>
@@ -245,18 +228,15 @@ internal sealed class CovenantAvailabilityRepublisher(
     CovenantAvailability availability,
     ILogger<CovenantAvailabilityRepublisher> logger)
 {
-
     /// <summary>The fixed failure name for a state read the publisher absorbed.</summary>
     private const string UnreadableState = "CovenantStateUnreadable";
 
     internal async Task RepublishAsync(SqliteConnection connection, CovenantHealthTransition transition)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         try
         {
-
             // Not the caller's token: a caller that stopped waiting has not undone the commit, and the
             // whole cost is one read of a singleton row.
             bool published = await CovenantPersistedAvailabilityPublisher.PublishAsync(
@@ -271,20 +251,14 @@ internal sealed class CovenantAvailabilityRepublisher(
             // therefore exists, so nothing to publish here means the read failed.
             if (!published)
             {
-
                 LogNotRepublished(transition, UnreadableState);
-
             }
-
         }
         catch (Exception failure)
         {
-
             // The type names the failure; its message is not repeated, so nothing it carries is logged.
             LogNotRepublished(transition, failure.GetType().Name);
-
         }
-
     }
 
     private void LogNotRepublished(CovenantHealthTransition transition, string failure) =>
@@ -292,5 +266,4 @@ internal sealed class CovenantAvailabilityRepublisher(
             "Covenant availability was not republished after a committed {Transition} ({FailureType}); the next maintenance pass or a restart republishes it.",
             transition,
             failure);
-
 }

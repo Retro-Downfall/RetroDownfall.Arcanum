@@ -201,7 +201,16 @@ internal sealed class CovenantRuntimeGenerationProvider
     }
 
     internal CovenantAvailabilitySnapshot PublishAvailability(
-        Func<CovenantAvailabilitySnapshot, CovenantAvailabilitySnapshot> mutate)
+        Func<CovenantAvailabilitySnapshot, CovenantAvailabilitySnapshot> mutate) =>
+        PublishAvailabilityCore(mutate, coalesceUnchanged: false);
+
+    internal CovenantAvailabilitySnapshot PublishAvailabilityIfChanged(
+        Func<CovenantAvailabilitySnapshot, CovenantAvailabilitySnapshot> mutate) =>
+        PublishAvailabilityCore(mutate, coalesceUnchanged: true);
+
+    private CovenantAvailabilitySnapshot PublishAvailabilityCore(
+        Func<CovenantAvailabilitySnapshot, CovenantAvailabilitySnapshot> mutate,
+        bool coalesceUnchanged)
     {
         ArgumentNullException.ThrowIfNull(mutate);
 
@@ -218,6 +227,17 @@ internal sealed class CovenantRuntimeGenerationProvider
             {
                 throw new InvalidOperationException(
                     "An availability-only publication cannot change the initialized Covenant dataset generation.");
+            }
+
+            // Only the explicitly conditional publishers may coalesce. All material fields remain
+            // significant; the publication counter and its diagnostic transition are bookkeeping.
+            if (coalesceUnchanged && candidate with
+            {
+                Generation = current.Availability.Generation,
+                LastHealthTransition = current.Availability.LastHealthTransition,
+            } == current.Availability)
+            {
+                return current.Availability;
             }
 
             CovenantAvailabilitySnapshot next = candidate with

@@ -298,6 +298,61 @@ public sealed class CovenantMaintenanceHostedServiceTests
         await PeriodicHostMaintenance.ReopenAsync(closed.Value);
     }
 
+    [Theory]
+    [InlineData("disabled")]
+    [InlineData("unhealthy")]
+    [InlineData("denied")]
+    [InlineData("failure")]
+    public async Task No_progress_or_unavailable_scheduled_passes_do_not_start_a_fast_retry_loop(string condition)
+    {
+        FakeCovenantAvailability availability = new();
+
+        if (condition == "disabled") availability.Mutate(current => current with { FeatureEnabled = false });
+
+        if (condition == "unhealthy") availability.Mutate(current => current with { Canonical = CovenantCapabilityState.Unavailable });
+
+        GrimoireConnectionAdmissionGate admission = new(TimeProvider.System);
+
+        IGrimoireExclusiveClosedLease? closed = condition == "denied" ? await PeriodicHostMaintenance.CloseAsync(admission) : null;
+
+        await using ServiceProvider provider = new ServiceCollection().BuildServiceProvider();
+
+        CountingServiceScopeFactory scopes = new(provider.GetRequiredService<IServiceScopeFactory>());
+
+        ManualWallClockTimeProvider clock = new();
+
+        CountingLogger<CovenantMaintenanceHostedService> logger = new();
+
+        using CovenantMaintenanceHostedService service = new(scopes, admission, availability, clock, logger);
+
+        await service.StartAsync(Token);
+
+        try
+        {
+            await clock.WhenArmedTimersAsync(count => count == 1, TimeSpan.FromSeconds(10));
+
+            Assert.Equal(TimeSpan.FromMinutes(condition == "failure" ? 5 : 1), clock.NextDueIn);
+
+            Assert.Equal(condition == "failure" ? 1 : 0, scopes.Created);
+
+            Assert.Equal(condition == "failure" ? 3 : 0, logger.Errors);
+        }
+        finally
+        {
+            await service.StopAsync(Token);
+
+            if (closed is not null) await PeriodicHostMaintenance.ReopenAsync(closed);
+        }
+
+        Assert.Equal(0, clock.ArmedTimers);
+
+        int scopesAfterStop = scopes.Created;
+
+        clock.Advance(TimeSpan.FromHours(1));
+
+        Assert.Equal(scopesAfterStop, scopes.Created);
+    }
+
     private static CovenantMaintenanceHostedService Service(ICovenantAvailability availability) =>
         new(
             new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),

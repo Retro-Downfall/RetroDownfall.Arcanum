@@ -10,8 +10,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </summary>
 /// <remarks>
 /// Publication asks the composite runtime holder to replace one complete immutable snapshot and
-/// advance its monotonic availability generation while preserving the exact runtime authority, key,
-/// and authority references. Readers never take a lock or see a half-updated tuple.
+/// advance its monotonic availability generation for forced or materially changed publication while
+/// preserving the exact runtime authority, key, and authority references. Equivalent persisted facts
+/// and observed configuration values retain the exact current snapshot. Readers never take a lock or see a half-updated tuple.
 ///
 /// <para>Each publication method copies only the fields its publisher actually owns. A mutation
 /// commit knows the canonical sequence but not the accelerator's applied tuple, and letting it write
@@ -234,7 +235,7 @@ internal sealed class CovenantAvailability : ICovenantAvailability
         CovenantFtsSynchronizationState synchronization,
         bool rebuildRequired,
         CovenantHealthTransition transition) =>
-        Publish(current => current with
+        _runtime.PublishAvailabilityIfChanged(current => current with
         {
             DatasetGeneration = datasetGeneration,
 
@@ -263,6 +264,15 @@ internal sealed class CovenantAvailability : ICovenantAvailability
     /// </summary>
     internal CovenantAvailabilitySnapshot PublishFeatureEnabled(bool featureEnabled) =>
         Publish(current => current with
+        {
+            FeatureEnabled = featureEnabled,
+
+            LastHealthTransition = CovenantHealthTransition.FeatureConfiguration,
+        });
+
+    /// <summary>Publishes an observed feature value only when it changes the live state.</summary>
+    internal CovenantAvailabilitySnapshot PublishFeatureEnabledIfChanged(bool featureEnabled) =>
+        _runtime.PublishAvailabilityIfChanged(current => current with
         {
             FeatureEnabled = featureEnabled,
 
