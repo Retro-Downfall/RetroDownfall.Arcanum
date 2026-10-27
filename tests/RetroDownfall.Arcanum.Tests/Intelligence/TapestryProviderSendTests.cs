@@ -31,7 +31,7 @@ public sealed class TapestryProviderSendTests
 
         using var handler = new RetryHandler();
 
-        Exception? refusal = await SendAsync(embedding, handler, proof);
+        Exception? refusal = await SendAsync(embedding, handler, proof, sdkRetries: refuseAt > 1);
 
         Assert.NotNull(refusal);
 
@@ -118,7 +118,7 @@ public sealed class TapestryProviderSendTests
         Assert.Contains(services, service => service.ServiceType == typeof(RetroDownfall.Arcanum.Core.Weave.Tapestry.ITapestryClusterer));
     }
 
-    private static async Task<Exception?> SendAsync(bool embedding, RetryHandler handler, ITapestryProviderValidator? validator)
+    private static async Task<Exception?> SendAsync(bool embedding, RetryHandler handler, ITapestryProviderValidator? validator, bool sdkRetries = false)
     {
         var settings = new ArcanumSettings
         {
@@ -140,14 +140,24 @@ public sealed class TapestryProviderSendTests
 
             using EmbeddingGeneratorLease lease = await factory.ResolveGeneratorAsync(CancellationToken.None);
 
-            return await Record.ExceptionAsync(async () => await lease.Generator.GenerateAsync(["full source"]));
+            if (!sdkRetries) return await Record.ExceptionAsync(async () => await lease.Generator.GenerateAsync(["full source"]));
+
+            var retry = ProviderSdkTestTransport.RetryEmbedding(lease, settings.Providers[0], handler, validator);
+
+            using HttpClient transport = retry.Transport;
+
+            using EmbeddingGeneratorLease retryLease = retry.Lease;
+
+            return await Record.ExceptionAsync(async () => await retryLease.Generator.GenerateAsync(["full source"]));
         }
 
         var chats = new ChatClientFactory(new HttpFactory(handler), monitor, new Keys(), null, null, null, validator);
 
         using ChatClientLease chat = await chats.ResolveClientAsync("model", CancellationToken.None);
 
-        return await Record.ExceptionAsync(async () => await chat.ChatClient.GetResponseAsync("summary source"));
+        using ChatClientLease? retried = sdkRetries ? ProviderSdkTestTransport.RetryChat(chat, handler, validator) : null;
+
+        return await Record.ExceptionAsync(async () => await (retried ?? chat).ChatClient.GetResponseAsync("summary source"));
     }
 
     private sealed class RefusingValidator(int refuseAt) : ITapestryProviderValidator
@@ -188,7 +198,7 @@ public sealed class TapestryProviderSendTests
 
             if (Sends == 1)
             {
-                var retry = new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("{}") };
+                var retry = new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = ProviderSdkTestTransport.Content("{}", "application/json") };
 
                 retry.Headers.Add("retry-after-ms", "1");
 
@@ -199,7 +209,7 @@ public sealed class TapestryProviderSendTests
                 ? """{"object":"list","data":[{"object":"embedding","index":0,"embedding":[1,0,0]}],"model":"embed","usage":{"prompt_tokens":1,"total_tokens":1}}"""
                 : """{"id":"chat-test","object":"chat.completion","created":1,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}""";
 
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") });
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = ProviderSdkTestTransport.Content(json, "application/json") });
         }
     }
 }

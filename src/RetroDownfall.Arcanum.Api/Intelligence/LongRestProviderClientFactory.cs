@@ -132,6 +132,7 @@ public sealed class LongRestProviderClientFactory : IDisposable
     {
         Endpoint = new Uri(selection.Provider.Endpoint),
         Transport = new HttpClientPipelineTransport(_httpClient),
+        NetworkTimeout = Timeout.InfiniteTimeSpan,
         RetryPolicy = new ClientRetryPolicy(0),
     };
 

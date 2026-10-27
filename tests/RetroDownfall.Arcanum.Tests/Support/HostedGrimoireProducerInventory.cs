@@ -26174,7 +26174,7 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 if (creation.Constructor is not { Parameters.Length: 0 } constructor
                     || !IsExactFrameworkType(constructor.ContainingType, "OpenAI.OpenAIClientOptions", typeof(OpenAI.OpenAIClientOptions).Assembly.GetName())
-                    || creation.Initializer?.Initializers is not { Length: 3 } initializers) return false;
+                    || creation.Initializer?.Initializers is not { Length: 3 or 4 } initializers) return false;
 
                 HashSet<string> assigned = new(StringComparer.Ordinal);
 
@@ -26182,6 +26182,13 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     if (initializer is not ISimpleAssignmentOperation { Target: IPropertyReferenceOperation target, Value: { } value }
                         || !assigned.Add(target.Property.Name)) return false;
+
+                    if (target.Property.Name == "NetworkTimeout")
+                    {
+                        if (!IsExactInfiniteSdkNetworkTimeout(target.Property, value)) return false;
+
+                        continue;
+                    }
 
                     while (value is IConversionOperation { OperatorMethod: null } conversion) value = conversion.Operand;
 
@@ -26214,7 +26221,7 @@ internal static partial class HostedGrimoireProducerInventory
                     if (!accepted) return false;
                 }
 
-                return true;
+                return assigned.Contains("Endpoint") && assigned.Contains("Transport") && assigned.Contains("RetryPolicy");
             }
 
             bool Origin(ExpressionSyntax value, SemanticModel model, HashSet<ISymbol> path, AuthoredMember? owner)
@@ -26299,6 +26306,7 @@ internal static partial class HostedGrimoireProducerInventory
                             typeof(System.ClientModel.Primitives.HttpClientPipelineTransport).Assembly.GetName()),
                         "RetryPolicy" => !IsExactSdkOptionCreation(value, "System.ClientModel.Primitives.ClientRetryPolicy",
                             typeof(System.ClientModel.Primitives.ClientRetryPolicy).Assembly.GetName()),
+                        "NetworkTimeout" => !IsExactInfiniteSdkNetworkTimeout(property.Property, value),
                         _ => true,
                     })
                 {

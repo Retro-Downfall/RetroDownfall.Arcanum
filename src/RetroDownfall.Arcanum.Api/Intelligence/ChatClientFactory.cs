@@ -189,6 +189,10 @@ public sealed class ChatClientFactory(
             Endpoint = new Uri(provider.Endpoint),
 
             Transport = new HttpClientPipelineTransport(http),
+
+            NetworkTimeout = Timeout.InfiniteTimeSpan,
+
+            RetryPolicy = new ClientRetryPolicy(0),
         };
 
         options.AddPolicy(new OutputTokenLimitWirePolicy(provider.OutputTokenLimitWireDialect), PipelinePosition.PerCall);

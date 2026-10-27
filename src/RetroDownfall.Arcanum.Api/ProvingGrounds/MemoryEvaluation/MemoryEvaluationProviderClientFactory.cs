@@ -102,6 +102,7 @@ public sealed class MemoryEvaluationProviderClientFactory : IDisposable
     {
         Endpoint = new Uri(provider.Endpoint),
         Transport = new HttpClientPipelineTransport(_httpClient),
+        NetworkTimeout = Timeout.InfiniteTimeSpan,
         RetryPolicy = new ClientRetryPolicy(RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation.MemoryEvaluationLimits.AutomaticRetries),
     };
 

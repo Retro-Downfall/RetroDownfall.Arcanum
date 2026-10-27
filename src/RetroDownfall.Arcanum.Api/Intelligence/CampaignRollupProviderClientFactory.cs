@@ -95,6 +95,7 @@ public sealed class CampaignRollupProviderClientFactory : ICampaignRollupProvide
         {
             Endpoint = new Uri(provider.Endpoint),
             Transport = new HttpClientPipelineTransport(_httpClient),
+            NetworkTimeout = Timeout.InfiniteTimeSpan,
             RetryPolicy = new ClientRetryPolicy(0),
         };
 

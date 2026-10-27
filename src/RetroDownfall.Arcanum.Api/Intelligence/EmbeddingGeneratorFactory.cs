@@ -136,6 +136,10 @@ public sealed class EmbeddingGeneratorFactory(
             Endpoint = new Uri(provider.Endpoint),
 
             Transport = new HttpClientPipelineTransport(http),
+
+            NetworkTimeout = Timeout.InfiniteTimeSpan,
+
+            RetryPolicy = new ClientRetryPolicy(0),
         };
 
         options.AddPolicy(new TapestryProviderPolicy(_tapestryValidator, provider.Name, model, embedding: true), PipelinePosition.BeforeTransport);

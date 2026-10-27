@@ -274,7 +274,7 @@ public sealed class OutputTokenLimitWireTests
 
             string body = streaming ? "data: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"public-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n" : "{\"id\":\"fixture\",\"object\":\"chat.completion\",\"created\":0,\"model\":\"public-model\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}";
 
-            return new(HttpStatusCode.OK) { Content = new StringContent(body, System.Text.Encoding.UTF8, streaming ? "text/event-stream" : "application/json") };
+            return new(HttpStatusCode.OK) { Content = ProviderSdkTestTransport.Content(body, streaming ? "text/event-stream" : "application/json") };
         }
     }
 }

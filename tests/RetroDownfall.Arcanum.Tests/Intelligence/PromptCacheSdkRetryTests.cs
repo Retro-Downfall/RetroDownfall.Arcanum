@@ -12,10 +12,11 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Tests.LongRest;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
-public sealed class PromptCacheSdkRetryTests
+public sealed partial class PromptCacheSdkRetryTests
 {
     [Theory]
     [InlineData(false, "epoch")]
@@ -91,7 +92,12 @@ public sealed class PromptCacheSdkRetryTests
             }
         }
 
-        if (transition == "cancel" && streaming) await Assert.ThrowsAnyAsync<OperationCanceledException>(Run);
+        if (transition == "cancel")
+        {
+            OperationCanceledException canceled = await Assert.ThrowsAnyAsync<OperationCanceledException>(Run);
+
+            Assert.Equal(cancellation.Token, canceled.CancellationToken);
+        }
         else await Run();
 
         Assert.Equal(transition is "epoch" or "cancel" ? 1 : 2, f.Handler.Sends);
@@ -364,7 +370,9 @@ public sealed class PromptCacheSdkRetryTests
 
         internal PromptCacheDispatchValidator Validator { get; }
 
-        internal ChatClientFactory Factory { get; }
+        internal RetryingSdkTestFactory Factory { get; }
+
+        internal ChatClientFactory ProductionFactory { get; }
 
         internal ModelCallExecutor Executor { get; }
 
@@ -395,7 +403,9 @@ public sealed class PromptCacheSdkRetryTests
 
             Validator = new(Epoch, CredentialSource, new PromptCacheDispatchValidatorTests.AuthorityProvider(), estimator, services.GetRequiredService<IServiceScopeFactory>());
 
-            Factory = new(new HttpFactory(Handler), Monitor, CredentialSource, promptCacheConfigurationEpoch: Epoch);
+            ProductionFactory = new(new HttpFactory(Handler), Monitor, CredentialSource, promptCacheConfigurationEpoch: Epoch);
+
+            Factory = new(ProductionFactory, Handler);
 
             Executor = new(estimator, Monitor, (Microsoft.Extensions.Logging.ILogger?)null, Validator);
         }
@@ -453,7 +463,7 @@ public sealed class PromptCacheSdkRetryTests
 
                 if (FirstException is { } failure) throw failure;
 
-                HttpResponseMessage retry = new(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("{}") };
+                HttpResponseMessage retry = new(HttpStatusCode.ServiceUnavailable) { Content = ProviderSdkTestTransport.Content("{}", "application/json") };
 
                 retry.Headers.Add("retry-after-ms", "1");
 
@@ -466,7 +476,7 @@ public sealed class PromptCacheSdkRetryTests
                 ? "data: {\"id\":\"chat-test\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"
                 : """{"id":"chat-test","object":"chat.completion","created":1,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}""";
 
-            return new(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, streaming ? "text/event-stream" : "application/json") };
+            return new(HttpStatusCode.OK) { Content = ProviderSdkTestTransport.Content(json, streaming ? "text/event-stream" : "application/json") };
         }
     }
 }

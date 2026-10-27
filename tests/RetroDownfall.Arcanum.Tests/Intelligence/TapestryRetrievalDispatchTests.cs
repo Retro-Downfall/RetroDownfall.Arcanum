@@ -68,7 +68,7 @@ public sealed partial class TapestryRetrievalDispatchTests
 
         h.Http.AfterFirst = () => h.ChangeAsync("edit");
 
-        bool succeeded = await h.SendAsync(streaming, observed ? h.Observation : null);
+        bool succeeded = await h.SendAsync(streaming, observed ? h.Observation : null, sdkRetries: true);
 
         Assert.Equal(!observed, succeeded);
 
@@ -193,7 +193,7 @@ public sealed partial class TapestryRetrievalDispatchTests
 
         h.Http.AfterFirst = () => h.ChangeAsync("edit");
 
-        Assert.Equal(!observed, await h.SendAsync(streaming, observed ? h.Observation : null, cacheConfigured: true));
+        Assert.Equal(!observed, await h.SendAsync(streaming, observed ? h.Observation : null, cacheConfigured: true, sdkRetries: true));
 
         Assert.Equal(observed ? 1 : 2, h.Http.Sends);
     }
@@ -297,7 +297,7 @@ public sealed partial class TapestryRetrievalDispatchTests
         }
 
         internal async Task<bool> SendAsync(bool streaming, ITapestryRetrievalObservation? observation, bool validationInstalled = true, Func<ModelCallUpdate, Task>? consumer = null,
-            string? contextProvider = null, string? contextModel = null, bool cacheConfigured = false)
+            string? contextProvider = null, string? contextModel = null, bool cacheConfigured = false, bool sdkRetries = false)
         {
             Settings.CurrentValue.Features.DynamicContextInjectionV2 = cacheConfigured;
 
@@ -306,7 +306,11 @@ public sealed partial class TapestryRetrievalDispatchTests
             // No binding means an ordinary attempt, including when the cache infrastructure is configured.
             var factory = new ChatClientFactory(new HttpFactory(Http), Settings, new Keys(), promptCacheConfigurationEpoch: epoch);
 
-            using ChatClientLease lease = await factory.ResolveClientAsync("model", default);
+            using ChatClientLease captured = await factory.ResolveClientAsync("model", default);
+
+            using ChatClientLease? retry = sdkRetries ? ProviderSdkTestTransport.RetryChat(captured, Http) : null;
+
+            ChatClientLease lease = retry ?? captured;
 
             var estimator = new ModelTokenEstimator(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
 
@@ -487,7 +491,7 @@ public sealed partial class TapestryRetrievalDispatchTests
             {
                 await AfterFirst();
 
-                HttpResponseMessage retry = new(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("{}") };
+                HttpResponseMessage retry = new(HttpStatusCode.ServiceUnavailable) { Content = ProviderSdkTestTransport.Content("{}", "application/json") };
 
                 retry.Headers.Add("retry-after-ms", "1");
 
@@ -500,7 +504,7 @@ public sealed partial class TapestryRetrievalDispatchTests
                 ? "data: {\"id\":\"chat-test\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"
                 : completion;
 
-            return new(HttpStatusCode.OK) { Content = new StringContent(content, Encoding.UTF8, content == completion ? "application/json" : "text/event-stream") };
+            return new(HttpStatusCode.OK) { Content = ProviderSdkTestTransport.Content(content, content == completion ? "application/json" : "text/event-stream") };
         }
     }
 }
