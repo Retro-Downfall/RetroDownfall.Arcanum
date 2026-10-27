@@ -13,6 +13,30 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 public sealed partial class DataRetentionEndpointTests
 {
     [SkippableTheory]
+    [InlineData('\u2028', "\\u2028")]
+    [InlineData('\u2029', "\\u2029")]
+    public async Task Rejected_retention_selector_escapes_unicode_line_separators(char separator, string escaped)
+    {
+        RequireSqlCipher();
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(new FakeDataRetentionService());
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PutAsync("/api/data/retention", JsonContent(
+            new RetentionRuleUpdateRequest("bad" + separator + "rule", Enabled: true, Days: 30),
+            ArcanumJsonContext.Default.RetentionRuleUpdateRequest));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        ApiResponse<RetentionSettings> result = await ReadAsync(response, ArcanumJsonContext.Default.ApiResponseRetentionSettings);
+
+        Assert.DoesNotContain(separator, result.Error!.Value.Message);
+
+        Assert.Contains("bad" + escaped + "rule", result.Error.Value.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableTheory]
     [InlineData("batch-output-files", "uploadedFiles", 2)]
     [InlineData("attachment-embeddings", "attachments", 2)]
     [InlineData("workspace-embeddings", "workspaceIndexes", 2)]

@@ -333,6 +333,11 @@ internal sealed class DataRetentionCommands(
                 + $"policy {policy}; store {item.Store}; provenance {item.Provenance}");
         }
 
+        if (status.CovenantInventoryErrorCode is { } inventoryError)
+        {
+            dispatcher.WritePayload($"Covenant inventory: unmeasured ({inventoryError})");
+        }
+
         if (status.MemoryErasure is { } erasure)
         {
             dispatcher.WritePayload(

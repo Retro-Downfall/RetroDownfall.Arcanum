@@ -6,6 +6,32 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 public sealed partial class DataRetentionCommandTests
 {
     [Theory]
+    [InlineData('\u2028', "\\u2028", false)]
+    [InlineData('\u2029', "\\u2029", false)]
+    [InlineData('\u2028', "\\u2028", true)]
+    [InlineData('\u2029', "\\u2029", true)]
+    public void Invalid_retention_arguments_escape_unicode_line_separators(char separator, string escaped, bool value)
+    {
+        RecordingHandler handler = new(_ => ErrorResponse());
+
+        RecordingConfirmationPrompt prompt = new(confirmed: true);
+
+        string input = "bad" + separator + "input";
+
+        var result = RunCommand(handler, ["data", "retention", "set", value ? "archived-sessions" : input, value ? input : "30"], prompt);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.DoesNotContain(separator, result.Error);
+
+        Assert.Contains("bad" + escaped + "input", result.Error, StringComparison.Ordinal);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Empty(prompt.Question);
+    }
+
+    [Theory]
     [InlineData("batch-input-files", "uploaded-files", "uploaded-files, batch-input-files, batch-output-files, batch-error-files")]
     [InlineData("attachment-chunks", "attachments", "attachment-versions, attachment-bytes, attachment-chunks, attachment-embeddings")]
     [InlineData("workspace-embeddings", "workspace-indexes", "workspace-chunks, workspace-embeddings")]

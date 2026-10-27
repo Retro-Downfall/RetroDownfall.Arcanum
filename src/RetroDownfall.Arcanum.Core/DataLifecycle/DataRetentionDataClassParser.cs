@@ -61,6 +61,7 @@ public static class DataRetentionDataClassParser
         foreach (char character in value ?? string.Empty)
         {
             string part = char.IsControl(character) || char.IsSurrogate(character)
+                || character is '\u2028' or '\u2029'
                 || char.GetUnicodeCategory(character) == System.Globalization.UnicodeCategory.Format
                 ? "\\u" + ((int)character).ToString("X4", System.Globalization.CultureInfo.InvariantCulture)
                 : character is '\\' or '\'' ? "\\" + character : character.ToString();

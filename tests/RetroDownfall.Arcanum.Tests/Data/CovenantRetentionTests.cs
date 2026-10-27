@@ -58,9 +58,8 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 [Trait("Category", "Integration")]
 
-public sealed class CovenantRetentionTests : IAsyncLifetime
+public sealed partial class CovenantRetentionTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -73,7 +72,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _root = Path.Combine(
@@ -89,43 +87,33 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         _db = _fixture.CreateContext(_dbPath);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             SqliteConnection connection = (SqliteConnection)_db.Database.GetDbConnection();
 
             await _db.DisposeAsync();
 
             SqliteConnection.ClearPool(connection);
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
 
         if (Directory.Exists(_root))
         {
-
             Directory.Delete(_root, recursive: true);
-
         }
-
     }
 
     [Fact]
     public void Retention_and_reset_enum_codes_preserve_every_existing_value_and_append_covenant()
     {
-
         Assert.Equal(0, (int)RetentionDataClass.ActiveSessions);
 
         Assert.Equal(1, (int)RetentionDataClass.ArchivedSessions);
@@ -207,16 +195,13 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.Equal(6, (int)MemoryResetScope.CampaignSummary);
 
         Assert.Equal(7, Enum.GetValues<MemoryResetScope>().Length);
-
     }
 
     [Fact]
     public void Covenant_retention_class_has_no_configurable_time_rule()
     {
-
         RetentionSettings everyRuleConfigured = new()
         {
-
             ActiveSessions = Rule(),
 
             ArchivedSessions = Rule(),
@@ -250,20 +235,17 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
             SanctumBreaches = Rule(),
 
             DaemonHistory = Rule(),
-
         };
 
         Assert.Null(
             DataRetentionSettingsCatalog.ResolveRule(
                 everyRuleConfigured,
                 RetentionDataClass.Covenant));
-
     }
 
     [Fact]
     public void Covenant_data_class_parses_from_its_name_and_never_from_a_numeric_code()
     {
-
         Assert.True(DataRetentionDataClassParser.TryParse("covenant", out RetentionDataClass parsed));
 
         Assert.Equal(RetentionDataClass.Covenant, parsed);
@@ -273,7 +255,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.Equal(RetentionDataClass.Covenant, parsed);
 
         Assert.False(DataRetentionDataClassParser.TryParse("28", out _));
-
     }
 
     /// <summary>
@@ -284,7 +265,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
     public async Task Ordinary_sweep_never_deletes_covenant_versions_heads_provenance_or_tombstones()
     {
-
         RequireSqlCipher();
 
         await SeedCovenantFamilyAsync(CancellationToken.None);
@@ -316,18 +296,14 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         // one arm of the family is the regression this guards, and the failure has to name which arm.
         foreach (string table in CovenantFamilyTables)
         {
-
             Assert.Equal((table, before[table]), (table, after[table]));
-
         }
-
     }
 
     [SkippableFact]
 
     public async Task Ordinary_sweep_never_deletes_external_disclosure_receipts_or_folded_aggregates()
     {
-
         RequireSqlCipher();
 
         await SeedCovenantFamilyAsync(CancellationToken.None);
@@ -368,14 +344,12 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
             await ScalarAsync(
                 "SELECT COUNT(*) FROM external_disclosure_state",
                 CancellationToken.None));
-
     }
 
     [SkippableFact]
 
     public async Task Status_reports_the_content_free_covenant_row_and_its_five_counts()
     {
-
         RequireSqlCipher();
 
         await SeedCovenantFamilyAsync(CancellationToken.None);
@@ -411,7 +385,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.Equal(3, inventory.PossibleDisclosures);
 
         Assert.Equal(CovenantDisclosureCountKind.Exact, inventory.DisclosureCountKind);
-
     }
 
     /// <summary>
@@ -422,7 +395,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
     public async Task Status_omits_the_covenant_row_entirely_when_no_lease_can_be_taken()
     {
-
         RequireSqlCipher();
 
         await SeedCovenantFamilyAsync(CancellationToken.None);
@@ -435,14 +407,12 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.DoesNotContain(status.Items, item => item.DataClass is RetentionDataClass.Covenant);
 
         Assert.Null(status.Covenant);
-
     }
 
     [SkippableFact]
 
     public async Task Covenant_memory_reset_plan_reports_content_free_aggregates_without_an_activation_conflict()
     {
-
         RequireSqlCipher();
 
         await SeedCovenantFamilyAsync(CancellationToken.None);
@@ -485,7 +455,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.DoesNotContain("a protected summary", serializedPlan, StringComparison.Ordinal);
 
         Assert.DoesNotContain(CovenantRetentionSeed.SessionId, serializedPlan, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -496,7 +465,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
     public async Task Seeded_disclosure_accounting_is_produced_by_the_live_journal_fold()
     {
-
         RequireSqlCipher();
 
         await SeedCovenantFamilyAsync(CancellationToken.None);
@@ -537,7 +505,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
                 .Select(static bucket => (bucket.Destination, bucket.Revocability, bucket.CountKind, bucket.Count))
                 .OrderBy(static bucket => bucket.Destination)
                 .ToArray());
-
     }
 
     /// <summary>
@@ -549,7 +516,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
     public async Task Reset_preview_rendered_by_the_cli_counts_live_receipts_instead_of_denying_disclosure()
     {
-
         RequireSqlCipher();
 
         await SeedCovenantFamilyAsync(CancellationToken.None);
@@ -579,7 +545,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.DoesNotContain(
             recorder.Diagnostics,
             static line => line.Contains("record no nonrevocable disclosure", StringComparison.Ordinal));
-
     }
 
     /// <summary>
@@ -591,7 +556,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
     public async Task Covenant_reset_plan_and_status_count_a_pin_on_an_installation_that_holds_no_entry()
     {
-
         RequireSqlCipher();
 
         IDataRetentionService service = CreateService(
@@ -636,7 +600,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.Equal(
             3,
             Assert.Single(status.Items, item => item.DataClass is RetentionDataClass.Covenant).Rows);
-
     }
 
     /// <summary>
@@ -648,7 +611,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
     public async Task Covenant_inventory_rows_are_the_canonical_content_list_summed_with_its_support_tables()
     {
-
         RequireSqlCipher();
 
         await SeedCovenantFamilyAsync(CancellationToken.None);
@@ -661,7 +623,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
         foreach (string table in CovenantCanonicalContentTables.InDeletionOrder)
         {
-
             long rows = await ScalarAsync(
                 $"SELECT COUNT(*) FROM \"{table}\"",
                 CancellationToken.None);
@@ -669,7 +630,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
             canonical += rows;
 
             populated += rows > 0 ? 1 : 0;
-
         }
 
         // The seed has to reach enough of the list for the sum to mean something.
@@ -685,18 +645,14 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
                      "external_disclosure_receipts",
                  ])
         {
-
             if (await ScalarAsync(
                     $"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '{table}'",
                     CancellationToken.None) == 1)
             {
-
                 support += await ScalarAsync(
                     $"SELECT COUNT(*) FROM \"{table}\"",
                     CancellationToken.None);
-
             }
-
         }
 
         IDataRetentionService service = CreateService(
@@ -718,7 +674,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.Equal(
             canonical + support,
             Assert.Single(plan.Items, item => item.DataClass is RetentionDataClass.Covenant).DerivedRecords);
-
     }
 
     [SkippableTheory]
@@ -736,7 +691,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
     public async Task Explicit_covenant_reset_and_factory_plan_ids_bind_every_content_free_inventory_aggregate_without_expiring_prune_or_workspace(
         CovenantInventoryAggregate aggregate)
     {
-
         RequireSqlCipher();
 
         await SeedCovenantFamilyAsync(CancellationToken.None);
@@ -828,14 +782,12 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.Equal(pruneBefore.PlanId, pruneAfter.PlanId);
 
         Assert.Equal(workspaceBefore.PlanId, workspaceAfter.PlanId);
-
     }
 
     [SkippableFact]
 
     public async Task Covenant_memory_reset_apply_without_route_components_fails_closed_without_mutating()
     {
-
         RequireSqlCipher();
 
         await SeedCovenantFamilyAsync(CancellationToken.None);
@@ -867,14 +819,12 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Equal(before, after);
-
     }
 
     [SkippableFact]
 
     public async Task Installation_wide_prune_planning_takes_exactly_one_installation_read_lease()
     {
-
         RequireSqlCipher();
 
         RecordingCovenantOperationGate gate = new();
@@ -888,14 +838,12 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.Equal(["installation-read"], gate.Acquisitions);
 
         Assert.Equal(1, gate.PeakConcurrentLeases);
-
     }
 
     [SkippableFact]
 
     public async Task Factory_reset_planning_always_takes_exactly_one_installation_read_lease()
     {
-
         RequireSqlCipher();
 
         RecordingCovenantOperationGate gate = new();
@@ -909,7 +857,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.Equal(["installation-read"], gate.Acquisitions);
 
         Assert.Equal(1, gate.PeakConcurrentLeases);
-
     }
 
     /// <summary>
@@ -920,7 +867,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
     public async Task Workspace_reset_planning_takes_exactly_one_scoped_read_lease_for_its_campaign()
     {
-
         RequireSqlCipher();
 
         Guid campaignId = new("22222222-2222-4222-8222-222222222222");
@@ -940,14 +886,12 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.Equal(1, gate.PeakConcurrentLeases);
 
         Assert.Equal(0, gate.LiveLeases);
-
     }
 
     [SkippableFact]
 
     public async Task Factory_workspace_plan_admission_takes_one_installation_read_lease()
     {
-
         RequireSqlCipher();
 
         Guid campaignId = new("22222222-2222-4222-8222-222222222222");
@@ -974,14 +918,12 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         await admission.Value.ReadLease.DisposeAsync();
 
         Assert.Equal(0, gate.LiveLeases);
-
     }
 
     [SkippableFact]
 
     public async Task Covenant_plan_admission_preserves_a_failed_installation_read_while_plan_async_stays_compatible()
     {
-
         RequireSqlCipher();
 
         Error failure = new(
@@ -990,9 +932,7 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
         RecordingCovenantOperationGate gate = new()
         {
-
             InstallationReadFailure = failure,
-
         };
 
         IDataRetentionService service = CreateService(covenantGate: gate);
@@ -1014,7 +954,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.Equal(request, plan.Request);
 
         Assert.Null(plan.Covenant);
-
     }
 
     [SkippableTheory]
@@ -1029,7 +968,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         bool installation,
         bool workspace)
     {
-
         RequireSqlCipher();
 
         IDataRetentionService service = CreateService(covenantGate: null);
@@ -1058,7 +996,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.True(admission.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, admission.Error.Code);
-
     }
 
     [SkippableTheory]
@@ -1069,7 +1006,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
     public async Task Ordinary_plan_without_a_gate_remains_available(bool workspace)
     {
-
         RequireSqlCipher();
 
         IDataRetentionService service = CreateService(covenantGate: null);
@@ -1089,7 +1025,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.Equal(request, plan.Request);
 
         Assert.Null(plan.Covenant);
-
     }
 
     /// <summary>
@@ -1099,12 +1034,9 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
     [Fact]
     public void Covenant_rule_update_is_refused_with_a_reason_that_is_not_a_spelling_complaint()
     {
-
         RetentionSettings settings = new()
         {
-
             ActiveSessions = Rule(),
-
         };
 
         Assert.Null(
@@ -1112,14 +1044,12 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
         Assert.NotNull(
             DataRetentionSettingsCatalog.ResolveRule(settings, RetentionDataClass.ActiveSessions));
-
     }
 
     [SkippableFact]
 
     public async Task Status_inventory_takes_exactly_one_installation_read_lease_and_never_nests()
     {
-
         RequireSqlCipher();
 
         RecordingCovenantOperationGate gate = new();
@@ -1133,7 +1063,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.Equal(1, gate.PeakConcurrentLeases);
 
         Assert.Equal(0, gate.LiveLeases);
-
     }
 
     private static void RequireSqlCipher() =>
@@ -1159,7 +1088,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
     public async Task Whole_unlabeled_session_retention_takes_only_its_own_session_scoped_erasure_receipt_with_it()
     {
-
         RequireSqlCipher();
 
         await SeedCovenantFamilyAsync(CancellationToken.None, sessionAgedOut: true);
@@ -1224,12 +1152,10 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.Equal(
             1,
             await ScalarAsync("SELECT COUNT(*) FROM covenant_heads", CancellationToken.None));
-
     }
 
     public enum CovenantInventoryAggregate
     {
-
         Rows,
 
         ManagedFiles,
@@ -1239,7 +1165,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         AffectedSessions,
 
         DisclosureExposure,
-
     }
 
     private static void AssertCovenantInventoryAggregateChanged(
@@ -1247,80 +1172,63 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         DataRetentionCovenantInventory before,
         DataRetentionCovenantInventory after)
     {
-
         switch (aggregate)
         {
-
             case CovenantInventoryAggregate.Rows:
-            {
+                {
+                    Assert.Equal(before.Rows + 1, after.Rows);
 
-                Assert.Equal(before.Rows + 1, after.Rows);
-
-                return;
-
-            }
+                    return;
+                }
 
             case CovenantInventoryAggregate.ManagedFiles:
-            {
+                {
+                    Assert.Equal(before.ManagedFiles + 1, after.ManagedFiles);
 
-                Assert.Equal(before.ManagedFiles + 1, after.ManagedFiles);
-
-                return;
-
-            }
+                    return;
+                }
 
             case CovenantInventoryAggregate.LocalArtifacts:
-            {
+                {
+                    Assert.Equal(before.LocalArtifacts + 1, after.LocalArtifacts);
 
-                Assert.Equal(before.LocalArtifacts + 1, after.LocalArtifacts);
-
-                return;
-
-            }
+                    return;
+                }
 
             case CovenantInventoryAggregate.AffectedSessions:
-            {
+                {
+                    Assert.Equal(before.AffectedSessions - 1, after.AffectedSessions);
 
-                Assert.Equal(before.AffectedSessions - 1, after.AffectedSessions);
-
-                return;
-
-            }
+                    return;
+                }
 
             case CovenantInventoryAggregate.DisclosureExposure:
-            {
+                {
+                    Assert.Equal(before.PossibleDisclosures + 1, after.PossibleDisclosures);
 
-                Assert.Equal(before.PossibleDisclosures + 1, after.PossibleDisclosures);
+                    Assert.Equal(CovenantDisclosureCountKind.LowerBound, after.DisclosureCountKind);
 
-                Assert.Equal(CovenantDisclosureCountKind.LowerBound, after.DisclosureCountKind);
-
-                return;
-
-            }
+                    return;
+                }
 
             default:
                 throw new ArgumentOutOfRangeException(nameof(aggregate), aggregate, null);
-
         }
-
     }
 
     private async Task ChangeCovenantInventoryAggregateAsync(
         CovenantInventoryAggregate aggregate,
         CancellationToken cancellationToken)
     {
-
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
         switch (aggregate)
         {
-
             case CovenantInventoryAggregate.Rows:
-            {
-
-                await ExecuteAsync(
-                    connection,
-                    """
+                {
+                    await ExecuteAsync(
+                        connection,
+                        """
                     INSERT INTO external_disclosure_receipts (
                         OriginInstallationId, SubjectKind, SubjectId, SubjectOrdinal, EffectCategoryCode,
                         CategoryPhysicalAttemptOrdinal, EffectIdentityDigest, DestinationCode,
@@ -1336,23 +1244,21 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
                     ORDER BY SubjectOrdinal DESC
                     LIMIT 1;
                     """,
-                    cancellationToken);
+                        cancellationToken);
 
-                return;
-
-            }
+                    return;
+                }
 
             case CovenantInventoryAggregate.ManagedFiles:
-            {
+                {
+                    using CovenantSqliteAuthorizationScope writer =
+                        CovenantSqliteConnectionInitializer.Instance.Authorize(
+                            connection,
+                            CovenantSqliteAuthorizationKind.ManagedFileIntentMutation);
 
-                using CovenantSqliteAuthorizationScope writer =
-                    CovenantSqliteConnectionInitializer.Instance.Authorize(
+                    await ExecuteAsync(
                         connection,
-                        CovenantSqliteAuthorizationKind.ManagedFileIntentMutation);
-
-                await ExecuteAsync(
-                    connection,
-                    """
+                        """
                     INSERT INTO managed_file_write_intents (
                         WriteOperationId, StableEffectIdentityDigest, ArtifactId, SensitivityLabelId,
                         SensitivityLabelDigest, PendingArtifactSensitivityLabel, DurableLocationEvidence,
@@ -1366,34 +1272,32 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
                     FROM managed_file_write_intents
                     WHERE WriteOperationId = '9f3a1c44-0d21-4a6e-9c31-6f2b0d55e706';
                     """,
-                    cancellationToken);
+                        cancellationToken);
 
-                return;
-
-            }
+                    return;
+                }
 
             case CovenantInventoryAggregate.LocalArtifacts:
-            {
+                {
+                    using CovenantSqliteAuthorizationScope maintenance =
+                        CovenantSqliteConnectionInitializer.Instance.Authorize(
+                            connection,
+                            CovenantSqliteAuthorizationKind.CovenantFamilyMaintenance);
 
-                using CovenantSqliteAuthorizationScope maintenance =
-                    CovenantSqliteConnectionInitializer.Instance.Authorize(
+                    await ExecuteAsync(
                         connection,
-                        CovenantSqliteAuthorizationKind.CovenantFamilyMaintenance);
-
-                await ExecuteAsync(
-                    connection,
-                    """
+                        """
                     UPDATE local_erasure_work_items
                     SET StateCode = 4,
                         CheckpointRevision = CheckpointRevision + 1,
                         UpdatedAtUtc = '2026-01-02T00:00:00.0000000Z'
                     WHERE WorkItemId = '9f3a1c44-0d21-4a6e-9c31-6f2b0d55e707';
                     """,
-                    cancellationToken);
+                        cancellationToken);
 
-                await ExecuteAsync(
-                    connection,
-                    """
+                    await ExecuteAsync(
+                        connection,
+                        """
                     INSERT INTO local_erasure_work_items (
                         WorkItemId, ErasureOperationId, SourceWriteOperationId, ExpectedSourceRevision,
                         ArtifactId, SourceSensitivityLabelId, DurableLocationEvidence,
@@ -1407,18 +1311,16 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
                     FROM local_erasure_work_items
                     WHERE WorkItemId = '9f3a1c44-0d21-4a6e-9c31-6f2b0d55e707';
                     """,
-                    cancellationToken);
+                        cancellationToken);
 
-                return;
-
-            }
+                    return;
+                }
 
             case CovenantInventoryAggregate.AffectedSessions:
-            {
-
-                await ExecuteAsync(
-                    connection,
-                    """
+                {
+                    await ExecuteAsync(
+                        connection,
+                        """
                     UPDATE session_sensitivity_state
                     SET TaintedArtifactCount = 0,
                         MaximumSensitivityCode = 0,
@@ -1426,19 +1328,17 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
                         UpdatedAtUtc = '2026-01-02T00:00:00.0000000Z'
                     WHERE SessionId = $session;
                     """,
-                    cancellationToken,
-                    ("$session", CovenantRetentionSeed.SessionId));
+                        cancellationToken,
+                        ("$session", CovenantRetentionSeed.SessionId));
 
-                return;
-
-            }
+                    return;
+                }
 
             case CovenantInventoryAggregate.DisclosureExposure:
-            {
-
-                await ExecuteAsync(
-                    connection,
-                    """
+                {
+                    await ExecuteAsync(
+                        connection,
+                        """
                     UPDATE external_disclosure_state
                     SET CountKindCode = 2,
                         JoinedCount = JoinedCount + 1,
@@ -1446,23 +1346,19 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
                     WHERE DestinationCode = 1
                         AND RevocabilityCode = 2;
                     """,
-                    cancellationToken);
+                        cancellationToken);
 
-                return;
-
-            }
+                    return;
+                }
 
             default:
                 throw new ArgumentOutOfRangeException(nameof(aggregate), aggregate, null);
-
         }
-
     }
 
     private async Task<DataRetentionRequest> CreateWorkspaceResetRequestAsync(
         CancellationToken cancellationToken)
     {
-
         Guid campaignId = new("55555555-5555-4555-8555-555555555555");
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
@@ -1484,26 +1380,21 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         return new DataRetentionRequest(
             DataRetentionOperation.ResetWorkspace,
             Workspace: new DataRetentionWorkspaceBinding(campaignId, _root));
-
     }
 
     private static RetentionRuleSettings Rule(int days = 1) =>
         new()
         {
-
             Enabled = true,
 
             Days = days,
-
         };
 
     private static ArcanumSettings EveryRuleEnabled() =>
         new()
         {
-
             Retention = new RetentionSettings
             {
-
                 ActiveSessions = Rule(),
 
                 ArchivedSessions = Rule(),
@@ -1537,14 +1428,13 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
                 SanctumBreaches = Rule(),
 
                 DaemonHistory = Rule(),
-
             },
-
         };
 
     private DataRetentionService CreateService(
         ArcanumSettings? settings = null,
-        ICovenantOperationGate? covenantGate = null) =>
+        ICovenantOperationGate? covenantGate = null,
+        Microsoft.Extensions.Logging.ILogger<DataRetentionService>? logger = null) =>
         new(
             _db!,
             new TestOptionsMonitor<ArcanumSettings>(settings ?? new ArcanumSettings()),
@@ -1552,7 +1442,7 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
                 _db!,
                 TestOrdinaryConnectionFactory.For(_db!)),
             TimeProvider.System,
-            NullLogger<DataRetentionService>.Instance,
+            logger ?? NullLogger<DataRetentionService>.Instance,
             FixtureLabeledArtifactGuard.For(_db!),
             Path.Combine(_root, "attachments"),
             Path.Combine(_root, "files"),
@@ -1561,7 +1451,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
     private async Task<long> ScalarAsync(string sql, CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command =
             (SqliteCommand)_db!.Database.GetDbConnection().CreateCommand();
 
@@ -1570,7 +1459,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         object? value = await command.ExecuteScalarAsync(cancellationToken);
 
         return Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
-
     }
 
     private static async Task ExecuteAsync(
@@ -1579,39 +1467,31 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         CancellationToken cancellationToken,
         params (string Name, object Value)[] parameters)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
 
         foreach ((string name, object value) in parameters)
         {
-
             _ = command.Parameters.AddWithValue(name, value);
-
         }
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
     }
 
     private async Task<IReadOnlyDictionary<string, long>> CountCovenantTablesAsync(
         CancellationToken cancellationToken)
     {
-
         Dictionary<string, long> counts = [];
 
         foreach (string table in CovenantFamilyTables)
         {
-
             counts[table] = await ScalarAsync(
                 $"SELECT COUNT(*) FROM \"{table}\"",
                 cancellationToken);
-
         }
 
         return counts;
-
     }
 
     private static readonly string[] CovenantFamilyTables =
@@ -1643,14 +1523,11 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
     /// </remarks>
     private async Task SeedCurationPinAsync(CancellationToken cancellationToken)
     {
-
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
         if (connection.State is not System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync(cancellationToken);
-
         }
 
         await ExecuteAsync(
@@ -1677,7 +1554,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
                     '2026-01-01T00:00:00.0000000Z');
             """,
             cancellationToken);
-
     }
 
     /// <summary>
@@ -1686,7 +1562,6 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
     /// </summary>
     private sealed class DiagnosticRecorder : IConsoleDispatcher
     {
-
         public List<string> Diagnostics { get; } = [];
 
         public void WriteDiagnostic(string value) => Diagnostics.Add(value);
@@ -1701,7 +1576,5 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         public void WriteJson(JsonElement value) => throw new InvalidOperationException(value.ToString());
 
         public void BeginJsonStream() => throw new InvalidOperationException();
-
     }
-
 }

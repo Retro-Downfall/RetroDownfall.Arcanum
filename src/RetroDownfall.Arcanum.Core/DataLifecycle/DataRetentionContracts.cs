@@ -257,7 +257,9 @@ public sealed record DataRetentionStatus(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     DataRetentionCovenantInventory? Covenant = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    DataRetentionMemoryErasureInventory? MemoryErasure = null);
+    DataRetentionMemoryErasureInventory? MemoryErasure = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? CovenantInventoryErrorCode = null);
 
 public sealed record DataRetentionPlanItem(
     RetentionDataClass DataClass,
