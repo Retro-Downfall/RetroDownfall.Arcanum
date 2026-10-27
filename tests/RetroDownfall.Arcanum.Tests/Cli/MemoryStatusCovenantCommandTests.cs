@@ -183,6 +183,19 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
         Assert.DoesNotContain("Covenant", rendered, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task A_disabled_covenant_reports_that_its_census_was_not_attempted()
+    {
+        RecordingDispatcher dispatcher = await StatusAsync(
+            Covenant([]) with { Enabled = false, Census = CovenantCensusReadState.Refused });
+        string rendered = string.Join("\n", dispatcher.Payloads);
+        Assert.Contains("Covenant is disabled", rendered, StringComparison.Ordinal);
+        Assert.Contains("entries were not counted", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("Refused", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("No Covenant entries.", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("Rendered bytes", rendered, StringComparison.Ordinal);
+    }
+
     private static CovenantStatusDto Covenant(CovenantScopeCountDto[] counts) =>
         new(
             Enabled: true,

@@ -390,6 +390,8 @@ public sealed partial class MemoryCommands
             dispatcher.WritePayload($"  observation: {item.ObservationToken}");
         }
 
+        WriteReviewContentHint("saga", page.Items.Length);
+
         WriteReviewPageFooter(page.Items.Length, page.ReviewedThroughEventSequence, page.FrozenThroughEventSequence, page.NextCursor);
     }
 
@@ -407,6 +409,8 @@ public sealed partial class MemoryCommands
 
             dispatcher.WritePayload($"  observation: {item.ObservationToken}");
         }
+
+        WriteReviewContentHint("lexicon", page.Items.Length);
 
         WriteReviewPageFooter(page.Items.Length, page.ReviewedThroughEventSequence, page.FrozenThroughEventSequence, page.NextCursor);
     }
@@ -435,7 +439,16 @@ public sealed partial class MemoryCommands
             dispatcher.WritePayload("A host process restart or any apply in this scope and lane invalidates its other tokens. Run arcanum memory covenant review list again.");
         }
 
+        WriteReviewContentHint("covenant", page.Items.Length);
+
         WriteReviewPageFooter(page.Items.Length, page.ReviewedThroughEventSequence, page.FrozenThroughEventSequence, page.NextCursor);
+    }
+
+    private void WriteReviewContentHint(string store, int count)
+    {
+        if (count > 0)
+            dispatcher.WritePayload($"To inspect available review content, run arcanum memory {store} review list --json "
+                + "with the same scope and paging arguments, including lane and cursor where applicable.");
     }
 
     private void WriteReviewPageFooter(int count, long reviewedThrough, long frozenThrough, string? nextCursor)

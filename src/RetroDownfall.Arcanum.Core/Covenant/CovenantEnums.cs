@@ -97,7 +97,10 @@ public enum CovenantAdmissionDecision : byte
 {
     Admitted = 1,
     Pressured = 2,
-    RequiredNoFit = 3
+    RequiredNoFit = 3,
+
+    /// <summary>Read-only explanation without an attempt budget or tokenizer; never a Policy V1 admission.</summary>
+    NotEvaluated = 4
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantAuthorizationMode>))]
