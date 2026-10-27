@@ -954,6 +954,12 @@ public sealed class CovenantPlaintextExportTests
 
     private sealed class StubPromptRepository : IPromptRepository
     {
+        public Task<ListPageResult<PromptSummary>> ListSummariesAsync(Guid? campaignId, string? query = null, string? tag = null, int? limit = null, int offset = 0, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ListPageResult<PromptSummary>([], false));
+
+        public Task<IReadOnlyList<Prompt>> ReadForExportAsync(Guid campaignId, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<Prompt>>([]);
+
         public Task<ListPageResult<Prompt>> ListAsync(
             Guid? campaignId,
             int? limit = null,

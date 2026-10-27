@@ -370,45 +370,12 @@ internal static class CampaignEndpoints
                         statusCode: StatusCodes.Status404NotFound);
                 }
 
-                bool hasClientFilters = !string.IsNullOrWhiteSpace(q) || !string.IsNullOrWhiteSpace(tag);
-
-                // A client-side q/tag filter thins one page, so it always reads the first 10,000 rows and its
-                // offsets would not address the underlying sequence; only an unfiltered read pages.
-                ListPageResult<Prompt> page = await promptRepo
-                    .ListAsync(
-                        id,
-                        ArcanumSettingClamps.ListQueryLimit(hasClientFilters ? 10_000 : limit ?? 10_000),
-                        hasClientFilters ? 0 : Math.Max(0, offset ?? 0),
-                        ctx.RequestAborted)
+                ListPageResult<PromptSummary> page = await promptRepo
+                    .ListSummariesAsync(id, q, tag, limit ?? 10_000, offset ?? 0, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
-                IEnumerable<PromptSummaryDto> filtered = page.Items.Select(PromptMapping.ToSummaryDto);
-
-                if (!string.IsNullOrWhiteSpace(q))
-                {
-                    string term = q.Trim();
-
-                    filtered = filtered.Where(p =>
-                        p.Name.Contains(term, StringComparison.OrdinalIgnoreCase)
-                        || (p.Description?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false)
-                        || p.Tags.Any(t => t.Contains(term, StringComparison.OrdinalIgnoreCase)));
-                }
-
-                if (!string.IsNullOrWhiteSpace(tag))
-                {
-                    filtered = filtered.Where(p => p.Tags.Any(t => string.Equals(t, tag, StringComparison.OrdinalIgnoreCase)));
-                }
-
-                PromptSummaryDto[] result = filtered.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToArray();
-
-                // Same shape as ListPrompts (PromptEndpoints): the repository really does compute
-                // HasMore/NextOffset against the 10,000-row ceiling, so hard-coding false told a
-                // caller with more prompts than that it had the whole set. A client-side q/tag filter
-                // reorders and thins the page, so its offsets no longer address the underlying
-                // sequence — that case keeps the honest false, exactly as the sibling route does.
-                ListPageResult<PromptSummaryDto> response = hasClientFilters
-                    ? new ListPageResult<PromptSummaryDto>(result, false)
-                    : new ListPageResult<PromptSummaryDto>(result, page.HasMore, page.NextOffset);
+                ListPageResult<PromptSummaryDto> response = new(
+                    [.. page.Items.Select(PromptMapping.ToSummaryDto)], page.HasMore, page.NextOffset);
 
                 return Results.Ok(
                     ApiResponse<ListPageResult<PromptSummaryDto>>.FromResult(
@@ -954,11 +921,9 @@ internal static class CampaignEndpoints
                 OmittedScripts: exported.OmittedScripts ?? []));
         }
 
-        ListPageResult<Prompt> promptPage = await promptRepo
-            .ListAsync(id, ArcanumSettingClamps.ListQueryLimit(10_000), cancellationToken: ctx.RequestAborted)
-            .ConfigureAwait(false);
+        IReadOnlyList<Prompt> prompts = await promptRepo.ReadForExportAsync(id, ctx.RequestAborted).ConfigureAwait(false);
 
-        PromptExportDto[] promptExports = promptPage.Items.Select(PromptMapping.ToExportDto).ToArray();
+        PromptExportDto[] promptExports = prompts.Select(PromptMapping.ToExportDto).ToArray();
 
         return Result<CampaignExportDto>.Success(new CampaignExportDto(
             CampaignPathPolicy.ToDto(campaign),

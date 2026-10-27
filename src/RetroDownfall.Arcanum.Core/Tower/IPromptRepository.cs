@@ -16,6 +16,18 @@ public interface IPromptRepository
         int offset = 0,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Filters summaries before paging in the repository's stable name, update-time and identity order.</summary>
+    Task<ListPageResult<PromptSummary>> ListSummariesAsync(
+        Guid? campaignId,
+        string? query = null,
+        string? tag = null,
+        int? limit = null,
+        int offset = 0,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Reads every prompt in one scope for a complete export, without the list-page ceiling.</summary>
+    Task<IReadOnlyList<Prompt>> ReadForExportAsync(Guid campaignId, CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Persists a new prompt. A (name, version, campaign) already taken and a campaign that does not exist
     /// come back as <c>Prompt.DuplicateVersion</c> and <c>Campaign.NotFound</c> failures, so the loser of a

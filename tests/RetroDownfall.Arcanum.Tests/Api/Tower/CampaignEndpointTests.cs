@@ -988,6 +988,12 @@ public sealed class CampaignEndpointTests
 
     private sealed class TruncatedPromptRepository(Guid campaignId) : IPromptRepository
     {
+        public Task<ListPageResult<PromptSummary>> ListSummariesAsync(Guid? scopeCampaignId, string? query = null, string? tag = null, int? limit = null, int offset = 0, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ListPageResult<PromptSummary>([new(Guid.NewGuid(), campaignId, "truncated", "1.0.0", null, "[]", DateTimeOffset.UtcNow)], true, 10_000));
+
+        public Task<IReadOnlyList<Prompt>> ReadForExportAsync(Guid scopeCampaignId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task<ListPageResult<Prompt>> ListAsync(
             Guid? scopeCampaignId,
             int? limit = null,
@@ -1045,6 +1051,12 @@ public sealed class CampaignEndpointTests
         PromptRepository inner,
         IHttpContextAccessor accessor) : IPromptRepository
     {
+        public Task<ListPageResult<PromptSummary>> ListSummariesAsync(Guid? scopeCampaignId, string? query = null, string? tag = null, int? limit = null, int offset = 0, CancellationToken cancellationToken = default) =>
+            inner.ListSummariesAsync(scopeCampaignId, query, tag, limit, offset, cancellationToken);
+
+        public Task<IReadOnlyList<Prompt>> ReadForExportAsync(Guid campaignId, CancellationToken cancellationToken = default) =>
+            inner.ReadForExportAsync(campaignId, cancellationToken);
+
         public Task<ListPageResult<Prompt>> ListAsync(
             Guid? scopeCampaignId,
             int? limit = null,

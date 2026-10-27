@@ -41,45 +41,12 @@ internal static class PromptEndpoints
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                bool hasClientFilters = !string.IsNullOrWhiteSpace(q) || !string.IsNullOrWhiteSpace(tag);
-
-                int? effectiveLimit = hasClientFilters
-                    ? ArcanumSettingClamps.ListQueryLimit(10_000)
-                    : limit;
-
-                int effectiveOffset = hasClientFilters ? 0 : offset ?? 0;
-
-                ListPageResult<Prompt> page = await repo
-                    .ListAsync(campaignId, effectiveLimit, effectiveOffset, ctx.RequestAborted)
+                ListPageResult<PromptSummary> page = await repo
+                    .ListSummariesAsync(campaignId, q, tag, limit, offset ?? 0, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
-                IEnumerable<PromptSummaryDto> query = page.Items.Select(PromptMapping.ToSummaryDto);
-
-                if (!string.IsNullOrWhiteSpace(q))
-                {
-                    string term = q.Trim();
-
-                    query = query.Where(p =>
-                        p.Name.Contains(term, StringComparison.OrdinalIgnoreCase)
-                        || (p.Description?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false)
-                        || p.Tags.Any(t => t.Contains(term, StringComparison.OrdinalIgnoreCase)));
-                }
-
-                if (!string.IsNullOrWhiteSpace(tag))
-                {
-                    query = query.Where(p => p.Tags.Any(t => string.Equals(t, tag, StringComparison.OrdinalIgnoreCase)));
-                }
-
-                PromptSummaryDto[] result = query
-                    .OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
-                    .ToArray();
-
-                ListPageResult<PromptSummaryDto> response = hasClientFilters
-                    ? new ListPageResult<PromptSummaryDto>(result, false)
-                    : new ListPageResult<PromptSummaryDto>(
-                        result,
-                        page.HasMore,
-                        page.NextOffset);
+                ListPageResult<PromptSummaryDto> response = new(
+                    [.. page.Items.Select(PromptMapping.ToSummaryDto)], page.HasMore, page.NextOffset);
 
                 return Results.Ok(
                     ApiResponse<ListPageResult<PromptSummaryDto>>.FromResult(

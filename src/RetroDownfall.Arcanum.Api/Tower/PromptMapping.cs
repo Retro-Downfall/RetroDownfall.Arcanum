@@ -7,6 +7,10 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 
 internal static class PromptMapping
 {
+    public static PromptSummaryDto ToSummaryDto(PromptSummary prompt) =>
+        new(prompt.Id, prompt.CampaignId, prompt.Name, prompt.Version, prompt.Description,
+            PromptRepository.DeserializeTags(prompt.Tags), prompt.UpdatedAt);
+
     public static PromptSummaryDto ToSummaryDto(Prompt prompt) =>
         new(
             prompt.Id,

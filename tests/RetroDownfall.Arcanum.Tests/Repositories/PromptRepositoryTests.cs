@@ -12,7 +12,7 @@ using SQLitePCL;
 namespace RetroDownfall.Arcanum.Tests.Repositories;
 
 [Collection("Grimoire")]
-public sealed class PromptRepositoryTests : IAsyncLifetime
+public sealed partial class PromptRepositoryTests : IAsyncLifetime
 {
     private readonly GrimoireFixture _fixture;
 
