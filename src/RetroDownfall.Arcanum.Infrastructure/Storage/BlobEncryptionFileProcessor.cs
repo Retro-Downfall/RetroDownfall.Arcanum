@@ -252,6 +252,13 @@ public sealed class BlobEncryptionFileProcessor(
             };
         }
 
+        if (inspected.Descriptor is { } authenticated
+            && (candidate.EncryptionVersion != authenticated.Version
+                || !string.Equals(candidate.EncryptionKeyId, authenticated.KeyId, StringComparison.Ordinal)))
+        {
+            return inspected with { Issue = BlobEncryptionVerificationIssue.MetadataEnvelopeMismatch };
+        }
+
         return inspected;
     }
 

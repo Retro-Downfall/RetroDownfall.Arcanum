@@ -13,14 +13,12 @@ public sealed class DataEncryptionCommands(IGrimoireCliInitialization initializa
             .RunExclusiveWithBootstrapAsync(
                 async (services, token) =>
                 {
-
                     IBlobEncryptionLifecycleService lifecycle = services
                         .GetRequiredService<IBlobEncryptionLifecycleService>();
 
                     return await lifecycle
                         .GetStatusAsync(token)
                         .ConfigureAwait(false);
-
                 },
                 cancellationToken)
             .ConfigureAwait(false);
@@ -29,14 +27,14 @@ public sealed class DataEncryptionCommands(IGrimoireCliInitialization initializa
         table.AddColumn("State");
         table.AddColumn("Files");
         table.AddColumn("Bytes");
-        table.AddRow("Encrypted", status.EncryptedFiles.ToString(), status.EncryptedBytes.ToString());
+        table.AddRow("Encrypted", status.EncryptedFiles.ToString(), FormatBytes(status.EncryptedBytes));
         table.AddRow(
             "Legacy plaintext",
             status.LegacyPlaintextFiles.ToString(),
-            status.LegacyPlaintextBytes.ToString());
+            FormatBytes(status.LegacyPlaintextBytes));
         table.AddRow("Reconciliation", status.FilesNeedingReconciliation.ToString(), "-");
         table.AddRow("Invalid/excluded", status.InvalidFiles.ToString(), "-");
-        table.AddRow("Total", status.TotalFiles.ToString(), status.TotalBytes.ToString());
+        table.AddRow("Total", status.TotalFiles.ToString(), FormatBytes(status.TotalBytes));
         AnsiConsole.Write(table);
         return status.InvalidFiles == 0 ? 0 : 1;
     }
@@ -82,19 +80,17 @@ public sealed class DataEncryptionCommands(IGrimoireCliInitialization initializa
             .RunExclusiveWithBootstrapAsync(
                 async (services, token) =>
                 {
-
                     IBlobEncryptionLifecycleService lifecycle = services
                         .GetRequiredService<IBlobEncryptionLifecycleService>();
 
                     return await run(lifecycle, token).ConfigureAwait(false);
-
                 },
                 cancellationToken)
             .ConfigureAwait(false);
 
         AnsiConsole.MarkupLine(
-            $"Processed [cyan]{result.ProcessedFiles}[/] files / [cyan]{result.ProcessedBytes}[/] bytes; "
-            + $"remaining [yellow]{result.RemainingFiles}[/] files / [yellow]{result.RemainingBytes}[/] bytes; "
+            $"Processed [cyan]{result.ProcessedFiles}[/] files / [cyan]{FormatBytes(result.ProcessedBytes)}[/] bytes; "
+            + $"remaining [yellow]{result.RemainingFiles}[/] files / [yellow]{FormatBytes(result.RemainingBytes)}[/] bytes; "
             + $"excluded [red]{result.FailedFiles}[/].");
         if (result.OperationId != Guid.Empty)
         {
@@ -109,4 +105,7 @@ public sealed class DataEncryptionCommands(IGrimoireCliInitialization initializa
 
         return result.RemainingFiles == 0 && result.FailedFiles == 0 ? 0 : 1;
     }
+
+    private static string FormatBytes(long? value) =>
+        value?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown";
 }

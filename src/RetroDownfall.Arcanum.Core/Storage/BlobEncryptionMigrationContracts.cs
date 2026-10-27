@@ -14,7 +14,30 @@ public sealed record BlobEncryptionCandidate(
     long ExpectedPlaintextLength,
     string? ExpectedPlaintextSha256,
     int EncryptionVersion,
-    string? EncryptionKeyId);
+    string? EncryptionKeyId,
+    long? CatalogRowId = null);
+
+public enum BlobEncryptionMetadataIssue
+{
+    InvalidIdentity,
+    InvalidPath,
+    InvalidLength,
+    InvalidVersion,
+    InvalidHash,
+    InvalidKey,
+    InvalidPurpose,
+}
+
+/// <summary>A content-free locator and cause; an invalid row never carries a usable file path.</summary>
+public sealed record BlobEncryptionInvalidRow(
+    BlobEncryptionRecordKind Kind,
+    long CatalogRowId,
+    BlobEncryptionMetadataIssue Issue,
+    long? KnownPlaintextLength);
+
+public sealed record BlobEncryptionInventory(
+    IReadOnlyList<BlobEncryptionCandidate> Candidates,
+    IReadOnlyList<BlobEncryptionInvalidRow> InvalidRows);
 
 public enum BlobEncryptionVerificationIssue
 {
@@ -37,6 +60,12 @@ public enum BlobEncryptionVerificationIssue
     /// <c>migrate</c> re-encrypts it to the current version.
     /// </summary>
     OutdatedEnvelopeVersion,
+
+    /// <summary>The catalog row cannot safely identify and describe a file.</summary>
+    InvalidMetadata,
+
+    /// <summary>The catalog key or version disagrees with the authenticated envelope.</summary>
+    MetadataEnvelopeMismatch,
 }
 
 public sealed record BlobEncryptionVerificationResult(
@@ -55,7 +84,7 @@ public sealed record BlobEncryptionFileResult(
 
 public interface IBlobEncryptionMetadataStore
 {
-    Task<IReadOnlyList<BlobEncryptionCandidate>> ListAsync(
+    Task<BlobEncryptionInventory> ListAsync(
         CancellationToken cancellationToken = default);
 
     Task UpdateEncryptionMetadataAsync(
@@ -67,11 +96,11 @@ public interface IBlobEncryptionMetadataStore
 
 public sealed record BlobEncryptionStatus(
     int TotalFiles,
-    long TotalBytes,
+    long? TotalBytes,
     int EncryptedFiles,
-    long EncryptedBytes,
+    long? EncryptedBytes,
     int LegacyPlaintextFiles,
-    long LegacyPlaintextBytes,
+    long? LegacyPlaintextBytes,
     int FilesNeedingReconciliation,
     int InvalidFiles,
     IReadOnlyDictionary<string, int> FilesByKeyId);
@@ -79,9 +108,9 @@ public sealed record BlobEncryptionStatus(
 public sealed record BlobEncryptionOperationResult(
     Guid OperationId,
     int ProcessedFiles,
-    long ProcessedBytes,
+    long? ProcessedBytes,
     int RemainingFiles,
-    long RemainingBytes,
+    long? RemainingBytes,
     int FailedFiles,
     IReadOnlyDictionary<BlobEncryptionVerificationIssue, int> Issues);
 

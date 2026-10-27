@@ -23,7 +23,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 /// </remarks>
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
-public sealed class BlobEncryptionMetadataStoreTests : IAsyncLifetime
+public sealed partial class BlobEncryptionMetadataStoreTests : IAsyncLifetime
 {
     private const string KeyId = "test-key";
 
@@ -78,10 +78,10 @@ public sealed class BlobEncryptionMetadataStoreTests : IAsyncLifetime
             VALUES ('{stored}', 'f.jsonl', 5, 'batch', 'application/jsonl', '{UtcInstantText.Format(DateTimeOffset.UtcNow)}');
             """);
 
-        BlobEncryptionMetadataStore store = new(_db!);
+        BlobEncryptionMetadataStore store = new(_db!, Microsoft.Extensions.Logging.Abstractions.NullLogger<BlobEncryptionMetadataStore>.Instance);
 
         BlobEncryptionCandidate candidate = Assert.Single(
-            await store.ListAsync(),
+            (await store.ListAsync()).Candidates,
             static candidate => candidate.Kind == BlobEncryptionRecordKind.UploadedFile);
 
         await store.UpdateEncryptionMetadataAsync(

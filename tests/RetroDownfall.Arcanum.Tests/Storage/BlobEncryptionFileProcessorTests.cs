@@ -136,9 +136,9 @@ public sealed class BlobEncryptionFileProcessorTests : IDisposable
         public BlobEncryptionCandidate Current { get; private set; } =
             candidates.FirstOrDefault()!;
 
-        public Task<IReadOnlyList<BlobEncryptionCandidate>> ListAsync(
+        public Task<BlobEncryptionInventory> ListAsync(
             CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<BlobEncryptionCandidate>>(candidates);
+            Task.FromResult(new BlobEncryptionInventory(candidates, []));
 
         public Task UpdateEncryptionMetadataAsync(
             BlobEncryptionCandidate candidate,

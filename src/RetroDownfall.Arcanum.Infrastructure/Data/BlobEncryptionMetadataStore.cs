@@ -1,29 +1,30 @@
 using System.Data;
 using System.Data.Common;
-using System.Globalization;
+using Microsoft.Extensions.Logging;
 using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
-internal sealed class BlobEncryptionMetadataStore(ArcanumDbContext db)
+internal sealed class BlobEncryptionMetadataStore(ArcanumDbContext db, ILogger<BlobEncryptionMetadataStore> logger)
     : IBlobEncryptionMetadataStore
 {
     private readonly SemaphoreSlim _writeGate = new(1, 1);
 
-    public Task<IReadOnlyList<BlobEncryptionCandidate>> ListAsync(
+    public Task<BlobEncryptionInventory> ListAsync(
         CancellationToken cancellationToken = default) =>
-        SqliteBusyRetry.ExecuteAsync<IReadOnlyList<BlobEncryptionCandidate>>(
+        SqliteBusyRetry.ExecuteAsync<BlobEncryptionInventory>(
             async () =>
             {
                 DbConnection connection = await OpenConnectionAsync(cancellationToken)
                     .ConfigureAwait(false);
                 List<BlobEncryptionCandidate> candidates = [];
-                await ReadAttachmentsAsync(connection, candidates, cancellationToken)
+                List<BlobEncryptionInvalidRow> invalid = [];
+                await ReadRowsAsync(connection, BlobEncryptionRecordKind.SessionAttachment, candidates, invalid, cancellationToken)
                     .ConfigureAwait(false);
-                await ReadUploadedFilesAsync(connection, candidates, cancellationToken)
+                await ReadRowsAsync(connection, BlobEncryptionRecordKind.UploadedFile, candidates, invalid, cancellationToken)
                     .ConfigureAwait(false);
-                return candidates;
+                return new BlobEncryptionInventory(candidates.ToArray(), invalid.ToArray());
             },
             cancellationToken);
 
@@ -73,8 +74,8 @@ internal sealed class BlobEncryptionMetadataStore(ArcanumDbContext db)
                         .ConfigureAwait(false);
                     if (affected != 1)
                     {
-                        throw new InvalidOperationException(
-                            "Blob encryption metadata row no longer exists.");
+                        throw new InvalidDataException(
+                            $"Blob encryption metadata {candidate.Kind} row {candidate.CatalogRowId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "<unavailable>"} no longer exists.");
                     }
 
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -98,73 +99,85 @@ internal sealed class BlobEncryptionMetadataStore(ArcanumDbContext db)
         return connection;
     }
 
-    private static async Task ReadAttachmentsAsync(
+    private async Task ReadRowsAsync(
         DbConnection connection,
+        BlobEncryptionRecordKind kind,
         ICollection<BlobEncryptionCandidate> candidates,
+        ICollection<BlobEncryptionInvalidRow> invalid,
         CancellationToken cancellationToken)
     {
         await using DbCommand command = connection.CreateCommand();
-        command.CommandText =
-            """
-            SELECT "Id", "RelativePath", "ByteLength", "ContentSha256",
-                   "EncryptionVersion", "EncryptionKeyId"
-            FROM "SessionAttachments"
-            ORDER BY "Id"
-            """;
-        await using DbDataReader reader = await command
-            .ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false);
+        command.CommandText = kind == BlobEncryptionRecordKind.SessionAttachment
+            ? """
+              SELECT rowid, "Id", "RelativePath", "ByteLength", "ContentSha256",
+                     "EncryptionVersion", "EncryptionKeyId", NULL
+              FROM "SessionAttachments" ORDER BY "Id"
+              """
+            : """
+              SELECT rowid, "Id", NULL, "Bytes", "PlaintextSha256",
+                     "EncryptionVersion", "EncryptionKeyId", "Purpose"
+              FROM "UploadedFiles" ORDER BY "Id"
+              """;
+        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            string path = ResolveAttachmentPath(reader.GetString(1));
-            candidates.Add(new BlobEncryptionCandidate(
-                BlobEncryptionRecordKind.SessionAttachment,
-                reader.GetString(0),
-                path,
-                EncryptedBlobPurpose.SessionAttachment,
-                reader.GetInt64(2),
-                reader.GetString(3),
-                Convert.ToInt32(reader.GetValue(4), CultureInfo.InvariantCulture),
-                reader.IsDBNull(5) ? null : reader.GetString(5)));
+            cancellationToken.ThrowIfCancellationRequested();
+            long rowId = reader.GetInt64(0);
+            long? knownLength = reader.GetValue(3) is long length && length >= 0 ? length : null;
+            BlobEncryptionMetadataIssue? issue = DecodeRow(reader, kind, rowId, out BlobEncryptionCandidate? candidate);
+            if (issue is { } failure)
+            {
+                invalid.Add(new BlobEncryptionInvalidRow(kind, rowId, failure, knownLength));
+                logger.LogWarning("Blob encryption metadata excluded {RecordKind} row {CatalogRowId}: {MetadataIssue}.",
+                    kind, rowId, failure);
+            }
+            else candidates.Add(candidate!);
         }
     }
 
-    private static async Task ReadUploadedFilesAsync(
-        DbConnection connection,
-        ICollection<BlobEncryptionCandidate> candidates,
-        CancellationToken cancellationToken)
+    private static BlobEncryptionMetadataIssue? DecodeRow(
+        DbDataReader reader,
+        BlobEncryptionRecordKind kind,
+        long rowId,
+        out BlobEncryptionCandidate? candidate)
     {
-        await using DbCommand command = connection.CreateCommand();
-        command.CommandText =
-            """
-            SELECT "Id", "Bytes", "Purpose", "EncryptionVersion",
-                   "EncryptionKeyId", "PlaintextSha256"
-            FROM "UploadedFiles"
-            ORDER BY "Id"
-            """;
-        await using DbDataReader reader = await command
-            .ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        candidate = null;
+        if (reader.GetValue(1) is not string storedId || !Guid.TryParse(storedId, out Guid id))
+            return BlobEncryptionMetadataIssue.InvalidIdentity;
+        if (reader.GetValue(3) is not long length || length < 0)
+            return BlobEncryptionMetadataIssue.InvalidLength;
+        if (reader.GetValue(5) is not long version || version < 0 || version > int.MaxValue)
+            return BlobEncryptionMetadataIssue.InvalidVersion;
+        object rawHash = reader.GetValue(4);
+        if (rawHash is not DBNull && (rawHash is not string text || text.Length != 64 || !text.All(char.IsAsciiHexDigit)))
+            return BlobEncryptionMetadataIssue.InvalidHash;
+        if (kind == BlobEncryptionRecordKind.SessionAttachment && rawHash is DBNull)
+            return BlobEncryptionMetadataIssue.InvalidHash;
+        object rawKey = reader.GetValue(6);
+        if (rawKey is not DBNull && rawKey is not string)
+            return BlobEncryptionMetadataIssue.InvalidKey;
+        string path;
+        EncryptedBlobPurpose purpose;
+        if (kind == BlobEncryptionRecordKind.SessionAttachment)
         {
-            string storedId = reader.GetString(0);
-
-            Guid id = Guid.Parse(storedId);
-
-            string purpose = reader.GetString(2);
-
-            candidates.Add(new BlobEncryptionCandidate(
-                BlobEncryptionRecordKind.UploadedFile,
-                // The text as stored, not a rendering of the parsed identity: the write-back below matches this
-                // column exactly, and a row still held in an earlier spelling has to find itself.
-                storedId,
-                UploadedFileStorage.ResolvePath(id),
-                UploadedFileStorage.ResolveEncryptionPurpose(purpose),
-                reader.GetInt64(1),
-                reader.IsDBNull(5) ? null : reader.GetString(5),
-                Convert.ToInt32(reader.GetValue(3), CultureInfo.InvariantCulture),
-                reader.IsDBNull(4) ? null : reader.GetString(4)));
+            if (reader.GetValue(2) is not string relativePath)
+                return BlobEncryptionMetadataIssue.InvalidPath;
+            try { path = ResolveAttachmentPath(relativePath); }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException or InvalidDataException)
+            { return BlobEncryptionMetadataIssue.InvalidPath; }
+            purpose = EncryptedBlobPurpose.SessionAttachment;
         }
+        else
+        {
+            if (reader.GetValue(7) is not string uploadedPurpose)
+                return BlobEncryptionMetadataIssue.InvalidPurpose;
+            path = UploadedFileStorage.ResolvePath(id);
+            purpose = UploadedFileStorage.ResolveEncryptionPurpose(uploadedPurpose);
+        }
+        // Keep the exact admitted stored spelling for write-back; rowid is only a diagnostic locator.
+        candidate = new BlobEncryptionCandidate(kind, storedId, path, purpose, length,
+            rawHash as string, (int)version, rawKey as string, rowId);
+        return null;
     }
 
     private static string ResolveAttachmentPath(string relativePath)
