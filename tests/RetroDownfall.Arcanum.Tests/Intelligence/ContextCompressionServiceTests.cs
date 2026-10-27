@@ -43,6 +43,23 @@ public sealed class ContextCompressionServiceTests
     }
 
     [Fact]
+    public async Task Legacy_repository_capabilities_fail_closed_for_manual_compaction_and_atomic_pin()
+    {
+        Session session = CreateSession([CreateEntry("retained answer")]);
+        CompressionGrimoireRepository grimoire = new() { Session = session };
+        ContextCompressionService service = CreateService(grimoire);
+        Result<CompactResult> compact = await service.CompactSessionAsync(session.Id, CancellationToken.None);
+        Assert.True(compact.IsFailure);
+        Assert.Equal(ErrorCodes.Session.CompactionUnavailable, compact.Error.Code);
+        IGrimoireRepository repository = grimoire;
+        Result<bool> pin = await repository.SetEntryPinnedWithinLimitAsync(session.Id, session.Entries.First().Id, true, 10);
+        Assert.True(pin.IsFailure);
+        Assert.Equal(ErrorCodes.Session.PinUnavailable, pin.Error.Code);
+        Assert.Empty(grimoire.DeletedEntryIds);
+        Assert.All(session.Entries, entry => Assert.False(entry.IsPinned));
+    }
+
+    [Fact]
     public async Task Compact_explains_when_pinned_context_remains_after_actual_removals()
     {
         Entry removable = CreateEntry(new string('r', 10_000), createdAtOffset: 0);

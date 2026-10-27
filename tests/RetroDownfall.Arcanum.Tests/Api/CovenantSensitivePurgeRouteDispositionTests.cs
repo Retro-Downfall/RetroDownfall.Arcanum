@@ -399,7 +399,7 @@ public sealed class CovenantSensitivePurgeRouteDispositionTests
                 new AppendEntryRequest(
                     MessageRole.Assistant,
                     string.Join(' ', Enumerable.Repeat($"ward-stone-{index}", 4_000)),
-                    "test-model"),
+                    "mistral:latest"),
                 ArcanumJsonContext.Default.AppendEntryRequest);
 
             using HttpResponseMessage response = await client.PostAsync(

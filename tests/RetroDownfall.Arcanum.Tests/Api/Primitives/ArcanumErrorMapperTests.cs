@@ -30,6 +30,8 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Session.EntryTooLarge, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Session.EmptyContent, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Session.RestQueueFull, StatusCodes.Status503ServiceUnavailable)]
+    [InlineData(ErrorCodes.Session.PinUnavailable, StatusCodes.Status503ServiceUnavailable)]
+    [InlineData(ErrorCodes.Session.CompactionUnavailable, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.Attachment.Disabled, StatusCodes.Status403Forbidden)]
     [InlineData(ErrorCodes.Attachment.InvalidRequest, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Attachment.InvalidContent, StatusCodes.Status400BadRequest)]

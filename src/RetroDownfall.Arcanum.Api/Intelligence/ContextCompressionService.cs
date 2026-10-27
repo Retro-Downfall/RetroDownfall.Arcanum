@@ -18,6 +18,17 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 public interface IContextCompressionService
 {
+    /// <summary>Manual Session compaction with a frozen, verified persisted assistant target.</summary>
+    Task<Result<CompactResult>> CompactSessionAsync(Guid sessionId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(Result<CompactResult>.Failure(new Error(
+            ErrorCodes.Session.CompactionUnavailable,
+            "Saved assistant model admission is unavailable. Restore a compatible host before compacting. No entries were removed.")));
+    }
+
+    /// <summary>Explicit-window primitive; the policy-governed Session route uses CompactSessionAsync.</summary>
     Task<CompactResult> CompressSessionAsync(Guid sessionId, int contextWindowLimit, CancellationToken cancellationToken);
 
     int CountTokens(
@@ -174,24 +185,113 @@ internal sealed class ContextCompressionService : IContextCompressionService
         return gone;
     }
 
+    public async Task<Result<CompactResult>> CompactSessionAsync(Guid sessionId, CancellationToken cancellationToken)
+    {
+        ArcanumSettings frozen = _settings.Value;
+        Session? session = await _grimoire.GetSessionAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        if (session is null)
+        {
+            return new Error(ErrorCodes.Session.NotFound, "Session was not found.");
+        }
+
+        Result<SessionCompactionModelSnapshot?> read = await _grimoire
+            .ReadSessionCompactionModelAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        if (read.IsFailure)
+        {
+            return read.Error;
+        }
+
+        SessionCompactionModelSnapshot? recorded = read.Value;
+        if (recorded is { HasContent: false }
+            || (recorded is { HasRecordedModel: true } && string.IsNullOrWhiteSpace(recorded.ModelUsed)))
+        {
+            return CompactionTargetUnavailable();
+        }
+
+        ProviderSettings provider;
+        string model;
+        if (!string.IsNullOrWhiteSpace(recorded?.ModelUsed))
+        {
+            string savedModel = recorded.ModelUsed.Trim();
+            List<(ProviderSettings Provider, string Model)> candidates = [];
+            foreach (ProviderSettings configured in frozen.Providers ?? [])
+            {
+                string? canonical = ProviderResolver.EnumerateAdvertisedModels(configured)
+                    .FirstOrDefault(name => ProviderResolver.ModelNameMatches(name, savedModel));
+                if (canonical is not null)
+                {
+                    candidates.Add((configured, canonical));
+                }
+            }
+
+            if (candidates.Count == 0)
+            {
+                return CompactionTargetUnavailable();
+            }
+
+            (provider, model) = candidates[0];
+            ResolvedModelTokenizationProfile policy = _modelTokenEstimator.ResolveEffectiveProfile(provider, model) with { ProfileId = string.Empty };
+            int window = ArcanumSettingClamps.ContextWindowLimit(provider.ContextWindowLimit);
+            foreach ((ProviderSettings other, string otherModel) in candidates.Skip(1))
+            {
+                ResolvedModelTokenizationProfile otherPolicy = _modelTokenEstimator.ResolveEffectiveProfile(other, otherModel) with { ProfileId = string.Empty };
+                if (ArcanumSettingClamps.ContextWindowLimit(other.ContextWindowLimit) != window || otherPolicy != policy)
+                {
+                    return CompactionTargetUnavailable();
+                }
+            }
+        }
+        else if (!ProviderResolver.TryResolveProviderForModel(frozen, frozen.DefaultModel, out ProviderSettings? fallback, out model)
+                 || fallback is null)
+        {
+            model = "unknown";
+            provider = new ProviderSettings
+            {
+                Name = "unconfigured",
+                Type = AiProviderKind.OpenAICompatible,
+                Models = [new ModelEntry(model)],
+                ContextWindowLimit = DefaultContextWindowLimit
+            };
+        }
+        else
+        {
+            provider = fallback;
+        }
+
+        CompactResult result = await CompressLoadedSessionAsync(session,
+            ArcanumSettingClamps.ContextWindowLimit(provider.ContextWindowLimit),
+            frozen.ResolveIntelligence(), provider, model, cancellationToken).ConfigureAwait(false);
+        return Result<CompactResult>.Success(result);
+    }
+
+    private static Error CompactionTargetUnavailable() => new(
+        ErrorCodes.Session.CompactionUnavailable,
+        "The saved assistant model is incomplete, unavailable, or ambiguous. Wait for an active reply to finish, or use arcanum config edit and arcanum config validate to restore an unambiguous provider/model policy before compacting. No entries were removed.");
+
     public async Task<CompactResult> CompressSessionAsync(Guid sessionId, int contextWindowLimit, CancellationToken cancellationToken)
     {
-        Session? session = await _grimoire
-            .GetSessionAsync(sessionId, cancellationToken)
-            .ConfigureAwait(false);
-
+        ArcanumSettings frozen = _settings.Value;
+        Session? session = await _grimoire.GetSessionAsync(sessionId, cancellationToken).ConfigureAwait(false);
         if (session is null)
         {
             return new CompactResult(0, 0, 0);
         }
 
-        IntelligenceSettings intelligenceSettings = _settings.Value.ResolveIntelligence();
-        ResolveProfileTarget(
-            provider: null,
-            model: null,
-            out ProviderSettings compressionProvider,
-            out string compressionModel);
+        ResolveProfileTarget(provider: null, model: null, out ProviderSettings compressionProvider, out string compressionModel);
+        return await CompressLoadedSessionAsync(session, contextWindowLimit, frozen.ResolveIntelligence(),
+            compressionProvider, compressionModel, cancellationToken).ConfigureAwait(false);
+    }
 
+    private async Task<CompactResult> CompressLoadedSessionAsync(
+        Session initialSession,
+        int contextWindowLimit,
+        IntelligenceSettings intelligenceSettings,
+        ProviderSettings compressionProvider,
+        string compressionModel,
+        CancellationToken cancellationToken)
+    {
+        Guid sessionId = initialSession.Id;
+        Session? session = initialSession;
         int minMessages = ArcanumSettingClamps.CompressionPreflightMinMessages(
             intelligenceSettings.CompressionPreflightMinMessages);
 

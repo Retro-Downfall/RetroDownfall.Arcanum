@@ -11,6 +11,10 @@ internal static class ArcanumErrorMapper
     public static int ResolveStatusCode(string errorCode) =>
         errorCode switch
         {
+            ErrorCodes.Session.PinUnavailable => StatusCodes.Status503ServiceUnavailable,
+
+            ErrorCodes.Session.CompactionUnavailable => StatusCodes.Status409Conflict,
+
             ErrorCodes.Lexicon.InvalidName
                 or ErrorCodes.Lexicon.InvalidFact
                 or ErrorCodes.Lexicon.InvalidScope

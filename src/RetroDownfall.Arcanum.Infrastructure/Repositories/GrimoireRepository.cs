@@ -824,6 +824,92 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         return updated > 0;
     }
 
+    public async Task<Result<bool>> SetEntryPinnedWithinLimitAsync(
+        Guid sessionId,
+        Guid entryId,
+        bool pinned,
+        int maxPinnedEntries,
+        CancellationToken cancellationToken = default)
+    {
+        using IDisposable entryLock = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            int updated = await ExecuteNonQueryAsync(
+                """
+                UPDATE "Entries"
+                SET "IsPinned" = $pinned
+                WHERE "SessionId" = $sessionId
+                  AND "Id" = $entryId
+                  AND ($pinned = 0 OR "IsPinned" = 1
+                       OR (SELECT COUNT(*) FROM "Entries"
+                           WHERE "SessionId" = $sessionId AND "IsPinned" = 1) < $maxPinned);
+                """,
+                command =>
+                {
+                    GrimoireEntitySql.AddParameter(command, "$pinned", pinned ? 1 : 0);
+                    GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(sessionId));
+                    GrimoireEntitySql.AddParameter(command, "$entryId", GrimoireEntitySql.Format(entryId));
+                    GrimoireEntitySql.AddParameter(command, "$maxPinned", Math.Max(0, maxPinnedEntries));
+                }, cancellationToken).ConfigureAwait(false);
+
+            Result<bool> result = Result<bool>.Success(true);
+            if (updated == 0)
+            {
+                await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(_db,
+                    """
+                    SELECT EXISTS(SELECT 1 FROM "Entries" WHERE "SessionId" = $sessionId AND "Id" = $entryId);
+                    """, cancellationToken).ConfigureAwait(false);
+                GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(sessionId));
+                GrimoireEntitySql.AddParameter(command, "$entryId", GrimoireEntitySql.Format(entryId));
+                bool exists = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) != 0;
+                result = Result<bool>.Failure(exists
+                    ? new Error(ErrorCodes.Session.TooManyPinned, $"Cannot pin more than {Math.Max(0, maxPinnedEntries)} entries in this session.")
+                    : new Error(ErrorCodes.Session.EntryNotFound, "Entry was not found in this session."));
+            }
+
+            await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+        catch
+        {
+            await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    public async Task<Result<SessionCompactionModelSnapshot?>> ReadSessionCompactionModelAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(_db,
+            """
+            SELECT e."ModelUsed",
+                   length(trim(e."Content", $whitespace)) > 0,
+                   EXISTS(SELECT 1 FROM "Entries" AS r
+                          WHERE r."SessionId" = $sessionId AND r."Role" = $assistant
+                            AND length(trim(coalesce(r."ToolName", ''), $whitespace)) = 0
+                            AND length(trim(coalesce(r."ToolCallId", ''), $whitespace)) = 0
+                            AND substr(ltrim(r."Content"), 1, 10) <> '[ToolCall:' COLLATE NOCASE
+                            AND length(trim(r."ModelUsed", $whitespace)) > 0)
+            FROM "Entries" AS e
+            WHERE e."SessionId" = $sessionId AND e."Role" = $assistant
+              AND length(trim(coalesce(e."ToolName", ''), $whitespace)) = 0
+              AND length(trim(coalesce(e."ToolCallId", ''), $whitespace)) = 0
+              AND substr(ltrim(e."Content"), 1, 10) <> '[ToolCall:' COLLATE NOCASE
+            ORDER BY e."Sequence" DESC
+            LIMIT 1;
+            """, cancellationToken).ConfigureAwait(false);
+        GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(sessionId));
+        GrimoireEntitySql.AddParameter(command, "$assistant", (int)MessageRole.Assistant);
+        GrimoireEntitySql.AddParameter(command, "$whitespace", " \t\r\n\v\f\u0085\u00A0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000");
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        SessionCompactionModelSnapshot? snapshot = await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new SessionCompactionModelSnapshot(reader.GetString(0), reader.GetInt64(1) != 0, reader.GetInt64(2) != 0)
+            : null;
+        return Result<SessionCompactionModelSnapshot?>.Success(snapshot);
+    }
+
     public async Task<int> GetPinnedEntryCountAsync(
         Guid sessionId,
         CancellationToken cancellationToken = default)
