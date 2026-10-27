@@ -83,6 +83,8 @@ public static class LongRunningOperationErrorCodes
     public const string RecoveryFailed = "operation.recovery_failed";
     public const string InvalidRecoveryResult = "operation.recovery_result_invalid";
 
+    public const string BlobEncryptionIncomplete = "operation.blob_encryption_incomplete";
+
     /// <summary>
     /// The ledger row is missing the domain id its handler needs (inference run, claim, reservation).
     /// Recovery cannot guess which entity the crashed work owned, so an operator has to look.

@@ -1403,7 +1403,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         BlobEncryptionLifecycleService lifecycle = new(metadata,
             processor: null!, blobStore: null!, keyRing: null!,
-            operationCoordinator: null!, store, TimeProvider.System);
+            new LongRunningOperationCoordinator(store, TimeProvider.System), store, TimeProvider.System);
 
         LongRunningOperationReconciler reconciler = new(store,
             [new BlobEncryptionMigrationRecoveryHandler(lifecycle)], TimeProvider.System,
@@ -2214,7 +2214,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     {
         private bool _listed;
 
-        public async Task<IReadOnlyList<BlobEncryptionCandidate>> ListAsync(CancellationToken cancellationToken = default)
+        public async Task<BlobEncryptionInventory> ListAsync(CancellationToken cancellationToken = default)
         {
             if (!_listed && onList is not null)
             {
@@ -2223,7 +2223,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
                 await onList();
             }
 
-            return [];
+            return new BlobEncryptionInventory([], []);
         }
 
         public Task UpdateEncryptionMetadataAsync(BlobEncryptionCandidate candidate,

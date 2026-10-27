@@ -22,8 +22,7 @@ public sealed class BlobEncryptionLifecycleService(
     /// <remarks>
     /// No blob body is opened, decrypted, or hashed here. Content verification (authentication, length,
     /// SHA-256, key availability) is the explicit, bounded and throttled <see cref="VerifyAsync"/>, so
-    /// status stays cheap on a large store and <see cref="BlobEncryptionStatus.InvalidFiles"/> counts only
-    /// what the inventory itself can see: a catalogued blob whose file is missing. A present file whose
+    /// status stays cheap on a large store and <see cref="BlobEncryptionStatus.InvalidFiles"/> counts invalid catalog rows and missing files. A present file whose
     /// envelope header cannot be read (access denied, locked) is not distinguished here: the header peek
     /// reports it as carrying no envelope, so it is counted as legacy plaintext, and as needing
     /// reconciliation when its metadata says encrypted. <see cref="VerifyAsync"/> is what reports it,
@@ -32,15 +31,16 @@ public sealed class BlobEncryptionLifecycleService(
     public async Task<BlobEncryptionStatus> GetStatusAsync(
         CancellationToken cancellationToken = default)
     {
-        IReadOnlyList<BlobEncryptionCandidate> candidates = await metadataStore
+        BlobEncryptionInventory inventory = await metadataStore
             .ListAsync(cancellationToken)
             .ConfigureAwait(false);
+        IReadOnlyList<BlobEncryptionCandidate> candidates = inventory.Candidates;
         int encrypted = 0;
-        long encryptedBytes = 0;
+        ByteTotal encryptedBytes = new();
         int legacy = 0;
-        long legacyBytes = 0;
+        ByteTotal legacyBytes = new();
         int reconciliation = 0;
-        int invalid = 0;
+        int invalid = inventory.InvalidRows.Count;
         Dictionary<string, int> byKey = new(StringComparer.Ordinal);
 
         foreach (BlobEncryptionCandidate candidate in candidates)
@@ -55,7 +55,7 @@ public sealed class BlobEncryptionLifecycleService(
             if (blobStore.HasEnvelope(candidate.Path))
             {
                 encrypted++;
-                encryptedBytes += candidate.ExpectedPlaintextLength;
+                encryptedBytes.Add(candidate.ExpectedPlaintextLength);
                 string key = candidate.EncryptionKeyId ?? "<unknown>";
                 byKey[key] = byKey.GetValueOrDefault(key) + 1;
                 if (candidate.EncryptionVersion == 0)
@@ -66,7 +66,7 @@ public sealed class BlobEncryptionLifecycleService(
             else
             {
                 legacy++;
-                legacyBytes += candidate.ExpectedPlaintextLength;
+                legacyBytes.Add(candidate.ExpectedPlaintextLength);
                 if (candidate.EncryptionVersion > 0)
                 {
                     reconciliation++;
@@ -75,12 +75,13 @@ public sealed class BlobEncryptionLifecycleService(
         }
 
         return new BlobEncryptionStatus(
-            candidates.Count,
-            candidates.Sum(static candidate => candidate.ExpectedPlaintextLength),
+            candidates.Count + inventory.InvalidRows.Count,
+            SumBytes(candidates.Select(static candidate => (long?)candidate.ExpectedPlaintextLength)
+                .Concat(inventory.InvalidRows.Select(static row => row.KnownPlaintextLength))),
             encrypted,
-            encryptedBytes,
+            encryptedBytes.Value,
             legacy,
-            legacyBytes,
+            legacyBytes.Value,
             reconciliation,
             invalid,
             byKey);
@@ -110,7 +111,7 @@ public sealed class BlobEncryptionLifecycleService(
         return await RunDurableAsync(
                 lease.Operation,
                 owner,
-                rotateToKeyId: null,
+                rotate: false,
                 maxConcurrency,
                 maxBytesPerSecond,
                 cancellationToken)
@@ -148,105 +149,124 @@ public sealed class BlobEncryptionLifecycleService(
             throw new InvalidOperationException("Could not acquire the key-rotation lease.");
         }
 
-        FileEncryptionKeyMaterial next = await keyRing.RotateAsync(cancellationToken)
-            .ConfigureAwait(false);
-        BlobEncryptionOperationResult result = await RunDurableAsync(
+        return await RunDurableAsync(
                 lease.Operation,
                 owner,
-                next.KeyId,
+                rotate: true,
                 maxConcurrency,
                 maxBytesPerSecond,
                 cancellationToken)
             .ConfigureAwait(false);
-
-        if (result.FailedFiles == 0 && result.RemainingFiles == 0)
-        {
-            await RetireUnreferencedKeysAsync(next.KeyId, cancellationToken).ConfigureAwait(false);
-        }
-
-        return result;
     }
 
     internal async Task<LongRunningOperationRecoveryResult> RecoverAsync(
         LongRunningOperation operation,
         CancellationToken cancellationToken)
     {
-        if (await IsRecoveryCancellationRequestedAsync(operation, cancellationToken).ConfigureAwait(false))
+        ConcurrentDictionary<RecordLocator, BlobEncryptionVerificationIssue> failures = new();
+        try
         {
-            return LongRunningOperationRecoveryResult.Abandoned(LongRunningOperationRecoveryOutcomes.Cancelled);
-        }
+            if (await IsRecoveryCancellationRequestedAsync(operation, cancellationToken).ConfigureAwait(false))
+            {
+                return LongRunningOperationRecoveryResult.Abandoned(LongRunningOperationRecoveryOutcomes.Cancelled);
+            }
 
-        string? targetKeyId = null;
-        if (operation.Kind == LongRunningOperationKinds.BlobEncryptionKeyRotation)
-        {
-            targetKeyId = (await keyRing.GetForWriteAsync(cancellationToken).ConfigureAwait(false)).KeyId;
-        }
+            string recoveryOwner = operation.LeaseOwner ?? throw LostOperationOwnership();
+            await RenewOwnedLeaseAsync(operation.Id, recoveryOwner, cancellationToken).ConfigureAwait(false);
 
-        IReadOnlyList<BlobEncryptionCandidate> candidates = await metadataStore
-            .ListAsync(cancellationToken)
-            .ConfigureAwait(false);
-        int failed = 0;
-        foreach (BlobEncryptionCandidate candidate in candidates)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
+            string? targetKeyId = null;
+            if (operation.Kind == LongRunningOperationKinds.BlobEncryptionKeyRotation)
+            {
+                targetKeyId = (await keyRing.GetForWriteAsync(cancellationToken).ConfigureAwait(false)).KeyId;
+            }
+
+            BlobEncryptionInventory inventory = await metadataStore
+                .ListAsync(cancellationToken)
+                .ConfigureAwait(false);
+            foreach (BlobEncryptionInvalidRow row in inventory.InvalidRows)
+                failures[RecordLocator.For(row)] = BlobEncryptionVerificationIssue.InvalidMetadata;
+            await RenewOwnedLeaseAsync(operation.Id, recoveryOwner, cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<BlobEncryptionCandidate> candidates = inventory.Candidates;
+            foreach (BlobEncryptionCandidate candidate in candidates)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (await IsRecoveryCancellationRequestedAsync(operation, cancellationToken).ConfigureAwait(false))
+                {
+                    return CancelledRecoveryResult(failures.Count);
+                }
+
+                await RenewOwnedLeaseAsync(operation.Id, recoveryOwner, cancellationToken).ConfigureAwait(false);
+
+                try
+                {
+                    if (targetKeyId is null)
+                    {
+                        _ = await processor.MigrateAsync(candidate, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        _ = await processor.ReencryptAsync(candidate, targetKeyId, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                }
+                // The same filter RunDurableAsync uses. A blob deleted out-of-band or access-denied, a
+                // length/hash mismatch, or an unavailable key is an expected data condition, not a reason
+                // to abandon every candidate queued behind it. Recovery for these kinds runs once —
+                // FindExpiredAsync re-selects only the DataRetention kinds — so an early unwind would
+                // leave the remaining files legacy plaintext (or on the retired key) permanently.
+                catch (Exception ex) when (BlobEncryptionFileProcessor.IsPerBlobFailure(ex))
+                {
+                    failures[RecordLocator.For(candidate)] = BlobEncryptionVerificationIssue.IoError;
+                }
+            }
 
             if (await IsRecoveryCancellationRequestedAsync(operation, cancellationToken).ConfigureAwait(false))
             {
-                return CancelledRecoveryResult(failed);
+                return CancelledRecoveryResult(failures.Count);
             }
 
-            try
+            // Both branches verify their own work before claiming success. Migration recovery used to
+            // return Completed() unconditionally, so a pass that never touched a file was
+            // indistinguishable from a clean one.
+            BlobEncryptionOperationResult verification = await RunVerificationAsync(
+                    operation.Id,
+                    maxConcurrency: 2,
+                    maxBytesPerSecond: 64L * 1024 * 1024,
+                    cancellationToken,
+                    attemptFailures: failures,
+                    renewLease: ct => RenewOwnedLeaseAsync(operation.Id, recoveryOwner, ct))
+                .ConfigureAwait(false);
+            if (!failures.IsEmpty || verification.FailedFiles != 0 || verification.RemainingFiles != 0)
             {
-                if (targetKeyId is null)
-                {
-                    _ = await processor.MigrateAsync(candidate, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                else
-                {
-                    _ = await processor.ReencryptAsync(candidate, targetKeyId, cancellationToken)
-                        .ConfigureAwait(false);
-                }
+                return LongRunningOperationRecoveryResult.RequiresAttention(
+                    LongRunningOperationErrorCodes.RecoveryFailed);
             }
-            // The same filter RunDurableAsync uses. A blob deleted out-of-band or access-denied, a
-            // length/hash mismatch, or an unavailable key is an expected data condition, not a reason
-            // to abandon every candidate queued behind it. Recovery for these kinds runs once —
-            // FindExpiredAsync re-selects only the DataRetention kinds — so an early unwind would
-            // leave the remaining files legacy plaintext (or on the retired key) permanently.
-            catch (Exception ex) when (BlobEncryptionFileProcessor.IsPerBlobFailure(ex))
+
+            if (await IsRecoveryCancellationRequestedAsync(operation, cancellationToken).ConfigureAwait(false))
             {
-                failed++;
+                return CancelledRecoveryResult(failures.Count);
             }
-        }
 
-        if (await IsRecoveryCancellationRequestedAsync(operation, cancellationToken).ConfigureAwait(false))
+            if (targetKeyId is not null)
+            {
+                KeyRetirementResult retirement = await RetireUnreferencedKeysAsync(
+                    targetKeyId, cancellationToken, operation, failures).ConfigureAwait(false);
+                if (retirement.InvalidRows.Count != 0)
+                    return LongRunningOperationRecoveryResult.RequiresAttention(LongRunningOperationErrorCodes.RecoveryFailed);
+                if (retirement.Cancelled) return CancelledRecoveryResult(failures.Count);
+            }
+
+            await RenewOwnedLeaseAsync(operation.Id, recoveryOwner, cancellationToken).ConfigureAwait(false);
+            return LongRunningOperationRecoveryResult.Completed();
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return CancelledRecoveryResult(failed);
+            if (await IsRecoveryCancellationRequestedAsync(operation, cancellationToken).ConfigureAwait(false))
+                return CancelledRecoveryResult(failures.Count);
+            throw;
         }
-
-        // Both branches verify their own work before claiming success. Migration recovery used to
-        // return Completed() unconditionally, so a pass that never touched a file was
-        // indistinguishable from a clean one.
-        BlobEncryptionOperationResult verification = await RunVerificationAsync(
-                operation.Id,
-                maxConcurrency: 2,
-                maxBytesPerSecond: 64L * 1024 * 1024,
-                cancellationToken)
-            .ConfigureAwait(false);
-        if (failed != 0 || verification.FailedFiles != 0 || verification.RemainingFiles != 0)
-        {
-            return LongRunningOperationRecoveryResult.RequiresAttention(
-                LongRunningOperationErrorCodes.RecoveryFailed);
-        }
-
-        if (await IsRecoveryCancellationRequestedAsync(operation, cancellationToken).ConfigureAwait(false)
-            || targetKeyId is not null
-            && !await RetireUnreferencedKeysAsync(targetKeyId, cancellationToken, operation).ConfigureAwait(false))
-        {
-            return CancelledRecoveryResult(failed);
-        }
-
-        return LongRunningOperationRecoveryResult.Completed();
     }
 
     private async Task<bool> IsRecoveryCancellationRequestedAsync(
@@ -261,14 +281,25 @@ public sealed class BlobEncryptionLifecycleService(
             ? LongRunningOperationRecoveryResult.Abandoned(LongRunningOperationRecoveryOutcomes.Cancelled)
             : LongRunningOperationRecoveryResult.RequiresAttention(LongRunningOperationErrorCodes.RecoveryFailed);
 
-    private async Task<bool> RetireUnreferencedKeysAsync(
+    private async Task<KeyRetirementResult> RetireUnreferencedKeysAsync(
         string activeKeyId,
         CancellationToken cancellationToken,
-        LongRunningOperation? recoveringOperation = null)
+        LongRunningOperation operation,
+        ConcurrentDictionary<RecordLocator, BlobEncryptionVerificationIssue> failures)
     {
-        IReadOnlyList<BlobEncryptionCandidate> current = await metadataStore
+        string owner = operation.LeaseOwner ?? throw LostOperationOwnership();
+
+        await RenewOwnedLeaseAsync(operation.Id, owner, cancellationToken).ConfigureAwait(false);
+        BlobEncryptionInventory inventory = await metadataStore
             .ListAsync(cancellationToken)
             .ConfigureAwait(false);
+        foreach (BlobEncryptionInvalidRow row in inventory.InvalidRows)
+            failures[RecordLocator.For(row)] = BlobEncryptionVerificationIssue.InvalidMetadata;
+
+        await RenewOwnedLeaseAsync(operation.Id, owner, cancellationToken).ConfigureAwait(false);
+        if (inventory.InvalidRows.Count != 0)
+            return new KeyRetirementResult(false, inventory.InvalidRows);
+        IReadOnlyList<BlobEncryptionCandidate> current = inventory.Candidates;
         HashSet<string> referenced = current
             .Select(static candidate => candidate.EncryptionKeyId)
             .Where(static keyId => !string.IsNullOrWhiteSpace(keyId))
@@ -282,41 +313,47 @@ public sealed class BlobEncryptionLifecycleService(
             if (!string.Equals(keyId, activeKeyId, StringComparison.Ordinal)
                 && !referenced.Contains(keyId))
             {
-                if (recoveringOperation is not null
-                    && await IsRecoveryCancellationRequestedAsync(recoveringOperation, cancellationToken).ConfigureAwait(false))
+                if (await IsRecoveryCancellationRequestedAsync(operation, cancellationToken).ConfigureAwait(false))
                 {
-                    return false;
+                    return new KeyRetirementResult(true, []);
                 }
+
+                await RenewOwnedLeaseAsync(operation.Id, owner, cancellationToken).ConfigureAwait(false);
 
                 await keyRing.RetireAsync(keyId, cancellationToken).ConfigureAwait(false);
             }
         }
 
-        return true;
+        return new KeyRetirementResult(false, []);
     }
 
     private async Task<BlobEncryptionOperationResult> RunDurableAsync(
         LongRunningOperation operation,
         string owner,
-        string? rotateToKeyId,
+        bool rotate,
         int maxConcurrency,
         long maxBytesPerSecond,
         CancellationToken cancellationToken)
     {
-        IReadOnlyList<BlobEncryptionCandidate> candidates = await metadataStore
-            .ListAsync(cancellationToken)
-            .ConfigureAwait(false);
-        ConcurrentDictionary<BlobEncryptionVerificationIssue, int> issues = new();
+        ConcurrentDictionary<RecordLocator, BlobEncryptionVerificationIssue> failures = new();
         int processed = 0;
-        long processedBytes = 0;
-        int failed = 0;
-        SemaphoreSlim checkpointGate = new(1, 1);
+        ByteTotal processedBytes = new();
+        using SemaphoreSlim checkpointGate = new(1, 1);
         OperationIoThrottle throttle = new(maxBytesPerSecond);
 
         try
         {
+            await RenewOwnedLeaseAsync(operation.Id, owner, cancellationToken).ConfigureAwait(false);
+            string? rotateToKeyId = rotate
+                ? (await keyRing.RotateAsync(cancellationToken).ConfigureAwait(false)).KeyId
+                : null;
+            BlobEncryptionInventory inventory = await metadataStore.ListAsync(cancellationToken).ConfigureAwait(false);
+            foreach (BlobEncryptionInvalidRow row in inventory.InvalidRows)
+                failures[RecordLocator.For(row)] = BlobEncryptionVerificationIssue.InvalidMetadata;
+            await RenewOwnedLeaseAsync(operation.Id, owner, cancellationToken).ConfigureAwait(false);
+
             await Parallel.ForEachAsync(
-                candidates,
+                inventory.Candidates,
                 new ParallelOptions
                 {
                     MaxDegreeOfParallelism = Math.Clamp(maxConcurrency, 1, 8),
@@ -325,152 +362,192 @@ public sealed class BlobEncryptionLifecycleService(
                 async (candidate, ct) =>
                 {
                     ct.ThrowIfCancellationRequested();
-                    LongRunningOperation? live = await operationStore
-                        .GetAsync(operation.Id, ct)
-                        .ConfigureAwait(false);
+                    LongRunningOperation? live = await operationStore.GetAsync(operation.Id, ct).ConfigureAwait(false);
                     if (live?.State == LongRunningOperationState.Cancelling)
-                    {
-                        throw new OperationCanceledException(
-                            "Blob encryption operation cancellation was requested.");
-                    }
+                        throw new OperationCanceledException("Blob encryption operation cancellation was requested.");
+                    RequireOwnedRunning(live, owner);
 
-                    await throttle.WaitAsync(candidate.ExpectedPlaintextLength, ct)
-                        .ConfigureAwait(false);
                     try
                     {
-                        if (rotateToKeyId is null)
-                        {
-                            _ = await processor.MigrateAsync(candidate, ct).ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            _ = await processor.ReencryptAsync(candidate, rotateToKeyId, ct)
-                                .ConfigureAwait(false);
-                        }
-
+                        await throttle.WaitAsync(PhysicalLength(candidate), ct,
+                            token => RenewOwnedLeaseAsync(operation.Id, owner, token)).ConfigureAwait(false);
+                        LongRunningOperation? beforeMutation = await operationStore.GetAsync(operation.Id, ct).ConfigureAwait(false);
+                        if (beforeMutation?.State == LongRunningOperationState.Cancelling)
+                            throw new OperationCanceledException("Blob encryption operation cancellation was requested.");
+                        RequireOwnedRunning(beforeMutation, owner);
+                        BlobEncryptionFileResult result = rotateToKeyId is null
+                            ? await processor.MigrateAsync(candidate, ct).ConfigureAwait(false)
+                            : await processor.ReencryptAsync(candidate, rotateToKeyId, ct).ConfigureAwait(false);
                         Interlocked.Increment(ref processed);
-                        Interlocked.Add(ref processedBytes, candidate.ExpectedPlaintextLength);
+                        processedBytes.Add(result.PlaintextLength);
                     }
                     catch (Exception ex) when (BlobEncryptionFileProcessor.IsPerBlobFailure(ex))
                     {
-                        Interlocked.Increment(ref failed);
                         BlobEncryptionVerificationResult verification = await VerifyCandidateAsync(
-                                candidate,
-                                CancellationToken.None)
-                            .ConfigureAwait(false);
-                        issues.AddOrUpdate(verification.Issue, 1, static (_, count) => count + 1);
+                            candidate, CancellationToken.None).ConfigureAwait(false);
+                        failures[RecordLocator.For(candidate)] = verification.IsValid
+                            ? BlobEncryptionVerificationIssue.IoError
+                            : verification.Issue;
                     }
 
                     await checkpointGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
                     try
                     {
-                        _ = await operationCoordinator.HeartbeatAsync(
-                                operation.Id,
-                                owner,
-                                LeaseDuration,
-                                CancellationToken.None)
+                        if (!await operationCoordinator.HeartbeatAsync(operation.Id, owner, LeaseDuration,
+                            CancellationToken.None).ConfigureAwait(false))
+                            throw LostOperationOwnership();
+                        LongRunningOperation? current = await operationStore.GetAsync(operation.Id, CancellationToken.None)
                             .ConfigureAwait(false);
-                        LongRunningOperation? current = await operationStore
-                            .GetAsync(operation.Id, CancellationToken.None)
-                            .ConfigureAwait(false);
-                        if (current is not null)
-                        {
-                            byte[] checkpoint = BuildCheckpoint(
-                                Volatile.Read(ref processed),
-                                Interlocked.Read(ref processedBytes),
-                                Volatile.Read(ref failed));
-                            _ = await operationCoordinator.CheckpointAsync(
-                                    operation.Id,
-                                    owner,
-                                    current.CheckpointVersion,
-                                    checkpointVersion: 1,
-                                    checkpoint,
-                                    checkpointReference: null,
-                                    $"Processed {Volatile.Read(ref processed)} of {candidates.Count} files; "
-                                    + $"{Interlocked.Read(ref processedBytes)} bytes complete; "
-                                    + $"{Volatile.Read(ref failed)} files excluded.",
-                                    CancellationToken.None)
-                                .ConfigureAwait(false);
-                        }
+                        RequireOwnedRunning(current, owner, allowCancelling: true);
+                        if (!await operationCoordinator.CheckpointAsync(operation.Id, owner, current!.CheckpointVersion,
+                            checkpointVersion: 1, BuildCheckpoint(Volatile.Read(ref processed), processedBytes.Value ?? -1, failures.Count),
+                            checkpointReference: null,
+                            $"Processed {Volatile.Read(ref processed)} of {inventory.Candidates.Count + inventory.InvalidRows.Count} files; "
+                            + $"{FormatBytes(processedBytes.Value)} bytes complete; {failures.Count} files excluded.",
+                            CancellationToken.None).ConfigureAwait(false))
+                            throw LostOperationOwnership();
                     }
-                    finally
-                    {
-                        checkpointGate.Release();
-                    }
+                    finally { checkpointGate.Release(); }
                 }).ConfigureAwait(false);
 
             BlobEncryptionOperationResult verification = await RunVerificationAsync(
-                    operation.Id,
-                    maxConcurrency,
-                    maxBytesPerSecond,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            foreach ((BlobEncryptionVerificationIssue issue, int count) in verification.Issues)
+                operation.Id, maxConcurrency, maxBytesPerSecond, cancellationToken, failures,
+                ct => RenewOwnedLeaseAsync(operation.Id, owner, ct)).ConfigureAwait(false);
+            if (rotateToKeyId is not null && verification.FailedFiles == 0 && verification.RemainingFiles == 0)
             {
-                issues.AddOrUpdate(issue, count, (_, existing) => existing + count);
+                KeyRetirementResult retirement = await RetireUnreferencedKeysAsync(
+                    rotateToKeyId, cancellationToken, operation, failures).ConfigureAwait(false);
+                if (retirement.Cancelled) throw new OperationCanceledException("Blob encryption operation cancellation was requested.");
+                if (retirement.InvalidRows.Count != 0)
+                {
+                    foreach (BlobEncryptionInvalidRow row in retirement.InvalidRows)
+                        failures[RecordLocator.For(row)] = BlobEncryptionVerificationIssue.InvalidMetadata;
+                    verification = verification with
+                    {
+                        RemainingFiles = retirement.InvalidRows.Count,
+                        RemainingBytes = SumBytes(retirement.InvalidRows.Select(static row => row.KnownPlaintextLength)),
+                        FailedFiles = failures.Count,
+                        Issues = CountIssues(failures),
+                    };
+                }
             }
 
-            LongRunningOperation? completed = await operationStore
-                .GetAsync(operation.Id, CancellationToken.None)
-                .ConfigureAwait(false);
-            if (completed is not null)
-            {
-                _ = await operationCoordinator.CompleteAsync(
-                        operation.Id,
-                        owner,
-                        completed.Revision,
-                        CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-
-            return verification with
-            {
-                ProcessedFiles = processed,
-                ProcessedBytes = processedBytes,
-                FailedFiles = failed + verification.FailedFiles,
-                Issues = issues,
-            };
+            await RenewOwnedLeaseAsync(operation.Id, owner, cancellationToken).ConfigureAwait(false);
+            LongRunningOperation? current = await operationStore.GetAsync(operation.Id, CancellationToken.None).ConfigureAwait(false);
+            if (current?.State == LongRunningOperationState.Cancelling)
+                throw new OperationCanceledException("Blob encryption operation cancellation was requested.");
+            RequireOwnedRunning(current, owner);
+            bool settled = verification.FailedFiles == 0 && verification.RemainingFiles == 0
+                ? await operationCoordinator.CompleteAsync(operation.Id, owner, current!.Revision, CancellationToken.None).ConfigureAwait(false)
+                : await operationStore.TryTransitionAsync(operation.Id, current!.Revision, owner,
+                    LongRunningOperationState.ReconciliationRequired, timeProvider.GetUtcNow(),
+                    LongRunningOperationErrorCodes.BlobEncryptionIncomplete, CancellationToken.None).ConfigureAwait(false);
+            if (!settled) throw LostOperationOwnership();
+            return verification with { ProcessedFiles = processed, ProcessedBytes = processedBytes.Value };
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException exception)
         {
-            LongRunningOperation? cancelled = await operationStore
-                .GetAsync(operation.Id, CancellationToken.None)
-                .ConfigureAwait(false);
-            if (cancelled is not null)
-            {
-                _ = await operationStore.TryTransitionAsync(
-                        operation.Id,
-                        cancelled.Revision,
-                        owner,
-                        LongRunningOperationState.Abandoned,
-                        timeProvider.GetUtcNow(),
-                        cancellationToken: CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-
+            await SettlePreservingFailureAsync(exception, operation.Id, owner, failures.IsEmpty
+                ? LongRunningOperationState.Abandoned : LongRunningOperationState.ReconciliationRequired, cancellationToken).ConfigureAwait(false);
             throw;
         }
-        finally
+        catch (Exception exception)
         {
-            checkpointGate.Dispose();
+            await SettlePreservingFailureAsync(exception, operation.Id, owner,
+                LongRunningOperationState.ReconciliationRequired, cancellationToken).ConfigureAwait(false);
+            throw;
         }
     }
+
+    private async Task SettlePreservingFailureAsync(Exception original, Guid operationId, string owner,
+        LongRunningOperationState state, CancellationToken cancellationToken)
+    {
+        bool settled;
+        try
+        {
+            settled = await SettleFailureAsync(operationId, owner, state).ConfigureAwait(false);
+        }
+        catch (Exception settlement)
+        {
+            AggregateException combined = new("Blob encryption and durable settlement both failed.", original, settlement);
+            if (original is OperationCanceledException)
+                throw new OperationCanceledException("Blob encryption was cancelled and durable settlement failed.", combined, cancellationToken);
+            throw combined;
+        }
+
+        if (!settled)
+        {
+            if (original is OperationCanceledException)
+                throw new OperationCanceledException("Blob encryption was cancelled; its durable operation could not be settled.", original, cancellationToken);
+            throw new InvalidOperationException("Blob encryption failed; its durable operation could not be settled.", original);
+        }
+    }
+
+    private async Task<bool> SettleFailureAsync(Guid operationId, string owner, LongRunningOperationState state)
+    {
+        LongRunningOperation? current = await operationStore.GetAsync(operationId, CancellationToken.None).ConfigureAwait(false);
+        if (current is null || current.LeaseOwner != owner
+            || current.State is not (LongRunningOperationState.Running or LongRunningOperationState.Cancelling)) return false;
+        return await operationStore.TryTransitionAsync(operationId, current.Revision, owner, state, timeProvider.GetUtcNow(),
+            state == LongRunningOperationState.Abandoned
+                ? LongRunningOperationRecoveryOutcomes.Cancelled : LongRunningOperationErrorCodes.BlobEncryptionIncomplete,
+            CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private async Task RenewOwnedLeaseAsync(Guid operationId, string owner, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        LongRunningOperation? current = await operationStore.GetAsync(operationId, cancellationToken).ConfigureAwait(false);
+
+        RequireOwnedRunning(current, owner);
+
+        if (!await operationCoordinator.HeartbeatAsync(operationId, owner, LeaseDuration, cancellationToken).ConfigureAwait(false))
+            throw LostOperationOwnership();
+
+        RequireOwnedRunning(await operationStore.GetAsync(operationId, cancellationToken).ConfigureAwait(false), owner);
+    }
+
+    private void RequireOwnedRunning(LongRunningOperation? operation, string owner, bool allowCancelling = false)
+    {
+        if (operation is null || operation.LeaseOwner != owner
+            || operation.LeaseExpiresAt is not { } expiresAt || expiresAt <= timeProvider.GetUtcNow())
+            throw LostOperationOwnership();
+
+        if (operation.State == LongRunningOperationState.Cancelling && !allowCancelling)
+            throw new OperationCanceledException("Blob encryption operation cancellation was requested.");
+
+        if (operation.State != LongRunningOperationState.Running
+            && !(allowCancelling && operation.State == LongRunningOperationState.Cancelling))
+            throw LostOperationOwnership();
+    }
+
+    private static InvalidOperationException LostOperationOwnership() =>
+        new("Blob encryption could not retain or settle its durable operation lease.");
 
     private async Task<BlobEncryptionOperationResult> RunVerificationAsync(
         Guid operationId,
         int maxConcurrency,
         long maxBytesPerSecond,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ConcurrentDictionary<RecordLocator, BlobEncryptionVerificationIssue>? attemptFailures = null,
+        Func<CancellationToken, Task>? renewLease = null)
     {
-        IReadOnlyList<BlobEncryptionCandidate> candidates = await metadataStore
-            .ListAsync(cancellationToken)
-            .ConfigureAwait(false);
-        ConcurrentDictionary<BlobEncryptionVerificationIssue, int> issues = new();
+        if (renewLease is not null) await renewLease(cancellationToken).ConfigureAwait(false);
+        BlobEncryptionInventory inventory = await metadataStore.ListAsync(cancellationToken).ConfigureAwait(false);
+        ConcurrentDictionary<RecordLocator, BlobEncryptionVerificationIssue> failures = attemptFailures ?? new();
+        ByteTotal remainingBytes = new();
+        foreach (BlobEncryptionInvalidRow row in inventory.InvalidRows)
+        {
+            failures[RecordLocator.For(row)] = BlobEncryptionVerificationIssue.InvalidMetadata;
+            remainingBytes.Add(row.KnownPlaintextLength);
+        }
+
+        if (renewLease is not null) await renewLease(cancellationToken).ConfigureAwait(false);
         int valid = 0;
-        long validBytes = 0;
+        ByteTotal validBytes = new();
         OperationIoThrottle throttle = new(maxBytesPerSecond);
-        await Parallel.ForEachAsync(
-            candidates,
+        await Parallel.ForEachAsync(inventory.Candidates,
             new ParallelOptions
             {
                 MaxDegreeOfParallelism = Math.Clamp(maxConcurrency, 1, 8),
@@ -478,30 +555,66 @@ public sealed class BlobEncryptionLifecycleService(
             },
             async (candidate, ct) =>
             {
-                ct.ThrowIfCancellationRequested();
-                await throttle.WaitAsync(candidate.ExpectedPlaintextLength, ct).ConfigureAwait(false);
-                BlobEncryptionVerificationResult result = await VerifyCandidateAsync(candidate, ct)
-                    .ConfigureAwait(false);
+                BlobEncryptionVerificationResult result = await VerifyCandidateAsync(candidate, ct, throttle, renewLease).ConfigureAwait(false);
                 if (result.IsValid && result.Descriptor is not null)
                 {
                     Interlocked.Increment(ref valid);
-                    Interlocked.Add(ref validBytes, candidate.ExpectedPlaintextLength);
+                    validBytes.Add(result.PlaintextLength);
                 }
                 else
                 {
-                    issues.AddOrUpdate(result.Issue, 1, static (_, count) => count + 1);
+                    failures[RecordLocator.For(candidate)] = result.Issue;
+                    remainingBytes.Add(candidate.ExpectedPlaintextLength);
                 }
             }).ConfigureAwait(false);
 
-        int failed = issues.Values.Sum();
-        return new BlobEncryptionOperationResult(
-            operationId,
-            valid,
-            validBytes,
-            candidates.Count - valid,
-            candidates.Sum(static candidate => candidate.ExpectedPlaintextLength) - validBytes,
-            failed,
-            issues);
+        if (renewLease is not null) await renewLease(cancellationToken).ConfigureAwait(false);
+        return new BlobEncryptionOperationResult(operationId, valid, validBytes.Value,
+            inventory.Candidates.Count + inventory.InvalidRows.Count - valid, remainingBytes.Value,
+            failures.Count, CountIssues(failures));
+    }
+
+    private static IReadOnlyDictionary<BlobEncryptionVerificationIssue, int> CountIssues(
+        ConcurrentDictionary<RecordLocator, BlobEncryptionVerificationIssue> failures) =>
+        failures.Values.GroupBy(static issue => issue).ToDictionary(static group => group.Key, static group => group.Count());
+
+    private static long PhysicalLength(BlobEncryptionCandidate candidate) =>
+        File.Exists(candidate.Path) ? new FileInfo(candidate.Path).Length : 0;
+
+    private static long? SumBytes(IEnumerable<long?> values)
+    {
+        ByteTotal total = new();
+        foreach (long? value in values) total.Add(value);
+        return total.Value;
+    }
+
+    private static string FormatBytes(long? value) => value?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown";
+
+    private sealed record KeyRetirementResult(bool Cancelled, IReadOnlyList<BlobEncryptionInvalidRow> InvalidRows);
+
+    private readonly record struct RecordLocator(BlobEncryptionRecordKind Kind, long? RowId, string? FallbackId)
+    {
+        public static RecordLocator For(BlobEncryptionCandidate candidate) =>
+            new(candidate.Kind, candidate.CatalogRowId, candidate.CatalogRowId.HasValue ? null : candidate.RecordId);
+
+        public static RecordLocator For(BlobEncryptionInvalidRow row) => new(row.Kind, row.CatalogRowId, null);
+    }
+
+    private sealed class ByteTotal
+    {
+        private readonly Lock _gate = new();
+        private long? _value = 0;
+
+        public long? Value { get { lock (_gate) return _value; } }
+
+        public void Add(long? value)
+        {
+            lock (_gate)
+            {
+                _value = _value is not { } current || value is not { } addition || addition < 0 || long.MaxValue - current < addition
+                    ? null : current + addition;
+            }
+        }
     }
 
     /// <summary>
@@ -510,10 +623,15 @@ public sealed class BlobEncryptionLifecycleService(
     /// </summary>
     private async Task<BlobEncryptionVerificationResult> VerifyCandidateAsync(
         BlobEncryptionCandidate candidate,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        OperationIoThrottle? throttle = null,
+        Func<CancellationToken, Task>? renewLease = null)
     {
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (throttle is not null)
+                await throttle.WaitAsync(PhysicalLength(candidate), cancellationToken, renewLease).ConfigureAwait(false);
             return await processor.VerifyAsync(candidate, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (BlobEncryptionFileProcessor.IsPerBlobFailure(exception))
@@ -534,28 +652,38 @@ public sealed class BlobEncryptionLifecycleService(
     private static string CreateOwner(string suffix) =>
         $"{Environment.MachineName}:{Environment.ProcessId}:{suffix}:{Guid.NewGuid():N}";
 
-    private sealed class OperationIoThrottle(long bytesPerSecond)
+    internal sealed class OperationIoThrottle(long bytesPerSecond)
     {
         private readonly object _sync = new();
         private readonly long _rate = Math.Clamp(bytesPerSecond, 1, 1024L * 1024 * 1024 * 1024);
         private long _nextTimestamp = Stopwatch.GetTimestamp();
 
-        public async Task WaitAsync(long bytes, CancellationToken cancellationToken)
+        public async Task WaitAsync(long bytes, CancellationToken cancellationToken,
+            Func<CancellationToken, Task>? renewLease = null)
         {
-            TimeSpan delay;
-            lock (_sync)
+            // Reserve at most one second of actual file I/O per step. This bounds timestamp
+            // arithmetic and delay sizes even for a large sparse file at a low configured rate.
+            long remaining = Math.Max(0, bytes);
+            while (true)
             {
-                long now = Stopwatch.GetTimestamp();
-                long start = Math.Max(now, _nextTimestamp);
-                double seconds = Math.Max(0, bytes) / (double)_rate;
-                long duration = checked((long)(seconds * Stopwatch.Frequency));
-                _nextTimestamp = checked(start + duration);
-                delay = TimeSpan.FromSeconds((start - now) / (double)Stopwatch.Frequency);
-            }
+                cancellationToken.ThrowIfCancellationRequested();
+                if (renewLease is not null) await renewLease(cancellationToken).ConfigureAwait(false);
+                long chunk = Math.Min(remaining, _rate);
+                TimeSpan delay;
+                lock (_sync)
+                {
+                    long now = Stopwatch.GetTimestamp();
+                    long start = Math.Max(now, _nextTimestamp);
+                    long duration = (long)(chunk / (double)_rate * Stopwatch.Frequency);
+                    _nextTimestamp = checked(start + duration);
+                    delay = TimeSpan.FromSeconds((start - now) / (double)Stopwatch.Frequency);
+                }
 
-            if (delay > TimeSpan.Zero)
-            {
-                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                if (delay > TimeSpan.Zero)
+                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                if (renewLease is not null) await renewLease(cancellationToken).ConfigureAwait(false);
+                remaining -= chunk;
+                if (remaining == 0) return;
             }
         }
     }

@@ -463,9 +463,9 @@ public sealed class EncryptedBlobStoreTests : IDisposable
     {
         public List<EncryptedBlobDescriptor> Updated { get; } = [];
 
-        public Task<IReadOnlyList<BlobEncryptionCandidate>> ListAsync(
+        public Task<BlobEncryptionInventory> ListAsync(
             CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<BlobEncryptionCandidate>>([]);
+            Task.FromResult(new BlobEncryptionInventory([], []));
 
         public Task UpdateEncryptionMetadataAsync(
             BlobEncryptionCandidate candidate,
