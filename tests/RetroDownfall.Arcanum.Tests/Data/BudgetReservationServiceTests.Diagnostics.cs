@@ -8,6 +8,38 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed partial class BudgetReservationServiceTests
 {
     [SkippableFact]
+    public async Task Adjustment_diagnostic_uses_the_actual_decision_projection_at_decimal_scale_boundaries()
+    {
+        RequireSqlCipher();
+
+        DateTimeOffset now = new(2035, 2, 3, 12, 0, 0, TimeSpan.Zero);
+
+        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 9m });
+
+        service.UtcNowForTesting = () => now;
+
+        string day = BudgetReservationService.UtcBudgetPeriod(now);
+
+        Result<BudgetReservation> first = await service.ReserveAsync(new(Guid.NewGuid(), 0.0000000000000000000000000002m, now.AddHours(1), day));
+
+        Assert.True(first.IsSuccess);
+
+        Assert.True((await service.ReserveAsync(new(Guid.NewGuid(), 0.0000000000000000000000000004m, now.AddHours(1), day))).IsSuccess);
+
+        Result result = await service.AdjustAsync(first.Value.Id, 10m);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains("projected: $10.00 USD", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("replacing reservation: $0.0000000000000000000000000002 USD", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("requested reservation: $10.00 USD", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(0.0000000000000000000000000006m, await service.GetTodayOutstandingReservationsAsync());
+    }
+
+    [SkippableFact]
     public async Task Reserve_refusal_names_exact_current_requested_projection_and_utc_period()
     {
         RequireSqlCipher();
@@ -42,7 +74,7 @@ public sealed partial class BudgetReservationServiceTests
     }
 
     [SkippableFact]
-    public async Task Adjust_refusal_distinguishes_the_requested_increase_from_the_existing_reservation()
+    public async Task Adjust_refusal_distinguishes_the_requested_target_from_the_existing_reservation()
     {
         RequireSqlCipher();
 
@@ -64,7 +96,9 @@ public sealed partial class BudgetReservationServiceTests
 
         Assert.Contains("committed+reserved: $0.0049", result.Error.Message, StringComparison.Ordinal);
 
-        Assert.Contains("requested increase: $0.0002", result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains("replacing reservation: $0.0049", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("requested reservation: $0.0051", result.Error.Message, StringComparison.Ordinal);
 
         Assert.Contains("projected: $0.0051", result.Error.Message, StringComparison.Ordinal);
 

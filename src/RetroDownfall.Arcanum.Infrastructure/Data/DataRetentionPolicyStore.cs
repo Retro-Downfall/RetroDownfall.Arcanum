@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
 {
-
     private readonly ConfigurationWriter _writer;
 
     private readonly SemaphoreSlim _updateLock = new(1, 1);
@@ -25,7 +24,6 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
         IOptionsMonitor<ArcanumSettings> options,
         ConfigurationWriter writer)
     {
-
         _writer = writer;
 
         ArcanumSettings initial = writer.Latest ?? options.CurrentValue;
@@ -36,24 +34,18 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
 
         _settings = initial with
         {
-
             Retention = _current,
-
         };
-
     }
 
     public RetentionSettings Current
     {
-
         get
         {
-
             ArcanumSettings? latest = _writer.Latest;
 
             if (latest is not null)
             {
-
                 RetentionSettings refreshed = Normalize(
                     latest.Retention
                     ?? new RetentionSettings());
@@ -63,30 +55,24 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
                 Volatile.Write(ref _settings, latest);
 
                 return Normalize(refreshed);
-
             }
 
             return Normalize(Volatile.Read(ref _current));
-
         }
-
     }
 
     public async Task<Result<RetentionSettings>> UpdateRuleAsync(
         RetentionRuleUpdateRequest request,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         if (request.Enabled && request.Days is null)
         {
-
             return Result<RetentionSettings>.Failure(
                 new Error(
                     ErrorCodes.Data.InvalidRequest,
                     "Retention days are required when enabling a rule."));
-
         }
 
         await _updateLock
@@ -95,13 +81,11 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
 
         try
         {
-
             Result<ArcanumSettings> write = await _writer
                 .UpdateAsync(
                     Volatile.Read(ref _settings),
                     currentSettings =>
                     {
-
                         RetentionSettings current = Normalize(
                             currentSettings.Retention
                             ?? new RetentionSettings());
@@ -112,24 +96,19 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
                                 out RetentionSettings updated,
                                 out string refusal))
                         {
-
                             return Result<ArcanumSettings>.Failure(
                                 new Error(ErrorCodes.Data.InvalidRequest, refusal));
-
                         }
 
                         return Result<ArcanumSettings>.Success(
                             currentSettings with { Retention = updated });
-
                     },
                     cancellationToken)
                 .ConfigureAwait(false);
 
             if (write.IsFailure)
             {
-
                 return Result<RetentionSettings>.Failure(write.Error);
-
             }
 
             Volatile.Write(ref _settings, write.Value);
@@ -141,15 +120,11 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
             Volatile.Write(ref _current, published);
 
             return Result<RetentionSettings>.Success(Normalize(published));
-
         }
         finally
         {
-
             _updateLock.Release();
-
         }
-
     }
 
     /// <summary>
@@ -168,64 +143,45 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
         out RetentionSettings updated,
         out string refusal)
     {
+        Result<RetentionDataClass> parsed = DataRetentionSettingsCatalog.ParseConfigurableClass(request.DataClass);
 
-        if (!TryParseDataClass(request.DataClass, out RetentionDataClass dataClass))
+        if (parsed.IsFailure)
         {
-
             updated = current;
 
-            refusal = "The retention data class is not recognized.";
+            refusal = parsed.Error.Message;
 
             return false;
-
         }
 
-        RetentionRuleSettings? existing =
-            DataRetentionSettingsCatalog.ResolveRule(current, dataClass);
+        RetentionDataClass dataClass = parsed.Value;
 
-        if (existing is null)
+        RetentionRuleSettings existing = DataRetentionSettingsCatalog.ResolveRule(current, dataClass)!;
+
+        if (request.Enabled && DataRetentionSettingsCatalog.GetRuleName(dataClass) == "accounting"
+            && request.Days < current.AccountingMinimumDays)
         {
-
             updated = current;
 
-            refusal = dataClass switch
-            {
-
-                RetentionDataClass.Covenant =>
-                    "The Covenant has no time-based retention rule and cannot be given one. It is "
-                    + "inventoried by 'data status' and removed only by an explicit reset.",
-
-                RetentionDataClass.MemoryErasureEvidence =>
-                    "Erasure evidence has no time-based retention rule and cannot be given one. It is "
-                    + "inventoried by 'data status' and removed only by a release, an operator "
-                    + "re-creation of the erased item, 'memory erasure reset-key', a restore's "
-                    + "destination-authoritative join, or a full installation reset.",
-
-                _ => "The retention data class has no configurable rule.",
-
-            };
+            refusal = FormattableString.Invariant($"Requested accounting retention of {request.Days} days is below the minimum of {current.AccountingMinimumDays} days. Choose at least that age or explicitly change Arcanum:Retention:AccountingMinimumDays. No retention setting was changed.");
 
             return false;
-
         }
 
         RetentionRuleSettings replacement = new()
         {
-
             Enabled = request.Enabled,
 
             Days = ArcanumSettingClamps.RetentionRuleDays(
                 request.Enabled
                     ? request.Days!.Value
                     : existing.Days),
-
         };
 
         updated = current with { };
 
         switch (dataClass)
         {
-
             case RetentionDataClass.ActiveSessions:
                 updated.ActiveSessions = replacement;
                 break;
@@ -312,7 +268,6 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
                 refusal = "The retention data class has no configurable rule.";
 
                 return false;
-
         }
 
         updated = Normalize(updated);
@@ -320,17 +275,10 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
         refusal = string.Empty;
 
         return true;
-
     }
-
-    private static bool TryParseDataClass(
-        string? value,
-        out RetentionDataClass dataClass) =>
-        DataRetentionDataClassParser.TryParse(value, out dataClass);
 
     private static RetentionSettings Normalize(RetentionSettings source)
     {
-
         int accountingMinimum =
             ArcanumSettingClamps.RetentionAccountingMinimumDays(
                 source.AccountingMinimumDays);
@@ -341,7 +289,6 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
 
         return source with
         {
-
             SweepIntervalHours =
                 ArcanumSettingClamps.RetentionSweepIntervalHours(
                     source.SweepIntervalHours),
@@ -388,24 +335,17 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
 
             ProtectedSessionIds =
                 [.. (source.ProtectedSessionIds ?? []).Distinct()],
-
         };
-
     }
 
     private static RetentionRuleSettings NormalizeRule(
         RetentionRuleSettings? rule)
     {
-
         RetentionRuleSettings effective = rule ?? new RetentionRuleSettings();
 
         return effective with
         {
-
             Days = ArcanumSettingClamps.RetentionRuleDays(effective.Days),
-
         };
-
     }
-
 }

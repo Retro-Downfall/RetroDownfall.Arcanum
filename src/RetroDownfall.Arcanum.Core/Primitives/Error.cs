@@ -76,10 +76,12 @@ public readonly record struct ContextOverflowDetails(
 public static class BudgetErrorMessages
 {
     /// <summary>Explains the exact proposed exposure in the UTC ledger period being refused.</summary>
-    public static string WouldExceed(string period, decimal limit, decimal current, decimal additional, string additionalLabel) =>
+    public static string WouldExceed(string period, decimal limit, decimal current, decimal additional,
+        string additionalLabel, decimal projected, decimal? replacedReservation = null) =>
         $"Daily budget limit of ${FormatUsd(limit)} USD for UTC day {period} would be exceeded "
-        + $"(committed+reserved: ${FormatUsd(current)} USD; {additionalLabel}: ${FormatUsd(additional)} USD; "
-        + $"projected: ${FormatUsd(checked(current + additional))} USD). " + Guidance;
+        + $"(committed+reserved: ${FormatUsd(current)} USD; "
+        + (replacedReservation is { } replaced ? $"replacing reservation: ${FormatUsd(replaced)} USD; " : string.Empty)
+        + $"{additionalLabel}: ${FormatUsd(additional)} USD; projected: ${FormatUsd(projected)} USD). " + Guidance;
 
     /// <summary>Formats USD invariantly with at least cents and every significant decimal place.</summary>
     public static string FormatUsd(decimal value) =>

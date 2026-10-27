@@ -93,7 +93,7 @@ internal sealed class BudgetReservationService(
 
                     if (projected > dailyLimit)
                     {
-                        throw new BudgetExceededException(dailyLimit, committedAndOutstanding, request.ReservedUsd, request.BudgetPeriod, "requested");
+                        throw new BudgetExceededException(dailyLimit, committedAndOutstanding, request.ReservedUsd, request.BudgetPeriod, "requested", projected);
                     }
 
                     if (AfterSumsBeforeReserveInsertForTesting is not null)
@@ -142,7 +142,7 @@ internal sealed class BudgetReservationService(
         {
             return Result<BudgetReservation>.Failure(new Error(
                 ErrorCodes.Budget.Exceeded,
-                BudgetErrorMessages.WouldExceed(ex.Period, ex.DailyLimit, ex.Current, ex.Additional, ex.AdditionalLabel)));
+                BudgetErrorMessages.WouldExceed(ex.Period, ex.DailyLimit, ex.Current, ex.Additional, ex.AdditionalLabel, ex.Projected, ex.ReplacedReservation)));
         }
     }
 
@@ -227,9 +227,11 @@ internal sealed class BudgetReservationService(
                         throw new BudgetExceededException(
                             dailyLimit,
                             ExactUsdText.CheckedAdd(committed, outstanding),
-                            requested - currentReserved,
+                            requested,
                             budgetPeriod,
-                            "requested increase");
+                            "requested reservation",
+                            projected,
+                            currentReserved);
                     }
 
                     string today = TodayBudgetPeriod();
@@ -252,14 +254,17 @@ internal sealed class BudgetReservationService(
                             .ConfigureAwait(false);
                         decimal todayCommittedAndOutstanding = ExactUsdText.CheckedAdd(todayCommitted, todayOutstanding);
 
-                        if (ExactUsdText.CheckedAdd(todayCommittedAndOutstanding, requested) > dailyLimit)
+                        decimal todayProjected = ExactUsdText.CheckedAdd(todayCommittedAndOutstanding, requested);
+
+                        if (todayProjected > dailyLimit)
                         {
                             throw new BudgetExceededException(
                                 dailyLimit,
                                 todayCommittedAndOutstanding,
                                 requested,
                                 today,
-                                "requested reservation");
+                                "requested reservation",
+                                todayProjected);
                         }
                     }
 
@@ -286,7 +291,7 @@ internal sealed class BudgetReservationService(
         {
             return Result.Failure(new Error(
                 ErrorCodes.Budget.Exceeded,
-                BudgetErrorMessages.WouldExceed(ex.Period, ex.DailyLimit, ex.Current, ex.Additional, ex.AdditionalLabel)));
+                BudgetErrorMessages.WouldExceed(ex.Period, ex.DailyLimit, ex.Current, ex.Additional, ex.AdditionalLabel, ex.Projected, ex.ReplacedReservation)));
         }
     }
 
@@ -379,7 +384,7 @@ internal sealed class BudgetReservationService(
         if (reservationPeriodTotal > dailyLimit)
         {
             return DailyLimitRecheckFailure(dailyLimit, local.ReservationPeriodSpend,
-                local.TodaySpend is null ? delegatedUsd : 0m, local.ReservationPeriod);
+                local.TodaySpend is null ? delegatedUsd : 0m, local.ReservationPeriod, reservationPeriodTotal);
         }
 
         if (local.TodaySpend is { } todaySpend)
@@ -388,17 +393,17 @@ internal sealed class BudgetReservationService(
 
             if (todayTotal > dailyLimit)
             {
-                return DailyLimitRecheckFailure(dailyLimit, todaySpend, delegatedUsd, local.TodayPeriod!);
+                return DailyLimitRecheckFailure(dailyLimit, todaySpend, delegatedUsd, local.TodayPeriod!, todayTotal);
             }
         }
 
         return Result.Success();
     }
 
-    private static Result DailyLimitRecheckFailure(decimal dailyLimit, decimal current, decimal delegated, string period) =>
+    private static Result DailyLimitRecheckFailure(decimal dailyLimit, decimal current, decimal delegated, string period, decimal projected) =>
         Result.Failure(new Error(
             ErrorCodes.Budget.Exceeded,
-            BudgetErrorMessages.WouldExceed(period, dailyLimit, current, delegated, "delegated")));
+            BudgetErrorMessages.WouldExceed(period, dailyLimit, current, delegated, "delegated", projected)));
 
     public Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default)
     {
@@ -802,7 +807,7 @@ internal sealed class BudgetReservationService(
     /// </summary>
     private readonly record struct RecheckSpend(string ReservationPeriod, decimal ReservationPeriodSpend, string? TodayPeriod, decimal? TodaySpend);
 
-    private sealed class BudgetExceededException(decimal dailyLimit, decimal current, decimal additional, string period, string additionalLabel) : Exception
+    private sealed class BudgetExceededException(decimal dailyLimit, decimal current, decimal additional, string period, string additionalLabel, decimal projected, decimal? replacedReservation = null) : Exception
     {
         public decimal DailyLimit { get; } = dailyLimit;
 
@@ -813,5 +818,9 @@ internal sealed class BudgetReservationService(
         public string Period { get; } = period;
 
         public string AdditionalLabel { get; } = additionalLabel;
+
+        public decimal Projected { get; } = projected;
+
+        public decimal? ReplacedReservation { get; } = replacedReservation;
     }
 }
