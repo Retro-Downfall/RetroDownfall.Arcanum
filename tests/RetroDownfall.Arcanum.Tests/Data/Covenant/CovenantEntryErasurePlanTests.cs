@@ -4,12 +4,14 @@ using System.Data;
 using System.Globalization;
 
 using Microsoft.Data.Sqlite;
+using SQLitePCL;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
@@ -30,7 +32,7 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// the absence proof is shown to catch.
 /// </remarks>
 [Trait("Category", "Integration")]
-public sealed class CovenantEntryErasurePlanTests
+public sealed class CovenantEntryErasurePlanTests(Xunit.Abstractions.ITestOutputHelper output)
 {
     private const string Key = "erasure.subject";
 
@@ -60,7 +62,367 @@ public sealed class CovenantEntryErasurePlanTests
     private static readonly string[] CurationTables =
         ["covenant_curation_heads", "covenant_curation_versions", "covenant_curation_receipts"];
 
+    private static readonly string[] ErasureOwnershipIndexes =
+    [
+        "idx_covenant_versions_erasure_entry", "idx_covenant_versions_erasure_version",
+        "idx_covenant_mutation_receipts_erasure_entry", "idx_covenant_mutation_receipts_erasure_version",
+        "idx_covenant_mutation_receipts_erasure_legacy", "idx_covenant_provenance_erasure_version",
+        "idx_covenant_review_events_erasure_version", "idx_covenant_review_events_erasure_entry",
+    ];
+
     private static CancellationToken Token => CancellationToken.None;
+
+    [Fact]
+    public async Task A_populated_version_six_upgrade_preserves_foreign_receipts_and_live_erasure_proofs()
+    {
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(Token);
+
+        await InstallAsync(connection, CovenantCanonicalSchemaVersionSixFixture.ChainSet(), 6);
+
+        await ApplyOperatorSetAsync(connection, Key, "Retained historical content.");
+
+        Guid entry = Guid.Parse((string)(await ScalarObjectAsync(connection, "SELECT EntryId FROM covenant_entries;"))!, CultureInfo.InvariantCulture);
+
+        await using (SqliteCommand guard = connection.CreateCommand())
+        {
+            guard.CommandText = "SELECT sql FROM sqlite_master WHERE name = 'covenant_mutation_receipts_guard_update';";
+
+            string sql = (string)(await guard.ExecuteScalarAsync())!;
+
+            await ExecuteAsync(connection, "DROP TRIGGER covenant_mutation_receipts_guard_update;");
+
+            await ExecuteAsync(connection, "UPDATE covenant_mutation_receipts SET EntryId = upper(replace(EntryId, '-', '')), ResultingVersionId = upper(replace(ResultingVersionId, '-', '')); ");
+
+            await ExecuteAsync(connection, sql);
+        }
+
+        const string versionBytes = "SELECT hex(CAST(AuthoredContent AS BLOB)) || ':' || hex(CAST(CompiledContent AS BLOB)) || ':' || hex(AuthoredHash) || ':' || hex(RenderedHash) FROM covenant_versions;";
+
+        object before = (await ScalarObjectAsync(connection, versionBytes))!;
+
+        string stored = (string)(await ScalarObjectAsync(connection, "SELECT EntryId FROM covenant_mutation_receipts;"))!;
+
+        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, 7);
+
+        Assert.Equal(before, await ScalarObjectAsync(connection, versionBytes));
+
+        Assert.Equal(stored, await ScalarObjectAsync(connection, "SELECT EntryId FROM covenant_mutation_receipts;"));
+
+        Assert.Equal(entry.ToString("N").ToUpperInvariant(), stored);
+
+        await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
+
+        using CovenantSqliteAuthorizationScope authorized = CovenantSqliteConnectionInitializer.Instance.Authorize(
+            connection, CovenantSqliteAuthorizationKind.CovenantEntryErasure);
+
+        CovenantEntryErasureSubject subject = await ReadSubjectAsync(connection, transaction, entry);
+
+        CovenantEntryErasureTally counted = await CovenantEntryErasurePlan.RunAsync(connection, transaction, subject,
+            CovenantArtifactPlanMode.Count, CovenantEntryErasureMode.Live, Token);
+
+        Assert.Equal(1, Rows(counted, "covenant_mutation_receipts"));
+
+        CovenantEntryErasureTally removed = await CovenantEntryErasurePlan.RunAsync(connection, transaction, subject,
+            CovenantArtifactPlanMode.Delete, CovenantEntryErasureMode.Live, Token);
+
+        Assert.Equal(counted.Targets, removed.Targets);
+
+        Assert.Empty(await CovenantEntryErasurePlan.ProveAbsentAsync(connection, transaction, subject, removed.VersionIds, Token));
+
+        await transaction.CommitAsync(Token);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Normalized_index_writer_and_page_cost_is_measured_on_real_mutations(bool withoutIndexes)
+    {
+        await using CovenantServiceHarness harness = await StartAsync();
+
+        SqliteConnection connection = harness.Fixture.Connection;
+
+        if (withoutIndexes)
+            foreach (string index in ErasureOwnershipIndexes) await ExecuteAsync(connection, $"DROP INDEX {index};");
+
+        await harness.SetAsync(CovenantScope.Campaign, CampaignOne, Key, "first", Token);
+
+        long beforePages = await CountAsync(harness, "PRAGMA page_count;");
+
+        long beforeFree = await CountAsync(harness, "PRAGMA freelist_count;");
+
+        long vm = 0;
+
+        raw.sqlite3_progress_handler(connection.Handle, 1, (object _) => { vm++; return 0; }, null);
+
+        try
+        {
+            for (int index = 0; index < 20; index++)
+                await harness.CorrectAsync(CovenantScope.Campaign, CampaignOne, Key, "correction " + index, Token);
+        }
+        finally
+        {
+            raw.sqlite3_progress_handler(connection.Handle, 0, null, null);
+        }
+
+        long afterPages = await CountAsync(harness, "PRAGMA page_count;");
+
+        long afterFree = await CountAsync(harness, "PRAGMA freelist_count;");
+
+        long pageSize = await CountAsync(harness, "PRAGMA page_size;");
+
+        Assert.Equal(21, await CountAsync(harness, "SELECT COUNT(*) FROM covenant_versions;"));
+
+        Assert.Equal(21, await CountAsync(harness, "SELECT COUNT(*) FROM covenant_mutation_receipts;"));
+
+        output.WriteLine($"Twenty real corrections: normalizedIndexes={!withoutIndexes}, VM={vm}, beforePages={beforePages}, afterPages={afterPages}, beforeFree={beforeFree}, afterFree={afterFree}, beforeUsed={beforePages - beforeFree}, afterUsed={afterPages - afterFree}, pageSize={pageSize}. Dropped-index control is physical overhead evidence, not a complete older-release profile.");
+    }
+
+    [Fact]
+    public async Task Live_erasure_hot_read_work_is_independent_of_unrelated_scope_rows()
+    {
+        await using CovenantServiceHarness harness = await StartAsync();
+
+        Guid entry = await SeedFullEntryAsync(harness);
+
+        await SeedErasureNoiseAsync(harness.Fixture.Connection, 1, 32);
+
+        var small = await MeasureErasureHotReadsAsync(harness, entry);
+
+        await SeedErasureNoiseAsync(harness.Fixture.Connection, 33, 512);
+
+        var larger = await MeasureErasureHotReadsAsync(harness, entry);
+
+        output.WriteLine($"Unrelated32: VM={small.Vm}, fullscan={small.FullScan}, sort={small.Sort}; unrelated512: VM={larger.Vm}, fullscan={larger.FullScan}, sort={larger.Sort}; actualCountStatements={larger.Statements}");
+
+        output.WriteLine($"NativeSQLite={raw.sqlite3_libversion().utf8_to_string()}; SourceId={await ScalarObjectAsync(harness.Fixture.Connection, "SELECT sqlite_source_id();")}; CipherVersion={await ScalarObjectAsync(harness.Fixture.Connection, "PRAGMA cipher_version;")}");
+
+        Assert.True(small.Statements > 0);
+
+        Assert.Equal(small.Statements, larger.Statements);
+
+        Assert.Equal(0, small.FullScan);
+
+        Assert.Equal(0, larger.FullScan);
+
+        Assert.Equal(0, larger.Sort);
+
+        Assert.True(larger.Vm <= small.Vm + 200, $"Native hot-read VM work grew with unrelated rows: {small.Vm} -> {larger.Vm}.");
+    }
+
+    private static async Task<(int Vm, int FullScan, int Sort, int Statements)> MeasureErasureHotReadsAsync(CovenantServiceHarness harness, Guid entry)
+    {
+        SqliteConnection connection = harness.Fixture.Connection;
+
+        await using SqliteTransaction transaction = connection.BeginTransaction();
+
+        IReadOnlyList<string> statements;
+
+        using (SqliteStatementTrace trace = new(connection))
+        {
+            CovenantEntryErasureSubject subject = await ReadSubjectAsync(connection, transaction, entry);
+
+            CovenantEntryErasureTally counted = await CovenantEntryErasurePlan.RunAsync(connection, transaction, subject,
+                CovenantArtifactPlanMode.Count, CovenantEntryErasureMode.Live, Token);
+
+            Assert.Equal(3, Rows(counted, "covenant_versions"));
+
+            Assert.Equal(3, Rows(counted, "covenant_mutation_receipts"));
+
+            statements = trace.Statements;
+        }
+
+        int vm = 0, fullScan = 0, sort = 0, measured = 0;
+
+        foreach (string sql in statements.Where(static sql => sql.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+            && new[] { "covenant_versions", "covenant_mutation_receipts", "covenant_version_attachment_provenance", "covenant_review_events" }
+                .Any(table => sql.Contains("FROM " + table, StringComparison.Ordinal))))
+        {
+            Assert.Equal(raw.SQLITE_OK, raw.sqlite3_prepare_v2(connection.Handle, sql, out sqlite3_stmt statement));
+
+            try
+            {
+                int result;
+
+                while ((result = raw.sqlite3_step(statement)) == raw.SQLITE_ROW) { }
+
+                Assert.Equal(raw.SQLITE_DONE, result);
+
+                vm += raw.sqlite3_stmt_status(statement, raw.SQLITE_STMTSTATUS_VM_STEP, 0);
+
+                fullScan += raw.sqlite3_stmt_status(statement, raw.SQLITE_STMTSTATUS_FULLSCAN_STEP, 0);
+
+                sort += raw.sqlite3_stmt_status(statement, raw.SQLITE_STMTSTATUS_SORT, 0);
+
+                measured++;
+            }
+            finally
+            {
+                raw.sqlite3_finalize(statement);
+            }
+        }
+
+        return (vm, fullScan, sort, measured);
+    }
+
+    private static async Task SeedErasureNoiseAsync(SqliteConnection connection, int first, int last)
+    {
+        foreach (string table in new[] { "covenant_entries", "covenant_versions", "covenant_mutation_receipts", "covenant_version_attachment_provenance", "covenant_review_events" })
+        {
+            List<string> columns = [];
+
+            await using (SqliteCommand schema = connection.CreateCommand())
+            {
+                schema.CommandText = $"PRAGMA table_info({table});";
+
+                await using SqliteDataReader reader = await schema.ExecuteReaderAsync(Token);
+
+                while (await reader.ReadAsync(Token)) columns.Add(reader.GetString(1));
+            }
+
+            string[] expressions = columns.Select(column => column switch
+            {
+                "EntryId" => "printf('%08x-2222-4222-8222-222222222222', n.x)",
+                "VersionId" or "ResultingVersionId" => "printf('%08x-1111-4111-8111-111111111111', n.x)",
+                "MutationId" => "printf('%08x-3333-4333-8333-333333333333', n.x)",
+                "CampaignId" => $"'{CampaignTwo:D}'",
+                "NormalizedKey" or "AuthoredKey" => "'noise.' || n.x",
+                "Sequence" => "NULL",
+                _ => "source.\"" + column + "\"",
+            }).ToArray();
+
+            // Closed fixture names and copied schema-valid bytes supply unrelated physical rows.
+            // Their digests are not a second service-admitted policy history; only the real target
+            // is measured. This does not replace any product writer or authority contract.
+            await ExecuteAsync(connection, $"INSERT INTO {table}({string.Join(',', columns.Select(column => '\"' + column + '\"'))}) "
+                + $"WITH RECURSIVE n(x) AS (SELECT {first} UNION ALL SELECT x + 1 FROM n WHERE x < {last}) "
+                + $"SELECT {string.Join(',', expressions)} FROM (SELECT * FROM {table} ORDER BY rowid LIMIT 1) source CROSS JOIN n;");
+        }
+    }
+
+    [Theory]
+    [InlineData("covenant_versions", "idx_covenant_versions_erasure_entry")]
+    [InlineData("covenant_versions", "idx_covenant_versions_erasure_version")]
+    [InlineData("covenant_mutation_receipts", "idx_covenant_mutation_receipts_erasure_entry")]
+    [InlineData("covenant_mutation_receipts", "idx_covenant_mutation_receipts_erasure_version")]
+    [InlineData("covenant_mutation_receipts", "idx_covenant_mutation_receipts_erasure_legacy")]
+    [InlineData("covenant_version_attachment_provenance", "idx_covenant_provenance_erasure_version")]
+    [InlineData("covenant_review_events", "idx_covenant_review_events_erasure_version")]
+    [InlineData("covenant_review_events", "idx_covenant_review_events_erasure_entry")]
+    public async Task Live_erasure_executed_proofs_seek_their_normalized_ownership_indexes(string table, string expectedIndex)
+    {
+        await using CovenantServiceHarness harness = await StartAsync();
+
+        Guid entry = await SeedFullEntryAsync(harness);
+
+        IReadOnlyList<string> statements;
+
+        using (SqliteStatementTrace trace = new(harness.Fixture.Connection))
+        {
+            await InTransactionAsync(harness, CovenantEntryErasureMode.Live, async (connection, transaction) =>
+            {
+                CovenantEntryErasureSubject subject = await ReadSubjectAsync(connection, transaction, entry);
+
+                CovenantEntryErasureTally counted = await CovenantEntryErasurePlan.RunAsync(connection, transaction, subject,
+                    CovenantArtifactPlanMode.Count, CovenantEntryErasureMode.Live, Token);
+
+                CovenantEntryErasureTally removed = await CovenantEntryErasurePlan.RunAsync(connection, transaction, subject,
+                    CovenantArtifactPlanMode.Delete, CovenantEntryErasureMode.Live, Token);
+
+                Assert.Equal(counted.Targets, removed.Targets);
+
+                Assert.Empty(await CovenantEntryErasurePlan.ProveAbsentAsync(connection, transaction, subject, removed.VersionIds, Token));
+            });
+
+            statements = trace.Statements;
+        }
+
+        List<string> plans = [];
+
+        foreach (string sql in statements.Distinct(StringComparer.Ordinal)
+            .Where(sql => (sql.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase) || sql.StartsWith("DELETE", StringComparison.OrdinalIgnoreCase))
+                && sql.Contains("FROM " + table, StringComparison.Ordinal)))
+        {
+            await using SqliteCommand explain = harness.Fixture.Connection.CreateCommand();
+
+            // Trace records the actual native statement with bound parameters, including its exact
+            // normalized predicate; this is not a test-owned approximation of the plan's SQL.
+            explain.CommandText = "EXPLAIN QUERY PLAN " + sql;
+
+            await using SqliteDataReader reader = await explain.ExecuteReaderAsync(Token);
+
+            while (await reader.ReadAsync(Token)) plans.Add(reader.GetString(reader.FieldCount - 1));
+        }
+
+        Assert.NotEmpty(plans);
+
+        Assert.Contains(plans, line => line.Contains(expectedIndex, StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Restored_live_and_pre_index_staged_erasure_preserve_foreign_receipt_identity_spellings(bool preIndexStaged)
+    {
+        await using CovenantServiceHarness harness = await StartAsync();
+
+        Guid entryId = await SeedFullEntryAsync(harness);
+
+        SqliteConnection connection = harness.Fixture.Connection;
+
+        if (preIndexStaged)
+            foreach (string index in ErasureOwnershipIndexes) await ExecuteAsync(connection, $"DROP INDEX {index};");
+
+        await using (SqliteCommand guard = connection.CreateCommand())
+        {
+            guard.CommandText = "SELECT sql FROM sqlite_master WHERE name = 'covenant_mutation_receipts_guard_update';";
+
+            string guardSql = (string)(await guard.ExecuteScalarAsync())!;
+
+            // Foreign historical bytes are an accepted restore input; the current writer cannot
+            // rewrite its immutable receipts. Restore the exact catalog before reconciliation.
+            await ExecuteAsync(connection, "DROP TRIGGER covenant_mutation_receipts_guard_update;");
+
+            await ExecuteAsync(connection, "UPDATE covenant_mutation_receipts SET EntryId = upper(replace(EntryId, '-', '')), ResultingVersionId = upper(replace(ResultingVersionId, '-', '')); ");
+
+            await ExecuteAsync(connection, guardSql);
+        }
+
+        await using (SqliteTransaction restore = connection.BeginTransaction())
+        {
+            var reconciled = await BackupCovenantRestoreReconciler.ReconcileStagedAsync(connection, restore,
+                BackupCovenantRestoreDestinationState.None, CovenantSqliteConnectionInitializer.Instance,
+                TimeProvider.System, purgeProtectedState: false, Token);
+
+            Assert.True(reconciled.IsSuccess, reconciled.Error.Message);
+
+            await restore.CommitAsync();
+        }
+
+        Assert.Equal(3, await CountAsync(harness, "SELECT COUNT(*) FROM covenant_mutation_receipts WHERE length(EntryId) = 32;"));
+
+        CovenantEntryErasureMode mode = preIndexStaged ? CovenantEntryErasureMode.Staged : CovenantEntryErasureMode.Live;
+
+        await InTransactionAsync(harness, mode, async (core, transaction) =>
+        {
+            CovenantEntryErasureSubject subject = await ReadSubjectAsync(core, transaction, entryId);
+
+            CovenantEntryErasureTally counted = await CovenantEntryErasurePlan.RunAsync(core, transaction, subject,
+                CovenantArtifactPlanMode.Count, mode, Token);
+
+            Assert.Equal(3, Rows(counted, "covenant_mutation_receipts"));
+
+            CovenantEntryErasureTally removed = await CovenantEntryErasurePlan.RunAsync(core, transaction, subject,
+                CovenantArtifactPlanMode.Delete, mode, Token);
+
+            Assert.Equal(counted.Targets, removed.Targets);
+
+            Assert.Empty(await CovenantEntryErasurePlan.ProveAbsentAsync(core, transaction, subject, removed.VersionIds, Token));
+        });
+
+        Assert.Equal(0, await CountAsync(harness, "SELECT COUNT(*) FROM covenant_mutation_receipts;"));
+    }
 
     [Theory]
     [InlineData(nameof(CovenantEntryErasureMode.Live))]
@@ -231,7 +593,7 @@ public sealed class CovenantEntryErasurePlanTests
 
         await ExecuteAsync(connection, LegacyNoChangeReceiptSql("legacy-before", "2000-01-01T00:00:00.0000000Z"));
 
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, 6);
+        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion);
 
         await ApplyOperatorSetAsync(connection, Key, "Global text.");
 

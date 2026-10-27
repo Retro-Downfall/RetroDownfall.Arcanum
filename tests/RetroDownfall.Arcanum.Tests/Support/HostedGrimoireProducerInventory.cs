@@ -26435,6 +26435,7 @@ internal static partial class HostedGrimoireProducerInventory
                     model,
                     context)
                 || IsReviewedPrimitiveQueueProperty(property, mutation, node, context)
+                || IsReviewedExactInt128Limit(property, mutation)
                 || IsReviewedExactMeAiDimensionsProperty(property, mutation)
                 || IsReviewedNonProducerExternalMember(property, mutation)
                 || !mutation && IsReviewedInMemoryXmlReaderMember(property, node, model, context)
@@ -26493,6 +26494,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedExactInMemoryConstruction(method)
                 || IsReviewedAsyncStateMachineMember(method)
                 || IsReviewedExactFrameworkScalarOperator(method, node, model, context)
+                || IsReviewedExactInt128AccountingOperation(method, node, model, context)
                 || IsReviewedExactTypeOfEqualityOperator(method, node, model)
                 || IsReviewedPrimitiveQueueMember(method, node, model, context)
                 || IsReviewedClosedScalarLog(method, node, model)

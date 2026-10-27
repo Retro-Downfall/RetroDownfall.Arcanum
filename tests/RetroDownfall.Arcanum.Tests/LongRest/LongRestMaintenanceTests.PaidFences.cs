@@ -321,7 +321,9 @@ public sealed partial class LongRestMaintenanceTests
     private sealed class PaidFenceAttemptStore(ILongRestAttemptStore inner,
         Func<LongRestDispatchAttempt, CancellationToken, Task> validated,
         Func<LongRestDispatchAttempt, LongRestUnresolvedSend, CancellationToken, Task<Result<LongRestDispatchAttempt>>?>? settle = null,
-        Func<LongRestDispatchAttempt, CancellationToken, Task<Result>?>? release = null) : ILongRestAttemptStore
+        Func<LongRestDispatchAttempt, CancellationToken, Task<Result>?>? release = null,
+        Func<LongRestDispatchAttempt, CancellationToken, Task>? marked = null,
+        Func<LongRestDispatchAttempt, Result?>? refuse = null) : ILongRestAttemptStore
     {
         public Task<Result<SessionTurnClaimLease>> RenewClaimAsync(SessionTurnClaimLease claim, CanonicalCampaignContext scope, CancellationToken ct) => inner.RenewClaimAsync(claim, scope, ct);
 
@@ -329,7 +331,14 @@ public sealed partial class LongRestMaintenanceTests
 
         public Task<Result<LongRestDispatchAttempt>> RecordDisclosureAsync(LongRestDispatchAttempt attempt, CovenantDigest receipt, CancellationToken ct) => inner.RecordDisclosureAsync(attempt, receipt, ct);
 
-        public Task<Result<LongRestDispatchAttempt>> MarkSentAsync(LongRestDispatchAttempt attempt, CancellationToken ct) => inner.MarkSentAsync(attempt, ct);
+        public async Task<Result<LongRestDispatchAttempt>> MarkSentAsync(LongRestDispatchAttempt attempt, CancellationToken ct)
+        {
+            Result<LongRestDispatchAttempt> result = await inner.MarkSentAsync(attempt, ct);
+
+            if (result.IsSuccess && marked is not null) await marked(result.Value, ct);
+
+            return result;
+        }
 
         public Task<Result<LongRestDispatchAttempt>> CompleteAttemptAsync(LongRestDispatchAttempt attempt, LongRestDispatchCompletion completion, CancellationToken ct) => inner.CompleteAttemptAsync(attempt, completion, ct);
 
@@ -344,7 +353,7 @@ public sealed partial class LongRestMaintenanceTests
 
             if (result.IsSuccess) await validated(attempt, ct);
 
-            return result;
+            return result.IsSuccess ? refuse?.Invoke(attempt) ?? result : result;
         }
     }
 }

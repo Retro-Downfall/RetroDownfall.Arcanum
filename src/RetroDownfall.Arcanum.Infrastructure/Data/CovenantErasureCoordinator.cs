@@ -1891,10 +1891,10 @@ internal sealed class CovenantErasureCoordinator(
 
         if (authenticatedAdmission is null)
         {
-            // InventoryPrepared may be entering for the first time or resuming a drained gate.
-            // ReopenedVerified may likewise follow a successful reopen whose post-disposition journal
-            // finalizer lost its CAS. Every destructive intermediate phase is resume-only: acquiring an
-            // open scope there would repeat effects whose checkpoint says admission must still be closed.
+            // Current launch projections enter at InventoryPrepared. ReopenedVerified remains a
+            // compatible phase-ten entry over either an open or exact adopted gate; the journal still
+            // determines durable progress and immutable verification runs again. Every destructive
+            // intermediate phase is resume-only, because ordinary admission must still be closed.
             Result<CovenantExclusiveLease> acquired = checkpoint.Phase is CovenantResetPhase.InventoryPrepared
                 or CovenantResetPhase.ReopenedVerified
                 ? await _gate.ResumeOrAcquireExclusiveAsync(owner, cancellationToken).ConfigureAwait(false)
@@ -2557,19 +2557,18 @@ internal sealed class CovenantErasureCoordinator(
                     interrupted).ConfigureAwait(false);
         }
 
-        // The caller no longer owns cancellation after the immutable proof succeeds. The checkpoint,
-        // publication, and writer restart share one bounded lifecycle token because all three must
-        // finish before the separately bounded disposition decides whether admission reopens.
+        // The caller no longer owns cancellation after the immutable proof succeeds. Publication and
+        // writer restart share one bounded lifecycle token after the in-memory phase check below;
+        // the separately bounded disposition then decides whether admission reopens.
         using CancellationTokenSource publicationAndWriter =
             new(PublicationAndWriterBound, _timeProvider);
 
         try
         {
-            // ReopenedVerified records that a proof succeeded, not the proof object itself, and a
-            // resumed pass has no value to recover from it either way — so it repeats the immutable
-            // verification rather than trusting a recorded phase. The ordering is still checked,
-            // because a run that reached this point out of order is a run whose earlier phases did
-            // not happen.
+            // ReopenedVerified marks this proof only in memory; current launch rows and the Applying
+            // journal do not persist phase ten. A compatible resumed entry has no proof object to
+            // recover and repeats immutable verification above. Ordering is still checked before the
+            // exact live candidate is transferred into publication.
             if (state.Phase < CovenantResetPhase.ReopenedVerified)
             {
                 Result ordered = CovenantResetPhaseMachine.RequireAdvance(
@@ -2981,9 +2980,18 @@ internal sealed class CovenantErasureCoordinator(
         Error error,
         Result<CovenantErasureCompletion> completion)
     {
+        // Typed inventory facts have a code-owned rendering. Other error codes identify only a
+        // refusal category, never a specific underlying cause or a safe arbitrary message.
         string diagnostic = error.CovenantInventoryFailure is { } inventory
             ? inventory.ToError().Message
-            : "The pre-effect checks could not be proved. Preserve the installation and inspect the operation and safe diagnostics before retrying.";
+            : error.Code switch
+            {
+                ErrorCodes.Data.Conflict => "The pre-effect checks reported a conflict. Inspect the operation and safe diagnostics to resolve it before retrying.",
+                ErrorCodes.Covenant.ManualArtifactErasureRequired => "The pre-effect checks require artifact-specific erasure. Preserve the installation and complete the authorized artifact cleanup before retrying.",
+                ErrorCodes.Covenant.IntegrityFailure => "The pre-effect checks could not establish integrity. Preserve the installation and inspect the operation and safe diagnostics before retrying.",
+                ErrorCodes.Covenant.MaintenanceFailed => "The pre-effect maintenance checks failed. Preserve the installation and inspect the operation and safe diagnostics before retrying.",
+                _ => "The pre-effect checks could not be proved. Preserve the installation and inspect the operation and safe diagnostics before retrying.",
+            };
 
         string admission = completion.IsFailure
             ? "admission reopening is unconfirmed"
@@ -3672,8 +3680,10 @@ internal sealed class CovenantErasureCoordinator(
         catch (CovenantErasureStepFailedException failed)
         {
             _logger.LogError(
-                "A Covenant erasure could not physically close its terminal ledger window "
+                "A Covenant erasure for durable operation {OperationId} at phase {ResetPhase} could not physically close its terminal ledger window "
                 + "({ErrorCode}); admission stays closed.",
+                operation.Id,
+                checkpoint.Phase,
                 failed.Error.Code);
 
             return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
@@ -3682,8 +3692,10 @@ internal sealed class CovenantErasureCoordinator(
         if (suffix.IsFailure)
         {
             _logger.LogError(
-                "A Covenant erasure could not publish its {Disposition} disposition to the offline "
+                "A Covenant erasure for durable operation {OperationId} at phase {ResetPhase} could not publish its {Disposition} disposition to the offline "
                 + "transition journal ({ErrorCode}); admission stays closed.",
+                operation.Id,
+                checkpoint.Phase,
                 disposition,
                 suffix.Error.Code);
 
@@ -3725,8 +3737,10 @@ internal sealed class CovenantErasureCoordinator(
             catch (CovenantErasureStepFailedException failed)
             {
                 _logger.LogError(
-                    "A Covenant erasure could not physically close its attention ledger window "
+                    "A Covenant erasure for durable operation {OperationId} at phase {ResetPhase} could not physically close its attention ledger window "
                     + "({ErrorCode}); admission stays closed.",
+                    operation.Id,
+                    checkpoint.Phase,
                     failed.Error.Code);
 
                 return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
@@ -3735,8 +3749,10 @@ internal sealed class CovenantErasureCoordinator(
             if (!attention.IsProven)
             {
                 _logger.LogError(
-                    "A Covenant erasure could not prove its parked operation attention state "
+                    "A Covenant erasure for durable operation {OperationId} at phase {ResetPhase} could not prove its parked operation attention state "
                     + "({AttentionOutcome}); admission stays closed.",
+                    operation.Id,
+                    checkpoint.Phase,
                     attention.Outcome);
 
                 return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());
@@ -3771,8 +3787,10 @@ internal sealed class CovenantErasureCoordinator(
             // also mean reaching into the Grimoire during the closed period, which is the circularity
             // the whole offline-transition arrangement exists to remove.
             _logger.LogError(
-                "A Covenant erasure could not record its {Disposition} disposition ({ErrorCode}); "
+                "A Covenant erasure for durable operation {OperationId} at phase {ResetPhase} could not record its {Disposition} disposition ({ErrorCode}); "
                 + "admission stays closed and the retained journal keeps the operation adoptable.",
+                operation.Id,
+                checkpoint.Phase,
                 disposition,
                 normalized.Code);
 
@@ -3788,8 +3806,10 @@ internal sealed class CovenantErasureCoordinator(
             if (retired.IsFailure)
             {
                 _logger.LogError(
-                    "A Covenant erasure spent its {Disposition} disposition but could not retire the "
+                    "A Covenant erasure for durable operation {OperationId} at phase {ResetPhase} spent its {Disposition} disposition but could not retire the "
                     + "offline transition journal ({ErrorCode}); the journal stays adoptable.",
+                    operation.Id,
+                    checkpoint.Phase,
                     disposition,
                     retired.Error.Code);
 
@@ -3806,8 +3826,10 @@ internal sealed class CovenantErasureCoordinator(
             if (reopened.IsFailure)
             {
                 _logger.LogError(
-                    "A Covenant erasure could not spend its {Disposition} disposition on the Grimoire "
+                    "A Covenant erasure for durable operation {OperationId} at phase {ResetPhase} could not spend its {Disposition} disposition on the Grimoire "
                     + "closure ({ErrorCode}); admission stays closed.",
+                    operation.Id,
+                    checkpoint.Phase,
                     disposition,
                     reopened.Error.Code);
 
@@ -3836,8 +3858,10 @@ internal sealed class CovenantErasureCoordinator(
             if (reopened.IsFailure)
             {
                 _logger.LogError(
-                    "A Covenant erasure proved and retired its rollback but could not abort the exact "
+                    "A Covenant erasure for durable operation {OperationId} at phase {ResetPhase} proved and retired its rollback but could not abort the exact "
                     + "Grimoire closing owner ({ErrorCode}); admission stays closed.",
+                    operation.Id,
+                    checkpoint.Phase,
                     reopened.Error.Code);
 
                 return Result<CovenantErasureCompletion>.Failure(MaintenanceFailure());

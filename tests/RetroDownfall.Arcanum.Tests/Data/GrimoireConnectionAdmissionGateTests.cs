@@ -1668,10 +1668,16 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
 
         await using IGrimoireClosingOwner secondClosing = Begin(gate, Owner(27));
 
+        Task<Result> secondDrain = gate.DrainRequestAndWorkAsync(secondClosing, CancellationToken.None).AsTask();
+
+        Assert.False(secondDrain.IsCompleted);
+
         _ = Assert.Throws<GrimoireMaintenanceUnavailableException>(
             () => gate.AcquireOrdinaryOpen(initialConnection));
 
         await initiating!.DisposeAsync();
+
+        Assert.True((await secondDrain.WaitAsync(BoundedWait)).IsSuccess);
 
         Result<IGrimoireExclusiveClosedLease> closed =
             await gate.CloseConnectionAdmissionAsync(secondClosing, CancellationToken.None);

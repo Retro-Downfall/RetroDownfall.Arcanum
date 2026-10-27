@@ -260,8 +260,8 @@ public sealed partial class DataRetentionServiceTests
     }
 
     /// <summary>
-    /// Only Saga and Lexicon record an owning Campaign, so naming one for any other store is refused
-    /// rather than quietly widened into a reset of the whole store.
+    /// Saga, Lexicon, and Campaign summaries support Campaign-targeted ordinary resets. Naming a
+    /// Campaign for an unsupported store is refused rather than widened into a whole-store reset.
     /// </summary>
     [SkippableFact]
     public async Task PlanAsync_ResetMemory_ForACampaign_IsRefusedForStoresThatRecordNoOwner()

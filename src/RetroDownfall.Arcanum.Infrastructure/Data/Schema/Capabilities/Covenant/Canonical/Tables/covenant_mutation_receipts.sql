@@ -39,3 +39,12 @@ CREATE INDEX IF NOT EXISTS idx_covenant_mutation_receipts_resulting_version
 -- An entry erasure finds every receipt for its entry through this index.
 CREATE INDEX IF NOT EXISTS idx_covenant_mutation_receipts_entry
     ON covenant_mutation_receipts(EntryId);
+
+CREATE INDEX IF NOT EXISTS idx_covenant_mutation_receipts_erasure_entry
+    ON covenant_mutation_receipts(lower(replace(EntryId, '-', '')));
+
+CREATE INDEX IF NOT EXISTS idx_covenant_mutation_receipts_erasure_version
+    ON covenant_mutation_receipts(lower(replace(ResultingVersionId, '-', '')));
+
+CREATE INDEX IF NOT EXISTS idx_covenant_mutation_receipts_erasure_legacy
+    ON covenant_mutation_receipts(ScopeCode, lower(replace(CampaignId, '-', '')), CommittedAtUtc) WHERE EntryId IS NULL AND OutcomeCode = 2;

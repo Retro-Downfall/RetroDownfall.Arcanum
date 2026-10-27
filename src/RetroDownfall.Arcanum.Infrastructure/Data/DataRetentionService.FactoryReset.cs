@@ -1319,7 +1319,7 @@ internal sealed partial class DataRetentionService
             CaptureFactoryFile(path, files, scope);
         }
 
-        foreach (string directory in EnumerateFactoryLogEntries(root, ".arcanum-cleanup-*", true, scope))
+        foreach (string directory in EnumerateFactoryLogQuarantineDirectories(root, scope))
         {
             _ = CaptureFactoryQuarantinedLogFiles(
                 directory,
@@ -1348,7 +1348,7 @@ internal sealed partial class DataRetentionService
             captured = true;
         }
 
-        foreach (string child in EnumerateFactoryLogEntries(directory, ".arcanum-cleanup-*", true, scope))
+        foreach (string child in EnumerateFactoryLogQuarantineDirectories(directory, scope))
         {
             captured |= CaptureFactoryQuarantinedLogFiles(
                 child,
@@ -1410,7 +1410,7 @@ internal sealed partial class DataRetentionService
             yield return path;
         }
 
-        foreach (string directory in EnumerateFactoryLogEntries(root, ".arcanum-cleanup-*", true, scope))
+        foreach (string directory in EnumerateFactoryLogQuarantineDirectories(root, scope))
         {
             foreach (string path in EnumerateFactoryQuarantinedLogFiles(
                          directory,
@@ -1434,7 +1434,7 @@ internal sealed partial class DataRetentionService
             yield return path;
         }
 
-        foreach (string child in EnumerateFactoryLogEntries(directory, ".arcanum-cleanup-*", true, scope))
+        foreach (string child in EnumerateFactoryLogQuarantineDirectories(directory, scope))
         {
             foreach (string path in EnumerateFactoryQuarantinedLogFiles(
                          child,
@@ -1562,6 +1562,14 @@ internal sealed partial class DataRetentionService
         }
     }
 
+    private static string[] EnumerateFactoryLogQuarantineDirectories(
+        string directory,
+        FactoryInventoryScope scope) =>
+        [
+            .. EnumerateFactoryLogEntries(directory, ".arcanum-cleanup-*", true, scope),
+            .. EnumerateFactoryLogEntries(directory, ".arcanum-retention-*", true, scope),
+        ];
+
     private static string[] EnumerateFactoryLogEntries(
         string directory,
         string pattern,
@@ -1571,8 +1579,10 @@ internal sealed partial class DataRetentionService
         try
         {
             return directories
-                ? [.. Directory.EnumerateDirectories(directory, pattern, FactoryLogEnumeration)]
-                : [.. Directory.EnumerateFiles(directory, pattern, FactoryLogEnumeration)];
+                ? [.. Directory.EnumerateDirectories(directory, pattern, LogInventoryEnumeration)]
+                : [.. Directory.EnumerateFiles(directory, pattern, LogInventoryEnumeration)
+                    .Where(static path => IsDatedLogFile(Path.GetFileName(path), "audit-")
+                        || IsDatedLogFile(Path.GetFileName(path), "guardrails-"))];
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
         {
@@ -1692,9 +1702,11 @@ internal sealed partial class DataRetentionService
             or DaemonJobStatus.Cancelled
         && daemonExecutions?.IsAwaitingDrain(execution.Id) != true;
 
-    private static EnumerationOptions FactoryLogEnumeration { get; } =
+    private static EnumerationOptions LogInventoryEnumeration { get; } =
         new()
         {
+            MatchType = MatchType.Simple,
+
             RecurseSubdirectories = false,
 
             AttributesToSkip = 0,

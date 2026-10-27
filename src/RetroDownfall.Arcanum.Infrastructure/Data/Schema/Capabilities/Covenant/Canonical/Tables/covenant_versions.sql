@@ -89,3 +89,9 @@ CREATE INDEX IF NOT EXISTS idx_covenant_versions_entry_created
 
 CREATE INDEX IF NOT EXISTS idx_covenant_versions_source_turn
     ON covenant_versions(SourceTurnId);
+
+CREATE INDEX IF NOT EXISTS idx_covenant_versions_erasure_entry
+    ON covenant_versions(lower(replace(EntryId, '-', '')), LaneCode, LaneRevision);
+
+CREATE INDEX IF NOT EXISTS idx_covenant_versions_erasure_version
+    ON covenant_versions(lower(replace(VersionId, '-', '')));

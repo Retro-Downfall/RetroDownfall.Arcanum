@@ -225,6 +225,14 @@ internal sealed class DataRetentionCommands(
             campaignId = parsedCampaign;
         }
 
+        if (parsedScope is MemoryResetScope.Covenant && campaignId is not null)
+        {
+            return WriteError(new Error(
+                ErrorCodes.Data.InvalidRequest,
+                "A Covenant memory reset is installation-wide and does not accept a Campaign target. "
+                + "Use saga, lexicon, or campaign-summary for one Campaign."));
+        }
+
         // Written before the prompt, and before any operation starts. The order is the contract: an
         // operator has to be told what local erasure cannot revoke while they can still decline, and a
         // refusal after the disclosure must leave nothing started (§10.20.2).
@@ -237,6 +245,21 @@ internal sealed class DataRetentionCommands(
         if (preview.IsFailure)
         {
             return WriteError(preview.Error);
+        }
+
+        if (preview.Value.Blockers.Length > 0)
+        {
+            DataRetentionBlocker blocker = preview.Value.Blockers[0];
+
+            return WriteError(new Error(
+                blocker.ReasonCode == ErrorCodes.Data.InvalidRequest
+                    ? ErrorCodes.Data.InvalidRequest : ErrorCodes.Data.Blocked,
+                blocker.Message));
+        }
+
+        if (preview.Value.Conflicts.Length > 0)
+        {
+            return WriteError(new Error(ErrorCodes.Data.Conflict, preview.Value.Conflicts[0].Message));
         }
 
         disclosureWriter.Write(preview.Value.Covenant);
@@ -515,7 +538,9 @@ internal sealed class DataRetentionCommands(
     {
         dispatcher.WriteDiagnostic($"{error.Code}: {error.Message}");
 
-        return CliFailureExit.ExitCode(error);
+        return error.Code == ErrorCodes.Data.InvalidRequest
+            ? (int)CliExitCode.ConfigurationError
+            : CliFailureExit.ExitCode(error);
     }
 
     private static bool TryParseRetentionValue(

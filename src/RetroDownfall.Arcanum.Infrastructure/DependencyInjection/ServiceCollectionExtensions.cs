@@ -1232,6 +1232,7 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
             sp.GetRequiredService<TimeProvider>(),
             sp.GetRequiredService<CovenantAvailabilityRepublisher>(),
+            sp.GetRequiredService<ILogger<CovenantEntryErasureService>>(),
             sp.GetRequiredService<IMemoryDelegationMutationBarrier>()));
 
         services.AddScoped<ICovenantEntryErasureService>(

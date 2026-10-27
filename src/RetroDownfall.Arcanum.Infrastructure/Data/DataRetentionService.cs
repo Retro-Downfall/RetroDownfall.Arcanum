@@ -630,6 +630,12 @@ internal sealed partial class DataRetentionService(
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        if (IsCampaignTargetedCovenantReset(request))
+        {
+            return Result<DataRetentionPlanAdmission>.Failure(
+                new Error(ErrorCodes.Data.InvalidRequest, UnsupportedCampaignResetMessage));
+        }
+
         Result<ICovenantSnapshotReadLease?> leaseResult = await AcquireCovenantPlanningAdmissionAsync(
             request,
             capability,
@@ -784,6 +790,12 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        if (IsCampaignTargetedCovenantReset(request.Request))
+        {
+            return Result<DataRetentionApplyResult>.Failure(
+                new Error(ErrorCodes.Data.InvalidRequest, UnsupportedCampaignResetMessage));
+        }
 
         if (request.Request is
             {
@@ -1245,7 +1257,7 @@ internal sealed partial class DataRetentionService(
             return Result<DataRetentionApplyResult>.Failure(
                 new Error(
                     ErrorCodes.Data.OperationNotFinalized,
-                    "Data was pruned, but the durable operation could not be finalized; retry is safe."));
+                    "The data change was applied, but the durable operation could not be finalized; retry is safe."));
         }
 
         return Result<DataRetentionApplyResult>.Success(applied);
@@ -1412,6 +1424,17 @@ internal sealed partial class DataRetentionService(
     private static Error HostedPruneError(string message) =>
         new(ErrorCodes.Data.ReconciliationFailed, message);
 
+    private static string PlanRefreshAdvice(DataRetentionOperation operation) => operation switch
+    {
+        DataRetentionOperation.DeleteSession or DataRetentionOperation.DeleteAttachment =>
+            "Run the deletion command again to rebuild and revalidate its plan.",
+
+        DataRetentionOperation.ResetMemory =>
+            "Request a new reset preview, or run reset-memory again with the same scope and review its confirmation.",
+
+        _ => "Request a new dry-run before applying.",
+    };
+
     private async Task<Result<DataRetentionApplyResult>> ApplyOrdinaryAsync(
         DataRetentionApplyRequest request,
         CancellationToken cancellationToken)
@@ -1437,7 +1460,7 @@ internal sealed partial class DataRetentionService(
             return Result<DataRetentionApplyResult>.Failure(
                 new Error(
                     ErrorCodes.Data.Conflict,
-                    "Managed data changed or could not be safely inspected; request a new dry-run before applying."));
+                    "Managed data changed or could not be safely inspected. " + PlanRefreshAdvice(request.Request.Operation)));
         }
 
         if (!string.IsNullOrWhiteSpace(request.ExpectedPlanId)
@@ -1449,17 +1472,7 @@ internal sealed partial class DataRetentionService(
             return Result<DataRetentionApplyResult>.Failure(
                 new Error(
                     ErrorCodes.Data.PlanChanged,
-                    "The deletion plan changed after preview; request a new dry-run before applying."));
-        }
-
-        if (request.Request.Operation is DataRetentionOperation.DeleteSession
-                or DataRetentionOperation.DeleteAttachment
-            && current.Items.Length == 0)
-        {
-            return Result<DataRetentionApplyResult>.Failure(
-                new Error(
-                    ErrorCodes.Data.NotFound,
-                    "The requested data source was not found."));
+                    "The deletion plan changed after preview. " + PlanRefreshAdvice(request.Request.Operation)));
         }
 
         if (request.Request.Operation != DataRetentionOperation.Prune
@@ -1467,7 +1480,8 @@ internal sealed partial class DataRetentionService(
         {
             return Result<DataRetentionApplyResult>.Failure(
                 new Error(
-                    ErrorCodes.Data.Blocked,
+                    current.Blockers[0].ReasonCode == ErrorCodes.Data.InvalidRequest
+                        ? ErrorCodes.Data.InvalidRequest : ErrorCodes.Data.Blocked,
                     current.Blockers[0].Message));
         }
 
@@ -1478,6 +1492,16 @@ internal sealed partial class DataRetentionService(
                 new Error(
                     ErrorCodes.Data.Conflict,
                     current.Conflicts[0].Message));
+        }
+
+        if (request.Request.Operation is DataRetentionOperation.DeleteSession
+                or DataRetentionOperation.DeleteAttachment
+            && current.Items.Length == 0)
+        {
+            return Result<DataRetentionApplyResult>.Failure(
+                new Error(
+                    ErrorCodes.Data.NotFound,
+                    "The requested data source was not found."));
         }
 
         SessionPlanSnapshot? expectedSessionSnapshot =
@@ -1673,7 +1697,7 @@ internal sealed partial class DataRetentionService(
                 return Result<DataRetentionApplyResult>.Failure(
                     new Error(
                         ErrorCodes.Data.OperationNotFinalized,
-                        "Data was pruned, but the durable operation could not be finalized; retry is safe."));
+                        "The data change was applied, but the durable operation could not be finalized; retry is safe."));
             }
 
             return Result<DataRetentionApplyResult>.Success(applied);
@@ -1892,7 +1916,7 @@ internal sealed partial class DataRetentionService(
                 return Result<DataRetentionApplyResult>.Failure(
                     new Error(
                         ErrorCodes.Data.PlanChanged,
-                        "The deletion plan changed after preview; request a new dry-run before applying."));
+                        "The deletion plan changed after preview. " + PlanRefreshAdvice(request.Request.Operation)));
             }
 
             if (current.Blockers.Length > 0)
@@ -2775,13 +2799,6 @@ internal sealed partial class DataRetentionService(
         DataRetentionRequest request,
         CancellationToken cancellationToken)
     {
-        if (request.MemoryScope is MemoryResetScope.Covenant)
-        {
-            return await BuildCovenantResetMemoryPlanAsync(
-                request,
-                cancellationToken).ConfigureAwait(false);
-        }
-
         if (request.TargetId is { } targeted && !CampaignTargetedResetIsSupported(request.MemoryScope!.Value))
         {
             return EmptyPlan(
@@ -2790,9 +2807,14 @@ internal sealed partial class DataRetentionService(
                     MemoryResetDataClass(request.MemoryScope!.Value),
                     targeted.ToString("D"),
                     ErrorCodes.Data.InvalidRequest,
-                    "Only Saga and Lexicon memories record an owning Campaign, so only those two can be "
-                    + "reset for one Campaign. Reset this store without a Campaign, or choose one that "
-                    + "carries an owner."));
+                    UnsupportedCampaignResetMessage));
+        }
+
+        if (request.MemoryScope is MemoryResetScope.Covenant)
+        {
+            return await BuildCovenantResetMemoryPlanAsync(
+                request,
+                cancellationToken).ConfigureAwait(false);
         }
 
         RetentionDataClass dataClass = MemoryResetDataClass(request.MemoryScope!.Value);
@@ -2836,7 +2858,19 @@ internal sealed partial class DataRetentionService(
         (string Name, object Value)[] Parameters,
         int? RequiredFromCoreVersion = null);
 
-    /// <summary>Only these two stores record who owns a memory.</summary>
+    private const string UnsupportedCampaignResetMessage =
+        "Only Saga, Lexicon, and Campaign summaries can be reset for one Campaign. "
+        + "Reset this store without a Campaign, or choose saga, lexicon, or campaign-summary.";
+
+    private static bool IsCampaignTargetedCovenantReset(DataRetentionRequest request) =>
+        request is
+        {
+            Operation: DataRetentionOperation.ResetMemory,
+            MemoryScope: MemoryResetScope.Covenant,
+            TargetId: not null,
+        };
+
+    /// <summary>These ordinary memory stores support a Campaign-targeted reset.</summary>
     private static bool CampaignTargetedResetIsSupported(MemoryResetScope scope) =>
         scope is MemoryResetScope.Saga or MemoryResetScope.Lexicon or MemoryResetScope.CampaignSummary;
 
@@ -2854,6 +2888,8 @@ internal sealed partial class DataRetentionService(
             MemoryResetScope.Lexicon => RetentionDataClass.LexiconEntries,
 
             MemoryResetScope.CampaignSummary => RetentionDataClass.CampaignSummaries,
+
+            MemoryResetScope.Covenant => RetentionDataClass.Covenant,
 
             _ => throw new InvalidOperationException("Unsupported memory reset scope."),
         };
@@ -3209,7 +3245,8 @@ internal sealed partial class DataRetentionService(
             if (transactionSnapshot is null)
             {
                 throw new RetentionConflictException(
-                    "Session data changed after preview; request a new dry-run before retrying.");
+                    "Session data changed after preview. " + PlanRefreshAdvice(
+                        ageCutoff.HasValue ? DataRetentionOperation.Prune : plan.Request.Operation));
             }
 
             snapshot = transactionSnapshot;
@@ -3240,7 +3277,8 @@ internal sealed partial class DataRetentionService(
             if (!SessionSnapshotMatchesPlan(snapshot, expectedSnapshot, plan))
             {
                 throw new RetentionConflictException(
-                    "Session data changed after preview; request a new dry-run before retrying.");
+                    "Session data changed after preview. " + PlanRefreshAdvice(
+                        ageCutoff.HasValue ? DataRetentionOperation.Prune : plan.Request.Operation));
             }
 
             await RevalidateSessionDeletionBoundaryAsync(
@@ -3582,7 +3620,8 @@ internal sealed partial class DataRetentionService(
             if (transactionSnapshot is null)
             {
                 throw new RetentionConflictException(
-                    "Attachment data changed after preview; request a new dry-run before retrying.");
+                    "Attachment data changed after preview. " + PlanRefreshAdvice(
+                        ageCutoff.HasValue ? DataRetentionOperation.Prune : plan.Request.Operation));
             }
 
             snapshot = transactionSnapshot;
@@ -3603,7 +3642,8 @@ internal sealed partial class DataRetentionService(
             if (!AttachmentSnapshotMatchesPlan(snapshot, expectedSnapshot, plan))
             {
                 throw new RetentionConflictException(
-                    "Attachment data changed after preview; request a new dry-run before retrying.");
+                    "Attachment data changed after preview. " + PlanRefreshAdvice(
+                        ageCutoff.HasValue ? DataRetentionOperation.Prune : plan.Request.Operation));
             }
 
             await RevalidateAttachmentDeletionBoundaryAsync(
@@ -3611,6 +3651,7 @@ internal sealed partial class DataRetentionService(
                 transaction,
                 operationId,
                 snapshot,
+                ageCutoff.HasValue ? DataRetentionOperation.Prune : plan.Request.Operation,
                 cancellationToken).ConfigureAwait(false);
 
             derivedDeleted = await DeleteAttachmentRowsAsync(
@@ -3793,7 +3834,7 @@ internal sealed partial class DataRetentionService(
                     || plan.CandidateIds.SequenceEqual([MemoryResetCandidateId(scope, campaignId)])))
             {
                 throw new RetentionConflictException(
-                    "Memory data changed after preview; request a new dry-run before retrying.");
+                    "Memory data changed after preview. " + PlanRefreshAdvice(DataRetentionOperation.ResetMemory));
             }
 
             if (scope == MemoryResetScope.CampaignSummary)
@@ -4632,6 +4673,7 @@ internal sealed partial class DataRetentionService(
         DbTransaction transaction,
         Guid operationId,
         AttachmentPlanSnapshot attachment,
+        DataRetentionOperation requestedOperation,
         CancellationToken cancellationToken)
     {
         string? state = await ScalarStringInTransactionAsync(
@@ -4649,7 +4691,7 @@ internal sealed partial class DataRetentionService(
         if (state is null)
         {
             throw new RetentionConflictException(
-                "The attachment changed after preview; request a new dry-run before retrying.");
+                "The attachment changed after preview. " + PlanRefreshAdvice(requestedOperation));
         }
 
         if (!string.Equals(state, "Bound", StringComparison.OrdinalIgnoreCase))

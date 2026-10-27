@@ -37,7 +37,7 @@ public sealed class GrimoireSchemaVersionChainTests
     {
         Assert.Equal(29, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
-        Assert.Equal(6, GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion);
+        Assert.Equal(7, GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion);
 
         Assert.Equal(1, GrimoireSchemaVersionChains.CovenantAcceleratorSchemaVersion);
     }

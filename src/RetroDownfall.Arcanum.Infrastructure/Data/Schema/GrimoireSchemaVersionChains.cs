@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 29 and declares twenty-eight steps, Covenant canonical is at version 6 and declares five,
+/// Core is at version 29 and declares twenty-eight steps, Covenant canonical is at version 7 and declares six,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -167,8 +167,12 @@ internal static class GrimoireSchemaVersionChains
     /// guards on an entry's closure and on the search outbox, and adds delete guards to
     /// <c>covenant_key_epochs</c> and <c>covenant_curation_heads</c>. The step declares no sweep: the
     /// backfill and the purge are single statements inside the step's own transaction.</para>
+    /// <para>Version 7 adds normalized ownership expression indexes for entry erasure. Historical
+    /// restored GUID spellings retain their matching semantics while versions, mutation receipts,
+    /// provenance and review companions seek their owner indexes during every destructive proof.
+    /// No row or receipt is rewritten.</para>
     /// </remarks>
-    internal const int CovenantCanonicalSchemaVersion = 6;
+    internal const int CovenantCanonicalSchemaVersion = 7;
 
     /// <summary>The version of Covenant's inspection index this binary declares.</summary>
     internal const int CovenantAcceleratorSchemaVersion = 1;
@@ -359,6 +363,10 @@ internal static class GrimoireSchemaVersionChains
             // names version 5. Its frozen copies also keep the older canonical pins still.
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 6)] =
                 "E4C4284B895BBBE50515D18FAC6066348D73C3A7D166F434B96BA675697DA925",
+
+            // Captured from the exact unchanged version-6 head before erasure ownership indexes.
+            [(GrimoireSchemaTransactionTier.CovenantCanonical, 7)] =
+                "A57D21459F05BED41C7929D3AA2DED80EB32679AB817F2BC81ABC5D8798EC4A5",
         };
 
     /// <summary>The sweep each step depends on, keyed the same way.</summary>

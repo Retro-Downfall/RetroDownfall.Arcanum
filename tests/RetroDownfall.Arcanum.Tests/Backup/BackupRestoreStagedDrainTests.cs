@@ -76,7 +76,7 @@ public sealed partial class BackupRestoreStagedDrainTests
 
         Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
 
-        Assert.Equal(6L, await ScalarAsync(restored, "SELECT SchemaVersion FROM grimoire_feature_schemas WHERE FamilyCode = 1 AND TransactionTierCode = 1"));
+        Assert.Equal((long)GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion, await ScalarAsync(restored, "SELECT SchemaVersion FROM grimoire_feature_schemas WHERE FamilyCode = 1 AND TransactionTierCode = 1"));
 
         Assert.Equal(0L, await ScalarAsync(restored, "SELECT COUNT(*) FROM grimoire_schema_transitions"));
 
@@ -142,7 +142,7 @@ public sealed partial class BackupRestoreStagedDrainTests
 
         Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
 
-        Assert.Equal(6L, await ScalarAsync(restored, "SELECT SchemaVersion FROM grimoire_feature_schemas WHERE FamilyCode = 1 AND TransactionTierCode = 1"));
+        Assert.Equal((long)GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion, await ScalarAsync(restored, "SELECT SchemaVersion FROM grimoire_feature_schemas WHERE FamilyCode = 1 AND TransactionTierCode = 1"));
 
         Assert.Equal(1L, await ScalarAsync(restored, "SELECT SchemaVersion FROM grimoire_feature_schemas WHERE FamilyCode = 1 AND TransactionTierCode = 2"));
 

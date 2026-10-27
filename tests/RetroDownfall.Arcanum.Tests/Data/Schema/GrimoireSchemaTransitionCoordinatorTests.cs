@@ -241,7 +241,8 @@ public sealed partial class GrimoireSchemaTransitionCoordinatorTests
 
             Assert.True(original.CovenantCanonical.IsHealthy);
 
-            GrimoireSchemaVersionChainSet chains = GrimoireSchemaVersionChains.Default;
+            // This fixture targets version-5/6 finalization and its no-progress failure boundary.
+            GrimoireSchemaVersionChainSet chains = CovenantCanonicalSchemaVersionSixFixture.ChainSet();
 
             GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create(chains);
 

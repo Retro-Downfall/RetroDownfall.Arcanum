@@ -6836,12 +6836,21 @@ internal sealed partial class DataRetentionService
             -ArcanumSettingClamps.RetentionRuleDays(rule.Days));
 
         foreach (string path in Directory
-                     .EnumerateFiles(_logsRoot, pattern, SearchOption.TopDirectoryOnly)
+                     .EnumerateFiles(_logsRoot, pattern, LogInventoryEnumeration)
                      .OrderBy(static path => path, StringComparer.Ordinal))
         {
             if (candidates.Count >= limit)
             {
                 break;
+            }
+
+            string name = Path.GetFileName(path);
+
+            string stem = dataClass == RetentionDataClass.AuditLogs ? "audit-" : "guardrails-";
+
+            if (!IsDatedLogFile(name, stem))
+            {
+                continue;
             }
 
             FileInfo info = new(path);

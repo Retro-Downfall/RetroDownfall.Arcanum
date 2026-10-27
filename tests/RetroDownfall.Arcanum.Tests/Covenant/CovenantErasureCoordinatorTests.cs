@@ -38,7 +38,7 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// disposition calls. A reset that reported <c>CommitAndReopen</c> while the gate stayed shut would
 /// pass a call-counting assertion and fail every user.</para>
 /// </remarks>
-public sealed class CovenantErasureCoordinatorTests
+public sealed partial class CovenantErasureCoordinatorTests
 {
     private static CancellationToken Token => CancellationToken.None;
 
@@ -1080,7 +1080,7 @@ public sealed class CovenantErasureCoordinatorTests
     }
 
     [Fact]
-    public async Task A_fresh_pass_checkpoints_one_live_verified_candidate_and_publishes_that_exact_object()
+    public async Task A_fresh_pass_verifies_one_live_candidate_and_publishes_that_exact_object()
     {
         CoordinatorHarness harness = new();
 
@@ -2709,6 +2709,10 @@ public sealed class CovenantErasureCoordinatorTests
 
         internal int AbortClosingCalls { get; private set; }
 
+        internal Error? ClosedDispositionFailure { get; set; }
+
+        internal Error? AbortClosingFailure { get; set; }
+
         public long CurrentGeneration => inner.CurrentGeneration;
 
         public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
@@ -2760,14 +2764,15 @@ public sealed class CovenantErasureCoordinatorTests
             Result<IGrimoireExclusiveClosedLease> closed = await inner
                 .CloseConnectionAdmissionAsync(closingOwner, cancellationToken);
 
-            if (closed.IsFailure || closureSetupFailure is GrimoireClosureSetupFailure.None)
+            if (closed.IsFailure || closureSetupFailure is GrimoireClosureSetupFailure.None && ClosedDispositionFailure is null)
             {
                 return closed;
             }
 
             InjectedClosedLease = new RefusingClosureSetupClosedLease(
                 closed.Value,
-                closureSetupFailure);
+                closureSetupFailure,
+                ClosedDispositionFailure);
 
             return Result<IGrimoireExclusiveClosedLease>.Success(InjectedClosedLease);
         }
@@ -2778,6 +2783,11 @@ public sealed class CovenantErasureCoordinatorTests
             CancellationToken cancellationToken)
         {
             AbortClosingCalls++;
+
+            if (AbortClosingFailure is { } failure)
+            {
+                return ValueTask.FromResult(Result.Failure(failure));
+            }
 
             return inner.AbortClosingAsync(
                 closingOwner,
@@ -2804,7 +2814,8 @@ public sealed class CovenantErasureCoordinatorTests
 
     private sealed class RefusingClosureSetupClosedLease(
         IGrimoireExclusiveClosedLease inner,
-        GrimoireClosureSetupFailure failure) : IGrimoireExclusiveClosedLease
+        GrimoireClosureSetupFailure failure,
+        Error? dispositionFailure = null) : IGrimoireExclusiveClosedLease
     {
         internal int CompleteCalls { get; private set; }
 
@@ -2855,7 +2866,9 @@ public sealed class CovenantErasureCoordinatorTests
 
             LastDisposition = disposition;
 
-            return inner.CompleteAsync(disposition, cancellationToken);
+            return dispositionFailure is { } refused
+                ? ValueTask.FromResult(Result.Failure(refused))
+                : inner.CompleteAsync(disposition, cancellationToken);
         }
 
         public ValueTask DisposeAsync()

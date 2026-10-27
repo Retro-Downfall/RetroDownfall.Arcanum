@@ -3,11 +3,15 @@ using System.Globalization;
 
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
+using RetroDownfall.Arcanum.Tests.Intelligence;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
@@ -51,6 +55,308 @@ public sealed class CovenantEntryErasureServiceTests
     private static readonly TimeSpan PatientDrain = TimeSpan.FromSeconds(20);
 
     private static CancellationToken Token => CancellationToken.None;
+
+    [Theory]
+    [InlineData("malformed")]
+    [InlineData("token")]
+    [InlineData("replay")]
+    [InlineData("absent")]
+    [InlineData("notfound")]
+    [InlineData("authority")]
+    public async Task Nonmutating_erasure_branches_preserve_a_real_delegation_grant(string reason)
+    {
+        await using EraseBed bed = await EraseBed.StartAsync(ShortDrain);
+
+        _ = await bed.SetCampaignEntryAsync("Campaign text.");
+
+        (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service());
+
+        if (reason is "replay" or "absent")
+        {
+            CovenantErasePrepareRequest original = prepare;
+
+            if (reason == "absent")
+                (original, _) = await bed.PrepareAsync(bed.Service());
+
+            MemoryErasurePreflightDto originalPreflight = reason == "replay" ? preflight
+                : (await bed.Service().PrepareAsync(original, bed.Context, Token)).Value;
+
+            Assert.True((await bed.Service().ApplyAsync(Apply(original, originalPreflight.PreflightToken), bed.Context, Token)).IsSuccess);
+        }
+
+        if (reason == "notfound")
+        {
+            await using SqliteTransaction removed = bed.Connection.BeginTransaction(deferred: false);
+
+            using CovenantSqliteAuthorizationScope authorized = CovenantSqliteConnectionInitializer.Instance.Authorize(
+                bed.Connection, CovenantSqliteAuthorizationKind.CovenantEntryErasure);
+
+            CovenantEntryErasureSubject subject = (await CovenantEntryErasurePlan.ReadSubjectAsync(bed.Connection, removed, prepare.EntryId, Token))!;
+
+            _ = await CovenantEntryErasurePlan.RunAsync(bed.Connection, removed, subject,
+                CovenantArtifactPlanMode.Delete, CovenantEntryErasureMode.Live, Token);
+
+            // A subject removed by an authorized owner path has no entry-erase fingerprint/receipt.
+            await removed.CommitAsync();
+        }
+
+        await using MemoryDelegationLifecycleTests.Harness delegation = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+
+        await using MemoryDelegationRoot root = await delegation.PrepareAsync();
+
+        Assert.True((await delegation.Coordinator.ConsumeAsync(root, delegation.RootId, Guid.NewGuid(), delegation.Digest)).IsSuccess);
+
+        CovenantEraseRequest request = reason == "malformed" ? null!
+            : Apply(prepare, reason is "token" or "replay" ? "invalid token" : preflight.PreflightToken);
+
+        OperatorAuthorityContext context = reason == "authority"
+            ? OperatorAuthorityContext.CreateForTests(bed.Context.Requirement, Guid.Parse(bed.Context.InstallationIdentity),
+                bed.Context.RuntimeAuthorityGeneration, bed.Context.AuthorityEpoch + 1, bed.Context.MasterKeyVersion)
+            : bed.Context;
+
+        Result<MemoryErasureResultDto> result = await bed.Service(memoryDelegation: delegation.Coordinator).ApplyAsync(request, context, Token);
+
+        Assert.Equal(reason == "replay", result.IsSuccess);
+
+        if (reason == "notfound") Assert.Equal(ErrorCodes.Covenant.NotFound, result.Error.Code);
+
+        if (reason == "absent") Assert.Equal(ErrorCodes.MemoryErasure.SubjectErased, result.Error.Code);
+
+        Assert.False(root.Revocation.IsCancellationRequested);
+
+        await using MemoryDelegationEffect effect = MemoryEvaluationSourceHarness.Require(await delegation.Coordinator.AdmitEffectAsync(root));
+    }
+
+    [Fact]
+    public async Task Present_erasure_drains_a_real_delegation_effect_before_acquiring_its_closure()
+    {
+        await using EraseBed bed = await EraseBed.StartAsync(PatientDrain);
+
+        Guid entry = await bed.SetCampaignEntryAsync("Campaign text.");
+
+        (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service());
+
+        await using MemoryDelegationLifecycleTests.Harness delegation = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+
+        await using MemoryDelegationRoot root = await delegation.PrepareAsync();
+
+        Assert.True((await delegation.Coordinator.ConsumeAsync(root, delegation.RootId, Guid.NewGuid(), delegation.Digest)).IsSuccess);
+
+        MemoryDelegationEffect effect = MemoryEvaluationSourceHarness.Require(await delegation.Coordinator.AdmitEffectAsync(root));
+
+        DispositionRecordingGate gate = new(bed.Gate, []);
+
+        Task<Result<MemoryErasureResultDto>> applying = bed.Service(gate, memoryDelegation: delegation.Coordinator)
+            .ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token);
+
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Task.Delay(Timeout.Infinite, root.Revocation).WaitAsync(TimeSpan.FromSeconds(5)));
+
+            Assert.False(applying.IsCompleted);
+
+            Assert.Empty(gate.Attempts);
+
+            Assert.True(await bed.EntryExistsAsync(entry));
+        }
+        finally
+        {
+            await effect.DisposeAsync();
+        }
+
+        Result<MemoryErasureResultDto> applied = await applying.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(applied.IsSuccess, applied.Error.Message);
+
+        Assert.False(await bed.EntryExistsAsync(entry));
+
+        Assert.Equal(1, await bed.ReceiptsAsync(prepare.MutationId));
+
+        Assert.Single(gate.Attempts);
+    }
+
+    [Fact]
+    public async Task Cancellation_while_draining_delegation_never_acquires_the_erasure_gate()
+    {
+        await using EraseBed bed = await EraseBed.StartAsync(PatientDrain);
+
+        Guid entry = await bed.SetCampaignEntryAsync("Campaign text.");
+
+        (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service());
+
+        await using MemoryDelegationLifecycleTests.Harness delegation = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+
+        await using MemoryDelegationRoot root = await delegation.PrepareAsync();
+
+        Assert.True((await delegation.Coordinator.ConsumeAsync(root, delegation.RootId, Guid.NewGuid(), delegation.Digest)).IsSuccess);
+
+        MemoryDelegationEffect effect = MemoryEvaluationSourceHarness.Require(await delegation.Coordinator.AdmitEffectAsync(root));
+
+        using CancellationTokenSource caller = new();
+
+        DispositionRecordingGate gate = new(bed.Gate, []);
+
+        Task<Result<MemoryErasureResultDto>> applying = bed.Service(gate, memoryDelegation: delegation.Coordinator)
+            .ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, caller.Token);
+
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Task.Delay(Timeout.Infinite, root.Revocation).WaitAsync(TimeSpan.FromSeconds(5)));
+
+            await caller.CancelAsync();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => applying.WaitAsync(TimeSpan.FromSeconds(5)));
+
+            Assert.Empty(gate.Attempts);
+
+            Assert.True(await bed.EntryExistsAsync(entry));
+
+            Assert.Equal(0, await bed.ReceiptsAsync(prepare.MutationId));
+        }
+        finally
+        {
+            await effect.DisposeAsync();
+        }
+
+        await using MemoryDelegationRoot fresh = await delegation.PrepareAsync(Guid.NewGuid());
+
+        Assert.False(fresh.Revocation.IsCancellationRequested);
+    }
+
+    [Theory]
+    [InlineData("rollback", 13)]
+    [InlineData("rollback", 10)]
+    [InlineData("rollback", 11)]
+    [InlineData("committed", 10)]
+    [InlineData("committed-unreadable", 10)]
+    [InlineData("unreadable", 13)]
+    [InlineData("unknown", 0)]
+    public async Task Uncertain_erasure_commit_reports_closed_cause_and_proven_disposition(string outcome, int nativeCode)
+    {
+        await using EraseBed bed = await EraseBed.StartAsync(ShortDrain);
+
+        Guid entry = await bed.SetCampaignEntryAsync("private content must never enter diagnostics");
+
+        (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service());
+
+        const string secret = "secret token /private/operator/path private content";
+
+        TestCapturingLogger<CovenantEntryErasureService> logger = new();
+
+        List<string> dispositions = [];
+
+        CovenantEntryErasureService service = bed.Service(new DispositionRecordingGate(bed.Gate, dispositions),
+            commit: async (transaction, cancellationToken) =>
+            {
+                if (outcome.StartsWith("committed", StringComparison.Ordinal)) await transaction.CommitAsync(cancellationToken);
+
+                if (outcome == "unknown") throw new InvalidOperationException(secret);
+
+                throw new SqliteException(secret, nativeCode, nativeCode | (2 << 8));
+            },
+            reread: outcome.EndsWith("unreadable", StringComparison.Ordinal) ? static (_, _) => Task.FromResult(Result<MemoryErasureReceiptRow?>.Failure(new Error(ErrorCodes.MemoryErasure.Unavailable, secret))) : null,
+            logger: logger);
+
+        Result<MemoryErasureResultDto> result = await service.ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token);
+
+        Assert.Equal(outcome == "committed", result.IsSuccess);
+
+        string disposition = outcome == "committed" ? "CommitAndReopen" : outcome.EndsWith("unreadable", StringComparison.Ordinal) ? "KeepClosed" : "RollbackAndReopen";
+
+        Assert.Equal(["complete:" + disposition], dispositions);
+
+        Assert.Equal(!outcome.StartsWith("committed", StringComparison.Ordinal), await bed.EntryExistsAsync(entry));
+
+        TestLogEntry warning = Assert.Single(logger.Entries, item => item.Level == LogLevel.Warning);
+
+        Assert.Null(warning.Exception);
+
+        Assert.Contains(warning.Properties!, item => item.Key == "MutationId" && Equals(item.Value, prepare.MutationId));
+
+        Assert.Contains(warning.Properties!, item => item.Key == "Disposition" && string.Equals(item.Value?.ToString(), disposition, StringComparison.Ordinal));
+
+        Assert.Contains(warning.Properties!, item => item.Key == "Failure" && Equals(item.Value?.ToString(), outcome == "unknown" ? "InvalidOperation" : "Sqlite"));
+
+        Assert.Contains(warning.Properties!, item => item.Key == "SqliteCode" && Equals(item.Value, nativeCode == 0 ? null : nativeCode));
+
+        Assert.Contains(warning.Properties!, item => item.Key == "RollbackFailed" && Equals(item.Value, false));
+
+        Assert.Contains(warning.Properties!, item => item.Key == "SqliteExtendedCode" && Equals(item.Value, nativeCode == 0 ? null : nativeCode | (2 << 8)));
+
+        Assert.Contains(warning.Properties!, item => item.Key == "Stage" && Equals(item.Value, "CommitSettlement"));
+
+        foreach (string privateValue in new[] { secret, "/private/operator/path", "private content", "secret token" })
+        {
+            Assert.DoesNotContain(privateValue, warning.Message);
+
+            Assert.All(warning.Properties!, item => Assert.DoesNotContain(privateValue, item.Value?.ToString() ?? string.Empty));
+
+            if (result.IsFailure) Assert.DoesNotContain(privateValue, result.Error.Message);
+        }
+
+        if (result.IsFailure)
+        {
+            if (outcome.EndsWith("unreadable", StringComparison.Ordinal))
+            {
+                if (outcome == "committed-unreadable") Assert.Equal(1, await bed.ReceiptsAsync(prepare.MutationId));
+
+                Assert.DoesNotContain("Rollback succeeded", result.Error.Message, StringComparison.Ordinal);
+
+                Assert.Contains("commit outcome remains unproved", result.Error.Message, StringComparison.Ordinal);
+            }
+            else Assert.Contains("Rollback succeeded.", result.Error.Message, StringComparison.Ordinal);
+
+            Assert.Contains(outcome == "unknown" ? "Failure=InvalidOperation" : $"SQLite={nativeCode},", result.Error.Message, StringComparison.Ordinal);
+
+            if (outcome == "unknown" || nativeCode == 11)
+            {
+                Assert.Contains("Preserve the installation", result.Error.Message, StringComparison.Ordinal);
+
+                Assert.DoesNotContain("retry it", result.Error.Message, StringComparison.Ordinal);
+            }
+
+            if (outcome.EndsWith("unreadable", StringComparison.Ordinal)) Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, result.Error.Code);
+        }
+    }
+
+    [Fact]
+    public async Task Failed_real_closure_completion_reports_safe_warning_without_replaying_a_committed_erase()
+    {
+        await using EraseBed bed = await EraseBed.StartAsync(ShortDrain);
+
+        Guid entry = await bed.SetCampaignEntryAsync("Campaign text.");
+
+        (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service());
+
+        List<string> events = [];
+
+        DispositionRecordingGate gate = new(bed.Gate, events) { ReleaseBeforeCompletion = true };
+
+        TestCapturingLogger<CovenantEntryErasureService> logger = new();
+
+        Result<MemoryErasureResultDto> result = await bed.Service(gate, logger: logger)
+            .ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(1, await bed.ReceiptsAsync(prepare.MutationId));
+
+        Assert.False(await bed.EntryExistsAsync(entry));
+
+        Assert.Equal(["complete:CommitAndReopen", "completion-failed:Covenant.LifecycleConflict"], events);
+
+        Assert.True((await bed.Gate.AcquireReadAsync(EntryScope(), Token)).IsFailure);
+
+        TestLogEntry warning = Assert.Single(logger.Entries, item => item.Level == LogLevel.Warning);
+
+        Assert.Null(warning.Exception);
+
+        Assert.Contains(warning.Properties!, item => item.Key == "MutationId" && Equals(item.Value, prepare.MutationId));
+
+        Assert.Contains(warning.Properties!, item => item.Key == "Stage" && Equals(item.Value, "Complete"));
+
+        Assert.Contains(warning.Properties!, item => item.Key == "Code" && Equals(item.Value, ErrorCodes.Covenant.LifecycleConflict));
+    }
 
     [Fact]
     public async Task Replay_is_receipt_first_and_never_closes_a_scope()
@@ -589,7 +895,8 @@ public sealed class CovenantEntryErasureServiceTests
             CovenantSqliteConnectionInitializer.Instance,
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
             TimeProvider.System,
-            DetachedAvailabilityRepublisher.Create());
+            DetachedAvailabilityRepublisher.Create(),
+            NullLogger<CovenantEntryErasureService>.Instance);
 
         Result<MemoryErasurePreflightDto> prepared = await service.PrepareAsync(
             new CovenantErasePrepareRequest(
@@ -999,16 +1306,19 @@ public sealed class CovenantEntryErasureServiceTests
                 Assert.NotNull(read.Value);
 
                 return Result<MemoryErasureReceiptRow?>.Success(read.Value with { RequestDigest = new byte[32] });
-            },
+            }
+            ,
             "fails" => static (_, _) => Task.FromResult(Result<MemoryErasureReceiptRow?>.Failure(
                 new Error(ErrorCodes.MemoryErasure.Unavailable, "The receipt could not be read back."))),
             _ => static (_, _) => throw new NotSupportedException("A failure no storage filter names."),
         };
 
+        TestCapturingLogger<CovenantEntryErasureService> logger = new();
+
         CovenantEntryErasureService service = bed.Service(
             new DispositionRecordingGate(bed.Gate, recorded),
             commit: CommitThenReportFailureAsync,
-            reread: unproved);
+            reread: unproved, logger: logger);
 
         Result<MemoryErasureResultDto> applied = await service.ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token);
 
@@ -1017,6 +1327,19 @@ public sealed class CovenantEntryErasureServiceTests
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, applied.Error.Code);
 
         Assert.Equal(["complete:KeepClosed"], recorded);
+
+        TestLogEntry warning = Assert.Single(logger.Entries, item => item.Level == LogLevel.Warning);
+
+        Assert.Null(warning.Exception);
+
+        Assert.Contains(warning.Properties!, item => item.Key == "RollbackFailed" && Equals(item.Value, true));
+
+        Assert.Contains(warning.Properties!, item => item.Key == "SqliteCode" && Equals(item.Value, 10));
+
+        Assert.Contains(warning.Properties!, item => item.Key == "ReceiptState" && Equals(item.Value,
+            reread == "none" ? "Absent" : reread == "mismatched" ? "Mismatched" : "Unreadable"));
+
+        Assert.Contains("Rollback was not proved.", applied.Error.Message, StringComparison.Ordinal);
 
         Assert.True((await bed.Gate.AcquireReadAsync(EntryScope(), Token)).IsFailure, "The scope reopened over an unproved commit.");
 
@@ -1289,7 +1612,9 @@ public sealed class CovenantEntryErasureServiceTests
             Func<SqliteTransaction, CancellationToken, Task>? commit = null,
             Func<Guid, CancellationToken, Task<Result<MemoryErasureReceiptRow?>>>? reread = null,
             List<string>? recorder = null,
-            Func<CancellationToken, Task>? afterReceiptProbe = null) =>
+            Func<CancellationToken, Task>? afterReceiptProbe = null,
+            IMemoryDelegationMutationBarrier? memoryDelegation = null,
+            TestCapturingLogger<CovenantEntryErasureService>? logger = null) =>
             new(
                 new FixedCovenantConnectionSource(Connection),
                 Fixture.ErasureKeys,
@@ -1300,7 +1625,9 @@ public sealed class CovenantEntryErasureServiceTests
                 CovenantSqliteConnectionInitializer.Instance,
                 new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
                 TimeProvider.System,
-                DetachedAvailabilityRepublisher.Create())
+                DetachedAvailabilityRepublisher.Create(),
+                (ILogger<CovenantEntryErasureService>?)logger ?? NullLogger<CovenantEntryErasureService>.Instance,
+                memoryDelegation)
             {
                 CommitForTesting = commit,
                 ReceiptReReadForTesting = reread,
@@ -1540,6 +1867,8 @@ public sealed class CovenantEntryErasureServiceTests
         /// <summary>The gate stub's other lie: the granted closure reports that it covers only one scope.</summary>
         internal bool ReportScopedCoverage { get; init; }
 
+        internal bool ReleaseBeforeCompletion { get; init; }
+
         public ValueTask<Result<CovenantInstallationReadLease>> AcquireInstallationReadAsync(CancellationToken cancellationToken)
         {
             CredentialCallsAtInstallationRead = CredentialCalls?.Invoke();
@@ -1600,7 +1929,7 @@ public sealed class CovenantEntryErasureServiceTests
                 ? acquired
                 : Result<CovenantEntryErasureLease>.Success(
                     new CovenantEntryErasureLease(
-                        new RecordingRegistration(acquired.Value, recorder, ThrowOnRevalidation, ReportScopedCoverage)));
+                        new RecordingRegistration(acquired.Value, recorder, ThrowOnRevalidation, ReportScopedCoverage, ReleaseBeforeCompletion)));
         }
 
         public ValueTask<Result<CovenantExclusiveLease>> AcquireExclusiveAsync(
@@ -1635,7 +1964,8 @@ public sealed class CovenantEntryErasureServiceTests
             CovenantEntryErasureLease lease,
             List<string> recorder,
             int? throwOnRevalidation,
-            bool reportScopedCoverage)
+            bool reportScopedCoverage,
+            bool releaseBeforeCompletion)
             : ICovenantExclusiveLeaseRegistration
         {
             private int _revalidations;
@@ -1654,14 +1984,20 @@ public sealed class CovenantEntryErasureServiceTests
 
             public Result ExecuteWhileHeld(Func<Result> callback) => lease.ExecuteWhileHeld(callback);
 
-            public ValueTask<Result> CompleteAsync(CovenantExclusiveLeaseDisposition disposition, CancellationToken cancellationToken)
+            public async ValueTask<Result> CompleteAsync(CovenantExclusiveLeaseDisposition disposition, CancellationToken cancellationToken)
             {
                 lock (recorder)
                 {
                     recorder.Add($"complete:{disposition}");
                 }
 
-                return lease.CompleteAsync(disposition, cancellationToken);
+                if (releaseBeforeCompletion) await lease.DisposeAsync();
+
+                Result result = await lease.CompleteAsync(disposition, cancellationToken);
+
+                if (result.IsFailure) recorder.Add("completion-failed:" + result.Error.Code);
+
+                return result;
             }
         }
     }

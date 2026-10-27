@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -511,15 +512,26 @@ public sealed partial class LongRestMaintenanceTests
 
             await providerReturned();
 
-            if (repeat()) Assert.True((await inner.ExecuteAsync(payload, budget, beforeSend, admission, ct)).IsFailure);
+            if (repeat())
+            {
+                LongRestBeforeSendRefusal refusal = await Assert.ThrowsAsync<LongRestBeforeSendRefusal>(() =>
+                    inner.ExecuteAsync(payload, budget, beforeSend, admission, ct));
+
+                Assert.Equal(ErrorCodes.LongRest.StaleInput, refusal.Error.Code);
+            }
 
             return result;
         }
     }
 
-    private sealed class PaidWriter(ITurnRunWriter inner, Action recorded, Action completing) : ITurnRunWriter
+    private sealed class PaidWriter(ITurnRunWriter inner, Action recorded, Action completing, Action? starting = null) : ITurnRunWriter
     {
-        public Task<Guid> StartRunAsync(InferenceRunStart start, CancellationToken cancellationToken = default) => inner.StartRunAsync(start, cancellationToken);
+        public Task<Guid> StartRunAsync(InferenceRunStart start, CancellationToken cancellationToken = default)
+        {
+            starting?.Invoke();
+
+            return inner.StartRunAsync(start, cancellationToken);
+        }
 
         public Task<bool> TryAbandonRunAsync(Guid runId, CancellationToken cancellationToken = default) => inner.TryAbandonRunAsync(runId, cancellationToken);
 

@@ -52,9 +52,29 @@ public sealed partial class ModelCallExecutor
         // True only while the SDK call itself is in flight: a failure there is typed; any other failure stays generic.
         bool dispatched = false;
 
+        LongRestBeforeSendRefusal? beforeSendRefusal = null;
+
         try
         {
-            await beforeSend(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await beforeSend(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception refusal)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                Error error = refusal is LongRestFenceRefusal coded ? coded.Error
+                    : new Error(ErrorCodes.Hub.Error, PublicInferenceErrorMessages.NativeGenericFailure);
+
+                beforeSendRefusal = new(error, refusal.GetType().Name);
+
+                throw beforeSendRefusal;
+            }
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -94,6 +114,13 @@ public sealed partial class ModelCallExecutor
             _ = ReconcileAndRecord(actual, response.Usage, chat.Context);
 
             return ParseLongRestChat(payload, ReadLongRestText(response), usage);
+        }
+        catch (LongRestBeforeSendRefusal refusal) when (ReferenceEquals(refusal, beforeSendRefusal))
+        {
+            _logger?.LogWarning("Long Rest physical-send fence refused before provider dispatch; provider {Provider}, model {Model}, operation {OperationId}, exception type {ExceptionType}.",
+                LongRestProviderFailure.Label(chat.Context.Provider.Name), LongRestProviderFailure.Label(chat.Context.Model), payload.Work.OperationId, refusal.ExceptionType);
+
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -144,9 +171,29 @@ public sealed partial class ModelCallExecutor
 
         bool dispatched = false;
 
+        LongRestBeforeSendRefusal? beforeSendRefusal = null;
+
         try
         {
-            await beforeSend(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await beforeSend(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception refusal)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                Error error = refusal is LongRestFenceRefusal coded ? coded.Error
+                    : new Error(ErrorCodes.Hub.Error, PublicInferenceErrorMessages.NativeGenericFailure);
+
+                beforeSendRefusal = new(error, refusal.GetType().Name);
+
+                throw beforeSendRefusal;
+            }
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -182,6 +229,13 @@ public sealed partial class ModelCallExecutor
             return vector.All(float.IsFinite)
                 ? new LongRestProviderResult(payload.Kind, LongRestProviderResultDisposition.Valid, null, null, vector, usage, null)
                 : InvalidLongRestOutput(payload.Kind, usage);
+        }
+        catch (LongRestBeforeSendRefusal refusal) when (ReferenceEquals(refusal, beforeSendRefusal))
+        {
+            _logger?.LogWarning("Long Rest physical-send fence refused before provider dispatch; provider {Provider}, model {Model}, operation {OperationId}, exception type {ExceptionType}.",
+                LongRestProviderFailure.Label(embedding.Provider.Name), LongRestProviderFailure.Label(embedding.Model), payload.Work.OperationId, refusal.ExceptionType);
+
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -329,4 +383,18 @@ public sealed partial class ModelCallExecutor
             return InvalidLongRestOutput(payload.Kind, usage);
         }
     }
+}
+
+// Host-only failure flow. The raw refusal carries its code, never exception text; only the executor's
+// active beforeSend await creates the observation consumed by the provider/maintenance invocation.
+internal class LongRestFenceRefusal(Error error) : Exception(error.Code)
+{
+    internal Error Error { get; } = error;
+}
+
+internal sealed class LongRestBeforeSendRefusal(Error error, string exceptionType) : Exception(error.Code)
+{
+    internal Error Error { get; } = error;
+
+    internal string ExceptionType { get; } = exceptionType;
 }

@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -79,8 +80,10 @@ internal interface ICovenantEntryErasurePreparer
 /// closure reopens, it republishes <c>CanonicalMutation</c> on the connection that committed.</para>
 ///
 /// <para>The result is built from the receipt only after a commit that succeeded or whose receipt a fresh
-/// connection read back, and only after the closure has reopened, so the write-ahead-log scrub never
-/// runs while the scope is closed. Nothing here logs, and errors name no content.</para>
+/// connection read back, after the closure's one disposition was attempted. A completion refusal never
+/// changes that durable receipt; it is warned without retrying the mutation or reopening authority.
+/// Settlement warnings contain only fixed stages, closed failure families, native codes and mutation
+/// ids. No exception object or message, token, key, content, path or digest is logged.</para>
 /// </remarks>
 internal sealed class CovenantEntryErasureService(
     ICovenantConnectionSource connections,
@@ -93,6 +96,7 @@ internal sealed class CovenantEntryErasureService(
     IOptionsMonitor<ArcanumSettings> options,
     TimeProvider timeProvider,
     CovenantAvailabilityRepublisher availabilityRepublisher,
+    ILogger<CovenantEntryErasureService> logger,
     IMemoryDelegationMutationBarrier? memoryDelegation = null) : ICovenantEntryErasureService, ICovenantEntryErasurePreparer
 {
     private const int ScrubPending = 1;
@@ -146,7 +150,7 @@ internal sealed class CovenantEntryErasureService(
 
     private static readonly Error CommitNotRecorded = new(
         ErrorCodes.Covenant.MaintenanceFailed,
-        "The erase's commit failed and recorded nothing, so nothing changed; retry it.");
+        "The erase's commit failed and recorded nothing, so nothing changed.");
 
     private static readonly Error CommitUnsettled = new(
         ErrorCodes.Covenant.ManualRecoveryRequired,
@@ -348,8 +352,6 @@ internal sealed class CovenantEntryErasureService(
         OperatorAuthorityContext authority,
         CancellationToken cancellationToken)
     {
-        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
-
         ArgumentNullException.ThrowIfNull(authority);
 
         if (request is null || string.IsNullOrWhiteSpace(request.PreflightToken))
@@ -466,6 +468,10 @@ internal sealed class CovenantEntryErasureService(
         }
         else
         {
+            // The receipt probe has released its read lease. Only a present, validated target can
+            // mutate sources: drain delegation effects before asking the gate to close its scope.
+            await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
             Result<CovenantEntryErasureLease> closed = await gate
                 .AcquireEntryErasureAsync(
                     target.Scope,
@@ -582,6 +588,38 @@ internal sealed class CovenantEntryErasureService(
                 // A rollback that failed and a re-read that found no receipt of this request together
                 // prove nothing: the connection's own transaction may still be in an unknown state, so
                 // the closure stays closed.
+
+                Exception failure = uncertain.InnerException ?? uncertain;
+
+                string receiptState = reread.IsFailure ? "Unreadable"
+                    : reread.Value is null ? "Absent"
+                    : applied.IsSuccess ? "Matching" : "Mismatched";
+
+                logger.LogWarning(
+                    "Covenant entry erasure {MutationId} at {Stage}: failure {Failure}, SQLite {SqliteCode}, extended {SqliteExtendedCode}, rollbackFailed {RollbackFailed}, receipt {ReceiptState}, disposition {Disposition}.",
+                    target.MutationId, "CommitSettlement", CovenantStorageFailure.Classify(failure),
+                    (failure as SqliteException)?.SqliteErrorCode, (failure as SqliteException)?.SqliteExtendedErrorCode,
+                    uncertain.RollbackFailed, receiptState, disposition);
+
+                if (applied.IsFailure)
+                {
+                    string cause = failure is SqliteException sqlite ? CovenantStorageFailure.Describe(sqlite)
+                        : $"Failure={CovenantStorageFailure.Classify(failure)}.";
+
+                    string guidance = failure is SqliteException { SqliteErrorCode: 13 }
+                        ? "Check free disk space before retrying a proven rollback."
+                        : failure is SqliteException native && SqliteStorageFailure.Classify(native.SqliteErrorCode) == SqliteStorageFailureKind.Unavailable
+                            || failure is IOException or UnauthorizedAccessException
+                            ? "Check storage availability and permissions before retrying a proven rollback."
+                            : "Preserve the installation and inspect its storage and schema diagnostics before retrying.";
+
+                    string rollback = uncertain.RollbackFailed ? "Rollback was not proved."
+                        : disposition == CovenantExclusiveLeaseDisposition.RollbackAndReopen ? "Rollback succeeded."
+                        : "Transaction disposal completed without error; the commit outcome remains unproved.";
+
+                    applied = new Error(applied.Error.Code,
+                        $"{(disposition == CovenantExclusiveLeaseDisposition.RollbackAndReopen ? CommitNotRecorded.Message : CommitUnsettled.Message)} {cause} {rollback} {guidance}");
+                }
             }
 
             // A committed erase appended its absent deltas and advanced the canonical search sequence.
@@ -598,7 +636,16 @@ internal sealed class CovenantEntryErasureService(
         {
             // A completion that fails leaves nothing to report differently: a committed erase is still
             // the committed erase, and a refusal is still the refusal.
-            _ = await lease.CompleteAsync(disposition, CancellationToken.None).ConfigureAwait(false);
+            Result completed = await lease.CompleteAsync(disposition, CancellationToken.None).ConfigureAwait(false);
+
+            if (completed.IsFailure)
+            {
+                string code = completed.Error.Code == ErrorCodes.Covenant.LifecycleConflict
+                    ? ErrorCodes.Covenant.LifecycleConflict : ErrorCodes.Covenant.MaintenanceFailed;
+
+                logger.LogWarning("Covenant entry erasure {MutationId} at {Stage}: disposition {Disposition} failed with {Code}; preserve its durable receipt and restart the host before further Covenant work.",
+                    target.MutationId, "Complete", disposition, code);
+            }
 
             await lease.DisposeAsync().ConfigureAwait(false);
         }

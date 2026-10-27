@@ -271,6 +271,9 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
     {
         ct.ThrowIfCancellationRequested();
 
+        if (!epoch.IsCurrent(generation.Fence.Configuration))
+            throw new Refused(new Error(ErrorCodes.LongRest.ConfigurationChanged, "The exact Long Rest configuration changed; capture a current generation before dispatch."));
+
         LongRestLiveFenceReader current = independentFacts ?? facts;
 
         if (string.IsNullOrWhiteSpace(workerOwner)) throw new Refused(Stale());
@@ -313,10 +316,7 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
 
     private static Error Stale() => new(ErrorCodes.LongRest.StaleInput, "Long Rest no longer has its exact live configuration, source or request authority.");
 
-    private sealed class Refused(Error error) : Exception(error.Code)
-    {
-        internal Error Error { get; } = error;
-    }
+    private sealed class Refused(Error error) : LongRestFenceRefusal(error);
 
     private sealed record PaidResult(LongRestProviderResult Result, LongRestPaidEvidence Evidence);
 }

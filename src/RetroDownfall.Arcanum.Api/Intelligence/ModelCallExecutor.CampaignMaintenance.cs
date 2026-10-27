@@ -98,8 +98,7 @@ public sealed partial class ModelCallExecutor
         }
         catch (Exception exception)
         {
-            _logger?.LogError("Model call {ModelCallId} failed for purpose {Purpose}; exception type {ExceptionType}.",
-                modelCallId, ModelCallPurpose.MainInference, exception.GetType().FullName);
+            LogModelCallFailure(modelCallId, ModelCallPurpose.MainInference, context, exception);
 
             return new Error(ErrorCodes.Hub.Error, PublicInferenceErrorMessages.NativeGenericFailure);
         }

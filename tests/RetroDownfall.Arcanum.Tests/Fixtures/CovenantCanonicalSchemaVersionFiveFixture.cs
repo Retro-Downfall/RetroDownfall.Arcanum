@@ -278,7 +278,7 @@ internal static class CovenantCanonicalSchemaVersionFiveFixture
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CovenantCanonicalObjects
+        .. CovenantCanonicalSchemaVersionSixFixture.Objects
             .Where(static definition => !AddedAtSix.Contains(definition.Name))
             .Select(static definition => definition.Name switch
             {

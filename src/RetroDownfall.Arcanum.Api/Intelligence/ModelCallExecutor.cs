@@ -231,11 +231,7 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         }
         catch (Exception ex)
         {
-            _logger?.LogError(
-                "Model call {ModelCallId} failed for purpose {Purpose}; exception type {ExceptionType}.",
-                modelCallId,
-                purpose,
-                ex.GetType().FullName);
+            LogModelCallFailure(modelCallId, purpose, context, ex);
 
             return ModelCallOutcome.Failed(new ModelCallFailure(
                 purpose,
@@ -461,6 +457,35 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
             await CommitProtectedUsageAsync(context, protectedUsage).ConfigureAwait(false);
         }
+    }
+
+    private void LogModelCallFailure(string modelCallId, ModelCallPurpose purpose, ModelCallContext? context, Exception exception)
+    {
+        if (_logger is null) return;
+
+        int? status = InferenceProviderFailureMessage.TryGetHttpStatus(exception);
+
+        if (status is not (>= 100 and <= 599))
+        {
+            status = null;
+
+            Exception? current = exception;
+
+            for (int depth = 0; current is not null && depth < 8; depth++, current = current.InnerException)
+            {
+                if (current is HttpRequestException { StatusCode: { } code } && (int)code is >= 100 and <= 599)
+                {
+                    status = (int)code;
+
+                    break;
+                }
+            }
+        }
+
+        _logger.LogError(
+            "Model call {ModelCallId} failed for purpose {Purpose}; provider {Provider}, model {Model}, HTTP {HttpStatus}; exception type {ExceptionType}.",
+            modelCallId, purpose, LongRestProviderFailure.Label(context?.Provider.Name ?? "<unknown>"),
+            LongRestProviderFailure.Label(context?.Model ?? "<unknown>"), status, exception.GetType().FullName);
     }
 
     private static Task CommitProtectedUsageAsync(ModelCallContext? context, UsageDetails? usage) =>

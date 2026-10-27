@@ -795,6 +795,15 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
             openGeneration = checked(_generation + 1);
 
+            // Promotion excluded only this transition's initiator. Its surviving request tail must
+            // drain in the next transition, and makes this abort an undrained admission interval.
+            if (token.Closure.InitiatingRequest is { IsReleased: false } initiatingRequest)
+            {
+                initiatingRequest.RestoreAfterAbortWhileLocked();
+
+                _requestLeases.Add(initiatingRequest);
+            }
+
             if (!token.Closure.StageOneDrained || _requestLeases.Count != 0 || _workLeases.Count != 0)
             {
                 _drainedAbortFloor = openGeneration;
@@ -1941,7 +1950,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     private sealed class RequestLease : IGrimoireRequestLease
     {
-        private readonly TaskCompletionSource _terminal =
+        private TaskCompletionSource _terminal =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private int _released;
@@ -1996,6 +2005,15 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             GC.SuppressFinalize(this);
 
             return ValueTask.CompletedTask;
+        }
+
+        internal void RestoreAfterAbortWhileLocked()
+        {
+            IsPromoted = false;
+
+            Lifetime.PromotedConnection = null;
+
+            _terminal = new(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         internal void SignalTerminalWhileLocked() => _terminal.TrySetResult();

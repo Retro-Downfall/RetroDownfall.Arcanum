@@ -139,6 +139,17 @@ internal sealed partial class LongRestMaintenance
                     result = await provider.ExecuteAsync(payload, UnrestrictedTurnBudget.Instance,
                         BeforeSend, providerAdmission, dispatch.Token).ConfigureAwait(false);
                 }
+                catch (LongRestBeforeSendRefusal refusal)
+                {
+                    dispatch.Token.ThrowIfCancellationRequested();
+
+                    if (attempt.State == LongRestDispatchAttemptState.Sent)
+                        await SettleUnresolvedAsync(attempt, LongRestUnresolvedSend.NotSent).ConfigureAwait(false);
+                    else if (attempt.State == LongRestDispatchAttemptState.Prepared)
+                        await ReleaseUnsentAsync(attempt).ConfigureAwait(false);
+
+                    throw new Refused(refusal.Error);
+                }
                 catch (Exception exception) when (exception is not OperationCanceledException && attempt.State == LongRestDispatchAttemptState.Sent)
                 {
                     // Unknown-Usage Settlement: the frame that owns a physical send closes it when the call ends without a result.

@@ -66,7 +66,7 @@ public sealed class CovenantCanonicalVersionSixEvolutionTests
         {
             await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
 
-            await InstallAsync(connection, GrimoireSchemaVersionChains.Default, 6);
+            await InstallAsync(connection, CovenantCanonicalSchemaVersionSixFixture.ChainSet(), 6);
 
             fresh = await CovenantDefinitionsAsync(connection);
         }
@@ -274,7 +274,7 @@ public sealed class CovenantCanonicalVersionSixEvolutionTests
                 await ExecuteAsync(connection, PinnedSubjectSql(key, epoch));
             }
 
-            await InstallAsync(connection, GrimoireSchemaVersionChains.Default, 6);
+            await InstallAsync(connection, CovenantCanonicalSchemaVersionSixFixture.ChainSet(), 6);
 
             return connection;
         }

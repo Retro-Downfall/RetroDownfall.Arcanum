@@ -136,6 +136,8 @@ public sealed partial class LongRestMaintenanceTests
 
         internal Action? Completing { get; set; }
 
+        internal Action? Starting { get; set; }
+
         internal Result<LongRestProviderResult>? ProviderResult { get; set; }
 
         internal Func<Task>? ProviderReturned { get; set; }
@@ -151,6 +153,10 @@ public sealed partial class LongRestMaintenanceTests
         internal RetroDownfall.Arcanum.Tests.Support.RecordingGrimoireWorkAdmissionGate RecordedAdmission = null!;
 
         internal Func<LongRestDispatchAttempt, CancellationToken, Task>? AfterAttemptValidated;
+
+        internal Func<LongRestDispatchAttempt, CancellationToken, Task>? AfterMarkedSent;
+
+        internal Func<LongRestDispatchAttempt, Result?>? AttemptValidationRefusal;
 
         /// <summary>Rewrites the fold the maintenance reads from the discovery store, to hand it work the store itself would never produce.</summary>
         internal Func<LongRestHierarchyWork, LongRestHierarchyWork>? FoldRead;
@@ -454,14 +460,16 @@ public sealed partial class LongRestMaintenanceTests
             ILongRestAttemptStore attempts = new PaidFenceAttemptStore(new LongRestAttemptStore(H.Saga.Context, Clock),
                 (attempt, token) => AfterAttemptValidated?.Invoke(attempt, token) ?? Task.CompletedTask,
                 (attempt, outcome, token) => SettleUnresolved?.Invoke(attempt, outcome, token),
-                (attempt, token) => ReleaseUnsent?.Invoke(attempt, token));
+                (attempt, token) => ReleaseUnsent?.Invoke(attempt, token),
+                (attempt, token) => AfterMarkedSent?.Invoke(attempt, token) ?? Task.CompletedTask,
+                attempt => AttemptValidationRefusal?.Invoke(attempt));
 
             ModelTokenEstimator estimator = new(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
 
             _clientFactory ??= new(new LateKeys(this), Handler, CredentialLog);
 
             LongRestProvider provider = new(_clientFactory,
-                new ModelCallExecutor(estimator, Options), Epoch, new PaidWriter(new TurnRunWriter(H.Saga.Context), () => PaidRecorded?.Invoke(), () => Completing?.Invoke()),
+                new ModelCallExecutor(estimator, Options), Epoch, new PaidWriter(new TurnRunWriter(H.Saga.Context), () => PaidRecorded?.Invoke(), () => Completing?.Invoke(), () => Starting?.Invoke()),
                 new BudgetReservationService(H.Saga.Context, Options));
 
             Maintenance = ActivatorUtilities.CreateInstance<LongRestMaintenance>(Services, Epoch, new DiscoveryTap(H.Store, this), sweeps, attempts, facts, Gate, new ObservedProvider(provider, result => ProviderResult = result, () => RepeatDispatch, payload => Payloads.Add(payload), ct => DispatchObserved?.Invoke(ct), () => ProviderReturned?.Invoke() ?? Task.CompletedTask), estimator, Journal,

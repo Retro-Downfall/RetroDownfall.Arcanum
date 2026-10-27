@@ -50,6 +50,76 @@ internal static class ExactUsdText
 
     internal static decimal CheckedAdd(decimal left, decimal right)
     {
+        (Int128 leftSignificand, int leftScale) = DecomposeNarrow(left);
+
+        (Int128 rightSignificand, int rightScale) = DecomposeNarrow(right);
+
+        int resultScale = Math.Max(leftScale, rightScale);
+
+        if (!TryScale(ref leftSignificand, resultScale - leftScale)
+            || !TryScale(ref rightSignificand, resultScale - rightScale)
+            || (rightSignificand > 0 && leftSignificand > Int128.MaxValue - rightSignificand)
+            || (rightSignificand < 0 && leftSignificand < Int128.MinValue - rightSignificand))
+        {
+            // A wide intermediate can still have a representable result after trailing-zero removal.
+            return CheckedAddWide(left, right);
+        }
+
+        Int128 exact = leftSignificand + rightSignificand;
+
+        while (resultScale > 0 && exact % 10 == 0)
+        {
+            exact /= 10;
+
+            resultScale--;
+        }
+
+        Int128 maximumSignificand = ((Int128)1 << 96) - 1;
+
+        if (exact < -maximumSignificand || exact > maximumSignificand)
+        {
+            throw new OverflowException(
+                "The exact USD sum cannot be represented without losing precision.");
+        }
+
+        Int128 magnitude = exact < 0 ? -exact : exact;
+
+        return new decimal(
+            unchecked((int)(uint)(magnitude & uint.MaxValue)),
+            unchecked((int)(uint)((magnitude >> 32) & uint.MaxValue)),
+            unchecked((int)(uint)((magnitude >> 64) & uint.MaxValue)),
+            exact < 0,
+            checked((byte)resultScale));
+    }
+
+    private static (Int128 Significand, int Scale) DecomposeNarrow(decimal value)
+    {
+        Span<int> bits = stackalloc int[4];
+
+        _ = decimal.GetBits(value, bits);
+
+        Int128 significand = (uint)bits[0] | ((Int128)(uint)bits[1] << 32) | ((Int128)(uint)bits[2] << 64);
+
+        return ((bits[3] & int.MinValue) != 0 ? -significand : significand, (bits[3] >> 16) & 0x7F);
+    }
+
+    private static bool TryScale(ref Int128 coefficient, int places)
+    {
+        for (int i = 0; i < places; i++)
+        {
+            if (coefficient > Int128.MaxValue / 10 || coefficient < Int128.MinValue / 10)
+            {
+                return false;
+            }
+
+            coefficient *= 10;
+        }
+
+        return true;
+    }
+
+    private static decimal CheckedAddWide(decimal left, decimal right)
+    {
         (BigInteger leftSignificand, int leftScale) = Decompose(left);
         (BigInteger rightSignificand, int rightScale) = Decompose(right);
         int resultScale = Math.Max(leftScale, rightScale);

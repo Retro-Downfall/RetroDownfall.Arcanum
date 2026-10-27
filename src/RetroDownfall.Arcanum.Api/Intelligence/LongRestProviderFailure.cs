@@ -102,5 +102,5 @@ internal static class LongRestProviderFailure
     }
 
     // Configuration labels, never endpoints or exception text. Bound their size and remove log-control characters.
-    internal static string Label(string value) => new(value.Take(128).Select(character => char.IsControl(character) ? '?' : character).ToArray());
+    internal static string Label(string value) => new(value.Take(128).Select(character => char.IsControl(character) || character is '\u2028' or '\u2029' ? '?' : character).ToArray());
 }

@@ -126,10 +126,12 @@ public sealed class LongRestProviderDispatchTests
 
         Func<CancellationToken, Task> callback = f.Callback(attempt, fence);
 
-        Result<LongRestProviderResult> result = await f.Provider.ExecuteAsync(f.Payload, UnrestrictedTurnBudget.Instance,
-            callback, f.Admission(), CancellationToken.None);
+        LongRestBeforeSendRefusal refusal = await Assert.ThrowsAsync<LongRestBeforeSendRefusal>(() =>
+            f.Provider.ExecuteAsync(f.Payload, UnrestrictedTurnBudget.Instance, callback, f.Admission(), CancellationToken.None));
 
-        Assert.True(result.IsFailure);
+        // These fixture callbacks throw untyped exceptions. Their text is not a trusted code;
+        // only the independently observed epoch change has a more specific diagnosis.
+        Assert.Equal(fence == "config-after-journal" ? ErrorCodes.LongRest.ConfigurationChanged : ErrorCodes.Hub.Error, refusal.Error.Code);
 
         Assert.Equal(0, f.Handler.SendCount);
 
@@ -163,7 +165,9 @@ public sealed class LongRestProviderDispatchTests
 
         release.SetResult();
 
-        Assert.True((await dispatch).IsFailure);
+        LongRestBeforeSendRefusal refusal = await Assert.ThrowsAsync<LongRestBeforeSendRefusal>(async () => await dispatch);
+
+        Assert.Equal(ErrorCodes.Hub.Error, refusal.Error.Code);
 
         Assert.Equal(0, f.Handler.SendCount);
 
@@ -273,7 +277,10 @@ public sealed class LongRestProviderDispatchTests
 
         Assert.True((await f.Provider.ExecuteAsync(f.Payload, UnrestrictedTurnBudget.Instance, callback, f.Admission(), CancellationToken.None)).IsSuccess);
 
-        Assert.True((await f.Provider.ExecuteAsync(f.Payload, UnrestrictedTurnBudget.Instance, callback, f.Admission(), CancellationToken.None)).IsFailure);
+        LongRestBeforeSendRefusal refusal = await Assert.ThrowsAsync<LongRestBeforeSendRefusal>(() =>
+            f.Provider.ExecuteAsync(f.Payload, UnrestrictedTurnBudget.Instance, callback, f.Admission(), CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.Hub.Error, refusal.Error.Code);
 
         Assert.Equal(1, f.Handler.SendCount);
 

@@ -30,7 +30,9 @@ public sealed class LongRestProvider(LongRestProviderClientFactory factory, IMod
 
         LongRestConfigurationSnapshot snapshot = epoch.Capture();
 
-        if (!snapshot.Enabled || payload.Work.Fence.Configuration != snapshot.Stamp
+        if (payload.Work.Fence.Configuration != snapshot.Stamp) return ConfigurationChanged();
+
+        if (!snapshot.Enabled
             || payload.Work.Scope.ProtectedPartitionDigest is not null && !snapshot.CovenantEnabled
             || payload.Kind == LongRestProviderPayloadKind.Embedding && admission is not LongRestProviderAdmission.Embedding
             || payload.Kind is LongRestProviderPayloadKind.Summary or LongRestProviderPayloadKind.Adjudication && admission is not LongRestProviderAdmission.Chat)
@@ -78,15 +80,9 @@ public sealed class LongRestProvider(LongRestProviderClientFactory factory, IMod
             _ => 0m,
         };
 
-        Result<TurnAccountingHandle> opened = await TurnAccountingHandle.BeginAsync(runs, reservations, pricing, selected.Model,
-            sessionId: null, surface: "long-rest", purpose, Guid.NewGuid().ToString("N"), ct, reservedUsdOverride: reservation).ConfigureAwait(false);
+        TurnAccountingHandle? accounting = null;
 
-        if (opened.IsFailure)
-        {
-            return opened.Error;
-        }
-
-        TurnAccountingHandle accounting = opened.Value;
+        LongRestBeforeSendRefusal? beforeSendRefusal = null;
 
         InferenceRunStatus status = InferenceRunStatus.Failed;
 
@@ -105,13 +101,23 @@ public sealed class LongRestProvider(LongRestProviderClientFactory factory, IMod
 
         try
         {
+            Result<TurnAccountingHandle> opened = await TurnAccountingHandle.BeginAsync(runs, reservations, pricing, selected.Model,
+                sessionId: null, surface: "long-rest", purpose, Guid.NewGuid().ToString("N"), ct, reservedUsdOverride: reservation).ConfigureAwait(false);
+
+            if (opened.IsFailure)
+            {
+                return opened.Error;
+            }
+
+            accounting = opened.Value;
+
             return await DispatchAsync().ConfigureAwait(false);
         }
         catch (Exception exception) when (observedUsage is not null && finalAccountingFailed)
         {
             logger?.LogWarning("Long Rest accounting completion failed ({ExceptionType}).", exception.GetType().FullName);
 
-            if (accounting.RunId is { } runId)
+            if (accounting?.RunId is { } runId)
             {
                 try
                 {
@@ -126,24 +132,47 @@ public sealed class LongRestProvider(LongRestProviderClientFactory factory, IMod
             return PaidRefusal(ErrorCodes.LongRest.AccountingCompletionRefused);
         }
 
+        // A same-type exception from run creation, lease disposal or final accounting did not pass
+        // through this invocation's executor fence. Never turn that later/local fault into not-sent evidence.
+        catch (LongRestBeforeSendRefusal exception) when (!ReferenceEquals(exception, beforeSendRefusal))
+        {
+            logger?.LogWarning("Long Rest local completion failed ({ExceptionType}); no fence observation was accepted.", exception.GetType().FullName);
+
+            return observedUsage is null
+                ? new Error(ErrorCodes.Hub.Error, PublicInferenceErrorMessages.NativeGenericFailure)
+                : PaidRefusal(ErrorCodes.LongRest.AccountingRefused);
+        }
+
         async Task<Result<LongRestProviderResult>> DispatchAsync()
         {
             try
             {
                 async Task BeforeSend(CancellationToken token)
                 {
-                    if (Interlocked.Exchange(ref sends, 1) != 0 || !epoch.IsCurrent(snapshot.Stamp))
+                    if (Interlocked.Exchange(ref sends, 1) != 0)
                     {
-                        throw new InvalidOperationException(ErrorCodes.LongRest.StaleFence);
+                        throw new LongRestFenceRefusal(new Error(ErrorCodes.LongRest.StaleFence, "The Long Rest physical-send fence has already been used."));
                     }
 
-                    await beforeSend(token).ConfigureAwait(false);
+                    if (!epoch.IsCurrent(snapshot.Stamp)) throw new LongRestFenceRefusal(ConfigurationChanged());
+
+                    try
+                    {
+                        await beforeSend(token).ConfigureAwait(false);
+                    }
+                    catch (Exception exception) when (exception is not (LongRestFenceRefusal or OperationCanceledException)
+                        && !epoch.IsCurrent(snapshot.Stamp))
+                    {
+                        token.ThrowIfCancellationRequested();
+
+                        throw new LongRestFenceRefusal(ConfigurationChanged());
+                    }
 
                     token.ThrowIfCancellationRequested();
 
                     if (!epoch.IsCurrent(snapshot.Stamp))
                     {
-                        throw new InvalidOperationException(ErrorCodes.LongRest.StaleFence);
+                        throw new LongRestFenceRefusal(ConfigurationChanged());
                     }
                 }
 
@@ -151,7 +180,7 @@ public sealed class LongRestProvider(LongRestProviderClientFactory factory, IMod
                 {
                     observedUsage = usage;
 
-                    await accounting.RecordUsageAsync(runs, payload.Kind == LongRestProviderPayloadKind.Embedding ? BillableOperationType.Embedding : BillableOperationType.Chat,
+                    await accounting!.RecordUsageAsync(runs, payload.Kind == LongRestProviderPayloadKind.Embedding ? BillableOperationType.Embedding : BillableOperationType.Chat,
                         selected.Provider.Name, selected.Model, purpose, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens,
                         usage.ReasoningTokens, selected.Pricing, CancellationToken.None).ConfigureAwait(false);
 
@@ -188,7 +217,16 @@ public sealed class LongRestProvider(LongRestProviderClientFactory factory, IMod
 
                     using EmbeddingGeneratorLease lease = client.Value;
 
-                    result = await executor.ExecuteLongRestEmbeddingAsync(lease.Generator, payload, budget, BeforeSend, RecordPaid, frozen, ct).ConfigureAwait(false);
+                    try
+                    {
+                        result = await executor.ExecuteLongRestEmbeddingAsync(lease.Generator, payload, budget, BeforeSend, RecordPaid, frozen, ct).ConfigureAwait(false);
+                    }
+                    catch (LongRestBeforeSendRefusal refusal)
+                    {
+                        beforeSendRefusal = refusal;
+
+                        throw;
+                    }
                 }
                 else
                 {
@@ -201,7 +239,16 @@ public sealed class LongRestProvider(LongRestProviderClientFactory factory, IMod
 
                     using ChatClientLease lease = client.Value;
 
-                    result = await executor.ExecuteLongRestChatAsync(lease.ChatClient, payload, budget, BeforeSend, RecordPaid, frozen, ct).ConfigureAwait(false);
+                    try
+                    {
+                        result = await executor.ExecuteLongRestChatAsync(lease.ChatClient, payload, budget, BeforeSend, RecordPaid, frozen, ct).ConfigureAwait(false);
+                    }
+                    catch (LongRestBeforeSendRefusal refusal)
+                    {
+                        beforeSendRefusal = refusal;
+
+                        throw;
+                    }
                 }
 
                 if (observedUsage is not null && !accounted)
@@ -213,7 +260,7 @@ public sealed class LongRestProvider(LongRestProviderClientFactory factory, IMod
 
                 if (!epoch.IsCurrent(snapshot.Stamp))
                 {
-                    return observedUsage is null ? Stale() : PaidRefusal(ErrorCodes.LongRest.ConfigurationChanged);
+                    return observedUsage is null ? ConfigurationChanged() : PaidRefusal(ErrorCodes.LongRest.ConfigurationChanged);
                 }
 
                 if (observedUsage is not null && result.IsFailure)
@@ -236,7 +283,7 @@ public sealed class LongRestProvider(LongRestProviderClientFactory factory, IMod
             {
                 try
                 {
-                    await accounting.CompleteAsync(runs, reservations, status, CancellationToken.None).ConfigureAwait(false);
+                    await accounting!.CompleteAsync(runs, reservations, status, CancellationToken.None).ConfigureAwait(false);
                 }
                 catch
                 {
@@ -281,6 +328,9 @@ public sealed class LongRestProvider(LongRestProviderClientFactory factory, IMod
         return JsonSerializer.SerializeToUtf8Bytes(provider, ConfigurationJsonContext.Default.ProviderSettings).AsSpan()
             .SequenceEqual(JsonSerializer.SerializeToUtf8Bytes(selected.Provider, ConfigurationJsonContext.Default.ProviderSettings));
     }
+
+    private static Error ConfigurationChanged() => new(ErrorCodes.LongRest.ConfigurationChanged,
+        "The exact Long Rest provider configuration changed; capture a current generation before dispatch.");
 
     private static Error Stale() => new(ErrorCodes.LongRest.InvalidRequest, "The exact Long Rest provider configuration or admission is unavailable or stale.");
 }

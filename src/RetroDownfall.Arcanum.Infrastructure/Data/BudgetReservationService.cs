@@ -11,7 +11,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 /// <summary>
-/// Atomic budget reservations with tiny <c>BEGIN IMMEDIATE</c> transactions.
+/// Atomic budget reservations over an exact daily ledger snapshot in <c>BEGIN IMMEDIATE</c> transactions.
 /// </summary>
 internal sealed class BudgetReservationService(
     ArcanumDbContext db,
