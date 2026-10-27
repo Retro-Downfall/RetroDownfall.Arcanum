@@ -19,7 +19,7 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
         ("src/RetroDownfall.Arcanum.Api/Health/GrimoireLivenessProbe.cs", "ExecuteProbeAsync(1)"),
         ("src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs", "JoinWorkspaceChunkMetadataAsync(5)"),
         ("src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs", "OpenConnectionAsync(3)"),
-        ("src/RetroDownfall.Arcanum.Api/Tower/SessionDivinationEndpoints.cs", "JoinSessionMetadataAsync(6)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionDivinationService.cs", "SearchAsync(6)"),
         ("src/RetroDownfall.Arcanum.Api/Workspaces/WorkspaceDivinationEndpoints.cs", "JoinWorkspaceChunksAsync(6)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantCampaignScopeProbe.cs", "HasDeletionEventAsync(4)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ICovenantConnectionSource.cs", "GetOpenCoreConnectionAsync(1)"),

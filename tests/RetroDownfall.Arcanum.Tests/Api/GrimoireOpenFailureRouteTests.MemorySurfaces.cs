@@ -82,7 +82,7 @@ public sealed partial class GrimoireOpenFailureRouteTests
     }
 
     [SkippableFact]
-    public async Task Session_metadata_join_preserves_the_native_open_failure_category()
+    public async Task Session_divination_preserves_the_native_open_failure_category()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -99,13 +99,8 @@ public sealed partial class GrimoireOpenFailureRouteTests
 
         await using AsyncServiceScope scope = factory.Services.CreateAsyncScope();
 
-        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
-
-        IGrimoireOrdinaryConnectionFactory connections = scope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
-
-        DivinationResult[] hits = [new("missing", 1, new Dictionary<string, string>())];
-
-        await AssertThrowsUnavailable(typeof(SessionDivinationEndpoints), "JoinSessionMetadataAsync", null,
-            [db, connections, hits, null, null, CancellationToken.None]);
+        await Assert.ThrowsAsync<GrimoireConnectionUnavailableException>(() =>
+            scope.ServiceProvider.GetRequiredService<RetroDownfall.Arcanum.Core.Tower.ISessionDivinationService>()
+                .SearchAsync(new Microsoft.Extensions.AI.Embedding<float>(new float[] { 1, 0, 0 }), null, null, 1, 0, CancellationToken.None));
     }
 }

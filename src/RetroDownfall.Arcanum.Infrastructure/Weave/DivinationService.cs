@@ -632,7 +632,7 @@ internal sealed class DivinationService(
         return Result<DivinationResult[]>.Success(results);
     }
 
-    private enum RowScore
+    internal enum RowScore
     {
         Scored,
 
@@ -643,7 +643,7 @@ internal sealed class DivinationService(
         NoSignal,
     }
 
-    private static RowScore TryScoreRow(
+    internal static RowScore TryScoreRow(
         object? embeddingColumn,
         float[] queryVector,
         double queryNormSquared,

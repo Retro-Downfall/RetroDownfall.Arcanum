@@ -1241,6 +1241,8 @@ public static class ServiceCollectionExtensions
             static sp => sp.GetRequiredService<CovenantEntryErasureService>());
 
         services.AddScoped<IDivinationService, DivinationService>();
+
+        services.AddScoped<ISessionDivinationService, SessionDivinationService>();
         services.AddScoped(
             static sp => new EmbeddingsResetService(
                 sp.GetRequiredService<ArcanumDbContext>(),
