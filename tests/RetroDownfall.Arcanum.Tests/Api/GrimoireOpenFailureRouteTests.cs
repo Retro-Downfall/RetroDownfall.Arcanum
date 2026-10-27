@@ -22,7 +22,7 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 namespace RetroDownfall.Arcanum.Tests.Api;
 
 [Collection("ApiHost")]
-public sealed class GrimoireOpenFailureRouteTests
+public sealed partial class GrimoireOpenFailureRouteTests
 {
     [SkippableFact]
     public async Task Actual_factory_open_failure_reaches_memory_route_and_health_without_maintenance_or_secrets()

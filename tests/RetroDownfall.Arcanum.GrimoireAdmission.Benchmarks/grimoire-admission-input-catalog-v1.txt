@@ -1587,6 +1587,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V28/260_idx_m
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V28/270_memory_search_secure_delete.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V28/280_memory_search_utc_view_drop.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V28/290_memory_search_utc_view.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V29/010_entries_model_used_index.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/010_annal_claims.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/011_annal_claims_subject_index.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/012_annal_claims_store_candidate_index.sql

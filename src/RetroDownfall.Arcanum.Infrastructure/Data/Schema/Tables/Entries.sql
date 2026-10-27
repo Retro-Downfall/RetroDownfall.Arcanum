@@ -40,3 +40,7 @@ CREATE INDEX IF NOT EXISTS idx_Entries_tapestry_scope_id ON Entries(SessionId, I
 CREATE INDEX IF NOT EXISTS idx_memory_search_Entries_order ON Entries(CreatedAt DESC,Sequence DESC,Id DESC);
 
 CREATE INDEX IF NOT EXISTS idx_memory_search_Entries_owner ON Entries(SessionId,CreatedAt DESC,Sequence DESC,Id DESC);
+
+-- Model analytics groups only named models. Keep their names/counts in a covering index so the
+-- aggregate never walks transcript records or sorts them into temporary grouping trees.
+CREATE INDEX IF NOT EXISTS "IX_Entries_ModelUsed" ON "Entries" ("ModelUsed") WHERE "ModelUsed" <> '';

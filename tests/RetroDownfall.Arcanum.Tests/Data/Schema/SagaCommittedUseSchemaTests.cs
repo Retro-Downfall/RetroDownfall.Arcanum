@@ -12,7 +12,7 @@ public sealed class SagaCommittedUseSchemaTests
 
         await using var connection = await file.OpenAsync(CancellationToken.None);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(connection, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(connection, 64, CancellationToken.None);
 
         await using var command = connection.CreateCommand();
 
@@ -32,13 +32,13 @@ public sealed class SagaCommittedUseSchemaTests
 
         await GrimoireSchemaTestInstaller.InstallAsync(old, CoreSchemaVersionNineteenFixture.ChainSet(), 64, CancellationToken.None);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(old, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(old, 64, CancellationToken.None);
 
         using var newFile = EvolutionScratchDatabase.Create();
 
         await using var fresh = await newFile.OpenAsync(CancellationToken.None);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(fresh, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(fresh, 64, CancellationToken.None);
 
         Assert.Equal(await Catalog(fresh), await Catalog(old));
     }

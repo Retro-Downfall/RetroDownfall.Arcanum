@@ -31,7 +31,7 @@ public sealed class BudgetReservationIndexSchemaTests
 
         if (evolve)
         {
-            await GrimoireSchemaTestInstaller.InstallAsync(connection, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None);
+            await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(connection, 64, CancellationToken.None);
         }
 
         await AssertOutstandingAsync(connection);
@@ -40,7 +40,7 @@ public sealed class BudgetReservationIndexSchemaTests
 
         await using SqliteConnection fresh = await freshFile.OpenAsync(CancellationToken.None);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(fresh, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(fresh, 64, CancellationToken.None);
 
         Assert.Equal(await ReadCatalogAsync(fresh), await ReadCatalogAsync(connection));
     }

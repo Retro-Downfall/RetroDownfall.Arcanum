@@ -26,7 +26,7 @@ public sealed partial class NativeMemorySearchSchemaTests
             INSERT INTO workspace_file_chunks(rowid,ChunkId,WorkspacePath,RelativePath,ChunkIndex,Content,CharOffset,CharLength,FileLastWriteTime,IndexedAt)
             VALUES(-9223372036854775808,'minimum','/fake/workspace','minimum.cs',0,'minimumneedle',0,4,'2026-01-01T00:00:00.0000000Z','2026-01-01T00:00:00.0000000Z');
             """);
-        GrimoireSchemaInstallResult pending = await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
+        GrimoireSchemaInstallResult pending = await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentyEightFixture.ChainSet(), 64, CancellationToken.None);
         Assert.Equal(GrimoireSchemaTierHealth.TransitionIncomplete, pending.Core.Health);
         var refusedRead = await RetroDownfall.Arcanum.Infrastructure.Data.NativeMemorySearchReader.ReadAsync(connection,
             "inheritedneedle", RetroDownfall.Arcanum.Core.Memory.MemorySearchScope.Workspace, null, null, new(3), 20, CancellationToken.None);
@@ -36,7 +36,7 @@ public sealed partial class NativeMemorySearchSchemaTests
         Assert.Equal(27, journal.CompletedThroughVersion);
         GrimoireSchemaBackfillRunner runner = new(GrimoireSchemaTestInstaller.Create(), TimeProvider.System);
         GrimoireSchemaBackfillProgress first = await runner.AdvanceAsync(connection,
-            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core), journal,
+            CoreSchemaVersionTwentyEightFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core), journal,
             GrimoireSchemaTestInstaller.CreateContext(), 4, CancellationToken.None);
         Assert.False(first.StepComplete);
         Assert.Equal(200L, await ScalarAsync(connection, "SELECT COUNT(*) FROM memory_search_documents"));
@@ -54,14 +54,14 @@ public sealed partial class NativeMemorySearchSchemaTests
         using CancellationTokenSource cancelled = new();
         cancelled.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => runner.AdvanceAsync(connection,
-            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core), journal,
+            CoreSchemaVersionTwentyEightFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core), journal,
             GrimoireSchemaTestInstaller.CreateContext(), 1, cancelled.Token));
         Assert.Equal(committedCursor, (await JournalAsync(connection))!.BackfillCursor);
         await ExecuteAsync(connection, "UPDATE workspace_file_chunks SET Content='editedneedle' WHERE ChunkId=printf('%064d',805)");
         Assert.Equal(201L, await ScalarAsync(connection, "SELECT COUNT(*) FROM memory_search_documents"));
         GrimoireSchemaBackfillRunner restarted = new(GrimoireSchemaTestInstaller.Create(), TimeProvider.System);
         GrimoireSchemaBackfillProgress complete = await restarted.AdvanceAsync(connection,
-            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core), (await JournalAsync(connection))!,
+            CoreSchemaVersionTwentyEightFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core), (await JournalAsync(connection))!,
             GrimoireSchemaTestInstaller.CreateContext(), 8, CancellationToken.None);
         Assert.True(complete.StepComplete);
         Assert.Null(await JournalAsync(connection));
@@ -78,7 +78,7 @@ public sealed partial class NativeMemorySearchSchemaTests
     [Fact]
     public async Task Core28_every_DDL_boundary_rolls_back_to_the_frozen_Core27_schema()
     {
-        GrimoireSchemaVersionChain core = GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core);
+        GrimoireSchemaVersionChain core = CoreSchemaVersionTwentyEightFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core);
         GrimoireSchemaVersionStep step = Assert.Single(core.Steps, item => item.ToVersion == 28);
         foreach (GrimoireSchemaTransitionStatement stop in step.Statements)
         {
