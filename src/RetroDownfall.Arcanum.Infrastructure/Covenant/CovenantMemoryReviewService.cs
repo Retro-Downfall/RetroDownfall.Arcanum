@@ -26,7 +26,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// the review read from the latch before <c>BEGIN</c>, and reports it on the item. Every other action, and
 /// every replay, releases nothing.
 /// </remarks>
-internal sealed class CovenantMemoryReviewService(
+internal sealed partial class CovenantMemoryReviewService(
     ICovenantConnectionSource connections,
     ICovenantCompiler compiler,
     IMemoryReviewTokenCodec tokenCodec,
@@ -70,7 +70,7 @@ internal sealed class CovenantMemoryReviewService(
 
     private static readonly Error IntegrityFailure = new(
         ErrorCodes.MemoryReview.IntegrityFailure,
-        "Durable Covenant review state failed its integrity contract.");
+        "Durable Covenant review state failed its integrity contract. Preserve the installation and inspect the host diagnostics before retrying.");
 
     private static readonly Error RequestReuse = new(
         ErrorCodes.MemoryReview.RequestReuse,
@@ -78,7 +78,7 @@ internal sealed class CovenantMemoryReviewService(
 
     private static readonly Error WriteFailed = new(
         ErrorCodes.Covenant.WriteFailed,
-        "The Covenant review decisions could not be persisted. Nothing was written.");
+        "The Covenant review decisions could not be persisted. Nothing was written. Check storage and the host diagnostics before retrying the same request.");
 
     // A database another writer held past the bounded retry is not a fault in the store: nothing was
     // written and the same request succeeds once the writer lets go, so it is the retryable 503 the rest
@@ -94,6 +94,23 @@ internal sealed class CovenantMemoryReviewService(
     private const string LegacyNoOpOutcome = "NoChange";
 
     public async ValueTask<Result<CovenantReviewPageDto>> ListAsync(
+        CovenantReviewListRequest request,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await ListCoreAsync(request, readLease, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception failure) when (IsReadStorageFailure(failure))
+        {
+            PropagateNativeCancellation(failure, cancellationToken);
+
+            return MapReadFailure(failure, ReviewOperation.List);
+        }
+    }
+
+    private async ValueTask<Result<CovenantReviewPageDto>> ListCoreAsync(
         CovenantReviewListRequest request,
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
@@ -134,9 +151,8 @@ internal sealed class CovenantMemoryReviewService(
             .GetOpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        await using SqliteTransaction transaction = (SqliteTransaction)await connection
-            .BeginTransactionAsync(cancellationToken)
-            .ConfigureAwait(false);
+        // A Review page is a WAL read snapshot; it must never reserve the single writer.
+        await using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);
 
         CanonicalState state = await ReadCanonicalStateAsync(connection, transaction, cancellationToken)
             .ConfigureAwait(false);
@@ -147,14 +163,15 @@ internal sealed class CovenantMemoryReviewService(
             return StaleObservation;
         }
 
-        ReviewMarker marker = await ReadOrCreateMarkerAsync(
+        ReviewMarker marker = await ReadMarkerAsync(
             connection,
             transaction,
             state.DatasetGeneration,
             request.Scope,
             request.CampaignId,
             request.Lane,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(false)
+            ?? new ReviewMarker(state.DatasetGeneration, ReviewedThroughSequence: 0, Revision: 1);
 
         ulong lower;
         ulong upper;
@@ -247,7 +264,7 @@ internal sealed class CovenantMemoryReviewService(
             if (sources.LongLength != row.ProvenanceCount)
             {
                 await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                return IntegrityFailure;
+                return ReportIntegrity(ReviewReason.ProvenanceCountMismatch, ReviewOperation.List, ReviewStage.Provenance);
             }
 
             Result<string> observation = tokenCodec.IssueObservation(
@@ -324,6 +341,23 @@ internal sealed class CovenantMemoryReviewService(
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
+        try
+        {
+            return await PrepareCoreAsync(request, readLease, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception failure) when (IsReadStorageFailure(failure))
+        {
+            PropagateNativeCancellation(failure, cancellationToken);
+
+            return MapReadFailure(failure, ReviewOperation.Prepare);
+        }
+    }
+
+    private async ValueTask<Result<MemoryReviewBulkPlanDto>> PrepareCoreAsync(
+        CovenantReviewBulkPrepareRequest request,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(readLease);
 
@@ -374,9 +408,8 @@ internal sealed class CovenantMemoryReviewService(
             ? mutationKernel.CaptureErasureGate()
             : CovenantAgentErasureGate.None;
 
-        await using SqliteTransaction transaction = (SqliteTransaction)await connection
-            .BeginTransactionAsync(cancellationToken)
-            .ConfigureAwait(false);
+        // A Review page is a WAL read snapshot; it must never reserve the single writer.
+        await using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);
 
         CanonicalState state = await ReadCanonicalStateAsync(connection, transaction, cancellationToken)
             .ConfigureAwait(false);
@@ -384,14 +417,15 @@ internal sealed class CovenantMemoryReviewService(
         ReviewMarker? marker = await ReadMarkerAsync(
             connection,
             transaction,
-            first.MarkerGeneration,
+            state.DatasetGeneration,
             request.Scope,
             request.CampaignId,
             request.Lane,
             cancellationToken).ConfigureAwait(false);
 
-        if (marker is null
-            || !MatchesCommon(first, scopeDigest, marker)
+        marker ??= new ReviewMarker(state.DatasetGeneration, ReviewedThroughSequence: 0, Revision: 1);
+
+        if (!MatchesCommon(first, scopeDigest, marker)
             || marker.Generation != state.DatasetGeneration
             || readLease.Snapshot.DatasetGeneration != state.DatasetGeneration)
         {
@@ -502,39 +536,10 @@ internal sealed class CovenantMemoryReviewService(
             // replay read before the transaction are storage reads too, and a transaction that threw has
             // already rolled back. Logged by type and error code only: a driver message can carry what it
             // was trying to write.
-            return MapApplyFailure(failure);
+            PropagateNativeCancellation(failure, cancellationToken);
+
+            return MapApplyFailure(failure, request.Request?.RequestId);
         }
-    }
-
-    private Result<MemoryReviewBulkResultDto> MapApplyFailure(Exception failure)
-    {
-        if (failure is GrimoireBusyTimeoutException || SqliteBusyRetry.IsBusyOrLocked(failure))
-        {
-            logger.LogError(
-                "Covenant memory review apply gave up on a busy database: {FailureType} (SQLite error {SqliteErrorCode}).",
-                failure.GetType(),
-                (failure.InnerException as SqliteException ?? failure as SqliteException)?.SqliteErrorCode);
-
-            return DatabaseBusy;
-        }
-
-        if (failure is InvalidDataException)
-        {
-            // Persisted state the review depends on is missing. A retry cannot succeed, which is the one
-            // thing the operator needs to know and the write-failed answer would hide.
-            logger.LogError(
-                "Covenant memory review apply found damaged review state: {FailureType}.",
-                failure.GetType());
-
-            return IntegrityFailure;
-        }
-
-        logger.LogError(
-            "Covenant memory review apply failed: {FailureType} (SQLite error {SqliteErrorCode}).",
-            failure.GetType(),
-            (failure as SqliteException)?.SqliteErrorCode);
-
-        return WriteFailed;
     }
 
     private async ValueTask<Result<MemoryReviewBulkResultDto>> ApplyCoreAsync(
@@ -657,9 +662,8 @@ internal sealed class CovenantMemoryReviewService(
             }
             catch (Exception failure) when (failure is not OperationCanceledException)
             {
-                logger.LogError(
-                    "Covenant availability republish after a committed review apply failed: {FailureType}.",
-                    failure.GetType());
+                LogReviewFailure(LogLevel.Error, ReviewOperation.Apply, ReviewStage.Republish,
+                    ReviewReason.AvailabilityPublicationFailed, failure, preparedRequest.RequestId);
             }
         }
 
@@ -715,8 +719,11 @@ internal sealed class CovenantMemoryReviewService(
             preparedRequest.Lane,
             cancellationToken).ConfigureAwait(false);
 
-        if (marker is null
-            || !MatchesCommon(plan, scopeDigest, marker)
+        bool establishMarker = marker is null;
+
+        marker ??= new ReviewMarker(state.DatasetGeneration, ReviewedThroughSequence: 0, Revision: 1);
+
+        if (!MatchesCommon(plan, scopeDigest, marker)
             || writeLease.Snapshot.DatasetGeneration != state.DatasetGeneration)
         {
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
@@ -752,6 +759,26 @@ internal sealed class CovenantMemoryReviewService(
             }
 
             targets[index] = row!;
+        }
+
+        if (establishMarker)
+        {
+            // Missing markers are synthetic on reads. Establish one only in this already-admitted
+            // write transaction; every refusal below rolls its creation back with the decisions.
+            ReviewMarker created = await ReadOrCreateMarkerAsync(
+                connection,
+                transaction,
+                state.DatasetGeneration,
+                preparedRequest.Scope,
+                preparedRequest.CampaignId,
+                preparedRequest.Lane,
+                cancellationToken).ConfigureAwait(false);
+
+            if (created != marker)
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                return StaleObservation;
+            }
         }
 
         DateTimeOffset committedAt = timeProvider.GetUtcNow();
@@ -999,7 +1026,8 @@ internal sealed class CovenantMemoryReviewService(
             row.IsCurrent,
             row.Origin.ToString(),
             SourceDescription(row),
-            ScopeDescription(row.Scope, row.CampaignId, row.Lane));
+            ScopeDescription(row.Scope, row.CampaignId, row.Lane),
+            Label: row.Key);
 
     private static CovenantReviewItemDto ReviewItem(
         CovenantReviewEvent row,
@@ -1157,7 +1185,7 @@ internal sealed class CovenantMemoryReviewService(
     private static string? CanonicalCampaign(Guid? campaignId) =>
         campaignId is { } present ? Canonical(present) : null;
 
-    private static string Hex(CovenantDigest digest) => Convert.ToHexString(digest.Bytes);
+    private static string Hex(CovenantDigest digest) => Convert.ToHexStringLower(digest.Bytes);
 
     private static Guid GuidFromBlob(object value) => new((byte[])value);
 
@@ -1181,7 +1209,7 @@ internal sealed class CovenantMemoryReviewService(
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            throw new InvalidDataException("Covenant canonical state is absent.");
+            throw new ReviewStateException(ReviewReason.CanonicalStateMissing, ReviewStage.CanonicalState);
         }
 
         return new CanonicalState(GuidFromBlob(reader.GetValue(0)), reader.GetInt64(1));
@@ -1235,7 +1263,7 @@ internal sealed class CovenantMemoryReviewService(
             campaignId,
             lane,
             cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidDataException("The Covenant review marker could not be created.");
+            ?? throw new ReviewStateException(ReviewReason.MarkerEstablishmentFailed, ReviewStage.Marker);
     }
 
     private static async ValueTask<ReviewMarker?> ReadMarkerAsync(
@@ -1249,15 +1277,7 @@ internal sealed class CovenantMemoryReviewService(
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText =
-            """
-            SELECT DatasetGeneration, ReviewedThroughSequence, Revision
-            FROM covenant_review_markers
-            WHERE DatasetGeneration = $generation
-              AND ScopeCode = $scope
-              AND CampaignId IS $campaign
-              AND LaneCode = $lane;
-            """;
+        command.CommandText = CovenantReviewSql.Marker(campaignId is not null);
 
         Bind(command, "$generation", GuidBytes(datasetGeneration));
         Bind(command, "$scope", (int)scope);
@@ -1267,9 +1287,19 @@ internal sealed class CovenantMemoryReviewService(
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-            ? new ReviewMarker(GuidFromBlob(reader.GetValue(0)), reader.GetInt64(1), reader.GetInt64(2))
-            : null;
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        ReviewMarker marker = new(GuidFromBlob(reader.GetValue(0)), reader.GetInt64(1), reader.GetInt64(2));
+
+        if (marker.ReviewedThroughSequence < 0 || marker.Revision < 1)
+        {
+            throw new ReviewStateException(ReviewReason.StoredStateInvalid, ReviewStage.Marker);
+        }
+
+        return marker;
     }
 
     private static async ValueTask<long> ReadUpperFrontierAsync(
@@ -1283,15 +1313,7 @@ internal sealed class CovenantMemoryReviewService(
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText =
-            """
-            SELECT COALESCE(MAX(Sequence), 0)
-            FROM covenant_review_events
-            WHERE DatasetGeneration = $generation
-              AND ScopeCode = $scope
-              AND CampaignId IS $campaign
-              AND LaneCode = $lane;
-            """;
+        command.CommandText = CovenantReviewSql.UpperFrontier(campaignId is not null);
 
         Bind(command, "$generation", GuidBytes(datasetGeneration));
         Bind(command, "$scope", (int)scope);
@@ -1317,23 +1339,7 @@ internal sealed class CovenantMemoryReviewService(
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = EventSelect +
-            """
-
-            WHERE event.DatasetGeneration = $generation
-              AND event.ScopeCode = $scope
-              AND event.CampaignId IS $campaign
-              AND event.LaneCode = $lane
-              AND event.Sequence >= $lower
-              AND event.Sequence <= $upper
-              AND ($keyset IS NULL OR event.Sequence < $keyset)
-              AND head.CurrentVersionId = event.VersionId
-              AND NOT EXISTS (
-                  SELECT 1 FROM covenant_review_decision_receipts receipt
-                  WHERE receipt.ReviewEventSequence = event.Sequence)
-            ORDER BY event.Sequence DESC
-            LIMIT $limit;
-            """;
+        command.CommandText = CovenantReviewSql.Page(campaignId is not null);
 
         BindQueue(command, datasetGeneration, scope, campaignId, lane);
         Bind(command, "$lower", checked((long)lower));
@@ -1366,15 +1372,7 @@ internal sealed class CovenantMemoryReviewService(
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = EventSelect +
-            """
-
-            WHERE event.DatasetGeneration = $generation
-              AND event.ScopeCode = $scope
-              AND event.CampaignId IS $campaign
-              AND event.LaneCode = $lane
-              AND event.Sequence = $sequence;
-            """;
+        command.CommandText = CovenantReviewSql.Event(campaignId is not null);
 
         BindQueue(command, datasetGeneration, scope, campaignId, lane);
         Bind(command, "$sequence", eventSequence);
@@ -1443,7 +1441,7 @@ internal sealed class CovenantMemoryReviewService(
                     Guid.Parse(reader.GetString(1), CultureInfo.InvariantCulture),
                     reader.GetString(2),
                     reader.GetString(3),
-                    Convert.ToHexString((byte[])reader.GetValue(4)),
+                    Convert.ToHexStringLower((byte[])reader.GetValue(4)),
                     (CovenantMaterializationSourceRange)reader.GetInt32(5),
                     reader.IsDBNull(6) ? null : reader.GetInt64(6),
                     reader.IsDBNull(7) ? null : reader.GetInt64(7),
@@ -1455,26 +1453,6 @@ internal sealed class CovenantMemoryReviewService(
 
         return [.. sources];
     }
-
-    private const string EventSelect =
-        """
-        SELECT event.Sequence, event.EntryId, event.VersionId,
-               event.OperationCode, event.OriginCode, event.ScopeCode, event.CampaignId,
-               event.LaneCode, entry.NormalizedKey, version.CompiledContent,
-               event.SourceTurnId, event.SourceToolCallId, version.LaneRevision,
-               version.AuthoredHash, version.RenderedHash, version.CompiledByteCost,
-               version.AttachmentProvenanceCount, version.AttachmentProvenanceDigest,
-               entry.CreatedAtUtc, head.UpdatedAtUtc,
-               CASE WHEN head.CurrentVersionId = event.VersionId THEN 1 ELSE 0 END,
-               EXISTS (
-                   SELECT 1 FROM covenant_review_decision_receipts reviewed
-                   WHERE reviewed.ReviewEventSequence = event.Sequence)
-        FROM covenant_review_events event
-        JOIN covenant_versions version ON version.VersionId = event.VersionId
-        JOIN covenant_entries entry ON entry.EntryId = event.EntryId
-        LEFT JOIN covenant_heads head
-          ON head.EntryId = event.EntryId AND head.LaneCode = event.LaneCode
-        """;
 
     private static CovenantReviewEvent ReadEventRow(SqliteDataReader reader) =>
         new(
@@ -1574,7 +1552,8 @@ internal sealed class CovenantMemoryReviewService(
                     if (mutation.Value.Outcome == CovenantMutationOutcome.Applied
                         && resultingVersionId is null)
                     {
-                        return IntegrityFailure;
+                        return ReportIntegrity(ReviewReason.MutationResultVersionMissing, ReviewOperation.Apply,
+                            ReviewStage.Mutation, request.RequestId);
                     }
 
                     if (mutation.Value.Kind is CovenantMutationKind.OperatorSet && !mutation.Value.Replayed)
@@ -1740,7 +1719,9 @@ internal sealed class CovenantMemoryReviewService(
             return applied.Error;
         }
 
-        return applied.Value.Count == 1 ? applied.Value[0] : IntegrityFailure;
+        return applied.Value.Count == 1 ? applied.Value[0]
+            : ReportIntegrity(ReviewReason.MutationResultCardinality, ReviewOperation.Apply,
+                ReviewStage.Mutation, request.RequestId);
     }
 
     private async ValueTask<Result<CovenantCurationReceipt>> ApplyCurationAsync(
@@ -1824,13 +1805,7 @@ internal sealed class CovenantMemoryReviewService(
         CancellationToken cancellationToken)
     {
         await using SqliteCommand command = transaction.CreateCommand();
-        command.CommandText =
-            """
-            SELECT COALESCE(MAX(CurrentRevision), 0)
-            FROM covenant_curation_heads
-            WHERE ScopeCode = $scope AND CampaignId IS $campaign
-              AND NormalizedKey = $key AND LaneCode = $lane AND KeyEpoch = $epoch;
-            """;
+        command.CommandText = CovenantReviewSql.CurationRevision(subject.Scope.CampaignId is not null);
         Bind(command, "$scope", (int)subject.Scope.Kind);
         Bind(command, "$campaign", CanonicalCampaign(subject.Scope.CampaignId));
         Bind(command, "$key", subject.NormalizedKey.Value);
@@ -1858,7 +1833,7 @@ internal sealed class CovenantMemoryReviewService(
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is null or DBNull
-            ? throw new InvalidDataException("A Covenant head update did not produce its review event.")
+            ? throw new ReviewStateException(ReviewReason.ReplacementEventMissing, ReviewStage.Mutation)
             : Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
 
@@ -1875,23 +1850,7 @@ internal sealed class CovenantMemoryReviewService(
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText =
-            """
-            SELECT event.Sequence,
-                   CASE WHEN head.CurrentVersionId = event.VersionId THEN 1 ELSE 0 END,
-                   EXISTS (
-                       SELECT 1 FROM covenant_review_decision_receipts receipt
-                       WHERE receipt.ReviewEventSequence = event.Sequence)
-            FROM covenant_review_events event
-            LEFT JOIN covenant_heads head
-              ON head.EntryId = event.EntryId AND head.LaneCode = event.LaneCode
-            WHERE event.DatasetGeneration = $generation
-              AND event.ScopeCode = $scope
-              AND event.CampaignId IS $campaign
-              AND event.LaneCode = $lane
-              AND event.Sequence > $current
-            ORDER BY event.Sequence;
-            """;
+        command.CommandText = CovenantReviewSql.ReviewedThrough(campaignId is not null);
         BindQueue(command, datasetGeneration, scope, campaignId, lane);
         Bind(command, "$current", current);
 
@@ -1931,17 +1890,7 @@ internal sealed class CovenantMemoryReviewService(
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText =
-            """
-            UPDATE covenant_review_markers
-            SET ReviewedThroughSequence = $through, Revision = Revision + 1
-            WHERE DatasetGeneration = $generation
-              AND ScopeCode = $scope
-              AND CampaignId IS $campaign
-              AND LaneCode = $lane
-              AND ReviewedThroughSequence = $expectedThrough
-              AND Revision = $revision;
-            """;
+        command.CommandText = CovenantReviewSql.AdvanceMarker(campaignId is not null);
         BindQueue(command, expected.Generation, scope, campaignId, lane);
         Bind(command, "$through", reviewedThrough);
         Bind(command, "$expectedThrough", expected.ReviewedThroughSequence);
@@ -2125,7 +2074,7 @@ internal sealed class CovenantMemoryReviewService(
             envelope.ReviewedThrough.ToString(CultureInfo.InvariantCulture),
             envelope.ResultingVersionId ?? "-");
 
-    private static async ValueTask<ReplayLookup> ReadReplayAsync(
+    private async ValueTask<ReplayLookup> ReadReplayAsync(
         SqliteConnection connection,
         SqliteTransaction? transaction,
         CovenantReviewBulkPrepareRequest request,
@@ -2156,7 +2105,7 @@ internal sealed class CovenantMemoryReviewService(
         {
             if (stored.IsCorrupt || stored.DatasetGeneration != currentGeneration)
             {
-                return ReplayLookup.Failed(IntegrityFailure);
+                return ReplayLookup.Failed(ReportIntegrity(stored.IsCorrupt ? ReviewReason.ReplayReceiptInvalid : ReviewReason.ReplayGenerationMismatch, ReviewOperation.Apply, ReviewStage.Replay, request.RequestId));
             }
 
             ReceiptEnvelope envelope = stored.Envelope;
@@ -2182,7 +2131,7 @@ internal sealed class CovenantMemoryReviewService(
 
             if (reviewedThrough is { } expectedThrough && expectedThrough != envelope.ReviewedThrough)
             {
-                return ReplayLookup.Failed(IntegrityFailure);
+                return ReplayLookup.Failed(ReportIntegrity(ReviewReason.ReplayFrontierMismatch, ReviewOperation.Apply, ReviewStage.Replay, request.RequestId));
             }
 
             reviewedThrough ??= envelope.ReviewedThrough;
@@ -2193,7 +2142,7 @@ internal sealed class CovenantMemoryReviewService(
 
             if (!destination.TryAdd(envelope.Ordinal, stored))
             {
-                return ReplayLookup.Failed(IntegrityFailure);
+                return ReplayLookup.Failed(ReportIntegrity(ReviewReason.ReplayDuplicateOrdinal, ReviewOperation.Apply, ReviewStage.Replay, request.RequestId));
             }
         }
 
@@ -2224,7 +2173,7 @@ internal sealed class CovenantMemoryReviewService(
 
             if (originalEvent is null)
             {
-                return ReplayLookup.Failed(IntegrityFailure);
+                return ReplayLookup.Failed(ReportIntegrity(ReviewReason.ReplayOriginalEventMissing, ReviewOperation.Apply, ReviewStage.Replay, request.RequestId));
             }
 
             byte[] expectedResponse = ResponseDigest(
@@ -2236,7 +2185,7 @@ internal sealed class CovenantMemoryReviewService(
 
             if (!CryptographicOperations.FixedTimeEquals(expectedResponse, original.ResponseReceiptDigest))
             {
-                return ReplayLookup.Failed(IntegrityFailure);
+                return ReplayLookup.Failed(ReportIntegrity(ReviewReason.ReplayResponseDigestMismatch, ReviewOperation.Apply, ReviewStage.Replay, request.RequestId));
             }
 
             bool validResult = await ResultingVersionExistsAsync(
@@ -2249,7 +2198,7 @@ internal sealed class CovenantMemoryReviewService(
 
             if (!validResult)
             {
-                return ReplayLookup.Failed(IntegrityFailure);
+                return ReplayLookup.Failed(ReportIntegrity(ReviewReason.ReplayResultVersionMissing, ReviewOperation.Apply, ReviewStage.Replay, request.RequestId));
             }
 
             if (replacements.TryGetValue(ordinal, out StoredReceipt? replacement))
@@ -2264,7 +2213,7 @@ internal sealed class CovenantMemoryReviewService(
                     || replacement.Envelope.ResultingVersionId is null
                     || replacement.Envelope.ResultingVersionId != original.Envelope.ResultingVersionId)
                 {
-                    return ReplayLookup.Failed(IntegrityFailure);
+                    return ReplayLookup.Failed(ReportIntegrity(ReviewReason.ReplayReplacementMismatch, ReviewOperation.Apply, ReviewStage.Replay, request.RequestId));
                 }
 
                 CovenantReviewEvent? replacementEvent = await ReadEventAsync(
@@ -2283,7 +2232,7 @@ internal sealed class CovenantMemoryReviewService(
                         replacement.Envelope.ResultingVersionId,
                         StringComparison.Ordinal))
                 {
-                    return ReplayLookup.Failed(IntegrityFailure);
+                    return ReplayLookup.Failed(ReportIntegrity(ReviewReason.ReplayReplacementEventMissing, ReviewOperation.Apply, ReviewStage.Replay, request.RequestId));
                 }
 
                 byte[] replacementResponse = ResponseDigest(
@@ -2297,7 +2246,7 @@ internal sealed class CovenantMemoryReviewService(
                     replacementResponse,
                     replacement.ResponseReceiptDigest))
                 {
-                    return ReplayLookup.Failed(IntegrityFailure);
+                    return ReplayLookup.Failed(ReportIntegrity(ReviewReason.ReplayReplacementDigestMismatch, ReviewOperation.Apply, ReviewStage.Replay, request.RequestId));
                 }
             }
             else if (request.Action == MemoryReviewAction.Correct
@@ -2306,7 +2255,7 @@ internal sealed class CovenantMemoryReviewService(
                     Outcome(MemoryReviewAction.Correct),
                     StringComparison.Ordinal))
             {
-                return ReplayLookup.Failed(IntegrityFailure);
+                return ReplayLookup.Failed(ReportIntegrity(ReviewReason.ReplayReplacementReceiptMissing, ReviewOperation.Apply, ReviewStage.Replay, request.RequestId));
             }
 
             results[ordinal] = new MemoryReviewBulkItemResultDto(
@@ -2423,7 +2372,7 @@ internal sealed class CovenantMemoryReviewService(
         command.CommandText = "SELECT DatasetGeneration FROM covenant_state WHERE StateKey = 1;";
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         return value is null or DBNull
-            ? throw new InvalidDataException("Covenant canonical state is absent.")
+            ? throw new ReviewStateException(ReviewReason.CanonicalStateMissing, ReviewStage.CanonicalState)
             : GuidFromBlob(value);
     }
 

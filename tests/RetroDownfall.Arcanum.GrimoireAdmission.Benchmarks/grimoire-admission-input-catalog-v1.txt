@@ -758,12 +758,14 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMaintenanceCoordinat
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMaintenanceHostedService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMaintenanceService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantManagementService.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMemoryReviewService.Diagnostics.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMemoryReviewService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMutationService.Correction.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMutationService.Curation.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMutationService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantOperationGate.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantRequestedOperationStarter.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantReviewSql.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantSchemaRepairExecutor.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantSchemaRepairJournal.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantSchemaRepairStartupRecovery.cs

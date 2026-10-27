@@ -15,7 +15,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Memory;
 
 [Trait("Category", "Integration")]
-public sealed class CovenantMemoryReviewServiceTests
+public sealed partial class CovenantMemoryReviewServiceTests(Xunit.Abstractions.ITestOutputHelper output)
 {
     private static readonly Guid CampaignOne = Guid.Parse("247a1767-7fc1-4c93-bc17-d021e52ff665");
 
@@ -1062,8 +1062,9 @@ public sealed class CovenantMemoryReviewServiceTests
         Assert.Equal(2L, await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM covenant_versions;"));
         Assert.Equal(0L, await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM covenant_mutation_receipts;"));
         Assert.Equal(0L, await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM covenant_review_decision_receipts;"));
-        Assert.Equal(0L, await ScalarAsync(runtime.Fixture.Connection, "SELECT ReviewedThroughSequence FROM covenant_review_markers;"));
-        Assert.Equal(1L, await ScalarAsync(runtime.Fixture.Connection, "SELECT Revision FROM covenant_review_markers;"));
+        // Reads no longer establish a durable marker. A refused first apply must roll its
+        // initial marker back too, together with every decision and receipt.
+        Assert.Equal(0L, await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM covenant_review_markers;"));
         Assert.Equal(2L, await ScalarAsync(
             runtime.Fixture.Connection,
             $"SELECT count(*) FROM covenant_heads WHERE CurrentVersionId IN ('{first.VersionId:D}', '{second.VersionId:D}');"));
@@ -1147,8 +1148,8 @@ public sealed class CovenantMemoryReviewServiceTests
 
         Assert.DoesNotContain("busy.key", busy.Error.Message, StringComparison.Ordinal);
 
-        // Not swallowed: the exhausted retry leaves exactly one error line, as content-free as the answer.
-        TestLogEntry logged = Assert.Single(runtime.Logger.Entries, static entry => entry.Level == LogLevel.Error);
+        // Not swallowed: the exhausted retry leaves exactly one warning line, as content-free as the answer.
+        TestLogEntry logged = Assert.Single(runtime.Logger.Entries, static entry => entry.Level == LogLevel.Warning);
 
         Assert.Null(logged.Exception);
 

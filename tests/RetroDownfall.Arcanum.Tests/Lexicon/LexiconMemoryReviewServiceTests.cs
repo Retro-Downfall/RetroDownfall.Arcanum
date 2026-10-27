@@ -63,6 +63,8 @@ public sealed class LexiconMemoryReviewServiceTests(GrimoireFixture fixture)
 
         Assert.True(prepared.IsSuccess, prepared.Error.Message);
 
+        Assert.All(prepared.Value.Items, item => Assert.Null(item.Label));
+
         var applied = await review.ApplyAsync(
             new(request, prepared.Value.PreparedPlanToken), null, CancellationToken.None);
 

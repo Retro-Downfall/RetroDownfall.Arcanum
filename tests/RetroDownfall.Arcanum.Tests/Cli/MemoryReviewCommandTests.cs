@@ -114,6 +114,96 @@ public sealed class MemoryReviewCommandTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Covenant_target_key_from_the_plan_is_visible_before_confirmation_and_decline_never_applies(bool json)
+    {
+        Guid requestId = Guid.CreateVersion7();
+
+        MemoryReviewBulkPlanDto plan = new(MemoryReviewStore.Covenant, requestId, MemoryReviewAction.Confirm,
+            [new(1, "exact-subject", "exact-version", true, "Operator", "source", "Global/Confirmed")],
+            DateTimeOffset.Parse("2026-09-28T12:00:00Z"), DateTimeOffset.Parse("2026-09-28T12:05:00Z"), "prepared-plan");
+
+        string body = JsonSerializer.Serialize(ApiResponse<MemoryReviewBulkPlanDto>.FromResult(
+            Result<MemoryReviewBulkPlanDto>.Success(plan)), ArcanumJsonContext.Default.ApiResponseMemoryReviewBulkPlanDto);
+
+        body = body.Contains("\"label\":null", StringComparison.Ordinal)
+            ? body.Replace("\"label\":null", "\"label\":\"target.key\"", StringComparison.Ordinal)
+            : body.Replace("\"subjectId\":", "\"label\":\"target.key\",\"subjectId\":", StringComparison.Ordinal);
+
+        using (JsonDocument wire = JsonDocument.Parse(body))
+        {
+            JsonElement item = wire.RootElement.GetProperty("data").GetProperty("items")[0];
+
+            Assert.Single(item.EnumerateObject(), property => property.Name == "label");
+
+            Assert.Equal("target.key", item.GetProperty("label").GetString());
+        }
+
+        RecordingHandler handler = new(plan) { PageJson = body };
+
+        CliInvocationOptions options = new(Json: json, Plain: false, Yes: false);
+
+        StringWriter output = new();
+
+        StringWriter error = new();
+
+        LabelConfirmation confirmation = new(output, error);
+
+        ArcanumApiClient apiClient = new(new SingleHandlerFactory(handler),
+            ArcanumApiCredentialLeaseTestFactory.Create(FixedSecretStore.Key));
+
+        MemoryCommands commands = new(apiClient, themePalette: null!, new ConsoleDispatcher(output, error, options),
+            confirmation, Options.Create(new ArcanumSettings()), resourceCatalog: null!);
+
+        string path = Path.Combine(Path.GetTempPath(), $"arcanum-review-label-{Guid.CreateVersion7():N}.json");
+
+        try
+        {
+            CovenantReviewBulkPrepareRequest request = new(requestId, CovenantScope.Global, null, CovenantLane.Confirmed,
+                MemoryReviewAction.Confirm, [new("observation", null)]);
+
+            File.WriteAllText(path, JsonSerializer.Serialize(request, ArcanumJsonContext.Default.CovenantReviewBulkPrepareRequest));
+
+            using IDisposable invocation = CliInvocationContext.Push(options);
+
+            Assert.Equal((int)CliExitCode.Success, await commands.CovenantReviewApply(path, CancellationToken.None));
+
+            string before = json ? confirmation.ErrorBefore : confirmation.OutputBefore;
+
+            Assert.Contains("target.key", before, StringComparison.Ordinal);
+
+            Assert.Contains("exact-subject", before, StringComparison.Ordinal);
+
+            Assert.Contains("exact-version", before, StringComparison.Ordinal);
+
+            Assert.Single(handler.Paths);
+
+            Assert.Equal("/api/memory/covenant/review/prepare", handler.Paths[0]);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    private sealed class LabelConfirmation(StringWriter output, StringWriter error) : IConfirmationPrompt
+    {
+        internal string OutputBefore { get; private set; } = string.Empty;
+
+        internal string ErrorBefore { get; private set; } = string.Empty;
+
+        public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken)
+        {
+            OutputBefore = output.ToString();
+
+            ErrorBefore = error.ToString();
+
+            return Task.FromResult(false);
+        }
+    }
+
     /// <summary>
     /// A correction that re-creates erased content or an erased key releases its erasure fingerprint,
     /// which is the unsafe direction, so the operator is told which items will release before the
