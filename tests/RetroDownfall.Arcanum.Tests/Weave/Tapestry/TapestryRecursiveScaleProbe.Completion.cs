@@ -64,9 +64,13 @@ public sealed partial class TapestryRecursiveScaleProbe
         await RunRecursiveAsync(count, ConsumerLimits.ForScale(count), receipt);
     }
 
-    private async Task RunRecursiveAsync(int count, ConsumerLimits limits, TextWriter receipt)
+    private Task RunRecursiveAsync(int count, ConsumerLimits limits, TextWriter receipt) =>
+        RunRecursiveAsync(count, limits, receipt, static (seconds, ceiling, caller) => new ConsumerBudget(seconds, ceiling, caller));
+
+    private async Task RunRecursiveAsync(int count, ConsumerLimits limits, TextWriter receipt,
+        Func<int, long, CancellationToken, ConsumerBudget> budgetFactory)
     {
-        using ConsumerBudget whole = new(limits.TotalSeconds, limits.MemoryCeiling, CancellationToken.None);
+        using ConsumerBudget whole = budgetFactory(limits.TotalSeconds, limits.MemoryCeiling, CancellationToken.None);
 
         using RecursiveJournal journal = new(this, whole, receipt);
 
@@ -146,7 +150,7 @@ public sealed partial class TapestryRecursiveScaleProbe
 
         async Task PhaseAsync(string name, int seconds, Func<CancellationToken, Task> work)
         {
-            using ConsumerBudget phase = new(seconds, limits.MemoryCeiling, whole.Token);
+            using ConsumerBudget phase = budgetFactory(seconds, limits.MemoryCeiling, whole.Token);
 
             journal.Stage(name);
 
@@ -257,7 +261,7 @@ public sealed partial class TapestryRecursiveScaleProbe
 
         private void Write(string kind, string outcome, string reason)
         {
-            string line = FormattableString.Invariant($"event={kind} phase={_phase} outcome={outcome} reason={reason} elapsed_ms={_watch.Elapsed.TotalMilliseconds:F3} start_working_set={_budget.StartWorkingSet} peak_working_set={_budget.PeakWorkingSet} allocated_bytes={GC.GetTotalAllocatedBytes(false) - _allocated} {_owner._clusterer.Describe()}");
+            string line = FormattableString.Invariant($"event={kind} phase={_phase} outcome={outcome} reason={reason} elapsed_ms={_watch.Elapsed.TotalMilliseconds:F3} start_working_set={_budget.StartWorkingSet} peak_working_set={_budget.PeakWorkingSet} budget_callback_failure={_budget.CallbackFailed} allocated_bytes={GC.GetTotalAllocatedBytes(false) - _allocated} {_owner._clusterer.Describe()}");
 
             _receipt.WriteLine(line);
 

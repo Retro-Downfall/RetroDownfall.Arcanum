@@ -70,11 +70,30 @@ public sealed partial class TapestryRecursiveScaleProbe
         Assert.Equal("memory", budget.Reason);
     }
 
+    private interface IConsumerResourceReader : IDisposable
+    {
+        long ReadWorkingSet();
+    }
+
+    private sealed class ProcessResourceReader : IConsumerResourceReader
+    {
+        private readonly System.Diagnostics.Process _process = System.Diagnostics.Process.GetCurrentProcess();
+
+        public long ReadWorkingSet()
+        {
+            _process.Refresh();
+
+            return _process.WorkingSet64;
+        }
+
+        public void Dispose() => _process.Dispose();
+    }
+
     private sealed class ConsumerBudget : IDisposable
     {
         private readonly CancellationTokenSource _source = new();
 
-        private readonly System.Diagnostics.Process _process = System.Diagnostics.Process.GetCurrentProcess();
+        private readonly IConsumerResourceReader _reader;
 
         private readonly Timer _timer;
 
@@ -92,23 +111,75 @@ public sealed partial class TapestryRecursiveScaleProbe
 
         private string _reason = "none";
 
+        private int _callbackFailed = 0;
+
+        private int _sampling;
+
         internal ConsumerBudget(double seconds, long memoryCeiling, CancellationToken caller)
+            : this(seconds, memoryCeiling, caller, new ProcessResourceReader(), true)
         {
+        }
+
+        internal ConsumerBudget(double seconds, long memoryCeiling, CancellationToken caller, IConsumerResourceReader reader, bool startTimer)
+        {
+            _reader = reader;
+
             _seconds = seconds;
 
             _memoryCeiling = memoryCeiling;
 
-            _process.Refresh();
+            try
+            {
+                _peak = StartWorkingSet = _reader.ReadWorkingSet();
+            }
+            catch (Exception observationFailure)
+            {
+                try
+                {
+                    _reader.Dispose();
+                }
+                catch (Exception cleanupFailure)
+                {
+                    throw new AggregateException("Resource observation and initialization cleanup both failed.", observationFailure, cleanupFailure);
+                }
+                finally
+                {
+                    _source.Dispose();
+                }
 
-            _peak = StartWorkingSet = _process.WorkingSet64;
+                throw;
+            }
 
             _caller = caller.Register(() => Cancel("caller"));
 
-            _timer = new Timer(_ =>
-            {
-                _process.Refresh();
+            _timer = new Timer(_ => SampleResources(), null,
+                startTimer ? TimeSpan.Zero : Timeout.InfiniteTimeSpan, TimeSpan.FromMilliseconds(10));
+        }
 
-                long current = _process.WorkingSet64;
+        internal void SampleResources()
+        {
+            if (Interlocked.CompareExchange(ref _sampling, 1, 0) != 0)
+            {
+                // A slow observation must not queue overlapping Process reads or suppress the clock deadline.
+                if (Stopwatch.GetElapsedTime(_started).TotalSeconds >= _seconds) Cancel("time");
+
+                return;
+            }
+
+            try
+            {
+                long current;
+
+                try
+                {
+                    current = _reader.ReadWorkingSet();
+                }
+                catch (Exception)
+                {
+                    Cancel("resource-unavailable");
+
+                    return;
+                }
 
                 long previous;
 
@@ -120,12 +191,18 @@ public sealed partial class TapestryRecursiveScaleProbe
                 while (current > previous && Interlocked.CompareExchange(ref _peak, current, previous) != previous);
 
                 ObserveResources(current, Stopwatch.GetElapsedTime(_started).TotalSeconds);
-            }, null, TimeSpan.Zero, TimeSpan.FromMilliseconds(10));
+            }
+            finally
+            {
+                Volatile.Write(ref _sampling, 0);
+            }
         }
 
         internal CancellationToken Token => _source.Token;
 
         internal string Reason => Volatile.Read(ref _reason);
+
+        internal bool CallbackFailed => Volatile.Read(ref _callbackFailed) != 0;
 
         internal long StartWorkingSet { get; }
 
@@ -147,7 +224,15 @@ public sealed partial class TapestryRecursiveScaleProbe
 
             Volatile.Write(ref _reason, reason);
 
-            _source.Cancel();
+            try
+            {
+                _source.Cancel();
+            }
+            catch (AggregateException)
+            {
+                // The token is already canceled; retain containment and its first cause without escaping the timer.
+                Volatile.Write(ref _callbackFailed, 1);
+            }
         }
 
         public void Dispose()
@@ -156,7 +241,7 @@ public sealed partial class TapestryRecursiveScaleProbe
 
             _caller.Dispose();
 
-            _process.Dispose();
+            _reader.Dispose();
 
             _source.Dispose();
         }
