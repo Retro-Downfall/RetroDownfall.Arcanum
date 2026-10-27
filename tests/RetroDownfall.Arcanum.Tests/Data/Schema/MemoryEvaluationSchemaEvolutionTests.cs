@@ -13,8 +13,6 @@ public sealed class MemoryEvaluationSchemaEvolutionTests
     {
         Assert.Equal(CoreSchemaVersionEighteenFixture.PublishedFingerprint, CoreSchemaVersionEighteenFixture.Fingerprint);
 
-        Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, GrimoireSchemaVersionChains.CoreSchemaVersion);
-
         Assert.Equal(CoreSchemaVersionEighteenFixture.PublishedFingerprint, GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core).SourceDefinitionFingerprintFor(18));
     }
 
