@@ -41,9 +41,11 @@ internal sealed partial class DataRetentionService
             (SensitiveArtifactKind.CampaignContribution, "campaign_contribution_artifacts", CampaignContributionCandidatePrefix),
         })
         {
-            string[] ids = await ReadStringIdsAsync(table, "ArtifactId",
-                "julianday(CreatedAtUtc) <= julianday(@cutoff)", "CreatedAtUtc, ArtifactId",
-                limit - candidates.Count, cancellationToken, ("@cutoff", FormatTimestamp(cutoff))).ConfigureAwait(false);
+            if (!await TableExistsAsync(table, cancellationToken).ConfigureAwait(false))
+                continue;
+
+            string[] ids = await ReadEligibleCampaignSummaryIdsAsync(connection, null, kind, cutoff,
+                limit - candidates.Count, cancellationToken).ConfigureAwait(false);
 
             foreach (string id in ids)
             {
@@ -77,6 +79,61 @@ internal sealed partial class DataRetentionService
         {
             items.Add(new(RetentionDataClass.CampaignSummaries, 0, 0, 0, coveredRows.Count - priorCount));
         }
+    }
+
+    private static async Task<string[]> ReadEligibleCampaignSummaryIdsAsync(
+        SqliteConnection connection,
+        DbTransaction? transaction,
+        SensitiveArtifactKind kind,
+        DateTimeOffset cutoff,
+        int limit,
+        CancellationToken cancellationToken,
+        Guid? exactArtifactId = null)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction?)transaction;
+        command.CommandText = kind switch
+        {
+            SensitiveArtifactKind.CampaignRollup => """
+                SELECT artifact.ArtifactId FROM campaign_rollup_artifacts artifact
+                WHERE artifact.SensitivityCode = 0 AND artifact.CreatedAtUtc <= @cutoff
+                    AND NOT EXISTS (SELECT 1 FROM artifact_sensitivity label
+                        WHERE label.ArtifactKindCode = @kind
+                            AND lower(replace(label.ArtifactId, '-', '')) = lower(replace(artifact.ArtifactId, '-', '')))
+                """,
+            SensitiveArtifactKind.CampaignContribution => """
+                SELECT artifact.ArtifactId FROM campaign_contribution_artifacts artifact
+                WHERE artifact.SensitivityCode = 0 AND artifact.CreatedAtUtc <= @cutoff
+                    AND NOT EXISTS (SELECT 1 FROM artifact_sensitivity label
+                        WHERE label.ArtifactKindCode = @kind
+                            AND lower(replace(label.ArtifactId, '-', '')) = lower(replace(artifact.ArtifactId, '-', '')))
+                    AND NOT EXISTS (
+                        SELECT 1 FROM campaign_rollup_source_membership source
+                        LEFT JOIN campaign_rollup_artifacts rollup ON rollup.ArtifactId = source.RollupArtifactId
+                        WHERE source.ContributionArtifactId = artifact.ArtifactId
+                            AND (rollup.SensitivityCode <> 0 OR EXISTS (
+                                SELECT 1 FROM artifact_sensitivity label
+                                WHERE label.ArtifactKindCode = @rollupKind
+                                    AND lower(replace(label.ArtifactId, '-', '')) = lower(replace(source.RollupArtifactId, '-', '')))))
+                """,
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
+        if (exactArtifactId is { } id)
+        {
+            command.CommandText += " AND artifact.ArtifactId = @id";
+            Add(command, "@id", id.ToString("D").ToUpperInvariant());
+        }
+        command.CommandText += " ORDER BY artifact.CreatedAtUtc, artifact.ArtifactId LIMIT @limit;";
+        Add(command, "@kind", (int)kind);
+        Add(command, "@rollupKind", (int)SensitiveArtifactKind.CampaignRollup);
+        Add(command, "@cutoff", FormatTimestamp(cutoff));
+        Add(command, "@limit", limit);
+        await CampaignRollupSourceStorage.ResolveMembershipAsync(command, cancellationToken).ConfigureAwait(false);
+        List<string> ids = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            ids.Add(reader.GetString(0));
+        return [.. ids];
     }
 
     private async Task<HashSet<string>> AddNativeOwnerClosureItemsAsync(
@@ -167,11 +224,10 @@ internal sealed partial class DataRetentionService
 
         string id = artifactId.ToString("D").ToUpperInvariant();
 
-        long eligible = await CountInTransactionAsync(connection, transaction, table,
-            "ArtifactId = @id AND SensitivityCode = 0 AND julianday(CreatedAtUtc) <= julianday(@cutoff)",
-            cancellationToken, ("@id", id), ("@cutoff", FormatTimestamp(cutoff))).ConfigureAwait(false);
+        string[] eligible = await ReadEligibleCampaignSummaryIdsAsync(connection, transaction, kind, cutoff,
+            1, cancellationToken, artifactId).ConfigureAwait(false);
 
-        if (eligible == 0)
+        if (eligible.Length == 0)
         {
             return CandidateDeleteResult.Empty;
         }
