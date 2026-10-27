@@ -36964,7 +36964,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         }
 
         string source = (shape == "foreign-assembly" ? "extern alias counterfeit; " : "")
-            + "using Microsoft.Extensions.AI; " + R2Source(body + " System.IO.File.Exists(\"cleanup-control\");",
+            + "using Microsoft.Extensions.AI; using RetroDownfall.Arcanum.Core.Weave; " + R2Source(body + " System.IO.File.Exists(\"cleanup-control\");",
                 lease + " internal static class AdapterInput { " + helper
                 + " internal static extern " + generator + " Unknown(); internal static extern void Replace(ref " + generator + " value);"
                 + " internal static extern " + generator + " AsIEmbeddingGenerator(OpenAI.Embeddings.EmbeddingClient client, string wrong);"
@@ -37482,7 +37482,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             consuming = consuming.ReplaceSdkFixtureText("RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory actualFactory =", "using RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory actualFactory =", StringComparison.Ordinal);
 
             consuming = consuming.ReplaceSdkFixtureText(selectedFactory, shape == "explicit-custom-owner" ? customFactory
-                : "MakeCustomFactory(actualScope.ServiceProvider.GetRequiredService<RetroDownfall.Arcanum.Core.Security.IProviderApiKeyResolver>())", StringComparison.Ordinal);
+                : "MakeCustomFactory(actualScope.ServiceProvider.GetRequiredService<RetroDownfall.Arcanum.Core.Security.IProviderApiKeyResolver>(), "
+                    + "actualScope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory>>())", StringComparison.Ordinal);
         }
 
         if (shape is "same-helper-good" or "same-helper-good-bad" or "same-helper-bad-good")
@@ -37517,7 +37518,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                     private static extern IServiceScope UnknownScope();
                     private static IServiceProvider ForwardProvider(IServiceProvider provider) => provider;
                     private static RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory MakeCustomFactory(
-                        RetroDownfall.Arcanum.Core.Security.IProviderApiKeyResolver keys) => new(keys);
+                        RetroDownfall.Arcanum.Core.Security.IProviderApiKeyResolver keys,
+                        Microsoft.Extensions.Logging.ILogger<RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory> logger) => new(keys, logger);
                     private static async Task ConsumeFactoryAsync(RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory factory, CancellationToken cancellationToken)
                     {
                         _ = await factory.ResolveEmbeddingAsync(new RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderSelection(
@@ -39198,37 +39200,37 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             double[] values = [double.NaN, double.NegativeInfinity, -1, -0.0, 0.0, 0.92, 1, double.PositiveInfinity];
 
             foreach (bool reverse in new[] { false, true })
-            foreach (int count in new[] { 1, 8, 9, 16 })
-            foreach (bool tied in new[] { false, true })
-            {
-                Guid[] order = reverse ? nodes.Reverse().ToArray() : nodes;
+                foreach (int count in new[] { 1, 8, 9, 16 })
+                    foreach (bool tied in new[] { false, true })
+                    {
+                        Guid[] order = reverse ? nodes.Reverse().ToArray() : nodes;
 
-                // Duplicating every identity/score checks repeated equal priorities too.
-                order = [.. order, .. order];
+                        // Duplicating every identity/score checks repeated equal priorities too.
+                        order = [.. order, .. order];
 
-                double[] scores = [.. order.Select((_, index) => tied ? 1.0 : values[index % values.Length])];
+                        double[] scores = [.. order.Select((_, index) => tied ? 1.0 : values[index % values.Length])];
 
-                PriorityQueue<(Guid Node, double Score), (Guid Node, double Score)> original = new(Comparer<(Guid Node, double Score)>.Create(static (left, right) =>
-                {
-                    int score = left.Score.CompareTo(right.Score);
+                        PriorityQueue<(Guid Node, double Score), (Guid Node, double Score)> original = new(Comparer<(Guid Node, double Score)>.Create(static (left, right) =>
+                        {
+                            int score = left.Score.CompareTo(right.Score);
 
-                    return score != 0 ? score : -StringComparer.Ordinal.Compare(left.Node.ToString("D"), right.Node.ToString("D"));
-                }));
+                            return score != 0 ? score : -StringComparer.Ordinal.Compare(left.Node.ToString("D"), right.Node.ToString("D"));
+                        }));
 
-                for (int index = 0; index < order.Length; index++)
-                {
-                    var candidate = (order[index], scores[index]);
+                        for (int index = 0; index < order.Length; index++)
+                        {
+                            var candidate = (order[index], scores[index]);
 
-                    original.Enqueue(candidate, candidate);
+                            original.Enqueue(candidate, candidate);
 
-                    if (original.Count > count) original.Dequeue();
-                }
+                            if (original.Count > count) original.Dequeue();
+                        }
 
-                Guid[] expected = [.. original.UnorderedItems.Select(static item => item.Element).OrderByDescending(static item => item.Score)
+                        Guid[] expected = [.. original.UnorderedItems.Select(static item => item.Element).OrderByDescending(static item => item.Score)
                     .ThenBy(static item => item.Node.ToString("D"), StringComparer.Ordinal).Select(static item => item.Node)];
 
-                Assert.Equal(expected, select(order, scores, count));
-            }
+                        Assert.Equal(expected, select(order, scores, count));
+                    }
         }
         finally
         {

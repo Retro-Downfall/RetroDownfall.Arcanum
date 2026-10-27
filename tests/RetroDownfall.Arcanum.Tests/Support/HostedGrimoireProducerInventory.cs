@@ -1172,6 +1172,7 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Collections.Generic.LinkedListNode`1.Value",
         "System.Collections.Generic.LinkedList`1.Count",
         "System.Collections.Generic.LinkedList`1.Last",
+        "System.Collections.Generic.LinkedList`1.First",
         "System.Text.Json.JsonDocumentOptions.MaxDepth",
         "System.Text.Json.JsonProperty.Name",
         "System.Text.Json.JsonProperty.Value",
@@ -1187,6 +1188,8 @@ internal static partial class HostedGrimoireProducerInventory
         "Microsoft.Extensions.AI.ChatResponse.Messages",
         "Microsoft.Extensions.AI.ChatResponse.Usage",
         "Microsoft.Extensions.AI.GeneratedEmbeddings`1.Usage",
+        "System.ClientModel.ClientResultException.Status",
+        "System.Net.Http.HttpRequestException.StatusCode",
     };
 
     // Documentation IDs retain overload and generic arity. In particular the
@@ -1216,6 +1219,8 @@ internal static partial class HostedGrimoireProducerInventory
         "M:System.Collections.Generic.LinkedList`1.AddFirst(System.Collections.Generic.LinkedListNode{`0})",
         "M:System.Collections.Generic.LinkedList`1.Remove(System.Collections.Generic.LinkedListNode{`0})",
         "M:System.Collections.Generic.LinkedList`1.RemoveLast",
+        "M:System.Collections.Generic.LinkedList`1.RemoveFirst",
+        "M:System.Collections.Generic.LinkedList`1.AddLast(`0)",
         "M:System.Range.GetOffsetAndLength(System.Int32)",
         "M:System.Security.Cryptography.IncrementalHash.TryGetHashAndReset(System.Span{System.Byte},System.Int32@)",
         "M:System.Security.Cryptography.SHA256.TryHashData(System.ReadOnlySpan{System.Byte},System.Span{System.Byte},System.Int32@)",
@@ -7291,7 +7296,7 @@ internal static partial class HostedGrimoireProducerInventory
             if (arguments.Length == 0)
             {
                 if (registration.Method.TypeArguments.LastOrDefault() is not
-                        { } registeredImplementation
+                    { } registeredImplementation
                     || !SameBoundType(
                         registeredImplementation,
                         registration.Model.Compilation,
@@ -7678,16 +7683,16 @@ internal static partial class HostedGrimoireProducerInventory
                     [SyntaxReference declarationReference]
                 || declarationReference.GetSyntax() is not
                     MethodDeclarationSyntax
-                    {
-                        ParameterList.Parameters:
+                {
+                    ParameterList.Parameters:
                             [ParameterSyntax collectionSyntax],
-                        Body.Statements:
+                    Body.Statements:
                             [
                                 ExpressionStatementSyntax activationStatement,
                                 ExpressionStatementSyntax wrapperStatement,
                                 ReturnStatementSyntax returnStatement,
                             ],
-                    } declaration
+                } declaration
                 || !semanticModels.TryGetValue(
                     declaration.SyntaxTree,
                     out SemanticModel? model)
@@ -8140,7 +8145,7 @@ internal static partial class HostedGrimoireProducerInventory
                     // execution, cleanup and admission still use normal traversal.
                     if (proof.RemainingWork-- <= 0
                         || member.Model.GetOperation(awaited) is not IAwaitOperation
-                            { Operation: IInvocationOperation configured, Type: { } resultType }
+                        { Operation: IInvocationOperation configured, Type: { } resultType }
                         || !IsExactFrameworkType(resultType, "Microsoft.Data.Sqlite.SqliteConnection",
                             typeof(Microsoft.Data.Sqlite.SqliteConnection).Assembly.GetName())
                         || !IsExactFrameworkConfigureAwait(configured.TargetMethod)
@@ -8255,7 +8260,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (!TryGetExactSqliteReceiverAllocation(member, receiver, proof, out BoundValueSource allocation)
                 || allocation.Caller.Model.GetTypeInfo(allocation.Expression).Type is not INamedTypeSymbol
-                    { TypeKind: TypeKind.Class, IsAbstract: false, IsSealed: true } concrete) return null;
+                { TypeKind: TypeKind.Class, IsAbstract: false, IsSealed: true } concrete) return null;
 
             for (INamedTypeSymbol? current = concrete; current is not null; current = current.BaseType)
             {
@@ -8298,7 +8303,7 @@ internal static partial class HostedGrimoireProducerInventory
                     ?? ExactOptionalDiDefaultCleanupReceiverType(
                         member,
                         receiver)) is
-                    { } concrete)
+                { } concrete)
             {
                 IMethodSymbol[] implementations = concrete.AllInterfaces
                     .Where(contract => contract.ContainingAssembly.Identity.Equals(method.ContainingAssembly.Identity) && TypeKey(contract) == TypeKey(method.ContainingType))
@@ -8341,9 +8346,9 @@ internal static partial class HostedGrimoireProducerInventory
                 } field
                 || receiver is not (IdentifierNameSyntax
                     or MemberAccessExpressionSyntax
-                    {
-                        Expression: ThisExpressionSyntax,
-                    })
+                {
+                    Expression: ThisExpressionSyntax,
+                })
                 || ExactReadOnlyFieldValues(member, receiver, field) is not
                     [BoundValueSource fieldValue]
                 || StripTransparentExpression(fieldValue.Expression) is not
@@ -8368,11 +8373,11 @@ internal static partial class HostedGrimoireProducerInventory
                 new CleanupProvenanceContext());
 
             return provenance is
-                {
-                    Complete: true,
-                    HasAuthoredSource: true,
-                    Candidates: [CleanupTypeCandidate exact],
-                }
+            {
+                Complete: true,
+                HasAuthoredSource: true,
+                Candidates: [CleanupTypeCandidate exact],
+            }
                     ? exact.Type
                     : null;
         }
@@ -21067,7 +21072,9 @@ internal static partial class HostedGrimoireProducerInventory
                                 continue;
                             }
 
-                            bool awaitableReturn = TypeKey(method.ReturnType) is "System.Threading.Tasks.Task" or "System.Threading.Tasks.Task`1" or "System.Threading.Tasks.ValueTask" or "System.Threading.Tasks.ValueTask`1";
+                            bool returnedAwaitableIsStoredValue = IsExactWeakTableValueFactory(method);
+
+                            bool awaitableReturn = !returnedAwaitableIsStoredValue && (TypeKey(method.ReturnType) is "System.Threading.Tasks.Task" or "System.Threading.Tasks.Task`1" or "System.Threading.Tasks.ValueTask" or "System.Threading.Tasks.ValueTask`1");
 
                             SyntaxNode? completion = awaitableReturn ? CompletionPoint(member, callbackCall, completionOwned) : lazyCallback ? LazyCompletionPoint(member, callbackCall) : synchronousCallback ? callbackCall : null;
 
@@ -21193,7 +21200,7 @@ internal static partial class HostedGrimoireProducerInventory
                                         : capturedBody;
 
                                     TraversalEvidence bodyEvidence = callbackOwned
-                                        ? Traverse(callbackBody, rootType, operationId + "/callback@" + Location(callbackCall) + "/body@" + Location(callback), active, lifecycle, workAdmitted, effectGroup, completionOwned: true, recoveryEffect: recoveryEffect)
+                                        ? Traverse(callbackBody, rootType, operationId + "/callback@" + Location(callbackCall) + "/body@" + Location(callback), active, lifecycle, workAdmitted, effectGroup, completionOwned: !returnedAwaitableIsStoredValue || !IsAwaitable(body.Symbol.ReturnType), recoveryEffect: recoveryEffect)
                                         : TraverseDetachedCallback(callbackBody, rootType, operationId + "/callback@" + Location(callbackCall) + "/body@" + Location(callback), active, lifecycle);
 
                                     callbackEvidence = MergeEvidence(
@@ -22889,17 +22896,17 @@ internal static partial class HostedGrimoireProducerInventory
                 || Normalize(taskRun) != "System.Threading.Tasks.Task.Run"
                 || dispatch.ArgumentList.Arguments is not
                 [
+                {
+                    Expression: ParenthesizedLambdaExpressionSyntax
                     {
-                        Expression: ParenthesizedLambdaExpressionSyntax
-                        {
-                            ParameterList.Parameters.Count: 0,
-                            Block: null,
-                            ExpressionBody: InvocationExpressionSyntax read,
-                        },
+                        ParameterList.Parameters.Count: 0,
+                        Block: null,
+                        ExpressionBody: InvocationExpressionSyntax read,
                     },
-                    {
-                        Expression: MemberAccessExpressionSyntax cancellation,
-                    },
+                },
+                {
+                    Expression: MemberAccessExpressionSyntax cancellation,
+                },
                 ]
                 || caller.Model.GetSymbolInfo(read).Symbol is not IMethodSymbol readMethod
                 || Normalize(readMethod) != "RetroDownfall.Arcanum.Secrets.Security.IOsCredentialStore.TryGet"
@@ -23677,7 +23684,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             string type = TypeKey(definition.ContainingType);
 
-            return IsExactEagerCollectionCallback(method)
+            return IsExactWeakTableValueFactory(method)
+                || IsExactEagerCollectionCallback(method)
                 || type == "System.Linq.Enumerable"
                     && definition.Name is "Aggregate" or "All" or "Any" or "Average" or "Count" or "First" or "FirstOrDefault" or "Last" or "LastOrDefault" or "LongCount" or "Max" or "MaxBy" or "Min" or "MinBy" or "Single" or "SingleOrDefault" or "Sum" or "ToDictionary" or "ToHashSet" or "ToLookup"
                 || type == "System.Array"
@@ -23696,7 +23704,7 @@ internal static partial class HostedGrimoireProducerInventory
                     && definition.Name is "For" or "ForEach" or "Invoke";
         }
 
-        private static bool IsReviewedEffectFreeRecoveryTerminal(
+        private bool IsReviewedEffectFreeRecoveryTerminal(
             AuthoredMember member,
             InvocationExpressionSyntax call,
             IMethodSymbol method)
@@ -23713,7 +23721,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || TypeKey(method.ContainingType)
                     != "RetroDownfall.Arcanum.Core.Operations.LongRunningOperationRecoveryResult"
                 || method.Name != "Abandoned"
-                || call.Parent is not ReturnStatementSyntax
+                || !IsReturnedRecoveryTerminal(member, call)
                 || call.Ancestors().OfType<IfStatementSyntax>().FirstOrDefault() is not
                 { Condition: { } condition })
             {
@@ -25664,7 +25672,7 @@ internal static partial class HostedGrimoireProducerInventory
                 return IsExactFrameworkType(constructor.ContainingType, "System.Diagnostics.Metrics.Meter", typeof(System.Diagnostics.Metrics.Meter).Assembly.GetName())
                     && HasExactParameterTypes(constructor, "System.String", "System.String")
                     && creation.Arguments is [{ Value.ConstantValue: { HasValue: true, Value: "Arcanum" } },
-                        { Value.ConstantValue: { HasValue: true, Value: "0.1.0" } }];
+                    { Value.ConstantValue: { HasValue: true, Value: "0.1.0" } }];
             }
 
             bool ExactInstrument(IFieldSymbol field)
@@ -25793,7 +25801,7 @@ internal static partial class HostedGrimoireProducerInventory
                 return IsExactFrameworkType(constructor.ContainingType, "System.Diagnostics.Metrics.Meter", typeof(System.Diagnostics.Metrics.Meter).Assembly.GetName())
                     && HasExactParameterTypes(constructor, "System.String", "System.String")
                     && creation.Arguments is [{ Value.ConstantValue: { HasValue: true, Value: "Arcanum" } },
-                        { Value.ConstantValue: { HasValue: true, Value: "0.1.0" } }];
+                    { Value.ConstantValue: { HasValue: true, Value: "0.1.0" } }];
             }
 
             if (!field.IsReadOnly || !field.IsStatic || HasAuthoredStorageWrite(field)
@@ -25817,9 +25825,9 @@ internal static partial class HostedGrimoireProducerInventory
                 && factory.ReturnType is INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Int64 }] } returned
                 && IsExactFrameworkType(returned, "System.Diagnostics.Metrics.Histogram`1", typeof(System.Diagnostics.Metrics.Histogram<>).Assembly.GetName())
                 && created.Arguments is [
-                    { ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: string name } },
-                    { ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: null or string } },
-                    { ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: null or string } }]
+                { ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: string name } },
+                { ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: null or string } },
+                { ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: null or string } }]
                 && ArcanumTokenHistogramNames.Contains(name)
                 && ExactMeter(meterReference.Field);
         }
@@ -26462,6 +26470,9 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedExactFrameworkScalarOperator(method, node, model, context)
                 || IsReviewedExactTypeOfEqualityOperator(method, node, model)
                 || IsReviewedPrimitiveQueueMember(method, node, model, context)
+                || IsReviewedClosedScalarLog(method, node, model)
+                || IsReviewedInvariantScalarInterpolation(method, node, model)
+                || IsReviewedSystemClockElapsed(method, node, model, context)
                 || IsReviewedInvariantDateTimeParser(method, node, model)
                 || IsReviewedDefaultProviderUInt32Format(method, node, model)
                 || IsExactIntegerRange(method)
@@ -26495,8 +26506,8 @@ internal static partial class HostedGrimoireProducerInventory
                     "System.Linq.Enumerable", typeof(Enumerable).Assembly.GetName())
                 && method.Parameters is
                 [
-                    { RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int32 },
-                    { RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int32 },
+                { RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int32 },
+                { RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int32 },
                 ]
                 && method.ReturnType is INamedTypeSymbol
                 {
@@ -26523,10 +26534,10 @@ internal static partial class HostedGrimoireProducerInventory
             && IsExactFrameworkType(method.ContainingType, "System.UInt32", typeof(uint).Assembly.GetName())
             && method.Parameters is
             [
-                { RefKind: RefKind.None, Type: INamedTypeSymbol { Name: "Span", TypeArguments: [{ SpecialType: SpecialType.System_Char }] } destination },
-                { RefKind: RefKind.Out, Type.SpecialType: SpecialType.System_Int32 },
-                { RefKind: RefKind.None, Type: INamedTypeSymbol { Name: "ReadOnlySpan", TypeArguments: [{ SpecialType: SpecialType.System_Char }] } format },
-                { RefKind: RefKind.None, Type: { } providerType },
+            { RefKind: RefKind.None, Type: INamedTypeSymbol { Name: "Span", TypeArguments: [{ SpecialType: SpecialType.System_Char }] } destination },
+            { RefKind: RefKind.Out, Type.SpecialType: SpecialType.System_Int32 },
+            { RefKind: RefKind.None, Type: INamedTypeSymbol { Name: "ReadOnlySpan", TypeArguments: [{ SpecialType: SpecialType.System_Char }] } format },
+            { RefKind: RefKind.None, Type: { } providerType },
             ]
             && IsExactFrameworkType(destination, "System.Span`1", typeof(Span<>).Assembly.GetName())
             && IsExactFrameworkType(format, "System.ReadOnlySpan`1", typeof(ReadOnlySpan<>).Assembly.GetName())
@@ -26545,10 +26556,10 @@ internal static partial class HostedGrimoireProducerInventory
                 || !IsExactFrameworkType(method.ContainingType, "System.DateTimeOffset", typeof(DateTimeOffset).Assembly.GetName())
                 || method.Parameters is not
                 [
-                    { RefKind: RefKind.None, Type.SpecialType: SpecialType.System_String },
-                    { RefKind: RefKind.None, Type: { } providerType },
-                    { RefKind: RefKind.None, Type: { } stylesType },
-                    { RefKind: RefKind.Out, Type: { } resultType },
+                { RefKind: RefKind.None, Type.SpecialType: SpecialType.System_String },
+                { RefKind: RefKind.None, Type: { } providerType },
+                { RefKind: RefKind.None, Type: { } stylesType },
+                { RefKind: RefKind.Out, Type: { } resultType },
                 ]
                 || !IsExactFrameworkType(providerType, "System.IFormatProvider", typeof(IFormatProvider).Assembly.GetName())
                 || !IsExactFrameworkType(stylesType, "System.Globalization.DateTimeStyles", typeof(DateTimeStyles).Assembly.GetName())
@@ -26733,7 +26744,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || !IsExactFrameworkType(property.ContainingType,
                     "Microsoft.Extensions.AI.GeneratedEmbeddings`1", sdkAssembly)
                 || property.ContainingType is not INamedTypeSymbol
-                    { IsSealed: true, TypeArguments: [INamedTypeSymbol embedding] }
+                { IsSealed: true, TypeArguments: [INamedTypeSymbol embedding] }
                 || !IsExactFrameworkType(embedding, "Microsoft.Extensions.AI.Embedding`1", sdkAssembly)
                 || embedding.TypeArguments is not [{ SpecialType: SpecialType.System_Single }]
                 || !IsExactFrameworkType(getter.ContainingType,
@@ -26763,9 +26774,9 @@ internal static partial class HostedGrimoireProducerInventory
         }
 
         private static bool IsExactPrimitivePriorityQueue(ITypeSymbol type) => type is INamedTypeSymbol
-            {
-                TypeArguments: [_, INamedTypeSymbol priority],
-            } queue
+        {
+            TypeArguments: [_, INamedTypeSymbol priority],
+        } queue
             && IsExactFrameworkType(queue, "System.Collections.Generic.PriorityQueue`2", typeof(PriorityQueue<,>).Assembly.GetName())
             && IsExactFrameworkType(priority.TupleUnderlyingType ?? priority, "System.ValueTuple`3", typeof(object).Assembly.GetName())
             && priority.TypeArguments is
@@ -29306,6 +29317,7 @@ internal static partial class HostedGrimoireProducerInventory
                 "OpenAI.OpenAIClientOptions" => typeof(OpenAI.OpenAIClientOptions).Assembly.GetName(),
                 _ when type.StartsWith("System.ClientModel.", StringComparison.Ordinal) => typeof(System.ClientModel.ApiKeyCredential).Assembly.GetName(),
                 "System.Collections.Generic.LinkedList`1" or "System.Collections.Generic.LinkedListNode`1" => typeof(LinkedList<>).Assembly.GetName(),
+                "System.Net.Http.HttpRequestException" => typeof(HttpRequestException).Assembly.GetName(),
                 "System.Range" => typeof(Range).Assembly.GetName(),
                 "System.Security.Cryptography.IncrementalHash" or "System.Security.Cryptography.SHA256" => typeof(SHA256).Assembly.GetName(),
                 _ when type.StartsWith("System.Text.Json.", StringComparison.Ordinal) => typeof(JsonDocument).Assembly.GetName(),
@@ -30202,10 +30214,10 @@ internal static partial class HostedGrimoireProducerInventory
                 || fieldReference.GetSyntax() is not VariableDeclaratorSyntax fieldDeclarator
                 || fieldDeclarator.Initializer?.Value is { } initializer
                     && (initializer is not ImplicitObjectCreationExpressionSyntax
-                        {
-                            ArgumentList.Arguments.Count: 0,
-                            Initializer: null,
-                        }
+                    {
+                        ArgumentList.Arguments.Count: 0,
+                        Initializer: null,
+                    }
                         and not ObjectCreationExpressionSyntax
                         {
                             ArgumentList: null or { Arguments.Count: 0 },
@@ -31396,6 +31408,7 @@ internal static partial class HostedGrimoireProducerInventory
             if (!hasCallableContext
                 && !typeCarriesCallableState
                 && !typeCarriesCleanupState
+                && !CarriesExactSystemClockDependency(target)
                 && !IsLongRestSdkSetupDependency(target)
                 && !hasReceiverValueContext
                 && !hasBoundReceiverContext)
@@ -31416,7 +31429,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (receiverContext is null
                 && receiver is not null
-                && typeCarriesCleanupState)
+                && (typeCarriesCleanupState || CarriesExactSystemClockDependency(target)))
             {
                 receiverContext = ResolveExactDiReceiverConstructorContext(
                     caller,
@@ -31500,7 +31513,7 @@ internal static partial class HostedGrimoireProducerInventory
                 if (activationArguments.Length == 0)
                 {
                     if (activation.Method.TypeArguments.LastOrDefault() is not
-                    { } registeredImplementation
+                        { } registeredImplementation
                         || !SameBoundType(
                             registeredImplementation,
                             activation.Model.Compilation,
@@ -31530,12 +31543,12 @@ internal static partial class HostedGrimoireProducerInventory
                         return null;
                     }
 
-                    return BindConstructedReadonlyFieldContext(selected with
+                    return BindConstructedReadonlyFieldContext(BindExactDiSystemClockArguments(selected with
                     {
                         ConstructorContexts = new HashSet<IMethodSymbol>(
                             [activationConstructor],
                             SymbolEqualityComparer.Default),
-                    });
+                    }));
                 }
 
                 if (activationArguments is not
@@ -31570,17 +31583,17 @@ internal static partial class HostedGrimoireProducerInventory
                         Expression: AnonymousFunctionExpressionSyntax factory,
                     }]
                 || (factory switch
+                {
+                    SimpleLambdaExpressionSyntax simple =>
+                        registration.Model.GetDeclaredSymbol(
+                            simple.Parameter),
+                    ParenthesizedLambdaExpressionSyntax
                     {
-                        SimpleLambdaExpressionSyntax simple =>
-                            registration.Model.GetDeclaredSymbol(
-                                simple.Parameter),
-                        ParenthesizedLambdaExpressionSyntax
-                        {
-                            ParameterList.Parameters:
-                                [ParameterSyntax parameter],
-                        } => registration.Model.GetDeclaredSymbol(parameter),
-                        _ => null,
-                    }) is not { } provider
+                        ParameterList.Parameters:
+                            [ParameterSyntax parameter],
+                    } => registration.Model.GetDeclaredSymbol(parameter),
+                    _ => null,
+                }) is not { } provider
                 || !IsExactFrameworkType(
                     provider.Type,
                     "System.IServiceProvider",
@@ -34019,11 +34032,11 @@ internal static partial class HostedGrimoireProducerInventory
                     Body.Statements:
                     [
                         IfStatementSyntax
-                        {
-                            Else: null,
-                            Condition: BinaryExpressionSyntax guard,
-                            Statement: BlockSyntax { Statements: [ThrowStatementSyntax unsupported] },
-                        },
+                    {
+                        Else: null,
+                        Condition: BinaryExpressionSyntax guard,
+                        Statement: BlockSyntax { Statements: [ThrowStatementSyntax unsupported] },
+                    },
                         ReturnStatementSyntax { Expression: InvocationExpressionSyntax asCall },
                     ],
                 }
@@ -34184,28 +34197,28 @@ internal static partial class HostedGrimoireProducerInventory
             // These are the compiler's exact throw-expression adaptation and
             // framework exception upcast, not primitive numeric conversions.
             return operation is IConversionOperation
+            {
+                IsImplicit: true,
+                IsChecked: false,
+                IsTryCast: false,
+                OperatorMethod: null,
+                Type.SpecialType: SpecialType.System_Byte,
+                Conversion: { Exists: true, IsIdentity: false, IsNumeric: false, IsReference: false, IsUserDefined: false, MethodSymbol: null },
+                Operand: IThrowOperation
                 {
-                    IsImplicit: true,
-                    IsChecked: false,
-                    IsTryCast: false,
-                    OperatorMethod: null,
-                    Type.SpecialType: SpecialType.System_Byte,
-                    Conversion: { Exists: true, IsIdentity: false, IsNumeric: false, IsReference: false, IsUserDefined: false, MethodSymbol: null },
-                    Operand: IThrowOperation
+                    Type: null,
+                    IsImplicit: false,
+                    Exception: IConversionOperation
                     {
-                        Type: null,
-                        IsImplicit: false,
-                        Exception: IConversionOperation
-                        {
-                            IsImplicit: true,
-                            IsChecked: false,
-                            IsTryCast: false,
-                            OperatorMethod: null,
-                            Conversion: { Exists: true, IsIdentity: false, IsNumeric: false, IsReference: true, IsUserDefined: false, MethodSymbol: null },
-                            Operand: IObjectCreationOperation { IsImplicit: false, Constructor: { } constructor, Initializer: null } creation,
-                        } upcast,
-                    } thrown,
-                }
+                        IsImplicit: true,
+                        IsChecked: false,
+                        IsTryCast: false,
+                        OperatorMethod: null,
+                        Conversion: { Exists: true, IsIdentity: false, IsNumeric: false, IsReference: true, IsUserDefined: false, MethodSymbol: null },
+                        Operand: IObjectCreationOperation { IsImplicit: false, Constructor: { } constructor, Initializer: null } creation,
+                    } upcast,
+                } thrown,
+            }
                 && operation.Syntax == syntax && thrown.Syntax == syntax
                 && upcast.Syntax == syntax.Expression && creation.Syntax == syntax.Expression
                 && SymbolEqualityComparer.Default.Equals(upcast.Type, member.Model.Compilation.GetTypeByMetadataName("System.Exception"))
@@ -34718,7 +34731,7 @@ internal static partial class HostedGrimoireProducerInventory
                 return false;
             }
 
-            if (RequiresSourceProvenance(parameter.Type))
+            if (RequiresSourceProvenance(parameter.Type) || IsExactSystemClockType(parameter.Type))
             {
                 return true;
             }
@@ -34733,8 +34746,14 @@ internal static partial class HostedGrimoireProducerInventory
                 // record still needs the actual argument preserved. Keeping the demand for a pure
                 // closed-value comparison would split every caller of a one-line comparison helper into
                 // one state per call site.
-                if (UserDefinedOperatorAt(target, expression) is { Method: { IsImplicitlyDeclared: true,
-                        ContainingType.IsRecord: true, Name: "op_Equality" or "op_Inequality" } } equality
+                if (UserDefinedOperatorAt(target, expression) is
+                    {
+                        Method:
+                        {
+                            IsImplicitlyDeclared: true,
+                            ContainingType.IsRecord: true, Name: "op_Equality" or "op_Inequality"
+                        }
+                    } equality
                     && equality.Operands.Any(operand => operand.Syntax is ExpressionSyntax source
                         && ExpressionDependsOnSymbol(target, source, parameter,
                             new HashSet<ISymbol>(SymbolEqualityComparer.Default), symbols: dependencySymbols))
@@ -34793,7 +34812,7 @@ internal static partial class HostedGrimoireProducerInventory
                                 && ExpressionDependsOnSymbol(target, expression, parameter,
                                     new HashSet<ISymbol>(SymbolEqualityComparer.Default), symbols: dependencySymbols))
                         || IsExactPrimitiveQueueMember(method) && target.Model.GetOperation(use) is IInvocationOperation
-                            { Instance.Syntax: ExpressionSyntax receiver }
+                        { Instance.Syntax: ExpressionSyntax receiver }
                             && ExpressionDependsOnSymbol(target, receiver, parameter,
                                 new HashSet<ISymbol>(SymbolEqualityComparer.Default), symbols: dependencySymbols)))
                 {
@@ -36958,7 +36977,7 @@ internal static partial class HostedGrimoireProducerInventory
                     || member.Model.GetOperation(payload) is not
                         (ILiteralOperation or ILocalReferenceOperation or IParameterReferenceOperation)
                     || member.Model.GetTypeInfo(payload).Type is not
-                        { SpecialType: SpecialType.System_String } payloadType
+                    { SpecialType: SpecialType.System_String } payloadType
                     || CanCarryAdmissionHandle(payloadType, []))
                 {
                     return false;
@@ -38593,16 +38612,21 @@ internal static partial class HostedGrimoireProducerInventory
                 && IsExactFrameworkType(definition.ContainingType, "Microsoft.Extensions.AI.OpenAIClientExtensions",
                     typeof(Microsoft.Extensions.AI.OpenAIClientExtensions).Assembly.GetName())
                 && definition.Parameters is [{ RefKind: RefKind.None } client,
-                    { RefKind: RefKind.None, IsOptional: true, HasExplicitDefaultValue: true, ExplicitDefaultValue: null,
-                        Type: INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Int32 }] } dimensions }]
+                {
+                    RefKind: RefKind.None, IsOptional: true, HasExplicitDefaultValue: true, ExplicitDefaultValue: null,
+                    Type: INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Int32 }] } dimensions
+                }]
                 && IsExactFrameworkType(client.Type, "OpenAI.Embeddings.EmbeddingClient", typeof(OpenAI.Embeddings.EmbeddingClient).Assembly.GetName())
                 && IsExactFrameworkType(dimensions, "System.Nullable`1", typeof(object).Assembly.GetName())
                 && IsExactEmbeddingGeneratorContract(definition.ReturnType);
         }
 
         private static bool IsExactEmbeddingGeneratorContract(ITypeSymbol type) =>
-            type is INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_String },
-                INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Single }] } embedding] } generator
+            type is INamedTypeSymbol
+            {
+                TypeArguments: [{ SpecialType: SpecialType.System_String },
+                INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Single }] } embedding]
+            } generator
             && IsExactFrameworkType(generator, "Microsoft.Extensions.AI.IEmbeddingGenerator`2", typeof(Microsoft.Extensions.AI.IEmbeddingGenerator<,>).Assembly.GetName())
             && IsExactFrameworkType(embedding, "Microsoft.Extensions.AI.Embedding`1", typeof(Microsoft.Extensions.AI.Embedding<>).Assembly.GetName());
 
@@ -40366,104 +40390,104 @@ internal static partial class HostedGrimoireProducerInventory
                     case IInvocationOperation invocation
                         when IsOptionsBuilderValue(invocation.Instance)
                             || invocation.Arguments.Any(argument => IsOptionsBuilderValue(argument.Value)):
-                    {
-                        IMethodSymbol method = invocation.TargetMethod;
-
-                        IMethodSymbol definition = method.ReducedFrom ?? method;
-
-                        if (IsExactSqliteOptionsBuilderCall(method))
                         {
-                            // H2: only the connection-string overload selects SQLite's own
-                            // connection; a DbConnection argument can be any (derived) connection. The
-                            // interceptor and model facts do not depend on which connection it is.
-                            if (facts is null && definition.Parameters is not [_, { Type.SpecialType: SpecialType.System_String }, ..])
+                            IMethodSymbol method = invocation.TargetMethod;
+
+                            IMethodSymbol definition = method.ReducedFrom ?? method;
+
+                            if (IsExactSqliteOptionsBuilderCall(method))
                             {
-                                return false;
-                            }
-
-                            break;
-                        }
-
-                        if (TypeKey(definition.ContainingType) is
-                                "Microsoft.EntityFrameworkCore.DbContextOptionsBuilder"
-                                or "Microsoft.EntityFrameworkCore.DbContextOptionsBuilder`1"
-                            && NonProviderOptionsBuilderMembers.Contains(definition.Name)
-                            && !definition.Locations.Any(static location => location.IsInSource)
-                            && AssemblyIdentityMatches(
-                                definition.ContainingAssembly.Identity,
-                                typeof(Microsoft.EntityFrameworkCore.DbContextOptionsBuilder).Assembly.GetName()))
-                        {
-                            // The provider certificate admits only interceptors that cannot hand EF another connection,
-                            // command or reader. The facts walk collects every interceptor instead, because their
-                            // callbacks are traversed at the operations that raise them.
-                            if (facts is null
-                                && definition.Name == "AddInterceptors"
-                                && !InterceptorsCannotReplaceConnection(invocation, model))
-                            {
-                                return false;
-                            }
-
-                            if (facts is not null)
-                            {
-                                if (definition.Name == "UseModel"
-                                    && unconditional
-                                    && invocation.Syntax is InvocationExpressionSyntax useModel
-                                    && CallExecutesUnconditionallyWithin(scope, useModel)
-                                    && invocation.Arguments.LastOrDefault() is { } suppliedModel
-                                    && suppliedModel.Value.ConstantValue is not { HasValue: true, Value: null })
-                                {
-                                    facts.ModelSupplied = true;
-                                }
-                                else if (definition.Name == "AddInterceptors")
-                                {
-                                    CollectInterceptors(invocation, model, facts);
-                                }
-                            }
-
-                            break;
-                        }
-
-                        if (Resolve(method, model.Compilation) is { } target)
-                        {
-                            // H5b: the helper must receive the builder as a builder; an
-                            // object/generic parameter hides later uses from this walk.
-                            if (invocation.Arguments.Any(argument => IsOptionsBuilderValue(argument.Value)
-                                && !IsOptionsBuilderType(argument.Parameter?.Type)))
-                            {
-                                return false;
-                            }
-
-                            GraphMemberIdentity identity = MemberIdentity(target);
-
-                            if (!path.Add(identity))
-                            {
-                                break;
-                            }
-
-                            try
-                            {
-                                if (!BuilderScopeCannotChangeProvider(
-                                    target.Syntax,
-                                    target.Model,
-                                    path,
-                                    facts,
-                                    unconditional
-                                        && invocation.Syntax is InvocationExpressionSyntax helperCall
-                                        && CallExecutesUnconditionallyWithin(scope, helperCall)))
+                                // H2: only the connection-string overload selects SQLite's own
+                                // connection; a DbConnection argument can be any (derived) connection. The
+                                // interceptor and model facts do not depend on which connection it is.
+                                if (facts is null && definition.Parameters is not [_, { Type.SpecialType: SpecialType.System_String }, ..])
                                 {
                                     return false;
                                 }
+
+                                break;
                             }
-                            finally
+
+                            if (TypeKey(definition.ContainingType) is
+                                    "Microsoft.EntityFrameworkCore.DbContextOptionsBuilder"
+                                    or "Microsoft.EntityFrameworkCore.DbContextOptionsBuilder`1"
+                                && NonProviderOptionsBuilderMembers.Contains(definition.Name)
+                                && !definition.Locations.Any(static location => location.IsInSource)
+                                && AssemblyIdentityMatches(
+                                    definition.ContainingAssembly.Identity,
+                                    typeof(Microsoft.EntityFrameworkCore.DbContextOptionsBuilder).Assembly.GetName()))
                             {
-                                _ = path.Remove(identity);
+                                // The provider certificate admits only interceptors that cannot hand EF another connection,
+                                // command or reader. The facts walk collects every interceptor instead, because their
+                                // callbacks are traversed at the operations that raise them.
+                                if (facts is null
+                                    && definition.Name == "AddInterceptors"
+                                    && !InterceptorsCannotReplaceConnection(invocation, model))
+                                {
+                                    return false;
+                                }
+
+                                if (facts is not null)
+                                {
+                                    if (definition.Name == "UseModel"
+                                        && unconditional
+                                        && invocation.Syntax is InvocationExpressionSyntax useModel
+                                        && CallExecutesUnconditionallyWithin(scope, useModel)
+                                        && invocation.Arguments.LastOrDefault() is { } suppliedModel
+                                        && suppliedModel.Value.ConstantValue is not { HasValue: true, Value: null })
+                                    {
+                                        facts.ModelSupplied = true;
+                                    }
+                                    else if (definition.Name == "AddInterceptors")
+                                    {
+                                        CollectInterceptors(invocation, model, facts);
+                                    }
+                                }
+
+                                break;
                             }
 
-                            break;
-                        }
+                            if (Resolve(method, model.Compilation) is { } target)
+                            {
+                                // H5b: the helper must receive the builder as a builder; an
+                                // object/generic parameter hides later uses from this walk.
+                                if (invocation.Arguments.Any(argument => IsOptionsBuilderValue(argument.Value)
+                                    && !IsOptionsBuilderType(argument.Parameter?.Type)))
+                                {
+                                    return false;
+                                }
 
-                        return false;
-                    }
+                                GraphMemberIdentity identity = MemberIdentity(target);
+
+                                if (!path.Add(identity))
+                                {
+                                    break;
+                                }
+
+                                try
+                                {
+                                    if (!BuilderScopeCannotChangeProvider(
+                                        target.Syntax,
+                                        target.Model,
+                                        path,
+                                        facts,
+                                        unconditional
+                                            && invocation.Syntax is InvocationExpressionSyntax helperCall
+                                            && CallExecutesUnconditionallyWithin(scope, helperCall)))
+                                    {
+                                        return false;
+                                    }
+                                }
+                                finally
+                                {
+                                    _ = path.Remove(identity);
+                                }
+
+                                break;
+                            }
+
+                            return false;
+                        }
 
                     case IObjectCreationOperation creation
                         when creation.Arguments.Any(argument => IsOptionsBuilderValue(argument.Value)):
@@ -41020,16 +41044,16 @@ internal static partial class HostedGrimoireProducerInventory
                 }
 
                 return statement is IfStatementSyntax
+                {
+                    Else: null,
+                    Condition: MemberAccessExpressionSyntax
                     {
-                        Else: null,
-                        Condition: MemberAccessExpressionSyntax
-                        {
-                            Name.Identifier.ValueText: "IsConfigured",
-                            Expression: IdentifierNameSyntax guarded,
-                        },
-                        Statement: ReturnStatementSyntax { Expression: null }
+                        Name.Identifier.ValueText: "IsConfigured",
+                        Expression: IdentifierNameSyntax guarded,
+                    },
+                    Statement: ReturnStatementSyntax { Expression: null }
                             or BlockSyntax { Statements: [ReturnStatementSyntax { Expression: null }] },
-                    }
+                }
                     && SymbolEqualityComparer.Default.Equals(
                         model.GetSymbolInfo(guarded).Symbol,
                         builder);
@@ -41768,10 +41792,10 @@ internal static partial class HostedGrimoireProducerInventory
                     new CleanupProvenanceContext());
 
                 completeExactCandidateValueFlow = candidateFlow is
-                    {
-                        Complete: true,
-                        Values.Count: > 0,
-                    }
+                {
+                    Complete: true,
+                    Values.Count: > 0,
+                }
                     && candidateFlow.Values.All(source =>
                     {
                         ExpressionSyntax exactSource = ExactNonThrowingValue(
@@ -44041,13 +44065,13 @@ internal static partial class HostedGrimoireProducerInventory
             if (receiverExpression is not CastExpressionSyntax cast
                 || member.Model.GetTypeInfo(cast).Type is not
                     INamedTypeSymbol
-                    {
-                        IsSealed: true,
-                        TypeKind: TypeKind.Class,
-                        DeclaredAccessibility: Accessibility.Private
+                {
+                    IsSealed: true,
+                    TypeKind: TypeKind.Class,
+                    DeclaredAccessibility: Accessibility.Private
                             or Accessibility.Internal
                             or Accessibility.ProtectedAndInternal,
-                    } castType
+                } castType
                 || !SameBoundType(
                     castType,
                     member.Model.Compilation,
@@ -44057,15 +44081,15 @@ internal static partial class HostedGrimoireProducerInventory
                 || property.IsStatic
                 || property.Parameters.Length != 0
                 || property.GetMethod is not
-                    {
-                        IsStatic: false,
-                        IsVirtual: false,
-                    }
+                {
+                    IsStatic: false,
+                    IsVirtual: false,
+                }
                 || property.SetMethod is
-                    {
-                        IsStatic: false,
-                        IsInitOnly: false,
-                    }
+                {
+                    IsStatic: false,
+                    IsInitOnly: false,
+                }
                 || property.DeclaringSyntaxReferences is not
                     [SyntaxReference propertyReference]
                 || !semanticModels.TryGetValue(
@@ -44162,10 +44186,10 @@ internal static partial class HostedGrimoireProducerInventory
                         .Any(expression =>
                             model.GetTypeInfo(expression).Type is
                                 INamedTypeSymbol
-                                {
-                                    TypeKind: not TypeKind.Error,
-                                    ContainingAssembly: not null,
-                                } expressionType
+                            {
+                                TypeKind: not TypeKind.Error,
+                                ContainingAssembly: not null,
+                            } expressionType
                             && SameBoundType(
                                 expressionType,
                                 model.Compilation,
@@ -44191,10 +44215,10 @@ internal static partial class HostedGrimoireProducerInventory
                     .Any(withExpression =>
                         model.GetTypeInfo(withExpression).Type is
                             INamedTypeSymbol
-                            {
-                                TypeKind: not TypeKind.Error,
-                                ContainingAssembly: not null,
-                            } withType
+                        {
+                            TypeKind: not TypeKind.Error,
+                            ContainingAssembly: not null,
+                        } withType
                         && SameBoundType(
                             withType,
                             compilation,
@@ -44211,10 +44235,10 @@ internal static partial class HostedGrimoireProducerInventory
                     .Where(creation =>
                         model.GetTypeInfo(creation).Type is
                             INamedTypeSymbol
-                            {
-                                TypeKind: not TypeKind.Error,
-                                ContainingAssembly: not null,
-                            } createdType
+                        {
+                            TypeKind: not TypeKind.Error,
+                            ContainingAssembly: not null,
+                        } createdType
                         && SameBoundType(
                             createdType,
                             compilation,
@@ -46252,7 +46276,7 @@ internal static partial class HostedGrimoireProducerInventory
                 && ResolveConstructorContextTarget(
                     constructor,
                     exactReceiver.Caller.Model.Compilation) is
-                    { } constructorTarget)
+                { } constructorTarget)
             {
                 AuthoredMember constructed = BindConstructedReadonlyFieldContext(
                     BindCleanupConstructorArguments(
@@ -46909,10 +46933,10 @@ internal static partial class HostedGrimoireProducerInventory
                         BaseObjectCreationExpressionSyntax creation
                     || source.Caller.Model.GetTypeInfo(creation).Type is not
                         INamedTypeSymbol
-                        {
-                            IsSealed: true,
-                            IsAbstract: false,
-                        } concrete
+                    {
+                        IsSealed: true,
+                        IsAbstract: false,
+                    } concrete
                     || !IsAuthoredCleanupSymbol(
                         concrete,
                         source.Caller.Model.Compilation))
@@ -46993,15 +47017,15 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (member.Model.GetSymbolInfo(receiver).Symbol is not
                     IPropertySymbol
-                    {
-                        IsStatic: true,
-                        SetMethod: null,
-                        Parameters.Length: 0,
-                        DeclaredAccessibility: Accessibility.Private
+                {
+                    IsStatic: true,
+                    SetMethod: null,
+                    Parameters.Length: 0,
+                    DeclaredAccessibility: Accessibility.Private
                             or Accessibility.Internal,
-                        DeclaringSyntaxReferences:
+                    DeclaringSyntaxReferences:
                             [SyntaxReference propertyReference],
-                    } property
+                } property
                 || !SameBoundType(
                     property.Type,
                     member.Model.Compilation,
@@ -47009,34 +47033,34 @@ internal static partial class HostedGrimoireProducerInventory
                     member.Model.Compilation)
                 || propertyReference.GetSyntax() is not
                     PropertyDeclarationSyntax
-                    {
-                        Initializer.Value:
+                {
+                    Initializer.Value:
                             BaseObjectCreationExpressionSyntax initializer,
-                        AccessorList.Accessors: var accessors,
-                    }
+                    AccessorList.Accessors: var accessors,
+                }
                 || accessors.Count != 1
                 || accessors[0] is not
-                    {
-                        RawKind: (int)SyntaxKind.GetAccessorDeclaration,
-                        Body: null,
-                        ExpressionBody: null,
-                    }
+                {
+                    RawKind: (int)SyntaxKind.GetAccessorDeclaration,
+                    Body: null,
+                    ExpressionBody: null,
+                }
                 || !semanticModels.TryGetValue(
                     initializer.SyntaxTree,
                     out SemanticModel? model)
                 || !ReferenceEquals(model.Compilation, member.Model.Compilation)
                 || model.GetOperation(initializer) is not
                     IObjectCreationOperation
+                {
+                    Arguments.Length: 0,
+                    Initializer: null,
+                    Type: INamedTypeSymbol
                     {
-                        Arguments.Length: 0,
-                        Initializer: null,
-                        Type: INamedTypeSymbol
-                            {
-                                IsSealed: true,
-                                IsAbstract: false,
-                                DeclaredAccessibility: Accessibility.Private,
-                            } created,
-                    }
+                        IsSealed: true,
+                        IsAbstract: false,
+                        DeclaredAccessibility: Accessibility.Private,
+                    } created,
+                }
                 || !SymbolEqualityComparer.Default.Equals(
                     created.ContainingType,
                     property.ContainingType)
@@ -47210,18 +47234,18 @@ internal static partial class HostedGrimoireProducerInventory
             if (expression is not BaseObjectCreationExpressionSyntax creation
                 || possible.Caller.Model.GetSymbolInfo(creation).Symbol is not
                     IMethodSymbol
-                    {
-                        MethodKind: MethodKind.Constructor,
-                        IsStatic: false,
-                        Parameters: [IParameterSymbol parameter],
-                    } constructor
+                {
+                    MethodKind: MethodKind.Constructor,
+                    IsStatic: false,
+                    Parameters: [IParameterSymbol parameter],
+                } constructor
                 || valueProperty.ContainingType is not
                     INamedTypeSymbol
-                    {
-                        IsSealed: true,
-                        OriginalDefinition.TypeParameters:
+                {
+                    IsSealed: true,
+                    OriginalDefinition.TypeParameters:
                             [ITypeParameterSymbol valueTypeParameter],
-                    } wrapper
+                } wrapper
                 || !SameBoundTypeOrGenericDefinition(
                     constructor.ContainingType,
                     wrapper,
@@ -47753,9 +47777,9 @@ internal static partial class HostedGrimoireProducerInventory
                 || writer.Symbol.IsVirtual
                 || writer.Symbol.IsOverride
                 || writer.Symbol.ContainingType is not
-                    {
-                        IsSealed: true,
-                    }
+                {
+                    IsSealed: true,
+                }
                 || !active.Add(identity))
             {
                 return Reject();
@@ -47888,7 +47912,7 @@ internal static partial class HostedGrimoireProducerInventory
                     if (model.GetEnclosingSymbol(call.SpanStart) is not
                             IMethodSymbol enclosing
                         || Resolve(enclosing, model.Compilation) is not
-                            { } caller
+                        { } caller
                         || !SameBoundType(
                             caller.Symbol.ContainingType,
                             caller.Model.Compilation,
@@ -49830,10 +49854,10 @@ internal static partial class HostedGrimoireProducerInventory
                     defaultExpression.SyntaxTree,
                     out SemanticModel? defaultModel)
                 || defaultModel.GetConstantValue(defaultExpression) is not
-                    {
-                        HasValue: true,
-                        Value: null,
-                    }
+                {
+                    HasValue: true,
+                    Value: null,
+                }
                 || !IsSemanticallyEmptyCleanupValue(
                     defaultModel,
                     defaultExpression))
@@ -51065,13 +51089,13 @@ internal static partial class HostedGrimoireProducerInventory
                 || AdmissionReceiver(member, call) is not { } receiver
                 || receiver is not (IdentifierNameSyntax or MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax })
                 || member.Model.GetSymbolInfo(receiver).Symbol is not IFieldSymbol
-                    { IsReadOnly: true, IsStatic: false, DeclaredAccessibility: Accessibility.Private } field
+                { IsReadOnly: true, IsStatic: false, DeclaredAccessibility: Accessibility.Private } field
                 || !SymbolEqualityComparer.Default.Equals(field.ContainingType, member.Symbol.ContainingType)
                 || ExactReadOnlyFieldValues(member, receiver, field) is not [BoundValueSource source]
                 || !TryNormalizeBuiltInCleanupValue(source.Caller.Model, source.Expression, out ExpressionSyntax literal)
                 || literal is not BaseObjectCreationExpressionSyntax creation
                 || source.Caller.Model.GetOperation(creation) is not IObjectCreationOperation
-                    { Type: INamedTypeSymbol { IsSealed: true, IsAbstract: false } concrete, Constructor: not null }
+                { Type: INamedTypeSymbol { IsSealed: true, IsAbstract: false } concrete, Constructor: not null }
                 || !IsAuthoredCleanupSymbol(concrete, source.Caller.Model.Compilation)) return null;
 
             Dictionary<ISymbol, ITypeSymbol> bindings = new(SymbolEqualityComparer.Default);
@@ -51326,9 +51350,9 @@ internal static partial class HostedGrimoireProducerInventory
                     Body.Statements:
                     [
                         ReturnStatementSyntax
-                        {
-                            Expression: InvocationExpressionSyntax returnCall,
-                        },
+                    {
+                        Expression: InvocationExpressionSyntax returnCall,
+                    },
                     ],
                 } => returnCall,
                 LocalFunctionStatementSyntax
@@ -51341,9 +51365,9 @@ internal static partial class HostedGrimoireProducerInventory
                     Body.Statements:
                     [
                         ReturnStatementSyntax
-                        {
-                            Expression: InvocationExpressionSyntax returnCall,
-                        },
+                    {
+                        Expression: InvocationExpressionSyntax returnCall,
+                    },
                     ],
                 } => returnCall,
                 _ => null,
@@ -51375,7 +51399,7 @@ internal static partial class HostedGrimoireProducerInventory
                     [IArgumentOperation { Parameter: { } targetParameter }]
                 || targetParameter.Ordinal >= target.Symbol.Parameters.Length
                 || target.Symbol.Parameters[targetParameter.Ordinal] is not
-                    { RefKind: RefKind.Out } exactTargetParameter
+                { RefKind: RefKind.Out } exactTargetParameter
                 || member.Syntax.DescendantNodesAndSelf(node =>
                         node == member.Syntax
                         || node is not AnonymousFunctionExpressionSyntax
