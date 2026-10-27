@@ -97,7 +97,7 @@ public interface ISagaMemoryStore
     Task<int> CountBySessionAsync(Guid sessionId, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Paginated listing, optionally filtered by a case-insensitive substring match on
+    /// Paginated listing, optionally filtered by a Unicode ordinal case-insensitive literal substring match on
     /// <c>Content</c> and/or an exact <c>SessionId</c> match. Ordered by <c>CreatedAt DESC</c>.
     /// </summary>
     /// <remarks>
