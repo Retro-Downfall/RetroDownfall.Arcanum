@@ -27,12 +27,21 @@ public sealed record RaptorNeighborGraph(
 
     public long MemoEvictions { get; init; }
 
+    /// <summary>Actual forward Heap.Add checks, separate from scalar and memo work.</summary>
+    public long ForwardHeapChecks { get; init; }
+
+    /// <summary>Candidate membership visits, including enumeration without scalar work.</summary>
+    public long PairEnumerationVisits { get; init; }
+
+    /// <summary>Transpose, cursor, marker and target flat-array payload bytes.</summary>
+    public long PairEnumerationAllocatedBytes { get; init; }
+
     /// <summary>Bounded flat-array payload bytes; excludes ordinary object/array headers.</summary>
     public long MemoAllocatedBytes { get; init; }
 }
 
 /// <summary>Content-free bounded search progress; optional observers do not participate in arithmetic.</summary>
-public readonly record struct RaptorNeighborProgress(string Phase, long DistanceEvaluations, long WorkSteps = 0, long MemoHits = 0, long MemoEvictions = 0, int InitializedRows = 0, int ProcessedRows = 0, int Pass = 0);
+public readonly record struct RaptorNeighborProgress(string Phase, long DistanceEvaluations, long WorkSteps = 0, long MemoHits = 0, long MemoEvictions = 0, int InitializedRows = 0, int ProcessedRows = 0, int Pass = 0, long PairEnumerationVisits = 0);
 
 /// <summary>
 /// First-party scalar cosine kNN. Large inputs use seeded median random-projection trees followed
@@ -43,6 +52,12 @@ public readonly record struct RaptorNeighborProgress(string Phase, long Distance
 public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>? progress = null)
 {
     private static RaptorNumericOptions Options => RaptorAlgorithmManifest.Current.Options;
+
+    /// <summary>Copies complete logical round state only for same-runtime test comparisons.</summary>
+    internal Action<int, bool, ReadOnlyMemory<int>, ReadOnlyMemory<int>, ReadOnlyMemory<double>, ReadOnlyMemory<bool>>? RoundStateForTesting { get; init; }
+
+    /// <summary>Tests supply the frozen original pair visitation; production never selects a fallback.</summary>
+    internal Func<ReadOnlyMemory<int>, ReadOnlyMemory<int>, ReadOnlyMemory<bool>, CancellationToken, IEnumerable<(int Left, int Right)>>? PairOrderForTesting { get; init; }
 
     /// <summary>
     /// Requires distinct nonblank ids and finite nonzero equal-width vectors. k is in [1,n], or
@@ -137,7 +152,7 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
 
         int width = exact ? neighbors - 1 : (int)Math.Min(count - 1L, Math.Max(Options.NeighborMinimumSearchWidth, (long)(neighbors - 1) * Options.NeighborSearchMultiplier));
 
-        Search search = new(vectors, width, !exact && neighbors > 1, cancellationToken, progress);
+        Search search = new(vectors, width, !exact && neighbors > 1, cancellationToken, progress, PairOrderForTesting, RoundStateForTesting);
 
         int iterations = 0;
 
@@ -195,6 +210,9 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
             MemoLookups = search.MemoLookups,
             MemoHits = search.MemoHits,
             MemoEvictions = search.MemoEvictions,
+            ForwardHeapChecks = search.ForwardHeapChecks,
+            PairEnumerationVisits = search.PairEnumerationVisits,
+            PairEnumerationAllocatedBytes = search.PairEnumerationAllocatedBytes,
             MemoAllocatedBytes = search.MemoAllocatedBytes,
         };
     }
@@ -224,7 +242,14 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
         return true;
     }
 
-    private sealed class Search(double[][] vectors, int width, bool useMemo, CancellationToken cancellationToken, IProgress<RaptorNeighborProgress>? observer)
+    private sealed class Search(
+        double[][] vectors,
+        int width,
+        bool useMemo,
+        CancellationToken cancellationToken,
+        IProgress<RaptorNeighborProgress>? observer,
+        Func<ReadOnlyMemory<int>, ReadOnlyMemory<int>, ReadOnlyMemory<bool>, CancellationToken, IEnumerable<(int Left, int Right)>>? pairOrder,
+        Action<int, bool, ReadOnlyMemory<int>, ReadOnlyMemory<int>, ReadOnlyMemory<double>, ReadOnlyMemory<bool>>? roundState)
     {
         internal Heap[] Heaps { get; } = Enumerable.Range(0, vectors.Length).Select(_ => new Heap(width)).ToArray();
 
@@ -233,6 +258,12 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
         private readonly PairMemo? _memo = useMemo ? new(vectors.Length, width, vectors[0].Length) : null;
 
         internal long Requests { get; private set; }
+
+        internal long ForwardHeapChecks { get; private set; }
+
+        internal long PairEnumerationVisits { get; private set; }
+
+        internal long PairEnumerationAllocatedBytes { get; private set; }
 
         internal long MemoLookups { get; private set; }
 
@@ -248,9 +279,11 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
 
         private string _phase = "exact";
 
-        private double Distance(int left, int right)
+        private double Distance(int left, int right, out bool reused)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            reused = false;
 
             Requests++;
 
@@ -266,6 +299,8 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
                 if (_memo.TryGet(key, out double cached))
                 {
                     MemoHits++;
+
+                    reused = true;
 
                     ReportWork();
 
@@ -305,7 +340,7 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
             // remain truthful and must not be used as the sole progress/cancellation clock.
             if (observer is not null && Requests % Options.NeighborProgressInterval == 0)
             {
-                observer.Report(new(_phase, Evaluations, Requests, MemoHits, MemoEvictions, vectors.Length, _processedRows, _pass));
+                observer.Report(new(_phase, Evaluations, Requests, MemoHits, MemoEvictions, vectors.Length, _processedRows, _pass, PairEnumerationVisits));
 
                 cancellationToken.ThrowIfCancellationRequested();
             }
@@ -321,7 +356,7 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
 
             if (observer is not null && rows % Options.NeighborProgressInterval == 0)
             {
-                observer.Report(new(_phase, Evaluations, Requests, MemoHits, MemoEvictions, vectors.Length, rows, pass));
+                observer.Report(new(_phase, Evaluations, Requests, MemoHits, MemoEvictions, vectors.Length, rows, pass, PairEnumerationVisits));
 
                 cancellationToken.ThrowIfCancellationRequested();
             }
@@ -334,9 +369,19 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
                 return 0;
             }
 
-            double distance = Distance(left, right);
+            double distance = Distance(left, right, out bool reused);
+
+            // A cached pair completed a prior Join in this continuing Search. Forward heaps
+            // never clear and their total distance/index thresholds only tighten: a resident
+            // pair is a duplicate, and an evicted/rejected pair cannot improve either heap now.
+            // Its two Add calls are therefore proven no-ops, including their IsNew flags.
+            if (reused) return 0;
+
+            ForwardHeapChecks++;
 
             int changes = Heaps[left].Add(new(right, distance, true)) ? 1 : 0;
+
+            ForwardHeapChecks++;
 
             return changes + (Heaps[right].Add(new(left, distance, true)) ? 1 : 0);
         }
@@ -527,6 +572,20 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
 
             int[] sizes = new int[vectors.Length];
 
+            // One reference per candidate slot plus four linear arrays, never an n-by-n table.
+            // The checked candidate length already bounds every prefix sum and encoded slot.
+            int[] memberships = new int[candidates.Length];
+
+            int[] offsets = new int[checked(vectors.Length + 1)];
+
+            int[] cursors = new int[vectors.Length];
+
+            int[] markers = new int[vectors.Length];
+
+            int[] targets = new int[vectors.Length];
+
+            PairEnumerationAllocatedBytes = ((long)candidates.Length + 4L * vectors.Length + 1) * sizeof(int);
+
             for (int iteration = 0; iteration < Options.NeighborMaximumIterations; iteration++)
             {
                 for (int row = 0; row < vectors.Length; row++)
@@ -589,33 +648,42 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
 
                 long changes = 0;
 
-                for (int row = 0; row < vectors.Length; row++)
+                if (pairOrder is { } reference)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    var snapshot = CandidateSnapshot(candidates, sizes);
 
-                    int offset = row * width * 2;
+                    roundState?.Invoke(iteration + 1, true, snapshot.Offsets, snapshot.Indices, snapshot.Distances, snapshot.New);
 
-                    // Only actual join work reports the established "descent" phase.
                     _phase = "descent";
 
-                    _processedRows = row;
+                    _processedRows = 0;
 
                     _pass = iteration + 1;
 
-                    for (int left = 0; left < sizes[row]; left++)
+                    foreach ((int left, int right) in reference(snapshot.Offsets, snapshot.Indices, snapshot.New, cancellationToken))
                     {
-                        for (int right = left + 1; right < sizes[row]; right++)
-                        {
-                            Entry a = candidates[offset + left];
+                        cancellationToken.ThrowIfCancellationRequested();
 
-                            Entry b = candidates[offset + right];
-
-                            if (a.IsNew || b.IsNew)
-                            {
-                                changes += Join(a.Index, b.Index);
-                            }
-                        }
+                        changes += Join(left, right);
                     }
+                }
+                else
+                {
+                    if (roundState is not null)
+                    {
+                        var snapshot = CandidateSnapshot(candidates, sizes);
+
+                        roundState(iteration + 1, true, snapshot.Offsets, snapshot.Indices, snapshot.Distances, snapshot.New);
+                    }
+
+                    changes = JoinFrozenPairs(candidates, sizes, memberships, offsets, cursors, markers, targets, iteration + 1);
+                }
+
+                if (roundState is not null)
+                {
+                    var snapshot = ForwardSnapshot();
+
+                    roundState(iteration + 1, false, snapshot.Offsets, snapshot.Indices, snapshot.Distances, snapshot.New);
                 }
 
                 if (changes == 0)
@@ -625,6 +693,180 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
             }
 
             return Options.NeighborMaximumIterations;
+        }
+
+        private long JoinFrozenPairs(Entry[] candidates, int[] sizes, int[] memberships,
+            int[] offsets, int[] cursors, int[] markers, int[] targets, int iteration)
+        {
+            int stride = checked(width * 2);
+
+            Array.Clear(offsets);
+
+            Array.Clear(markers);
+
+            _pass = iteration;
+
+            _processedRows = 0;
+
+            for (int row = 0; row < vectors.Length; row++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                for (int item = 0; item < sizes[row]; item++)
+                {
+                    VisitPairMembership();
+
+                    offsets[candidates[row * stride + item].Index + 1]++;
+                }
+            }
+
+            for (int row = 0; row < vectors.Length; row++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                offsets[row + 1] = checked(offsets[row + 1] + offsets[row]);
+
+                cursors[row] = offsets[row];
+            }
+
+            for (int row = 0; row < vectors.Length; row++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                for (int item = 0; item < sizes[row]; item++)
+                {
+                    VisitPairMembership();
+
+                    int slot = row * stride + item;
+
+                    memberships[cursors[candidates[slot].Index]++] = slot;
+                }
+            }
+
+            long changes = 0;
+
+            for (int left = 0; left < vectors.Length; left++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                _processedRows = left;
+
+                int count = 0;
+
+                int stamp = left + 1;
+
+                for (int position = offsets[left]; position < offsets[left + 1]; position++)
+                {
+                    int slot = memberships[position];
+
+                    int pool = slot / stride;
+
+                    bool fresh = candidates[slot].IsNew;
+
+                    for (int item = 0; item < sizes[pool]; item++)
+                    {
+                        VisitPairMembership();
+
+                        Entry other = candidates[pool * stride + item];
+
+                        if (other.Index <= left || !(fresh || other.IsNew) || markers[other.Index] == stamp) continue;
+
+                        markers[other.Index] = stamp;
+
+                        targets[count++] = other.Index;
+                    }
+                }
+
+                // Exact union of the original frozen pools: every eligible unordered pair once.
+                // The total heap comparator makes top-width membership independent of visitation.
+                // MarkOld precedes the round, so final new flags and zero-change stopping agree too.
+                Array.Sort(targets, 0, count);
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                _phase = "descent";
+
+                for (int item = 0; item < count; item++) changes += Join(left, targets[item]);
+            }
+
+            return changes;
+        }
+
+        private void VisitPairMembership()
+        {
+            PairEnumerationVisits++;
+
+            if (PairEnumerationVisits % Options.NeighborProgressInterval != 0) return;
+
+            _phase = "descent-pair-enumeration";
+
+            observer?.Report(new(_phase, Evaluations, Requests, MemoHits, MemoEvictions,
+                vectors.Length, _processedRows, _pass, PairEnumerationVisits));
+
+            // Enumeration may perform many marker hits without another Distance request.
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        private (int[] Offsets, int[] Indices, double[] Distances, bool[] New) CandidateSnapshot(Entry[] candidates, int[] sizes)
+        {
+            int[] offsets = new int[vectors.Length + 1];
+
+            for (int row = 0; row < vectors.Length; row++) offsets[row + 1] = checked(offsets[row] + sizes[row]);
+
+            int[] indices = new int[offsets[^1]];
+
+            double[] distances = new double[indices.Length];
+
+            bool[] fresh = new bool[indices.Length];
+
+            for (int row = 0; row < vectors.Length; row++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                for (int item = 0; item < sizes[row]; item++)
+                {
+                    Entry entry = candidates[row * width * 2 + item];
+
+                    indices[offsets[row] + item] = entry.Index;
+
+                    distances[offsets[row] + item] = entry.Distance;
+
+                    fresh[offsets[row] + item] = entry.IsNew;
+                }
+            }
+
+            return (offsets, indices, distances, fresh);
+        }
+
+        private (int[] Offsets, int[] Indices, double[] Distances, bool[] New) ForwardSnapshot()
+        {
+            int[] offsets = new int[vectors.Length + 1];
+
+            for (int row = 0; row < vectors.Length; row++) offsets[row + 1] = checked(offsets[row] + Heaps[row].Count);
+
+            int[] indices = new int[offsets[^1]];
+
+            double[] distances = new double[indices.Length];
+
+            bool[] fresh = new bool[indices.Length];
+
+            for (int row = 0; row < vectors.Length; row++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                int item = offsets[row];
+
+                foreach (Entry entry in Heaps[row].Entries)
+                {
+                    indices[item] = entry.Index;
+
+                    distances[item] = entry.Distance;
+
+                    fresh[item++] = entry.IsNew;
+                }
+            }
+
+            return (offsets, indices, distances, fresh);
         }
 
         private static int GreatestCommonDivisor(int a, int b)
