@@ -14,9 +14,8 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 /// <summary>RAG Phase 4 — <see cref="SagaMemoryStore"/> round-trip persistence against the real (managed-fallback) Grimoire schema.</summary>
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
-public sealed class SagaMemoryStoreTests : IAsyncLifetime
+public sealed partial class SagaMemoryStoreTests : IAsyncLifetime
 {
-
     /// <summary>
     /// Matches <see cref="ArcanumSettingClamps.EmbeddingsDimensions"/>'s 64-dimension floor — the
     /// smallest configured value that is not itself clamped up, so the store's dimension-validation
@@ -34,14 +33,11 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
 
     public SagaMemoryStoreTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
@@ -63,44 +59,34 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
             MemoryErasureTestKeys.Isolated());
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     /// <summary>Builds a <see cref="TestDimensions"/>-length vector with <paramref name="leading"/> in its first slots and zeros elsewhere.</summary>
     private static float[] Vec(params float[] leading)
     {
-
         float[] result = new float[TestDimensions];
 
         leading.AsSpan().CopyTo(result);
 
         return result;
-
     }
 
     [SkippableFact]
     public async Task InsertAsync_then_ListAsync_RoundTrips()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -126,14 +112,12 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.Equal(sessionId, memory.SessionId);
 
         Assert.Equal("extraction", memory.Source);
-
     }
 
     [SkippableFact]
 
     public async Task InsertAsync_AttachmentDerivedMemory_RoundTripsProvenanceAndUnavailableSourceState()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -169,13 +153,11 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.Equal(deletedAttachmentId, memory.AttachmentProvenance.AttachmentId);
 
         Assert.Equal(AttachmentSourceAvailability.Unavailable, memory.AttachmentProvenance.Availability);
-
     }
 
     [SkippableFact]
     public async Task ListAsync_FiltersBySessionIdAndQuery()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionA = Guid.NewGuid();
@@ -197,20 +179,16 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.Single(byQuery);
 
         Assert.Equal("mem-b", byQuery[0].Id);
-
     }
 
     [SkippableFact]
     public async Task ListAsync_RespectsLimitAndOffset()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         for (int i = 0; i < 5; i++)
         {
-
             _ = await _store!.InsertAsync($"mem-{i}", $"memory {i}", DateTimeOffset.UtcNow.AddMinutes(i), null, null, "extraction", Vec(1f), CancellationToken.None);
-
         }
 
         SagaMemoryDto[] page1 = await _store!.ListAsync(null, null, MemoryScope.Installation, 2, 0, CancellationToken.None);
@@ -222,13 +200,11 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.Equal(2, page2.Length);
 
         Assert.DoesNotContain(page2, m => page1.Any(p => p.Id == m.Id));
-
     }
 
     [SkippableFact]
     public async Task ListPositionsAfterAsync_WalksEveryMemoryOnceNewestFirstWithTheIdentityBreakingATie()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset origin = DateTimeOffset.Parse("2026-03-01T00:00:00Z");
@@ -237,11 +213,9 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         // written out of identity order, so the order the rows were stored in is not the order they sort in.
         for (int step = 0; step < 30; step++)
         {
-
             int index = step * 7 % 30;
 
             _ = await _store!.InsertAsync($"mem-{index:D2}", $"memory {index}", origin.AddMinutes(index / 10), null, null, "extraction", Vec(1f), CancellationToken.None);
-
         }
 
         string[] expected =
@@ -258,14 +232,11 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
 
         while (true)
         {
-
             SagaMemoryPosition[] page = await _store!.ListPositionsAfterAsync(after, 4, CancellationToken.None);
 
             if (page.Length == 0)
             {
-
                 break;
-
             }
 
             Assert.InRange(page.Length, 1, 4);
@@ -273,7 +244,6 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
             walked.AddRange(page);
 
             after = page[^1];
-
         }
 
         Assert.Equal(expected, walked.Select(static position => position.Id));
@@ -281,24 +251,20 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.Equal(UtcInstantText.Format(origin.AddMinutes(2)), walked[0].CreatedAt);
 
         Assert.Equal(UtcInstantText.Format(origin), walked[^1].CreatedAt);
-
     }
 
     [SkippableFact]
     public async Task ListPositionsAfterAsync_MissesNoMemoryWhenEveryPageIsDeletedBeforeTheNextIsRead()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset origin = DateTimeOffset.Parse("2026-03-01T00:00:00Z");
 
         for (int step = 0; step < 25; step++)
         {
-
             int index = step * 7 % 25;
 
             _ = await _store!.InsertAsync($"mem-{index:D2}", $"memory {index}", origin.AddMinutes(index / 5), null, null, "extraction", Vec(1f), CancellationToken.None);
-
         }
 
         string[] expected =
@@ -315,33 +281,26 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
 
         while (true)
         {
-
             SagaMemoryPosition[] page = await _store!.ListPositionsAfterAsync(after, 6, CancellationToken.None);
 
             if (page.Length == 0)
             {
-
                 break;
-
             }
 
             foreach (SagaMemoryPosition position in page)
             {
-
                 seen.Add(position.Id);
 
                 Assert.True(await _store.DeleteAsync(position.Id, CancellationToken.None));
-
             }
 
             after = page[^1];
-
         }
 
         Assert.Equal(expected, seen);
 
         Assert.Equal(0, await _store!.CountAsync(CancellationToken.None));
-
     }
 
     /// <summary>
@@ -358,7 +317,6 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
     [SkippableFact]
     public async Task ListPositionsAfterAsync_ResumesFromTheStoredCreatedAtTextWhateverItsSpelling()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         (string Id, string CreatedAt)[] rows =
@@ -380,16 +338,13 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
 
         foreach ((string id, _) in Enumerable.Reverse(rows))
         {
-
             _ = await _store!.InsertAsync(id, $"memory {id}", DateTimeOffset.Parse("2026-03-01T10:00:00Z"), null, null, "extraction", Vec(1f), CancellationToken.None);
-
         }
 
         DbConnection connection = _db!.Database.GetDbConnection();
 
         foreach ((string id, string createdAt) in rows)
         {
-
             await using DbCommand rewrite = connection.CreateCommand();
 
             rewrite.CommandText = """UPDATE "saga_memories" SET "CreatedAt" = @createdAt WHERE "Id" = @id""";
@@ -411,7 +366,6 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
             rewrite.Parameters.Add(idParameter);
 
             Assert.Equal(1, await rewrite.ExecuteNonQueryAsync());
-
         }
 
         string[] expected =
@@ -428,38 +382,31 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
 
         while (true)
         {
-
             SagaMemoryPosition[] page = await _store!.ListPositionsAfterAsync(after, 3, CancellationToken.None);
 
             if (page.Length == 0)
             {
-
                 break;
-
             }
 
             Assert.InRange(page.Length, 1, 3);
 
             foreach (SagaMemoryPosition position in page)
             {
-
                 visited.Add(position.Id);
 
                 // The cursor is the text the row holds, byte for byte.
                 Assert.Equal(rows.Single(row => row.Id == position.Id).CreatedAt, position.CreatedAt);
 
                 Assert.True(await _store.DeleteAsync(position.Id, CancellationToken.None));
-
             }
 
             after = page[^1];
-
         }
 
         Assert.Equal(expected, visited);
 
         Assert.Equal(0, await _store!.CountAsync(CancellationToken.None));
-
     }
 
     /// <summary>
@@ -475,18 +422,15 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
     [SkippableFact]
     public async Task ListAsync_And_ListCurationRowsAsync_PageMemoriesSharingAnInstantExactlyOnceInIdentityOrder()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset origin = DateTimeOffset.Parse("2026-03-01T00:00:00Z");
 
         for (int step = 0; step < 27; step++)
         {
-
             int index = step * 7 % 27;
 
             _ = await _store!.InsertAsync($"mem-{index:D2}", $"memory {index}", origin.AddMinutes(index / 9), null, null, "extraction", Vec(1f), CancellationToken.None);
-
         }
 
         string[] expected =
@@ -503,7 +447,6 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
 
         for (int offset = 0; offset < expected.Length; offset += 4)
         {
-
             listed.AddRange(
                 (await _store!.ListAsync(null, null, MemoryScope.Installation, 4, offset, CancellationToken.None))
                     .Select(static memory => memory.Id));
@@ -511,13 +454,11 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
             curated.AddRange(
                 (await _store.ListCurationRowsAsync(null, null, MemoryScope.Installation, 4, offset, CancellationToken.None))
                     .Select(static row => row.Memory.Id));
-
         }
 
         Assert.Equal(expected, listed);
 
         Assert.Equal(expected, curated);
-
     }
 
     [SkippableTheory]
@@ -525,20 +466,17 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
     [InlineData(-1)]
     public async Task ListPositionsAfterAsync_RefusesALimitBelowOneRatherThanReadingEverything(int limit)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _ = await _store!.InsertAsync("mem-1", "a", DateTimeOffset.UtcNow, null, null, "extraction", Vec(1f), CancellationToken.None);
 
         _ = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
             () => _store.ListPositionsAfterAsync(null, limit, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task CountAsync_And_CountBySessionAsync_ReflectInserts()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -552,13 +490,11 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.Equal(3, await _store.CountAsync(CancellationToken.None));
 
         Assert.Equal(2, await _store.CountBySessionAsync(sessionId, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task GetByIdsAsync_ReturnsOnlyMatchingIds_MissingIdsAreAbsent()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _ = await _store!.InsertAsync("mem-1", "a", DateTimeOffset.UtcNow, null, null, "extraction", Vec(1f), CancellationToken.None);
@@ -570,13 +506,11 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.True(result.ContainsKey("mem-1"));
 
         Assert.False(result.ContainsKey("mem-missing"));
-
     }
 
     [SkippableFact]
     public async Task InsertAsync_RejectsEmbeddingWithWrongDimensions()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // The fixture's store is configured for Dimensions=64 (see TestDimensions); a shorter vector
@@ -585,13 +519,11 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
             () => _store!.InsertAsync("mem-bad-dims", "a", DateTimeOffset.UtcNow, null, null, "extraction", [1f, 0f], CancellationToken.None));
 
         Assert.Equal(0, await _store!.CountAsync(CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task DeleteAsync_RemovesMemoryAndEmbedding_ReturnsFalseWhenMissing()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _ = await _store!.InsertAsync("mem-1", "a", DateTimeOffset.UtcNow, null, null, "extraction", Vec(1f), CancellationToken.None);
@@ -601,13 +533,11 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.Equal(0, await _store.CountAsync(CancellationToken.None));
 
         Assert.False(await _store.DeleteAsync("mem-1", CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task DeleteAllAsync_ClearsEverythingIncludingWatermarks()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -621,13 +551,11 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.Equal(0, await _store.CountAsync(CancellationToken.None));
 
         Assert.Null(await _store.GetWatermarkAsync(sessionId, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task GetStatsAsync_ReportsCountsAndTimestampBounds()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionA = Guid.NewGuid();
@@ -647,13 +575,11 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.Equal(DateTimeOffset.Parse("2026-01-01T00:00:00Z"), stats.OldestCreatedAt);
 
         Assert.Equal(DateTimeOffset.Parse("2026-03-01T00:00:00Z"), stats.NewestCreatedAt);
-
     }
 
     [SkippableFact]
     public async Task GetStatsAsync_NoMemories_ReturnsZeroCountsAndNullBounds()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SagaStats stats = await _store!.GetStatsAsync(CancellationToken.None);
@@ -665,13 +591,11 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.Null(stats.OldestCreatedAt);
 
         Assert.Null(stats.NewestCreatedAt);
-
     }
 
     [SkippableFact]
     public async Task Watermark_GetIsNullInitially_SetThenGetRoundTrips_UpsertOverwrites()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -689,13 +613,11 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         await _store.SetWatermarkAsync(sessionId, second, CancellationToken.None);
 
         Assert.Equal(second, await _store.GetWatermarkAsync(sessionId, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task ExtractionCursor_RoundTripsSequenceAndTimestamp_AndLegacyGetterProjectsTimestamp()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -711,13 +633,11 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.Equal(cursor, await _store.GetExtractionCursorAsync(sessionId, CancellationToken.None));
 
         Assert.Equal(cursor.EntryCreatedAt, await _store.GetWatermarkAsync(sessionId, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task LegacyWatermarkSetter_DerivesTheLastEntrySequenceAtOrBeforeTheTimestamp()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -749,13 +669,11 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.Equal(
             new SagaExtractionCursor(3, watermarkAt),
             await _store.GetExtractionCursorAsync(sessionId, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task LegacyWatermarkSetter_StopsBeforeTheFirstLaterEntryEvenWhenAHigherSequenceIsEarlier()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -785,7 +703,6 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.Equal(
             new SagaExtractionCursor(0, watermarkAt),
             await _store.GetExtractionCursorAsync(sessionId, CancellationToken.None));
-
     }
 
     private static Entry NewEntry(Guid sessionId, long sequence, DateTimeOffset createdAt) =>
@@ -799,5 +716,4 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
             CreatedAt = createdAt,
             Sequence = sequence,
         };
-
 }

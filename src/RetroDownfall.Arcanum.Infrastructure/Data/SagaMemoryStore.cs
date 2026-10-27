@@ -645,9 +645,9 @@ internal sealed partial class SagaMemoryStore(
 
         if (!string.IsNullOrWhiteSpace(query))
         {
-            sql.Append(" AND m.\"Content\" LIKE @query ESCAPE '\\'");
+            sql.Append(" AND arcanum_ordinal_contains(m.\"Content\", @query)");
 
-            AddParameter(cmd, "@query", "%" + EscapeLikePattern(query) + "%");
+            AddParameter(cmd, "@query", query);
         }
 
         if (sessionId is not null)
@@ -1192,11 +1192,6 @@ internal sealed partial class SagaMemoryStore(
 
         cmd.Parameters.Add(parameter);
     }
-
-    private static string EscapeLikePattern(string value) =>
-        value.Replace("\\", "\\\\", StringComparison.Ordinal)
-            .Replace("%", "\\%", StringComparison.Ordinal)
-            .Replace("_", "\\_", StringComparison.Ordinal);
 
     private Task<T> ReadLongRestSnapshotAsync<T>(
         Func<DbConnection, bool, Task<T>> read,

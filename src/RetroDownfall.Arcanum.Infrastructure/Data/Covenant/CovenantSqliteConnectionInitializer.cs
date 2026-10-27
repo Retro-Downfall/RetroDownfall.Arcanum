@@ -1,5 +1,6 @@
 using System.Data;
 using System.Runtime.CompilerServices;
+using System.Text;
 using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -188,9 +189,11 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
         SqliteConnection connection,
         CovenantSqliteConnectionState state)
     {
-        connection.CreateFunction<string?, string?, bool>("arcanum_ordinal_contains",
+        // Read length-delimited UTF-8: the provider's SQL function string arguments stop at NUL,
+        // which would both hide suffix matches and turn a NUL-prefixed query into an empty query.
+        connection.CreateFunction<byte[]?, byte[]?, bool>("arcanum_ordinal_contains",
             static (value, query) => value is not null && query is not null
-                && value.Contains(query, StringComparison.OrdinalIgnoreCase),
+                && Encoding.UTF8.GetString(value).Contains(Encoding.UTF8.GetString(query), StringComparison.OrdinalIgnoreCase),
             isDeterministic: true);
 
         // The canonical search fallback refines its substring prefilter with this, so a term matches

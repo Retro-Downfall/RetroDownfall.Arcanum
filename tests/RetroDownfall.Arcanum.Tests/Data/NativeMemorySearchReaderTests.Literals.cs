@@ -17,6 +17,9 @@ public sealed partial class NativeMemorySearchReaderTests
             ("a%b", "before a%b after"), ("a_b", "before a_b after"), ("a\"b", "a\"b"),
             ("AND", "AND OR NEAR(foo)"), ("😀ab", "prefix😀ab"), ("e\u0301xy", "e\u0301xy"),
             ("écl", "Éclair"), ("Écl", "Éclair"), ("Σab", "σab"), ("𐐀ab", "𐐨ab"),
+            ("CAFÉ", "Café"), ("é", "Éric"), ("ς", "Σ"), ("ΣΣΣ", "ςσΣ"),
+            ("ÉabcÉ", "éABCé"), ("éabcé", "ÉABCÉ"), ("cafe", "café"),
+            ("a\u001fb", "a\u001fB"), ("é", "e\u0301"), ("a\0c", "a\0b"),
         })
         {
             foreach ((int phase, int field) in new[] { (0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (3, 0), (3, 1) })
@@ -26,13 +29,12 @@ public sealed partial class NativeMemorySearchReaderTests
 
     [Theory]
     [MemberData(nameof(LiteralCases))]
-    public async Task Native_index_and_fallback_retain_the_original_each_field_oracle(int phase, int field, string query, string text)
+    public async Task Native_index_and_fallback_follow_the_ordinal_each_field_oracle(int phase, int field, string query, string text)
     {
         using var file = EvolutionScratchDatabase.Create();
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
         await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
         string[] fields = phase switch { 0 => ["Content"], 1 => ["Summary"], 2 => ["Content", "OriginalFileName", "LogicalKey"], _ => ["Content", "RelativePath"] };
-        string table = phase switch { 0 => "Entries", 1 => "Sessions", 2 => "session_attachment_chunks", _ => "workspace_file_chunks" };
         string[] values = fields.Select((_, index) => index == field ? text : "void").ToArray();
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText = "INSERT INTO Sessions(Id,CreatedAt,UpdatedAt) VALUES('11111111-1111-4111-8111-111111111111','2026-01-01T00:00:00.0000000Z','2026-01-01T00:00:00.0000000Z');";
@@ -51,14 +53,12 @@ public sealed partial class NativeMemorySearchReaderTests
         };
         for (int index = 0; index < values.Length; index++) _ = command.Parameters.AddWithValue("@v" + index, values[index]);
         _ = await command.ExecuteNonQueryAsync();
-        command.Parameters.Clear();
-        command.CommandText = $"SELECT COUNT(*) FROM {table} WHERE " + string.Join(" OR ", fields.Select(name => $"instr(lower({name}),lower(@query))>0"));
-        _ = command.Parameters.AddWithValue("@query", query);
-        long expected = (long)(await command.ExecuteScalarAsync())!;
+        long expected = values.Any(value => value.Contains(query, StringComparison.OrdinalIgnoreCase)) ? 1 : 0;
         MemorySearchScope scope = phase < 2 ? MemorySearchScope.Session : phase == 2 ? MemorySearchScope.Attachments : MemorySearchScope.Workspace;
         NativeMemorySearchPage page = await ReadNativeAsync(connection, query, scope, null, null, new(phase), 20, CancellationToken.None);
         Assert.Equal(expected, page.Hits.LongLength);
         Assert.Null(page.Reason);
+        if (expected != 0) Assert.Equal(values[0], Assert.Single(page.Hits).Result.Content);
         await using SqliteCommand integrity = connection.CreateCommand();
         integrity.CommandText = "INSERT INTO memory_search_fts(memory_search_fts,rank) VALUES('integrity-check',1)";
         _ = await integrity.ExecuteNonQueryAsync();

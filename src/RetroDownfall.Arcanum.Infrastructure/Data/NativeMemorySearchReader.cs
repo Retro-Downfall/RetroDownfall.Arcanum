@@ -152,7 +152,7 @@ internal static class NativeMemorySearchReader
             }
 
             if (source.Filter is not null) guard += " AND d." + source.Filter;
-            match.CommandText = $"WITH selected(rowid) AS MATERIALIZED (VALUES {names}) SELECT d.rowid,{source.Select} FROM selected c CROSS JOIN {source.Table} d ON d.rowid=c.rowid{source.Join} WHERE ({string.Join(" OR ", source.Fields.Select(f => $"instr(lower(d.{f}),lower(@query))>0"))}){guard} ORDER BY {Order(source, "d.")}";
+            match.CommandText = $"WITH selected(rowid) AS MATERIALIZED (VALUES {names}) SELECT d.rowid,{source.Select} FROM selected c CROSS JOIN {source.Table} d ON d.rowid=c.rowid{source.Join} WHERE ({string.Join(" OR ", source.Fields.Select(f => $"arcanum_ordinal_contains(d.{f},@query)"))}){guard} ORDER BY {Order(source, "d.")}";
             Dictionary<long, MemorySearchResultDto> matches = [];
             await using (DbDataReader reader = await match.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
             {
@@ -190,9 +190,17 @@ internal static class NativeMemorySearchReader
         string normalized = (string)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
         Rune[] runes = normalized.EnumerateRunes().ToArray();
         if (runes.Length < 3) return (null, 1);
+        // Core28 stores SQLite's ASCII fold. Only printable ASCII seeds are complete supersets
+        // of ordinal case-insensitive matches; Unicode-only queries use the bounded seek lane.
+        // Search every possible window so mixed text can still use a rare safe interior seed.
+        int[] safe = Enumerable.Range(0, runes.Length - 2)
+            .Where(offset => runes[offset].Value is >= 32 and <= 126
+                && runes[offset + 1].Value is >= 32 and <= 126
+                && runes[offset + 2].Value is >= 32 and <= 126).ToArray();
+        if (safe.Length == 0) return (null, 1);
         HashSet<string> tried = new(StringComparer.Ordinal);
         int statements = 1;
-        foreach (int offset in new[] { 0, Math.Min(runes.Length / 2, runes.Length - 3), runes.Length - 3 })
+        foreach (int offset in new[] { safe[0], safe[safe.Length / 2], safe[^1] })
         {
             string seed = string.Concat(runes.Skip(offset).Take(3).Select(rune => rune.ToString()));
             if (!tried.Add(seed)) continue;
