@@ -1,0 +1,50 @@
+# Offline RAPTOR numerical scale qualification
+
+This protocol measures managed kernels with synthetic vectors. It does not discover, configure, install or call an embedding/chat provider. The real-model, paid-summary, recursive-tree, full CI and shipping AOT gates remain separate. A canceled bounded probe is **incomplete**, even when its cancellation-control test passes. The full 50,000-point numerical qualification remains open.
+
+## Reproduce
+
+Use the recorded candidate SHA/tree and .NET runtime. The first measurements used controller `f72ffd87e8209c62cd30337e8dbcc415bbb7491a`, .NET SDK 10.0.402 and runtime 10.0.13, Arm64. Hardware identity/headroom was not assumed. Build normally, then run each selected opt-in probe in a fresh test process so working-set peaks do not inherit another scale's arrays:
+
+```sh
+dotnet build RetroDownfall.Arcanum.slnx -m:1 -nodeReuse:false
+ARCANUM_RAPTOR_SCALE_PROBE=1 dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --no-build -m:1 -nodeReuse:false --filter 'FullyQualifiedName~RaptorScaleProbe.Complete_global_pipeline_at_one_thousand' --logger 'trx;LogFileName=probe.trx' --results-directory /private/tmp/raptor-global-1k
+ARCANUM_RAPTOR_SCALE_PROBE=1 dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --no-build -m:1 -nodeReuse:false --filter 'FullyQualifiedName~RaptorScaleProbe.Complete_real_clusterer_at_one_thousand' --logger 'trx;LogFileName=probe.trx' --results-directory /private/tmp/raptor-clusterer-1k
+ARCANUM_RAPTOR_SCALE_PROBE=1 dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --no-build -m:1 -nodeReuse:false --filter 'FullyQualifiedName~RaptorScaleProbe.Complete_approximate_graph_at_ten_thousand_uses_less_work_than_exact' --logger 'trx;LogFileName=probe.trx' --results-directory /private/tmp/raptor-graph-10k
+```
+
+The scale fixture is opt-in; its ordinary corpus/oracle/cancellation controls still run without that environment variable. Use a fresh results directory; a missing TRX is never successful evidence. Each terminal receipt must include exact source hashes, command/environment, exit code, TRX counters/hash and source restoration. Do not add pass counts from repeated runs or substitute a filtered subset for a complete class census.
+
+The deterministic source has unique ordered synthetic identities, eight synthetic centers, 768 float dimensions, a fixed integer stream and exact float-bit corpus hashes. Global k includes self and is floor(sqrt(n-1)): 31/99/223 for 1k/10k/50k. The global pipeline uses actual neighbor/fuzzy/500-or-200-epoch UMAP/full-covariance BIC kernels; the default `RaptorClusterer` probe additionally exercises actual global/local composition and exact source-index coverage. Global-only measurements are not full-clusterer/tree throughput. Direct numerical probes contain no paid/provider stage; their zero provider calls are not an estimate of summary cost.
+
+## Closed containment and acceptance
+
+Initial 1k stage ceilings are neighbor 30s, fuzzy 30s, UMAP 60s and global BIC 120s. The real 1k clusterer ceiling is 120s. The complete 10k graph ceiling is180s. Every stage requests cancellation above a sampled 4 GiB process working set, with a 10ms timer; cooperative polling/large allocations can overshoot this sampled ceiling. Process memory includes test discovery/runtime; cumulative allocated bytes are not live memory. Parallel regression-test allocation output is not used as an isolated performance measurement.
+
+The complete 10k graph has a predeclared algorithmic acceptance: strictly fewer actual scalar distance calculations than exact all-pairs, `n*(n-1)/2 = 49,995,000`, and sampled exact nonself recall >=.95. This is a minimum reason to choose approximation, not a hardware speed promise or exhaustive sampled-oracle claim. Time/memory cancellation is separately incomplete and cannot establish failure of the scalar-work gate. A progress-triggered work-limit refusal records the exact reported scalar count at cancellation; ordinary asynchronous cancellation may leave the last report up to 1023 pair requests behind.
+
+Initial 10k/50k partial pilots use 15s or2,000,000 reported actual scalar evaluations. The next50k phase pilot uses 180s/50,000,000; the final authorized first-descent investigation uses 600s/150,000,000. All retain sampled 4 GiB cancellation and run in separate processes. These are measurement budgets, not completed scale acceptance. A graph that naturally finishes before its limits is reported as complete; the probe never invents cancellation. No unlimited/automatic retry or sequence of budget increases is authorized by this document.
+
+Checkpoints contain only counts, elapsed time and closed phase/pass values, at phase/pass/4096-row changes, capped at 1024 records. `InitializedRows` means fully validated/copied normalized vectors. Initialization pass0 seeds identical-vector anchors; passes1..8 are projection trees; pass9 fills missing neighbors. Tree processed rows count completed leaf-left traversals. Descent allocation/clear/reverse/candidate phases expose setup independently of actual `descent` joins; descent pass is its1-based iteration, and processed rows precede the current row's joins. Completed graph counters are authoritative; partial progress values are explicitly the last report. No source text/vector values/paths/provider data are logged.
+
+## Measured pilot evidence and limits
+
+These are archived pilot observations on the recorded source versions, not a claim about every machine or final integrated candidate:
+
+| Workload | Terminal disposition | Observed work and time | Sampled process peak |
+|---|---|---|---|
+|1k/768d/k31 global pipeline|Complete|499,500 exact neighbor distances;500 UMAP epochs,4,225,090 attractive samples and21,092,322 negatives;49 converged BIC candidates, selected8. Two instrumented runs preserved graph/layout/fit bits; sampled recall1.0.|About784MB including roughly772MB test-host baseline|
+|1k/768d default global/local clusterer|Complete|19.815s;164clusters,1000memberships, all1000source indices, zero unassigned.|781,713,408B|
+|10k/768d/k99 before memo|Work acceptance failed|49,995,776 scalar distances during descent without completion;102.420s. No time/memory trigger.|1,205,157,888B|
+|10k/768d/k99 with bounded memo|Complete graph|168.597s;11,115,526 scalar distances,367,607,729 logical requests,356,492,203 memo hits,2descent iterations;990,000edges;32 sampled rows/319,968 oracle distances gave recall1.0.|1,360,281,600B|
+|50k/768d/k223 with bounded memo,180s/50m pilot|Incomplete, evaluation cancellation|165.405s;initialization pass6/21,500processed rows;52,894,720 logical requests,50,000,877 reported scalar distances,2,893,843hits,33,249,088evictions. Never reached descent.|2,178,613,248B; excludes descent reverse/candidate peak|
+
+The 50k initialization hit rate is only about5.47%; its required working set differs materially from10k. Extrapolating the completed10k graph to50k is unsound. The 600s/150m first-descent measurement is separately pending; its next result must support a bounded completed run or a specific behavior-preserving improvement. No completed50k recall/runtime/memory, full10k global/local pipeline, recursive50k tree or live-provider claim follows from these partial observations.
+
+## Behavior-preserving work repair
+
+Overlapping NN-descent pools revisited identical immutable vector pairs and reran the full768-dimensional scalar dot loop before heap duplicate/retention checks. A search-local four-way exact-index memo now reuses only previously calculated values. The original scalar miss arithmetic/accumulation order, candidate Join/Add sequence, search constants, seeds, manifest and numerical recipes remain unchanged. Keys canonicalize the exact pair of indices; finite multiplication and the identical dimension order make the distance symmetric. Collisions only evict/miss; they never equate different pairs or source identities.
+
+The flat-array payload is O(n*k), also scaled down for narrow dimensions, explicitly capped at 260 MiB including replacement cursors. Sizing saturates before multiplication and rounds within the fixed cap; there is no n-by-n distance table or dictionary overhead. Eviction affects work only, so these implementation storage bounds do not alter the numerical manifest. Scalar evaluations, logical requests, hits, evictions and allocated memo payload are separate diagnostics. Workstep/row cancellation continues when scalar evaluations stop advancing on hit-only runs.
+
+The unchanged2304-point/d16/global-k47 graph fingerprint is `783dc08ffd6a44b2a5a4ccf1451607bab27d345d3ea8206dd7609386a43b4e55`; this is a behavior-preservation witness, not an independent scientific oracle. Exact distance bits and neighbor identities survive reversed input. Existing pinned/analytic reference fixtures, >=.95 quality controls and the6000-point allocation guard remain required. The first narrow-vector memo residency attempt still failed the work gate and is retained separately; the gate was not relaxed. Normal low-dimensional wall time is not claimed to improve universally.
