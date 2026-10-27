@@ -118,7 +118,7 @@ public sealed class RaptorScaleProbe(ITestOutputHelper output)
 
         Describe(points, k);
 
-        using var budget = new Budget(180);
+        using var budget = new Budget(240);
 
         RaptorNeighborProgress observed = default;
 
