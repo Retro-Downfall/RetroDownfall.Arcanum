@@ -1,4 +1,8 @@
 using System.Data.Common;
+using System.Globalization;
+
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -14,14 +18,14 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 {
     private static readonly TimeSpan ProductionOpeningAttemptTimeout = TimeSpan.FromSeconds(5);
 
-    private const string LifecycleConflictCode = "Grimoire.AdmissionLifecycleConflict";
+    private const string LifecycleConflictCode = ErrorCodes.Grimoire.AdmissionLifecycleConflict;
 
-    private const string OpeningTimeoutCode = "Grimoire.OpeningTimeout";
+    private const string OpeningTimeoutCode = ErrorCodes.Grimoire.OpeningTimeout;
 
     /// <summary>The stage-one drain's own timeout refusal.</summary>
     internal const string WorkDrainTimeoutCode = ErrorCodes.Grimoire.WorkDrainTimeout;
 
-    private const string StaleOpenCode = "Grimoire.StaleOpenGeneration";
+    private const string StaleOpenCode = ErrorCodes.Grimoire.StaleOpenGeneration;
 
     internal MemoryDelegationCoordinator? MemoryDelegation { get; }
 
@@ -32,6 +36,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     private static readonly AsyncLocal<OrdinaryLifetime?> CurrentOrdinaryLifetime = new();
 
     private readonly TimeProvider _timeProvider;
+
+    private readonly ILogger<GrimoireConnectionAdmissionGate> _logger;
 
     private readonly ICovenantConnectionDrain _drain;
 
@@ -44,8 +50,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     /// A separate deadline from <see cref="_openingAttemptTimeout"/> because it bounds a different
     /// thing - session-attachment indexing, entry weaving and saga extraction rather than one
     /// physical connection reaching its terminal callback - and its expiry is reported under its own
-    /// error code. Both default to the same value, so separating them moves no deadline; it gives
-    /// the failure an operator reads a knob of its own to turn.
+    /// error code. These are distinct internal deadlines and diagnostics; both production defaults
+    /// remain five seconds. They are not operator-configurable settings.
     /// </remarks>
     private readonly TimeSpan _workDrainCheckpoint;
 
@@ -97,6 +103,18 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             ProductionOpeningAttemptTimeout,
             AfterSuccessfulDrainNoOpAsync,
             paths)
+    {
+        MemoryDelegation = memoryDelegation;
+    }
+
+    internal GrimoireConnectionAdmissionGate(
+        TimeProvider timeProvider,
+        ICovenantConnectionDrain drain,
+        IGrimoireMaintenancePathAuthority paths,
+        MemoryDelegationCoordinator memoryDelegation,
+        ILogger<GrimoireConnectionAdmissionGate> logger)
+        : this(timeProvider, drain, ProductionOpeningAttemptTimeout, ProductionOpeningAttemptTimeout,
+            AfterSuccessfulDrainNoOpAsync, paths, logger)
     {
         MemoryDelegation = memoryDelegation;
     }
@@ -172,7 +190,24 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         TimeSpan workDrainCheckpoint,
         Func<CancellationToken, ValueTask> afterSuccessfulDrainTestSeam,
         IGrimoireMaintenancePathAuthority paths)
+        : this(timeProvider, drain, openingAttemptTimeout, workDrainCheckpoint,
+            afterSuccessfulDrainTestSeam, paths, NullLogger<GrimoireConnectionAdmissionGate>.Instance)
     {
+    }
+
+    internal GrimoireConnectionAdmissionGate(
+        TimeProvider timeProvider,
+        ICovenantConnectionDrain drain,
+        TimeSpan openingAttemptTimeout,
+        TimeSpan workDrainCheckpoint,
+        Func<CancellationToken, ValueTask> afterSuccessfulDrainTestSeam,
+        IGrimoireMaintenancePathAuthority paths,
+        ILogger<GrimoireConnectionAdmissionGate> logger)
+    {
+        ArgumentNullException.ThrowIfNull(logger);
+
+        _logger = logger;
+
         ArgumentNullException.ThrowIfNull(timeProvider);
 
         ArgumentNullException.ThrowIfNull(drain);
@@ -558,18 +593,19 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         }
         catch (TimeoutException)
         {
+            AdmissionTimeoutSnapshot snapshot;
+
             lock (_sync)
             {
                 if (OwnsClosingToken(token) && _state == GateState.Closing)
                 {
                     token.Closure.StageOneTimedOut = true;
                 }
+
+                snapshot = CaptureTimeoutWhileLocked(_workDrainCheckpoint);
             }
 
-            return Result.Failure(
-                new Error(
-                    WorkDrainTimeoutCode,
-                    "Ordinary Grimoire request or background work did not drain before maintenance closing timed out."));
+            return Result.Failure(ReportTimeout(snapshot, physicalOpen: false));
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -681,10 +717,14 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             }
             catch (TimeoutException)
             {
-                return Result<IGrimoireExclusiveClosedLease>.Failure(
-                    new Error(
-                        OpeningTimeoutCode,
-                        "A physical Grimoire open did not reach its terminal callback before maintenance closing timed out."));
+                AdmissionTimeoutSnapshot snapshot;
+
+                lock (_sync)
+                {
+                    snapshot = CaptureTimeoutWhileLocked(_openingAttemptTimeout);
+                }
+
+                return Result<IGrimoireExclusiveClosedLease>.Failure(ReportTimeout(snapshot, physicalOpen: true));
             }
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -734,6 +774,66 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             ResetStageTwoAttempt(closure);
         }
     }
+
+    // Both kind enums are bytes. Fixed counters retain no lease, connection, token or caller data.
+    // In particular, a scope-disposed work lease still in the set owns an unfinished effect group.
+    private AdmissionTimeoutSnapshot CaptureTimeoutWhileLocked(TimeSpan window)
+    {
+        int[] requests = new int[256];
+
+        int[] work = new int[256];
+
+        foreach (RequestLease request in _requestLeases)
+        {
+            requests[(byte)request.Kind]++;
+        }
+
+        foreach (WorkLease lease in _workLeases)
+        {
+            work[(byte)lease.Kind]++;
+        }
+
+        return new AdmissionTimeoutSnapshot(_generation, _state, window, requests, work,
+            _unresolvedOpens.Count, !_memoryDelegationDrain.IsCompletedSuccessfully);
+    }
+
+    private Error ReportTimeout(AdmissionTimeoutSnapshot snapshot, bool physicalOpen)
+    {
+        string requests = string.Join(", ", Enum.GetValues<GrimoireRequestKind>()
+            .Where(kind => snapshot.RequestCounts[(byte)kind] > 0)
+            .Select(kind => FormattableString.Invariant($"{kind}={snapshot.RequestCounts[(byte)kind]}")));
+
+        string work = string.Join(", ", Enum.GetValues<GrimoireWorkKind>()
+            .Where(kind => snapshot.WorkCounts[(byte)kind] > 0)
+            .Select(kind => FormattableString.Invariant($"{kind}={snapshot.WorkCounts[(byte)kind]}")));
+
+        string code = physicalOpen ? OpeningTimeoutCode : WorkDrainTimeoutCode;
+
+        string stage = physicalOpen ? "physical-open drain" : "request/work drain";
+
+        string facts = FormattableString.Invariant(
+            $"Grimoire {stage} timed out: generation={snapshot.Generation}; state={snapshot.State}; windowMs={snapshot.Window.TotalMilliseconds.ToString("0.###", CultureInfo.InvariantCulture)}; requests=[{requests}]; work=[{work}]; openingConnections={snapshot.OpeningConnections}; memoryDelegationPending={(snapshot.MemoryDelegationPending ? 1 : 0)}. ");
+
+        string guidance = physicalOpen
+            ? "Admission remains closed. Preserve recovery evidence and let the same owner finish closing after pending opens reach their terminal callbacks; do not start a second transformation."
+            : "The closing owner must prove its abort or continue recovery. This timeout alone does not prove reopening or that no effects occurred; inspect the owning operation before retrying.";
+
+        Error error = new(code, facts + guidance);
+
+        // Observers run only after the state/census snapshot has left the state-machine lock.
+        _logger.LogWarning("Grimoire admission timeout {ErrorCode}: {Diagnostic}", error.Code, error.Message);
+
+        return error;
+    }
+
+    private sealed record AdmissionTimeoutSnapshot(
+        long Generation,
+        GateState State,
+        TimeSpan Window,
+        int[] RequestCounts,
+        int[] WorkCounts,
+        int OpeningConnections,
+        bool MemoryDelegationPending);
 
     public async ValueTask<Result> AbortClosingAsync(
         IGrimoireClosingOwner closingOwner,

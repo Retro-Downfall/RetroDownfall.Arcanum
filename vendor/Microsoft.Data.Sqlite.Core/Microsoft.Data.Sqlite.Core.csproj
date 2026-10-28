@@ -1,0 +1,85 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+
+    <TargetFramework>net8.0</TargetFramework>
+
+    <AssemblyName>Microsoft.Data.Sqlite</AssemblyName>
+
+    <RootNamespace>Microsoft.Data.Sqlite</RootNamespace>
+
+    <PackageId>Microsoft.Data.Sqlite.Core</PackageId>
+
+    <Version>10.0.10</Version>
+
+    <AssemblyVersion>10.0.10.0</AssemblyVersion>
+
+    <FileVersion>10.0.10.0</FileVersion>
+
+    <InformationalVersion>10.0.10+arcanum.null-origin.1</InformationalVersion>
+
+    <Company>Arcanum self-built managed-provider backport</Company>
+
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+
+    <SignAssembly>true</SignAssembly>
+
+    <PublicSign>true</PublicSign>
+
+    <AssemblyOriginatorKeyFile>Microsoft.Data.Sqlite.public.snk</AssemblyOriginatorKeyFile>
+
+    <Deterministic>true</Deterministic>
+
+    <PathMap>$(MSBuildProjectDirectory)=/_/Microsoft.Data.Sqlite.Core</PathMap>
+
+    <LangVersion>14.0</LangVersion>
+
+    <ImplicitUsings>disable</ImplicitUsings>
+
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+
+    <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
+
+    <IsPackable>false</IsPackable>
+
+    <IsAotCompatible>true</IsAotCompatible>
+
+    <IsTrimmable>true</IsTrimmable>
+
+    <PublishAot>false</PublishAot>
+
+  </PropertyGroup>
+
+  <Import Project="source-hashes.props" />
+
+  <ItemGroup>
+
+    <Compile Include="@(ManagedSqliteCompileSource)" />
+
+    <EmbeddedResource Include="upstream/Properties/Resources.resx" LogicalName="Microsoft.Data.Sqlite.Properties.Resources.resources" />
+
+    <Content Include="LICENSE.txt;source-manifest.json;README.md" Link="licenses/Microsoft.Data.Sqlite.Core/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+
+    <PackageReference Include="SQLitePCLRaw.core" Version="2.1.11" />
+
+    <AssemblyMetadata Include="Arcanum.ManagedSqlite.UpstreamCommit" Value="f7d90799ce4ef09a0bb257852a57248d2a8fb8dd" />
+
+    <AssemblyMetadata Include="Arcanum.ManagedSqlite.SelfBuilt" Value="true; public-signed for identity compatibility; not a Microsoft-signed release" />
+
+  </ItemGroup>
+
+  <Target Name="VerifyManagedSqliteSources" BeforeTargets="PrepareForBuild">
+
+    <ItemGroup>
+
+      <_UnverifiedManagedSqliteCompile Include="upstream/**/*.cs" Exclude="@(ManagedSqliteCompileSource)" />
+
+    </ItemGroup>
+
+    <Error Condition="'@(_UnverifiedManagedSqliteCompile)' != ''" Code="ARCSQLM001" Text="The managed SQLite source tree contains an unreviewed compile input." />
+
+    <VerifyFileHash File="%(ManagedSqliteSource.Identity)" Hash="%(ManagedSqliteSource.ExpectedSha256)" Algorithm="SHA256" />
+
+  </Target>
+
+</Project>

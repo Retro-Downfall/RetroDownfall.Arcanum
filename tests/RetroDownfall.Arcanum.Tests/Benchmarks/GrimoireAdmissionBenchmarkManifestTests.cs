@@ -117,6 +117,7 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
 
         HashSet<string> expected = tracked.Where(
                 static path => IsSelectedCSharp(path)
+                    || path.StartsWith("vendor/Microsoft.Data.Sqlite.Core/", StringComparison.Ordinal)
                     || path.StartsWith(
                         "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/",
                         StringComparison.Ordinal)

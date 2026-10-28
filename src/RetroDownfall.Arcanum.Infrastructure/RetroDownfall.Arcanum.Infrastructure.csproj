@@ -55,6 +55,8 @@
 
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.RegexAotSmoke" />
 
+    <InternalsVisibleTo Include="RetroDownfall.Arcanum.SqliteReaderSmoke" />
+
     <!-- The dedicated benchmark hosts compose the same internal services a live host does.
          Measuring a public facade instead would measure a facade, and rebuilding either composition
          against copies would make its gate a test of the copies. -->
@@ -69,6 +71,8 @@
     <ProjectReference Include="..\RetroDownfall.Arcanum.Core\RetroDownfall.Arcanum.Core.csproj" />
 
     <ProjectReference Include="..\RetroDownfall.Arcanum.Secrets\RetroDownfall.Arcanum.Secrets.csproj" />
+
+    <ProjectReference Include="../../vendor/Microsoft.Data.Sqlite.Core/Microsoft.Data.Sqlite.Core.csproj" />
 
   </ItemGroup>
 

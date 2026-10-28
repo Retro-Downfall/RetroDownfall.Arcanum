@@ -97,6 +97,8 @@
 
     <ProjectReference Include="..\..\src\RetroDownfall.Arcanum.Infrastructure\RetroDownfall.Arcanum.Infrastructure.csproj" />
 
+    <ProjectReference Include="../RetroDownfall.Arcanum.SqliteReaderSmoke/RetroDownfall.Arcanum.SqliteReaderSmoke.csproj" />
+
   </ItemGroup>
 
   <ItemGroup>

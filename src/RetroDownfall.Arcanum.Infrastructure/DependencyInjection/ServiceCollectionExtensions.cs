@@ -2116,7 +2116,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<TimeProvider>(),
                 sp.GetRequiredService<ICovenantConnectionDrain>(),
                 sp.GetRequiredService<IGrimoireMaintenancePathAuthority>(),
-                sp.GetRequiredService<MemoryDelegationCoordinator>()));
+                sp.GetRequiredService<MemoryDelegationCoordinator>(),
+                sp.GetRequiredService<ILogger<GrimoireConnectionAdmissionGate>>()));
 
         services.AddSingleton<IGrimoireConnectionAdmissionGate>(
             static sp => sp.GetRequiredService<GrimoireConnectionAdmissionGate>());

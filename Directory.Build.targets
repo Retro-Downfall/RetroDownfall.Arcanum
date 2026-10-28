@@ -35,6 +35,8 @@
 
     <ArcanumPortableMacOsNativeAotPackageSha512 Condition="'$(ArcanumPortableMacOsNativeAotPackageVersion)' == '10.0.13'">w06ziBrKBpaS1G2Z3hM6GDYcBV1O/KRzH//ZS+IgjouMnlJUO2pl1PL3a95UblAywH3DrJHwLy8/yrR6Yu0LFw==</ArcanumPortableMacOsNativeAotPackageSha512>
 
+    <ArcanumPortableMacOsNativeAotPackageSha512 Condition="'$(ArcanumPortableMacOsNativeAotPackageVersion)' == '10.0.14'">SaeXGZoDmwJs/4kLtoaLvpFDl6lTOEytpx/ZR3jtqVRI44farCSXizx3K7QX5T4sBMgLptfLF1Z0lfdGO7qDpw==</ArcanumPortableMacOsNativeAotPackageSha512>
+
     <_ArcanumResolvedNuGetPackageRoot>$(NuGetPackageRoot)</_ArcanumResolvedNuGetPackageRoot>
 
     <_ArcanumResolvedNuGetPackageRoot Condition="'$(_ArcanumResolvedNuGetPackageRoot)' == ''">$(RestorePackagesPath)</_ArcanumResolvedNuGetPackageRoot>

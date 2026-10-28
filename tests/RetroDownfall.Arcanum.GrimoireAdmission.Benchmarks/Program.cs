@@ -749,7 +749,7 @@ internal static class Program
                 inputs.Where(entry => !manifest.SourceDifferenceAllowlist.Contains(entry.Path, StringComparer.Ordinal))),
             manifestDigest,
             DigestContents(root, inputs.Where(static entry => entry.Path.StartsWith(BenchmarkPrefix, StringComparison.Ordinal))),
-            DigestContents(root, inputs.Where(static entry => entry.Path == "Directory.Build.props" || entry.Path.EndsWith(".csproj", StringComparison.Ordinal) || entry.Path.EndsWith(".targets", StringComparison.Ordinal))),
+            DigestContents(root, inputs.Where(static entry => entry.Path.EndsWith(".props", StringComparison.Ordinal) || entry.Path.EndsWith(".csproj", StringComparison.Ordinal) || entry.Path.EndsWith(".targets", StringComparison.Ordinal))),
             inputs.Single(static entry => entry.Path.EndsWith("/packages.lock.json", StringComparison.Ordinal)).Digest,
             toolchainDigest,
             inputs.Single(static entry => entry.Path.EndsWith("/native-source-manifest.json", StringComparison.Ordinal)).Digest,
@@ -788,6 +788,11 @@ internal static class Program
             }
         }
 
+        foreach (string path in EnumerateSelectedFiles(root, "vendor/Microsoft.Data.Sqlite.Core", extension: null))
+        {
+            entries.Add(new(path, false));
+        }
+
         foreach (string path in EnumerateSelectedFiles(
                      root,
                      "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema",
@@ -813,7 +818,7 @@ internal static class Program
     private static IEnumerable<string> EnumerateSelectedFiles(
         string root,
         string relativeRoot,
-        string extension)
+        string? extension)
     {
         string selectionRoot = Path.Combine(root, relativeRoot);
 
@@ -850,7 +855,7 @@ internal static class Program
                 }
 
                 if (child is FileInfo file
-                    && file.Extension.Equals(extension, StringComparison.Ordinal))
+                    && (extension is null || file.Extension.Equals(extension, StringComparison.Ordinal)))
                 {
                     string relative = Path.GetRelativePath(root, file.FullName).Replace('\\', '/');
 

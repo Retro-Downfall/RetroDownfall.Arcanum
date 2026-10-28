@@ -28,13 +28,15 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
         "PersistentWorkerHarness.cs",
     ];
 
-    [Fact]
-    public void Locked_toolchain_matches_the_serviced_macos_native_aot_sdk()
+    [Theory]
+    [InlineData("GrimoireAdmission")]
+    [InlineData("PromptCache")]
+    public void Locked_toolchain_matches_the_serviced_macos_native_aot_sdk(string benchmark)
     {
         string lockPath = Path.Combine(
             FindRepositoryRoot(),
             "tests",
-            "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks",
+            $"RetroDownfall.Arcanum.{benchmark}.Benchmarks",
             "packages.lock.json");
 
         using JsonDocument document = JsonDocument.Parse(File.ReadAllText(lockPath));
@@ -46,19 +48,19 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
         [
             (
                 "Microsoft.DotNet.ILCompiler",
-                "MnT222WlxhelguLZTQx9soBHKW7TeY6A9YUwVaprjUd+ARlhLAkfsXGFNX9w6kRq89/yxUcAQ/lzvmgndSFfOw=="),
+                "CDQ/+XRT1JT/0u87j9exR1AociehKUzxae4KCOWxCQ1PIKbYS0F8ovxaCrqRlkylGmbhywKxV/zbbrEhWa5NXg=="),
             (
                 "Microsoft.NET.ILLink.Tasks",
-                "40yrBMsLEcjixBR4G+FiUaBPvxXIPSKJ2OgSrbOZcmSDBda4Sb0k7BWrfDpIvn3IvvDzwOL/tEPa6gDQfh6aRw=="),
+                "YlTamXppEQls6DYWt7RdUuwWDb0lyw/vXCaGeQpLCpsLmfwGuCkOz/vIGgMTV7ECsJcavkCOkxZXv9s8rdAHkQ=="),
         ];
 
         foreach ((string name, string hash) in expected)
         {
             JsonElement package = dependencies.GetProperty(name);
 
-            Assert.Equal("[10.0.13, )", package.GetProperty("requested").GetString());
+            Assert.Equal("[10.0.14, )", package.GetProperty("requested").GetString());
 
-            Assert.Equal("10.0.13", package.GetProperty("resolved").GetString());
+            Assert.Equal("10.0.14", package.GetProperty("resolved").GetString());
 
             Assert.Equal(hash, package.GetProperty("contentHash").GetString());
         }
@@ -69,16 +71,16 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
         JsonElement compiler = runtimeDependencies.GetProperty("Microsoft.DotNet.ILCompiler");
 
-        Assert.Equal("[10.0.13, )", compiler.GetProperty("requested").GetString());
+        Assert.Equal("[10.0.14, )", compiler.GetProperty("requested").GetString());
 
-        Assert.Equal("10.0.13", compiler.GetProperty("resolved").GetString());
+        Assert.Equal("10.0.14", compiler.GetProperty("resolved").GetString());
 
         Assert.Equal(
-            "MnT222WlxhelguLZTQx9soBHKW7TeY6A9YUwVaprjUd+ARlhLAkfsXGFNX9w6kRq89/yxUcAQ/lzvmgndSFfOw==",
+            "CDQ/+XRT1JT/0u87j9exR1AociehKUzxae4KCOWxCQ1PIKbYS0F8ovxaCrqRlkylGmbhywKxV/zbbrEhWa5NXg==",
             compiler.GetProperty("contentHash").GetString());
 
         Assert.Equal(
-            "10.0.13",
+            "10.0.14",
             compiler
                 .GetProperty("dependencies")
                 .GetProperty("runtime.osx-arm64.Microsoft.DotNet.ILCompiler")
@@ -87,10 +89,10 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
         JsonElement runtimeCompiler = runtimeDependencies
             .GetProperty("runtime.osx-arm64.Microsoft.DotNet.ILCompiler");
 
-        Assert.Equal("10.0.13", runtimeCompiler.GetProperty("resolved").GetString());
+        Assert.Equal("10.0.14", runtimeCompiler.GetProperty("resolved").GetString());
 
         Assert.Equal(
-            "UlaKJbhvcFO/HC+zY5q3r07uGzwIGE5z49EeGj51mbIxu4XZBp87sr2IKi8lOb9eTO2e2M9tMOEpOtaqPzSoTA==",
+            "t4T2d4Ye79r1GTjP9JuJHkA874jiKCvdhcsj8HAUD5U2XF8GpjRsT6YSusy67My5V12iydckl0D4qC9iZsmpvQ==",
             runtimeCompiler.GetProperty("contentHash").GetString());
     }
 
@@ -401,6 +403,41 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
             Assert.Equal(2, extraSqlResult.ExitCode);
 
             File.Delete(extraSql);
+
+            foreach (string relative in new[]
+            {
+                "vendor/Microsoft.Data.Sqlite.Core/upstream/UnexpectedBenchmarkInput.cs",
+                "vendor/Microsoft.Data.Sqlite.Core/UnexpectedBenchmarkInput.props",
+            })
+            {
+                string extraProviderInput = Path.Combine(sourceRoot, relative);
+
+                await File.WriteAllTextAsync(extraProviderInput, "unexpected provider input\n");
+
+                ProcessResult extraProviderResult = await RunProcessAsync(
+                    host,
+                    ["--smoke", "--source-root", sourceRoot],
+                    workingDirectory);
+
+                Assert.Equal(2, extraProviderResult.ExitCode);
+
+                File.Delete(extraProviderInput);
+            }
+
+            string requiredProviderInput = Path.Combine(sourceRoot, "vendor/Microsoft.Data.Sqlite.Core/source-hashes.props");
+
+            byte[] requiredProviderBytes = await File.ReadAllBytesAsync(requiredProviderInput);
+
+            File.Delete(requiredProviderInput);
+
+            ProcessResult missingProviderResult = await RunProcessAsync(
+                host,
+                ["--smoke", "--source-root", sourceRoot],
+                workingDirectory);
+
+            Assert.Equal(2, missingProviderResult.ExitCode);
+
+            await File.WriteAllBytesAsync(requiredProviderInput, requiredProviderBytes);
 
             string requiredSql = Directory.EnumerateFiles(
                     Path.Combine(
@@ -722,6 +759,8 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
     [InlineData(0, "ancestry", 2)]
     [InlineData(0, "catalog-extra-csharp", 2)]
     [InlineData(0, "catalog-extra-sql", 2)]
+    [InlineData(0, "catalog-extra-managed-provider-source", 2)]
+    [InlineData(0, "catalog-extra-managed-provider-build", 2)]
     [InlineData(0, "bytes-baseline", 2)]
     [InlineData(0, "bytes-candidate", 2)]
     [InlineData(0, "bytes-caller", 2)]
@@ -827,6 +866,8 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
                 "      case \"${BENCHMARK_QUALIFICATION_BREAK:-none}\" in\n" +
                 "        catalog-extra-csharp) printf '%s\\n' 'src/RetroDownfall.Arcanum.Infrastructure/ExtraQualificationFixture.cs';;\n" +
                 "        catalog-extra-sql) printf '%s\\n' 'src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/ExtraQualificationFixture.sql';;\n" +
+                "        catalog-extra-managed-provider-source) printf '%s\\n' 'vendor/Microsoft.Data.Sqlite.Core/upstream/ExtraQualificationFixture.cs';;\n" +
+                "        catalog-extra-managed-provider-build) printf '%s\\n' 'vendor/Microsoft.Data.Sqlite.Core/ExtraQualificationFixture.props';;\n" +
                 "      esac\n" +
                 "    fi\n" +
                 "    exit 0;;\n" +

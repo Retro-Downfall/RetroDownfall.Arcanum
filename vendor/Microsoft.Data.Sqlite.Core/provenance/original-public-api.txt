@@ -1,0 +1,397 @@
+Assembly: Microsoft.Data.Sqlite, Version=10.0.10.0, Culture=neutral, PublicKeyToken=adb9793829ddae60
+Field: Microsoft.Data.Sqlite.SqliteCacheMode : Int32 value__ : Public : -
+Field: Microsoft.Data.Sqlite.SqliteCacheMode : Microsoft.Data.Sqlite.SqliteCacheMode Default : Public, Static, Literal : 0
+Field: Microsoft.Data.Sqlite.SqliteCacheMode : Microsoft.Data.Sqlite.SqliteCacheMode Private : Public, Static, Literal : 1
+Field: Microsoft.Data.Sqlite.SqliteCacheMode : Microsoft.Data.Sqlite.SqliteCacheMode Shared : Public, Static, Literal : 2
+Field: Microsoft.Data.Sqlite.SqliteFactory : Microsoft.Data.Sqlite.SqliteFactory Instance : Public, Static, InitOnly : -
+Field: Microsoft.Data.Sqlite.SqliteOpenMode : Int32 value__ : Public : -
+Field: Microsoft.Data.Sqlite.SqliteOpenMode : Microsoft.Data.Sqlite.SqliteOpenMode Memory : Public, Static, Literal : 3
+Field: Microsoft.Data.Sqlite.SqliteOpenMode : Microsoft.Data.Sqlite.SqliteOpenMode ReadOnly : Public, Static, Literal : 2
+Field: Microsoft.Data.Sqlite.SqliteOpenMode : Microsoft.Data.Sqlite.SqliteOpenMode ReadWrite : Public, Static, Literal : 1
+Field: Microsoft.Data.Sqlite.SqliteOpenMode : Microsoft.Data.Sqlite.SqliteOpenMode ReadWriteCreate : Public, Static, Literal : 0
+Field: Microsoft.Data.Sqlite.SqliteType : Int32 value__ : Public : -
+Field: Microsoft.Data.Sqlite.SqliteType : Microsoft.Data.Sqlite.SqliteType Blob : Public, Static, Literal : 4
+Field: Microsoft.Data.Sqlite.SqliteType : Microsoft.Data.Sqlite.SqliteType Integer : Public, Static, Literal : 1
+Field: Microsoft.Data.Sqlite.SqliteType : Microsoft.Data.Sqlite.SqliteType Real : Public, Static, Literal : 2
+Field: Microsoft.Data.Sqlite.SqliteType : Microsoft.Data.Sqlite.SqliteType Text : Public, Static, Literal : 3
+Interface: Microsoft.Data.Sqlite.SqliteBlob : System.IAsyncDisposable
+Interface: Microsoft.Data.Sqlite.SqliteBlob : System.IDisposable
+Interface: Microsoft.Data.Sqlite.SqliteCacheMode : System.IComparable
+Interface: Microsoft.Data.Sqlite.SqliteCacheMode : System.IConvertible
+Interface: Microsoft.Data.Sqlite.SqliteCacheMode : System.IFormattable
+Interface: Microsoft.Data.Sqlite.SqliteCacheMode : System.ISpanFormattable
+Interface: Microsoft.Data.Sqlite.SqliteCommand : System.ComponentModel.IComponent
+Interface: Microsoft.Data.Sqlite.SqliteCommand : System.Data.IDbCommand
+Interface: Microsoft.Data.Sqlite.SqliteCommand : System.IAsyncDisposable
+Interface: Microsoft.Data.Sqlite.SqliteCommand : System.IDisposable
+Interface: Microsoft.Data.Sqlite.SqliteConnection : System.ComponentModel.IComponent
+Interface: Microsoft.Data.Sqlite.SqliteConnection : System.Data.IDbConnection
+Interface: Microsoft.Data.Sqlite.SqliteConnection : System.IAsyncDisposable
+Interface: Microsoft.Data.Sqlite.SqliteConnection : System.IDisposable
+Interface: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : System.Collections.ICollection
+Interface: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : System.Collections.IDictionary
+Interface: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : System.Collections.IEnumerable
+Interface: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : System.ComponentModel.ICustomTypeDescriptor
+Interface: Microsoft.Data.Sqlite.SqliteDataReader : System.Collections.IEnumerable
+Interface: Microsoft.Data.Sqlite.SqliteDataReader : System.Data.IDataReader
+Interface: Microsoft.Data.Sqlite.SqliteDataReader : System.Data.IDataRecord
+Interface: Microsoft.Data.Sqlite.SqliteDataReader : System.IAsyncDisposable
+Interface: Microsoft.Data.Sqlite.SqliteDataReader : System.IDisposable
+Interface: Microsoft.Data.Sqlite.SqliteException : System.Runtime.Serialization.ISerializable
+Interface: Microsoft.Data.Sqlite.SqliteOpenMode : System.IComparable
+Interface: Microsoft.Data.Sqlite.SqliteOpenMode : System.IConvertible
+Interface: Microsoft.Data.Sqlite.SqliteOpenMode : System.IFormattable
+Interface: Microsoft.Data.Sqlite.SqliteOpenMode : System.ISpanFormattable
+Interface: Microsoft.Data.Sqlite.SqliteParameter : System.Data.IDataParameter
+Interface: Microsoft.Data.Sqlite.SqliteParameter : System.Data.IDbDataParameter
+Interface: Microsoft.Data.Sqlite.SqliteParameterCollection : System.Collections.ICollection
+Interface: Microsoft.Data.Sqlite.SqliteParameterCollection : System.Collections.IEnumerable
+Interface: Microsoft.Data.Sqlite.SqliteParameterCollection : System.Collections.IList
+Interface: Microsoft.Data.Sqlite.SqliteParameterCollection : System.Data.IDataParameterCollection
+Interface: Microsoft.Data.Sqlite.SqliteTransaction : System.Data.IDbTransaction
+Interface: Microsoft.Data.Sqlite.SqliteTransaction : System.IAsyncDisposable
+Interface: Microsoft.Data.Sqlite.SqliteTransaction : System.IDisposable
+Interface: Microsoft.Data.Sqlite.SqliteType : System.IComparable
+Interface: Microsoft.Data.Sqlite.SqliteType : System.IConvertible
+Interface: Microsoft.Data.Sqlite.SqliteType : System.IFormattable
+Interface: Microsoft.Data.Sqlite.SqliteType : System.ISpanFormattable
+Method: Microsoft.Data.Sqlite.SqliteBlob : Boolean get_CanRead() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteBlob : Boolean get_CanSeek() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteBlob : Boolean get_CanWrite() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteBlob : Int32 Read(Byte[], Int32, Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteBlob : Int32 Read(System.Span`1[System.Byte]) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteBlob : Int64 Seek(Int64, System.IO.SeekOrigin) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteBlob : Int64 get_Length() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteBlob : Int64 get_Position() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteBlob : Void .ctor(Microsoft.Data.Sqlite.SqliteConnection, System.String, System.String, Int64, Boolean) : Public
+Method: Microsoft.Data.Sqlite.SqliteBlob : Void .ctor(Microsoft.Data.Sqlite.SqliteConnection, System.String, System.String, System.String, Int64, Boolean) : Public
+Method: Microsoft.Data.Sqlite.SqliteBlob : Void Dispose(Boolean) : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteBlob : Void Flush() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteBlob : Void SetLength(Int64) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteBlob : Void Write(Byte[], Int32, Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteBlob : Void Write(System.ReadOnlySpan`1[System.Byte]) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteBlob : Void set_Position(Int64) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Boolean get_DesignTimeVisible() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Int32 ExecuteNonQuery() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Int32 get_CommandTimeout() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Microsoft.Data.Sqlite.SqliteConnection get_Connection() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Microsoft.Data.Sqlite.SqliteDataReader ExecuteReader() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Microsoft.Data.Sqlite.SqliteDataReader ExecuteReader(System.Data.CommandBehavior) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Microsoft.Data.Sqlite.SqliteDataReader get_DataReader() : FamORAssem, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Microsoft.Data.Sqlite.SqliteParameter CreateParameter() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Microsoft.Data.Sqlite.SqliteParameterCollection get_Parameters() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Microsoft.Data.Sqlite.SqliteTransaction get_Transaction() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : System.Data.CommandType get_CommandType() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : System.Data.Common.DbConnection get_DbConnection() : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : System.Data.Common.DbDataReader ExecuteDbDataReader(System.Data.CommandBehavior) : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : System.Data.Common.DbParameter CreateDbParameter() : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : System.Data.Common.DbParameterCollection get_DbParameterCollection() : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : System.Data.Common.DbTransaction get_DbTransaction() : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : System.Data.UpdateRowSource get_UpdatedRowSource() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : System.Object ExecuteScalar() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : System.String get_CommandText() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : System.Threading.Tasks.Task`1[Microsoft.Data.Sqlite.SqliteDataReader] ExecuteReaderAsync() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : System.Threading.Tasks.Task`1[Microsoft.Data.Sqlite.SqliteDataReader] ExecuteReaderAsync(System.Data.CommandBehavior) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : System.Threading.Tasks.Task`1[Microsoft.Data.Sqlite.SqliteDataReader] ExecuteReaderAsync(System.Data.CommandBehavior, System.Threading.CancellationToken) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : System.Threading.Tasks.Task`1[Microsoft.Data.Sqlite.SqliteDataReader] ExecuteReaderAsync(System.Threading.CancellationToken) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : System.Threading.Tasks.Task`1[System.Data.Common.DbDataReader] ExecuteDbDataReaderAsync(System.Data.CommandBehavior, System.Threading.CancellationToken) : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void .ctor() : Public
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void .ctor(System.String) : Public
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void .ctor(System.String, Microsoft.Data.Sqlite.SqliteConnection) : Public
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void .ctor(System.String, Microsoft.Data.Sqlite.SqliteConnection, Microsoft.Data.Sqlite.SqliteTransaction) : Public
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void Cancel() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void Dispose(Boolean) : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void Prepare() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void set_CommandText(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void set_CommandTimeout(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void set_CommandType(System.Data.CommandType) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void set_Connection(Microsoft.Data.Sqlite.SqliteConnection) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void set_DataReader(Microsoft.Data.Sqlite.SqliteDataReader) : FamORAssem, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void set_DbConnection(System.Data.Common.DbConnection) : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void set_DbTransaction(System.Data.Common.DbTransaction) : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void set_DesignTimeVisible(Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void set_Transaction(Microsoft.Data.Sqlite.SqliteTransaction) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteCommand : Void set_UpdatedRowSource(System.Data.UpdateRowSource) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Int32 get_DefaultTimeout() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Microsoft.Data.Sqlite.SqliteCommand CreateCommand() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Microsoft.Data.Sqlite.SqliteTransaction BeginTransaction() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Microsoft.Data.Sqlite.SqliteTransaction BeginTransaction(Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Microsoft.Data.Sqlite.SqliteTransaction BeginTransaction(System.Data.IsolationLevel) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Microsoft.Data.Sqlite.SqliteTransaction BeginTransaction(System.Data.IsolationLevel, Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Microsoft.Data.Sqlite.SqliteTransaction get_Transaction() : FamORAssem, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : SQLitePCL.sqlite3 get_Handle() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : System.Data.Common.DbCommand CreateDbCommand() : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : System.Data.Common.DbProviderFactory get_DbProviderFactory() : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : System.Data.Common.DbTransaction BeginDbTransaction(System.Data.IsolationLevel) : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : System.Data.ConnectionState get_State() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : System.Data.DataTable GetSchema() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : System.Data.DataTable GetSchema(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : System.Data.DataTable GetSchema(System.String, System.String[]) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : System.String get_ConnectionString() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : System.String get_DataSource() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : System.String get_Database() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : System.String get_ServerVersion() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void .ctor() : Public
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void .ctor(System.String) : Public
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void BackupDatabase(Microsoft.Data.Sqlite.SqliteConnection) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void BackupDatabase(Microsoft.Data.Sqlite.SqliteConnection, System.String, System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void ChangeDatabase(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void ClearAllPools() : Public, Static
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void ClearPool(Microsoft.Data.Sqlite.SqliteConnection) : Public, Static
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void Close() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,T15,TAccumulate,TResult](System.String, TAccumulate, System.Func`17[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,T15,TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,T15,TAccumulate](System.String, System.Func`17[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,T15,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,T15,TAccumulate](System.String, TAccumulate, System.Func`17[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,T15,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,TAccumulate,TResult](System.String, TAccumulate, System.Func`16[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,TAccumulate](System.String, System.Func`16[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,TAccumulate](System.String, TAccumulate, System.Func`16[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,TAccumulate,TResult](System.String, TAccumulate, System.Func`15[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,TAccumulate](System.String, System.Func`15[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,TAccumulate](System.String, TAccumulate, System.Func`15[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,TAccumulate,TResult](System.String, TAccumulate, System.Func`14[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,TAccumulate](System.String, System.Func`14[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,TAccumulate](System.String, TAccumulate, System.Func`14[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,TAccumulate,TResult](System.String, TAccumulate, System.Func`13[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,TAccumulate](System.String, System.Func`13[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,TAccumulate](System.String, TAccumulate, System.Func`13[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,TAccumulate,TResult](System.String, TAccumulate, System.Func`12[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,TAccumulate](System.String, System.Func`12[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,TAccumulate](System.String, TAccumulate, System.Func`12[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,TAccumulate,TResult](System.String, TAccumulate, System.Func`11[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,TAccumulate](System.String, System.Func`11[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,T9,TAccumulate](System.String, TAccumulate, System.Func`11[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,T9,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,TAccumulate,TResult](System.String, TAccumulate, System.Func`10[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,TAccumulate](System.String, System.Func`10[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,T8,TAccumulate](System.String, TAccumulate, System.Func`10[TAccumulate,T1,T2,T3,T4,T5,T6,T7,T8,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,TAccumulate,TResult](System.String, TAccumulate, System.Func`9[TAccumulate,T1,T2,T3,T4,T5,T6,T7,TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,TAccumulate](System.String, System.Func`9[TAccumulate,T1,T2,T3,T4,T5,T6,T7,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,T7,TAccumulate](System.String, TAccumulate, System.Func`9[TAccumulate,T1,T2,T3,T4,T5,T6,T7,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,TAccumulate,TResult](System.String, TAccumulate, System.Func`8[TAccumulate,T1,T2,T3,T4,T5,T6,TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,TAccumulate](System.String, System.Func`8[TAccumulate,T1,T2,T3,T4,T5,T6,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,T6,TAccumulate](System.String, TAccumulate, System.Func`8[TAccumulate,T1,T2,T3,T4,T5,T6,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,TAccumulate,TResult](System.String, TAccumulate, System.Func`7[TAccumulate,T1,T2,T3,T4,T5,TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,TAccumulate](System.String, System.Func`7[TAccumulate,T1,T2,T3,T4,T5,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,T5,TAccumulate](System.String, TAccumulate, System.Func`7[TAccumulate,T1,T2,T3,T4,T5,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,TAccumulate,TResult](System.String, TAccumulate, System.Func`6[TAccumulate,T1,T2,T3,T4,TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,TAccumulate](System.String, System.Func`6[TAccumulate,T1,T2,T3,T4,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,T4,TAccumulate](System.String, TAccumulate, System.Func`6[TAccumulate,T1,T2,T3,T4,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,TAccumulate,TResult](System.String, TAccumulate, System.Func`5[TAccumulate,T1,T2,T3,TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,TAccumulate](System.String, System.Func`5[TAccumulate,T1,T2,T3,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,T3,TAccumulate](System.String, TAccumulate, System.Func`5[TAccumulate,T1,T2,T3,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,TAccumulate,TResult](System.String, TAccumulate, System.Func`4[TAccumulate,T1,T2,TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,TAccumulate](System.String, System.Func`4[TAccumulate,T1,T2,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,T2,TAccumulate](System.String, TAccumulate, System.Func`4[TAccumulate,T1,T2,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,TAccumulate,TResult](System.String, TAccumulate, System.Func`3[TAccumulate,T1,TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,TAccumulate](System.String, System.Func`3[TAccumulate,T1,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[T1,TAccumulate](System.String, TAccumulate, System.Func`3[TAccumulate,T1,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[TAccumulate,TResult](System.String, TAccumulate, System.Func`2[TAccumulate,TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[TAccumulate,TResult](System.String, TAccumulate, System.Func`3[TAccumulate,System.Object[],TAccumulate], System.Func`2[TAccumulate,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[TAccumulate](System.String, System.Func`2[TAccumulate,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[TAccumulate](System.String, System.Func`3[TAccumulate,System.Object[],TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[TAccumulate](System.String, TAccumulate, System.Func`2[TAccumulate,TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateAggregate[TAccumulate](System.String, TAccumulate, System.Func`3[TAccumulate,System.Object[],TAccumulate], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateCollation(System.String, System.Comparison`1[System.String]) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateCollation[T](System.String, T, System.Func`4[T,System.String,System.String,System.Int32]) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,T15,T16,TResult](System.String, System.Func`17[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,T15,T16,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,T15,TResult](System.String, System.Func`16[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,T15,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,TResult](System.String, System.Func`15[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,TResult](System.String, System.Func`14[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,TResult](System.String, System.Func`13[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,TResult](System.String, System.Func`12[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,TResult](System.String, System.Func`11[T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[T1,T2,T3,T4,T5,T6,T7,T8,T9,TResult](System.String, System.Func`10[T1,T2,T3,T4,T5,T6,T7,T8,T9,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[T1,T2,T3,T4,T5,T6,T7,T8,TResult](System.String, System.Func`9[T1,T2,T3,T4,T5,T6,T7,T8,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[T1,T2,T3,T4,T5,T6,T7,TResult](System.String, System.Func`8[T1,T2,T3,T4,T5,T6,T7,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[T1,T2,T3,T4,T5,T6,TResult](System.String, System.Func`7[T1,T2,T3,T4,T5,T6,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[T1,T2,T3,T4,T5,TResult](System.String, System.Func`6[T1,T2,T3,T4,T5,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[T1,T2,T3,T4,TResult](System.String, System.Func`5[T1,T2,T3,T4,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[T1,T2,T3,TResult](System.String, System.Func`4[T1,T2,T3,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[T1,T2,TResult](System.String, System.Func`3[T1,T2,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[T1,TResult](System.String, System.Func`2[T1,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TResult](System.String, System.Func`1[TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TResult](System.String, System.Func`2[System.Object[],TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,T15,TResult](System.String, TState, System.Func`17[TState,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,T15,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,TResult](System.String, TState, System.Func`16[TState,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,T14,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,TResult](System.String, TState, System.Func`15[TState,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,TResult](System.String, TState, System.Func`14[TState,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,TResult](System.String, TState, System.Func`13[TState,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,TResult](System.String, TState, System.Func`12[TState,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,T1,T2,T3,T4,T5,T6,T7,T8,T9,TResult](System.String, TState, System.Func`11[TState,T1,T2,T3,T4,T5,T6,T7,T8,T9,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,T1,T2,T3,T4,T5,T6,T7,T8,TResult](System.String, TState, System.Func`10[TState,T1,T2,T3,T4,T5,T6,T7,T8,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,T1,T2,T3,T4,T5,T6,T7,TResult](System.String, TState, System.Func`9[TState,T1,T2,T3,T4,T5,T6,T7,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,T1,T2,T3,T4,T5,T6,TResult](System.String, TState, System.Func`8[TState,T1,T2,T3,T4,T5,T6,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,T1,T2,T3,T4,T5,TResult](System.String, TState, System.Func`7[TState,T1,T2,T3,T4,T5,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,T1,T2,T3,T4,TResult](System.String, TState, System.Func`6[TState,T1,T2,T3,T4,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,T1,T2,T3,TResult](System.String, TState, System.Func`5[TState,T1,T2,T3,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,T1,T2,TResult](System.String, TState, System.Func`4[TState,T1,T2,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,T1,TResult](System.String, TState, System.Func`3[TState,T1,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,TResult](System.String, TState, System.Func`2[TState,TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void CreateFunction[TState,TResult](System.String, TState, System.Func`3[TState,System.Object[],TResult], Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void Dispose(Boolean) : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void EnableExtensions(Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void LoadExtension(System.String, System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void Open() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void set_ConnectionString(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void set_DefaultTimeout(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnection : Void set_Transaction(Microsoft.Data.Sqlite.SqliteTransaction) : FamORAssem, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Boolean ContainsKey(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Boolean Remove(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Boolean ShouldSerialize(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Boolean TryGetValue(System.String, System.Object ByRef) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Boolean get_Pooling() : Public
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Boolean get_RecursiveTriggers() : Public
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Int32 get_DefaultTimeout() : Public
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Microsoft.Data.Sqlite.SqliteCacheMode get_Cache() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Microsoft.Data.Sqlite.SqliteOpenMode get_Mode() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : System.Collections.ICollection get_Keys() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : System.Collections.ICollection get_Values() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : System.Nullable`1[System.Boolean] get_ForeignKeys() : Public
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : System.Object get_Item(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : System.String get_DataSource() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : System.String get_Password() : Public
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : System.String get_Vfs() : Public
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Void .ctor() : Public
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Void .ctor(System.String) : Public
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Void Clear() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Void set_Cache(Microsoft.Data.Sqlite.SqliteCacheMode) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Void set_DataSource(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Void set_DefaultTimeout(Int32) : Public
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Void set_ForeignKeys(System.Nullable`1[System.Boolean]) : Public
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Void set_Item(System.String, System.Object) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Void set_Mode(Microsoft.Data.Sqlite.SqliteOpenMode) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Void set_Password(System.String) : Public
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Void set_Pooling(Boolean) : Public
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Void set_RecursiveTriggers(Boolean) : Public
+Method: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : Void set_Vfs(System.String) : Public
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Boolean GetBoolean(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Boolean IsDBNull(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Boolean NextResult() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Boolean Read() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Boolean get_HasRows() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Boolean get_IsClosed() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Byte GetByte(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Char GetChar(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Double GetDouble(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Int16 GetInt16(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Int32 GetInt32(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Int32 GetOrdinal(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Int32 GetValues(System.Object[]) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Int32 get_Depth() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Int32 get_FieldCount() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Int32 get_RecordsAffected() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Int64 GetBytes(Int32, Int64, Byte[], Int32, Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Int64 GetChars(Int32, Int64, Char[], Int32, Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Int64 GetInt64(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : SQLitePCL.sqlite3_stmt get_Handle() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Single GetFloat(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : System.Collections.IEnumerator GetEnumerator() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : System.Data.DataTable GetSchemaTable() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : System.DateTime GetDateTime(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : System.DateTimeOffset GetDateTimeOffset(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : System.Decimal GetDecimal(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : System.Guid GetGuid(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : System.IO.Stream GetStream(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : System.IO.TextReader GetTextReader(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : System.Object GetValue(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : System.Object get_Item(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : System.Object get_Item(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : System.String GetDataTypeName(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : System.String GetName(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : System.String GetString(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : System.TimeSpan GetTimeSpan(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : System.Type GetFieldType(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : T GetFieldValue[T](Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Void Close() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteDataReader : Void Dispose(Boolean) : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteException : Int32 get_SqliteErrorCode() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteException : Int32 get_SqliteExtendedErrorCode() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteException : Void .ctor(System.String, Int32) : Public
+Method: Microsoft.Data.Sqlite.SqliteException : Void .ctor(System.String, Int32, Int32) : Public
+Method: Microsoft.Data.Sqlite.SqliteException : Void ThrowExceptionForRC(Int32, SQLitePCL.sqlite3) : Public, Static
+Method: Microsoft.Data.Sqlite.SqliteFactory : System.Data.Common.DbCommand CreateCommand() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteFactory : System.Data.Common.DbConnection CreateConnection() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteFactory : System.Data.Common.DbConnectionStringBuilder CreateConnectionStringBuilder() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteFactory : System.Data.Common.DbParameter CreateParameter() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : Boolean get_IsNullable() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : Boolean get_SourceColumnNullMapping() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : Int32 get_Size() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : Microsoft.Data.Sqlite.SqliteType get_SqliteType() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : System.Data.DbType get_DbType() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : System.Data.ParameterDirection get_Direction() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : System.Object get_Value() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : System.String get_ParameterName() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : System.String get_SourceColumn() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : Void .ctor() : Public
+Method: Microsoft.Data.Sqlite.SqliteParameter : Void .ctor(System.String, Microsoft.Data.Sqlite.SqliteType) : Public
+Method: Microsoft.Data.Sqlite.SqliteParameter : Void .ctor(System.String, Microsoft.Data.Sqlite.SqliteType, Int32) : Public
+Method: Microsoft.Data.Sqlite.SqliteParameter : Void .ctor(System.String, Microsoft.Data.Sqlite.SqliteType, Int32, System.String) : Public
+Method: Microsoft.Data.Sqlite.SqliteParameter : Void .ctor(System.String, System.Object) : Public
+Method: Microsoft.Data.Sqlite.SqliteParameter : Void ResetDbType() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : Void ResetSqliteType() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : Void set_DbType(System.Data.DbType) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : Void set_Direction(System.Data.ParameterDirection) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : Void set_IsNullable(Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : Void set_ParameterName(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : Void set_Size(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : Void set_SourceColumn(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : Void set_SourceColumnNullMapping(Boolean) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : Void set_SqliteType(Microsoft.Data.Sqlite.SqliteType) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameter : Void set_Value(System.Object) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Boolean Contains(Microsoft.Data.Sqlite.SqliteParameter) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Boolean Contains(System.Object) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Boolean Contains(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Int32 Add(System.Object) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Int32 IndexOf(Microsoft.Data.Sqlite.SqliteParameter) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Int32 IndexOf(System.Object) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Int32 IndexOf(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Int32 get_Count() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Microsoft.Data.Sqlite.SqliteParameter Add(Microsoft.Data.Sqlite.SqliteParameter) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Microsoft.Data.Sqlite.SqliteParameter Add(System.String, Microsoft.Data.Sqlite.SqliteType) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Microsoft.Data.Sqlite.SqliteParameter Add(System.String, Microsoft.Data.Sqlite.SqliteType, Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Microsoft.Data.Sqlite.SqliteParameter Add(System.String, Microsoft.Data.Sqlite.SqliteType, Int32, System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Microsoft.Data.Sqlite.SqliteParameter AddWithValue(System.String, System.Object) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Microsoft.Data.Sqlite.SqliteParameter get_Item(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Microsoft.Data.Sqlite.SqliteParameter get_Item(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : System.Collections.IEnumerator GetEnumerator() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : System.Data.Common.DbParameter GetParameter(Int32) : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : System.Data.Common.DbParameter GetParameter(System.String) : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : System.Object get_SyncRoot() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Void .ctor() : FamORAssem
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Void AddRange(System.Array) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Void AddRange(System.Collections.Generic.IEnumerable`1[Microsoft.Data.Sqlite.SqliteParameter]) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Void Clear() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Void CopyTo(Microsoft.Data.Sqlite.SqliteParameter[], Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Void CopyTo(System.Array, Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Void Insert(Int32, Microsoft.Data.Sqlite.SqliteParameter) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Void Insert(Int32, System.Object) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Void Remove(Microsoft.Data.Sqlite.SqliteParameter) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Void Remove(System.Object) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Void RemoveAt(Int32) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Void RemoveAt(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Void SetParameter(Int32, System.Data.Common.DbParameter) : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Void SetParameter(System.String, System.Data.Common.DbParameter) : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Void set_Item(Int32, Microsoft.Data.Sqlite.SqliteParameter) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteParameterCollection : Void set_Item(System.String, Microsoft.Data.Sqlite.SqliteParameter) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteTransaction : Boolean get_SupportsSavepoints() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteTransaction : Microsoft.Data.Sqlite.SqliteConnection get_Connection() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteTransaction : System.Data.Common.DbConnection get_DbConnection() : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteTransaction : System.Data.IsolationLevel get_IsolationLevel() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteTransaction : Void Commit() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteTransaction : Void Dispose(Boolean) : Family, Virtual
+Method: Microsoft.Data.Sqlite.SqliteTransaction : Void Release(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteTransaction : Void Rollback() : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteTransaction : Void Rollback(System.String) : Public, Virtual
+Method: Microsoft.Data.Sqlite.SqliteTransaction : Void Save(System.String) : Public, Virtual
+Type: Microsoft.Data.Sqlite.SqliteBlob : System.IO.Stream
+Type: Microsoft.Data.Sqlite.SqliteCacheMode : System.Enum
+Type: Microsoft.Data.Sqlite.SqliteCommand : System.Data.Common.DbCommand
+Type: Microsoft.Data.Sqlite.SqliteConnection : System.Data.Common.DbConnection
+Type: Microsoft.Data.Sqlite.SqliteConnectionStringBuilder : System.Data.Common.DbConnectionStringBuilder
+Type: Microsoft.Data.Sqlite.SqliteDataReader : System.Data.Common.DbDataReader
+Type: Microsoft.Data.Sqlite.SqliteException : System.Data.Common.DbException
+Type: Microsoft.Data.Sqlite.SqliteFactory : System.Data.Common.DbProviderFactory
+Type: Microsoft.Data.Sqlite.SqliteOpenMode : System.Enum
+Type: Microsoft.Data.Sqlite.SqliteParameter : System.Data.Common.DbParameter
+Type: Microsoft.Data.Sqlite.SqliteParameterCollection : System.Data.Common.DbParameterCollection
+Type: Microsoft.Data.Sqlite.SqliteTransaction : System.Data.Common.DbTransaction
+Type: Microsoft.Data.Sqlite.SqliteType : System.Enum

@@ -462,7 +462,14 @@ internal sealed class BenchmarkWireObserver(bool fixture) : HttpMessageHandler
 
         string payload = streaming ? "data: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gemma4:e4b\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gemma4:e4b\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"OK\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gemma4:e4b\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":1,\"total_tokens\":101}}\n\ndata: [DONE]\n\n" : "{\"id\":\"fixture\",\"object\":\"chat.completion\",\"created\":1,\"model\":\"gemma4:e4b\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"OK\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":1,\"total_tokens\":101}}";
 
-        return new(HttpStatusCode.OK) { Content = new StringContent(payload.Replace("gemma4:e4b", _expectedModel, StringComparison.Ordinal), Encoding.UTF8, streaming ? "text/event-stream" : "application/json") };
+        // Match the live observer's forward-only response stream. The pinned SDK must not
+        // treat consumed fixture content as a seekable replay buffer during disposal.
+        return new(HttpStatusCode.OK)
+        {
+            Content = new BenchmarkObservedContent(
+                new StringContent(payload.Replace("gemma4:e4b", _expectedModel, StringComparison.Ordinal), Encoding.UTF8, streaming ? "text/event-stream" : "application/json"),
+                (prompt, load) => { PromptMs = prompt ?? PromptMs; LoadMs = load ?? LoadMs; }),
+        };
     }
 
     // The pinned adapter materializes an empty required array. JSON Schema treats absent and

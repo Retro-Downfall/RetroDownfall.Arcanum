@@ -408,11 +408,19 @@ public static class ErrorCodes
         public const string MaintenanceUnavailable = "Grimoire.MaintenanceUnavailable";
 
         /// <summary>
-        /// A database transformation could not take the database offline because ordinary work would
-        /// not drain in time. Nothing was erased and ordinary admission is open again, so the caller's
-        /// action is to ask once whatever held the database open has finished.
+        /// Ordinary requests or work exceeded the maintenance drain window. The closing owner still
+        /// controls recovery or a proven abort; this code alone proves neither reopening nor no effects.
         /// </summary>
         public const string WorkDrainTimeout = "Grimoire.WorkDrainTimeout";
+
+        /// <summary>The requested admission action conflicts with the exact current owner or lifecycle state.</summary>
+        public const string AdmissionLifecycleConflict = "Grimoire.AdmissionLifecycleConflict";
+
+        /// <summary>Physical opens did not reach terminal callbacks in time; the same owner retains closed admission.</summary>
+        public const string OpeningTimeout = "Grimoire.OpeningTimeout";
+
+        /// <summary>The physical open lost its admitted generation and cannot publish a usable handle.</summary>
+        public const string StaleOpenGeneration = "Grimoire.StaleOpenGeneration";
     }
 
     /// <summary>Apprentice — autonomous agent orchestration.</summary>

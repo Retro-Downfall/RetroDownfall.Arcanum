@@ -11,6 +11,10 @@ internal static class ArcanumErrorMapper
     public static int ResolveStatusCode(string errorCode) =>
         errorCode switch
         {
+            ErrorCodes.Grimoire.AdmissionLifecycleConflict => StatusCodes.Status409Conflict,
+
+            ErrorCodes.Grimoire.OpeningTimeout or ErrorCodes.Grimoire.StaleOpenGeneration => StatusCodes.Status503ServiceUnavailable,
+
             ErrorCodes.Session.PinUnavailable => StatusCodes.Status503ServiceUnavailable,
 
             ErrorCodes.Session.CompactionUnavailable => StatusCodes.Status409Conflict,

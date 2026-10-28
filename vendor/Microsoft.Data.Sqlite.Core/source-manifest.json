@@ -1,0 +1,481 @@
+{
+  "upstream_repository": "https://github.com/dotnet/dotnet",
+  "upstream_commit": "f7d90799ce4ef09a0bb257852a57248d2a8fb8dd",
+  "package_id": "Microsoft.Data.Sqlite.Core",
+  "package_version": "10.0.10",
+  "assembly_identity": "Microsoft.Data.Sqlite, Version=10.0.10.0, Culture=neutral, PublicKeyToken=adb9793829ddae60",
+  "target_framework": "net8.0",
+  "source_variant": "one upstream null-origin guard",
+  "self_built": true,
+  "public_signed_not_microsoft_signed": true,
+  "public_key": {
+    "sha256": "a4ab129d0e7e105e850f07fc3d2fa9f5b3e50a2a3128121e2a269574bcaf9e5a",
+    "source": "Public key extracted without loading code from the original pinned10.0.10 assembly",
+    "original_assembly_sha256": "1078d41c6c0f2cee48a8b706e3a54ce145705993f19f703d2b3bdf2abcc59088"
+  },
+  "files": [
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/Extensions/SQLitePCLExtensions.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/Extensions/SQLitePCLExtensions.cs",
+      "http_status": 200,
+      "git_blob_sha1": "452ca0e596c6f49b42ea7b3a73f41090d228ebed",
+      "sha256": "2837269d06bf1dfa277b5ace2301e68e1223b31a8a751e77264966296dc8a495",
+      "bytes": 951,
+      "local_path": "upstream/Extensions/SQLitePCLExtensions.cs",
+      "compiled_sha256": "2837269d06bf1dfa277b5ace2301e68e1223b31a8a751e77264966296dc8a495"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/Extensions/SqliteConnectionExtensions.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/Extensions/SqliteConnectionExtensions.cs",
+      "http_status": 200,
+      "git_blob_sha1": "a658d2b75407f22b4f7df8b34487aaecee703a07",
+      "sha256": "1f30b298f16d59b8433b7e566c783d8f2f8e08d094d3af568f3306b9430c92aa",
+      "bytes": 1203,
+      "local_path": "upstream/Extensions/SqliteConnectionExtensions.cs",
+      "compiled_sha256": "1f30b298f16d59b8433b7e566c783d8f2f8e08d094d3af568f3306b9430c92aa"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/Extensions/TypeExtensions.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/Extensions/TypeExtensions.cs",
+      "http_status": 200,
+      "git_blob_sha1": "03916df6aff41292629a8ed8022db94e36197fa8",
+      "sha256": "535b9076c64bbe163dd65ac4e3d88190396dabbc4d608b9a0d7b4a2c32a3516c",
+      "bytes": 468,
+      "local_path": "upstream/Extensions/TypeExtensions.cs",
+      "compiled_sha256": "535b9076c64bbe163dd65ac4e3d88190396dabbc4d608b9a0d7b4a2c32a3516c"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/Microsoft.Data.Sqlite.Core.csproj",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/Microsoft.Data.Sqlite.Core.csproj",
+      "http_status": 200,
+      "git_blob_sha1": "2305284d616c335902c96cb7201ab772049621c2",
+      "sha256": "b58e8f7587a04c49ae53754041763dc05dbf152f9e93686add6de6866482edef",
+      "bytes": 2725,
+      "local_path": "provenance/upstream-project.csproj.txt",
+      "compiled_sha256": "b58e8f7587a04c49ae53754041763dc05dbf152f9e93686add6de6866482edef"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/Microsoft.Data.Sqlite.Core.ruleset",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/Microsoft.Data.Sqlite.Core.ruleset",
+      "http_status": 200,
+      "git_blob_sha1": "a3f1f9cef953fb8d03a953f64335abe1529f7afd",
+      "sha256": "758550aa8fada79cf45084c0b98a2051ee7a5a33a7e67e5ff00c7f8cfcc9a078",
+      "bytes": 5908,
+      "local_path": "upstream/Microsoft.Data.Sqlite.Core.ruleset",
+      "compiled_sha256": "758550aa8fada79cf45084c0b98a2051ee7a5a33a7e67e5ff00c7f8cfcc9a078"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/Package.md",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/Package.md",
+      "http_status": 200,
+      "git_blob_sha1": "c1c17b8e6e1e2849ec7e2e5fdc15ccf2417ea940",
+      "sha256": "473b70e37aa243840a02c2126f07de4584adcbc9c49385022cf536512e2389bc",
+      "bytes": 1106,
+      "local_path": "upstream/Package.md",
+      "compiled_sha256": "473b70e37aa243840a02c2126f07de4584adcbc9c49385022cf536512e2389bc"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/Properties/InternalsVisibleTo.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/Properties/InternalsVisibleTo.cs",
+      "http_status": 200,
+      "git_blob_sha1": "30f05a579ca4483489a16d47db626cb1105ed6e9",
+      "sha256": "c8552df047c6fa678a57bf799b7c4b1f64edc9c507f89cdf6ac8ebcba87510f1",
+      "bytes": 2216,
+      "local_path": "upstream/Properties/InternalsVisibleTo.cs",
+      "compiled_sha256": "c8552df047c6fa678a57bf799b7c4b1f64edc9c507f89cdf6ac8ebcba87510f1"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/Properties/Resources.Designer.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/Properties/Resources.Designer.cs",
+      "http_status": 200,
+      "git_blob_sha1": "c93038f459ef342823abe2abe1460a3e5b333274",
+      "sha256": "bf13b8015315190c211bc8125ca730ad2f8cf9ae52f5d22c94b22e8c254dfc62",
+      "bytes": 12071,
+      "local_path": "upstream/Properties/Resources.Designer.cs",
+      "compiled_sha256": "bf13b8015315190c211bc8125ca730ad2f8cf9ae52f5d22c94b22e8c254dfc62"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/Properties/Resources.Designer.tt",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/Properties/Resources.Designer.tt",
+      "http_status": 200,
+      "git_blob_sha1": "66a69f7cee4c36f7bee9fb2cb5f747311f1816ab",
+      "sha256": "97d8b31e8d38e0a49795bca6b95f2012882df06624efa39327f5d48affa5ae25",
+      "bytes": 330,
+      "local_path": "upstream/Properties/Resources.Designer.tt",
+      "compiled_sha256": "97d8b31e8d38e0a49795bca6b95f2012882df06624efa39327f5d48affa5ae25"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/Properties/Resources.resx",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/Properties/Resources.resx",
+      "http_status": 200,
+      "git_blob_sha1": "50eeec9e90e53bf32ef8bd51982ebd154a87423a",
+      "sha256": "0801641b19752624b35b9b0a1fffa7c2f0d0c425b91db31aeb6d33843ff65ba0",
+      "bytes": 11582,
+      "local_path": "upstream/Properties/Resources.resx",
+      "compiled_sha256": "0801641b19752624b35b9b0a1fffa7c2f0d0c425b91db31aeb6d33843ff65ba0"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteBlob.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteBlob.cs",
+      "http_status": 200,
+      "git_blob_sha1": "4e9cbc25a7db3e1f99fc4c742bb922001f54f326",
+      "sha256": "f9625b43316885ba62cab79171e99f28f3d78fbb6ff1e47eac809aa31d5fbbfc",
+      "bytes": 12713,
+      "local_path": "upstream/SqliteBlob.cs",
+      "compiled_sha256": "f9625b43316885ba62cab79171e99f28f3d78fbb6ff1e47eac809aa31d5fbbfc"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteCacheMode.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteCacheMode.cs",
+      "http_status": 200,
+      "git_blob_sha1": "cd919bf23f8fda36202649c19fe488409f3729cc",
+      "sha256": "06123e06ab4299c6c0cf2e885c8769547e33c69654e592ce3da87343daa2ea75",
+      "bytes": 823,
+      "local_path": "upstream/SqliteCacheMode.cs",
+      "compiled_sha256": "06123e06ab4299c6c0cf2e885c8769547e33c69654e592ce3da87343daa2ea75"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteCommand.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteCommand.cs",
+      "http_status": 200,
+      "git_blob_sha1": "01b3eed85551a660e1502d0c09b02361b9242bd0",
+      "sha256": "c5d427a5d70161528f63b9f789af93b0b24af3d7118dbfd92912db808ac1f5fb",
+      "bytes": 21934,
+      "local_path": "upstream/SqliteCommand.cs",
+      "compiled_sha256": "c5d427a5d70161528f63b9f789af93b0b24af3d7118dbfd92912db808ac1f5fb"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnection.CreateAggregate.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnection.CreateAggregate.cs",
+      "http_status": 200,
+      "git_blob_sha1": "11d8a1a816baf7cc2ac8d85e2be9b994de3b7b7e",
+      "sha256": "9adf10a84268c5970292b43b8b7f56053ecb342b011461baaf0d2b0b2f99d7a6",
+      "bytes": 109977,
+      "local_path": "upstream/SqliteConnection.CreateAggregate.cs",
+      "compiled_sha256": "9adf10a84268c5970292b43b8b7f56053ecb342b011461baaf0d2b0b2f99d7a6"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnection.CreateAggregate.tt",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnection.CreateAggregate.tt",
+      "http_status": 200,
+      "git_blob_sha1": "f4ec0e7470675dc52fe284f0e8addf86f2b09359",
+      "sha256": "dfad2a1e6d632e0da8dbf469b5efb958390e64d1cecc31c9e5cd1946cce463cc",
+      "bytes": 6399,
+      "local_path": "upstream/SqliteConnection.CreateAggregate.tt",
+      "compiled_sha256": "dfad2a1e6d632e0da8dbf469b5efb958390e64d1cecc31c9e5cd1946cce463cc"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnection.CreateFunction.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnection.CreateFunction.cs",
+      "http_status": 200,
+      "git_blob_sha1": "560bfb9256dbf04628192227ecb9c92d70cfad16",
+      "sha256": "e2cc2a21d11389116dccc0cde5a4ae62048f5b24b95dbcfff0e669a25ebe562f",
+      "bytes": 70327,
+      "local_path": "upstream/SqliteConnection.CreateFunction.cs",
+      "compiled_sha256": "e2cc2a21d11389116dccc0cde5a4ae62048f5b24b95dbcfff0e669a25ebe562f"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnection.CreateFunction.tt",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnection.CreateFunction.tt",
+      "http_status": 200,
+      "git_blob_sha1": "53043d0f66c84213d0d4a6d57244ca24fb2efbc6",
+      "sha256": "cd1cad2cfe0cd9346a2d1cc54ebbeba9cc0e754edf82ec5da29876fb5054849b",
+      "bytes": 5046,
+      "local_path": "upstream/SqliteConnection.CreateFunction.tt",
+      "compiled_sha256": "cd1cad2cfe0cd9346a2d1cc54ebbeba9cc0e754edf82ec5da29876fb5054849b"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnection.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnection.cs",
+      "http_status": 200,
+      "git_blob_sha1": "3062c0f923c5358326da200bc01e7448bb756477",
+      "sha256": "0fd8dd0cd1ca7e6f9ad7fa1301cfd77a743c33be3276550fad94b20557b096b6",
+      "bytes": 38343,
+      "local_path": "upstream/SqliteConnection.cs",
+      "compiled_sha256": "0fd8dd0cd1ca7e6f9ad7fa1301cfd77a743c33be3276550fad94b20557b096b6"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnectionFactory.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnectionFactory.cs",
+      "http_status": 200,
+      "git_blob_sha1": "1182ae0b20dafba4df117a417be4cd03c14895bf",
+      "sha256": "cd94372e4c4be077d845f0d77d91297688a80b5a96cef126d640443ec19cf08a",
+      "bytes": 5001,
+      "local_path": "upstream/SqliteConnectionFactory.cs",
+      "compiled_sha256": "cd94372e4c4be077d845f0d77d91297688a80b5a96cef126d640443ec19cf08a"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnectionInternal.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnectionInternal.cs",
+      "http_status": 200,
+      "git_blob_sha1": "8d568b87e2d85394a6d8ed50f2b6aacea122b122",
+      "sha256": "1a2324129be6f53d624d45eb8f8fb8d6f3ae3e3fb17de9490e2662698a96018d",
+      "bytes": 8127,
+      "local_path": "upstream/SqliteConnectionInternal.cs",
+      "compiled_sha256": "1a2324129be6f53d624d45eb8f8fb8d6f3ae3e3fb17de9490e2662698a96018d"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnectionPool.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnectionPool.cs",
+      "http_status": 200,
+      "git_blob_sha1": "841626879a63220d98fb524f58f96723ddf829b5",
+      "sha256": "883c4f8752379a9d98523c9b3b29eea512b6617d736ba5cbae64a422e7b05a57",
+      "bytes": 4387,
+      "local_path": "upstream/SqliteConnectionPool.cs",
+      "compiled_sha256": "883c4f8752379a9d98523c9b3b29eea512b6617d736ba5cbae64a422e7b05a57"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnectionPoolGroup.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnectionPoolGroup.cs",
+      "http_status": 200,
+      "git_blob_sha1": "cfa6e4d9c08d0ea951568a6049a86382fca489d8",
+      "sha256": "f210a1f4d259a1837eba70ef43e3d53d89bc3f5e7ea3b0e75680650a1bde3a07",
+      "bytes": 2322,
+      "local_path": "upstream/SqliteConnectionPoolGroup.cs",
+      "compiled_sha256": "f210a1f4d259a1837eba70ef43e3d53d89bc3f5e7ea3b0e75680650a1bde3a07"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnectionStringBuilder.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteConnectionStringBuilder.cs",
+      "http_status": 200,
+      "git_blob_sha1": "680f674b45c24cd7797577cd8ac6643f4b3705ee",
+      "sha256": "7293c6c7cbfd326a334262e5616adca3515392d19340ede0cb4ad8813b570cac",
+      "bytes": 17168,
+      "local_path": "upstream/SqliteConnectionStringBuilder.cs",
+      "compiled_sha256": "7293c6c7cbfd326a334262e5616adca3515392d19340ede0cb4ad8813b570cac"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteDataReader.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteDataReader.cs",
+      "http_status": 200,
+      "git_blob_sha1": "2537670988b0bef85011b4f42a4fb2e77e572f44",
+      "sha256": "0712b68bd0b036886b3ea5c5209ba257a4d6b3ba9ac51655dbb2c4c374946968",
+      "bytes": 33555,
+      "local_path": "upstream/SqliteDataReader.cs",
+      "compiled_sha256": "0712b68bd0b036886b3ea5c5209ba257a4d6b3ba9ac51655dbb2c4c374946968"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteDataRecord.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteDataRecord.cs",
+      "http_status": 200,
+      "git_blob_sha1": "7257603d51ca18307bceaa7220ba937af0894370",
+      "sha256": "80b4a911325e4ece4c24428d410e6c502d3ce71afb4c90bbd149ebd80b19eb57",
+      "bytes": 15701,
+      "local_path": "upstream/SqliteDataRecord.cs",
+      "compiled_sha256": "82f9adfb844610d01dad1aae130f8b68fe647b179804d5fb8c8c06a43f381d07"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteException.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteException.cs",
+      "http_status": 200,
+      "git_blob_sha1": "905148dc04bf773af89dae15dccb527a69bc575a",
+      "sha256": "f2fdc8769d57d4300aaccb73ec9f431ae67f0c276dfbbdb28605d0de800f63a7",
+      "bytes": 3121,
+      "local_path": "upstream/SqliteException.cs",
+      "compiled_sha256": "f2fdc8769d57d4300aaccb73ec9f431ae67f0c276dfbbdb28605d0de800f63a7"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteFactory.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteFactory.cs",
+      "http_status": 200,
+      "git_blob_sha1": "7d00b2625478453741484adbd88d583e545356c0",
+      "sha256": "343c8226433108f92f3540200138248a8ee61e5a50f73ae660d3755f45894896",
+      "bytes": 1409,
+      "local_path": "upstream/SqliteFactory.cs",
+      "compiled_sha256": "343c8226433108f92f3540200138248a8ee61e5a50f73ae660d3755f45894896"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteOpenMode.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteOpenMode.cs",
+      "http_status": 200,
+      "git_blob_sha1": "10599108d6a5b5d5668887f1a75d082275b91406",
+      "sha256": "e02bd48df68457171b98e025d50760ff1f09b51843a67f77e56803d42de13e78",
+      "bytes": 896,
+      "local_path": "upstream/SqliteOpenMode.cs",
+      "compiled_sha256": "e02bd48df68457171b98e025d50760ff1f09b51843a67f77e56803d42de13e78"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteParameter.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteParameter.cs",
+      "http_status": 200,
+      "git_blob_sha1": "bd3d7460c0f1f80f629d31b4459b147b40908dfa",
+      "sha256": "e348773411a69a061b1d3403218e6db7e1e8308e677b984f9a946f9436c78a0f",
+      "bytes": 9292,
+      "local_path": "upstream/SqliteParameter.cs",
+      "compiled_sha256": "e348773411a69a061b1d3403218e6db7e1e8308e677b984f9a946f9436c78a0f"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteParameterBinder.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteParameterBinder.cs",
+      "http_status": 200,
+      "git_blob_sha1": "fb737b44a12245e4647bdb6c1ff998dc38821a3e",
+      "sha256": "cd2c67977291d9d91ef93012d3ed039ed9d7769d1b9afefc60dce1ca6129515b",
+      "bytes": 1739,
+      "local_path": "upstream/SqliteParameterBinder.cs",
+      "compiled_sha256": "cd2c67977291d9d91ef93012d3ed039ed9d7769d1b9afefc60dce1ca6129515b"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteParameterCollection.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteParameterCollection.cs",
+      "http_status": 200,
+      "git_blob_sha1": "58b4c4fe342067a1086134c2a303a18886b9ef65",
+      "sha256": "a44d13ed7babf619b6112f84d95132b9a9d321b2aabd9ead3a5f1e56b243f93d",
+      "bytes": 14286,
+      "local_path": "upstream/SqliteParameterCollection.cs",
+      "compiled_sha256": "a44d13ed7babf619b6112f84d95132b9a9d321b2aabd9ead3a5f1e56b243f93d"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteParameterReader.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteParameterReader.cs",
+      "http_status": 200,
+      "git_blob_sha1": "7a15a1b77e4ce857bf4a507344e7c94805297493",
+      "sha256": "100a9498a410d745467e06499ca2ec774e66720c71853e916af3a43914cb2315",
+      "bytes": 1094,
+      "local_path": "upstream/SqliteParameterReader.cs",
+      "compiled_sha256": "100a9498a410d745467e06499ca2ec774e66720c71853e916af3a43914cb2315"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteResultBinder.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteResultBinder.cs",
+      "http_status": 200,
+      "git_blob_sha1": "48be075f3f76b9cf31905840646217f6b1c24903",
+      "sha256": "1727feb5cb1ae576f6b96e120183dbaf95218ce19ef726f76ffbfbda3fee0a32",
+      "bytes": 787,
+      "local_path": "upstream/SqliteResultBinder.cs",
+      "compiled_sha256": "1727feb5cb1ae576f6b96e120183dbaf95218ce19ef726f76ffbfbda3fee0a32"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteTransaction.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteTransaction.cs",
+      "http_status": 200,
+      "git_blob_sha1": "7c578727f82605008470f9ae17dc85ba77482571",
+      "sha256": "fc7e9f47ca6d53643cbb2eebaa4d0d4fe33e9e41a898baef67fc3dd943db4898",
+      "bytes": 8242,
+      "local_path": "upstream/SqliteTransaction.cs",
+      "compiled_sha256": "fc7e9f47ca6d53643cbb2eebaa4d0d4fe33e9e41a898baef67fc3dd943db4898"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteType.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteType.cs",
+      "http_status": 200,
+      "git_blob_sha1": "43768b0c59dfc980a5c122348ea7c52c1207049d",
+      "sha256": "26d506952f132353432fa602533fc5e8874ec1f95d379b28b1ad727f29a62458",
+      "bytes": 806,
+      "local_path": "upstream/SqliteType.cs",
+      "compiled_sha256": "26d506952f132353432fa602533fc5e8874ec1f95d379b28b1ad727f29a62458"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteValueBinder.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteValueBinder.cs",
+      "http_status": 200,
+      "git_blob_sha1": "35fca9e4a443d0d8ac835d1f149c58eab8dc6c0f",
+      "sha256": "2ff48f46e3b59a49d704d1178c0a685632f8556b7eea6c0a37223f01a9d52be7",
+      "bytes": 9775,
+      "local_path": "upstream/SqliteValueBinder.cs",
+      "compiled_sha256": "2ff48f46e3b59a49d704d1178c0a685632f8556b7eea6c0a37223f01a9d52be7"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteValueReader.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/SqliteValueReader.cs",
+      "http_status": 200,
+      "git_blob_sha1": "f8a6ea29378e3e4d4215496756e35ab5997a16db",
+      "sha256": "77406d1020ae1c5800f72edecd8dd8c33b69adb8562f37fc1bdbd963959b0567",
+      "bytes": 13263,
+      "local_path": "upstream/SqliteValueReader.cs",
+      "compiled_sha256": "77406d1020ae1c5800f72edecd8dd8c33b69adb8562f37fc1bdbd963959b0567"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/Utilities/AllowNullAttribute.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/Utilities/AllowNullAttribute.cs",
+      "http_status": 200,
+      "git_blob_sha1": "8bcfa0fbde756898ad9460ed34f2ec5c60402e52",
+      "sha256": "a0ccb088c8b88ddf0e95d348d1214bfacc8aac4263cca60c7dba0ae8aff90b1d",
+      "bytes": 435,
+      "local_path": "upstream/Utilities/AllowNullAttribute.cs",
+      "compiled_sha256": "a0ccb088c8b88ddf0e95d348d1214bfacc8aac4263cca60c7dba0ae8aff90b1d"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/Utilities/MemberNotNullAttribute.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/Utilities/MemberNotNullAttribute.cs",
+      "http_status": 200,
+      "git_blob_sha1": "5de368fd34b7c056d2d4d47c40a08974ac7c392c",
+      "sha256": "f9f29afb37efce28d98ece6636f6d6186f5cce7183e867b7d16dcf2ffe0dbe1c",
+      "bytes": 634,
+      "local_path": "upstream/Utilities/MemberNotNullAttribute.cs",
+      "compiled_sha256": "f9f29afb37efce28d98ece6636f6d6186f5cce7183e867b7d16dcf2ffe0dbe1c"
+    },
+    {
+      "path": "src/efcore/src/Microsoft.Data.Sqlite.Core/Utilities/SharedStopwatch.cs",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Microsoft.Data.Sqlite.Core/Utilities/SharedStopwatch.cs",
+      "http_status": 200,
+      "git_blob_sha1": "0b9c0513638f04944aa5f1f10bf38ea7a82bb989",
+      "sha256": "7bf40a98b1170d3afcada4919968658264c35791f73c2139c88655f1500a5177",
+      "bytes": 1700,
+      "local_path": "upstream/Utilities/SharedStopwatch.cs",
+      "compiled_sha256": "7bf40a98b1170d3afcada4919968658264c35791f73c2139c88655f1500a5177"
+    },
+    {
+      "path": "src/efcore/LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/LICENSE.txt",
+      "http_status": 200,
+      "git_blob_sha1": "a616ed188dfce68ee308f674350ad242d8588c2b",
+      "sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+      "bytes": 1115,
+      "local_path": "LICENSE.txt",
+      "compiled_sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b"
+    },
+    {
+      "path": "src/efcore/Directory.Build.props",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/Directory.Build.props",
+      "http_status": 200,
+      "git_blob_sha1": "0605f449c7b08d8f1e9eb9d2a36551fdaccd8474",
+      "sha256": "96167a03d49b7cdd98b8051edf962e45c39c178c5ad4874d140b518a94fd60cd",
+      "bytes": 3717,
+      "local_path": "provenance/Directory.Build.props",
+      "compiled_sha256": "96167a03d49b7cdd98b8051edf962e45c39c178c5ad4874d140b518a94fd60cd"
+    },
+    {
+      "path": "src/efcore/Directory.Build.targets",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/Directory.Build.targets",
+      "http_status": 200,
+      "git_blob_sha1": "b2b7913a657f4cb96fd806f0164b1f45d088d0e3",
+      "sha256": "8e5b683e3695ddeda927ff881ff81fe7ba0bbe94bd2da0840e2884c4c59bb296",
+      "bytes": 1923,
+      "local_path": "provenance/Directory.Build.targets",
+      "compiled_sha256": "8e5b683e3695ddeda927ff881ff81fe7ba0bbe94bd2da0840e2884c4c59bb296"
+    },
+    {
+      "path": "src/efcore/src/Directory.Build.props",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/src/Directory.Build.props",
+      "http_status": 200,
+      "git_blob_sha1": "adcdae77f747587484127916dad34e3577f0cb43",
+      "sha256": "38e8e4414ce77a0aa8956fb5b3ed274f8309e7aed5eeb0d719a3506f567745ad",
+      "bytes": 501,
+      "local_path": "provenance/src/Directory.Build.props",
+      "compiled_sha256": "38e8e4414ce77a0aa8956fb5b3ed274f8309e7aed5eeb0d719a3506f567745ad"
+    },
+    {
+      "path": "src/efcore/eng/Versions.props",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/src/efcore/eng/Versions.props",
+      "http_status": 200,
+      "git_blob_sha1": "33eed98c62995d15bc53dba6f9e629cc04b5c266",
+      "sha256": "3d8e8f9be4576ee300163ca08876ce861b886bb2f84c24b44a499f62826590b9",
+      "bytes": 2417,
+      "local_path": "provenance/eng/Versions.props",
+      "compiled_sha256": "3d8e8f9be4576ee300163ca08876ce861b886bb2f84c24b44a499f62826590b9"
+    }
+  ],
+  "patch": {
+    "upstream_commit": "493b52c681ba7f9a25c7a2e6c89d237f735c83c4",
+    "file": "upstream/SqliteDataRecord.cs",
+    "before_sha256": "80b4a911325e4ece4c24428d410e6c502d3ce71afb4c90bbd149ebd80b19eb57",
+    "after_sha256": "82f9adfb844610d01dad1aae130f8b68fe647b179804d5fb8c8c06a43f381d07",
+    "guard_sha256": "a0112c4b91ae35cebc48cd3a6d53f4aead42e5c690f9beb7631dec13e5d65106",
+    "only_csharp_divergence": true
+  },
+  "original_public_api": {
+    "path": "provenance/original-public-api.txt",
+    "sha256": "00380445a170141721b4cf93e48228670ceccd5446f4c5afbb0c76e443cc0685",
+    "origin": "Original pinned provider inspected in isolated process; public/protected declared contract, not a regenerated expected value from the backport."
+  }
+}

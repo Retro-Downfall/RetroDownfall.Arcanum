@@ -191,6 +191,7 @@ derive_revision_catalog()
     derive_revision_catalog__selected="$temp_root/selected-$derive_revision_catalog__revision.txt"
     git -C "$repo_root" ls-tree -r --name-only "$derive_revision_catalog__revision" > "$derive_revision_catalog__tree" || return 2
     awk '
+        /^vendor\/Microsoft\.Data\.Sqlite\.Core\// { print; next }
         /\.cs$/ && ($0 ~ /^tests\/RetroDownfall\.Arcanum\.GrimoireAdmission\.Benchmarks\// || $0 ~ /^src\/RetroDownfall\.Arcanum\.(Core|Infrastructure|Secrets)\//) { print; next }
         /\.sql$/ && $0 ~ /^src\/RetroDownfall\.Arcanum\.Infrastructure\/Data\/Schema\// { print }
     ' "$derive_revision_catalog__tree" > "$derive_revision_catalog__selected" || return 2

@@ -185,7 +185,7 @@ public sealed class HostProjectFeatureSwitchTests
             .ToArray();
 
         Assert.Equal("$(BundledNETCoreAppPackageVersion)", auditedPackageVersion.Value.Trim());
-        Assert.Equal(4, auditedPackageHashes.Length);
+        Assert.Equal(5, auditedPackageHashes.Length);
         Assert.Contains(
             auditedPackageHashes,
             static element => string.IsNullOrEmpty(element.Value) && element.Attribute("Condition") is null);
@@ -213,6 +213,14 @@ public sealed class HostProjectFeatureSwitchTests
                     StringComparison.Ordinal)
                 && element.Value.Trim()
                     == "w06ziBrKBpaS1G2Z3hM6GDYcBV1O/KRzH//ZS+IgjouMnlJUO2pl1PL3a95UblAywH3DrJHwLy8/yrR6Yu0LFw==");
+        Assert.Contains(
+            auditedPackageHashes,
+            static element =>
+                ((string?)element.Attribute("Condition") ?? string.Empty).Contains(
+                    "10.0.14",
+                    StringComparison.Ordinal)
+                && element.Value.Trim()
+                    == "SaeXGZoDmwJs/4kLtoaLvpFDl6lTOEytpx/ZR3jtqVRI44farCSXizx3K7QX5T4sBMgLptfLF1Z0lfdGO7qDpw==");
         Assert.True(IsMacOsNativeAotGated(auditedPackageVersion));
 
         foreach (XElement auditedPackageHash in auditedPackageHashes)
@@ -646,10 +654,12 @@ public sealed class HostProjectFeatureSwitchTests
         }
     }
 
-    [Fact]
-    public async Task MacOS_native_aot_restore_collects_the_portable_pack_for_plural_runtime_identifiers()
+    [Theory]
+    [InlineData("10.0.12")]
+    [InlineData("10.0.13")]
+    [InlineData("10.0.14")]
+    public async Task MacOS_native_aot_restore_collects_the_portable_pack_for_plural_runtime_identifiers(string version)
     {
-        const string version = "10.0.12";
         string temporaryRoot = Directory
             .CreateTempSubdirectory("arcanum-nativeaot-restore-collection-")
             .FullName;

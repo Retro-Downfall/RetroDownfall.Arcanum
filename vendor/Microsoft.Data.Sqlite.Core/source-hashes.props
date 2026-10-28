@@ -1,0 +1,83 @@
+<Project>
+  <ItemGroup>
+    <ManagedSqliteSource Include="upstream/Extensions/SQLitePCLExtensions.cs" ExpectedSha256="2837269D06BF1DFA277B5ACE2301E68E1223B31A8A751E77264966296DC8A495" />
+    <ManagedSqliteSource Include="upstream/Extensions/SqliteConnectionExtensions.cs" ExpectedSha256="1F30B298F16D59B8433B7E566C783D8F2F8E08D094D3AF568F3306B9430C92AA" />
+    <ManagedSqliteSource Include="upstream/Extensions/TypeExtensions.cs" ExpectedSha256="535B9076C64BBE163DD65AC4E3D88190396DABBC4D608B9A0D7B4A2C32A3516C" />
+    <ManagedSqliteSource Include="provenance/upstream-project.csproj.txt" ExpectedSha256="B58E8F7587A04C49AE53754041763DC05DBF152F9E93686ADD6DE6866482EDEF" />
+    <ManagedSqliteSource Include="upstream/Microsoft.Data.Sqlite.Core.ruleset" ExpectedSha256="758550AA8FADA79CF45084C0B98A2051EE7A5A33A7E67E5FF00C7F8CFCC9A078" />
+    <ManagedSqliteSource Include="upstream/Package.md" ExpectedSha256="473B70E37AA243840A02C2126F07DE4584ADCBC9C49385022CF536512E2389BC" />
+    <ManagedSqliteSource Include="upstream/Properties/InternalsVisibleTo.cs" ExpectedSha256="C8552DF047C6FA678A57BF799B7C4B1F64EDC9C507F89CDF6AC8EBCBA87510F1" />
+    <ManagedSqliteSource Include="upstream/Properties/Resources.Designer.cs" ExpectedSha256="BF13B8015315190C211BC8125CA730AD2F8CF9AE52F5D22C94B22E8C254DFC62" />
+    <ManagedSqliteSource Include="upstream/Properties/Resources.Designer.tt" ExpectedSha256="97D8B31E8D38E0A49795BCA6B95F2012882DF06624EFA39327F5D48AFFA5AE25" />
+    <ManagedSqliteSource Include="upstream/Properties/Resources.resx" ExpectedSha256="0801641B19752624B35B9B0A1FFFA7C2F0D0C425B91DB31AEB6D33843FF65BA0" />
+    <ManagedSqliteSource Include="upstream/SqliteBlob.cs" ExpectedSha256="F9625B43316885BA62CAB79171E99F28F3D78FBB6FF1E47EAC809AA31D5FBBFC" />
+    <ManagedSqliteSource Include="upstream/SqliteCacheMode.cs" ExpectedSha256="06123E06AB4299C6C0CF2E885C8769547E33C69654E592CE3DA87343DAA2EA75" />
+    <ManagedSqliteSource Include="upstream/SqliteCommand.cs" ExpectedSha256="C5D427A5D70161528F63B9F789AF93B0B24AF3D7118DBFD92912DB808AC1F5FB" />
+    <ManagedSqliteSource Include="upstream/SqliteConnection.CreateAggregate.cs" ExpectedSha256="9ADF10A84268C5970292B43B8B7F56053ECB342B011461BAAF0D2B0B2F99D7A6" />
+    <ManagedSqliteSource Include="upstream/SqliteConnection.CreateAggregate.tt" ExpectedSha256="DFAD2A1E6D632E0DA8DBF469B5EFB958390E64D1CECC31C9E5CD1946CCE463CC" />
+    <ManagedSqliteSource Include="upstream/SqliteConnection.CreateFunction.cs" ExpectedSha256="E2CC2A21D11389116DCCC0CDE5A4AE62048F5B24B95DBCFFF0E669A25EBE562F" />
+    <ManagedSqliteSource Include="upstream/SqliteConnection.CreateFunction.tt" ExpectedSha256="CD1CAD2CFE0CD9346A2D1CC54EBBEBA9CC0E754EDF82EC5DA29876FB5054849B" />
+    <ManagedSqliteSource Include="upstream/SqliteConnection.cs" ExpectedSha256="0FD8DD0CD1CA7E6F9AD7FA1301CFD77A743C33BE3276550FAD94B20557B096B6" />
+    <ManagedSqliteSource Include="upstream/SqliteConnectionFactory.cs" ExpectedSha256="CD94372E4C4BE077D845F0D77D91297688A80B5A96CEF126D640443EC19CF08A" />
+    <ManagedSqliteSource Include="upstream/SqliteConnectionInternal.cs" ExpectedSha256="1A2324129BE6F53D624D45EB8F8FB8D6F3AE3E3FB17DE9490E2662698A96018D" />
+    <ManagedSqliteSource Include="upstream/SqliteConnectionPool.cs" ExpectedSha256="883C4F8752379A9D98523C9B3B29EEA512B6617D736BA5CBAE64A422E7B05A57" />
+    <ManagedSqliteSource Include="upstream/SqliteConnectionPoolGroup.cs" ExpectedSha256="F210A1F4D259A1837EBA70EF43E3D53D89BC3F5E7EA3B0E75680650A1BDE3A07" />
+    <ManagedSqliteSource Include="upstream/SqliteConnectionStringBuilder.cs" ExpectedSha256="7293C6C7CBFD326A334262E5616ADCA3515392D19340EDE0CB4AD8813B570CAC" />
+    <ManagedSqliteSource Include="upstream/SqliteDataReader.cs" ExpectedSha256="0712B68BD0B036886B3EA5C5209BA257A4D6B3BA9AC51655DBB2C4C374946968" />
+    <ManagedSqliteSource Include="upstream/SqliteDataRecord.cs" ExpectedSha256="82F9ADFB844610D01DAD1AAE130F8B68FE647B179804D5FB8C8C06A43F381D07" />
+    <ManagedSqliteSource Include="upstream/SqliteException.cs" ExpectedSha256="F2FDC8769D57D4300AACCB73EC9F431AE67F0C276DFBBDB28605D0DE800F63A7" />
+    <ManagedSqliteSource Include="upstream/SqliteFactory.cs" ExpectedSha256="343C8226433108F92F3540200138248A8EE61E5A50F73AE660D3755F45894896" />
+    <ManagedSqliteSource Include="upstream/SqliteOpenMode.cs" ExpectedSha256="E02BD48DF68457171B98E025D50760FF1F09B51843A67F77E56803D42DE13E78" />
+    <ManagedSqliteSource Include="upstream/SqliteParameter.cs" ExpectedSha256="E348773411A69A061B1D3403218E6DB7E1E8308E677B984F9A946F9436C78A0F" />
+    <ManagedSqliteSource Include="upstream/SqliteParameterBinder.cs" ExpectedSha256="CD2C67977291D9D91EF93012D3ED039ED9D7769D1B9AFEFC60DCE1CA6129515B" />
+    <ManagedSqliteSource Include="upstream/SqliteParameterCollection.cs" ExpectedSha256="A44D13ED7BABF619B6112F84D95132B9A9D321B2AABD9EAD3A5F1E56B243F93D" />
+    <ManagedSqliteSource Include="upstream/SqliteParameterReader.cs" ExpectedSha256="100A9498A410D745467E06499CA2EC774E66720C71853E916AF3A43914CB2315" />
+    <ManagedSqliteSource Include="upstream/SqliteResultBinder.cs" ExpectedSha256="1727FEB5CB1AE576F6B96E120183DBAF95218CE19EF726F76FFBFBDA3FEE0A32" />
+    <ManagedSqliteSource Include="upstream/SqliteTransaction.cs" ExpectedSha256="FC7E9F47CA6D53643CBB2EEBAA4D0D4FE33E9E41A898BAEF67FC3DD943DB4898" />
+    <ManagedSqliteSource Include="upstream/SqliteType.cs" ExpectedSha256="26D506952F132353432FA602533FC5E8874EC1F95D379B28B1AD727F29A62458" />
+    <ManagedSqliteSource Include="upstream/SqliteValueBinder.cs" ExpectedSha256="2FF48F46E3B59A49D704D1178C0A685632F8556B7EEA6C0A37223F01A9D52BE7" />
+    <ManagedSqliteSource Include="upstream/SqliteValueReader.cs" ExpectedSha256="77406D1020AE1C5800F72EDECD8DD8C33B69ADB8562F37FC1BDBD963959B0567" />
+    <ManagedSqliteSource Include="upstream/Utilities/AllowNullAttribute.cs" ExpectedSha256="A0CCB088C8B88DDF0E95D348D1214BFACC8AAC4263CCA60C7DBA0AE8AFF90B1D" />
+    <ManagedSqliteSource Include="upstream/Utilities/MemberNotNullAttribute.cs" ExpectedSha256="F9F29AFB37EFCE28D98ECE6636F6D6186F5CCE7183E867B7D16DCF2FFE0DBE1C" />
+    <ManagedSqliteSource Include="upstream/Utilities/SharedStopwatch.cs" ExpectedSha256="7BF40A98B1170D3AFCADA4919968658264C35791F73C2139C88655F1500A5177" />
+    <ManagedSqliteSource Include="LICENSE.txt" ExpectedSha256="AE48DF11A335DC1A615F4F938B69CBA73BCF4485C4F97AF49B38EFB0F216353B" />
+    <ManagedSqliteSource Include="provenance/Directory.Build.props" ExpectedSha256="96167A03D49B7CDD98B8051EDF962E45C39C178C5AD4874D140B518A94FD60CD" />
+    <ManagedSqliteSource Include="provenance/Directory.Build.targets" ExpectedSha256="8E5B683E3695DDEDA927FF881FF81FE7BA0BBE94BD2DA0840E2884C4C59BB296" />
+    <ManagedSqliteSource Include="provenance/src/Directory.Build.props" ExpectedSha256="38E8E4414CE77A0AA8956FB5B3ED274F8309E7AED5EEB0D719A3506F567745AD" />
+    <ManagedSqliteSource Include="provenance/eng/Versions.props" ExpectedSha256="3D8E8F9BE4576EE300163CA08876CE861B886BB2F84C24B44A499F62826590B9" />
+    <ManagedSqliteSource Include="Microsoft.Data.Sqlite.public.snk" ExpectedSha256="A4AB129D0E7E105E850F07FC3D2FA9F5B3E50A2A3128121E2A269574BCAF9E5A" />
+    <ManagedSqliteCompileSource Include="upstream/Extensions/SQLitePCLExtensions.cs" />
+    <ManagedSqliteCompileSource Include="upstream/Extensions/SqliteConnectionExtensions.cs" />
+    <ManagedSqliteCompileSource Include="upstream/Extensions/TypeExtensions.cs" />
+    <ManagedSqliteCompileSource Include="upstream/Properties/InternalsVisibleTo.cs" />
+    <ManagedSqliteCompileSource Include="upstream/Properties/Resources.Designer.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteBlob.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteCacheMode.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteCommand.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteConnection.CreateAggregate.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteConnection.CreateFunction.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteConnection.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteConnectionFactory.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteConnectionInternal.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteConnectionPool.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteConnectionPoolGroup.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteConnectionStringBuilder.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteDataReader.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteDataRecord.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteException.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteFactory.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteOpenMode.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteParameter.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteParameterBinder.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteParameterCollection.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteParameterReader.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteResultBinder.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteTransaction.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteType.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteValueBinder.cs" />
+    <ManagedSqliteCompileSource Include="upstream/SqliteValueReader.cs" />
+    <ManagedSqliteCompileSource Include="upstream/Utilities/AllowNullAttribute.cs" />
+    <ManagedSqliteCompileSource Include="upstream/Utilities/MemberNotNullAttribute.cs" />
+    <ManagedSqliteCompileSource Include="upstream/Utilities/SharedStopwatch.cs" />
+  </ItemGroup>
+</Project>

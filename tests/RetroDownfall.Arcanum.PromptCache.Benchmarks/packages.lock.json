@@ -10,15 +10,15 @@
       },
       "Microsoft.DotNet.ILCompiler": {
         "type": "Direct",
-        "requested": "[10.0.13, )",
-        "resolved": "10.0.13",
-        "contentHash": "MnT222WlxhelguLZTQx9soBHKW7TeY6A9YUwVaprjUd+ARlhLAkfsXGFNX9w6kRq89/yxUcAQ/lzvmgndSFfOw=="
+        "requested": "[10.0.14, )",
+        "resolved": "10.0.14",
+        "contentHash": "CDQ/+XRT1JT/0u87j9exR1AociehKUzxae4KCOWxCQ1PIKbYS0F8ovxaCrqRlkylGmbhywKxV/zbbrEhWa5NXg=="
       },
       "Microsoft.NET.ILLink.Tasks": {
         "type": "Direct",
-        "requested": "[10.0.13, )",
-        "resolved": "10.0.13",
-        "contentHash": "40yrBMsLEcjixBR4G+FiUaBPvxXIPSKJ2OgSrbOZcmSDBda4Sb0k7BWrfDpIvn3IvvDzwOL/tEPa6gDQfh6aRw=="
+        "requested": "[10.0.14, )",
+        "resolved": "10.0.14",
+        "contentHash": "YlTamXppEQls6DYWt7RdUuwWDb0lyw/vXCaGeQpLCpsLmfwGuCkOz/vIGgMTV7ECsJcavkCOkxZXv9s8rdAHkQ=="
       },
       "A2A": {
         "type": "Transitive",
@@ -64,14 +64,6 @@
         "type": "Transitive",
         "resolved": "6.0.0",
         "contentHash": "GI4jcoi6eC9ZhNOQylIBaWOQjyGaR8T6N3tC1u8p3EXfndLCVNNWa+Zp+ocjvvS3kNBN09Zma2HXL0ezO0dRfw=="
-      },
-      "Microsoft.Data.Sqlite.Core": {
-        "type": "Transitive",
-        "resolved": "10.0.10",
-        "contentHash": "TPCs0ldm7AWqcKmp6f/Xr+14sat7hx4rHfRlS4RgCURBH2thEWbAKEyX7cCWr63zVJVOJIJZTg2cBiUXa8ys6g==",
-        "dependencies": {
-          "SQLitePCLRaw.core": "2.1.11"
-        }
       },
       "Microsoft.EntityFrameworkCore": {
         "type": "Transitive",
@@ -648,6 +640,13 @@
           "System.Diagnostics.EventLog": "10.0.10"
         }
       },
+      "microsoft.data.sqlite.core": {
+        "type": "Project",
+        "dependencies": {
+          "Microsoft.Bcl.Memory": "[10.0.10, )",
+          "SQLitePCLRaw.core": "[2.1.11, )"
+        }
+      },
       "retrodownfall.arcanum.api": {
         "type": "Project",
         "dependencies": {
@@ -685,6 +684,7 @@
           "A2A": "[1.0.0-preview2, )",
           "HtmlAgilityPack": "[1.12.4, )",
           "Microsoft.Bcl.Memory": "[10.0.10, )",
+          "Microsoft.Data.Sqlite.Core": "[10.0.10, )",
           "Microsoft.EntityFrameworkCore.Sqlite.Core": "[10.0.10, )",
           "Microsoft.Extensions.AI": "[10.8.1, )",
           "Microsoft.Extensions.Hosting.Systemd": "[10.0.10, )",
@@ -710,17 +710,17 @@
     "net10.0/osx-arm64": {
       "Microsoft.DotNet.ILCompiler": {
         "type": "Direct",
-        "requested": "[10.0.13, )",
-        "resolved": "10.0.13",
-        "contentHash": "MnT222WlxhelguLZTQx9soBHKW7TeY6A9YUwVaprjUd+ARlhLAkfsXGFNX9w6kRq89/yxUcAQ/lzvmgndSFfOw==",
+        "requested": "[10.0.14, )",
+        "resolved": "10.0.14",
+        "contentHash": "CDQ/+XRT1JT/0u87j9exR1AociehKUzxae4KCOWxCQ1PIKbYS0F8ovxaCrqRlkylGmbhywKxV/zbbrEhWa5NXg==",
         "dependencies": {
-          "runtime.osx-arm64.Microsoft.DotNet.ILCompiler": "10.0.13"
+          "runtime.osx-arm64.Microsoft.DotNet.ILCompiler": "10.0.14"
         }
       },
       "runtime.osx-arm64.Microsoft.DotNet.ILCompiler": {
         "type": "Transitive",
-        "resolved": "10.0.13",
-        "contentHash": "UlaKJbhvcFO/HC+zY5q3r07uGzwIGE5z49EeGj51mbIxu4XZBp87sr2IKi8lOb9eTO2e2M9tMOEpOtaqPzSoTA=="
+        "resolved": "10.0.14",
+        "contentHash": "t4T2d4Ye79r1GTjP9JuJHkA874jiKCvdhcsj8HAUD5U2XF8GpjRsT6YSusy67My5V12iydckl0D4qC9iZsmpvQ=="
       },
       "System.Diagnostics.EventLog": {
         "type": "Transitive",

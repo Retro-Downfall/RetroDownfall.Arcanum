@@ -1,0 +1,11 @@
+--- official/SqliteDataRecord.cs
++++ backport/SqliteDataRecord.cs
+@@ -309,0 +310,8 @@
++
++        if (blobDatabaseName == null
++            || blobTableName == null)
++        {
++            // The value came from an expression, so there is no row to open a blob on. Looking for a rowid
++            // column would also hand these nulls to sqlite3_table_column_metadata, which is misuse
++            return new MemoryStream(GetCachedBlob(ordinal), false);
++        }
