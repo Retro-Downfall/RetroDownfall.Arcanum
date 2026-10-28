@@ -34,6 +34,8 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
 
     internal Func<LongRunningOperation?, LongRunningOperation?>? GetOverride { get; set; }
 
+    internal Func<LongRunningOperationQuery, IReadOnlyList<LongRunningOperation>>? ListOverride { get; set; }
+
     internal Func<LongRunningOperation?, bool?>? TryTransitionOverride { get; set; }
 
     internal Func<
@@ -226,7 +228,7 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
 
     /// <summary>
     /// Mirrors the SQL store's <c>ListAsync</c>: the kind, state and checkpoint-reference filters, newest
-    /// first, and a page of <c>Limit</c> (clamped to 1–500) rows from <c>Offset</c>. A fake that ignored
+    /// first, and a validated page of <c>Limit</c> rows from <c>Offset</c>, plus one only for explicit lookahead. A fake that ignored
     /// them answered every query with every row, so a caller that pages until a short page — the ledger's
     /// <c>FindOpenAsync</c> — never saw one and looped for as long as there were a page's worth of rows.
     /// </summary>
@@ -236,9 +238,18 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
     {
         Interlocked.Increment(ref _listCallCount);
 
-        int limit = Math.Clamp(query.Limit, 1, 500);
+        ArgumentNullException.ThrowIfNull(query);
 
-        int offset = Math.Max(0, query.Offset);
+        if (!query.HasValidPageBounds)
+        {
+            throw new ArgumentOutOfRangeException(nameof(query));
+        }
+
+        if (ListOverride is { } listOverride) return Task.FromResult(listOverride(query));
+
+        int limit = query.Limit + (query.IncludeLookahead ? 1 : 0);
+
+        int offset = query.Offset;
 
         LongRunningOperation[] page =
         [

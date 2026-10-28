@@ -27,24 +27,61 @@ internal static class LongRunningOperationEndpoints
         {
             if (!TryParseState(state, out LongRunningOperationState? parsedState))
             {
-                return Error<LongRunningOperationDto[]>(
+                return Error<ListPageResult<LongRunningOperationDto>>(
                     httpContext,
                     StatusCodes.Status400BadRequest,
                     ErrorCodes.Operation.InvalidState,
                     "State must be Pending, Running, Waiting, Cancelling, Completed, Failed, Abandoned, or ReconciliationRequired.",
-                    ArcanumJsonContext.Default.ApiResponseLongRunningOperationDtoArray);
+                    ArcanumJsonContext.Default.ApiResponseListPageResultLongRunningOperationDto);
             }
 
-            IReadOnlyList<LongRunningOperation> operations = await store.ListAsync(
-                new LongRunningOperationQuery(kind, parsedState, limit ?? 100, offset ?? 0),
-                cancellationToken).ConfigureAwait(false);
-            LongRunningOperationDto[] data = operations
+            LongRunningOperationQuery query = new(
+                kind,
+                parsedState,
+                limit ?? LongRunningOperationQuery.DefaultLimit,
+                offset ?? 0,
+                IncludeLookahead: true);
+
+            if (!query.HasValidPageBounds)
+            {
+                return Error<ListPageResult<LongRunningOperationDto>>(
+                    httpContext,
+                    StatusCodes.Status400BadRequest,
+                    ErrorCodes.Validation.InvalidQuery,
+                    "Limit must be 1 through 500; offset must be nonnegative and at most 2147483647 minus limit.",
+                    ArcanumJsonContext.Default.ApiResponseListPageResultLongRunningOperationDto);
+            }
+
+            IReadOnlyList<LongRunningOperation> operations = await store.ListAsync(query, cancellationToken).ConfigureAwait(false);
+
+            bool hasMore = operations.Count > query.Limit;
+
+            int? nextOffset = hasMore ? checked(query.Offset + query.Limit) : null;
+
+            if (nextOffset is { } next && next > int.MaxValue - query.Limit)
+            {
+                return Error<ListPageResult<LongRunningOperationDto>>(
+                    httpContext,
+                    StatusCodes.Status400BadRequest,
+                    ErrorCodes.Validation.InvalidQuery,
+                    "This page has more operations, but its continuation exceeds the supported offset range. Narrow the kind or state filter.",
+                    ArcanumJsonContext.Default.ApiResponseListPageResultLongRunningOperationDto);
+            }
+
+            LongRunningOperationDto[] items = operations
+                .Take(query.Limit)
                 .Select(LongRunningOperationDto.FromOperation)
                 .ToArray();
+
+            ListPageResult<LongRunningOperationDto> page = new(
+                items,
+                hasMore,
+                nextOffset);
+
             return Success(
                 httpContext,
-                data,
-                ArcanumJsonContext.Default.ApiResponseLongRunningOperationDtoArray);
+                page,
+                ArcanumJsonContext.Default.ApiResponseListPageResultLongRunningOperationDto);
         })
         .WithName("ListLongRunningOperations");
 

@@ -1,3 +1,9 @@
+using RetroDownfall.Arcanum.Api.Serialization;
+
+using RetroDownfall.Arcanum.Cli.Infrastructure;
+
+using RetroDownfall.Arcanum.Core.Desktop;
+
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Operations;
@@ -8,17 +14,74 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 
 public sealed class OperationCommands(
     ArcanumApiClient apiClient,
-    IThemePalette themePalette)
+    IThemePalette themePalette,
+    IConsoleDispatcher dispatcher)
 {
-    public async Task<int> List(string? kind, string? state, CancellationToken cancellationToken)
+    public async Task<int> List(
+        string? kind,
+        string? state,
+        int? limit,
+        int offset,
+        CancellationToken cancellationToken)
     {
-        Result<LongRunningOperationDto[]> result = await apiClient
-            .GetOperationsAsync(kind, state, cancellationToken)
+        int pageSize = limit ?? LongRunningOperationQuery.DefaultLimit;
+
+        if (!new LongRunningOperationQuery(Limit: pageSize, Offset: offset).HasValidPageBounds)
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(new Error(
+                ErrorCodes.Validation.InvalidQuery,
+                "The operation page requires --limit between 1 and 500 and a non-negative --offset whose sum with the page size fits an integer.")));
+
+            return (int)CliExitCode.ConfigurationError;
+        }
+
+        int? continuation = null;
+
+        Result<HostListing<LongRunningOperationDto>> result = await HostPageWalker
+            .ReadAsync<LongRunningOperationDto, int>(
+                "operation list",
+                singlePage: limit is not null,
+                async (cursor, token) =>
+                {
+                    int pageOffset = cursor ?? offset;
+
+                    Result<ListPageResult<LongRunningOperationDto>> response = await apiClient
+                        .GetOperationsAsync(kind, state, pageSize, pageOffset, token)
+                        .ConfigureAwait(false);
+
+                    token.ThrowIfCancellationRequested();
+
+                    Result<HostPage<LongRunningOperationDto, int>> page = ValidatePage(
+                        response,
+                        pageSize,
+                        pageOffset);
+
+                    if (page.IsSuccess) continuation = page.Value.Next;
+
+                    return page;
+                },
+                cancellationToken,
+                firstPageCursor: offset)
             .ConfigureAwait(false);
+
         if (result.IsFailure)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
+
             return CliFailureExit.ExitCode(result.Error);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        LongRunningOperationDto[] rows = result.Value.Items;
+
+        if (CliInvocationContext.Current.Json)
+        {
+            dispatcher.WriteJson(rows, ArcanumJsonContext.Default.LongRunningOperationDtoArray);
+
+            WriteContinuation(continuation, pageSize, kind, state);
+
+            return 0;
         }
 
         IReadOnlyList<ListingColumn<LongRunningOperationDto>> columns =
@@ -32,7 +95,7 @@ public sealed class OperationCommands(
 
         int width = AnsiConsole.Profile.Width;
 
-        ListingTableResult rendered = ListingTable.Build(themePalette, columns, result.Value, width);
+        ListingTableResult rendered = ListingTable.Build(themePalette, columns, rows, width);
 
         AnsiConsole.Write(rendered.Table);
 
@@ -41,12 +104,69 @@ public sealed class OperationCommands(
             CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape(hiddenNotice)));
         }
 
-        if (result.Value.Length == 0)
+        if (rows.Length == 0)
         {
             AnsiConsole.MarkupLine(themePalette.MutedMarkup("No durable operations found."));
         }
 
+        WriteContinuation(continuation, pageSize, kind, state);
+
         return 0;
+    }
+
+    private static Result<HostPage<LongRunningOperationDto, int>> ValidatePage(
+        Result<ListPageResult<LongRunningOperationDto>> response,
+        int limit,
+        int offset)
+    {
+        if (response.IsFailure)
+        {
+            return Result<HostPage<LongRunningOperationDto, int>>.Failure(response.Error);
+        }
+
+        ListPageResult<LongRunningOperationDto> page = response.Value;
+
+        if (page is null)
+        {
+            return Result<HostPage<LongRunningOperationDto, int>>.Failure(
+                HostPageWalker.NoProgressError(
+                    "operation list",
+                    "returned an invalid operation page or continuation",
+                    0));
+        }
+
+        bool validContinuation = page.HasMore
+            ? page.Items.Length > 0
+                && page.NextOffset is { } next
+                && next > offset
+                && (long)next == (long)offset + page.Items.Length
+                && next <= int.MaxValue - limit
+            : page.NextOffset is null;
+
+        if (page.Items.Length > limit || page.NextBeforeUpdatedAt is not null || !validContinuation)
+        {
+            return Result<HostPage<LongRunningOperationDto, int>>.Failure(
+                HostPageWalker.NoProgressError(
+                    "operation list",
+                    "returned an invalid operation page or continuation",
+                    page.Items.Length));
+        }
+
+        return Result<HostPage<LongRunningOperationDto, int>>.Success(
+            new HostPage<LongRunningOperationDto, int>(page.Items, page.HasMore, page.NextOffset));
+    }
+
+    private void WriteContinuation(int? offset, int limit, string? kind, string? state)
+    {
+        if (offset is not { } next) return;
+
+        string command = FormattableString.Invariant($"arcanum operation list --limit {limit} --offset {next}");
+
+        if (!string.IsNullOrEmpty(kind)) command += " --kind " + CommandDisplayFormatter.QuoteArgumentForCurrentPlatform(kind);
+
+        if (!string.IsNullOrEmpty(state)) command += " --state " + CommandDisplayFormatter.QuoteArgumentForCurrentPlatform(state);
+
+        dispatcher.WriteDiagnostic($"More operations remain. Continue: {command}");
     }
 
     public async Task<int> Show(Guid id, CancellationToken cancellationToken)

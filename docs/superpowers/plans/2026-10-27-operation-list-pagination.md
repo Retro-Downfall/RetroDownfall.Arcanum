@@ -1,0 +1,33 @@
+# RV262 operation listing continuation preflight — 2026-10-27
+
+Read-only base: current controller `7b18ca645bf82787eded8e0b79fe88edc074fcb1`. Original finding and T4.13 reviewed. All new work remains offline. Root's RV268 candidate22cf690 is sealed/approved and can be preserved on its branch while its worktree is reused after validation.
+
+## Existing behavior and selected repair
+
+LongRunningOperationStore.ListAsync clamps Limit to1..500 and Offset to >=0; HTTP defaults100 and returns a bare array. CLI sends neither limit nor offset and cannot expose continuation. Current sort is CreatedAt descending, Id ascending. Dates remain the primary history order and Id the deterministic equal-date tie breaker; no updated-time or Guid-order reinterpretation.
+
+Use the existing universal ListPageResult<LongRunningOperationDto> API shape rather than introducing another domain concept or private header convention. Intentionally change the list response data from array to {items,hasMore,nextOffset}, register source-generated envelopes, and update the exact owning API/CLI/design contracts and every compiled consumer together. This is an explicit contract change on the reviewed local candidate; no installed host/client is changed now. Get/show/cancel/retry/reconcile responses remain untouched.
+
+The public page defaults to100, maximum500. Validate and refuse invalid limit/offset at HTTP before storage with existing Validation.InvalidQuery/400 and in direct store calls with argument exceptions; never clamp. Preserve existing optional kind/state/checkpoint-reference predicate semantics and ordinary admission. Add one explicit query lookahead flag (defaultfalse) on the internal store query so the list endpoint requests limit+1 in the SAME statement/snapshot while ordinary diagnostic/recovery callers still receive exactly their requested limit. Public limit remains<=500; lookahead allocation is at most501. The extra row proves HasMore and is never returned. NextOffset is computed only when HasMore. Refuse an offset/page combination that cannot represent the next int offset rather than wrap it or report a false complete page; document this input arithmetic boundary. No schema/index/mutation/recovery/authority changes.
+
+CLI follows existing Session listing conventions: no --limit means follow every host page through HostPageWalker with cancellation and continuation-progress checks; explicit --limit selects one page and prints a concrete continuation command on stderr. Add --offset to choose a starting page, preserve --kind/--state in the next command, and validate bad input before HTTP. --json emits one clean array via IConsoleDispatcher and any continuation notice goes to stderr, matching existing Session CLI JSON semantics. Current plain table styling remains. Avoid accumulating hidden duplicate pages or silently ignoring absent/malformed continuation metadata; rely on the established walker contract. This is offset pagination over a live ledger, not an immutable snapshot: concurrent insertion/deletion may shift subsequent pages. State this limit rather than implying keyset stability.
+
+## TDD and acceptance
+
+1. Existing native store with 520 rows: invalid zero/negative/501 limit and negative/overflow offset are refused, normal100/500/late offset retain expected ordered records. Same CreatedAt fixtures prove exact Id tie order. A lookahead test declaration may be added unused first, then RED proves501 rows for a requested500 plus lookahead without allowing public501.
+2. Actual /api/operations route tests: default100 and150 rows gives100 +HasMore+NextOffset100; second page50 givesno continuation; exactly100/empty/final partial; kind/state filter; invalid values400 before store; bounded one-statement lookahead and body/envelope/source-gen shape. Preserve existing invalid-state error and all mutation response tests.
+3. Actual CLI command tree and mock HTTP transport: default traverses multiple pages (150/520), explicit page bounds/default offset and exact continued filters; JSON is one document and continuation is stderr; cancellation/failing later page/nonadvancing malformed continuation cannot look like complete success; connection/config exit codes remain.
+4. Mutation reversals kill clamp refusal, omitted lookahead/HasMore, and truncated CLI traversal. Owning complete operation store/API/CLI/walker suites plus source-generation/error catalog/boundary/docs/format gates, source map and immutable candidate review. No live calls or installation.
+
+Review focus: changing the existing list payload deliberately versus maintaining its older array shape, parameter source compatibility for internal callers, exact public/internal lookahead distinction, validated integer continuation, and current CLI default all-page convention. Resolve against actual consumers before implementation; no global pagination refactor.
+
+## Accepted independent review corrections
+
+Read /private/tmp/arcanum-rv262-operation-pagination-plan-review.md. Validate each operation page locally before HostPageWalker, including single-page mode: actual bounded rows, explicit advancing count-consistent continuation when HasMore, no fabricated/backwards cursor or non-offset continuation. Preserve first-party internal query positional argument order/default false lookahead. Document/test the actual ListPageResult wire including its existing nullable NextBeforeUpdatedAt field. All next-command filters must be shell-quoted/markup-escaped. No shared walker redesign.
+
+## Implementation evidence boundary
+
+Native and API contracts first reproduced7 and14 assertion failures on unchanged preceding implementation, with controls retained. CLI reproduced29 failures against its former command/array contract. Native and actual route plus CLI owning scope passed102 tests; expanded fake/native/CLI contract scope passed61 after six fake parity failures. Counts overlap and are not additive. Caller cancellation is tested after response disposal, including after parsing the final page. Final source-bound causal reversals and complete affected qualification are separate acceptance gates. Final full CI and live/install qualification are not claimed here.
+
+
+Independent implementation review added two required edge contracts: a success envelope with null page data must fail locally without partial output (initial/later automatic pages and explicit pages), and an actual endpoint lookahead must refuse a continuation that cannot accept the current page size. The integer-frontier endpoint test uses a bounded injected store response, alongside the existing native SQL pagination tests; it does not claim a multi-billion-row fixture.

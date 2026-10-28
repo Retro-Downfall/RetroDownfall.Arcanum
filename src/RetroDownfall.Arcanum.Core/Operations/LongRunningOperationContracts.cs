@@ -258,7 +258,17 @@ public sealed record LongRunningOperationQuery(
     LongRunningOperationState? State = null,
     int Limit = 100,
     int Offset = 0,
-    string? CheckpointReference = null);
+    string? CheckpointReference = null,
+    bool IncludeLookahead = false)
+{
+    public const int DefaultLimit = 100;
+
+    public const int MaximumLimit = 500;
+
+    public bool HasValidPageBounds => Limit is > 0 and <= MaximumLimit
+        && Offset >= 0
+        && Offset <= int.MaxValue - Limit;
+}
 
 public sealed record LongRunningOperationLeaseResult(
     bool Acquired,

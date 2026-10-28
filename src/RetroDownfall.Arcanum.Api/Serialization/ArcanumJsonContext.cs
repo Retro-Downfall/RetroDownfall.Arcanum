@@ -59,6 +59,8 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(LongRunningOperationReconciliationSummary))]
 [JsonSerializable(typeof(ApiResponse<LongRunningOperationDto>))]
 [JsonSerializable(typeof(ApiResponse<LongRunningOperationDto[]>))]
+[JsonSerializable(typeof(ListPageResult<LongRunningOperationDto>))]
+[JsonSerializable(typeof(ApiResponse<ListPageResult<LongRunningOperationDto>>))]
 [JsonSerializable(typeof(ApiResponse<LongRunningOperationReconciliationSummary>))]
 [JsonSerializable(typeof(DataRetentionRequest))]
 [JsonSerializable(typeof(DataRetentionApplyRequest))]

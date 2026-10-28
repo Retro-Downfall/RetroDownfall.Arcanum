@@ -102,7 +102,7 @@ The families below emit the text envelope for every verb except the typed ones n
 |---|---|
 | `arcanum ward` | none |
 | `arcanum model`, `arcanum provider` | none |
-| `arcanum operation` | none |
+| `arcanum operation` | `arcanum operation list` |
 | `arcanum daemon` | none |
 | `arcanum saga` | none |
 | `arcanum data encryption` | none |
@@ -1144,13 +1144,15 @@ Inspects and repairs durable long-running operations. Safe detail omits checkpoi
 
 | Command | Explanation | Additional command options |
 |---|---|---|
-| `arcanum operation list` | List durable operations. | `--kind <kind>` — Filter by registered operation kind.<br>`--state <state>` — Filter by lifecycle state. |
+| `arcanum operation list` | List durable operations, following all host pages by default. | `--kind <kind>` — Filter by registered operation kind.<br>`--state <state>` — Filter by lifecycle state.<br>`--limit <1..500>` — Read exactly one page and print a continuation command on stderr if more rows remain.<br>`--offset <n>` — Start at this nonnegative row offset (default 0); without `--limit`, follow every remaining page. |
 | `arcanum operation show <id>` | Show safe operation detail (checkpoint payloads are never returned). | None beyond global or inherited family options. |
 | `arcanum operation cancel <id>` | Request cancellation through a compare-and-swap transition. Current owner-bound retention checkpoints refuse generic cancellation; see the authenticated recovery exception below. | None beyond global or inherited family options. |
 | `arcanum operation retry <id>` | Reset a failed, abandoned, repair-required, or unobserved-cancelling operation to Pending. A `Cancelling` row is admitted only once its lease has lapsed, so a cancellation still in progress cannot be yanked out from under its owner. Retrying a Long Rest sweep also runs the reconciler's ordinary recovery pass on the host before the command answers (see below), and the command waits for that pass with no response-headers deadline. | None beyond global or inherited family options. |
 | `arcanum operation reconcile` | Process ordinary recoverable operations in bounded internal pages/concurrency. Report interrupted owner-bound operations separately as `owner recovery required`, with authenticated recovery guidance. Exit 2 still means the ordinary pass returned operations requiring attention; the separate diagnostic count does not change that exit rule. | None beyond global or inherited family options. |
 
-`operation list` keeps the full operation ID, state and attempt count together at standard 80-column widths. It omits Summary first and then Kind when they do not fit, and names the omitted columns on stderr. Widen the terminal or use `operation show <id>` to inspect those details. This also applies to the rendered text inside the `--json` output envelope; it does not change that envelope into a typed operation array.
+`operation list` uses 100-row host pages when `--limit` is omitted. It collects every requested page before printing; a failed or null page, invalid continuation or caller cancellation never publishes a partial listing. An explicit `--limit` reads one page and, when more rows exist, stderr carries a copyable `arcanum operation list --limit … --offset …` command preserving `--kind` and `--state`. Bounds must satisfy `1 <= limit <= 500` and `0 <= offset <= 2147483647 - limit`; invalid bounds exit **2** before contacting the host. Pages follow the live ledger in `CreatedAt DESC, Id ASC` order; concurrent inserts and deletes can shift offsets.
+
+The text and `--plain` table keeps the full operation ID, state and attempt count together at standard 80-column widths. It omits Summary first and then Kind when they do not fit, and names omitted columns on stderr. Widen the terminal or use `operation show <id>` to inspect those details. `--json` now emits one typed array of the requested operation summaries, including full fields and an empty array for no matches. This intentionally replaces the former `{ "output", "exitCode" }` rendered-table envelope for `operation list`; continuation and failure diagnostics remain on stderr.
 
 A retried Long Rest sweep does not wait for the reconciler's minute either: the retry parks it as `long_rest.readmit_requested` at once and wakes the background worker, so it resumes at once. That settling pass is the reconciler's ordinary recovery pass, run serially on the host before the command answers: it settles every operation then eligible for recovery, of any kind, as `arcanum operation reconcile` does, so the retry takes as long as the recovery backlog does, and the pass's summary is neither printed nor recorded as the last reconciliation. A retried row does not wait for the original caller to come back. The reconciler treats a `Pending` row with a prior attempt as recoverable and re-drives it under its kind's registered recovery policy; a row still at attempt zero is left alone because it is a first start, not abandoned work: most kinds lease it in the very next statement, and a queued Long Rest sweep waits for the background worker. `Cancelling` is recoverable on the same terms once its lease lapses, so a cancellation nobody observed is settled by the reconciler through the kind's handler instead of waiting forever for an owner that will never poll the flag.
 

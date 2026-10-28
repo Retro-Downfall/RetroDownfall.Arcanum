@@ -543,8 +543,18 @@ internal sealed partial class LongRunningOperationStore(
         LongRunningOperationQuery query,
         CancellationToken cancellationToken = default)
     {
-        int limit = Math.Clamp(query.Limit, 1, 500);
-        int offset = Math.Max(0, query.Offset);
+        ArgumentNullException.ThrowIfNull(query);
+
+        if (!query.HasValidPageBounds)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(query),
+                "Operation list limit must be 1 through 500 and offset must be nonnegative with a representable continuation.");
+        }
+
+        int limit = query.Limit + (query.IncludeLookahead ? 1 : 0);
+
+        int offset = query.Offset;
 
         return SqliteBusyRetry.ExecuteAsync<IReadOnlyList<LongRunningOperation>>(
             async () =>

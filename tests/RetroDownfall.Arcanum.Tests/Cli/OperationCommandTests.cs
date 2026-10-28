@@ -23,13 +23,10 @@ public sealed class OperationCommandTests
     [Theory]
     [InlineData(80, null, "Summary, Kind")]
     [InlineData(80, "--plain", "Summary, Kind")]
-    [InlineData(80, "--json", "Summary, Kind")]
     [InlineData(120, null, "Summary")]
     [InlineData(120, "--plain", "Summary")]
-    [InlineData(120, "--json", "Summary")]
     [InlineData(240, null, null)]
     [InlineData(240, "--plain", null)]
-    [InlineData(240, "--json", null)]
     public async Task List_keeps_copyable_identifiers_and_full_states_at_the_available_width(
         int width,
         string? outputOption,
@@ -105,7 +102,18 @@ public sealed class OperationCommandTests
 
         Assert.Equal(0, result.ExitCode);
 
-        Assert.Contains("No durable operations found.", ReadOutput(result, outputOption), StringComparison.Ordinal);
+        if (outputOption == "--json")
+        {
+            using JsonDocument document = JsonDocument.Parse(result.Output);
+
+            Assert.Equal(JsonValueKind.Array, document.RootElement.ValueKind);
+
+            Assert.Equal(0, document.RootElement.GetArrayLength());
+        }
+        else
+        {
+            Assert.Contains("No durable operations found.", result.Output, StringComparison.Ordinal);
+        }
 
         Assert.Equal(string.Empty, result.Error.Trim());
     }
@@ -257,8 +265,8 @@ public sealed class OperationCommandTests
             Requests.Add(new HttpRequestMessage(request.Method, request.RequestUri));
 
             byte[] json = JsonSerializer.SerializeToUtf8Bytes(
-                new ApiResponse<LongRunningOperationDto[]>(rows, true, null),
-                ArcanumJsonContext.Default.ApiResponseLongRunningOperationDtoArray);
+                new ApiResponse<ListPageResult<LongRunningOperationDto>>(new ListPageResult<LongRunningOperationDto>(rows, false), true, null),
+                ArcanumJsonContext.Default.ApiResponseListPageResultLongRunningOperationDto);
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {

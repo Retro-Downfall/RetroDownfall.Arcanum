@@ -10,6 +10,36 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 /// </summary>
 public sealed class FakeLongRunningOperationStoreTests
 {
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(501, 0)]
+    [InlineData(100, -1)]
+    [InlineData(100, int.MaxValue)]
+    public async Task ListAsync_mirrors_native_refusal_of_invalid_page_bounds(int limit, int offset)
+    {
+        FakeLongRunningOperationStore store = new(TimeProvider.System);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => store.ListAsync(new LongRunningOperationQuery(Limit: limit, Offset: offset)));
+    }
+
+    [Theory]
+    [InlineData(100, false, 100)]
+    [InlineData(100, true, 101)]
+    [InlineData(500, false, 500)]
+    [InlineData(500, true, 501)]
+    public async Task ListAsync_mirrors_explicit_native_lookahead_without_changing_ordinary_budgets(int limit, bool lookahead, int count)
+    {
+        FakeLongRunningOperationStore store = new(TimeProvider.System);
+
+        for (int index = 0; index < 520; index++)
+        {
+            store.Seed(LongRunningOperationKinds.A2AOutboundSending, LongRunningOperationRecoveryPolicy.ReconcileAndComplete);
+        }
+
+        Assert.Equal(count, (await store.ListAsync(new LongRunningOperationQuery(Limit: limit, IncludeLookahead: lookahead))).Count);
+    }
+
     [Fact]
     public async Task ListAsync_applies_the_kind_state_and_checkpoint_reference_filters()
     {

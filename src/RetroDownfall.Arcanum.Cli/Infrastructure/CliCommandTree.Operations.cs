@@ -15,12 +15,22 @@ internal static partial class CliCommandTree
         Command list = new("list", "List durable operations.");
         Option<string?> kind = new("--kind") { Description = "Filter by registered operation kind." };
         Option<string?> state = new("--state") { Description = "Filter by lifecycle state." };
+        Option<int?> limit = new("--limit") { Description = "Read one page of 1–500 operations; omitted follows every page." };
+
+        Option<int> offset = new("--offset") { Description = "Start at this zero-based row offset." };
+
+        list.Add(limit);
+
+        list.Add(offset);
+
         list.Add(kind);
         list.Add(state);
         list.SetAction(async (ParseResult result, CancellationToken cancellationToken) =>
             await handler.Value.List(
                 result.GetValue(kind),
                 result.GetValue(state),
+                result.GetValue(limit),
+                result.GetValue(offset),
                 cancellationToken).ConfigureAwait(false));
 
         Argument<Guid> id = new("id") { Description = "Durable operation ID." };

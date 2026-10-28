@@ -462,21 +462,26 @@ public sealed partial class ArcanumApiClient(
 
     #region Durable operations
 
-    public Task<Result<LongRunningOperationDto[]>> GetOperationsAsync(
+    public Task<Result<ListPageResult<LongRunningOperationDto>>> GetOperationsAsync(
         string? kind = null,
         string? state = null,
+        int limit = LongRunningOperationQuery.DefaultLimit,
+        int offset = 0,
         CancellationToken cancellationToken = default)
     {
         string path = BuildQueryString(
             "api/operations",
             ("kind", kind),
-            ("state", state));
+            ("state", state),
+            ("limit", limit.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+            ("offset", offset.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+
         return SendRequestAsync(
             HttpMethod.Get,
             path,
             null,
             null,
-            ArcanumJsonContext.Default.ApiResponseLongRunningOperationDtoArray,
+            ArcanumJsonContext.Default.ApiResponseListPageResultLongRunningOperationDto,
             cancellationToken);
     }
 
