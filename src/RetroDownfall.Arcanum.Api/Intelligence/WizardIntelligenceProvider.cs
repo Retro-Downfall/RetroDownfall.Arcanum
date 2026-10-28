@@ -713,17 +713,18 @@ public sealed partial class WizardIntelligenceProvider(
             {
                 ChatClientLease singleLease;
 
-                try
+                using (ChatClientFactory.ResolutionObservation resolution = ChatClientFactory.ObserveResolution(chatClientFactory))
                 {
-                    singleLease = await chatClientFactory.ResolveClientAsync(request.Model, inferenceToken).ConfigureAwait(false);
-                }
-                catch (InvalidOperationException ex)
-                {
-                    logger.LogWarning(
-                        "Hub model resolution failed; exception type {ExceptionType}.",
-                        ex.GetType().FullName);
+                    try
+                    {
+                        singleLease = await chatClientFactory.ResolveClientAsync(request.Model, inferenceToken).ConfigureAwait(false);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        LogModelResolutionFailure(resolution.Consume(ex), ex);
 
-                    return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
+                        return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
+                    }
                 }
 
                 using (singleLease)
@@ -790,7 +791,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (candidates.Count == 0)
         {
-            logger.LogWarning("Hub model resolution failed for requested model {RequestedModel}.", request.Model);
+            LogModelResolutionFailure(ChatClientFactory.ResolutionFailureReason.NoConfiguredCandidate);
 
             return Result<PromptTurnResult>.Failure(memoryDelegation is null
                 ? new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage)
@@ -832,46 +833,44 @@ public sealed partial class WizardIntelligenceProvider(
 
                 ChatClientLease lease;
 
-                try
+                using (ChatClientFactory.ResolutionObservation resolution = ChatClientFactory.ObserveResolution(chatClientFactory))
                 {
-                    lease = await chatClientFactory.ResolveClientAsync(provider, resolvedModel, inferenceToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    // Only mark the provider unhealthy for a genuine connectivity failure — matching
-                    // the inference-failure handling below (attempt.IsConnectivityFailure). A lease
-                    // construction error can also be a local misconfiguration or transient overload,
-                    // neither of which means the provider itself is down; marking it failed regardless
-                    // would incorrectly drain its health status and could take it out of rotation for
-                    // unrelated reasons.
-                    bool isConnectivityFailure = IsConnectivityFailure(ex, callerToken);
-
-                    if (isConnectivityFailure)
+                    try
                     {
-                        healthTracker?.MarkFailed(provider.Name);
+                        lease = await chatClientFactory.ResolveClientAsync(provider, resolvedModel, inferenceToken).ConfigureAwait(false);
                     }
-
-                    logger.LogWarning(
-                        "Provider {ProviderName} unavailable while resolving client (fallback candidate {Attempt}/{CandidateCount}); exception type {ExceptionType}.",
-                        provider.Name,
-                        attemptIndex + 1,
-                        candidates.Count,
-                        ex.GetType().FullName);
-
-                    lastFailure = Result<PromptTurnResult>.Failure(new Error(
-                        ErrorCodes.Hub.Error,
-                        BuildInferenceFailureMessage(provider, ex)));
-
-                    if (!isConnectivityFailure || isLastAttempt)
+                    catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
                     {
-                        return lastFailure;
+                        throw;
                     }
+                    catch (Exception ex)
+                    {
+                        // Only mark the provider unhealthy for a genuine connectivity failure — matching
+                        // the inference-failure handling below (attempt.IsConnectivityFailure). A lease
+                        // construction error can also be a local misconfiguration or transient overload,
+                        // neither of which means the provider itself is down; marking it failed regardless
+                        // would incorrectly drain its health status and could take it out of rotation for
+                        // unrelated reasons.
+                        bool isConnectivityFailure = IsConnectivityFailure(ex, callerToken);
 
-                    continue;
+                        if (isConnectivityFailure)
+                        {
+                            healthTracker?.MarkFailed(provider.Name);
+                        }
+
+                        LogModelResolutionFailure(resolution.Consume(ex), ex, provider, resolvedModel);
+
+                        lastFailure = Result<PromptTurnResult>.Failure(new Error(
+                            ErrorCodes.Hub.Error,
+                            BuildInferenceFailureMessage(provider, ex)));
+
+                        if (!isConnectivityFailure || isLastAttempt)
+                        {
+                            return lastFailure;
+                        }
+
+                        continue;
+                    }
                 }
 
                 using (lease)
@@ -1095,20 +1094,25 @@ public sealed partial class WizardIntelligenceProvider(
 
             ChatClientLease? leaseOrNull = null;
 
-            try
+            ChatClientFactory.ResolutionFailureReason reason = ChatClientFactory.ResolutionFailureReason.Unknown;
+
+            using (ChatClientFactory.ResolutionObservation resolution = ChatClientFactory.ObserveResolution(chatClientFactory))
             {
-                leaseOrNull = await chatClientFactory.ResolveClientAsync(request.Model, inferenceToken).ConfigureAwait(false);
-            }
-            catch (InvalidOperationException ex)
-            {
-                resolveFailure = ex;
+                try
+                {
+                    leaseOrNull = await chatClientFactory.ResolveClientAsync(request.Model, inferenceToken).ConfigureAwait(false);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    resolveFailure = ex;
+
+                    reason = resolution.Consume(ex);
+                }
             }
 
             if (resolveFailure is not null)
             {
-                logger.LogWarning(
-                    "Hub model resolution failed; exception type {ExceptionType}.",
-                    resolveFailure.GetType().FullName);
+                LogModelResolutionFailure(reason, resolveFailure);
 
                 yield return ErrorFrame(new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
 
@@ -1202,7 +1206,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (streamCandidates.Count == 0)
         {
-            logger.LogWarning("Hub model resolution failed for requested model {RequestedModel}.", request.Model);
+            LogModelResolutionFailure(ChatClientFactory.ResolutionFailureReason.NoConfiguredCandidate);
 
             yield return ErrorFrame(new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
 
@@ -1240,17 +1244,24 @@ public sealed partial class WizardIntelligenceProvider(
 
                 Exception? leaseBuildFailure = null;
 
-                try
+                ChatClientFactory.ResolutionFailureReason reason = ChatClientFactory.ResolutionFailureReason.Unknown;
+
+                using (ChatClientFactory.ResolutionObservation resolution = ChatClientFactory.ObserveResolution(chatClientFactory))
                 {
-                    candidateLease = await chatClientFactory.ResolveClientAsync(candidateProvider, candidateModel, inferenceToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    leaseBuildFailure = ex;
+                    try
+                    {
+                        candidateLease = await chatClientFactory.ResolveClientAsync(candidateProvider, candidateModel, inferenceToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        leaseBuildFailure = ex;
+
+                        reason = resolution.Consume(ex);
+                    }
                 }
 
                 if (leaseBuildFailure is not null)
@@ -1266,12 +1277,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     bool retryableBuildFailure = buildFailureIsConnectivity && !isLastAttempt;
 
-                    logger.LogWarning(
-                        "Provider {ProviderName} unavailable while resolving streaming client (fallback candidate {Attempt}/{CandidateCount}); exception type {ExceptionType}.",
-                        candidateProvider.Name,
-                        attemptIndex + 1,
-                        streamCandidates.Count,
-                        leaseBuildFailure.GetType().FullName);
+                    LogModelResolutionFailure(reason, leaseBuildFailure, candidateProvider, candidateModel);
 
                     if (retryableBuildFailure)
                     {
@@ -2332,6 +2338,10 @@ public sealed partial class WizardIntelligenceProvider(
             TapestryInvocationSelection? streamTapestrySelection = await tapestryInvocationValidator
                 .AuthorizeAsync(tapestryScopeRequest, invocationContext, inferenceToken).ConfigureAwait(false);
 
+            RetrievalDiagnostics retrievalDiagnostics = seed?.RetrievalDiagnostics ?? new();
+
+            retrievalDiagnostics.SessionId = grimoireTurn.SessionId ?? request.SessionId;
+
             Embedding<float>? streamQueryEmbedding;
 
             // Provider-independent and billed through TryRecordAuxiliaryUsageAsync, so the run resolves
@@ -2342,7 +2352,7 @@ public sealed partial class WizardIntelligenceProvider(
             }
             else
             {
-                streamQueryEmbedding = await ResolveRagQueryEmbeddingAsync(request, streamTapestrySelection is not null, inferenceToken).ConfigureAwait(false);
+                streamQueryEmbedding = await ResolveRagQueryEmbeddingAsync(request, streamTapestrySelection is not null, inferenceToken, retrievalDiagnostics).ConfigureAwait(false);
 
                 if (seed is not null)
                 {
@@ -2352,14 +2362,14 @@ public sealed partial class WizardIntelligenceProvider(
                 }
             }
 
-            SemanticContextChunk[]? streamSemanticContext = await RetrieveSemanticContextAsync(request, streamQueryEmbedding, inferenceToken).ConfigureAwait(false);
+            SemanticContextChunk[]? streamSemanticContext = await RetrieveSemanticContextAsync(request, streamQueryEmbedding, inferenceToken, retrievalDiagnostics).ConfigureAwait(false);
 
-            SagaMemory[]? streamSagaMemories = await RetrieveSagaMemoriesAsync(streamQueryEmbedding, invocationContext, inferenceToken).ConfigureAwait(false);
+            SagaMemory[]? streamSagaMemories = await RetrieveSagaMemoriesAsync(streamQueryEmbedding, invocationContext, inferenceToken, retrievalDiagnostics).ConfigureAwait(false);
 
             SessionAttachmentRetrievedChunk[]? streamAttachmentContext = await RetrieveSessionAttachmentContextAsync(
                 request,
                 streamQueryEmbedding,
-                inferenceToken).ConfigureAwait(false);
+                inferenceToken, retrievalDiagnostics).ConfigureAwait(false);
 
             streamAttachmentContext = AcceptAttachmentRagMaterializations(
                 streamMaterializationLedger,
@@ -2384,7 +2394,7 @@ public sealed partial class WizardIntelligenceProvider(
             // Admitted last of the semantic sources so an exact raw leaf already in the ledger wins the
             // duplicate-content check against a Tapestry node covering the same text (DESIGN §21.11).
             TapestryRetrievedNode[]? streamRetrievedTapestry = await RetrieveAuthorizedTapestryAsync(
-                streamTapestrySelection, streamQueryEmbedding, lease.Provider, lease.ResolvedModel, inferenceToken).ConfigureAwait(false);
+                streamTapestrySelection, streamQueryEmbedding, lease.Provider, lease.ResolvedModel, inferenceToken, retrievalDiagnostics).ConfigureAwait(false);
 
             TapestryContextNode[]? streamTapestryContext = AcceptTapestryMaterializations(
                 streamMaterializationLedger,
@@ -2400,7 +2410,7 @@ public sealed partial class WizardIntelligenceProvider(
                 lease.Provider,
                 targetModel,
                 invocationContext,
-                inferenceToken).ConfigureAwait(false);
+                inferenceToken, retrievalDiagnostics).ConfigureAwait(false);
 
             int streamMaxIndexItems = ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt(
                 streamAttachmentSettings.MaxIndexItemsInPrompt);
@@ -5542,15 +5552,20 @@ public sealed partial class WizardIntelligenceProvider(
         ProviderSettings mainProvider,
         string mainModel,
         ArcanumInvocationContext invocationContext,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RetrievalDiagnostics? diagnostics = null)
     {
         if (!settings.Value.ResolveIntelligence().EnableLexiconSystem)
         {
+            diagnostics?.Set(RetrievalSource.Lexicon, RetrievalReason.Disabled);
+
             return null;
         }
 
         if (!ShouldUseLexiconForTurn(request))
         {
+            diagnostics?.Set(RetrievalSource.Lexicon, RetrievalReason.NotRequested);
+
             return null;
         }
 
@@ -5570,6 +5585,8 @@ public sealed partial class WizardIntelligenceProvider(
             // SemanticRouter via OverrideSpellName — skip a redundant LexiconEntityExtractor LLM call.
             if (request.UnattendedMode && !string.IsNullOrWhiteSpace(request.OverrideSpellName))
             {
+                diagnostics?.Set(RetrievalSource.Lexicon, RetrievalReason.NotRequested);
+
                 return null;
             }
 
@@ -5584,13 +5601,15 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (eligible.IsFailure)
                 {
-                    logger.LogWarning("Lexicon eligibility lookup failed ({ErrorCode}); continuing without Lexicon context.", eligible.Error.Code);
+                    ReportRetrievalFailure(diagnostics, RetrievalSource.Lexicon, RetrievalStage.Eligibility);
 
                     return null;
                 }
 
                 if (!eligible.Value)
                 {
+                    diagnostics?.Set(RetrievalSource.Lexicon, RetrievalReason.NoEligibleEntries);
+
                     return null;
                 }
 
@@ -5649,9 +5668,7 @@ public sealed partial class WizardIntelligenceProvider(
                 ex is not OperationCanceledException
                 && TurnAccountingAmbient.Current?.AccountingFailed != true)
             {
-                logger.LogWarning(
-                    "Lexicon entity extraction failed; continuing without Lexicon context (exception type {ExceptionType}).",
-                    ex.GetType().FullName);
+                ReportRetrievalFailure(diagnostics, RetrievalSource.Lexicon, RetrievalStage.EntityExtraction, ex);
 
                 return null;
             }
@@ -5663,6 +5680,8 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (entities.Count == 0)
         {
+            diagnostics?.Set(RetrievalSource.Lexicon, RetrievalReason.NoEntities);
+
             return null;
         }
 
@@ -5675,10 +5694,12 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (match.IsFailure)
         {
-            logger.LogWarning("Lexicon retrieval failed ({ErrorCode}); continuing without Lexicon context.", match.Error.Code);
+            ReportRetrievalFailure(diagnostics, RetrievalSource.Lexicon, RetrievalStage.Matching);
 
             return null;
         }
+
+        diagnostics?.Set(RetrievalSource.Lexicon, match.Value.Count == 0 ? RetrievalReason.NoHits : RetrievalReason.Retrieved);
 
         return match.Value.Count == 0 ? null : match.Value;
     }
@@ -5720,10 +5741,12 @@ public sealed partial class WizardIntelligenceProvider(
     /// neither feature needs an embedding this turn (both disabled), or when embedding fails for any
     /// reason — callers treat <c>null</c> as "skip RAG retrieval for this turn", never as an error.
     /// </summary>
-    private async Task<Embedding<float>?> ResolveRagQueryEmbeddingAsync(PingRequest request, bool tapestryEligible, CancellationToken cancellationToken)
+    private async Task<Embedding<float>?> ResolveRagQueryEmbeddingAsync(PingRequest request, bool tapestryEligible, CancellationToken cancellationToken, RetrievalDiagnostics? diagnostics = null)
     {
         if (SubagentExecutionAmbient.IsIsolated)
         {
+            if (diagnostics is not null) diagnostics.QueryUnavailableReason = RetrievalReason.NoAuthority;
+
             return null;
         }
 
@@ -5751,65 +5774,85 @@ public sealed partial class WizardIntelligenceProvider(
             return null;
         }
 
-        return await EmbedQueryAsync(GetSemanticRouterUserProbe(request), cancellationToken).ConfigureAwait(false);
+        return await EmbedQueryAsync(GetSemanticRouterUserProbe(request), cancellationToken, diagnostics).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Embeds <paramref name="prompt"/> via The Weave. Never throws for expected failure modes (provider
-    /// unavailable, embedding call failure) — returns <c>null</c> instead, at Debug log level, so callers
-    /// can gracefully skip RAG retrieval for the turn.
+    /// unavailable, embedding call failure) — returns <c>null</c> instead. Actual failures produce one
+    /// content-free Warning per logical turn; expected skips do not report an outage.
     /// </summary>
-    private async Task<Embedding<float>?> EmbedQueryAsync(string prompt, CancellationToken cancellationToken)
+    private async Task<Embedding<float>?> EmbedQueryAsync(string prompt, CancellationToken cancellationToken, RetrievalDiagnostics? diagnostics)
     {
+        bool invoked = false;
+
+        EmbeddingProvenance? provenance = null;
+
+        string outcome = "The shared retrieval embedding is unavailable; it was not invoked.";
+
         try
         {
-            if (!weaveService.IsAvailable)
-            {
-                return null;
-            }
+            if (!weaveService.IsAvailable) return null;
 
-            EmbeddingSettings embeddingSettings = settings.Value.ResolveEmbeddings();
-
-            PreviewAuxiliaryObserver.Value?.Invoke(
-                new ContextPreviewAuxiliaryCall(
-                    "retrieval-embedding",
-
-                    true,
-
-                    embeddingSettings.Provider,
-
-                    embeddingSettings.Model,
-
-                    null,
-
-                    TokenEstimateClassification.Unknown,
-
-                    "The shared retrieval embedding was invoked; this provider does not report token usage."));
+            invoked = true;
 
             Result<Embedding<float>> embedResult = await weaveService.EmbedAsync(prompt, cancellationToken).ConfigureAwait(false);
 
             if (embedResult.IsFailure)
             {
-                logger.LogDebug(
-                    "RAG query embedding failed ({Code}); semantic retrieval for this turn will be skipped.",
-                    embedResult.Error.Code);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (weaveService is WeaveService owner && owner.OwnsDisabledBeforeGenerationResult(embedResult))
+                {
+                    if (diagnostics is not null) diagnostics.QueryUnavailableReason = RetrievalReason.EmbeddingUnavailable;
+
+                    outcome = "The shared retrieval embedding call was disabled or incomplete before generation; token usage is unknown.";
+
+                    return null;
+                }
+
+                if (diagnostics is not null) diagnostics.QueryUnavailableReason = RetrievalReason.EmbeddingFailed;
+
+                outcome = "The shared retrieval embedding was invoked and failed; token usage is unknown.";
+
+                ReportRetrievalFailure(diagnostics, RetrievalSource.QueryEmbedding, RetrievalStage.Embedding);
 
                 return null;
             }
+
+            if (embedResult.Value.AdditionalProperties?.TryGetValue(EmbeddingProvenance.MetadataKey, out object? value) == true)
+            {
+                provenance = value as EmbeddingProvenance;
+            }
+
+            outcome = "The shared retrieval embedding succeeded; this provider does not report token usage.";
 
             return embedResult.Value;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            outcome = "The shared retrieval embedding was cancelled; token usage is unknown.";
+
             throw;
         }
         catch (Exception ex)
         {
-            logger.LogDebug(
-                "RAG query embedding threw; semantic retrieval for this turn will be skipped (exception type {ExceptionType}).",
-                ex.GetType().FullName);
+            if (diagnostics is not null) diagnostics.QueryUnavailableReason = RetrievalReason.EmbeddingFailed;
+
+            outcome = invoked
+                ? "The shared retrieval embedding was invoked and failed; token usage is unknown."
+                : "The shared retrieval embedding availability check failed; it was not invoked.";
+
+            ReportRetrievalFailure(diagnostics, RetrievalSource.QueryEmbedding,
+                invoked ? RetrievalStage.Embedding : RetrievalStage.Availability, ex);
 
             return null;
+        }
+        finally
+        {
+            PreviewAuxiliaryObserver.Value?.Invoke(new ContextPreviewAuxiliaryCall(
+                "retrieval-embedding", invoked, provenance?.Provider, provenance?.Model, null,
+                TokenEstimateClassification.Unknown, outcome));
         }
     }
 
@@ -5830,12 +5873,15 @@ public sealed partial class WizardIntelligenceProvider(
     private async Task<SemanticContextChunk[]?> RetrieveSemanticContextAsync(
         PingRequest request,
         Embedding<float>? queryEmbedding,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RetrievalDiagnostics? diagnostics = null)
     {
         EmbeddingSettings embeddings = settings.Value.ResolveEmbeddings();
 
         if (!embeddings.Enabled || !embeddings.CodebaseRetrievalEnabled || string.IsNullOrWhiteSpace(request.WorkingDirectory))
         {
+            diagnostics?.Set(RetrievalSource.Workspace, !embeddings.Enabled || !embeddings.CodebaseRetrievalEnabled ? RetrievalReason.Disabled : RetrievalReason.NoWorkspace);
+
             return null;
         }
 
@@ -5851,17 +5897,23 @@ public sealed partial class WizardIntelligenceProvider(
 
             normalizedWorkingDirectory = workspaceIndexingService.ResolveIndexedWorkspacePath(normalizedWorkingDirectory);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
-            logger.LogDebug(
-                "Failed to register workspace for background indexing; exception type {ExceptionType}.",
-                ex.GetType().FullName);
+            ReportRetrievalFailure(diagnostics, RetrievalSource.Workspace, RetrievalStage.Registration, ex);
         }
 
         if (queryEmbedding is not { } embedding)
         {
+            diagnostics?.Set(RetrievalSource.Workspace, diagnostics.QueryUnavailableReason);
+
             return null;
         }
+
+        RetrievalStage stage = RetrievalStage.Search;
 
         try
         {
@@ -5889,10 +5941,21 @@ public sealed partial class WizardIntelligenceProvider(
                     cancellationToken)
                 .ConfigureAwait(false);
 
-            if (searchResult.IsFailure || searchResult.Value.Length == 0)
+            if (searchResult.IsFailure)
             {
+                ReportRetrievalFailure(diagnostics, RetrievalSource.Workspace, RetrievalStage.Search);
+
                 return null;
             }
+
+            if (searchResult.Value.Length == 0)
+            {
+                diagnostics?.Set(RetrievalSource.Workspace, RetrievalReason.NoHits);
+
+                return null;
+            }
+
+            stage = RetrievalStage.Materialization;
 
             SemanticContextChunk[] chunks = await JoinWorkspaceChunkMetadataAsync(
                 db,
@@ -5900,6 +5963,8 @@ public sealed partial class WizardIntelligenceProvider(
                 normalizedWorkingDirectory,
                 maxChunks,
                 cancellationToken).ConfigureAwait(false);
+
+            diagnostics?.Set(RetrievalSource.Workspace, chunks.Length == 0 ? RetrievalReason.NotMaterialized : RetrievalReason.Retrieved);
 
             return chunks.Length == 0 ? null : chunks;
         }
@@ -5909,9 +5974,7 @@ public sealed partial class WizardIntelligenceProvider(
         }
         catch (Exception ex)
         {
-            logger.LogDebug(
-                "Semantic context retrieval failed; continuing without it (exception type {ExceptionType}).",
-                ex.GetType().FullName);
+            ReportRetrievalFailure(diagnostics, RetrievalSource.Workspace, stage, ex);
 
             return null;
         }
@@ -5932,19 +5995,26 @@ public sealed partial class WizardIntelligenceProvider(
     private async Task<SagaMemory[]?> RetrieveSagaMemoriesAsync(
         Embedding<float>? queryEmbedding,
         ArcanumInvocationContext invocationContext,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RetrievalDiagnostics? diagnostics = null)
     {
         EmbeddingSettings embeddings = settings.Value.ResolveEmbeddings();
 
         if (!embeddings.Enabled || !embeddings.SagaEnabled)
         {
+            diagnostics?.Set(RetrievalSource.Saga, RetrievalReason.Disabled);
+
             return null;
         }
 
         if (queryEmbedding is not { } embedding)
         {
+            diagnostics?.Set(RetrievalSource.Saga, diagnostics.QueryUnavailableReason);
+
             return null;
         }
+
+        RetrievalStage stage = RetrievalStage.Search;
 
         try
         {
@@ -5978,10 +6048,21 @@ public sealed partial class WizardIntelligenceProvider(
                         cancellationToken)
                     .ConfigureAwait(false);
 
-            if (searchResult.IsFailure || searchResult.Value.Length == 0)
+            if (searchResult.IsFailure)
             {
+                ReportRetrievalFailure(diagnostics, RetrievalSource.Saga, RetrievalStage.Search);
+
                 return null;
             }
+
+            if (searchResult.Value.Length == 0)
+            {
+                diagnostics?.Set(RetrievalSource.Saga, RetrievalReason.NoHits);
+
+                return null;
+            }
+
+            stage = RetrievalStage.Materialization;
 
             IReadOnlyDictionary<string, SagaMemoryDto> byId = await sagaMemoryStore
                 .GetByIdsAsync(
@@ -6005,6 +6086,8 @@ public sealed partial class WizardIntelligenceProvider(
                 }
             }
 
+            diagnostics?.Set(RetrievalSource.Saga, memories.Count == 0 ? RetrievalReason.NotMaterialized : RetrievalReason.Retrieved);
+
             return memories.Count == 0 ? null : [.. memories];
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -6013,9 +6096,7 @@ public sealed partial class WizardIntelligenceProvider(
         }
         catch (Exception ex)
         {
-            logger.LogDebug(
-                "Saga memory retrieval failed; continuing without it (exception type {ExceptionType}).",
-                ex.GetType().FullName);
+            ReportRetrievalFailure(diagnostics, RetrievalSource.Saga, stage, ex);
 
             return null;
         }
@@ -6152,12 +6233,30 @@ public sealed partial class WizardIntelligenceProvider(
 
     private async Task<TapestryRetrievedNode[]?> RetrieveAuthorizedTapestryAsync(
         TapestryInvocationSelection? selection, Embedding<float>? queryEmbedding,
-        ProviderSettings provider, string model, CancellationToken cancellationToken)
+        ProviderSettings provider, string model, CancellationToken cancellationToken, RetrievalDiagnostics? diagnostics = null)
     {
-        if (selection is null || queryEmbedding is not { } embedding
-            || embedding.AdditionalProperties is null
+        if (selection is null)
+        {
+            diagnostics?.Set(RetrievalSource.Tapestry, settings.Value.ResolveEmbeddings() is { Enabled: true, TapestryEnabled: true } ? RetrievalReason.NoAuthority : RetrievalReason.Disabled);
+
+            return null;
+        }
+
+        if (queryEmbedding is not { } embedding)
+        {
+            diagnostics?.Set(RetrievalSource.Tapestry, diagnostics.QueryUnavailableReason);
+
+            return null;
+        }
+
+        if (embedding.AdditionalProperties is null
             || !embedding.AdditionalProperties.TryGetValue(EmbeddingProvenance.MetadataKey, out object? value)
-            || value is not EmbeddingProvenance provenance) return null;
+            || value is not EmbeddingProvenance provenance)
+        {
+            diagnostics?.Set(RetrievalSource.Tapestry, RetrievalReason.MissingProvenance);
+
+            return null;
+        }
 
         EmbeddingSettings embeddings = settings.Value.ResolveEmbeddings();
 
@@ -6180,12 +6279,21 @@ public sealed partial class WizardIntelligenceProvider(
                 ArcanumSettingClamps.EmbeddingsSimilarityThreshold(embeddings.SimilarityThreshold), provider, model),
                 cancellationToken).ConfigureAwait(false);
 
-            return result.IsSuccess && result.Value.Count > 0 ? [.. result.Value] : null;
+            if (result.IsFailure)
+            {
+                ReportRetrievalFailure(diagnostics, RetrievalSource.Tapestry, RetrievalStage.Search);
+
+                return null;
+            }
+
+            diagnostics?.Set(RetrievalSource.Tapestry, result.Value.Count == 0 ? RetrievalReason.NoHits : RetrievalReason.Retrieved);
+
+            return result.Value.Count > 0 ? [.. result.Value] : null;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
-            logger.LogDebug("Tapestry retrieval failed; continuing without it (exception type {ExceptionType}).", ex.GetType().FullName);
+            ReportRetrievalFailure(diagnostics, RetrievalSource.Tapestry, RetrievalStage.Search, ex);
 
             return null;
         }
@@ -6539,16 +6647,29 @@ public sealed partial class WizardIntelligenceProvider(
     private async Task<SessionAttachmentRetrievedChunk[]?> RetrieveSessionAttachmentContextAsync(
         PingRequest request,
         Embedding<float>? queryEmbedding,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RetrievalDiagnostics? diagnostics = null)
     {
         EmbeddingSettings embeddings = settings.Value.ResolveEmbeddings();
 
-        if (!embeddings.Enabled
-            || !embeddings.AttachmentRetrievalEnabled
-            || request.SessionId is not { } sessionId
-            || queryEmbedding is null
-            || sessionAttachmentRetrieval is null)
+        if (!embeddings.Enabled || !embeddings.AttachmentRetrievalEnabled)
         {
+            diagnostics?.Set(RetrievalSource.Attachment, RetrievalReason.Disabled);
+
+            return null;
+        }
+
+        if (request.SessionId is not { } sessionId)
+        {
+            diagnostics?.Set(RetrievalSource.Attachment, RetrievalReason.NoSession);
+
+            return null;
+        }
+
+        if (queryEmbedding is null || sessionAttachmentRetrieval is null)
+        {
+            diagnostics?.Set(RetrievalSource.Attachment, sessionAttachmentRetrieval is null ? RetrievalReason.NoService : diagnostics.QueryUnavailableReason);
+
             return null;
         }
 
@@ -6560,6 +6681,8 @@ public sealed partial class WizardIntelligenceProvider(
                 includeHistorical: false,
                 cancellationToken).ConfigureAwait(false);
 
+            diagnostics?.Set(RetrievalSource.Attachment, chunks.Length == 0 ? RetrievalReason.NoHits : RetrievalReason.Retrieved);
+
             return chunks.Length == 0 ? null : chunks;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -6568,9 +6691,7 @@ public sealed partial class WizardIntelligenceProvider(
         }
         catch (Exception ex)
         {
-            logger.LogDebug(
-                "Session attachment semantic retrieval failed; continuing without attachment context (exception type {ExceptionType}).",
-                ex.GetType().FullName);
+            ReportRetrievalFailure(diagnostics, RetrievalSource.Attachment, RetrievalStage.Search, ex);
 
             return null;
         }
@@ -8559,6 +8680,173 @@ public sealed partial class WizardIntelligenceProvider(
         return outcome.IsSuccess ? Result.Success() : Result.Failure(outcome.Error);
     }
 
+    private enum RetrievalSource
+    {
+        QueryEmbedding,
+
+        Workspace,
+
+        Saga,
+
+        Attachment,
+
+        Tapestry,
+
+        Lexicon,
+    }
+
+    private enum RetrievalStage
+    {
+        Availability,
+
+        Embedding,
+
+        Registration,
+
+        Search,
+
+        Materialization,
+
+        Eligibility,
+
+        EntityExtraction,
+
+        Matching,
+    }
+
+    private enum RetrievalReason
+    {
+        Disabled,
+
+        NoWorkspace,
+
+        NoSession,
+
+        NoAuthority,
+
+        NoService,
+
+        EmbeddingUnavailable,
+
+        EmbeddingFailed,
+
+        MissingProvenance,
+
+        NoHits,
+
+        NotMaterialized,
+
+        Retrieved,
+
+        Failed,
+
+        NotRequested,
+
+        NoEligibleEntries,
+
+        NoEntities,
+    }
+
+    // Per logical turn: closed observations and correlation GUIDs only; no request, source text or authority is retained.
+    private sealed class RetrievalDiagnostics
+    {
+        private readonly Dictionary<RetrievalSource, RetrievalReason> _outcomes = [];
+
+        private readonly HashSet<(RetrievalSource, RetrievalStage)> _reportedFailures = [];
+
+        internal Guid? SessionId { get; set; }
+
+        internal RetrievalReason QueryUnavailableReason { get; set; } = RetrievalReason.EmbeddingUnavailable;
+
+        internal void Set(RetrievalSource source, RetrievalReason reason) => _outcomes[source] = reason;
+
+        internal bool ReportOnce(RetrievalSource source, RetrievalStage stage) => _reportedFailures.Add((source, stage));
+
+        internal string? Describe(ContextTokenSource source) => source switch
+        {
+            ContextTokenSource.WorkspaceRag => Describe(RetrievalSource.Workspace),
+
+            ContextTokenSource.AttachmentRag => Describe(RetrievalSource.Attachment),
+
+            ContextTokenSource.TapestryRag => Describe(RetrievalSource.Tapestry),
+
+            ContextTokenSource.LexiconSaga => $"Saga: {Describe(RetrievalSource.Saga) ?? "No observed outcome."} Lexicon: {Describe(RetrievalSource.Lexicon) ?? "No observed outcome."}",
+
+            _ => null,
+        };
+
+        private string? Describe(RetrievalSource source) => !_outcomes.TryGetValue(source, out RetrievalReason reason) ? null : reason switch
+        {
+            RetrievalReason.Disabled => "Skipped because the source feature is disabled.",
+
+            RetrievalReason.NoWorkspace => "No Workspace was selected; retrieval was skipped.",
+
+            RetrievalReason.NoSession => "No Session was selected; retrieval was skipped.",
+
+            RetrievalReason.NoAuthority => "Skipped because this invocation has no eligible source scope.",
+
+            RetrievalReason.NoService => "Skipped because the retrieval service is unavailable.",
+
+            RetrievalReason.EmbeddingUnavailable => "Skipped because the shared query embedding is unavailable.",
+
+            RetrievalReason.EmbeddingFailed => "Skipped because the shared query embedding failed.",
+
+            RetrievalReason.MissingProvenance => "Skipped because the query embedding has no first-party provenance.",
+
+            RetrievalReason.NoHits => "Retrieval succeeded with no hits.",
+
+            RetrievalReason.NotMaterialized => "Retrieval found candidates but no current source content was materialized.",
+
+            RetrievalReason.Retrieved => "Content was retrieved but is not included after production admission and context budgeting.",
+
+            RetrievalReason.Failed => "Source retrieval failed; continuing without affected context.",
+
+            RetrievalReason.NotRequested => "Skipped by this turn's source selection policy.",
+
+            RetrievalReason.NoEligibleEntries => "No eligible source entries were available.",
+
+            RetrievalReason.NoEntities => "No entities were selected for source matching.",
+
+            _ => "No observed outcome.",
+        };
+    }
+
+    private void ReportRetrievalFailure(RetrievalDiagnostics? diagnostics, RetrievalSource source, RetrievalStage stage, Exception? failure = null)
+    {
+        diagnostics?.Set(source, RetrievalReason.Failed);
+
+        if (diagnostics is not null && !diagnostics.ReportOnce(source, stage)) return;
+
+        logger.LogWarning(
+            "{RetrievalSource} semantic retrieval failed at {RetrievalStage}; reason {RetrievalReason}, Session {SessionId}, run {RunId}, exception type {ExceptionType}. Check embedding configuration and local retrieval state; continuing without affected context.",
+            source,
+            stage,
+            RetrievalReason.Failed,
+            diagnostics?.SessionId,
+            TurnAccountingAmbient.Current?.RunId,
+            failure?.GetType().FullName ?? "None");
+    }
+
+    private void LogModelResolutionFailure(
+        ChatClientFactory.ResolutionFailureReason reason,
+        Exception? failure = null,
+        ProviderSettings? provider = null,
+        string? configuredModel = null)
+    {
+        string modelLabel = provider is not null
+            && ProviderResolver.TryResolveModelEntry(provider, configuredModel, out ModelEntry? entry)
+            && entry is not null
+                ? LongRestProviderFailure.Label(entry.Name)
+                : "Unknown";
+
+        logger.LogWarning(
+            "Hub model resolution failed; reason {ResolutionReason}, configured provider {ProviderName}, model {Model}, exception type {ExceptionType}. Check Arcanum:Providers and Arcanum:DefaultModel, then select a configured model.",
+            reason,
+            provider is null ? "Unknown" : LongRestProviderFailure.Label(provider.Name),
+            modelLabel,
+            failure?.GetType().FullName ?? "None");
+    }
+
     private static string BuildInferenceFailureMessage(ChatClientLease lease, Exception? ex = null) =>
         BuildInferenceFailureMessage(lease.Provider, ex);
 
@@ -8602,6 +8890,8 @@ public sealed partial class WizardIntelligenceProvider(
     /// </summary>
     private sealed class TurnContextSeed
     {
+        internal RetrievalDiagnostics RetrievalDiagnostics { get; } = new();
+
         /// <summary>
         /// The Grimoire turn opened by the first candidate that got far enough to begin one.
         /// <see langword="null"/> until then; a stateless request seeds an empty handle.

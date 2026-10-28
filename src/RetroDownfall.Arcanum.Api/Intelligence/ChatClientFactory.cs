@@ -62,6 +62,8 @@ public sealed class ChatClientFactory(
 
     public Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken)
     {
+        object? observation = ActiveResolution.Value?.Enter(this);
+
         // Hot-reload: read settings only here — never cache ArcanumSettings on the singleton factory.
         ArcanumSettings arc = optionsMonitor.CurrentValue;
 
@@ -77,22 +79,24 @@ public sealed class ChatClientFactory(
         if (!ProviderResolver.TryResolveProviderForModel(arc, targetModel, out ProviderSettings? provider, out string resolvedModel)
             || provider is null)
         {
-            throw new InvalidOperationException(
+            throw GuardFailure(observation, ResolutionFailureReason.NoConfiguredModel,
                 "No AI model could be resolved. Configure Arcanum:Providers (with non-empty Models) and Arcanum:DefaultModel, or pass a model override that matches a configured model.");
         }
 
-        return ResolveClientCoreAsync(provider, resolvedModel, arc.Features.DynamicContextInjectionV2, snapshot, cancellationToken);
+        return ResolveClientCoreAsync(provider, resolvedModel, arc.Features.DynamicContextInjectionV2, snapshot, observation, cancellationToken);
     }
 
     public Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken)
     {
+        object? observation = ActiveResolution.Value?.Enter(this);
+
         bool enabled = optionsMonitor.CurrentValue.Features.DynamicContextInjectionV2;
 
         PromptCacheConfigurationSnapshot? snapshot = enabled ? promptCacheConfigurationEpoch?.Capture() : null;
 
         enabled = snapshot?.ReadSettings().Features.DynamicContextInjectionV2 ?? enabled;
 
-        return ResolveClientCoreAsync(provider, resolvedModel, enabled, snapshot, cancellationToken);
+        return ResolveClientCoreAsync(provider, resolvedModel, enabled, snapshot, observation, cancellationToken);
     }
 
     private async Task<ChatClientLease> ResolveClientCoreAsync(
@@ -100,11 +104,12 @@ public sealed class ChatClientFactory(
         string resolvedModel,
         bool enabled,
         PromptCacheConfigurationSnapshot? snapshot,
+        object? observation,
         CancellationToken cancellationToken)
     {
         if (!Enum.IsDefined(provider.OutputTokenLimitWireDialect))
         {
-            throw new InvalidOperationException("Provider output-token limit wire dialect is not defined.");
+            throw GuardFailure(observation, ResolutionFailureReason.InvalidOutputTokenDialect, "Provider output-token limit wire dialect is not defined.");
         }
 
         // Freeze the declared wire contract before any asynchronous credential resolution.
@@ -112,12 +117,12 @@ public sealed class ChatClientFactory(
 
         if (FamiliarProviders.IsFamiliar(provider))
         {
-            return CreateFamiliarLease(provider, resolvedModel);
+            return CreateFamiliarLease(provider, resolvedModel, observation);
         }
 
         if (provider.Type != AiProviderKind.OpenAICompatible)
         {
-            throw new InvalidOperationException(
+            throw GuardFailure(observation, ResolutionFailureReason.UnsupportedProviderKind,
                 $"Unsupported provider type '{provider.Type}' for provider '{provider.Name}'.");
         }
 
@@ -142,7 +147,7 @@ public sealed class ChatClientFactory(
     /// lifetime is still one inference turn, which is exactly the process lifetime — there is no
     /// long-lived CLI to leak or wedge between turns.
     /// </summary>
-    private ChatClientLease CreateFamiliarLease(ProviderSettings provider, string resolvedModel)
+    private ChatClientLease CreateFamiliarLease(ProviderSettings provider, string resolvedModel, object? observation)
     {
         // Read once, here: the deny list is derived from the current provider table, and a Familiar
         // must never inherit a key configured for some other provider.
@@ -164,7 +169,7 @@ public sealed class ChatClientFactory(
                     denied,
                     loggerFactory?.CreateLogger<CodexCliChatClient>()),
 
-            _ => throw new InvalidOperationException(
+            _ => throw GuardFailure(observation, ResolutionFailureReason.UnsupportedFamiliarKind,
                 $"Unsupported Familiar type '{provider.Type}' for provider '{provider.Name}'."),
         };
 
@@ -217,6 +222,138 @@ public sealed class ChatClientFactory(
             : null;
 
         return new ChatClientLease(meAi, provider, resolvedModel, ownedHttpClient: null, identity);
+    }
+
+    internal enum ResolutionFailureReason
+    {
+        Unknown,
+
+        NoConfiguredModel,
+
+        NoConfiguredCandidate,
+
+        InvalidOutputTokenDialect,
+
+        UnsupportedProviderKind,
+
+        UnsupportedFamiliarKind,
+    }
+
+    private static readonly AsyncLocal<ResolutionObservation?> ActiveResolution = new();
+
+    internal static ResolutionObservation ObserveResolution(IChatClientFactory factory) => new(factory);
+
+    private static InvalidOperationException GuardFailure(object? attempt, ResolutionFailureReason reason, string message)
+    {
+        InvalidOperationException failure = new(message);
+
+        ActiveResolution.Value?.Record(attempt, failure, reason);
+
+        return failure;
+    }
+
+    // Observation only: one exact factory invocation and exception, never configuration, payload or authority.
+    internal sealed class ResolutionObservation : IDisposable
+    {
+        private readonly object _sync = new();
+
+        private WeakReference<IChatClientFactory>? _factory;
+
+        private readonly ResolutionObservation? _previous;
+
+        private object? _attempt;
+
+        private WeakReference<Exception>? _failure;
+
+        private ResolutionFailureReason _reason;
+
+        private bool _entered;
+
+        private bool _finished;
+
+        internal ResolutionObservation(IChatClientFactory factory)
+        {
+            _factory = new(factory);
+
+            _previous = ActiveResolution.Value;
+
+            ActiveResolution.Value = this;
+        }
+
+        internal object? Enter(ChatClientFactory factory)
+        {
+            lock (_sync)
+            {
+                if (_finished || _entered || !ReferenceEquals(ActiveResolution.Value, this)
+                    || _factory is null || !_factory.TryGetTarget(out IChatClientFactory? expected)
+                    || !ReferenceEquals(factory, expected))
+                {
+                    return null;
+                }
+
+                _entered = true;
+
+                _attempt = new object();
+
+                return _attempt;
+            }
+        }
+
+        internal void Record(object? attempt, Exception failure, ResolutionFailureReason reason)
+        {
+            lock (_sync)
+            {
+                if (_finished || attempt is null || !ReferenceEquals(attempt, _attempt)
+                    || !ReferenceEquals(ActiveResolution.Value, this))
+                {
+                    return;
+                }
+
+                _failure = new(failure);
+
+                _reason = reason;
+            }
+        }
+
+        internal ResolutionFailureReason Consume(Exception failure)
+        {
+            lock (_sync)
+            {
+                ResolutionFailureReason reason = !_finished && ReferenceEquals(ActiveResolution.Value, this)
+                    && _failure is not null && _failure.TryGetTarget(out Exception? observed)
+                    && ReferenceEquals(failure, observed) ? _reason : ResolutionFailureReason.Unknown;
+
+                Clear();
+
+                return reason;
+            }
+        }
+
+        private void Clear()
+        {
+            _finished = true;
+
+            _factory = null;
+
+            _attempt = null;
+
+            _failure = null;
+
+            _reason = ResolutionFailureReason.Unknown;
+        }
+
+        public void Dispose()
+        {
+            lock (_sync)
+            {
+                Clear();
+
+                if (ReferenceEquals(ActiveResolution.Value, this))
+                {
+                    ActiveResolution.Value = _previous;
+                }
+            }
+        }
     }
 }
 

@@ -2768,7 +2768,16 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
     private string ResolveUnderRoot(string relativePath)
     {
-        string combined = Path.GetFullPath(Path.Combine(_attachmentsRoot, relativePath));
+        string combined;
+
+        try
+        {
+            combined = Path.GetFullPath(Path.Combine(_attachmentsRoot, relativePath));
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
+        {
+            throw new InvalidOperationException("Attachment path is malformed.");
+        }
 
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_attachmentsRoot, combined, out _))
         {

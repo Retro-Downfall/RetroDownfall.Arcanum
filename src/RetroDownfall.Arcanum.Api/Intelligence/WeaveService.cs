@@ -1,6 +1,7 @@
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using System.ClientModel;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Net.Http;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -36,6 +37,21 @@ public sealed class WeaveService(
     {
     }
 
+    private sealed class DisabledBeforeGenerationResult;
+
+    private readonly ConditionalWeakTable<Result, DisabledBeforeGenerationResult> _disabledBeforeGeneration = new();
+
+    // Observation only, issued by this sealed owner's pre-generation guard; never send/accounting authority.
+    internal bool OwnsDisabledBeforeGenerationResult(Result<Embedding<float>> result) =>
+        _disabledBeforeGeneration.TryGetValue(result, out _);
+
+    private Result<T> MarkDisabledBeforeGeneration<T>(Result<T> result)
+    {
+        _disabledBeforeGeneration.Add(result, new());
+
+        return result;
+    }
+
     /// <summary>
     /// Computed fresh on every access from <see cref="IOptionsMonitor{ArcanumSettings}.CurrentValue"/> —
     /// no <c>OnChange</c> registration (avoids leak/fragility risk); cheap, since the monitor holds a
@@ -60,7 +76,11 @@ public sealed class WeaveService(
 
         if (batchResult.IsFailure)
         {
-            return Result<Embedding<float>>.Failure(batchResult.Error);
+            Result<Embedding<float>> failure = Result<Embedding<float>>.Failure(batchResult.Error);
+
+            return _disabledBeforeGeneration.TryGetValue(batchResult, out _)
+                ? MarkDisabledBeforeGeneration(failure)
+                : failure;
         }
 
         // EmbedBatchAsync guarantees one vector per input on success. A provider that answered 200
@@ -81,9 +101,9 @@ public sealed class WeaveService(
 
         if (!embeddings.Enabled || string.IsNullOrWhiteSpace(embeddings.Provider) || string.IsNullOrWhiteSpace(embeddings.Model))
         {
-            return Result<Embedding<float>[]>.Failure(new Error(
+            return MarkDisabledBeforeGeneration(Result<Embedding<float>[]>.Failure(new Error(
                 ErrorCodes.Embeddings.FeatureDisabled,
-                "Embeddings are disabled or incomplete (enable an embedding-backed Arcanum:Features option and configure Arcanum:Integrations:Embeddings:Provider and Arcanum:Integrations:Embeddings:Model)."));
+                "Embeddings are disabled or incomplete (enable an embedding-backed Arcanum:Features option and configure Arcanum:Integrations:Embeddings:Provider and Arcanum:Integrations:Embeddings:Model).")));
         }
 
         if (texts.Count == 0)

@@ -7,6 +7,7 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Win32.SafeHandles;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -830,35 +831,24 @@ internal sealed partial class SessionAttachmentStore
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            string absolute;
-
+            // Presence is only a fast path. Failure to resolve or observe a file is never absence authority.
             try
             {
-                absolute = ResolveUnderRoot(row.RelativePath);
+                if (File.Exists(ResolveUnderRoot(row.RelativePath)))
+                {
+                    continue;
+                }
             }
             catch (InvalidOperationException)
             {
-                if (await DeleteSweptRowAsync(row, cancellationToken).ConfigureAwait(false))
-                {
-                    _logger.LogWarning(
-                        "Deleted SessionAttachments row {AttachmentId} with escaping RelativePath.",
-                        row.Id);
-                }
-
-                continue;
+                // The gated native proof below refuses malformed or escaping selectors.
             }
 
-            if (File.Exists(absolute))
-            {
-                continue;
-            }
-
-            if (await DeleteSweptRowAsync(row, cancellationToken).ConfigureAwait(false))
+            if (await DeleteSweptRowAsync(row, cancellationToken, requireMissingFile: true).ConfigureAwait(false))
             {
                 _logger.LogWarning(
-                    "Deleted SessionAttachments row {AttachmentId} whose file is missing ({RelativePath}).",
-                    row.Id,
-                    row.RelativePath);
+                    "Deleted SessionAttachments row {AttachmentId} after proving its file is missing.",
+                    row.Id);
             }
         }
     }
@@ -918,7 +908,8 @@ internal sealed partial class SessionAttachmentStore
     private async Task<bool> DeleteSweptRowAsync(
         SessionAttachmentRecord row,
         CancellationToken cancellationToken,
-        Func<CancellationToken, Task>? whileGateHeld = null)
+        Func<CancellationToken, Task>? whileGateHeld = null,
+        bool requireMissingFile = false)
     {
         string? gateKey = row.SessionId is Guid sessionId
             ? SessionGateKey(sessionId)
@@ -926,6 +917,21 @@ internal sealed partial class SessionAttachmentStore
                 && SessionAttachmentPathSanitizer.TryValidatePendingTurnId(turn, out string safeTurn, out _)
                     ? PendingTurnGateKey(safeTurn)
                     : null;
+
+        if (requireMissingFile
+            && (gateKey is null
+                || row.State is not (SessionAttachmentState.Pending or SessionAttachmentState.Bound)
+                || (row.State == SessionAttachmentState.Bound
+                    ? row.SessionId is null || row.PendingTurnId is not null
+                    : row.SessionId is not null
+                        || row.PendingTurnId is not { } pending
+                        || !SessionAttachmentPathSanitizer.TryValidatePendingTurnId(pending, out string exactPending, out _)
+                        || !string.Equals(pending, exactPending, StringComparison.Ordinal))))
+        {
+            LogUnprovedMissingFile(row.Id);
+
+            return false;
+        }
 
         IDisposable? gate = gateKey is null
             ? null
@@ -939,6 +945,28 @@ internal sealed partial class SessionAttachmentStore
             async () =>
             {
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                (SecureFileOpenStatus status, SafeFileHandle? root, SafeFileHandle? parent) = requireMissingFile
+                    ? ProbeMissingAttachmentFile(row)
+                    : (SecureFileOpenStatus.NotFound, null, null);
+
+                using SafeFileHandle? rootLease = root;
+
+                using SafeFileHandle? parentLease = parent;
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (status != SecureFileOpenStatus.NotFound)
+                {
+                    if (status != SecureFileOpenStatus.Success)
+                    {
+                        LogUnprovedMissingFile(row.Id);
+                    }
+
+                    return;
+                }
 
                 await using DbCommand cmd = connection.CreateCommand();
 
@@ -966,6 +994,165 @@ internal sealed partial class SessionAttachmentStore
         }
 
         return affected > 0;
+    }
+
+    private void LogUnprovedMissingFile(Guid attachmentId) =>
+        _logger.LogWarning(
+            "Retained SessionAttachments row {AttachmentId}: file absence could not be proved. Restore ordinary attachment directories and retry reconciliation.",
+            attachmentId);
+
+    private (SecureFileOpenStatus Status, SafeFileHandle? Root, SafeFileHandle? Parent) ProbeMissingAttachmentFile(SessionAttachmentRecord row)
+    {
+        string relativePath = row.RelativePath;
+
+        SafeFileHandle? root = null;
+
+        SafeFileHandle? parent = null;
+
+        bool retainHandles = false;
+
+        try
+        {
+            if (string.IsNullOrEmpty(relativePath) || Path.IsPathRooted(relativePath))
+            {
+                return (SecureFileOpenStatus.Rejected, null, null);
+            }
+
+            string[] segments = relativePath.Split(OperatingSystem.IsWindows() ? ['/', '\\'] : ['/']);
+
+            if (segments.Any(static segment => !IsOrdinaryAttachmentSegment(segment))
+                || !IsAttachmentPathOwnedByRow(row, segments)
+                || !WorkspacePathPolicy.TryCanonicalize(_attachmentsRoot, out string? canonicalRoot, out bool exists)
+                || !exists
+                || !FileHandleIdentityInterop.TryOpenDirectoryMetadata(canonicalRoot, out root, out FileHandleMetadata rootMetadata))
+            {
+                return (SecureFileOpenStatus.Rejected, null, null);
+            }
+
+            SafeFileHandle current = root;
+
+            string expectedParent = canonicalRoot;
+
+            FileHandleMetadata parentMetadata = rootMetadata;
+
+            foreach (string segment in segments.AsSpan(0, segments.Length - 1))
+            {
+                if (!FileHandleIdentityInterop.TryOpenDirectoryMetadataRelative(
+                        current, segment, requestReadControl: false, out SafeFileHandle next, out parentMetadata))
+                {
+                    next.Dispose();
+
+                    return (SecureFileOpenStatus.Rejected, null, null);
+                }
+
+                parent?.Dispose();
+
+                parent = next;
+
+                current = next;
+
+                expectedParent = Path.Combine(expectedParent, segment);
+            }
+
+            SecureFileOpenStatus status = FileHandleIdentityInterop.TryOpenReadOnlyNoFollowRelative(
+                current, segments[^1], out SafeFileHandle? leaf);
+
+            leaf?.Dispose();
+
+            if (status != SecureFileOpenStatus.NotFound)
+            {
+                return (status, null, null);
+            }
+
+            // ENOTDIR is mapped to NotFound by the shared native helper. It is absence only for a
+            // strict single leaf beneath the ordinary, still-current parent just admitted above.
+            if (!WorkspacePathPolicy.TryCanonicalize(_attachmentsRoot, out string? currentRoot, out bool rootExists)
+                || !rootExists
+                || !SameAttachmentDirectory(currentRoot, canonicalRoot)
+                || !IsCurrentAttachmentDirectory(root, canonicalRoot, rootMetadata.Identity)
+                || !IsCurrentAttachmentDirectory(current, expectedParent, parentMetadata.Identity))
+            {
+                return (SecureFileOpenStatus.Rejected, null, null);
+            }
+
+            retainHandles = true;
+
+            return (SecureFileOpenStatus.NotFound, root, parent);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return (SecureFileOpenStatus.Rejected, null, null);
+        }
+        finally
+        {
+            if (!retainHandles)
+            {
+                parent?.Dispose();
+
+                root?.Dispose();
+            }
+        }
+    }
+
+    private static bool IsAttachmentPathOwnedByRow(SessionAttachmentRecord row, string[] segments)
+    {
+        if (row.State == SessionAttachmentState.Bound)
+        {
+            return row.SessionId is Guid sessionId
+                && row.PendingTurnId is null
+                && segments.Length >= 2
+                && segments[0].Length == 32
+                && Guid.TryParseExact(segments[0], "N", out Guid pathOwner)
+                && pathOwner == sessionId;
+        }
+
+        return row.State == SessionAttachmentState.Pending
+            && row.SessionId is null
+            && row.PendingTurnId is { } pendingTurn
+            && segments.Length >= 3
+            && string.Equals(segments[0], "_pending", StringComparison.Ordinal)
+            && string.Equals(segments[1], pendingTurn, StringComparison.Ordinal);
+    }
+
+    private static bool IsCurrentAttachmentDirectory(SafeFileHandle handle, string expectedPath, FileHandleIdentity identity) =>
+        FileHandleIdentityInterop.TryGetHandleKernelPath(handle, out string? kernelPath)
+        && SameAttachmentDirectory(kernelPath, expectedPath)
+        && FileHandleIdentityInterop.TryGetPathMetadataNoFollow(expectedPath, out FileHandleMetadata current)
+        && current.Kind == FileSystemObjectKind.Directory
+        && current.Identity == identity;
+
+    private static bool SameAttachmentDirectory(string left, string right) =>
+        string.Equals(
+            Path.TrimEndingDirectorySeparator(left),
+            Path.TrimEndingDirectorySeparator(right),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private static bool IsOrdinaryAttachmentSegment(string segment)
+    {
+        if (string.IsNullOrEmpty(segment)
+            || segment is "." or ".."
+            || segment.IndexOfAny(['/', '\\', '\0', ':']) >= 0)
+        {
+            return false;
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            return true;
+        }
+
+        string device = segment.Split('.')[0];
+
+        return segment[^1] is not ('.' or ' ')
+            && segment.IndexOfAny(['<', '>', '"', '|', '?', '*']) < 0
+            && !segment.Any(static character => character < ' ')
+            && !device.Equals("CON", StringComparison.OrdinalIgnoreCase)
+            && !device.Equals("PRN", StringComparison.OrdinalIgnoreCase)
+            && !device.Equals("AUX", StringComparison.OrdinalIgnoreCase)
+            && !device.Equals("NUL", StringComparison.OrdinalIgnoreCase)
+            && !(device.Length == 4
+                && (device.StartsWith("COM", StringComparison.OrdinalIgnoreCase) || device.StartsWith("LPT", StringComparison.OrdinalIgnoreCase))
+                && device[3] is >= '1' and <= '9');
     }
 
     private async Task VerifyCopiedFileAsync(

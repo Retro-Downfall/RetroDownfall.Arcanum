@@ -3240,6 +3240,991 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.False(File.Exists(orphan));
     }
 
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Rv260_reconcile_retains_rows_when_the_parent_directory_cannot_be_admitted(bool linkedParent)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid session = Guid.NewGuid();
+
+        await EnsureSessionAsync(session, "unavailable-parent");
+
+        byte[] plaintext = "parent recovery"u8.ToArray();
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            session, null, null, "parent.txt", "parent.txt", plaintext, "text/plain", SessionAttachmentKind.Text);
+
+        string parent = Path.GetDirectoryName(Path.Combine(_attachmentsRoot, record.RelativePath))!;
+
+        string parked = _attachmentsRoot + ".parked-parent-" + session.ToString("N");
+
+        Directory.Move(parent, parked);
+
+        try
+        {
+            if (linkedParent)
+            {
+                try
+                {
+                    Directory.CreateSymbolicLink(parent, parked);
+                }
+                catch (Exception exception) when (exception is UnauthorizedAccessException or PlatformNotSupportedException)
+                {
+                    Skip.If(true, "Symbolic links are unavailable on this runner.");
+                }
+            }
+
+            await _store.ReconcileAsync(TimeSpan.FromHours(24));
+
+            Assert.NotNull(await _store.GetByIdAsync(record.Id));
+        }
+        finally
+        {
+            if (linkedParent && new DirectoryInfo(parent).LinkTarget is not null)
+            {
+                Directory.Delete(parent);
+            }
+
+            Directory.Move(parked, parent);
+        }
+
+        Assert.Equal(plaintext, (await _store.ReadBytesAsync(record)).ToArray());
+    }
+
+    [SkippableFact]
+    public async Task Rv260_reconcile_retains_row_when_native_parent_metadata_is_unavailable()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid session = Guid.NewGuid();
+
+        await EnsureSessionAsync(session, "unreadable-parent");
+
+        byte[] plaintext = "metadata recovery"u8.ToArray();
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            session, null, null, "metadata.txt", "metadata.txt", plaintext, "text/plain", SessionAttachmentKind.Text);
+
+        string absolute = Path.Combine(_attachmentsRoot, record.RelativePath);
+
+        string parked = _attachmentsRoot + ".parked-metadata-" + record.Id.ToString("N");
+
+        File.Move(absolute, parked);
+
+        FileHandleIdentityInterop.TryGetHandleMetadataForTests = _ => null;
+
+        try
+        {
+            await _store.ReconcileAsync(TimeSpan.FromHours(24));
+
+            Assert.NotNull(await _store.GetByIdAsync(record.Id));
+        }
+        finally
+        {
+            FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
+
+            File.Move(parked, absolute);
+        }
+
+        Assert.Equal(plaintext, (await _store.ReadBytesAsync(record)).ToArray());
+    }
+
+    [SkippableTheory]
+    [InlineData("leaf-directory")]
+    [InlineData("dangling-link")]
+    [InlineData("outside-link")]
+    [InlineData("escaping-row")]
+    public async Task Rv260_reconcile_retains_recovery_metadata_when_file_absence_is_unproved(string scenario)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid session = Guid.NewGuid();
+
+        await EnsureSessionAsync(session, "uncertain-attachment");
+
+        byte[] plaintext = "recoverable encrypted attachment"u8.ToArray();
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            session, null, null, "recoverable.txt", "recoverable.txt", plaintext, "text/plain", SessionAttachmentKind.Text);
+
+        string absolute = Path.Combine(_attachmentsRoot, record.RelativePath);
+
+        string parked = _attachmentsRoot + ".parked-" + record.Id.ToString("N");
+
+        if (scenario == "escaping-row")
+        {
+            await _db!.Database.ExecuteSqlRawAsync(
+                "UPDATE SessionAttachments SET RelativePath = {0} WHERE Id = {1}", "../outside-unknown", GrimoireEntitySql.Format(record.Id));
+        }
+        else
+        {
+            File.Move(absolute, parked);
+        }
+
+        try
+        {
+            if (scenario == "leaf-directory")
+            {
+                Directory.CreateDirectory(absolute);
+            }
+            else if (scenario is "dangling-link" or "outside-link")
+            {
+                try
+                {
+                    File.CreateSymbolicLink(absolute, scenario == "outside-link" ? parked : parked + ".absent");
+                }
+                catch (Exception exception) when (exception is UnauthorizedAccessException or PlatformNotSupportedException)
+                {
+                    Skip.If(true, "Symbolic links are unavailable on this runner.");
+                }
+            }
+
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                await _store.ReconcileAsync(TimeSpan.FromHours(24));
+
+                Assert.NotNull(await _store.GetByIdAsync(record.Id));
+            }
+        }
+        finally
+        {
+            if (scenario == "escaping-row")
+            {
+                await _db!.Database.ExecuteSqlRawAsync(
+                    "UPDATE SessionAttachments SET RelativePath = {0} WHERE Id = {1}", record.RelativePath, GrimoireEntitySql.Format(record.Id));
+            }
+            else
+            {
+                if (scenario == "leaf-directory")
+                {
+                    Directory.Delete(absolute);
+                }
+                else
+                {
+                    File.Delete(absolute);
+                }
+
+                File.Move(parked, absolute);
+            }
+        }
+
+        Assert.NotNull(await _store.GetByIdAsync(record.Id));
+
+        Assert.Equal(plaintext, (await _store.ReadBytesAsync(record)).ToArray());
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Rv260_reconcile_rechecks_after_the_session_gate_and_honors_cancellation(bool cancel)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid session = Guid.NewGuid();
+
+        await EnsureSessionAsync(session, "gate-restoration");
+
+        byte[] plaintext = "gated recovery"u8.ToArray();
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            session, null, null, "gated.txt", "gated.txt", plaintext, "text/plain", SessionAttachmentKind.Text);
+
+        string absolute = Path.Combine(_attachmentsRoot, record.RelativePath);
+
+        string parked = _attachmentsRoot + ".gate-" + record.Id.ToString("N");
+
+        File.Move(absolute, parked);
+
+        using CancellationTokenSource cancellation = new();
+
+        IDisposable? gate = await _store.AcquireSessionGateAsync(session);
+
+        bool snapshotReached = false;
+
+        _store.AfterMissingFileSnapshotForTesting = _ =>
+        {
+            snapshotReached = true;
+
+            return Task.CompletedTask;
+        };
+
+        Task reconcile = _store.ReconcileAsync(TimeSpan.FromHours(24), cancellation.Token);
+
+        try
+        {
+            Assert.True(snapshotReached);
+
+            Assert.False(reconcile.IsCompleted);
+
+            if (cancel)
+            {
+                cancellation.Cancel();
+
+                OperationCanceledException failure = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reconcile);
+
+                Assert.Equal(cancellation.Token, failure.CancellationToken);
+
+                File.Move(parked, absolute);
+            }
+            else
+            {
+                File.Move(parked, absolute);
+
+                gate.Dispose();
+
+                gate = null;
+
+                await reconcile;
+            }
+
+            Assert.NotNull(await _store.GetByIdAsync(record.Id));
+        }
+        finally
+        {
+            _store.AfterMissingFileSnapshotForTesting = null;
+
+            cancellation.Cancel();
+
+            gate?.Dispose();
+
+            if (File.Exists(parked))
+            {
+                File.Move(parked, absolute);
+            }
+        }
+
+        Assert.Equal(plaintext, (await _store.ReadBytesAsync(record)).ToArray());
+    }
+
+    [SkippableTheory]
+    [InlineData("parent-within-root")]
+    [InlineData("parent-outside-root")]
+    [InlineData("parent-replaced")]
+    [InlineData("root-replaced")]
+    [InlineData("root-replaced-parent-returned")]
+    public async Task Rv260_reconcile_requires_the_current_exact_root_and_parent_position(string scenario)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid session = Guid.NewGuid();
+
+        await EnsureSessionAsync(session, "native-parent-position");
+
+        byte[] plaintext = "position recovery"u8.ToArray();
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            session, null, null, "position.txt", "position.txt", plaintext, "text/plain", SessionAttachmentKind.Text);
+
+        string absolute = Path.Combine(_attachmentsRoot, record.RelativePath);
+
+        string parent = Path.GetDirectoryName(absolute)!;
+
+        string parked = _attachmentsRoot + ".position-bytes-" + record.Id.ToString("N");
+
+        string moved = scenario == "parent-within-root" ? parent + "-moved" : _attachmentsRoot + ".position-moved-" + record.Id.ToString("N");
+
+        File.Move(absolute, parked);
+
+        bool enabled = false;
+
+        bool changed = false;
+
+        _store.AfterMissingFileSnapshotForTesting = _ =>
+        {
+            enabled = true;
+
+            return Task.CompletedTask;
+        };
+
+        Func<Microsoft.Win32.SafeHandles.SafeFileHandle, FileHandleMetadata?>? probe = null;
+
+        probe = handle =>
+        {
+            FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
+
+            try
+            {
+                FileHandleMetadata? metadata = FileHandleIdentityInterop.TryGetHandleMetadata(handle, out FileHandleMetadata actual) ? actual : null;
+
+                if (enabled && !changed
+                    && FileHandleIdentityInterop.TryGetHandleKernelPath(handle, out string? kernel)
+                    && Path.GetFileName(kernel) == session.ToString("N"))
+                {
+                    changed = true;
+
+                    if (scenario.StartsWith("root-replaced", StringComparison.Ordinal))
+                    {
+                        Directory.Move(_attachmentsRoot, moved);
+
+                        Directory.CreateDirectory(_attachmentsRoot);
+
+                        if (scenario == "root-replaced-parent-returned")
+                        {
+                            Directory.Move(Path.Combine(moved, session.ToString("N")), parent);
+                        }
+                        else
+                        {
+                            Directory.CreateDirectory(parent);
+                        }
+                    }
+                    else
+                    {
+                        Directory.Move(parent, moved);
+
+                        if (scenario == "parent-replaced")
+                        {
+                            Directory.CreateDirectory(parent);
+                        }
+                    }
+                }
+
+                return metadata;
+            }
+            finally
+            {
+                FileHandleIdentityInterop.TryGetHandleMetadataForTests = probe;
+            }
+        };
+
+        FileHandleIdentityInterop.TryGetHandleMetadataForTests = probe;
+
+        try
+        {
+            await _store.ReconcileAsync(TimeSpan.FromHours(24));
+
+            Assert.True(changed);
+
+            Assert.NotNull(await _store.GetByIdAsync(record.Id));
+        }
+        finally
+        {
+            FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
+
+            _store.AfterMissingFileSnapshotForTesting = null;
+
+            if (changed)
+            {
+                string original = scenario.StartsWith("root-replaced", StringComparison.Ordinal) ? _attachmentsRoot : parent;
+
+                if (scenario == "root-replaced-parent-returned")
+                {
+                    Directory.Move(parent, Path.Combine(moved, session.ToString("N")));
+                }
+
+                if (Directory.Exists(original))
+                {
+                    Directory.Delete(original, recursive: true);
+                }
+
+                Directory.Move(moved, original);
+            }
+
+            File.Move(parked, absolute);
+        }
+
+        Assert.Equal(plaintext, (await _store.ReadBytesAsync(record)).ToArray());
+    }
+
+    [SkippableFact]
+    public async Task Rv260_reconcile_reproves_absence_after_a_busy_sql_attempt()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid session = Guid.NewGuid();
+
+        await EnsureSessionAsync(session, "retry-restoration");
+
+        byte[] plaintext = "retry recovery"u8.ToArray();
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            session, null, null, "retry.txt", "retry.txt", plaintext, "text/plain", SessionAttachmentKind.Text);
+
+        string absolute = Path.Combine(_attachmentsRoot, record.RelativePath);
+
+        string parked = _attachmentsRoot + ".retry-" + record.Id.ToString("N");
+
+        File.Move(absolute, parked);
+
+        await _db!.Database.OpenConnectionAsync();
+
+        SqliteConnection connection = (SqliteConnection)_db.Database.GetDbConnection();
+
+        connection.DefaultTimeout = 1;
+
+        await using ArcanumDbContext writerDb = _fixture.CreateContext(_dbPath);
+
+        await writerDb.Database.OpenConnectionAsync();
+
+        await using SqliteTransaction writer = ((SqliteConnection)writerDb.Database.GetDbConnection()).BeginTransaction(deferred: false);
+
+        bool writerReleased = false;
+
+        int deletes = 0;
+
+        int parentProbes = 0;
+
+        bool enabled = false;
+
+        _store.AfterMissingFileSnapshotForTesting = _ =>
+        {
+            enabled = true;
+
+            return Task.CompletedTask;
+        };
+
+        Func<Microsoft.Win32.SafeHandles.SafeFileHandle, FileHandleMetadata?>? probe = null;
+
+        probe = handle =>
+        {
+            FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
+
+            try
+            {
+                if (enabled
+                    && FileHandleIdentityInterop.TryGetHandleKernelPath(handle, out string? kernel)
+                    && Path.GetFileName(kernel) == session.ToString("N"))
+                {
+                    parentProbes++;
+                }
+
+                return FileHandleIdentityInterop.TryGetHandleMetadata(handle, out FileHandleMetadata metadata) ? metadata : null;
+            }
+            finally
+            {
+                FileHandleIdentityInterop.TryGetHandleMetadataForTests = probe;
+            }
+        };
+
+        FileHandleIdentityInterop.TryGetHandleMetadataForTests = probe;
+
+        SQLitePCL.raw.sqlite3_trace(connection.Handle, (SQLitePCL.strdelegate_trace)((_, statement) =>
+        {
+            if (statement.StartsWith("DELETE FROM \"SessionAttachments\"", StringComparison.Ordinal))
+            {
+                deletes++;
+
+                if (deletes == 1)
+                {
+                    File.Move(parked, absolute);
+                }
+                else if (!writerReleased)
+                {
+                    writer.Rollback();
+
+                    writerReleased = true;
+                }
+            }
+        }), null);
+
+        try
+        {
+            await _store.ReconcileAsync(TimeSpan.FromHours(24)).WaitAsync(TimeSpan.FromSeconds(8));
+
+            Assert.Equal(1, deletes);
+
+            Assert.True(parentProbes >= 2);
+
+            Assert.NotNull(await _store.GetByIdAsync(record.Id));
+        }
+        finally
+        {
+            FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
+
+            _store.AfterMissingFileSnapshotForTesting = null;
+
+            SQLitePCL.raw.sqlite3_trace(connection.Handle, (SQLitePCL.strdelegate_trace)null!, null);
+
+            if (!writerReleased)
+            {
+                await writer.RollbackAsync();
+            }
+
+            if (File.Exists(parked))
+            {
+                File.Move(parked, absolute);
+            }
+        }
+
+        Assert.Equal(plaintext, (await _store.ReadBytesAsync(record)).ToArray());
+    }
+
+    [SkippableTheory]
+    [InlineData("../private-selector-canary")]
+    [InlineData("session/\0private-selector-canary")]
+    [InlineData("session//missing")]
+    [InlineData("session/./missing")]
+    [InlineData("session/leaf:private-selector-canary")]
+    [InlineData("session/leaf\\private-selector-canary")]
+    public async Task Rv260_reconcile_retains_malformed_selectors_with_content_free_warning(string selector)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid session = Guid.NewGuid();
+
+        await EnsureSessionAsync(session, "selector-recovery");
+
+        selector = selector.Replace("session/", session.ToString("N") + "/", StringComparison.Ordinal);
+
+        byte[] plaintext = "selector recovery"u8.ToArray();
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            session, null, null, "selector.txt", "selector.txt", plaintext, "text/plain", SessionAttachmentKind.Text);
+
+        SessionAttachmentRecord healthy = await _store.PersistNewAsync(
+            session, null, null, "healthy.txt", "healthy.txt", "healthy"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        File.Delete(Path.Combine(_attachmentsRoot, healthy.RelativePath));
+
+        await _db!.Database.ExecuteSqlRawAsync(
+            "UPDATE SessionAttachments SET RelativePath = {0} WHERE Id = {1}", selector, GrimoireEntitySql.Format(record.Id));
+
+        string absolute = Path.Combine(_attachmentsRoot, record.RelativePath);
+
+        string parked = _attachmentsRoot + ".selector-" + record.Id.ToString("N");
+
+        File.Move(absolute, parked);
+
+        TestCapturingLogger<SessionAttachmentStore> logger = new();
+
+        SessionAttachmentStore store = new(_db, Options.Create(_settings), _attachmentsRoot, CreateEncryptedBlobStore(), logger);
+
+        try
+        {
+            if (selector.Contains('\0'))
+            {
+                InvalidOperationException refusal = await Assert.ThrowsAsync<InvalidOperationException>(
+                    () => store.ReadBytesAsync(record with { RelativePath = selector }));
+
+                Assert.Null(refusal.InnerException);
+
+                Assert.DoesNotContain("private-selector-canary", refusal.ToString(), StringComparison.Ordinal);
+            }
+
+            await store.ReconcileAsync(TimeSpan.FromHours(24));
+
+            Assert.NotNull(await store.GetByIdAsync(record.Id));
+
+            Assert.Null(await store.GetByIdAsync(healthy.Id));
+
+            TestLogEntry warning = Assert.Single(logger.Entries, entry => entry.Message.Contains("file absence could not be proved", StringComparison.Ordinal));
+
+            Assert.Null(warning.Exception);
+
+            Assert.DoesNotContain(selector, warning.Message, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("private-selector-canary", string.Join("|", warning.Properties!.Select(property => property.Value)), StringComparison.Ordinal);
+
+            Assert.Equal(record.Id, Assert.Single(warning.Properties!, property => property.Key == "AttachmentId").Value);
+        }
+        finally
+        {
+            await _db.Database.ExecuteSqlRawAsync(
+                "UPDATE SessionAttachments SET RelativePath = {0} WHERE Id = {1}", record.RelativePath, GrimoireEntitySql.Format(record.Id));
+
+            File.Move(parked, absolute);
+        }
+
+        Assert.Equal(plaintext, (await _store.ReadBytesAsync(record)).ToArray());
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Rv260_reconcile_deletes_missing_legacy_leaves_under_the_exact_owner_gate(bool pending)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid session = Guid.NewGuid();
+
+        string turn = "rv260..legacy";
+
+        if (!pending)
+        {
+            await EnsureSessionAsync(session, "legacy-absence");
+        }
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            pending ? null : session, pending ? turn : null, null, "legacy.txt", "legacy.txt", "legacy"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        string original = Path.Combine(_attachmentsRoot, record.RelativePath);
+
+        string parked = _attachmentsRoot + ".legacy-" + record.Id.ToString("N");
+
+        File.Move(original, parked);
+
+        string prefix = pending ? "_pending/" + turn : session.ToString("N");
+
+        string relative = prefix + "/legacy/v1/legacy.txt";
+
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(_attachmentsRoot, relative))!);
+
+        await _db!.Database.ExecuteSqlRawAsync(
+            "UPDATE SessionAttachments SET RelativePath = {0} WHERE Id = {1}", relative, GrimoireEntitySql.Format(record.Id));
+
+        bool gated = false;
+
+        Microsoft.Win32.SafeHandles.SafeFileHandle? parent = null;
+
+        Func<Microsoft.Win32.SafeHandles.SafeFileHandle, FileHandleMetadata?>? probe = null;
+
+        probe = handle =>
+        {
+            FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
+
+            try
+            {
+                if (FileHandleIdentityInterop.TryGetHandleKernelPath(handle, out string? path) && Path.GetFileName(path) == "v1")
+                {
+                    parent = handle;
+                }
+
+                return FileHandleIdentityInterop.TryGetHandleMetadata(handle, out FileHandleMetadata metadata) ? metadata : null;
+            }
+            finally
+            {
+                FileHandleIdentityInterop.TryGetHandleMetadataForTests = probe;
+            }
+        };
+
+        FileHandleIdentityInterop.TryGetHandleMetadataForTests = probe;
+
+        SqliteConnection connection = (SqliteConnection)_db.Database.GetDbConnection();
+
+        SQLitePCL.raw.sqlite3_trace(connection.Handle, (SQLitePCL.strdelegate_trace)((_, statement) =>
+        {
+            if (statement.StartsWith("DELETE FROM \"SessionAttachments\"", StringComparison.Ordinal))
+            {
+                gated = SessionAttachmentStore.AttachmentGates.IsHeld(pending ? "pending|" + turn : "session|" + session.ToString("N"))
+                    && parent is { IsClosed: false, IsInvalid: false };
+            }
+        }), null);
+
+        try
+        {
+            await _store.ReconcileAsync(TimeSpan.FromHours(24));
+
+            Assert.True(gated);
+
+            Assert.True(parent!.IsClosed);
+
+            Assert.Null(await _store.GetByIdAsync(record.Id));
+        }
+        finally
+        {
+            FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
+
+            SQLitePCL.raw.sqlite3_trace(connection.Handle, (SQLitePCL.strdelegate_trace)null!, null);
+
+            File.Delete(parked);
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Rv260_reconcile_retains_a_pending_row_without_an_exact_valid_gate_key(bool undefinedState)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string turn = "rv260-gate";
+
+        byte[] plaintext = "pending recovery"u8.ToArray();
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            null, turn, null, "pending.txt", "pending.txt", plaintext, "text/plain", SessionAttachmentKind.Text);
+
+        string absolute = Path.Combine(_attachmentsRoot, record.RelativePath);
+
+        string parked = _attachmentsRoot + ".pending-" + record.Id.ToString("N");
+
+        File.Move(absolute, parked);
+
+        if (undefinedState)
+        {
+            await _db!.Database.ExecuteSqlRawAsync(
+                "UPDATE SessionAttachments SET State = {0} WHERE Id = {1}", "99", GrimoireEntitySql.Format(record.Id));
+        }
+        else
+        {
+            await _db!.Database.ExecuteSqlRawAsync(
+                "UPDATE SessionAttachments SET PendingTurnId = {0} WHERE Id = {1}", " " + turn + " ", GrimoireEntitySql.Format(record.Id));
+        }
+
+        try
+        {
+            await _store.ReconcileAsync(TimeSpan.FromHours(24));
+
+            Assert.NotNull(await _store.GetByIdAsync(record.Id));
+        }
+        finally
+        {
+            await _db.Database.ExecuteSqlRawAsync(
+                "UPDATE SessionAttachments SET PendingTurnId = {0}, State = 'Pending' WHERE Id = {1}", turn, GrimoireEntitySql.Format(record.Id));
+
+            Directory.CreateDirectory(Path.GetDirectoryName(absolute)!);
+
+            File.Move(parked, absolute);
+        }
+
+        Assert.Equal(plaintext, (await _store.ReadBytesAsync(record)).ToArray());
+    }
+
+    [SkippableFact]
+    public async Task Rv260_reconcile_cancellation_after_native_admission_disposes_the_parent_without_deleting()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid session = Guid.NewGuid();
+
+        await EnsureSessionAsync(session, "cancel-native-proof");
+
+        byte[] plaintext = "cancel recovery"u8.ToArray();
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            session, null, null, "cancel.txt", "cancel.txt", plaintext, "text/plain", SessionAttachmentKind.Text);
+
+        string absolute = Path.Combine(_attachmentsRoot, record.RelativePath);
+
+        string parked = _attachmentsRoot + ".cancel-" + record.Id.ToString("N");
+
+        File.Move(absolute, parked);
+
+        using CancellationTokenSource cancellation = new();
+
+        bool enabled = false;
+
+        Microsoft.Win32.SafeHandles.SafeFileHandle? parent = null;
+
+        _store.AfterMissingFileSnapshotForTesting = _ =>
+        {
+            enabled = true;
+
+            return Task.CompletedTask;
+        };
+
+        Func<Microsoft.Win32.SafeHandles.SafeFileHandle, FileHandleMetadata?>? probe = null;
+
+        probe = handle =>
+        {
+            FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
+
+            try
+            {
+                if (enabled && FileHandleIdentityInterop.TryGetHandleKernelPath(handle, out string? path) && Path.GetFileName(path) == session.ToString("N"))
+                {
+                    parent = handle;
+
+                    cancellation.Cancel();
+                }
+
+                return FileHandleIdentityInterop.TryGetHandleMetadata(handle, out FileHandleMetadata metadata) ? metadata : null;
+            }
+            finally
+            {
+                FileHandleIdentityInterop.TryGetHandleMetadataForTests = probe;
+            }
+        };
+
+        FileHandleIdentityInterop.TryGetHandleMetadataForTests = probe;
+
+        try
+        {
+            OperationCanceledException failure = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => _store.ReconcileAsync(TimeSpan.FromHours(24), cancellation.Token));
+
+            Assert.Equal(cancellation.Token, failure.CancellationToken);
+
+            Assert.NotNull(parent);
+
+            Assert.True(parent.IsClosed);
+
+            Assert.NotNull(await _store.GetByIdAsync(record.Id));
+        }
+        finally
+        {
+            FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
+
+            _store.AfterMissingFileSnapshotForTesting = null;
+
+            File.Move(parked, absolute);
+        }
+
+        Assert.Equal(plaintext, (await _store.ReadBytesAsync(record)).ToArray());
+    }
+
+    [SkippableTheory]
+    [InlineData("bound", false)]
+    [InlineData("bound", true)]
+    [InlineData("pending", false)]
+    [InlineData("pending", true)]
+    [InlineData("bound-owner-only", false)]
+    [InlineData("pending-owner-only", false)]
+    [InlineData("bound-pending-namespace", false)]
+    [InlineData("pending-bound-namespace", false)]
+    [InlineData("pending-case-alias", false)]
+    public async Task Rv260_owner_prefix_must_match_the_row_gate_before_missing_file_deletion(string scenario, bool legacy)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid session = Guid.NewGuid();
+
+        Guid otherSession = Guid.NewGuid();
+
+        string turn = "rv260-owner-a";
+
+        string otherTurn = "rv260-owner-b";
+
+        await EnsureSessionAsync(session, "source-owner");
+
+        await EnsureSessionAsync(otherSession, "other-owner");
+
+        bool pending = scenario.StartsWith("pending", StringComparison.Ordinal);
+
+        byte[] plaintext = "owner-bound recovery"u8.ToArray();
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            pending ? null : session, pending ? turn : null, null, "owner.txt", "owner.txt", plaintext, "text/plain", SessionAttachmentKind.Text);
+
+        string original = Path.Combine(_attachmentsRoot, record.RelativePath);
+
+        string parked = _attachmentsRoot + ".owner-proof-" + record.Id.ToString("N");
+
+        File.Move(original, parked);
+
+        string tail = legacy ? "legacy/v1/owner.txt" : record.Id.ToString("N");
+
+        string relative = scenario switch
+        {
+            "bound" => otherSession.ToString("N") + "/" + tail,
+            "pending" => "_pending/" + otherTurn + "/" + tail,
+            "bound-owner-only" => session.ToString("N"),
+            "pending-owner-only" => "_pending/" + turn,
+            "bound-pending-namespace" => "_pending/" + otherTurn + "/" + tail,
+            "pending-bound-namespace" => otherSession.ToString("N") + "/" + turn + "/v1/" + tail,
+            "pending-case-alias" => "_pending/" + turn.ToUpperInvariant() + "/" + tail,
+            _ => throw new InvalidOperationException("Unknown owner-proof fixture."),
+        };
+
+        string aliasTemporary = _attachmentsRoot + ".pending-case-parent-" + record.Id.ToString("N");
+
+        string? aliasParent = scenario == "pending-case-alias" ? Path.GetDirectoryName(Path.Combine(_attachmentsRoot, relative)) : null;
+
+        if (aliasParent is not null)
+        {
+            Directory.Move(Path.GetDirectoryName(original)!, aliasTemporary);
+
+            Directory.Move(aliasTemporary, aliasParent);
+        }
+
+        bool ownerOnly = scenario.EndsWith("owner-only", StringComparison.Ordinal);
+
+        if (ownerOnly)
+        {
+            Directory.Delete(Path.GetDirectoryName(original)!);
+        }
+        else
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(_attachmentsRoot, relative))!);
+        }
+
+        await _db!.Database.ExecuteSqlRawAsync(
+            "UPDATE SessionAttachments SET RelativePath = {0} WHERE Id = {1}", relative, GrimoireEntitySql.Format(record.Id));
+
+        string? targetGateKey = ownerOnly ? null
+            : relative.StartsWith("_pending/", StringComparison.Ordinal)
+                ? SessionAttachmentStore.PendingTurnGateKey(relative.Split('/')[1])
+                : SessionAttachmentStore.SessionGateKey(otherSession);
+
+        using IDisposable? targetGate = targetGateKey is null
+            ? null
+            : await SessionAttachmentStore.AttachmentGates.AcquireAsync(targetGateKey);
+
+        using CancellationTokenSource cancellation = new(TimeSpan.FromSeconds(10));
+
+        try
+        {
+            if (targetGateKey is not null)
+            {
+                Assert.True(SessionAttachmentStore.AttachmentGates.IsHeld(targetGateKey));
+            }
+
+            await _store.ReconcileAsync(TimeSpan.FromDays(365), cancellation.Token);
+
+            Assert.NotNull(await _store.GetByIdAsync(record.Id));
+        }
+        finally
+        {
+            await _db.Database.ExecuteSqlRawAsync(
+                "UPDATE SessionAttachments SET RelativePath = {0} WHERE Id = {1}", record.RelativePath, GrimoireEntitySql.Format(record.Id));
+
+            if (aliasParent is not null)
+            {
+                Directory.Move(aliasParent, aliasTemporary);
+
+                Directory.Move(aliasTemporary, Path.GetDirectoryName(original)!);
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(original)!);
+
+            File.Move(parked, original);
+        }
+
+        Assert.Equal(plaintext, (await _store.ReadBytesAsync(record)).ToArray());
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Rv260_owner_prefix_accepts_case_equivalent_session_guids_without_rewriting_legacy_tails(bool legacy)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid session = Guid.ParseExact("a2600000000000000000000000000001", "N");
+
+        await EnsureSessionAsync(session, "case-equivalent-owner");
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            session, null, null, "case.txt", "case.txt", "case"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        string original = Path.Combine(_attachmentsRoot, record.RelativePath);
+
+        string parked = _attachmentsRoot + ".case-proof-" + record.Id.ToString("N");
+
+        File.Move(original, parked);
+
+        string owner = session.ToString("N").ToUpperInvariant();
+
+        string originalParent = Path.GetDirectoryName(original)!;
+
+        string temporaryParent = _attachmentsRoot + ".case-parent-" + record.Id.ToString("N");
+
+        string upperParent = Path.Combine(_attachmentsRoot, owner);
+
+        Directory.Move(originalParent, temporaryParent);
+
+        Directory.Move(temporaryParent, upperParent);
+
+        string relative = owner + "/" + (legacy ? "legacy/v1/case.txt" : record.Id.ToString("N"));
+
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(_attachmentsRoot, relative))!);
+
+        await _db!.Database.ExecuteSqlRawAsync(
+            "UPDATE SessionAttachments SET RelativePath = {0} WHERE Id = {1}", relative, GrimoireEntitySql.Format(record.Id));
+
+        try
+        {
+            await _store.ReconcileAsync(TimeSpan.FromDays(365));
+
+            Assert.Null(await _store.GetByIdAsync(record.Id));
+        }
+        finally
+        {
+            File.Delete(parked);
+        }
+    }
+
     [SkippableFact]
     public async Task ReconcileAsync_deletes_row_whose_file_is_missing()
     {
@@ -3359,10 +4344,17 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         {
             await _store.PromotePendingAsync(pendingTurnId, sessionId, entryId);
 
+            // Retain an ordinary stale parent so positive leaf absence actually reaches the SQL CAS.
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(_attachmentsRoot, pending.RelativePath))!);
+
             _store.AfterMissingFileSnapshotForTesting = null;
         };
 
+        using SqliteStatementTrace trace = new((SqliteConnection)_db!.Database.GetDbConnection());
+
         await _store.ReconcileAsync(TimeSpan.FromDays(365));
+
+        Assert.Contains(trace.Statements, statement => statement.StartsWith("DELETE FROM \"SessionAttachments\"", StringComparison.Ordinal));
 
         SessionAttachmentRecord? survivor = await _store.GetByIdAsync(pending.Id);
 

@@ -113,45 +113,52 @@ public sealed partial class WizardIntelligenceProvider
 
         ChatClientLease lease;
 
-        try
-
+        using (ChatClientFactory.ResolutionObservation resolution = ChatClientFactory.ObserveResolution(chatClientFactory))
         {
-            if (healthTracker is null)
+            try
 
             {
-                lease = await chatClientFactory
-
-                    .ResolveClientAsync(turn.Model, cancellationToken)
-
-                    .ConfigureAwait(false);
-            }
-            else
-
-            {
-                IReadOnlyList<(ProviderSettings Provider, string CanonicalModelId)> candidates =
-                    ProviderResolver.ResolveCandidates(settings.Value, turn.Model, healthTracker);
-
-                if (candidates.Count == 0)
+                if (healthTracker is null)
 
                 {
-                    return Result<ContextPreviewResult>.Failure(
-                        new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
+                    lease = await chatClientFactory
+
+                        .ResolveClientAsync(turn.Model, cancellationToken)
+
+                        .ConfigureAwait(false);
                 }
+                else
 
-                (ProviderSettings provider, string resolvedModel) = candidates[0];
+                {
+                    IReadOnlyList<(ProviderSettings Provider, string CanonicalModelId)> candidates =
+                        ProviderResolver.ResolveCandidates(settings.Value, turn.Model, healthTracker);
 
-                lease = await chatClientFactory
+                    if (candidates.Count == 0)
 
-                    .ResolveClientAsync(provider, resolvedModel, cancellationToken)
+                    {
+                        LogModelResolutionFailure(ChatClientFactory.ResolutionFailureReason.NoConfiguredCandidate);
 
-                    .ConfigureAwait(false);
+                        return Result<ContextPreviewResult>.Failure(
+                            new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
+                    }
+
+                    (ProviderSettings provider, string resolvedModel) = candidates[0];
+
+                    lease = await chatClientFactory
+
+                        .ResolveClientAsync(provider, resolvedModel, cancellationToken)
+
+                        .ConfigureAwait(false);
+                }
             }
-        }
-        catch (InvalidOperationException)
+            catch (InvalidOperationException ex)
 
-        {
-            return Result<ContextPreviewResult>.Failure(
-                new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
+            {
+                LogModelResolutionFailure(resolution.Consume(ex), ex);
+
+                return Result<ContextPreviewResult>.Failure(
+                    new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
+            }
         }
 
         using (lease)
@@ -309,6 +316,8 @@ public sealed partial class WizardIntelligenceProvider
                 : "production";
         }
 
+        RetrievalDiagnostics retrievalDiagnostics = new() { SessionId = turn.SessionId };
+
         Embedding<float>? queryEmbedding = null;
 
         SemanticContextChunk[]? semanticContext = null;
@@ -335,20 +344,20 @@ public sealed partial class WizardIntelligenceProvider
         {
             previewTapestrySelection = await tapestryInvocationValidator.AuthorizeAsync(turn, invocationContext, cancellationToken).ConfigureAwait(false);
 
-            queryEmbedding = await ResolveRagQueryEmbeddingAsync(turn, previewTapestrySelection is not null, cancellationToken).ConfigureAwait(false);
+            queryEmbedding = await ResolveRagQueryEmbeddingAsync(turn, previewTapestrySelection is not null, cancellationToken, retrievalDiagnostics).ConfigureAwait(false);
 
-            semanticContext = await RetrieveSemanticContextAsync(turn, queryEmbedding, cancellationToken).ConfigureAwait(false);
+            semanticContext = await RetrieveSemanticContextAsync(turn, queryEmbedding, cancellationToken, retrievalDiagnostics).ConfigureAwait(false);
 
             // The same invocation context the turn would carry, so the preview reports the candidate
             // set the turn would actually draw on rather than a wider one.
-            sagaMemories = await RetrieveSagaMemoriesAsync(queryEmbedding, invocationContext, cancellationToken).ConfigureAwait(false);
+            sagaMemories = await RetrieveSagaMemoriesAsync(queryEmbedding, invocationContext, cancellationToken, retrievalDiagnostics).ConfigureAwait(false);
 
             attachmentContext = await RetrieveSessionAttachmentContextAsync(
                 turn,
 
                 queryEmbedding,
 
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken, retrievalDiagnostics).ConfigureAwait(false);
 
             attachmentContext = AcceptAttachmentRagMaterializations(previewLedger, attachmentContext, lease.Provider, lease.ResolvedModel);
 
@@ -357,7 +366,7 @@ public sealed partial class WizardIntelligenceProvider
             sagaMemories = AcceptSagaMaterializations(previewLedger, sagaMemories, lease.Provider, lease.ResolvedModel, turn.SessionId);
 
             previewRetrievedTapestry = await RetrieveAuthorizedTapestryAsync(previewTapestrySelection, queryEmbedding,
-                lease.Provider, lease.ResolvedModel, cancellationToken).ConfigureAwait(false);
+                lease.Provider, lease.ResolvedModel, cancellationToken, retrievalDiagnostics).ConfigureAwait(false);
 
             tapestryContext = AcceptTapestryMaterializations(previewLedger, previewRetrievedTapestry,
                 lease.Provider, lease.ResolvedModel, turn.SessionId);
@@ -375,7 +384,7 @@ public sealed partial class WizardIntelligenceProvider
 
                 invocationContext,
 
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken, retrievalDiagnostics).ConfigureAwait(false);
         }
 
         AttachmentsSettings attachments = settings.Value.ResolveAttachments();
@@ -674,7 +683,9 @@ public sealed partial class WizardIntelligenceProvider
 
             turn,
 
-            finalMessages);
+            finalMessages,
+
+            retrievalDiagnostics);
 
         ContextPreviewContent? content = previewRequest.ShowContent
 
@@ -901,7 +912,19 @@ public sealed partial class WizardIntelligenceProvider
 
         PingRequest turn,
 
-        IReadOnlyList<MeAiChatMessage> messages)
+        IReadOnlyList<MeAiChatMessage> messages) =>
+        BuildPreviewSources(breakdown, request, turn, messages, null);
+
+    private static List<ContextPreviewSource> BuildPreviewSources(
+        ContextTokenBreakdown breakdown,
+
+        ContextPreviewRequest request,
+
+        PingRequest turn,
+
+        IReadOnlyList<MeAiChatMessage> messages,
+
+        RetrievalDiagnostics? diagnostics)
 
     {
         string? systemContent = request.ShowContent
@@ -937,6 +960,11 @@ public sealed partial class WizardIntelligenceProvider
                 request,
 
                 turn);
+
+            if (!included && !request.NoRetrieval && diagnostics?.Describe(component.Source) is { } observedReason)
+            {
+                reason = observedReason;
+            }
 
             // Covenant pressure is reported on the lane it actually happened to. Folding it into the
             // generic "dropped" total would let a reader conclude the operator's own Confirmed
