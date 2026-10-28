@@ -206,6 +206,16 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
                 SumAll(estimates) - beforeMessage));
         }
 
+        if (request.Options.Instructions is { } instructions && !string.IsNullOrWhiteSpace(instructions))
+        {
+            // The native SDK prepends one system message for this option. Its text is
+            // generic input, never evidence of a typed Covenant attribution span.
+            AddText(estimates, ContextTokenSource.SystemCodexSpell, instructions, profile, tokenizer);
+
+            Add(estimates, ContextTokenSource.ProviderFraming, profile.PerMessageOverheadTokens,
+                TokenEstimateClassification.Estimated, profile.Confidence);
+        }
+
         EstimateTools(estimates, request.Options.Tools, profile, tokenizer);
         EstimateStructuredOutput(estimates, request.Options.ResponseFormat, profile, tokenizer);
 
@@ -766,25 +776,18 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
         AIContent content,
         bool currentPrompt)
     {
-
         if (content.AdditionalProperties is { } properties
             && properties.TryGetValue("arcanum.context_source", out object? value))
         {
-
             if (string.Equals(value?.ToString(), "refreshedFile", StringComparison.Ordinal))
             {
-
                 return ContextTokenSource.RefreshedFiles;
-
             }
 
             if (string.Equals(value?.ToString(), "explicitAttachment", StringComparison.Ordinal))
             {
-
                 return ContextTokenSource.ExplicitAttachments;
-
             }
-
         }
 
         return content is FunctionCallContent or FunctionResultContent
@@ -794,7 +797,6 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
                 : currentPrompt
                     ? ContextTokenSource.CurrentPrompt
                     : ContextTokenSource.History;
-
     }
 
     private static void EstimateTools(

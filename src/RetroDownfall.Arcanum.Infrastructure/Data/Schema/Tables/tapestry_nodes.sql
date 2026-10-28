@@ -29,3 +29,5 @@ CREATE INDEX IF NOT EXISTS idx_tapestry_nodes_parent
 CREATE INDEX IF NOT EXISTS idx_tapestry_nodes_membership
     ON tapestry_nodes(GenerationId, ChildMembershipHash);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_tapestry_nodes_generation_node ON tapestry_nodes(GenerationId, NodeId);
+CREATE INDEX IF NOT EXISTS idx_tapestry_nodes_scope
+    ON tapestry_nodes(ScopeKind, ScopeId, NodeId);

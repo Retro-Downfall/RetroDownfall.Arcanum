@@ -8459,7 +8459,7 @@ internal sealed partial class DataRetentionService(
             DbConnection connection = await OpenConnectionAsync(
                 cancellationToken).ConfigureAwait(false);
 
-            WorkspaceResetSnapshot snapshot = await ReadWorkspaceResetSnapshotAsync(
+            WorkspaceResetInventory snapshot = await ReadWorkspaceResetInventoryAsync(
                 connection,
                 transaction: null,
                 workspaceRoot,

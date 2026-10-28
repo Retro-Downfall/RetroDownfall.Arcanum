@@ -90,6 +90,14 @@ internal static class ModelCallPayloadFingerprint
             }
         }
 
+        if (options.Instructions is { } instructions && !string.IsNullOrWhiteSpace(instructions))
+        {
+            // Preserve existing fingerprints when the SDK omits this option.
+            Append(hash, "ChatOptions.Instructions.v1");
+
+            Append(hash, instructions);
+        }
+
         if (options.Tools is { } tools)
         {
             foreach (AITool tool in tools)

@@ -49,7 +49,7 @@ internal sealed partial class DataRetentionService
             workspaceRoot,
             cancellationToken).ConfigureAwait(false);
 
-        DataRetentionConflict[] conflicts = snapshot.CrossScopeGenerationRows == 0
+        DataRetentionConflict[] conflicts = snapshot.Inventory.CrossScopeGenerationRows == 0
             ? []
             :
             [
@@ -61,7 +61,7 @@ internal sealed partial class DataRetentionService
 
         return FinalizePlan(
             request,
-            WorkspaceResetPlanItems(snapshot),
+            WorkspaceResetPlanItems(snapshot.Inventory),
             [],
             conflicts,
             WorkspaceResetCandidateIds(binding, workspaceRoot),
@@ -112,7 +112,7 @@ internal sealed partial class DataRetentionService
                 cancellationToken).ConfigureAwait(false);
 
             DataRetentionConflict[] currentConflicts =
-                current.CrossScopeGenerationRows == 0
+                current.Inventory.CrossScopeGenerationRows == 0
                     ? []
                     :
                     [
@@ -124,7 +124,7 @@ internal sealed partial class DataRetentionService
 
             DataRetentionPlan transactionalPlan = FinalizePlan(
                 plan.Request,
-                WorkspaceResetPlanItems(current),
+                WorkspaceResetPlanItems(current.Inventory),
                 [],
                 currentConflicts,
                 WorkspaceResetCandidateIds(binding, workspaceRoot),
@@ -162,7 +162,7 @@ internal sealed partial class DataRetentionService
 
             // Published graph children are immutable. Count the admitted snapshot before the owner
             // cascade removes them; deleting children first would bypass the generation contract.
-            derivedDeleted += current.TapestryNodeRows + current.TapestryEmbeddingRows + current.TapestryEdgeRows;
+            derivedDeleted += current.Inventory.TapestryNodeRows + current.Inventory.TapestryEmbeddingRows + current.Inventory.TapestryEdgeRows;
 
             derivedDeleted += await ExecuteAsync(
                 connection,
@@ -227,7 +227,7 @@ internal sealed partial class DataRetentionService
             throw;
         }
 
-        WorkspaceResetSnapshot remaining = await ReadWorkspaceResetSnapshotAsync(
+        WorkspaceResetInventory remaining = await ReadWorkspaceResetInventoryAsync(
             connection,
             transaction: null,
             workspaceRoot,
@@ -322,7 +322,7 @@ internal sealed partial class DataRetentionService
     }
 
     private static DataRetentionPlanItem[] WorkspaceResetPlanItems(
-        WorkspaceResetSnapshot snapshot)
+        WorkspaceResetInventory snapshot)
     {
         List<DataRetentionPlanItem> items = [];
 
@@ -379,7 +379,7 @@ internal sealed partial class DataRetentionService
             "workspace:" + workspaceRoot,
         ];
 
-    private static async Task<WorkspaceResetSnapshot> ReadWorkspaceResetSnapshotAsync(
+    private static async Task<WorkspaceResetInventory> ReadWorkspaceResetInventoryAsync(
         DbConnection connection,
         DbTransaction? transaction,
         string workspaceRoot,
@@ -511,6 +511,21 @@ internal sealed partial class DataRetentionService
             workspaceRoot,
             cancellationToken).ConfigureAwait(false);
 
+        return new WorkspaceResetInventory(
+            workspaceContexts, workspaceChunks, workspaceEmbeddings, workspaceVectors,
+            tapestryGenerations, tapestryNodes, tapestryEmbeddings, tapestryEdges,
+            tapestryVectors, crossScopeGenerationRows, hasWorkspaceVectors, hasTapestryVectors);
+    }
+
+    private static async Task<WorkspaceResetSnapshot> ReadWorkspaceResetSnapshotAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        string workspaceRoot,
+        CancellationToken cancellationToken)
+    {
+        WorkspaceResetInventory inventory = await ReadWorkspaceResetInventoryAsync(
+            connection, transaction, workspaceRoot, cancellationToken).ConfigureAwait(false);
+
         using IncrementalHash resourceFingerprint = IncrementalHash.CreateHash(
             HashAlgorithmName.SHA256);
 
@@ -547,7 +562,7 @@ internal sealed partial class DataRetentionService
             workspaceRoot,
             cancellationToken).ConfigureAwait(false);
 
-        if (hasWorkspaceVectors)
+        if (inventory.HasWorkspaceVectors)
         {
             await AppendWorkspaceResetFingerprintAsync(
                 resourceFingerprint,
@@ -608,7 +623,7 @@ internal sealed partial class DataRetentionService
             workspaceRoot,
             cancellationToken).ConfigureAwait(false);
 
-        if (hasTapestryVectors)
+        if (inventory.HasTapestryVectors)
         {
             await AppendWorkspaceResetFingerprintAsync(
                 resourceFingerprint,
@@ -640,18 +655,7 @@ internal sealed partial class DataRetentionService
             workspaceRoot,
             cancellationToken).ConfigureAwait(false);
 
-        return new WorkspaceResetSnapshot(
-            workspaceContexts,
-            workspaceChunks,
-            workspaceEmbeddings,
-            workspaceVectors,
-            tapestryGenerations,
-            tapestryNodes,
-            tapestryEmbeddings,
-            tapestryEdges,
-            tapestryVectors,
-            crossScopeGenerationRows,
-            Convert.ToHexString(resourceFingerprint.GetHashAndReset()));
+        return new WorkspaceResetSnapshot(inventory, Convert.ToHexString(resourceFingerprint.GetHashAndReset()));
     }
 
     private static async Task<long> WorkspaceResetCountAsync(
@@ -735,7 +739,9 @@ internal sealed partial class DataRetentionService
         }
     }
 
-    private sealed record WorkspaceResetSnapshot(
+    private sealed record WorkspaceResetSnapshot(WorkspaceResetInventory Inventory, string ResourceFingerprint);
+
+    private sealed record WorkspaceResetInventory(
         long WorkspaceContextRows,
         long WorkspaceChunkRows,
         long WorkspaceEmbeddingRows,
@@ -746,7 +752,8 @@ internal sealed partial class DataRetentionService
         long TapestryEdgeRows,
         long TapestryVectorRows,
         long CrossScopeGenerationRows,
-        string ResourceFingerprint)
+        bool HasWorkspaceVectors,
+        bool HasTapestryVectors)
     {
         internal long TotalOwnedRows => WorkspaceContextRows
             + WorkspaceChunkRows

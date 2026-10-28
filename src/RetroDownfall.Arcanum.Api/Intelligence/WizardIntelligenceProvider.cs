@@ -2520,7 +2520,11 @@ public sealed partial class WizardIntelligenceProvider(
             PromptCacheDispatchValidator? cacheValidator = cacheV2Enabled
                 ? serviceProvider.GetService<PromptCacheDispatchValidator>() : null;
 
-            string streamBuiltSystemPrompt = streamSystemPromptDocument.Render();
+            SystemPromptBuildResult ordinarySystemPromptBuild = ordinarySystemPromptDocument.BuildResult();
+
+            SystemPromptBuildResult selectedSystemPromptBuild = ordinarySystemPromptBuild;
+
+            string streamBuiltSystemPrompt = selectedSystemPromptBuild.Prompt;
 
             bool streamContextUsesCompressedSummary = false;
 
@@ -2561,10 +2565,14 @@ public sealed partial class WizardIntelligenceProvider(
                     baseSystemPromptDocument = ordinarySystemPromptDocument;
                 }
 
+                ordinarySystemPromptBuild = ordinarySystemPromptDocument.BuildResult();
+
                 streamCachePrepared = streamCachePrepared?.Rebuild(ordinarySystemPromptDocument);
                 streamSystemPromptDocument = streamCachePrepared?.Document ?? ordinarySystemPromptDocument;
 
-                streamBuiltSystemPrompt = streamCachePrepared?.Build.Prompt ?? streamSystemPromptDocument.Render();
+                selectedSystemPromptBuild = streamCachePrepared?.Build ?? ordinarySystemPromptBuild;
+
+                streamBuiltSystemPrompt = selectedSystemPromptBuild.Prompt;
 
                 if (chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System)
                 {
@@ -2591,7 +2599,9 @@ public sealed partial class WizardIntelligenceProvider(
 
                 streamSystemPromptDocument = ordinarySystemPromptDocument;
 
-                streamBuiltSystemPrompt = ordinarySystemPromptDocument.Render();
+                selectedSystemPromptBuild = ordinarySystemPromptBuild;
+
+                streamBuiltSystemPrompt = selectedSystemPromptBuild.Prompt;
 
                 chatMessages[0] = new MeAiChatMessage(ChatRole.System, streamBuiltSystemPrompt);
 
@@ -2610,7 +2620,9 @@ public sealed partial class WizardIntelligenceProvider(
 
                 streamSystemPromptDocument = streamCachePrepared?.Document ?? ordinarySystemPromptDocument;
 
-                streamBuiltSystemPrompt = streamCachePrepared?.Build.Prompt ?? streamSystemPromptDocument.Render();
+                selectedSystemPromptBuild = streamCachePrepared?.Build ?? ordinarySystemPromptBuild;
+
+                streamBuiltSystemPrompt = selectedSystemPromptBuild.Prompt;
 
                 if (chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System)
                 {
@@ -2623,7 +2635,9 @@ public sealed partial class WizardIntelligenceProvider(
 
                     streamSystemPromptDocument = ordinarySystemPromptDocument;
 
-                    streamBuiltSystemPrompt = ordinarySystemPromptDocument.Render();
+                    selectedSystemPromptBuild = ordinarySystemPromptBuild;
+
+                    streamBuiltSystemPrompt = selectedSystemPromptBuild.Prompt;
 
                     chatMessages[0] = new MeAiChatMessage(ChatRole.System, streamBuiltSystemPrompt);
                 }
@@ -3135,7 +3149,11 @@ public sealed partial class WizardIntelligenceProvider(
                     InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
 
                     streamSystemPromptDocument = baseSystemPromptDocument;
+
                     ordinarySystemPromptDocument = baseSystemPromptDocument;
+
+                    ordinarySystemPromptBuild = ordinarySystemPromptDocument.BuildResult();
+
                     streamCachePrepared = null;
                 }
 
@@ -3282,8 +3300,7 @@ public sealed partial class WizardIntelligenceProvider(
                         streamMaterializationLedger,
                         RemoveSemanticMaterialization,
                         out ContextTokenBreakdown callBreakdown,
-                        systemPromptAttribution: () => streamCachePrepared?.Build.Attribution
-                            ?? (covenantScope?.MemorySources is null ? null : streamSystemPromptDocument.BuildResult().Attribution),
+                        systemPromptAttribution: () => selectedSystemPromptBuild.Attribution,
                         progress: toolLoopProgressDetector);
 
                     if (streamContextGate.IsSuccess)
@@ -3420,7 +3437,7 @@ public sealed partial class WizardIntelligenceProvider(
                                         streamPromptCachePlan,
                                         ResolveCallSensitivity(),
                                         streamCachePrepared?.Bind(chatMessages, streamChatOptions),
-                                        streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
+                                        selectedSystemPromptBuild.Attribution,
                                         roundProtection,
                                         CreateTapestryObservation(streamTapestrySelection, streamQueryEmbedding, streamRetrievedTapestry, streamTapestryContext)), failureObservation, roundUsageCommit)
                                 .ConfigureAwait(false);
@@ -3528,7 +3545,7 @@ public sealed partial class WizardIntelligenceProvider(
                                         streamPromptCachePlan,
                                         ResolveCallSensitivity(),
                                         streamCachePrepared?.Bind(chatMessages, streamChatOptions),
-                                        streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
+                                        selectedSystemPromptBuild.Attribution,
                                             roundProtection,
                                         CreateTapestryObservation(streamTapestrySelection, streamQueryEmbedding, streamRetrievedTapestry, streamTapestryContext)), failureObservation)
                             .GetAsyncEnumerator(inferenceToken);
@@ -4484,9 +4501,8 @@ public sealed partial class WizardIntelligenceProvider(
                                         streamMaterializationLedger,
                                         RemoveSemanticMaterialization,
                                         out ContextTokenBreakdown retryContextBreakdown,
-                                        systemPromptAttribution: () => streamCachePrepared?.Build.Attribution
-                                ?? (covenantScope?.MemorySources is null ? null : streamSystemPromptDocument.BuildResult().Attribution),
-                        progress: toolLoopProgressDetector);
+                                        systemPromptAttribution: () => selectedSystemPromptBuild.Attribution,
+                                        progress: toolLoopProgressDetector);
 
                                     if (retryContextGate.IsFailure)
                                     {
@@ -4541,7 +4557,7 @@ public sealed partial class WizardIntelligenceProvider(
                                                 retryPromptCachePlan,
                                                 ResolveCallSensitivity(),
                                                 streamCachePrepared?.Bind(chatMessages, retryOptions),
-                                                streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
+                                                selectedSystemPromptBuild.Attribution,
                                             retryProtection,
                                                 CreateTapestryObservation(streamTapestrySelection, streamQueryEmbedding, streamRetrievedTapestry, streamTapestryContext)), retryUsageCommit)
                                         .ConfigureAwait(false);
@@ -7907,8 +7923,11 @@ public sealed partial class WizardIntelligenceProvider(
         int contextWindowLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
         ModelCallContext context = BuildModelCallContext(lease, request);
 
-        int Count(IReadOnlyList<MeAiChatMessage> messages) =>
-            ModelTokenEstimator.EstimateContext(
+        ContextTokenBreakdown? latestFullBreakdown = null;
+
+        ContextTokenBreakdown Measure(IReadOnlyList<MeAiChatMessage> messages)
+        {
+            ContextTokenBreakdown measured = ModelTokenEstimator.EstimateContext(
                 new ModelTokenizationRequest(
                     lease.Provider,
                     lease.ResolvedModel,
@@ -7916,8 +7935,17 @@ public sealed partial class WizardIntelligenceProvider(
                     chatOptions,
                     context.ReservedAnswerTokens,
                     context.ReservedReasoningTokens,
-                    systemPromptAttribution?.Invoke()))
-                .TotalTokens;
+                    systemPromptAttribution?.Invoke()));
+
+            if (ReferenceEquals(messages, chatMessages))
+            {
+                latestFullBreakdown = measured;
+            }
+
+            return measured;
+        }
+
+        int Count(IReadOnlyList<MeAiChatMessage> messages) => Measure(messages).TotalTokens;
 
         if (ledger is not null && onSemanticDropped is not null)
         {
@@ -7927,21 +7955,20 @@ public sealed partial class WizardIntelligenceProvider(
                 () => Count(chatMessages) > contextWindowLimit);
         }
 
-        _ = TurnContextGuards.TryTrimOldestToolExchanges(
-            chatMessages,
-            Count,
-            contextWindowLimit,
-            progress);
+        breakdown = latestFullBreakdown ?? Measure(chatMessages);
 
-        breakdown = ModelTokenEstimator.EstimateContext(
-            new ModelTokenizationRequest(
-                lease.Provider,
-                lease.ResolvedModel,
+        if (breakdown.TotalTokens > contextWindowLimit)
+        {
+            _ = TurnContextGuards.TryTrimOldestToolExchanges(
                 chatMessages,
-                chatOptions,
-                context.ReservedAnswerTokens,
-                context.ReservedReasoningTokens,
-                systemPromptAttribution?.Invoke()));
+                Count,
+                contextWindowLimit,
+                progress);
+
+            // Trimming ends with an authoritative full-list measurement. Its empty,
+            // removed-run and notice slices must never replace that dispatch breakdown.
+            breakdown = latestFullBreakdown!;
+        }
 
         if (ledger is not null)
         {

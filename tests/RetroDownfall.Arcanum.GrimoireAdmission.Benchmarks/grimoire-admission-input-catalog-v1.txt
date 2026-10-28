@@ -1630,6 +1630,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/080_annal_
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V30/010_idx_long_rest_receipt_inputs_memory_receipt.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V30/020_idx_long_rest_protected_receipt_inputs_memory_receipt.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V30/030_idx_artifact_sensitivity_session_provenance.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V31/010_idx_tapestry_nodes_scope.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/010_saga_memories_retired_at.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/020_saga_memories_pinned_at.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/030_saga_retirement_suppressions.sql
