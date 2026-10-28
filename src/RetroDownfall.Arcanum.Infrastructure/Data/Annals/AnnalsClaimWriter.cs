@@ -487,8 +487,23 @@ internal static class AnnalsClaimWriter
         CancellationToken cancellationToken,
         params (string Name, object? Value)[] parameters)
     {
+        bool receiptsRemoved = false;
+
         foreach (AnnalsErasureStep step in steps)
         {
+            if (step.Receipts is { } receipts)
+            {
+                if (!receiptsRemoved)
+                {
+                    await AnnalsReceiptErasure.DeleteAsync(connection, transaction, receipts,
+                        cancellationToken, parameters).ConfigureAwait(false);
+
+                    receiptsRemoved = true;
+                }
+
+                continue;
+            }
+
             if (step.RequiredFromCoreVersion is { } requiredVersion
                 && await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false) < requiredVersion)
             {

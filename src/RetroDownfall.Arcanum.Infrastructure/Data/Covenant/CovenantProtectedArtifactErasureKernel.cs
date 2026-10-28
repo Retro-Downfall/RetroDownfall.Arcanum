@@ -49,12 +49,19 @@ internal sealed record CovenantArtifactPurgeTarget(
     internal string ReadIdentitiesBy(string parameter) =>
         $"SELECT {RowIdentity ?? KeyColumn} FROM {Table} WHERE {Predicate(parameter)};";
 
+    internal AnnalsReceiptSelection? ReceiptSelection(string parameter) => AnnalStore is { } store
+        ? AnnalsErasurePlan.ForSubjectQuery(store,
+            $"SELECT SubjectId FROM annal_claims WHERE {CovenantIdentitySql.Keyed("SubjectId", parameter)}",
+            normalizedSubjectParameter: parameter).Single(step => step.Table == Table).Receipts
+        : null;
+
     private string Predicate(string parameter)
     {
         string keyed = CampaignManifestNode ? CampaignRollupSourceStorage.PurgePredicate(Table, parameter) : LongRestNode ? LongRestLifecycle.Predicate(Table, parameter) : AnnalStore is { } store
             ? AnnalsErasurePlan.ForSubjectQuery(
                 store,
-                $"SELECT SubjectId FROM annal_claims WHERE {CovenantIdentitySql.Keyed("SubjectId", parameter)}")
+                $"SELECT SubjectId FROM annal_claims WHERE {CovenantIdentitySql.Keyed("SubjectId", parameter)}",
+                normalizedSubjectParameter: parameter)
                 .Single(step => string.Equals(step.Table, Table, StringComparison.Ordinal)).Predicate
             : CovenantIdentitySql.Keyed(KeyColumn, parameter);
 

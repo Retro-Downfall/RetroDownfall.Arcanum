@@ -355,14 +355,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// R-052 belt-and-braces: a connectivity-class failure that escapes the attempt itself (here the
-    /// MCP tool discovery behind candidate A, after the turn began) is not classified inside it, so
-    /// A's exit cleanup resolves the seeded turn — discards the empty assistant row and releases the
-    /// Session — before the wrapper moves on. Candidate B must begin its own turn rather than adopt
-    /// that dead handle, whose finalize would write B's answer against a discarded row.
+    /// Local MCP discovery failed after the native attempt began its turn. The turn is resolved
+    /// exactly once and a transport-shaped local exception cannot select a second provider.
     /// </summary>
     [Fact]
-    public async Task StreamPromptAsync_never_adopts_a_turn_an_earlier_candidate_already_finalized()
+    public async Task StreamPromptAsync_local_MCP_discovery_failure_does_not_select_another_provider()
     {
         ProviderSettings providerA = MakeProvider("provider-a");
         ProviderSettings providerB = MakeProvider("provider-b");
@@ -382,6 +379,60 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             CreateTracker(healthFailureThreshold: 1),
             grimoire,
             mcp,
+            executor: null,
+            providerA,
+            providerB);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { DisableMcpTools = false });
+
+        Assert.Equal([providerA.Name], factory.CandidateCallOrder);
+
+        Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Error);
+
+        Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Result);
+
+        Assert.Equal(0, chatA.StreamingCallCount + chatB.StreamingCallCount);
+
+        Assert.Single(grimoire.BeginCalls);
+
+        Assert.Single(grimoire.DiscardedAssistantEntryIds);
+
+        Assert.Empty(grimoire.FinalizedContents);
+    }
+
+    /// <summary>
+    /// R-052 belt-and-braces: a connectivity-class failure that escapes the attempt itself (here the
+    /// opaque model-stream construction behind candidate A, after the turn began) is not classified inside it, so
+    /// A's exit cleanup resolves the seeded turn — discards the empty assistant row and releases the
+    /// Session — before the wrapper moves on. Candidate B must begin its own turn rather than adopt
+    /// that dead handle, whose finalize would write B's answer against a discarded row.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_never_adopts_a_turn_an_earlier_candidate_already_finalized()
+    {
+        ProviderSettings providerA = MakeProvider("provider-a");
+        ProviderSettings providerB = MakeProvider("provider-b");
+        ScriptingChatClient chatA = new();
+        ScriptingChatClient chatB = new();
+        chatB.EnqueueStreamTokens("answer ", "from B");
+        RecordingChatClientFactory factory = new();
+        factory.CandidateResolvers[providerA.Name] = () => MakeLease(chatA, providerA);
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+        FakeGrimoireRepository grimoire = new();
+        FakeMcpConnectionManager mcp = new();
+
+        IModelCallExecutor native = new ModelCallExecutor(new ModelTokenEstimator(
+            new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance)));
+
+        OpaqueStreamConstructionFailure executor = new(native);
+        WizardIntelligenceProvider wizard = CreateWizardWithMcp(
+            factory,
+            CreateTracker(healthFailureThreshold: 1),
+            grimoire,
+            mcp,
+            executor,
             providerA,
             providerB);
 
@@ -392,6 +443,12 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.Equal([providerA.Name, providerB.Name], factory.CandidateCallOrder);
         Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Error);
         Assert.Contains(events, static evt => evt.Type == IntelligenceEventType.Result);
+
+        Assert.Equal(2, executor.StreamCalls);
+
+        Assert.Equal(0, chatA.StreamingCallCount);
+
+        Assert.Equal(1, chatB.StreamingCallCount);
 
         // A's turn was resolved by its own exit; B began a second one and answered into it.
         Assert.Equal(2, grimoire.BeginCalls.Count);
@@ -1567,6 +1624,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         IProviderHealthTracker? healthTracker,
         FakeGrimoireRepository grimoire,
         IMcpConnectionManager mcpConnectionManager,
+        IModelCallExecutor? executor,
         params ProviderSettings[] providers) =>
         CreateWizard(
             factory,
@@ -1581,7 +1639,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             covenantEgressGuard: null,
             covenantAuthority: null,
             mcpConnectionManager,
-            providers);
+            providers,
+            executor: executor);
 
     private static WizardIntelligenceProvider CreateWizard(
         IChatClientFactory factory,
@@ -1612,7 +1671,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         ICovenantAuthoritySnapshotProvider? covenantAuthority,
         IMcpConnectionManager? mcpConnectionManager,
         ProviderSettings[] providers,
-        CovenantStagingTurnPorts? stagingTurn = null)
+        CovenantStagingTurnPorts? stagingTurn = null,
+        IModelCallExecutor? executor = null)
     {
         ArcanumSettings settings = new()
         {
@@ -1723,6 +1783,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             new TapestryInvocationValidator(ordinaryProvider.GetRequiredService<IServiceScopeFactory>(), new TestOptionsMonitor<ArcanumSettings>(settings),
                 covenantAuthority ?? new UnestablishedTapestryAuthority()),
             withHealthTracker ? healthTracker : null,
+            modelCallExecutor: executor,
             covenantDispatch: covenantDispatch,
             covenantToolCapabilities: covenantToolCapabilities,
             campaignRollups: preparer);
@@ -1770,6 +1831,25 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         }
 
         return events;
+    }
+
+    private sealed class OpaqueStreamConstructionFailure(IModelCallExecutor inner) : IModelCallExecutor
+    {
+        internal int StreamCalls { get; private set; }
+
+        public Task<ModelCallOutcome> ExecuteBufferedAsync(IChatClient client, IList<ChatMessage> messages, ChatOptions options,
+            ITurnBudget budget, ModelCallPurpose purpose, CancellationToken cancellationToken, ModelCallContext? context = null) =>
+            inner.ExecuteBufferedAsync(client, messages, options, budget, purpose, cancellationToken, context);
+
+        public IAsyncEnumerable<ModelCallUpdate> ExecuteStreamingAsync(IChatClient client, IList<ChatMessage> messages, ChatOptions options,
+            ITurnBudget budget, ModelCallPurpose purpose, CancellationToken cancellationToken, ModelCallContext? context = null)
+        {
+            StreamCalls++;
+
+            if (StreamCalls == 1) throw new HttpRequestException("opaque model stream construction failed");
+
+            return inner.ExecuteStreamingAsync(client, messages, options, budget, purpose, cancellationToken, context);
+        }
     }
 
     // ===== Test doubles =====

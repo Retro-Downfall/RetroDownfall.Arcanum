@@ -14,6 +14,8 @@ public sealed record PromptResponseDto(
 {
     public IReadOnlyList<ReasoningContentSegment> Reasoning { get; init; } = [];
 
+    public IReadOnlyList<InferenceNotice> Notices { get; init; } = [];
+
     public static PromptResponseDto From(PromptTurnResult turn) =>
         new(
             turn.Text,
@@ -22,5 +24,6 @@ public sealed record PromptResponseDto(
             turn.FinishReason)
         {
             Reasoning = turn.Reasoning,
+            Notices = turn.Notices,
         };
 }

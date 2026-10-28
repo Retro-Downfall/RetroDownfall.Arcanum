@@ -4,13 +4,27 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class InferenceProviderFailureMessageTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Unknown_failure_does_not_invent_a_connectivity_diagnosis(bool hasException)
+    {
+        string message = hasException
+            ? InferenceProviderFailureMessage.Build("Fireworks", new InvalidOperationException("PRIVATE_UNKNOWN_BODY"))
+            : InferenceProviderFailureMessage.Build("Fireworks");
+
+        Assert.DoesNotContain("unreachable", message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("PRIVATE_UNKNOWN_BODY", message, StringComparison.Ordinal);
+    }
+
     [Fact]
-    public void Build_without_status_keeps_unreachable_guidance()
+    public void Build_without_status_keeps_unknown_guidance()
     {
         string message = InferenceProviderFailureMessage.Build("Fireworks");
 
         Assert.Equal(
-            "Provider 'Fireworks' is unreachable. Verify the service is running and Arcanum:Providers is configured correctly.",
+            "Inference failed. See server logs for details.",
             message);
     }
 

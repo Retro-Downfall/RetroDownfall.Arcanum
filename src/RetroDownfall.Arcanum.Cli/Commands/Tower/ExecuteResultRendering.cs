@@ -17,6 +17,13 @@ internal static class ExecuteResultRendering
     {
         await Console.Out.WriteLineAsync(response.Text).ConfigureAwait(false);
 
+        if (response.Notices.Any(static notice => notice.Code == InferenceNoticeCode.ToolCompatibilityRestart))
+        {
+            IAnsiConsole noticeConsole = CliConsoleFactory.CreateDiagnostic();
+
+            noticeConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape(new InferenceNotice(InferenceNoticeCode.ToolCompatibilityRestart).Message)));
+        }
+
         if (response.ToolCalls is not { Count: > 0 } toolCalls)
         {
             return;

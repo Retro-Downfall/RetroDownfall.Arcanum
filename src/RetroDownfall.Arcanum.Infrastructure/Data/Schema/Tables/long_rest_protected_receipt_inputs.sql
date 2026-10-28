@@ -14,3 +14,5 @@ CREATE TABLE IF NOT EXISTS long_rest_protected_receipt_inputs (
     UNIQUE (ReceiptId, VersionId),
     FOREIGN KEY (ReceiptId, Ordinal) REFERENCES long_rest_receipt_inputs(ReceiptId, Ordinal) ON DELETE CASCADE
 );
+
+CREATE INDEX IF NOT EXISTS idx_long_rest_protected_receipt_inputs_memory_receipt ON long_rest_protected_receipt_inputs (lower(replace(MemoryId, '-', '')), ReceiptId, MemoryId);

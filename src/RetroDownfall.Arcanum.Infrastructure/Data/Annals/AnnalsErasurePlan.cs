@@ -8,7 +8,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 /// <summary>
 /// One table an Annals erasure clears, and the rows of it that erasure owns.
 /// </summary>
-internal sealed record AnnalsErasureStep(string Table, string Predicate, int? RequiredFromCoreVersion = null);
+internal sealed record AnnalsErasureStep(string Table, string Predicate, int? RequiredFromCoreVersion = null, AnnalsReceiptSelection? Receipts = null);
 
 /// <summary>
 /// The ordered statements every Annals erasure runs, stated once.
@@ -46,13 +46,16 @@ internal static class AnnalsErasurePlan
     /// </param>
     internal static IReadOnlyList<AnnalsErasureStep> ForSubjectQuery(
         AnnalSubjectStore subjectStore,
-        string subjectIdQuery) =>
+        string subjectIdQuery,
+        string? normalizedSubjectParameter = null) =>
         Build(
             $"SubjectStoreCode = {(int)subjectStore} AND SubjectId IN ({subjectIdQuery})",
             (int)subjectStore,
             headPredicate: $"ClaimId IN (SELECT ClaimId FROM annal_claims WHERE SubjectStoreCode = {(int)subjectStore} AND SubjectId IN ({subjectIdQuery}))",
             sourcePredicate: $"MemoryId IN ({subjectIdQuery})",
-            evaluationPredicate: MemoryEvaluationErasurePlan.SubjectPredicate(subjectStore == AnnalSubjectStore.Saga ? MemoryEvaluationSource.Saga : MemoryEvaluationSource.Lexicon, $"WITH evaluation_subjects(subject) AS ({subjectIdQuery}) SELECT subject FROM evaluation_subjects"));
+            evaluationPredicate: MemoryEvaluationErasurePlan.SubjectPredicate(subjectStore == AnnalSubjectStore.Saga ? MemoryEvaluationSource.Saga : MemoryEvaluationSource.Lexicon, $"WITH evaluation_subjects(subject) AS ({subjectIdQuery}) SELECT subject FROM evaluation_subjects"),
+            subjectIdQuery: subjectIdQuery,
+            normalizedSubjectParameter: normalizedSubjectParameter);
 
     private static IReadOnlyList<AnnalsErasureStep> Build(
         string claimPredicate,
@@ -60,7 +63,9 @@ internal static class AnnalsErasurePlan
         string? headPredicate = null,
         string? sourcePredicate = null,
         string? generationIdQuery = null,
-        string? evaluationPredicate = null)
+        string? evaluationPredicate = null,
+        string? subjectIdQuery = null,
+        string? normalizedSubjectParameter = null)
     {
         string claimScope = $"SELECT ClaimId FROM annal_claims WHERE {claimPredicate}";
 
@@ -73,6 +78,17 @@ internal static class AnnalsErasurePlan
 
         string receiptScope = $"SELECT ReceiptId FROM long_rest_receipts WHERE {receiptPredicate}";
 
+        AnnalsReceiptSelection? receipts = subjectIdQuery is null ? null
+            : AnnalsReceiptSelection.ForSubjects(receiptScope, versionScope, subjectIdQuery,
+                subjectStoreCode == (int)AnnalSubjectStore.Saga, normalizedSubjectParameter);
+
+        if (receipts is not null)
+        {
+            receiptPredicate = receipts.Predicate;
+
+            receiptScope = receipts.Query;
+        }
+
         string generationScope = generationIdQuery
             ?? $"SELECT GenerationId FROM long_rest_discovery_leaves WHERE VersionId IN ({versionScope}) OR {sourcePredicate}";
 
@@ -84,9 +100,9 @@ internal static class AnnalsErasurePlan
                     new AnnalsErasureStep("long_rest_sources", sourcePredicate!, RequiredFromCoreVersion: 18)]
                 : [],
 
-            new("long_rest_protected_receipt_inputs", $"ReceiptId IN ({receiptScope})", RequiredFromCoreVersion: 18),
+            new("long_rest_protected_receipt_inputs", $"ReceiptId IN ({receiptScope})", RequiredFromCoreVersion: 18, Receipts: receipts),
 
-            new("long_rest_protected_receipt_evidence", $"ReceiptId IN ({receiptScope})", RequiredFromCoreVersion: 18),
+            new("long_rest_protected_receipt_evidence", $"ReceiptId IN ({receiptScope})", RequiredFromCoreVersion: 18, Receipts: receipts),
 
             // Delete the whole receipt while all input coordinates are still available. Its child
             // cascades are followed by explicit orphan cleanup, so erasure also works when a caller
@@ -94,17 +110,17 @@ internal static class AnnalsErasurePlan
             new(
                 "long_rest_receipts",
                 receiptPredicate,
-                RequiredFromCoreVersion: 17),
+                RequiredFromCoreVersion: 17, Receipts: receipts),
 
             new(
                 "long_rest_suppressions",
-                $"ReceiptId IN ({receiptScope}) OR NOT EXISTS (SELECT 1 FROM long_rest_receipts receipt WHERE receipt.ReceiptId = long_rest_suppressions.ReceiptId)",
-                RequiredFromCoreVersion: 17),
+                receipts?.Predicate ?? $"ReceiptId IN ({receiptScope}) OR NOT EXISTS (SELECT 1 FROM long_rest_receipts receipt WHERE receipt.ReceiptId = long_rest_suppressions.ReceiptId)",
+                RequiredFromCoreVersion: 17, Receipts: receipts),
 
             new(
                 "long_rest_receipt_inputs",
-                $"ReceiptId IN ({receiptScope}) OR NOT EXISTS (SELECT 1 FROM long_rest_receipts receipt WHERE receipt.ReceiptId = long_rest_receipt_inputs.ReceiptId)",
-                RequiredFromCoreVersion: 17),
+                receipts?.Predicate ?? $"ReceiptId IN ({receiptScope}) OR NOT EXISTS (SELECT 1 FROM long_rest_receipts receipt WHERE receipt.ReceiptId = long_rest_receipt_inputs.ReceiptId)",
+                RequiredFromCoreVersion: 17, Receipts: receipts),
 
             .. subjectStoreCode == (int)AnnalSubjectStore.Lexicon
                 ? new[] { new AnnalsErasureStep("lexicon_annal_fact_provenance", $"AnnalVersionId IN ({versionScope})", RequiredFromCoreVersion: 11) }

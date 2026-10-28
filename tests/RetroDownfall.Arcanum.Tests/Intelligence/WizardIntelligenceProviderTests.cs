@@ -9930,7 +9930,9 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         RetroDownfall.Arcanum.Core.Memory.IMemoryRecallCandidateReader? memoryRecallReader = null,
         RetroDownfall.Arcanum.Core.Weave.Tapestry.ITapestryStore? tapestryStore = null,
         ICovenantAuthoritySnapshotProvider? tapestryAuthority = null,
-        ICanonicalCampaignContextResolver? tapestryResolver = null)
+        ICanonicalCampaignContextResolver? tapestryResolver = null,
+        IServiceProvider? diagnosticsHost = null,
+        IModelCallExecutor? executor = null)
     {
         settings ??= DefaultSettings();
 
@@ -9986,6 +9988,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         sessionAttachmentStore ??= new NoOpSessionAttachmentStore();
 
         ServiceCollection ordinaryServices = new();
+
+        if (diagnosticsHost?.GetService<WizardIntelligenceProvider.CompatibilityDiagnostics>() is { } diagnostics)
+        {
+            ordinaryServices.AddSingleton(diagnostics);
+        }
 
         if (memoryRecallReader is not null)
         {
@@ -10065,9 +10072,9 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             sessionAttachmentRetrieval: sessionAttachmentRetrieval,
             serviceProvider: ordinaryProvider,
             modelTokenEstimator: modelTokenEstimator,
-            modelCallExecutor: cacheValidator is null ? null : new ModelCallExecutor(
+            modelCallExecutor: executor ?? (cacheValidator is null ? null : new ModelCallExecutor(
                 modelTokenEstimator ?? new ModelTokenEstimator(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance)),
-                null, (ILogger?)null, cacheValidator),
+                null, (ILogger?)null, cacheValidator)),
             covenantDispatch: covenantDispatch,
             covenantToolCapabilities: covenantToolCapabilities,
             campaignRollups: campaignRollups,
@@ -11023,6 +11030,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public bool ThrowOnBegin { get; init; }
 
+        public Func<CancellationToken, Task>? BeforeBegin { get; init; }
+
         public bool ThrowOnFinalize { get; init; }
 
         /// <summary>
@@ -11110,6 +11119,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             string model,
             CancellationToken cancellationToken)
         {
+            if (BeforeBegin is not null)
+            {
+                await BeforeBegin(cancellationToken);
+            }
+
             if (ThrowOnBegin)
             {
                 // The port reports a failed begin, it does not throw: the whole point of the narrow
@@ -11569,12 +11583,16 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public BillableOperationRecord? LastOperation => _operations.LastOrDefault();
 
+        public Guid RunId => _runId;
+
         /// <summary>Every run completion, in order, with the status it recorded.</summary>
         public IReadOnlyList<(Guid RunId, InferenceRunStatus Status)> CompletedRuns => [.. _completedRuns];
 
         public IReadOnlyList<BillableOperationRecord> Operations => [.. _operations];
 
         public Exception? RecordException { get; init; }
+
+        public int RecordAttempts { get; private set; }
 
         public CancellationTokenSource? CancelBeforeRecord { get; init; }
 
@@ -11600,6 +11618,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             BillableOperationRecord operation,
             CancellationToken cancellationToken = default)
         {
+            RecordAttempts++;
+
             if (CancelBeforeRecord is not null)
             {
                 CancelBeforeRecord.Cancel();

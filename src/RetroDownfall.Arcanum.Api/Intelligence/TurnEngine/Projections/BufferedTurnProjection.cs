@@ -50,6 +50,7 @@ internal sealed class BufferedTurnProjection
             {
                 ModelUsed = _completed.ModelUsed,
                 Warnings = _completed.Warnings,
+                Notices = _completed.Notices,
                 Reasoning = _completed.Reasoning,
                 Sensitivity = _completed.Sensitivity,
             };

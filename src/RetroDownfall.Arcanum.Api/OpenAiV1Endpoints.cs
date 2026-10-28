@@ -339,6 +339,13 @@ internal static partial class OpenAiV1Endpoints
                 warningHeader);
         }
 
+        if (turn.Notices.Any(static notice => notice.Code == InferenceNoticeCode.ToolCompatibilityRestart))
+        {
+            // Fixed ASCII copy, coalesced once. Operational notices never enter the schema warning
+            // header, system fingerprint, assistant content, or the OpenAI streaming contract.
+            httpContext.Response.Headers.Append("X-Arcanum-Notice", new InferenceNotice(InferenceNoticeCode.ToolCompatibilityRestart).Message);
+        }
+
         return Results.Json(response, ArcanumJsonContext.Default.OpenAiChatResponse);
     }
 

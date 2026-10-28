@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 29 and declares twenty-eight steps, Covenant canonical is at version 7 and declares six,
+/// Core is at version 30 and declares twenty-nine steps, Covenant canonical is at version 7 and declares six,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -144,7 +144,7 @@ internal static class GrimoireSchemaVersionChains
     /// <para>Version 24 indexes Campaign continuity Session and output-artifact dependencies without
     /// changing source manifests, checkpoints, or their cascade relationships.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 29;
+    internal const int CoreSchemaVersion = 30;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -336,6 +336,9 @@ internal static class GrimoireSchemaVersionChains
 
             // Captured from the complete unchanged Core28 catalog before the model analytics index.
             [(GrimoireSchemaTransactionTier.Core, 29)] = "B7272C386885847EFD43C155BD19A7B89F18ECD4699954F5F3872367E97CF7E8",
+
+            // Frozen complete Core29 catalog before subject ownership and provenance access paths.
+            [(GrimoireSchemaTransactionTier.Core, 30)] = "6DBB71B928E774E8865537BD28CF559EC195981021746160252217408A04A59C",
 
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 2)] =
                 "7F906C4C832FDF824EC3B6A56431E9E6098DC9BB83EDA5BAE02EC62CE3B4E105",

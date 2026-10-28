@@ -794,6 +794,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Daemons/UnseenServantDaemonIds.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Daemons/UnseenServantDaemonJob.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Annals/AnnalsClaimWriter.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Annals/AnnalsErasurePlan.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Annals/AnnalsReceiptErasure.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Annals/AnnalsStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/ArcanumDbContext.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/ArcanumDbContextFactory.cs
@@ -805,6 +806,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/BlobEncryptionMetadataStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetAlertRepository.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetReservationService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ArtifactSensitivityLedger.LexiconReplacement.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ArtifactSensitivityLedger.Provenance.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ArtifactSensitivityLedger.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CampaignMaintenanceCheckpointStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CampaignPathFullResetCleanupEvidenceStore.cs
@@ -1625,6 +1627,9 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/050_annal_
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/060_annal_versions_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/070_annal_dependencies_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/080_annal_heads_validate_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V30/010_idx_long_rest_receipt_inputs_memory_receipt.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V30/020_idx_long_rest_protected_receipt_inputs_memory_receipt.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V30/030_idx_artifact_sensitivity_session_provenance.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/010_saga_memories_retired_at.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/020_saga_memories_pinned_at.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/030_saga_retirement_suppressions.sql

@@ -1,4 +1,7 @@
+using NativeModelCallExecutor = RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor;
 using System.Buffers;
+using System.Collections.Concurrent;
+using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Familiars;
 using System.Data;
 using System.Data.Common;
@@ -135,6 +138,8 @@ public sealed partial class WizardIntelligenceProvider(
     private IModelTokenEstimator ModelTokenEstimator => _tokenAccounting.Estimator;
 
     private IModelCallExecutor ModelCallExecutor => _tokenAccounting.Executor;
+
+    private readonly CompatibilityDiagnostics? _compatibilityDiagnostics = serviceProvider.GetService<CompatibilityDiagnostics>();
 
     private readonly Lazy<ITurnExecutionFacade>? _turnCoordinator = turnCoordinator;
 
@@ -304,6 +309,7 @@ public sealed partial class WizardIntelligenceProvider(
                         StructuredOutputWarning: turn.Warnings.Count > 0)
                     {
                         ModelUsed = turn.ModelUsed,
+                        Notices = turn.Notices,
                         Reasoning = turn.Reasoning,
                         Sensitivity = turn.Sensitivity,
                     },
@@ -318,7 +324,7 @@ public sealed partial class WizardIntelligenceProvider(
                 new RunFailed(
                     emitter.NextCorrelation(),
                     result.Error,
-                    TurnTerminationReason.ProviderFailure,
+                    TurnTerminationReason.PipelineFailure,
                     Usage: null,
                     Warnings: [],
                     Interrupted: false,
@@ -531,7 +537,7 @@ public sealed partial class WizardIntelligenceProvider(
                     yield return new RunFailed(
                         correlation,
                         new Error(frame.Data ?? ErrorCodes.Hub.Error, frame.Message) { ContextOverflow = frame.ContextOverflow },
-                        TurnTerminationReason.ProviderFailure,
+                        TurnTerminationReason.PipelineFailure,
                         frame.Usage,
                         frame.Warnings,
                         Interrupted: false,
@@ -851,7 +857,8 @@ public sealed partial class WizardIntelligenceProvider(
                         // neither of which means the provider itself is down; marking it failed regardless
                         // would incorrectly drain its health status and could take it out of rotation for
                         // unrelated reasons.
-                        bool isConnectivityFailure = IsConnectivityFailure(ex, callerToken);
+                        bool isConnectivityFailure = chatClientFactory is not ChatClientFactory
+                            && IsConnectivityFailure(ex, callerToken);
 
                         if (isConnectivityFailure)
                         {
@@ -862,7 +869,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                         lastFailure = Result<PromptTurnResult>.Failure(new Error(
                             ErrorCodes.Hub.Error,
-                            BuildInferenceFailureMessage(provider, ex)));
+                            chatClientFactory is ChatClientFactory ? PublicInferenceFailureMessage : BuildInferenceFailureMessage(provider, ex)));
 
                         if (!isConnectivityFailure || isLastAttempt)
                         {
@@ -920,11 +927,14 @@ public sealed partial class WizardIntelligenceProvider(
                         return lastFailure;
                     }
 
-                    logger.LogWarning(
-                        "Provider {ProviderName} inference failed with a connectivity error (fallback candidate {Attempt}/{CandidateCount}); trying next candidate.",
-                        provider.Name,
-                        attemptIndex + 1,
-                        candidates.Count);
+                    if (ModelCallExecutor is not NativeModelCallExecutor)
+                    {
+                        logger.LogWarning(
+                            "Provider {ProviderName} inference failed with a connectivity error (fallback candidate {Attempt}/{CandidateCount}); trying next candidate.",
+                            provider.Name,
+                            attemptIndex + 1,
+                            candidates.Count);
+                    }
                 }
             }
         }
@@ -984,26 +994,42 @@ public sealed partial class WizardIntelligenceProvider(
     {
         StreamFailureClassification classification = new();
 
-        await foreach (IntelligenceEvent frame in RunInferenceAttemptAsync(
-                lease,
-                request,
-                invocationContext,
-                request.Prompt,
-                TurnResponseMode.Buffered,
-                classification,
-                inferenceToken,
-                callerToken,
-                auditContext,
-                seed,
-                canFallBack,
-                covenantScope,
-                memoryDelegation)
-            .ConfigureAwait(false))
+        try
         {
-            if (eventSink is not null)
+            await foreach (IntelligenceEvent frame in RunInferenceAttemptAsync(
+                    lease,
+                    request,
+                    invocationContext,
+                    request.Prompt,
+                    TurnResponseMode.Buffered,
+                    classification,
+                    inferenceToken,
+                    callerToken,
+                    auditContext,
+                    seed,
+                    canFallBack,
+                    covenantScope,
+                    memoryDelegation)
+                .ConfigureAwait(false))
             {
-                await eventSink(frame, callerToken).ConfigureAwait(false);
+                if (eventSink is not null)
+                {
+                    await eventSink(frame, callerToken).ConfigureAwait(false);
+                }
             }
+        }
+        catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ModelCallExecutor is NativeModelCallExecutor)
+        {
+            LogPipelineFailure(lease.Provider, lease.ResolvedModel, request.SessionId, ex);
+
+            return new InferenceAttemptResult(
+                Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage)),
+                IsConnectivityFailure: false,
+                classification.ProviderCommitted);
         }
 
         if (classification.BufferedTerminal is { } terminal)
@@ -1190,9 +1216,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (singleMoveFailure is not null)
             {
-                logger.LogError(
-                    "Streaming inference threw after start; exception type {ExceptionType}.",
-                    singleMoveFailure.GetType().FullName);
+                LogPipelineFailure(singleLease.Provider, singleLease.ResolvedModel, request.SessionId, singleMoveFailure);
 
                 yield return ErrorFrame(new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage),
                     singleClassification.PartialReplyDropped);
@@ -1268,7 +1292,8 @@ public sealed partial class WizardIntelligenceProvider(
                 {
                     // Only mark the provider unhealthy for a genuine connectivity failure — a local
                     // misconfiguration or transient overload does not mean the provider itself is down.
-                    bool buildFailureIsConnectivity = IsConnectivityFailure(leaseBuildFailure, callerToken);
+                    bool buildFailureIsConnectivity = chatClientFactory is not ChatClientFactory
+                        && IsConnectivityFailure(leaseBuildFailure, callerToken);
 
                     if (buildFailureIsConnectivity)
                     {
@@ -1286,7 +1311,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     yield return ErrorFrame(new Error(
                         ErrorCodes.Hub.Error,
-                        BuildInferenceFailureMessage(candidateProvider, leaseBuildFailure)));
+                        chatClientFactory is ChatClientFactory ? PublicInferenceFailureMessage : BuildInferenceFailureMessage(candidateProvider, leaseBuildFailure)));
 
                     yield break;
                 }
@@ -1330,7 +1355,8 @@ public sealed partial class WizardIntelligenceProvider(
                 {
                     // Only mark the provider unhealthy for a genuine connectivity failure — matches
                     // the lease-build-failure handling above and the buffered inference path.
-                    bool moveFailureIsConnectivity = IsConnectivityFailure(moveNextFailure, callerToken);
+                    bool moveFailureIsConnectivity = ModelCallExecutor is not global::RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor
+                        && IsConnectivityFailure(moveNextFailure, callerToken);
 
                     if (moveFailureIsConnectivity)
                     {
@@ -1339,12 +1365,19 @@ public sealed partial class WizardIntelligenceProvider(
 
                     bool retryableMoveFailure = moveFailureIsConnectivity && !isLastAttempt;
 
-                    logger.LogWarning(
-                        "Provider {ProviderName} failed to start streaming (fallback candidate {Attempt}/{CandidateCount}); exception type {ExceptionType}.",
-                        candidateProvider.Name,
-                        attemptIndex + 1,
-                        streamCandidates.Count,
-                        moveNextFailure.GetType().FullName);
+                    if (ModelCallExecutor is NativeModelCallExecutor)
+                    {
+                        LogPipelineFailure(candidateProvider, candidateModel, request.SessionId, moveNextFailure);
+                    }
+                    else
+                    {
+                        logger.LogWarning(
+                            "Provider {ProviderName} failed to start streaming (fallback candidate {Attempt}/{CandidateCount}); exception type {ExceptionType}.",
+                            candidateProvider.Name,
+                            attemptIndex + 1,
+                            streamCandidates.Count,
+                            moveNextFailure.GetType().FullName);
+                    }
 
                     if (retryableMoveFailure)
                     {
@@ -1353,7 +1386,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     yield return ErrorFrame(new Error(
                         ErrorCodes.Hub.Error,
-                        BuildInferenceFailureMessage(candidateProvider, moveNextFailure)),
+                        ModelCallExecutor is global::RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor ? PublicInferenceFailureMessage : BuildInferenceFailureMessage(candidateProvider, moveNextFailure)),
                         classification.PartialReplyDropped);
 
                     yield break;
@@ -1411,7 +1444,8 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (moveNextFailure is not null)
                 {
-                    bool moveFailureIsConnectivity = IsConnectivityFailure(moveNextFailure, callerToken);
+                    bool moveFailureIsConnectivity = ModelCallExecutor is not global::RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor
+                        && IsConnectivityFailure(moveNextFailure, callerToken);
 
                     if (moveFailureIsConnectivity)
                     {
@@ -1420,12 +1454,19 @@ public sealed partial class WizardIntelligenceProvider(
 
                     bool retryableMoveFailure = moveFailureIsConnectivity && !isLastAttempt && !classification.ProviderCommitted;
 
-                    logger.LogWarning(
-                        "Provider {ProviderName} failed during pre-commit streaming (fallback candidate {Attempt}/{CandidateCount}); exception type {ExceptionType}.",
-                        candidateProvider.Name,
-                        attemptIndex + 1,
-                        streamCandidates.Count,
-                        moveNextFailure.GetType().FullName);
+                    if (ModelCallExecutor is NativeModelCallExecutor)
+                    {
+                        LogPipelineFailure(candidateProvider, candidateModel, request.SessionId, moveNextFailure);
+                    }
+                    else
+                    {
+                        logger.LogWarning(
+                            "Provider {ProviderName} failed during pre-commit streaming (fallback candidate {Attempt}/{CandidateCount}); exception type {ExceptionType}.",
+                            candidateProvider.Name,
+                            attemptIndex + 1,
+                            streamCandidates.Count,
+                            moveNextFailure.GetType().FullName);
+                    }
 
                     if (retryableMoveFailure)
                     {
@@ -1434,7 +1475,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     yield return ErrorFrame(new Error(
                         ErrorCodes.Hub.Error,
-                        BuildInferenceFailureMessage(candidateProvider, moveNextFailure)),
+                        ModelCallExecutor is global::RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor ? PublicInferenceFailureMessage : BuildInferenceFailureMessage(candidateProvider, moveNextFailure)),
                         classification.PartialReplyDropped);
 
                     yield break;
@@ -1457,11 +1498,14 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (gateIsRetryableConnectivityError)
                 {
-                    logger.LogWarning(
-                        "Provider {ProviderName} streaming connection failed (fallback candidate {Attempt}/{CandidateCount}); trying next candidate.",
-                        candidateProvider.Name,
-                        attemptIndex + 1,
-                        streamCandidates.Count);
+                    if (ModelCallExecutor is not NativeModelCallExecutor)
+                    {
+                        logger.LogWarning(
+                            "Provider {ProviderName} streaming connection failed (fallback candidate {Attempt}/{CandidateCount}); trying next candidate.",
+                            candidateProvider.Name,
+                            attemptIndex + 1,
+                            streamCandidates.Count);
+                    }
 
                     continue;
                 }
@@ -1501,17 +1545,25 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (midStreamFailure is not null)
                 {
-                    bool midStreamConnectivityFailure = IsConnectivityFailure(midStreamFailure, callerToken);
+                    bool midStreamConnectivityFailure = ModelCallExecutor is not global::RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor
+                        && IsConnectivityFailure(midStreamFailure, callerToken);
                     if (midStreamConnectivityFailure && !providerMarkedFailed)
                     {
                         healthTracker!.MarkFailed(candidateProvider.Name);
                         providerMarkedFailed = true;
                     }
 
-                    logger.LogError(
-                        "Streaming inference threw mid-stream for provider {ProviderName}; exception type {ExceptionType}.",
-                        candidateProvider.Name,
-                        midStreamFailure.GetType().FullName);
+                    if (ModelCallExecutor is NativeModelCallExecutor)
+                    {
+                        LogPipelineFailure(candidateProvider, candidateModel, request.SessionId, midStreamFailure);
+                    }
+                    else
+                    {
+                        logger.LogError(
+                            "Streaming inference threw mid-stream for provider {ProviderName}; exception type {ExceptionType}.",
+                            candidateProvider.Name,
+                            midStreamFailure.GetType().FullName);
+                    }
 
                     yield return ErrorFrame(new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage),
                         classification.PartialReplyDropped);
@@ -1641,6 +1693,8 @@ public sealed partial class WizardIntelligenceProvider(
     {
         bool streaming = mode == TurnResponseMode.Streaming;
 
+        CompatibilityDiagnostics.Attempt? compatibilityAttempt = _compatibilityDiagnostics?.Capture(lease);
+
         // A Session claimed later in this attempt cannot add a source scope to the accepted request.
         PingRequest tapestryScopeRequest = request;
 
@@ -1649,6 +1703,8 @@ public sealed partial class WizardIntelligenceProvider(
         StringBuilder streamAccumulator = new(1024);
 
         ModelCallReasoningAccumulator ephemeralReasoningSegments = new();
+
+        List<InferenceNotice> operationalNotices = seed?.Notices ?? [];
 
         Stopwatch inferenceStopwatch = Stopwatch.StartNew();
 
@@ -3342,13 +3398,15 @@ public sealed partial class WizardIntelligenceProvider(
                         PromptCacheSemanticNamespace.Main,
                         streamCachePrepared);
 
+                    using NativeModelCallExecutor.FailureObservation? failureObservation =
+                        ModelCallExecutor is NativeModelCallExecutor ? new() : null;
+
                     if (!streaming)
                     {
                         ModelCallOutcome modelCall;
 
                         {
-                            modelCall = await ModelCallExecutor
-                                .ExecuteBufferedAsync(
+                            modelCall = await ExecuteWizardBufferedAsync(
                                     chatClient,
                                     chatMessages,
                                     streamChatOptions,
@@ -3364,7 +3422,7 @@ public sealed partial class WizardIntelligenceProvider(
                                         streamCachePrepared?.Bind(chatMessages, streamChatOptions),
                                         streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
                                         roundProtection,
-                                        CreateTapestryObservation(streamTapestrySelection, streamQueryEmbedding, streamRetrievedTapestry, streamTapestryContext)))
+                                        CreateTapestryObservation(streamTapestrySelection, streamQueryEmbedding, streamRetrievedTapestry, streamTapestryContext)), failureObservation, roundUsageCommit)
                                 .ConfigureAwait(false);
                         }
 
@@ -3388,9 +3446,13 @@ public sealed partial class WizardIntelligenceProvider(
                             streamingMoveNextFailure = modelCall.Failure.Cause
                                 ?? new InvalidOperationException(modelCall.Error.Message);
 
-                            inferenceError = BuildInferenceFailureMessage(lease, streamingMoveNextFailure);
+                            bool invocationFailure = failureObservation is null
+                                || failureObservation.OriginOf(modelCall.Failure.Cause) == NativeModelCallExecutor.FailureOrigin.ModelInvocation;
 
-                            classification.IsConnectivityFailure = roundProtection?.Revocation.IsCancellationRequested != true
+                            inferenceError = invocationFailure
+                                ? BuildInferenceFailureMessage(lease, streamingMoveNextFailure) : PublicInferenceFailureMessage;
+
+                            classification.IsConnectivityFailure = invocationFailure && roundProtection?.Revocation.IsCancellationRequested != true
                                 && (modelCall.Failure.IsConnectivityFailure || IsConnectivityFailure(streamingMoveNextFailure, callerToken));
                         }
                         else
@@ -3452,8 +3514,7 @@ public sealed partial class WizardIntelligenceProvider(
                     }
                     else
                     {
-                        IAsyncEnumerator<ModelCallUpdate> streamEnumerator = ModelCallExecutor
-                                .ExecuteStreamingAsync(
+                        IAsyncEnumerator<ModelCallUpdate> streamEnumerator = ExecuteWizardStreamingAsync(
                                     chatClient,
                                     chatMessages,
                                     streamChatOptions,
@@ -3469,7 +3530,7 @@ public sealed partial class WizardIntelligenceProvider(
                                         streamCachePrepared?.Bind(chatMessages, streamChatOptions),
                                         streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
                                             roundProtection,
-                                        CreateTapestryObservation(streamTapestrySelection, streamQueryEmbedding, streamRetrievedTapestry, streamTapestryContext)))
+                                        CreateTapestryObservation(streamTapestrySelection, streamQueryEmbedding, streamRetrievedTapestry, streamTapestryContext)), failureObservation)
                             .GetAsyncEnumerator(inferenceToken);
 
                         try
@@ -3518,14 +3579,21 @@ public sealed partial class WizardIntelligenceProvider(
 
                                     streamingMoveNextFailure = ex;
 
-                                    logger.LogError(
-                                        "Streaming read failed; exception type {ExceptionType}.",
-                                        ex.GetType().FullName);
+                                    if (failureObservation is null)
+                                    {
+                                        logger.LogError(
+                                            "Streaming read failed; exception type {ExceptionType}.",
+                                            ex.GetType().FullName);
+                                    }
 
-                                    inferenceError = BuildInferenceFailureMessage(lease, ex);
+                                    bool invocationFailure = failureObservation is null
+                                        || failureObservation.OriginOf(ex) == NativeModelCallExecutor.FailureOrigin.ModelInvocation;
+
+                                    inferenceError = invocationFailure ? BuildInferenceFailureMessage(lease, ex) : PublicInferenceFailureMessage;
 
                                     // Only a genuine connectivity failure should trigger provider fallback.
-                                    classification.IsConnectivityFailure = roundProtection?.Revocation.IsCancellationRequested != true
+                                    classification.IsConnectivityFailure = invocationFailure
+                                        && roundProtection?.Revocation.IsCancellationRequested != true
                                         && IsConnectivityFailure(ex, callerToken);
 
                                     break;
@@ -3652,6 +3720,8 @@ public sealed partial class WizardIntelligenceProvider(
                         // and before the first provider call. This compatibility restart is only for an
                         // undeclared model whose provider rejects the advertised tools at runtime.
                         bool providerRejectedTools = streamUsesTools
+                            && (failureObservation is null
+                                || failureObservation.OriginOf(streamingMoveNextFailure) == NativeModelCallExecutor.FailureOrigin.ModelInvocation)
                             && streamingMoveNextFailure is { Message: var moveMsg }
                             && LooksLikeModelDoesNotSupportTools(moveMsg)
                             && !classification.ProviderCommitted
@@ -3688,15 +3758,31 @@ public sealed partial class WizardIntelligenceProvider(
                         }
                         else if (allowNoToolsRestart)
                         {
-                            logger.LogInformation(
-                                "Model does not support tools; retrying without local tools (exception type {ExceptionType}).",
-                                streamingMoveNextFailure!.GetType().FullName);
-
-                            if (streaming)
+                            if (failureObservation is null)
                             {
-                                yield return new IntelligenceEvent(
-                                    IntelligenceEventType.Status,
-                                    "This model does not support tools; continuing without local tools.");
+                                logger.LogInformation(
+                                    "Model does not support tools; retrying without local tools (exception type {ExceptionType}).",
+                                    streamingMoveNextFailure!.GetType().FullName);
+                            }
+                            else
+                            {
+                                if (compatibilityAttempt?.TryReport() != false)
+                                {
+                                    LogObservedModelFailure(LogLevel.Warning, lease, failureObservation, streamingMoveNextFailure,
+                                        grimoireTurn.SessionId, streamAccountingLocal.RunId, restartingWithoutTools: true);
+                                }
+                            }
+
+                            InferenceNotice notice = new(InferenceNoticeCode.ToolCompatibilityRestart);
+
+                            if (!operationalNotices.Any(static existing => existing.Code == InferenceNoticeCode.ToolCompatibilityRestart))
+                            {
+                                operationalNotices.Add(notice);
+
+                                if (streaming)
+                                {
+                                    yield return new IntelligenceEvent(IntelligenceEventType.Status, notice.Message);
+                                }
                             }
 
                             streamUsesTools = false;
@@ -3713,9 +3799,19 @@ public sealed partial class WizardIntelligenceProvider(
                         }
                         else if (!streaming && streamingMoveNextFailure is not null)
                         {
-                            logger.LogError(
-                                "Hub inference failed; exception type {ExceptionType}.",
-                                streamingMoveNextFailure.GetType().FullName);
+                            if (failureObservation is null)
+                            {
+                                logger.LogError(
+                                    "Hub inference failed; exception type {ExceptionType}.",
+                                    streamingMoveNextFailure.GetType().FullName);
+                            }
+                            else
+                            {
+                                LogObservedModelFailure(
+                                    ShouldDeferTurnToNextCandidate(seed, canFallBack, classification, streamAccumulator.Length) ? LogLevel.Warning : LogLevel.Error,
+                                    lease, failureObservation, streamingMoveNextFailure,
+                                    grimoireTurn.SessionId, streamAccountingLocal.RunId, restartingWithoutTools: false);
+                            }
 
                             if (!ShouldDeferTurnToNextCandidate(
                                     seed,
@@ -3734,7 +3830,14 @@ public sealed partial class WizardIntelligenceProvider(
                             classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
                                 inferenceTypedError ?? new Error(
                                     ErrorCodes.Hub.Error,
-                                    BuildInferenceFailureMessage(lease, streamingMoveNextFailure)));
+                                    inferenceError));
+                        }
+                        else if (failureObservation is not null)
+                        {
+                            LogObservedModelFailure(
+                                    ShouldDeferTurnToNextCandidate(seed, canFallBack, classification, streamAccumulator.Length) ? LogLevel.Warning : LogLevel.Error,
+                                    lease, failureObservation, streamingMoveNextFailure,
+                                    grimoireTurn.SessionId, streamAccountingLocal.RunId, restartingWithoutTools: false);
                         }
 
                         break;
@@ -4424,8 +4527,7 @@ public sealed partial class WizardIntelligenceProvider(
                                     MemoryDelegationProtection? retryProtection = BindProtectedUsage(covenantScope, streamAccountingLocal,
                                         lease.Provider.Name, targetModel, ModelCallPurpose.StructuredOutputRetry, out MemoryDelegationUsageCommit? retryUsageCommit);
 
-                                    ModelCallOutcome retryCall = await ModelCallExecutor
-                                        .ExecuteBufferedAsync(
+                                    ModelCallOutcome retryCall = await ExecuteWizardAccountedBufferedAsync(
                                             chatClient,
                                             chatMessages,
                                             retryOptions,
@@ -4441,7 +4543,7 @@ public sealed partial class WizardIntelligenceProvider(
                                                 streamCachePrepared?.Bind(chatMessages, retryOptions),
                                                 streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
                                             retryProtection,
-                                                CreateTapestryObservation(streamTapestrySelection, streamQueryEmbedding, streamRetrievedTapestry, streamTapestryContext)))
+                                                CreateTapestryObservation(streamTapestrySelection, streamQueryEmbedding, streamRetrievedTapestry, streamTapestryContext)), retryUsageCommit)
                                         .ConfigureAwait(false);
 
                                     if (retryCall.IsFailure)
@@ -4770,6 +4872,7 @@ public sealed partial class WizardIntelligenceProvider(
                     {
                         ModelUsed = targetModel,
                         Warnings = streamWarnings,
+                        Notices = operationalNotices.ToArray(),
                         Reasoning = clientReasoningSegments,
                         Sensitivity = covenantScope?.DerivedSensitivity,
                     });
@@ -8327,10 +8430,10 @@ public sealed partial class WizardIntelligenceProvider(
     {
         var protection = scope?.Protection;
 
-        usageCommit = protection is null ? null : new(usage => RecordProviderCallUsageAsync(
+        usageCommit = new(usage => RecordProviderCallUsageAsync(
             accounting, MapUsageDetails(usage), provider, model, purpose, CancellationToken.None));
 
-        return usageCommit is null ? null : protection!.WithUsageCommit(usageCommit);
+        return protection?.WithUsageCommit(usageCommit);
     }
 
     private async Task RecordProviderCallUsageAsync(
@@ -8872,6 +8975,133 @@ public sealed partial class WizardIntelligenceProvider(
         };
     }
 
+    private Task<ModelCallOutcome> ExecuteWizardBufferedAsync(
+        IChatClient chatClient, IList<ChatMessage> messages, ChatOptions options, ITurnBudget budget,
+        ModelCallPurpose purpose, CancellationToken cancellationToken, ModelCallContext? context,
+        NativeModelCallExecutor.FailureObservation? observation, MemoryDelegationUsageCommit? usageCommit) =>
+        ModelCallExecutor is NativeModelCallExecutor native && observation is not null
+            ? native.ExecuteObservedBufferedAsync(chatClient, messages, options, budget, purpose, cancellationToken, context, observation, usageCommit)
+            : ModelCallExecutor.ExecuteBufferedAsync(chatClient, messages, options, budget, purpose, cancellationToken, context);
+
+    private Task<ModelCallOutcome> ExecuteWizardAccountedBufferedAsync(
+        IChatClient chatClient, IList<ChatMessage> messages, ChatOptions options, ITurnBudget budget,
+        ModelCallPurpose purpose, CancellationToken cancellationToken, ModelCallContext? context,
+        MemoryDelegationUsageCommit? usageCommit) =>
+        ModelCallExecutor is NativeModelCallExecutor native
+            ? native.ExecuteAccountedBufferedAsync(chatClient, messages, options, budget, purpose, cancellationToken, context, usageCommit)
+            : ModelCallExecutor.ExecuteBufferedAsync(chatClient, messages, options, budget, purpose, cancellationToken, context);
+
+    private IAsyncEnumerable<ModelCallUpdate> ExecuteWizardStreamingAsync(
+        IChatClient chatClient, IList<ChatMessage> messages, ChatOptions options, ITurnBudget budget,
+        ModelCallPurpose purpose, CancellationToken cancellationToken, ModelCallContext? context,
+        NativeModelCallExecutor.FailureObservation? observation) =>
+        ModelCallExecutor is NativeModelCallExecutor native && observation is not null
+            ? native.ExecuteObservedStreamingAsync(chatClient, messages, options, budget, purpose, cancellationToken, context, observation)
+            : ModelCallExecutor.ExecuteStreamingAsync(chatClient, messages, options, budget, purpose, cancellationToken, context);
+
+    private (string Provider, string Model) ResolveDiagnosticLabels(ProviderSettings captured, string model)
+    {
+        string providerLabel = "Unknown";
+
+        string modelLabel = "Unknown";
+
+        try
+        {
+            ProviderSettings[] configured = settings.Value.Providers
+                .Where(provider => string.Equals(provider.Name, captured.Name, StringComparison.OrdinalIgnoreCase)).Take(2).ToArray();
+
+            if (configured.Length == 1 && CompatibilityDiagnostics.Matches(configured[0], captured))
+            {
+                providerLabel = LongRestProviderFailure.Label(configured[0].Name);
+
+                if (ProviderResolver.TryResolveModelEntry(configured[0], model, out ModelEntry? entry) && entry is not null)
+                    modelLabel = LongRestProviderFailure.Label(entry.Name);
+            }
+        }
+        catch
+        {
+            // Diagnostic uncertainty preserves unknown labels; it cannot change the turn outcome.
+        }
+
+        return (providerLabel, modelLabel);
+    }
+
+    private void LogPipelineFailure(ProviderSettings provider, string model, Guid? sessionId, Exception failure)
+    {
+        (string providerLabel, string modelLabel) = ResolveDiagnosticLabels(provider, model);
+
+        logger.LogError(
+            "Inference pipeline failed at phase {FailureOrigin}; Session {SessionId}, configured provider {Provider}, model {Model}; exception type {ExceptionType}. Check local Session, admission, finalization, and storage state before retrying.",
+            NativeModelCallExecutor.FailureOrigin.LocalPipeline, sessionId, providerLabel, modelLabel,
+            failure.GetType().FullName);
+    }
+
+    private void LogObservedModelFailure(LogLevel level, ChatClientLease lease,
+        NativeModelCallExecutor.FailureObservation observation, Exception? failure,
+        Guid? sessionId, Guid? runId, bool restartingWithoutTools)
+    {
+        (string providerLabel, string modelLabel) = ResolveDiagnosticLabels(lease.Provider, lease.ResolvedModel);
+
+        int? status = observation.RecordedOrigin == NativeModelCallExecutor.FailureOrigin.ModelInvocation
+            ? InferenceProviderFailureMessage.TryGetHttpStatus(failure) : null;
+
+        logger.Log(level,
+            "Model call {ModelCallId} ended for purpose {Purpose}; Session {SessionId}, run {RunId}, phase {FailureOrigin}, provider {Provider}, model {Model}, HTTP {HttpStatus}, restarting without tools {RestartingWithoutTools}; exception type {ExceptionType}. {Guidance}",
+            observation.ModelCallId, observation.Purpose, sessionId, runId, observation.RecordedOrigin,
+            providerLabel, modelLabel, status, restartingWithoutTools,
+            failure?.GetType().FullName ?? "None",
+            restartingWithoutTools ? "Set supportsTools=false on the configured model if tools are unavailable."
+                : level == LogLevel.Warning ? "Trying the next configured provider after a transport failure."
+                : observation.RecordedOrigin == NativeModelCallExecutor.FailureOrigin.ModelInvocation
+                    ? "Check configured provider availability, credentials, and model capabilities."
+                    : "Check local model-call admission, finalization, and storage state before retrying.");
+    }
+
+    // Host-owned diagnostics only. A weak monitor snapshot controls warning repetition, never
+    // tools, retries, provider capabilities, or any source/execution/network authority.
+    internal sealed class CompatibilityDiagnostics(IOptionsMonitor<ArcanumSettings> monitor)
+    {
+        private readonly ConditionalWeakTable<ArcanumSettings, Snapshot> _snapshots = new();
+
+        internal Attempt? Capture(ChatClientLease lease)
+        {
+            try
+            {
+                ArcanumSettings current = monitor.CurrentValue;
+
+                ProviderSettings[] providers = current.Providers
+                    .Where(provider => string.Equals(provider.Name, lease.Provider.Name, StringComparison.OrdinalIgnoreCase)).Take(2).ToArray();
+
+                if (providers.Length != 1 || string.IsNullOrWhiteSpace(providers[0].Name)
+                    || !Matches(providers[0], lease.Provider)
+                    || !ProviderResolver.TryResolveModelEntry(providers[0], lease.ResolvedModel, out ModelEntry? entry)
+                    || entry is null || string.IsNullOrWhiteSpace(entry.Name)) return null;
+
+                // Capture this attempt's actual matched snapshot before I/O. A later reload cannot
+                // relabel its result as belonging to a new configuration window.
+                return new(_snapshots.GetValue(current, static _ => new()), providers[0].Name, entry.Name);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        internal static bool Matches(ProviderSettings configured, ProviderSettings captured) =>
+            JsonSerializer.Serialize(configured, ConfigurationJsonContext.Default.ProviderSettings)
+                == JsonSerializer.Serialize(captured, ConfigurationJsonContext.Default.ProviderSettings);
+
+        internal sealed class Snapshot
+        {
+            internal ConcurrentDictionary<(string Provider, string Model), byte> Reported { get; } = new();
+        }
+
+        internal sealed class Attempt(Snapshot snapshot, string provider, string model)
+        {
+            internal bool TryReport() => snapshot.Reported.TryAdd((provider, model), 0);
+        }
+    }
+
     private static bool IsConnectivityFailure(Exception ex, CancellationToken callerToken) =>
         ProviderFailureClassifier.IsConnectivityFailure(ex, callerToken);
 
@@ -8891,6 +9121,8 @@ public sealed partial class WizardIntelligenceProvider(
     private sealed class TurnContextSeed
     {
         internal RetrievalDiagnostics RetrievalDiagnostics { get; } = new();
+
+        internal List<InferenceNotice> Notices { get; } = [];
 
         /// <summary>
         /// The Grimoire turn opened by the first candidate that got far enough to begin one.

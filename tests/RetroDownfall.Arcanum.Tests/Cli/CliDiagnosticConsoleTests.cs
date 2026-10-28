@@ -28,6 +28,27 @@ public sealed class CliDiagnosticConsoleTests
 {
     private const string Markup = "[bold]diagnostic words[/]";
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Operational_notice_reaches_stderr_without_tool_calls_and_ignores_unknown_codes(bool known)
+    {
+        PromptResponseDto response = new("exact answer", null)
+        {
+            Notices = [new(known ? InferenceNoticeCode.ToolCompatibilityRestart : (InferenceNoticeCode)int.MaxValue)],
+        };
+
+        IThemePalette palette = new ConfiguredThemePalette(new ThemeSemanticColors(), new ThemeSemanticColors());
+
+        string written = CaptureError("plain", () => ExecuteResultRendering.WriteExecuteResultAsync(response, palette).GetAwaiter().GetResult());
+
+        Assert.Equal(known, written.Contains("continuing without local tools", StringComparison.Ordinal));
+
+        Assert.DoesNotContain("exact answer", written, StringComparison.Ordinal);
+
+        Assert.DoesNotContain('\u001b', written);
+    }
+
     [Fact]
     public void Control_a_stream_with_no_opt_out_is_forced_to_ansi_by_the_GitHub_Actions_detector()
     {

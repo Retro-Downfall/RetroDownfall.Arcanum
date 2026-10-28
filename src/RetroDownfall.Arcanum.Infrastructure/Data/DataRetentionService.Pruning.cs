@@ -2204,13 +2204,15 @@ internal sealed partial class DataRetentionService
             // A receipt can name several selected candidates. Count its complete manifest once
             // over the selected identities, rather than once for every endpoint that will erase it.
             // One JSON parameter also keeps a large paged plan below SQLite's variable ceiling.
+            DbConnection receiptConnection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
             foreach (AnnalsErasureStep step in SagaLongRestPruneSteps(subjectQuery))
             {
-                transformations += await CountTableAsync(
-                    step.Table,
-                    step.Predicate,
-                    cancellationToken,
-                    ("@longRestMemoryIds", selectedIds)).ConfigureAwait(false);
+                transformations += step.Receipts is { } receipts
+                    ? await AnnalsReceiptErasure.CountAsync(receiptConnection, null, receipts, step.Table,
+                        cancellationToken, ("@longRestMemoryIds", selectedIds)).ConfigureAwait(false)
+                    : await CountTableAsync(step.Table, step.Predicate, cancellationToken,
+                        ("@longRestMemoryIds", selectedIds)).ConfigureAwait(false);
             }
 
             if (transformations > 0)
@@ -6495,13 +6497,11 @@ internal sealed partial class DataRetentionService
             // this receipt then see zero, matching the preview's one count of the whole manifest.
             foreach (AnnalsErasureStep step in SagaLongRestPruneSteps("SELECT @id", includeEvaluations: true))
             {
-                derived += await CountInTransactionAsync(
-                    connection,
-                    transaction,
-                    step.Table,
-                    step.Predicate,
-                    cancellationToken,
-                    ("@id", memoryId)).ConfigureAwait(false);
+                derived += step.Receipts is { } receipts
+                    ? await AnnalsReceiptErasure.CountAsync(connection, transaction, receipts, step.Table,
+                        cancellationToken, ("@id", memoryId)).ConfigureAwait(false)
+                    : await CountInTransactionAsync(connection, transaction, step.Table, step.Predicate,
+                        cancellationToken, ("@id", memoryId)).ConfigureAwait(false);
             }
 
             await AnnalsClaimWriter.DeleteClaimsForSubjectAsync(

@@ -1,16 +1,17 @@
 using System.ClientModel;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 /// <summary>
 /// Public-facing inference failure copy. Prefer HTTP status detail when the provider answered;
-/// reserve "unreachable" for genuine transport/connectivity failures (Status &lt;= 0 / no response).
+/// reserve "unreachable" for positively classified connection failures. Missing status stays unknown.
 /// </summary>
 internal static class InferenceProviderFailureMessage
 {
     public static string Build(string providerName, int? httpStatus = null)
     {
-        if (httpStatus is > 0)
+        if (httpStatus is >= 100 and <= 599)
         {
             string remedy = httpStatus.Value switch
             {
@@ -27,22 +28,29 @@ internal static class InferenceProviderFailureMessage
             return $"Provider '{providerName}' returned HTTP {httpStatus.Value}. {remedy}";
         }
 
-        // W3.5: do NOT embed provider.Endpoint — this message surfaces to clients via the
-        // native /api inference envelopes and the raw endpoint URL can leak internal hostnames/paths.
-        return $"Provider '{providerName}' is unreachable. Verify the service is running and Arcanum:Providers is configured correctly.";
+        return PublicInferenceErrorMessages.NativeGenericFailure;
     }
 
-    public static string Build(string providerName, Exception? ex) =>
-        Build(providerName, TryGetHttpStatus(ex));
+    public static string Build(string providerName, Exception? ex)
+    {
+        if (TryGetHttpStatus(ex) is { } status) return Build(LongRestProviderFailure.Label(providerName), status);
+
+        // Missing status alone proves nothing. This helper diagnoses connectivity only after the
+        // caller selected the actual invocation origin; it never sees endpoint or exception text.
+        return ex is not null && LongRestProviderFailure.Classify(ex).Code == ErrorCodes.LongRest.ProviderUnreachable
+            ? $"Provider '{LongRestProviderFailure.Label(providerName)}' is unreachable. Verify the service is running and Arcanum:Providers is configured correctly."
+            : PublicInferenceErrorMessages.NativeGenericFailure;
+    }
 
     public static int? TryGetHttpStatus(Exception? ex)
     {
-        for (Exception? current = ex; current is not null; current = current.InnerException)
+        Exception? current = ex;
+
+        for (int depth = 0; current is not null && depth < 8; depth++, current = current.InnerException)
         {
-            if (current is ClientResultException { Status: > 0 } clientResult)
-            {
-                return clientResult.Status;
-            }
+            if (current is ClientResultException { Status: >= 100 and <= 599 } clientResult) return clientResult.Status;
+
+            if (current is HttpRequestException { StatusCode: { } code } && (int)code is >= 100 and <= 599) return (int)code;
         }
 
         return null;

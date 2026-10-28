@@ -21,6 +21,37 @@ public class TomeViewModelTests
     private static readonly Guid SessionId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
 
     [Fact]
+    public async Task Operational_compatibility_status_is_visible_separately_from_the_assistant_answer()
+    {
+        InferenceNotice notice = new(InferenceNoticeCode.ToolCompatibilityRestart);
+
+        FakeTomeDataSource dataSource = new()
+        {
+            Session = NewSession(),
+            PingEvents =
+            [
+                new IntelligenceEvent(IntelligenceEventType.Status, notice.Message),
+                new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, "exact answer"),
+                new IntelligenceEvent(IntelligenceEventType.Result, "Complete"),
+            ],
+        };
+
+        TomeViewModel viewModel = CreateViewModel(dataSource);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        viewModel.InputText = "operator question";
+
+        await viewModel.SendAsync(CancellationToken.None);
+
+        Assert.Contains(viewModel.Messages, message => message.Role == "status" && message.Content == notice.Message);
+
+        Assert.Equal("exact answer", Assert.Single(viewModel.Messages, static message => message.Role == "assistant").Content);
+
+        Assert.Equal("operator question", dataSource.LastPingRequest?.Prompt);
+    }
+
+    [Fact]
     public void Generated_manual_entry_contract_preserves_explicit_system_and_detects_omission()
     {
         AppendEntryRequest omitted = JsonSerializer.Deserialize("{\"content\":\"operator note\"}", TheForgeJsonContext.Default.AppendEntryRequest)!;

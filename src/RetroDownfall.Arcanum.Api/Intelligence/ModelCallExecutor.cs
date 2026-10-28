@@ -99,14 +99,167 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         _logger = logger;
     }
 
-    public async Task<ModelCallOutcome> ExecuteBufferedAsync(
+    internal enum FailureOrigin
+    {
+        Unknown,
+
+        LocalAdmission,
+
+        ModelInvocation,
+
+        LocalFinalization,
+
+        LocalPipeline,
+    }
+
+    // One explicit native Wizard call, never ambient or serialized. Observations grant no authority.
+    internal sealed class FailureObservation : IDisposable
+    {
+        private WeakReference<Exception>? _failure;
+
+        // 0 fresh, 1 active, 2 completed, 3 disposed. No transition can revive an observation.
+        private int _state;
+
+        internal FailureOrigin Stage { get; set; } = FailureOrigin.LocalAdmission;
+
+        internal FailureOrigin RecordedOrigin { get; private set; }
+
+        internal string ModelCallId { get; set; } = string.Empty;
+
+        internal ModelCallPurpose Purpose { get; set; }
+
+        internal void Begin()
+        {
+            if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
+                throw new InvalidOperationException("A call observation cannot be reused or reactivated.");
+        }
+
+        internal void Capture(Exception failure)
+        {
+            if (Volatile.Read(ref _state) != 1) return;
+
+            if (_failure?.TryGetTarget(out Exception? previous) == true && ReferenceEquals(previous, failure)) return;
+
+            _failure = new(failure);
+
+            RecordedOrigin = Stage;
+        }
+
+        internal FailureOrigin OriginOf(Exception? failure) =>
+            failure is null ? RecordedOrigin
+                : _failure?.TryGetTarget(out Exception? recorded) == true && ReferenceEquals(recorded, failure)
+                    ? RecordedOrigin : FailureOrigin.Unknown;
+
+        internal void End() => Interlocked.CompareExchange(ref _state, 2, 1);
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _state, 3);
+
+            _failure = null;
+
+            RecordedOrigin = FailureOrigin.Unknown;
+
+            ModelCallId = string.Empty;
+        }
+    }
+
+    public Task<ModelCallOutcome> ExecuteBufferedAsync(
+        IChatClient chatClient, IList<ChatMessage> messages, ChatOptions options, ITurnBudget budget,
+        ModelCallPurpose purpose, CancellationToken cancellationToken, ModelCallContext? context = null) =>
+        ExecuteBufferedCoreAsync(chatClient, messages, options, budget, purpose, cancellationToken, context, null, null);
+
+    internal Task<ModelCallOutcome> ExecuteAccountedBufferedAsync(
+        IChatClient chatClient, IList<ChatMessage> messages, ChatOptions options, ITurnBudget budget,
+        ModelCallPurpose purpose, CancellationToken cancellationToken, ModelCallContext? context, MemoryDelegationUsageCommit? usageCommit) =>
+        ExecuteBufferedCoreAsync(chatClient, messages, options, budget, purpose, cancellationToken, context, null, usageCommit);
+
+    internal async Task<ModelCallOutcome> ExecuteObservedBufferedAsync(
+        IChatClient chatClient, IList<ChatMessage> messages, ChatOptions options, ITurnBudget budget,
+        ModelCallPurpose purpose, CancellationToken cancellationToken, ModelCallContext? context, FailureObservation observation, MemoryDelegationUsageCommit? usageCommit)
+    {
+        observation.Begin();
+
+        try
+        {
+            return await ExecuteBufferedCoreAsync(chatClient, messages, options, budget, purpose, cancellationToken, context, observation, usageCommit).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            observation.Capture(ex);
+
+            throw;
+        }
+        finally
+        {
+            observation.End();
+        }
+    }
+
+    public IAsyncEnumerable<ModelCallUpdate> ExecuteStreamingAsync(
+        IChatClient chatClient, IList<ChatMessage> messages, ChatOptions options, ITurnBudget budget,
+        ModelCallPurpose purpose, CancellationToken cancellationToken, ModelCallContext? context = null) =>
+        ExecuteStreamingCoreAsync(chatClient, messages, options, budget, purpose, cancellationToken, context, null);
+
+    internal async IAsyncEnumerable<ModelCallUpdate> ExecuteObservedStreamingAsync(
+        IChatClient chatClient, IList<ChatMessage> messages, ChatOptions options, ITurnBudget budget,
+        ModelCallPurpose purpose, [EnumeratorCancellation] CancellationToken cancellationToken,
+        ModelCallContext? context, FailureObservation observation)
+    {
+        observation.Begin();
+
+        IAsyncEnumerator<ModelCallUpdate> enumerator = ExecuteStreamingCoreAsync(
+            chatClient, messages, options, budget, purpose, cancellationToken, context, observation).GetAsyncEnumerator(cancellationToken);
+
+        try
+        {
+            while (true)
+            {
+                bool moved;
+
+                try
+                {
+                    moved = await enumerator.MoveNextAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    observation.Capture(ex);
+
+                    throw;
+                }
+
+                if (!moved) break;
+
+                yield return enumerator.Current;
+            }
+        }
+        finally
+        {
+            try
+            {
+                await enumerator.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                observation.Capture(ex);
+
+                throw;
+            }
+            finally
+            {
+                observation.End();
+            }
+        }
+    }
+
+    private async Task<ModelCallOutcome> ExecuteBufferedCoreAsync(
         IChatClient chatClient,
         IList<ChatMessage> messages,
         ChatOptions options,
         ITurnBudget budget,
         ModelCallPurpose purpose,
         CancellationToken cancellationToken,
-        ModelCallContext? context = null)
+        ModelCallContext? context, FailureObservation? observation, MemoryDelegationUsageCommit? usageCommit)
     {
         ArgumentNullException.ThrowIfNull(chatClient);
         ArgumentNullException.ThrowIfNull(messages);
@@ -145,6 +298,14 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         }
 
         string modelCallId = Guid.NewGuid().ToString("N");
+
+        if (observation is not null)
+        {
+            observation.ModelCallId = modelCallId;
+
+            observation.Purpose = purpose;
+        }
+
         ProviderCallPayload providerPayload = CreateProviderCallPayload(
             messages,
             options,
@@ -186,6 +347,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
             try
             {
+                if (observation is not null) observation.Stage = FailureOrigin.ModelInvocation;
+
                 response = await chatClient.GetResponseAsync(
                     providerPayload.Messages, providerPayload.Options, providerToken).ConfigureAwait(false);
             }
@@ -196,8 +359,22 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
                 return ModelCallOutcome.Failed(new ModelCallFailure(purpose, modelCallId, refusal.Error, Cause: null, refusal.RetryDirective)
                 { HasUncertainProviderEffect = refusal.HasUncertainProviderEffect });
             }
+            catch (Exception ex)
+            {
+                observation?.Capture(ex);
+
+                throw;
+            }
+            finally
+            {
+                if (observation is not null) observation.Stage = FailureOrigin.LocalFinalization;
+            }
 
             await CommitProtectedUsageAsync(context, response.Usage).ConfigureAwait(false);
+
+            // Independent accounting handoff, never diagnostic provenance. The protected owner is
+            // acknowledged first; re-observing the same commit Task cannot duplicate its ledger row.
+            if (usageCommit is not null) await usageCommit.CommitAsync(response.Usage).ConfigureAwait(false);
 
             (ReasoningOutputMode? requestedOutput, ReasoningOutputMode effectiveOutput) =
                 ResolveReasoningOutput(options, purpose);
@@ -231,7 +408,9 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         }
         catch (Exception ex)
         {
-            LogModelCallFailure(modelCallId, purpose, context, ex);
+            observation?.Capture(ex);
+
+            if (observation is null) LogModelCallFailure(modelCallId, purpose, context, ex);
 
             return ModelCallOutcome.Failed(new ModelCallFailure(
                 purpose,
@@ -248,14 +427,14 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         }
     }
 
-    public async IAsyncEnumerable<ModelCallUpdate> ExecuteStreamingAsync(
+    private async IAsyncEnumerable<ModelCallUpdate> ExecuteStreamingCoreAsync(
         IChatClient chatClient,
         IList<ChatMessage> messages,
         ChatOptions options,
         ITurnBudget budget,
         ModelCallPurpose purpose,
         [EnumeratorCancellation] CancellationToken cancellationToken,
-        ModelCallContext? context = null)
+        ModelCallContext? context, FailureObservation? observation)
     {
         ArgumentNullException.ThrowIfNull(chatClient);
         ArgumentNullException.ThrowIfNull(messages);
@@ -294,6 +473,14 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         }
 
         string modelCallId = Guid.NewGuid().ToString("N");
+
+        if (observation is not null)
+        {
+            observation.ModelCallId = modelCallId;
+
+            observation.Purpose = purpose;
+        }
+
         ProviderCallPayload providerPayload = CreateProviderCallPayload(
             messages,
             options,
@@ -350,12 +537,16 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
         try
         {
+            if (observation is not null) observation.Stage = FailureOrigin.ModelInvocation;
+
             await using IAsyncEnumerator<ChatResponseUpdate> stream = chatClient.GetStreamingResponseAsync(
                 providerPayload.Messages, providerPayload.Options, providerToken).GetAsyncEnumerator(providerToken);
 
+            if (observation is not null) observation.Stage = FailureOrigin.LocalFinalization;
+
             while (true)
             {
-                var next = await MoveNextProviderUpdateAsync(stream, chatClient, messages, options, context, providerToken).ConfigureAwait(false);
+                var next = await MoveNextProviderUpdateAsync(stream, chatClient, messages, options, context, providerToken, observation).ConfigureAwait(false);
 
                 if (next.Refusal is { } refusal)
                 {
@@ -515,7 +706,7 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
     private async ValueTask<(bool HasUpdate, PromptCacheDispatchException? Refusal)> MoveNextProviderUpdateAsync(
         IAsyncEnumerator<ChatResponseUpdate> stream, IChatClient client, IList<ChatMessage> messages,
-        ChatOptions options, ModelCallContext? context, CancellationToken ct)
+        ChatOptions options, ModelCallContext? context, CancellationToken ct, FailureObservation? observation)
     {
         // Scope each MoveNext, never a yielded consumer continuation. AsyncLocal isolates concurrent
         // requests sharing this lease, and disposal restores the caller even on cancellation/fault.
@@ -525,6 +716,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
         try
         {
+            if (observation is not null) observation.Stage = FailureOrigin.ModelInvocation;
+
             return (await stream.MoveNextAsync().ConfigureAwait(false), null);
         }
         catch (PromptCacheDispatchException refusal)
@@ -534,6 +727,16 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         catch (AggregateException ex) when (retrievalScope.IsTerminalRefusal(ex) || scope?.IsTerminalRefusal(ex) == true)
         {
             return (false, retrievalScope.IsTerminalRefusal(ex) ? retrievalScope.Refusal : scope!.Refusal);
+        }
+        catch (Exception ex)
+        {
+            observation?.Capture(ex);
+
+            throw;
+        }
+        finally
+        {
+            if (observation is not null) observation.Stage = FailureOrigin.LocalFinalization;
         }
     }
 

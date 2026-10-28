@@ -9,7 +9,6 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 /// </summary>
 public interface IUploadedFileRepository
 {
-
     Task CreateAsync(UploadedFileRecord record, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -31,7 +30,10 @@ public interface IUploadedFileRepository
     /// input, output, or error artifact. This is the user-facing deletion seam: it serializes the
     /// reference check and metadata mutation, moves identity-verified bytes to reversible
     /// same-parent quarantine before that mutation, restores them when the mutation is rejected or
-    /// fails, and finalizes the quarantined bytes only after commit.
+    /// fails, and finalizes the quarantined bytes only after commit. A fresh retry can adopt one
+    /// exact private quarantine for this id after reclassifying current references and proving
+    /// current filesystem identities. It restores live bytes or cleans an absent row's orphan;
+    /// this is not proof of a historical inode or a prior commit. Ambiguous artifacts are retained.
     /// <see cref="UploadedFileDeleteStatus.Deleted"/> means both metadata and bytes are absent.
     /// </summary>
     Task<UploadedFileDeleteStatus> TryDeleteUnreferencedAsync(
@@ -44,21 +46,17 @@ public interface IUploadedFileRepository
     /// deletion must use <see cref="TryDeleteUnreferencedAsync"/>.
     /// </summary>
     Task DeleteAsync(Guid id, CancellationToken cancellationToken = default);
-
 }
 
 public sealed class UploadedFilePublicationException(Guid fileId)
     : IOException(
         $"Uploaded file '{fileId:D}' could not be published because its owned bytes changed or disappeared.")
 {
-
     public Guid FileId { get; } = fileId;
-
 }
 
 public enum UploadedFileDeleteStatus
 {
-
     Deleted,
 
     NotFound,
@@ -68,7 +66,6 @@ public enum UploadedFileDeleteStatus
     StorageConflict,
 
     RecoveryRequired,
-
 }
 
 public sealed record UploadedFileRecord(
@@ -89,7 +86,6 @@ public sealed record UploadedFileRecord(
 /// </summary>
 public static class UploadedFileStorage
 {
-
     /// <summary><c>{ArcanumPaths.FilesDirectory}/{id:N}</c> — never the client-supplied filename.</summary>
     public static string ResolvePath(Guid id) => Path.Combine(ArcanumPaths.FilesDirectory, id.ToString("N"));
 
@@ -106,5 +102,4 @@ public static class UploadedFileStorage
         IsReservedEncryptionPurpose(purpose)
             ? EncryptedBlobPurpose.BatchArtifact
             : EncryptedBlobPurpose.UploadedFile;
-
 }

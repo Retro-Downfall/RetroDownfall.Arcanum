@@ -2992,11 +2992,7 @@ internal sealed partial class DataRetentionService(
         {
             if (!await MemoryResetSelectionAvailableAsync(selection, cancellationToken).ConfigureAwait(false)) continue;
 
-            rows += await CountTableAsync(
-                selection.Table,
-                selection.Predicate,
-                cancellationToken,
-                selection.Parameters).ConfigureAwait(false);
+            rows += await CountMemoryResetSelectionAsync(selection, cancellationToken).ConfigureAwait(false);
         }
 
         return FinalizePlan(
@@ -3021,7 +3017,8 @@ internal sealed partial class DataRetentionService(
         string Table,
         string? Predicate,
         (string Name, object Value)[] Parameters,
-        int? RequiredFromCoreVersion = null);
+        int? RequiredFromCoreVersion = null,
+        AnnalsReceiptSelection? Receipts = null);
 
     private const string UnsupportedCampaignResetMessage =
         "Only Saga, Lexicon, and Campaign summaries can be reset for one Campaign. "
@@ -3293,6 +3290,29 @@ internal sealed partial class DataRetentionService(
         return await TableExistsAsync(selection.Table, ct).ConfigureAwait(false);
     }
 
+    private async Task<long> CountMemoryResetSelectionAsync(MemoryResetSelection selection, CancellationToken cancellationToken)
+    {
+        if (selection.Receipts is not null)
+        {
+            DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            return await AnnalsReceiptErasure.CountAsync(connection, null, selection.Receipts, selection.Table,
+                cancellationToken, selection.Parameters.Select(static item => (item.Name, (object?)item.Value)).ToArray()).ConfigureAwait(false);
+        }
+
+        return await CountTableAsync(selection.Table, selection.Predicate,
+            cancellationToken, selection.Parameters).ConfigureAwait(false);
+    }
+
+    private static Task<long> CountMemoryResetSelectionWithinAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        MemoryResetSelection selection,
+        CancellationToken cancellationToken) => selection.Receipts is { } receipts
+        ? AnnalsReceiptErasure.CountAsync(connection, transaction, receipts, selection.Table, cancellationToken,
+            selection.Parameters.Select(static item => (item.Name, (object?)item.Value)).ToArray())
+        : CountInTransactionAsync(connection, transaction, selection.Table, selection.Predicate, cancellationToken, selection.Parameters);
+
     private static MemoryResetSelection Whole(string table) => new(table, null, []);
 
     /// <summary>
@@ -3306,7 +3326,7 @@ internal sealed partial class DataRetentionService(
             .. (subjectIdQuery is null
                     ? AnnalsErasurePlan.ForStore(subjectStore)
                     : AnnalsErasurePlan.ForSubjectQuery(subjectStore, subjectIdQuery))
-                .Select(step => new MemoryResetSelection(step.Table, step.Predicate, parameters ?? [], step.RequiredFromCoreVersion)),
+                .Select(step => new MemoryResetSelection(step.Table, step.Predicate, parameters ?? [], step.RequiredFromCoreVersion, step.Receipts)),
         ];
 
     /// <summary>
@@ -3984,13 +4004,8 @@ internal sealed partial class DataRetentionService(
 
             foreach (MemoryResetSelection selection in selections)
             {
-                currentRows += await CountInTransactionAsync(
-                    connection,
-                    transaction,
-                    selection.Table,
-                    selection.Predicate,
-                    cancellationToken,
-                    selection.Parameters).ConfigureAwait(false);
+                currentRows += await CountMemoryResetSelectionWithinAsync(
+                    connection, transaction, selection, cancellationToken).ConfigureAwait(false);
             }
 
             // A store that held nothing at preview pins no candidate, and applying that preview is a
@@ -4020,8 +4035,21 @@ internal sealed partial class DataRetentionService(
             }
             else
             {
+                IReadOnlyDictionary<string, long>? receiptChanges = null;
+
                 foreach (MemoryResetSelection selection in selections)
                 {
+                    if (selection.Receipts is { } receipts)
+                    {
+                        receiptChanges ??= await AnnalsReceiptErasure.DeleteAsync(connection, transaction,
+                            receipts, cancellationToken,
+                            selection.Parameters.Select(static item => (item.Name, (object?)item.Value)).ToArray()).ConfigureAwait(false);
+
+                        deleted += receiptChanges[selection.Table];
+
+                        continue;
+                    }
+
                     // annal_versions goes through the leaf-first delete for the reason stated there: a bare
                     // statement over it empties the table and reports fewer rows than it removed, and this
                     // sum is the number the operator is shown.
@@ -4063,11 +4091,7 @@ internal sealed partial class DataRetentionService(
 
         foreach (MemoryResetSelection selection in selections)
         {
-            reconciled &= await CountTableAsync(
-                selection.Table,
-                selection.Predicate,
-                CancellationToken.None,
-                selection.Parameters).ConfigureAwait(false) == 0;
+            reconciled &= await CountMemoryResetSelectionAsync(selection, CancellationToken.None).ConfigureAwait(false) == 0;
         }
 
         return new DataRetentionApplyResult(
@@ -8360,11 +8384,7 @@ internal sealed partial class DataRetentionService(
                          resetScope,
                          resetCampaignId))
             {
-                if (await CountTableAsync(
-                        selection.Table,
-                        selection.Predicate,
-                        cancellationToken,
-                        selection.Parameters).ConfigureAwait(false) > 0)
+                if (await CountMemoryResetSelectionAsync(selection, cancellationToken).ConfigureAwait(false) > 0)
                 {
                     return true;
                 }

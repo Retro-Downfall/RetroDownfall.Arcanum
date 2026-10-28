@@ -1880,7 +1880,7 @@ public sealed class DocumentationCodeContradictionTests
     }
 
     /// <summary>
-    /// The turn engine records three termination reasons; the design table may not name terminal
+    /// The turn engine records four termination reasons; the design table may not name terminal
     /// reasons the engine has no value for.
     /// </summary>
     [Fact]
@@ -1894,7 +1894,7 @@ public sealed class DocumentationCodeContradictionTests
             .Matches(declaration, @"^\s+(?<name>[A-Z][A-Za-z]+) = \d+,", RegexOptions.Multiline, TimeSpan.FromSeconds(5))
             .Select(static match => match.Groups["name"].Value)];
 
-        Assert.Equal(new[] { "Completed", "ProviderFailure", "Cancelled" }, members);
+        Assert.Equal(new[] { "Completed", "ProviderFailure", "Cancelled", "PipelineFailure" }, members);
 
         string design = ReadDocument("Arcanum.DESIGN.md");
 

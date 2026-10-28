@@ -7,14 +7,15 @@ internal enum TurnResponseMode
 }
 
 /// <summary>
-/// Why a logical run ended. Only the reasons the engine can select are declared; the numeric values
-/// of the survivors are kept so a reason that is added back later cannot reuse one.
+/// Closed logical-run reasons. Unclassified pipeline adapters select PipelineFailure; the existing
+/// ProviderFailure value and prior numeric reservations are retained for semantic compatibility.
 /// </summary>
 internal enum TurnTerminationReason
 {
     Completed = 0,
     ProviderFailure = 3,
     Cancelled = 10,
+    PipelineFailure = 11,
 }
 
 internal enum ToolCallDisposition

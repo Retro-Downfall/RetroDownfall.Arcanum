@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Memory;
@@ -89,6 +90,8 @@ internal static class CovenantArtifactPlanRunner
         // plan that has one still fails on missing or malformed metadata instead of guessing.
         int? coreVersion = null;
 
+        IReadOnlyDictionary<string, long>? receiptChanges = null;
+
         foreach (CovenantArtifactPurgeTarget target in plan.Projections)
         {
             if (target.CampaignManifestNode
@@ -125,6 +128,25 @@ internal static class CovenantArtifactPlanRunner
 
                     continue;
                 }
+            }
+
+            if (target.ReceiptSelection("$artifactKey") is { } receipts)
+            {
+                if (mode == CovenantArtifactPlanMode.Delete)
+                {
+                    receiptChanges ??= await AnnalsReceiptErasure.DeleteAsync(connection, transaction,
+                        receipts, cancellationToken, ("$artifactKey", artifactKey)).ConfigureAwait(false);
+
+                    targets.Add(new MemoryErasureTableCount(target.Table, receiptChanges[target.Table]));
+                }
+                else
+                {
+                    targets.Add(new MemoryErasureTableCount(target.Table,
+                        await AnnalsReceiptErasure.CountAsync(connection, transaction, receipts, target.Table,
+                            cancellationToken, ("$artifactKey", artifactKey)).ConfigureAwait(false)));
+                }
+
+                continue;
             }
 
             targets.Add(new MemoryErasureTableCount(

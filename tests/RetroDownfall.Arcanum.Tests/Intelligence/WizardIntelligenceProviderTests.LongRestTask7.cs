@@ -110,7 +110,8 @@ public sealed partial class WizardIntelligenceProviderTests
 
             Result<PromptTurnResult> result = await h.Wizard.ExecutePromptAsync(h.Request with
             {
-                ResponseFormat = "json_schema", ResponseFormatJsonSchema = schema,
+                ResponseFormat = "json_schema",
+                ResponseFormatJsonSchema = schema,
             }, LongRestTask7Invocation(campaign: true), CancellationToken.None);
 
             Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
@@ -201,6 +202,14 @@ public sealed partial class WizardIntelligenceProviderTests
     {
         CampaignWizardHarness h = CreateLongRestTask7Harness(campaign: true);
 
+        PingRequest request = h.Request with { DisableAllTools = false, DisableMcpTools = true };
+
+        ArcanumInvocationContext invocation = ArcanumInvocationContext.Create(
+            ArcanumExecutionSurface.SessionBackedOperatorTurn, CampaignRollupTurnSnapshotTests.Campaign,
+            InvocationAttendance.Attended, CovenantContextPolicy.Default, ToolPolicy.ReadOnlyTools, null).Value;
+
+        h.Chat.EnqueueException(new InvalidOperationException("model does not support tools"));
+
         h.Chat.EnqueueText("persisted reply with an exact newline\n");
 
         h.Chat.EnqueueText("must not be sent");
@@ -209,17 +218,21 @@ public sealed partial class WizardIntelligenceProviderTests
         {
             TurnIdempotencyAmbient.PublishIdentity(new string('a', 64), new string('b', 64));
 
-            Result<PromptTurnResult> first = await h.Wizard.ExecutePromptAsync(h.Request, LongRestTask7Invocation(true), CancellationToken.None);
+            Result<PromptTurnResult> first = await h.Wizard.ExecutePromptAsync(request, invocation, CancellationToken.None);
 
             Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : null);
 
-            Result<PromptTurnResult> replay = await h.Wizard.ExecutePromptAsync(h.Request, LongRestTask7Invocation(true), CancellationToken.None);
+            Assert.Single(first.Value.Notices);
+
+            Result<PromptTurnResult> replay = await h.Wizard.ExecutePromptAsync(request, invocation, CancellationToken.None);
 
             Assert.True(replay.IsSuccess, replay.IsFailure ? replay.Error.Message : null);
 
             Assert.Equal(Encoding.UTF8.GetBytes("persisted reply with an exact newline\n"), Encoding.UTF8.GetBytes(replay.Value.Text));
 
-            Assert.Equal(1, h.Chat.BufferedCallCount);
+            Assert.Equal(2, h.Chat.BufferedCallCount);
+
+            Assert.Empty(replay.Value.Notices);
 
             Assert.Equal(1, h.Claims.Begins);
 
@@ -418,7 +431,10 @@ public sealed partial class WizardIntelligenceProviderTests
 
         PingRequest request = BaseRequest() with
         {
-            Prompt = "Continue this project.", SessionId = session.Id, SkipSpellRouting = true, DisableAllTools = true,
+            Prompt = "Continue this project.",
+            SessionId = session.Id,
+            SkipSpellRouting = true,
+            DisableAllTools = true,
         };
 
         return new(wizard, chat, grimoire, settings, store, maintenance, claims, lookup, request);

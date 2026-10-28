@@ -14,7 +14,6 @@ internal sealed class TurnEngine(
     ITurnPipelineRunner pipelineRunner,
     ILogger<TurnEngine>? logger = null) : ITurnEventSource
 {
-
     private readonly ITurnPipelineRunner _pipelineRunner =
         pipelineRunner ?? throw new ArgumentNullException(nameof(pipelineRunner));
 
@@ -148,7 +147,7 @@ internal sealed class TurnEngine(
                             new Error(
                                 ErrorCodes.Hub.Error,
                                 PublicInferenceErrorMessages.NativeGenericFailure),
-                            TurnTerminationReason.ProviderFailure,
+                            TurnTerminationReason.PipelineFailure,
                             Usage: null,
                             Warnings: [],
                             Interrupted: true,
@@ -162,5 +161,4 @@ internal sealed class TurnEngine(
             emitter.CompleteWithoutTerminal();
         }
     }
-
 }

@@ -3,6 +3,8 @@ using System.Data.Common;
 using System.Globalization;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Win32.SafeHandles;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -34,7 +36,7 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
     internal const string IdSpellings = "(@id, lower(@id), lower(replace(@id, '-', '')))";
 
     /// <summary>
-    /// The statement that classifies a delete: no row, referenced by a batch, or deletable. Internal so a test can
+    /// The statement that classifies row presence and all batch references independently, including a dangling reference. Internal so a test can
     /// explain the exact text the repository runs.
     /// </summary>
     /// <remarks>
@@ -43,19 +45,17 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
     /// </remarks>
     internal const string ClassifyDeleteSql =
         $"""
-        SELECT CASE
-            WHEN EXISTS (
+        SELECT
+            EXISTS (
                 SELECT 1
                 FROM "Batches"
                 WHERE "InputFileId" IN {IdSpellings}
                    OR "OutputFileId" IN {IdSpellings}
                    OR "ErrorFileId" IN {IdSpellings}
-            ) THEN 1
-            ELSE 0
-        END
-        FROM "UploadedFiles"
-        WHERE "Id" IN {IdSpellings}
-        LIMIT 1
+            )
+            + 2 * NOT EXISTS (
+                SELECT 1 FROM "UploadedFiles" WHERE "Id" IN {IdSpellings}
+            )
         """;
 
     /// <summary>
@@ -321,7 +321,15 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
 
         try
         {
-            if (HasRecognizableDeleteQuarantine(id))
+            UploadedFileDeleteStatus? classification = await ClassifyDeleteAsync(
+                    connection,
+                    transaction,
+                    id,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (classification is UploadedFileDeleteStatus.RecoveryRequired
+                || !TryRecoverDeleteQuarantine(id, classification, cancellationToken))
             {
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
@@ -329,13 +337,6 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
 
                 return UploadedFileDeleteStatus.RecoveryRequired;
             }
-
-            UploadedFileDeleteStatus? classification = await ClassifyDeleteAsync(
-                    connection,
-                    transaction,
-                    id,
-                    cancellationToken)
-                .ConfigureAwait(false);
 
             if (classification is { } classifiedStatus)
             {
@@ -452,14 +453,15 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
 
         object? result = await classify.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
-        if (result is null)
-        {
-            return UploadedFileDeleteStatus.NotFound;
-        }
-
-        return Convert.ToInt64(result, CultureInfo.InvariantCulture) == 1
-            ? UploadedFileDeleteStatus.ReferencedByBatch
-            : null;
+        // Low bit is a current batch reference; high bit is missing upload metadata.
+        return result is null or DBNull ? UploadedFileDeleteStatus.RecoveryRequired
+            : Convert.ToInt64(result, CultureInfo.InvariantCulture) switch
+            {
+                0 => null,
+                1 => UploadedFileDeleteStatus.ReferencedByBatch,
+                2 => UploadedFileDeleteStatus.NotFound,
+                _ => UploadedFileDeleteStatus.RecoveryRequired,
+            };
     }
 
     private static async Task<int> DeleteUnreferencedMetadataAsync(
@@ -479,29 +481,144 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
         return await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private bool HasRecognizableDeleteQuarantine(Guid id)
+    private bool TryRecoverDeleteQuarantine(
+        Guid id,
+        UploadedFileDeleteStatus? classification,
+        CancellationToken cancellationToken)
     {
-        if (!Directory.Exists(_filesRoot))
-        {
-            return false;
-        }
+        string rootPath = NoFollowPathTopology.NormalizeMacOsSystemAlias(_filesRoot);
+
+        Result<NoFollowPathTopologyKind> topology = NoFollowPathTopology.Classify(rootPath);
+
+        if (topology.IsFailure) return false;
+
+        if (topology.Value is NoFollowPathTopologyKind.Absent) return true;
+
+        if (topology.Value is not NoFollowPathTopologyKind.Directory) return false;
+
+        SafeFileHandle? root = null;
+
+        SafeFileHandle? directory = null;
+
+        SafeFileHandle? leaf = null;
 
         try
         {
-            return Directory.EnumerateFileSystemEntries(
-                    _filesRoot,
-                    $".arcanum-file-delete-{id:N}-*",
-                    SearchOption.TopDirectoryOnly)
-                .Any();
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!FileHandleIdentityInterop.TryOpenDirectoryMetadata(rootPath, out root, out FileHandleMetadata rootMetadata)) return false;
+
+            string prefix = $".arcanum-file-delete-{id:N}-";
+
+            string[] candidates = Directory.EnumerateFileSystemEntries(rootPath, prefix + "*", SearchOption.TopDirectoryOnly).Take(2).ToArray();
+
+            if (!IsCurrentDeleteRecoveryDirectory(root, rootPath, rootMetadata.Identity, requireOwnerOnly: candidates.Length > 0)) return false;
+
+            if (candidates.Length == 0) return true;
+
+            if (candidates.Length != 1) return false;
+
+            string directoryPath = candidates[0];
+
+            string name = Path.GetFileName(directoryPath);
+
+            if (name.Length != prefix.Length + 32
+                || !name.StartsWith(prefix, StringComparison.Ordinal)
+                || name.AsSpan(prefix.Length).ContainsAnyExcept("0123456789abcdef")) return false;
+
+            if (!FileHandleIdentityInterop.TryOpenDirectoryMetadataRelative(
+                    root, name, requestReadControl: false, out directory, out FileHandleMetadata directoryMetadata)) return false;
+
+            string[] children = Directory.EnumerateFileSystemEntries(directoryPath, "*", SearchOption.TopDirectoryOnly).Take(2).ToArray();
+
+            if (children.Length > 1
+                || !IsCurrentDeleteRecoveryDirectory(root, rootPath, rootMetadata.Identity, requireOwnerOnly: true)
+                || !IsCurrentDeleteRecoveryDirectory(directory, directoryPath, directoryMetadata.Identity, requireOwnerOnly: true)) return false;
+
+            string fileName = id.ToString("N");
+
+            if (children.Length == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                Directory.Delete(directoryPath, recursive: false);
+
+                return IsAbsentDeleteRecoveryChild(root, name)
+                    && IsCurrentDeleteRecoveryDirectory(root, rootPath, rootMetadata.Identity, requireOwnerOnly: true);
+            }
+
+            if (!string.Equals(Path.GetFileName(children[0]), fileName, StringComparison.Ordinal)
+                || FileHandleIdentityInterop.TryOpenReadOnlyNoFollowRelative(directory, fileName, out leaf) is not SecureFileOpenStatus.Success
+                || leaf is null
+                || !FileHandleIdentityInterop.TryGetHandleMetadata(leaf, out FileHandleMetadata fileMetadata)
+                || fileMetadata.Kind is not FileSystemObjectKind.RegularFile
+                || fileMetadata.HardLinkCount != 1
+                || !SecureFilePermissions.HasOwnerOnlyPosture(children[0], isDirectory: false)
+                || !IsAbsentDeleteRecoveryChild(root, fileName)) return false;
+
+            // This retry freshly adopts the current id-scoped artifact; no pre-crash inode or COMMIT proof exists.
+            IdentityOwnedFileSystemQuarantine current = new(
+                new IdentityOwnedFileSystemArtifact(Path.Combine(rootPath, fileName), fileMetadata),
+                new IdentityOwnedFileSystemArtifact(children[0], fileMetadata),
+                new IdentityOwnedFileSystemArtifact(directoryPath, directoryMetadata));
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!IsCurrentDeleteRecoveryDirectory(root, rootPath, rootMetadata.Identity, requireOwnerOnly: true)
+                || !IsCurrentDeleteRecoveryDirectory(directory, directoryPath, directoryMetadata.Identity, requireOwnerOnly: true)
+                || !FileHandleIdentityInterop.TryGetPathMetadataNoFollow(children[0], out FileHandleMetadata currentFile)
+                || currentFile != fileMetadata) return false;
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            bool recovered = classification is UploadedFileDeleteStatus.NotFound
+                ? IdentityOwnedFileSystemCleanup.TryDeleteQuarantined(current)
+                : IdentityOwnedFileSystemCleanup.TryRestoreQuarantined(current);
+
+            return recovered
+                && IsAbsentDeleteRecoveryChild(root, name)
+                && IsCurrentDeleteRecoveryDirectory(root, rootPath, rootMetadata.Identity, requireOwnerOnly: true);
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
-            return true;
+            return false;
         }
-        catch (UnauthorizedAccessException)
+        finally
         {
-            return true;
+            leaf?.Dispose();
+
+            directory?.Dispose();
+
+            root?.Dispose();
         }
+    }
+
+    private static bool IsAbsentDeleteRecoveryChild(SafeFileHandle parent, string name)
+    {
+        SecureFileOpenStatus status = FileHandleIdentityInterop.TryOpenReadOnlyNoFollowRelative(parent, name, out SafeFileHandle? child);
+
+        child?.Dispose();
+
+        return status is SecureFileOpenStatus.NotFound;
+    }
+
+    private static bool IsCurrentDeleteRecoveryDirectory(
+        SafeFileHandle handle,
+        string path,
+        FileHandleIdentity identity,
+        bool requireOwnerOnly)
+    {
+        Result<NoFollowPathTopologyKind> topology = NoFollowPathTopology.Classify(path);
+
+        return topology.IsSuccess
+            && topology.Value is NoFollowPathTopologyKind.Directory
+            && FileHandleIdentityInterop.TryGetHandleKernelPath(handle, out string? kernelPath)
+            && string.Equals(Path.TrimEndingDirectorySeparator(kernelPath), Path.TrimEndingDirectorySeparator(path),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
+            && FileHandleIdentityInterop.TryGetPathMetadataNoFollow(path, out FileHandleMetadata current)
+            && current.Kind is FileSystemObjectKind.Directory
+            && current.Identity == identity
+            && (!requireOwnerOnly || SecureFilePermissions.HasOwnerOnlyPosture(path, isDirectory: true));
     }
 
     private static bool IsPathAbsent(string path)

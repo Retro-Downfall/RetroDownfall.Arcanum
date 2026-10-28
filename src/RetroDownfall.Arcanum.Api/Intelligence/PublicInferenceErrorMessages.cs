@@ -2,12 +2,12 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 /// <summary>
 /// Exact public inference-failure copy by transport surface.
-/// Native and OpenAI messages intentionally differ and must not be merged.
+/// Native and OpenAI surfaces retain separate constants; unknown failures use neutral copy.
 /// </summary>
 internal static class PublicInferenceErrorMessages
 {
     public const string NativeGenericFailure =
-        "Inference failed. Ensure the provider is running and reachable, then try again. See server logs for details.";
+        "Inference failed. See server logs for details.";
 
     public const string OpenAiGenericFailure =
         "Inference failed. See server logs for details.";

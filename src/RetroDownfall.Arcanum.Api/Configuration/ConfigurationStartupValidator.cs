@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -13,10 +14,10 @@ namespace RetroDownfall.Arcanum.Api.Configuration;
 /// pipeline begins serving, and aborts host startup with a clear message when the
 /// configuration is semantically invalid. Closes the gap where an invalid
 /// <c>arcanum.json</c> booted successfully and only failed later at runtime.
+/// After validation, initializes the code-owned default tokenizer before serving requests.
 /// </summary>
 internal sealed class ConfigurationStartupValidator : IStartupFilter
 {
-
     private readonly IOptions<ArcanumSettings> _options;
 
     private readonly IConfiguration _configuration;
@@ -25,13 +26,15 @@ internal sealed class ConfigurationStartupValidator : IStartupFilter
 
     private readonly ILogger<ConfigurationStartupValidator> _logger;
 
+    private readonly InferenceTokenizerResolver _tokenizerResolver;
+
     public ConfigurationStartupValidator(
         IOptions<ArcanumSettings> options,
         IConfiguration configuration,
         ConfigurationValidator validator,
-        ILogger<ConfigurationStartupValidator> logger)
+        ILogger<ConfigurationStartupValidator> logger,
+        InferenceTokenizerResolver tokenizerResolver)
     {
-
         _options = options;
 
         _configuration = configuration;
@@ -40,40 +43,36 @@ internal sealed class ConfigurationStartupValidator : IStartupFilter
 
         _logger = logger;
 
+        _tokenizerResolver = tokenizerResolver;
     }
 
     public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next)
     {
-
         Result rawTree = _validator.RejectObsoleteKeys(_configuration);
 
         if (rawTree.IsFailure)
         {
-
             LogValidationFailure(rawTree.Error);
 
             throw new ConfigurationValidationException(rawTree.Error);
-
         }
 
         Result result = _validator.Validate(_options.Value);
 
         if (result.IsFailure)
         {
-
             LogValidationFailure(result.Error);
 
             throw new ConfigurationValidationException(result.Error);
-
         }
 
-        return next;
+        _ = _tokenizerResolver.ResolveTokenizer(null);
 
+        return next;
     }
 
     private void LogValidationFailure(Error error)
     {
-
         _logger.LogCritical(
             "Arcanum configuration is invalid; aborting startup. {Code}: {Message}",
             error.Code,
@@ -81,18 +80,12 @@ internal sealed class ConfigurationStartupValidator : IStartupFilter
 
         if (error.Details is { Count: > 0 } details)
         {
-
             foreach (ConfigurationValidationError detail in details)
             {
-
                 _logger.LogCritical("  - {Pointer}: {Detail}", detail.Pointer, detail.Detail);
-
             }
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -101,15 +94,11 @@ internal sealed class ConfigurationStartupValidator : IStartupFilter
 /// </summary>
 public sealed class ConfigurationValidationException : InvalidOperationException
 {
-
     public ConfigurationValidationException(Error error)
         : base($"Arcanum configuration validation failed ({error.Code}): {error.Message}")
     {
-
         Error = error;
-
     }
 
     public Error Error { get; }
-
 }

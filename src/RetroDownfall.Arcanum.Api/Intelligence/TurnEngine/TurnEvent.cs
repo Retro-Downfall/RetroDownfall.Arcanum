@@ -129,6 +129,8 @@ internal sealed record RunCompleted(
     bool StructuredOutputWarning,
     TurnTerminationReason Reason = TurnTerminationReason.Completed) : TurnEvent(Correlation)
 {
+    public IReadOnlyList<InferenceNotice> Notices { get; init; } = [];
+
     public string? ModelUsed { get; init; }
 
     public IReadOnlyList<ReasoningContentSegment> Reasoning { get; init; } = [];

@@ -657,6 +657,9 @@ public static class ApiBootstrapper
             sp.GetRequiredService<TimeProvider>(),
             sp.GetRequiredService<ILogger<CovenantDispatchGate>>()));
 
+        services.AddSingleton(static sp => new WizardIntelligenceProvider.CompatibilityDiagnostics(
+            sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()));
+
         services.AddScoped<WizardIntelligenceProvider>(static sp =>
             ActivatorUtilities.CreateInstance<WizardIntelligenceProvider>(
                 sp,

@@ -759,9 +759,9 @@ internal sealed partial class ArtifactSensitivityLedger(ICovenantConnectionSourc
     /// fingerprint differently depending on the order their artifacts happened to be written, and
     /// the value would stop being comparable — which is the only thing a projection digest is for.
     ///
-    /// <para>Distinct is what keeps this bounded. A dataset generation changes on reset and restore,
-    /// not per turn, so a Session with thousands of tainted artifacts still has one or two distinct
-    /// provenance values, and the indexed lookup collapses them before the merge runs.</para>
+    /// <para>A bounded ordered window and distinct-key seeks avoid revisiting repeated canonical
+    /// provenance. High diversity or noncanonical storage falls back to the original complete
+    /// distinct fold, preserving its decoder and refusal behavior in the same writer snapshot.</para>
     /// </remarks>
     private static async Task<byte[]> MergedProvenanceDigestAsync(
         SqliteConnection connection,
@@ -770,6 +770,14 @@ internal sealed partial class ArtifactSensitivityLedger(ICovenantConnectionSourc
         ArtifactSensitivityLabel label,
         CancellationToken cancellationToken)
     {
+        GenerationProvenance? distinct = await TrySeekProvenanceAsync(
+            connection, transaction, sessionId, label.Provenance, cancellationToken).ConfigureAwait(false);
+
+        if (distinct is not null)
+        {
+            return CovenantDigests.Sensitivity(distinct.ToDigestInput(label.Sensitivity)).Bytes;
+        }
+
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;

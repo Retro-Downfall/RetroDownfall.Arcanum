@@ -14,3 +14,5 @@ CREATE TABLE IF NOT EXISTS long_rest_receipt_inputs (
 
 CREATE INDEX IF NOT EXISTS idx_long_rest_receipt_inputs_version
 ON long_rest_receipt_inputs(VersionId, ReceiptId);
+
+CREATE INDEX IF NOT EXISTS idx_long_rest_receipt_inputs_memory_receipt ON long_rest_receipt_inputs (lower(replace(MemoryId, '-', '')), ReceiptId, MemoryId);

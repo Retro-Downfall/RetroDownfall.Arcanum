@@ -87,7 +87,7 @@ public sealed class SessionAnalyticsIndexSchemaTests
 
             GrimoireSchemaVersionChainSet chains = new(
             [
-                new(core.HeadManifest, core.HeadObjects, [.. core.Steps.Where(static item => item.ToVersion < 29), interrupted]),
+                new(core.HeadManifest, core.HeadObjects, [.. core.Steps.Select(item => item.ToVersion == 29 ? interrupted : item)]),
                 GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
                 GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
             ]);

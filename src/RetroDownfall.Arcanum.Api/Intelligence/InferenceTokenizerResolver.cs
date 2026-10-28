@@ -12,16 +12,16 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 public sealed class InferenceTokenizerResolver(ILogger<InferenceTokenizerResolver> logger)
 {
-
     internal const string DefaultEncodingName = "o200k_base";
 
     private readonly ConcurrentDictionary<string, ResolvedInferenceTokenizer> _cache = new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly object _initializationLock = new();
 
     public Tokenizer ResolveTokenizer(string? encodingName) => Resolve(encodingName).Tokenizer;
 
     internal ResolvedInferenceTokenizer Resolve(string? encodingName)
     {
-
         string requested = string.IsNullOrWhiteSpace(encodingName)
             ? DefaultEncodingName
             : encodingName.Trim();
@@ -31,13 +31,14 @@ public sealed class InferenceTokenizerResolver(ILogger<InferenceTokenizerResolve
             return cached;
         }
 
-        return _cache.GetOrAdd(requested, ResolveTokenizerSlow);
-
+        lock (_initializationLock)
+        {
+            return _cache.GetOrAdd(requested, ResolveTokenizerSlow);
+        }
     }
 
     private ResolvedInferenceTokenizer ResolveTokenizerSlow(string requested)
     {
-
         try
         {
             InferenceTextCounter created = new(requested);
@@ -68,9 +69,7 @@ public sealed class InferenceTokenizerResolver(ILogger<InferenceTokenizerResolve
                 UsedFallback = true,
             };
         }
-
     }
-
 }
 
 internal sealed record ResolvedInferenceTokenizer(

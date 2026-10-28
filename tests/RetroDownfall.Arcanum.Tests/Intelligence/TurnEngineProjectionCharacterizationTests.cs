@@ -314,6 +314,24 @@ public sealed class TurnEngineProjectionCharacterizationTests
     }
 
     [Fact]
+    public async Task TurnEngine_unclassified_local_pipeline_failure_does_not_claim_a_provider_failure()
+    {
+        TurnEngine engine = new(new ThrowingTurnPipelineRunner(new InvalidOperationException("PRIVATE_LOCAL_PIPELINE")));
+
+        List<TurnEvent> events = [];
+
+        await foreach (TurnEvent item in engine.RunTurnAsync(CreateTurnRequest(TurnResponseMode.Buffered), CancellationToken.None)) events.Add(item);
+
+        RunFailed failed = Assert.IsType<RunFailed>(Assert.Single(events));
+
+        Assert.Equal("PipelineFailure", failed.Reason.ToString());
+
+        Assert.Equal(ErrorCodes.Hub.Error, failed.Error.Code);
+
+        Assert.DoesNotContain("PRIVATE_LOCAL_PIPELINE", failed.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task TurnEngine_UnhandledFailure_EmitsSanitizedCompleteNativeOutput()
     {
         const string canary = "CANARY_TURN_PROVIDER_RESPONSE_BODY";
@@ -333,7 +351,7 @@ public sealed class TurnEngineProjectionCharacterizationTests
         RunFailed failed = Assert.IsType<RunFailed>(Assert.Single(events));
         Assert.Equal(ErrorCodes.Hub.Error, failed.Error.Code);
         Assert.Equal(
-            "Inference failed. Ensure the provider is running and reachable, then try again. See server logs for details.",
+            "Inference failed. See server logs for details.",
             failed.Error.Message);
 
         IntelligenceEvent native = Assert.Single(IntelligenceEventProjection.Map(failed));
@@ -371,7 +389,7 @@ public sealed class TurnEngineProjectionCharacterizationTests
         RunFailed failed = Assert.IsType<RunFailed>(Assert.Single(events));
         Assert.Equal(ErrorCodes.Hub.Error, failed.Error.Code);
         Assert.Equal(
-            "Inference failed. Ensure the provider is running and reachable, then try again. See server logs for details.",
+            "Inference failed. See server logs for details.",
             failed.Error.Message);
         Assert.DoesNotContain(canary, failed.Error.Message, StringComparison.Ordinal);
 

@@ -418,7 +418,7 @@ public sealed partial class ModelCallExecutorTests
         Assert.True(outcome.IsFailure);
         Assert.Same(connectivityFailure, outcome.Failure.Cause);
         Assert.Equal(
-            "Inference failed. Ensure the provider is running and reachable, then try again. See server logs for details.",
+            "Inference failed. See server logs for details.",
             outcome.Error.Message);
 
         string serialized = JsonSerializer.Serialize(
@@ -457,7 +457,7 @@ public sealed partial class ModelCallExecutorTests
 
         Assert.True(outcome.IsFailure);
         Assert.Equal(
-            "Inference failed. Ensure the provider is running and reachable, then try again. See server logs for details.",
+            "Inference failed. See server logs for details.",
             outcome.Failure?.Error.Message);
         Assert.DoesNotContain(canary, outcome.Failure?.Error.Message, StringComparison.Ordinal);
 

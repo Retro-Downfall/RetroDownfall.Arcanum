@@ -91,3 +91,5 @@ CREATE INDEX IF NOT EXISTS idx_artifact_sensitivity_campaign
 
 CREATE INDEX IF NOT EXISTS idx_artifact_sensitivity_turn
     ON artifact_sensitivity(TurnId);
+
+CREATE INDEX IF NOT EXISTS idx_artifact_sensitivity_session_provenance ON artifact_sensitivity (SessionId, ProvenanceModeCode, ExactGenerationIds, GenerationBloom);

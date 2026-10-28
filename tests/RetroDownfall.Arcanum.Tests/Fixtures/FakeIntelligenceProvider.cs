@@ -79,6 +79,8 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
 
     public List<string>? NextWarnings { get; set; }
 
+    public IReadOnlyList<InferenceNotice>? NextNotices { get; set; }
+
     /// <summary>
     /// When set, <see cref="ExecutePromptAsync"/> waits on this gate (or until cancelled) before
     /// returning — used by batch in-flight expiry tests.
@@ -127,6 +129,7 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
             Result<PromptTurnResult>.Success(new PromptTurnResult(NextText, null, NextToolCalls, NextFinishReason)
             {
                 Warnings = NextWarnings ?? [],
+                Notices = NextNotices ?? [],
                 Reasoning = NextReasoning ?? [],
                 PreserveProviderToolCallIds = request.ForwardClientTools,
             }));
@@ -170,6 +173,7 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
         return Result<PromptTurnResult>.Success(new PromptTurnResult(NextText, null, NextToolCalls, NextFinishReason)
         {
             Warnings = NextWarnings ?? [],
+            Notices = NextNotices ?? [],
             Reasoning = NextReasoning ?? [],
             PreserveProviderToolCallIds = request.ForwardClientTools,
         });

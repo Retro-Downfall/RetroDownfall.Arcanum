@@ -3,13 +3,13 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Configuration;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Configuration;
 
 public sealed class ConfigurationStartupValidatorTests
 {
-
     private static ConfigurationStartupValidator CreateFilter(
         ArcanumSettings settings,
         IConfiguration? configuration = null) =>
@@ -17,46 +17,36 @@ public sealed class ConfigurationStartupValidatorTests
             Options.Create(settings),
             configuration ?? new ConfigurationBuilder().Build(),
             new ConfigurationValidator(),
-            NullLogger<ConfigurationStartupValidator>.Instance);
+            NullLogger<ConfigurationStartupValidator>.Instance,
+            new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
 
     [Fact]
     public void Configure_InvalidSettings_AbortsStartup()
     {
-
         ArcanumSettings settings = new()
         {
-
             DefaultModel = "missing-model",
 
             Providers =
             [
-
                 new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] },
-
             ],
-
         };
 
         ConfigurationStartupValidator filter = CreateFilter(settings);
 
         Assert.Throws<ConfigurationValidationException>(() => filter.Configure(static _ => { }));
-
     }
 
     [Fact]
     public void Configure_ValidSettings_ReturnsNextUnchanged()
     {
-
         ArcanumSettings settings = new()
         {
-
             Providers =
             [
-
                 new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] },
-
             ],
-
         };
 
         ConfigurationStartupValidator filter = CreateFilter(settings);
@@ -66,19 +56,15 @@ public sealed class ConfigurationStartupValidatorTests
         Action<IApplicationBuilder> result = filter.Configure(next);
 
         Assert.Same(next, result);
-
     }
 
     [Fact]
     public void Configure_ObsoleteLlamaCppSection_AbortsStartup()
     {
-
         ArcanumSettings settings = new()
         {
-
             Providers =
             [
-
                 new ProviderSettings
                 {
                     Name = "ollama",
@@ -86,9 +72,7 @@ public sealed class ConfigurationStartupValidatorTests
                     Endpoint = "http://localhost:11434/v1",
                     Models = ["llama3"],
                 },
-
             ],
-
         };
 
         IConfiguration configuration = new ConfigurationBuilder()
@@ -106,19 +90,15 @@ public sealed class ConfigurationStartupValidatorTests
         Assert.Equal("Configuration.ValidationFailed", ex.Error.Code);
 
         Assert.Contains(ex.Error.Details!, static e => e.Pointer == "llamaCpp");
-
     }
 
     [Fact]
     public void Configure_ObsoleteLlamaCppServerType_AbortsStartup()
     {
-
         ArcanumSettings settings = new()
         {
-
             Providers =
             [
-
                 new ProviderSettings
                 {
                     Name = "ollama",
@@ -126,9 +106,7 @@ public sealed class ConfigurationStartupValidatorTests
                     Endpoint = "http://localhost:11434/v1",
                     Models = ["llama3"],
                 },
-
             ],
-
         };
 
         IConfiguration configuration = new ConfigurationBuilder()
@@ -148,7 +126,5 @@ public sealed class ConfigurationStartupValidatorTests
         Assert.Contains(
             ex.Error.Details!,
             static e => e.Detail.Contains("LlamaCppServer", StringComparison.OrdinalIgnoreCase));
-
     }
-
 }
