@@ -183,7 +183,7 @@ internal sealed partial class DataRetentionService
 
         return await ReadConflictsAsync(
             "SELECT Id FROM InferenceRuns WHERE Status = @status",
-            "Data.InferenceRunActive",
+            ErrorCodes.Data.InferenceRunActive,
             "An active inference run protects its inputs and accounting chain.",
             cancellationToken,
             ("@status", (int)InferenceRunStatus.Running)).ConfigureAwait(false);
@@ -204,7 +204,7 @@ internal sealed partial class DataRetentionService
             WHERE State IN (@claimed, @running)
               AND LeaseExpiresAt > @now
             """,
-            "Data.IdempotencyLeaseActive",
+            ErrorCodes.Data.IdempotencyLeaseActive,
             "An active idempotency lease protects its request and response state.",
             cancellationToken,
             ("@claimed", (int)IdempotencyClaimState.Claimed),
@@ -222,7 +222,7 @@ internal sealed partial class DataRetentionService
 
         return await ReadConflictsAsync(
             "SELECT Id FROM Batches WHERE Status NOT IN (@completed, @failed, @cancelled, @expired)",
-            "Data.BatchInProgress",
+            ErrorCodes.Data.BatchInProgress,
             "An in-progress batch protects its input, output, and error files.",
             cancellationToken,
             ("@completed", BatchStatuses.Completed),
@@ -683,12 +683,12 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.CompletedBatches,
                         id.ToString("D"),
-                        "Data.BatchInProgress",
+                        ErrorCodes.Data.BatchInProgress,
                         "An in-progress batch cannot be pruned."));
 
                 conflicts.Add(
                     new DataRetentionConflict(
-                        "Data.BatchInProgress",
+                        ErrorCodes.Data.BatchInProgress,
                         id.ToString("D"),
                         "An in-progress batch protects its input, output, and error files."));
             }
@@ -733,12 +733,12 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.CompletedBatches,
                         id.ToString("D"),
-                        "Data.BatchInProgress",
+                        ErrorCodes.Data.BatchInProgress,
                         "An in-progress batch cannot be pruned."));
 
                 conflicts.Add(
                     new DataRetentionConflict(
-                        "Data.BatchInProgress",
+                        ErrorCodes.Data.BatchInProgress,
                         id.ToString("D"),
                         "An in-progress batch protects its input, output, and error files."));
 
@@ -805,14 +805,14 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.UploadedFiles,
                         file.Id.ToString("D"),
-                        "Data.BatchReference",
+                        ErrorCodes.Data.BatchReference,
                         "An uploaded file referenced by an in-progress batch cannot be pruned."));
 
                 foreach (BatchReferenceSnapshot reference in active.Take(remainingReferenceConflicts))
                 {
                     conflicts.Add(
                         new DataRetentionConflict(
-                            "Data.BatchInProgress",
+                            ErrorCodes.Data.BatchInProgress,
                             reference.BatchId.ToString("D"),
                             "An in-progress batch protects every referenced file."));
 
@@ -828,7 +828,7 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.UploadedFiles,
                         file.Id.ToString("D"),
-                        "Data.BatchReference",
+                        ErrorCodes.Data.BatchReference,
                         "A retained terminal batch still references this uploaded file."));
 
                 continue;
@@ -990,7 +990,7 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.Entries,
                         id.ToString("D"),
-                        "Data.PinnedEntry",
+                        ErrorCodes.Data.PinnedEntry,
                         "A pinned entry cannot be pruned."));
             }
             else if (protectedSessionIds.Contains(sessionId))
@@ -999,7 +999,7 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.Entries,
                         id.ToString("D"),
-                        "Data.SessionHold",
+                        ErrorCodes.Data.SessionHold,
                         "An operator-retained session protects its entries."));
             }
             else if (contextPinned)
@@ -1008,7 +1008,7 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.Entries,
                         id.ToString("D"),
-                        "Data.ContextPin",
+                        ErrorCodes.Data.ContextPin,
                         "A pinned session-entry context protects this entry."));
             }
 
@@ -1144,7 +1144,7 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.AttachmentVersions,
                         id.ToString("D"),
-                        "Data.SessionHold",
+                        ErrorCodes.Data.SessionHold,
                         "An operator-retained session protects its attachments."));
             }
             else if (contextPinned)
@@ -1153,7 +1153,7 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.AttachmentVersions,
                         id.ToString("D"),
-                        "Data.PinnedAttachment",
+                        ErrorCodes.Data.PinnedAttachment,
                         "A pinned attachment/context protects this attachment from deletion."));
             }
 
@@ -1278,7 +1278,7 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.SessionEntryEmbeddings,
                         entryId.ToString("D"),
-                        "Data.PinnedEntry",
+                        ErrorCodes.Data.PinnedEntry,
                         "A pinned entry protects its derived embeddings."));
             }
             else if (protectedSessionIds.Contains(sessionId))
@@ -1287,7 +1287,7 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.SessionEntryEmbeddings,
                         entryId.ToString("D"),
-                        "Data.SessionHold",
+                        ErrorCodes.Data.SessionHold,
                         "An operator-retained session protects its derived entry embeddings."));
             }
             else if (contextPinned)
@@ -1296,7 +1296,7 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.SessionEntryEmbeddings,
                         entryId.ToString("D"),
-                        "Data.ContextPin",
+                        ErrorCodes.Data.ContextPin,
                         "A pinned session-entry context protects its derived embeddings."));
             }
 
@@ -1329,21 +1329,21 @@ internal sealed partial class DataRetentionService
             SELECT Code, ResourceId
             FROM (
                 SELECT 0 AS ConflictOrder,
-                       'Data.ActiveOperation' AS Code,
+                       @diagnosticActiveOperation AS Code,
                        Id AS ResourceId
                 FROM LongRunningOperations
                 WHERE lower(replace(SessionId, '-', '')) = @diagnosticSessionId
                   AND State IN ({string.Join(",", ActiveOperationStates)})
                 UNION ALL
                 SELECT 1 AS ConflictOrder,
-                       'Data.InferenceRunActive' AS Code,
+                       @diagnosticInferenceRunActive AS Code,
                        Id AS ResourceId
                 FROM InferenceRuns
                 WHERE lower(replace(SessionId, '-', '')) = @diagnosticSessionId
                   AND Status = @diagnosticRunning
                 UNION ALL
                 SELECT 2 AS ConflictOrder,
-                       'Data.BudgetReservationOutstanding' AS Code,
+                       @diagnosticBudgetReservationOutstanding AS Code,
                        reservation.Id AS ResourceId
                 FROM BudgetReservations reservation
                 JOIN InferenceRuns run
@@ -1353,6 +1353,12 @@ internal sealed partial class DataRetentionService
             ORDER BY ConflictOrder, ResourceId
             LIMIT @diagnosticConflictLimit
             """;
+
+        Add(command, "@diagnosticActiveOperation", ErrorCodes.Data.ActiveOperation);
+
+        Add(command, "@diagnosticInferenceRunActive", ErrorCodes.Data.InferenceRunActive);
+
+        Add(command, "@diagnosticBudgetReservationOutstanding", ErrorCodes.Data.BudgetReservationOutstanding);
 
         Add(command, "@diagnosticSessionId", sessionId.ToString("N"));
 
@@ -1373,10 +1379,10 @@ internal sealed partial class DataRetentionService
 
             string message = code switch
             {
-                "Data.ActiveOperation" =>
+                ErrorCodes.Data.ActiveOperation =>
                     "An active durable operation protects this session.",
 
-                "Data.InferenceRunActive" =>
+                ErrorCodes.Data.InferenceRunActive =>
                     "An active inference run protects this session.",
 
                 _ =>
@@ -1551,7 +1557,7 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.Entries,
                         id.ToString("D"),
-                        "Data.PinnedEntry",
+                        ErrorCodes.Data.PinnedEntry,
                         "A pinned entry cannot be pruned."));
 
                 continue;
@@ -1563,7 +1569,7 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.Entries,
                         id.ToString("D"),
-                        "Data.SessionHold",
+                        ErrorCodes.Data.SessionHold,
                         "An operator-retained session protects its entries."));
 
                 continue;
@@ -1587,7 +1593,7 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.Entries,
                         id.ToString("D"),
-                        "Data.ContextPin",
+                        ErrorCodes.Data.ContextPin,
                         "A pinned session-entry context protects this entry."));
 
                 continue;
@@ -1803,7 +1809,7 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.AttachmentVersions,
                         id.ToString("D"),
-                        "Data.SessionHold",
+                        ErrorCodes.Data.SessionHold,
                         "An operator-retained session protects its attachments."));
 
                 continue;
@@ -2421,7 +2427,7 @@ internal sealed partial class DataRetentionService
 
                     bool leaseActive = leaseExpiresAt > PrunePlanningTimestamp;
 
-                    string reasonCode = leaseActive ? "Data.IdempotencyLeaseActive" : "Data.IdempotencyLeaseExpired";
+                    string reasonCode = leaseActive ? ErrorCodes.Data.IdempotencyLeaseActive : ErrorCodes.Data.IdempotencyLeaseExpired;
 
                     string message = leaseActive
                         ? "An active idempotency lease cannot be pruned."
@@ -2490,14 +2496,14 @@ internal sealed partial class DataRetentionService
                         new DataRetentionBlocker(
                             RetentionDataClass.IdempotencyClaims,
                             id.ToString("D"),
-                            "Data.IdempotencyLeaseActive",
+                            ErrorCodes.Data.IdempotencyLeaseActive,
                             leaseExpiresAt > PrunePlanningTimestamp
                                 ? "An active idempotency lease cannot be pruned."
                                 : "An unfinished idempotency claim requires reconciliation before pruning."));
 
                     conflicts.Add(
                         new DataRetentionConflict(
-                            "Data.IdempotencyLeaseActive",
+                            ErrorCodes.Data.IdempotencyLeaseActive,
                             id.ToString("D"),
                             "An unfinished idempotency claim protects its request state."));
 
@@ -2630,10 +2636,10 @@ internal sealed partial class DataRetentionService
                 bool active = status == InferenceRunStatus.Running || reserved;
 
                 string code = status == InferenceRunStatus.Running
-                    ? "Data.InferenceRunActive"
+                    ? ErrorCodes.Data.InferenceRunActive
                     : reserved
-                        ? "Data.BudgetReservationOutstanding"
-                        : "Data.SessionAccountingAuthority";
+                        ? ErrorCodes.Data.BudgetReservationOutstanding
+                        : ErrorCodes.Data.SessionAccountingAuthority;
 
                 blockers.Add(
                     new DataRetentionBlocker(
@@ -2740,15 +2746,15 @@ internal sealed partial class DataRetentionService
                         RetentionDataClass.InferenceRuns,
                         runId.ToString("D"),
                         status == InferenceRunStatus.Running
-                            ? "Data.InferenceRunActive"
-                            : "Data.BudgetReservationOutstanding",
+                            ? ErrorCodes.Data.InferenceRunActive
+                            : ErrorCodes.Data.BudgetReservationOutstanding,
                         "Active accounting state cannot be pruned."));
 
                 conflicts.Add(
                     new DataRetentionConflict(
                         status == InferenceRunStatus.Running
-                            ? "Data.InferenceRunActive"
-                            : "Data.BudgetReservationOutstanding",
+                            ? ErrorCodes.Data.InferenceRunActive
+                            : ErrorCodes.Data.BudgetReservationOutstanding,
                         runId.ToString("D"),
                         "Active accounting state protects the entire run chain."));
 
@@ -2761,7 +2767,7 @@ internal sealed partial class DataRetentionService
                     new DataRetentionBlocker(
                         RetentionDataClass.InferenceRuns,
                         runId.ToString("D"),
-                        "Data.SessionAccountingAuthority",
+                        ErrorCodes.Data.SessionAccountingAuthority,
                         "Accounting for a retained session remains available to explain its cost."));
 
                 continue;

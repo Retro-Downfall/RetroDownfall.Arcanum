@@ -172,7 +172,8 @@ public sealed partial class InstallationResetStoppedHostCovenantTests
                             ? Result<DataRetentionPlan>.Success(plan.Value with { Covenant = null })
                             : plan,
                     }),
-            _ => static _ => { },
+            _ => static _ => { }
+            ,
         };
 
         await StoppedHostResetTestSupport.UseWriteAheadLoggingAsync(_fixture);
@@ -333,10 +334,28 @@ public sealed partial class InstallationResetStoppedHostCovenantTests
                 candidate => candidate.GetProperty("code").GetString() == expected.Code);
 
             // The remedy is the one that is true for this kind of work, and it is spoken, not implied.
-            Assert.EndsWith(
-                expected.Remedy,
-                blocker.GetProperty("message").GetString(),
-                StringComparison.Ordinal);
+            string message = blocker.GetProperty("message").GetString()!;
+
+            if (kind is UndrainableWork.ActiveOperation or UndrainableWork.RecoveredAttention
+                or UndrainableWork.ParkedLongRestSweep or UndrainableWork.QueuedLongRestSweep)
+            {
+                Assert.Contains("operation show " + Guid.Parse(id).ToString("D"), message, StringComparison.Ordinal);
+
+                Assert.Contains("fresh reset plan", message, StringComparison.Ordinal);
+
+                Assert.DoesNotContain("operation retry", message, StringComparison.Ordinal);
+
+                if (kind is UndrainableWork.QueuedLongRestSweep)
+                {
+                    Assert.Contains("Pending", message, StringComparison.Ordinal);
+
+                    Assert.Contains("operation cancel " + Guid.Parse(id).ToString("D"), message, StringComparison.Ordinal);
+                }
+            }
+            else
+            {
+                Assert.EndsWith(expected.Remedy, message, StringComparison.Ordinal);
+            }
         }
 
         AssertUnchanged(before);

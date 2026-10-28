@@ -928,8 +928,8 @@ internal sealed partial class DataRetentionService
     {
         List<DataRetentionConflict> conflicts = [];
 
-        // A durable operation a host start settles, and one that waits for an operator and that no start
-        // clears, are different conflicts with different remedies, so they are read apart.
+        // Preserve the two existing eligibility reads and borrowed transaction. Recorded recovery
+        // context selects guidance; attention classification alone cannot authorize retry or cancel.
         (string Name, object Value)[] operationParameters =
         [
             ("@excludedOperationId", excludedOperationId.ToString("N")),
@@ -938,34 +938,32 @@ internal sealed partial class DataRetentionService
         ];
 
         conflicts.AddRange(
-            await ReadFactoryConflictRowsAsync(
+            await ReadFactoryOperationConflictsAsync(
                 connection,
                 transaction,
                 $"""
-                SELECT Id
+                SELECT Id, Kind, CheckpointVersion, State, TerminalErrorCode
                 FROM LongRunningOperations
                 WHERE State IN ({string.Join(",", ActiveOperationStates)})
                   AND NOT {LongRunningOperationStore.WaitsForOperatorPredicate}
                   AND lower(replace(Id, '-', '')) <> @excludedOperationId
                 """,
-                "Data.ActiveOperation",
-                ActiveOperationGlobalMessage,
+                waitsForOperator: false,
                 cancellationToken,
                 operationParameters).ConfigureAwait(false));
 
         conflicts.AddRange(
-            await ReadFactoryConflictRowsAsync(
+            await ReadFactoryOperationConflictsAsync(
                 connection,
                 transaction,
                 $"""
-                SELECT Id
+                SELECT Id, Kind, CheckpointVersion, State, TerminalErrorCode
                 FROM LongRunningOperations
                 WHERE State IN ({string.Join(",", ActiveOperationStates)})
                   AND {LongRunningOperationStore.WaitsForOperatorPredicate}
                   AND lower(replace(Id, '-', '')) <> @excludedOperationId
                 """,
-                ErrorCodes.Data.OperationNeedsAttention,
-                OperationNeedsAttentionGlobalMessage,
+                waitsForOperator: true,
                 cancellationToken,
                 operationParameters).ConfigureAwait(false));
 
@@ -974,7 +972,7 @@ internal sealed partial class DataRetentionService
                 connection,
                 transaction,
                 "SELECT Id FROM BudgetReservations WHERE Status IN (@status, @uncertainPaid)",
-                "Data.BudgetReservationOutstanding",
+                ErrorCodes.Data.BudgetReservationOutstanding,
                 "An outstanding budget reservation conflicts with this global reset.",
                 cancellationToken,
                 ("@status", (int)BudgetReservationStatus.Reserved),
@@ -985,7 +983,7 @@ internal sealed partial class DataRetentionService
                 connection,
                 transaction,
                 "SELECT Id FROM InferenceRuns WHERE Status = @status",
-                "Data.InferenceRunActive",
+                ErrorCodes.Data.InferenceRunActive,
                 "An active inference run conflicts with this global reset.",
                 cancellationToken,
                 ("@status", (int)InferenceRunStatus.Running)).ConfigureAwait(false));
@@ -1000,7 +998,7 @@ internal sealed partial class DataRetentionService
                 WHERE State IN (@claimed, @running)
                   AND LeaseExpiresAt > @now
                 """,
-                "Data.IdempotencyLeaseActive",
+                ErrorCodes.Data.IdempotencyLeaseActive,
                 "An active idempotency lease conflicts with this global reset.",
                 cancellationToken,
                 ("@claimed", (int)IdempotencyClaimState.Claimed),
@@ -1016,7 +1014,7 @@ internal sealed partial class DataRetentionService
                 FROM Batches
                 WHERE Status NOT IN (@completed, @failed, @cancelled, @expired)
                 """,
-                "Data.BatchInProgress",
+                ErrorCodes.Data.BatchInProgress,
                 "An in-progress batch conflicts with this global reset.",
                 cancellationToken,
                 ("@completed", BatchStatuses.Completed),
@@ -1028,6 +1026,43 @@ internal sealed partial class DataRetentionService
             .DistinctBy(static conflict => (conflict.Code, conflict.ResourceId))
             .OrderBy(static conflict => conflict.Code, StringComparer.Ordinal)
             .ThenBy(static conflict => conflict.ResourceId, StringComparer.Ordinal)];
+    }
+
+    private static async Task<DataRetentionConflict[]> ReadFactoryOperationConflictsAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        string sql,
+        bool waitsForOperator,
+        CancellationToken cancellationToken,
+        params (string Name, object Value)[] parameters)
+    {
+        await using DbCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = sql;
+
+        foreach ((string name, object value) in parameters)
+        {
+            Add(command, name, value);
+        }
+
+        List<DataRetentionConflict> conflicts = [];
+
+        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            conflicts.Add(GlobalOperationConflict(
+                Guid.Parse(reader.GetString(0)).ToString("D"),
+                waitsForOperator,
+                reader.GetString(1),
+                reader.GetInt32(2),
+                (LongRunningOperationState)reader.GetInt32(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4)));
+        }
+
+        return [.. conflicts];
     }
 
     private static async Task<DataRetentionConflict[]> ReadFactoryConflictRowsAsync(

@@ -69,7 +69,9 @@ public sealed partial class InstallationResetServiceTests
 
         Assert.Equal("resource-1", blocker.ResourceId);
 
-        Assert.Equal("Something conflicts with this global reset. " + expected, blocker.Message);
+        Assert.Equal(code is "Data.ActiveOperation" or "Data.OperationNeedsAttention"
+            ? "Something conflicts with this global reset."
+            : "Something conflicts with this global reset. " + expected, blocker.Message);
     }
 
     [Theory]
@@ -149,7 +151,53 @@ public sealed partial class InstallationResetServiceTests
 
         InstallationResetIssueSummary only = Assert.Single(transitionBlockers);
 
-        Assert.EndsWith(InstallationResetService.StartHostOnceRemedy, only.Message, StringComparison.Ordinal);
+        Assert.Contains("attempt its existing recovery", only.Message, StringComparison.Ordinal);
+
+        Assert.Contains("does not guarantee repair", only.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(ErrorCodes.Covenant.IntegrityFailure)]
+    [InlineData(ErrorCodes.Data.RecoveryRequired)]
+    public async Task Failed_transition_inspection_preserves_cause_without_promising_restart_repairs_it(string code)
+    {
+        DataRetentionPlan dataPlan = CreateDataPlan("failed-inspection-data") with { Covenant = EmptyFamily };
+
+        FakeActiveStore active = new();
+
+        InstallationResetMaintenanceLockAccessor accessor = new();
+
+        RecordingStartupRecovery recovery = new(InstallationResetNestedTransitionEvidenceOutcome.NeitherActive,
+            new Error(code, "The authenticated transition evidence cannot be proved."));
+
+        FakeDataService data = new(dataPlan);
+
+        InstallationResetService service = new(
+            data, new FakeCredentialInventory([]), active, new FakeOfflineCleanup(), null, null,
+            new FixedStateRoots(["/state"]), null, null, null, CleanPairReader(), null,
+            new TransitionDeferredServices(recovery,
+                new StoppedHostLockLender(accessor, Path.Combine(active.GuardedRoot, "arcanum.db"))),
+            new TestStoppedHostDataService(data, null, active), new TestStoppedHostPairReader(CleanPairReader()),
+            Path.Combine(active.GuardedRoot, "arcanum.db"));
+
+        Result<StoppedHostInstallationResetPlan> planned = await PlanUnderTestLockAsync(
+            service, service, new InstallationResetPlanRequest(InstallationResetScope.Global, "/invocation"));
+
+        Assert.True(planned.IsSuccess);
+
+        InstallationResetIssueSummary blocker = Assert.Single(planned.Value.Plan.Blockers);
+
+        Assert.Equal(code, blocker.Code);
+
+        Assert.Contains("authenticated transition evidence", blocker.Message, StringComparison.Ordinal);
+
+        Assert.Contains("does not repair", blocker.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(InstallationResetService.StartHostOnceRemedy, blocker.Message, StringComparison.Ordinal);
+
+        Assert.Equal(1, recovery.Inspections);
+
+        Assert.Equal(0, recovery.Recoveries);
     }
 
     [Fact]
@@ -181,14 +229,15 @@ public sealed partial class InstallationResetServiceTests
 
         Assert.Contains("does not shorten", InstallationResetService.LeaseExpiryRemedy, StringComparison.Ordinal);
 
-        // An operation that waits for an operator is not cleared by starting the host alone: the remedy
-        // says what does clear it, with the two commands that exist for it, and it is not the remedy of
-        // an operation a host start does settle.
+        // Generic fallback guidance cannot authorize cancellation or retry. Actual operation
+        // blockers preserve their source-authored kind/checkpoint/state context instead.
         Assert.NotEqual(InstallationResetService.StartHostOnceRemedy, InstallationResetService.OperatorSettlesRemedy);
 
-        Assert.Contains("`arcanum operation cancel <id>`", InstallationResetService.OperatorSettlesRemedy, StringComparison.Ordinal);
+        Assert.Contains("`arcanum operation show <id>`", InstallationResetService.OperatorSettlesRemedy, StringComparison.Ordinal);
 
-        Assert.Contains("`arcanum operation retry <id>`", InstallationResetService.OperatorSettlesRemedy, StringComparison.Ordinal);
+        Assert.DoesNotContain("operation cancel", InstallationResetService.OperatorSettlesRemedy, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("operation retry", InstallationResetService.OperatorSettlesRemedy, StringComparison.Ordinal);
 
         Assert.Contains("`arcanum serve quit`", InstallationResetService.OperatorSettlesRemedy, StringComparison.Ordinal);
     }
@@ -210,7 +259,8 @@ public sealed partial class InstallationResetServiceTests
     }
 
     private sealed class RecordingStartupRecovery(
-        InstallationResetNestedTransitionEvidenceOutcome evidence)
+        InstallationResetNestedTransitionEvidenceOutcome evidence,
+        Error? failure = null)
         : IInstallationResetStartupRecovery
     {
         public int Inspections { get; private set; }
@@ -235,7 +285,9 @@ public sealed partial class InstallationResetServiceTests
         }
 
         private Result<InstallationResetStartupRecoveryState> Report() =>
-            Result<InstallationResetStartupRecoveryState>.Success(
+            failure is { } error
+                ? Result<InstallationResetStartupRecoveryState>.Failure(error)
+                : Result<InstallationResetStartupRecoveryState>.Success(
                 new InstallationResetStartupRecoveryState(
                     ActiveReset: null,
                     ExpectedInstallationId: null,

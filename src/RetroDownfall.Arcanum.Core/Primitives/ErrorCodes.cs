@@ -715,6 +715,48 @@ public static class ErrorCodes
     /// <summary>Data lifecycle planning and destructive execution.</summary>
     public static class Data
     {
+        /// <summary>A durable operation conflicts with the selected erase.</summary>
+        public const string ActiveOperation = "Data.ActiveOperation";
+
+        /// <summary>An attachment is still in flight.</summary>
+        public const string AttachmentInFlight = "Data.AttachmentInFlight";
+
+        /// <summary>An unfinished batch protects its data.</summary>
+        public const string BatchInProgress = "Data.BatchInProgress";
+
+        /// <summary>A batch still references the selected uploaded file.</summary>
+        public const string BatchReference = "Data.BatchReference";
+
+        /// <summary>A reserved or uncertain-paid budget reservation protects accounting.</summary>
+        public const string BudgetReservationOutstanding = "Data.BudgetReservationOutstanding";
+
+        /// <summary>A pinned Session context protects its source or derived data.</summary>
+        public const string ContextPin = "Data.ContextPin";
+
+        /// <summary>An active daemon execution conflicts with the selection.</summary>
+        public const string DaemonExecutionActive = "Data.DaemonExecutionActive";
+
+        /// <summary>An unexpired idempotency claim protects work.</summary>
+        public const string IdempotencyLeaseActive = "Data.IdempotencyLeaseActive";
+
+        /// <summary>An expired claim still awaits ordinary TTL cleanup.</summary>
+        public const string IdempotencyLeaseExpired = "Data.IdempotencyLeaseExpired";
+
+        /// <summary>A running inference record protects its accounting chain.</summary>
+        public const string InferenceRunActive = "Data.InferenceRunActive";
+
+        /// <summary>An explicitly pinned attachment is protected.</summary>
+        public const string PinnedAttachment = "Data.PinnedAttachment";
+
+        /// <summary>An explicitly pinned entry is protected.</summary>
+        public const string PinnedEntry = "Data.PinnedEntry";
+
+        /// <summary>The accounting chain cannot be safely removed by this Session selection.</summary>
+        public const string SessionAccountingAuthority = "Data.SessionAccountingAuthority";
+
+        /// <summary>The configured Session hold protects this Session.</summary>
+        public const string SessionHold = "Data.SessionHold";
+
         public const string InvalidRequest = "Data.InvalidRequest";
 
         public const string PlanChanged = "Data.PlanChanged";
@@ -731,10 +773,10 @@ public static class ErrorCodes
         /// A durable operation is waiting for an operator, and that conflicts with a global reset.
         /// </summary>
         /// <remarks>
-        /// Reported as a global-reset conflict, never as the failure of a request. An operation that
-        /// waits for an operator stays exactly as it is across any number of host starts, so starting
-        /// the host does not clear it; cancelling it or retrying it against a started host does. The
-        /// conflict whose operation a host start does settle is <c>Data.ActiveOperation</c>.
+        /// Reported as a nested global-reset diagnostic, never as the failure of a request. The
+        /// recorded kind, checkpoint and state determine recovery advice. Owner-bound transitions
+        /// cannot use generic retry or cancel; queued Pending work cannot be retried merely to clear
+        /// this conflict. The companion active-work reason is <see cref="ActiveOperation"/>.
         /// </remarks>
         public const string OperationNeedsAttention = "Data.OperationNeedsAttention";
 

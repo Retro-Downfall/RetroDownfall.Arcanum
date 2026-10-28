@@ -257,6 +257,11 @@ internal sealed partial class CampaignRollupStore
             metadata.SessionId.HasValue ? SensitiveArtifactKind.CampaignContribution : SensitiveArtifactKind.CampaignRollup,
             metadata.ArtifactId, ct).ConfigureAwait(false);
 
+        return VerifyArtifactLabel(metadata, label);
+    }
+
+    private static ArtifactSensitivityLabel? VerifyArtifactLabel(Metadata metadata, ArtifactSensitivityLabel? label)
+    {
         if (metadata.Sensitivity == ContentSensitivity.None)
         {
             if (label is not null || metadata.SensitivityDigest != CleanSensitivityDigest)
@@ -358,7 +363,7 @@ internal sealed partial class CampaignRollupStore
     {
         await using SqliteCommand command = Command(connection, transaction,
             """
-            SELECT b.BindingKindCode, b.CampaignId, c.Id
+            SELECT s.Id, b.BindingKindCode, b.CampaignId, c.Id
             FROM "Sessions" s LEFT JOIN session_campaign_bindings b ON b.SessionId = s.Id
             LEFT JOIN "Campaigns" c ON c.Id = b.CampaignId WHERE s.Id = $session;
             """, ("$session", Format(sessionId)));
@@ -370,22 +375,32 @@ internal sealed partial class CampaignRollupStore
             throw Refuse(Stale("The Session no longer exists."));
         }
 
-        if (reader.IsDBNull(0) || reader.GetInt32(0) == 3)
+        return ReadCanonicalCampaignRow(reader, 0);
+    }
+
+    private static Guid? ReadCanonicalCampaignRow(SqliteDataReader reader, int first)
+    {
+        if (reader.IsDBNull(first))
+        {
+            throw Refuse(Stale("The Session no longer exists."));
+        }
+
+        if (reader.IsDBNull(first + 1) || reader.GetInt32(first + 1) == 3)
         {
             throw Refuse(new Error(ErrorCodes.Covenant.IntegrityFailure, "The Session has no resolved canonical Campaign binding."));
         }
 
-        if (reader.GetInt32(0) == 1)
+        if (reader.GetInt32(first + 1) == 1)
         {
             return null;
         }
 
-        if (reader.GetInt32(0) != 2 || reader.IsDBNull(1) || reader.IsDBNull(2))
+        if (reader.GetInt32(first + 1) != 2 || reader.IsDBNull(first + 2) || reader.IsDBNull(first + 3))
         {
             throw Refuse(new Error(ErrorCodes.Covenant.IntegrityFailure, "The canonical Campaign binding names an unavailable Campaign."));
         }
 
-        return Guid.Parse(reader.GetString(1));
+        return Guid.Parse(reader.GetString(first + 2));
     }
 
     private static async Task RequireCampaignAsync(SqliteConnection connection, SqliteTransaction transaction,
@@ -422,11 +437,12 @@ internal sealed partial class CampaignRollupStore
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
 
-        return await reader.ReadAsync(ct).ConfigureAwait(false)
-            ? new State(reader.IsDBNull(0) ? null : Guid.Parse(reader.GetString(0)), reader.GetInt64(1), reader.GetInt64(2),
-                reader.GetInt32(3) == 1, reader.GetInt64(4), UtcInstantText.Parse(reader.GetString(5)))
-            : null;
+        return await reader.ReadAsync(ct).ConfigureAwait(false) ? ReadStateRow(reader, 0) : null;
     }
+
+    private static State ReadStateRow(SqliteDataReader reader, int first) =>
+        new(reader.IsDBNull(first) ? null : Guid.Parse(reader.GetString(first)), reader.GetInt64(first + 1), reader.GetInt64(first + 2),
+            reader.GetInt32(first + 3) == 1, reader.GetInt64(first + 4), UtcInstantText.Parse(reader.GetString(first + 5)));
 
     private static async Task<Metadata?> ReadMetadataAsync(SqliteConnection connection, SqliteTransaction transaction,
         Guid artifactId, bool contribution, CancellationToken ct)
@@ -450,11 +466,16 @@ internal sealed partial class CampaignRollupStore
             return null;
         }
 
-        Metadata metadata = new(Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)),
-            reader.IsDBNull(2) ? null : Guid.Parse(reader.GetString(2)), reader.GetInt64(3),
-            new CovenantDigest((byte[])reader.GetValue(4)), (ContentSensitivity)reader.GetInt32(5),
-            new CovenantDigest((byte[])reader.GetValue(6)), reader.GetInt64(7), new CovenantDigest((byte[])reader.GetValue(8)),
-            reader.GetInt64(9), reader.GetInt64(10), reader.GetInt32(11));
+        return ReadMetadataRow(reader, 0);
+    }
+
+    private static Metadata ReadMetadataRow(SqliteDataReader reader, int first)
+    {
+        Metadata metadata = new(Guid.Parse(reader.GetString(first + 0)), Guid.Parse(reader.GetString(first + 1)),
+            reader.IsDBNull(first + 2) ? null : Guid.Parse(reader.GetString(first + 2)), reader.GetInt64(first + 3),
+            new CovenantDigest((byte[])reader.GetValue(first + 4)), (ContentSensitivity)reader.GetInt32(first + 5),
+            new CovenantDigest((byte[])reader.GetValue(first + 6)), reader.GetInt64(first + 7), new CovenantDigest((byte[])reader.GetValue(first + 8)),
+            reader.GetInt64(first + 9), reader.GetInt64(first + 10), reader.GetInt32(first + 11));
 
         if (metadata.ContentBytes is < 0 or > CampaignRollupLimits.SummaryUtf8Bytes
             || metadata.Sensitivity is not (ContentSensitivity.None or ContentSensitivity.CovenantDerived))

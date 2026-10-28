@@ -2732,7 +2732,7 @@ internal sealed partial class DataRetentionService(
                 new DataRetentionBlocker(
                     RetentionDataClass.Entries,
                     entryId.ToString("D"),
-                    "Data.PinnedEntry",
+                    ErrorCodes.Data.PinnedEntry,
                     "A pinned session entry protects this session from deletion."));
         }
 
@@ -2744,7 +2744,7 @@ internal sealed partial class DataRetentionService(
                 new DataRetentionBlocker(
                     RetentionDataClass.ArchivedSessions,
                     sessionId.ToString("D"),
-                    "Data.SessionHold",
+                    ErrorCodes.Data.SessionHold,
                     "The session is protected by an explicit operator retention hold."));
         }
 
@@ -2796,7 +2796,7 @@ internal sealed partial class DataRetentionService(
                     new DataRetentionBlocker(
                         RetentionDataClass.AttachmentVersions,
                         attachmentId.ToString("D"),
-                        "Data.AttachmentInFlight",
+                        ErrorCodes.Data.AttachmentInFlight,
                         "A pending attachment must finish or be reclaimed by attachment GC before deletion."),
                 ],
                 [],
@@ -2814,7 +2814,7 @@ internal sealed partial class DataRetentionService(
                     new DataRetentionBlocker(
                         RetentionDataClass.AttachmentVersions,
                         sessionId.ToString("D"),
-                        "Data.SessionHold",
+                        ErrorCodes.Data.SessionHold,
                         "The attachment's owning session is protected by an explicit operator retention hold."));
             }
 
@@ -4968,7 +4968,7 @@ internal sealed partial class DataRetentionService(
                   AND lower(replace(Id, '-', '')) <> @excludedOperationId
                   AND State IN ({string.Join(",", ActiveOperationStates)})
                 """,
-                "Data.ActiveOperation",
+                ErrorCodes.Data.ActiveOperation,
                 "An active durable operation protects this session.",
                 cancellationToken,
                 ("@sessionId", sessionId.ToString("N")),
@@ -4984,7 +4984,7 @@ internal sealed partial class DataRetentionService(
                 WHERE lower(replace(SessionId, '-', '')) = @sessionId
                   AND Status = @running
                 """,
-                "Data.InferenceRunActive",
+                ErrorCodes.Data.InferenceRunActive,
                 "An active inference run protects this session.",
                 cancellationToken,
                 ("@sessionId", sessionId.ToString("N")),
@@ -5002,7 +5002,7 @@ internal sealed partial class DataRetentionService(
                 WHERE lower(replace(run.SessionId, '-', '')) = @sessionId
                   AND reservation.Status IN (@reserved, @uncertainPaid)
                 """,
-                "Data.BudgetReservationOutstanding",
+                ErrorCodes.Data.BudgetReservationOutstanding,
                 "An outstanding budget reservation protects the accounting chain.",
                 cancellationToken,
                 ("@sessionId", sessionId.ToString("N")),
@@ -5026,7 +5026,7 @@ internal sealed partial class DataRetentionService(
                 connection,
                 transaction,
                 "SELECT Id FROM InferenceRuns WHERE Status = @running",
-                "Data.InferenceRunActive",
+                ErrorCodes.Data.InferenceRunActive,
                 "An active inference run protects memory and accounting state.",
                 cancellationToken,
                 ("@running", (int)InferenceRunStatus.Running)).ConfigureAwait(false),
@@ -5283,7 +5283,7 @@ internal sealed partial class DataRetentionService(
                 new DataRetentionBlocker(
                     RetentionDataClass.Entries,
                     reader.GetString(0),
-                    "Data.ContextPin",
+                    ErrorCodes.Data.ContextPin,
                     $"Pinned context '{reader.GetString(1)}' protects this session from deletion."));
         }
 
@@ -5326,7 +5326,7 @@ internal sealed partial class DataRetentionService(
                 new DataRetentionBlocker(
                     RetentionDataClass.AttachmentVersions,
                     attachmentId.ToString("D"),
-                    "Data.PinnedAttachment",
+                    ErrorCodes.Data.PinnedAttachment,
                     "A pinned attachment/context protects this attachment from deletion."),
             ];
     }
@@ -5363,7 +5363,7 @@ internal sealed partial class DataRetentionService(
             {
                 conflicts.Add(
                     new DataRetentionConflict(
-                        "Data.ActiveOperation",
+                        ErrorCodes.Data.ActiveOperation,
                         Guid.Parse(reader.GetString(0)).ToString("D"),
                         "An active durable operation protects this session."));
             }
@@ -5394,7 +5394,7 @@ internal sealed partial class DataRetentionService(
             {
                 conflicts.Add(
                     new DataRetentionConflict(
-                        "Data.InferenceRunActive",
+                        ErrorCodes.Data.InferenceRunActive,
                         Guid.Parse(reader.GetString(0)).ToString("D"),
                         "An active inference run protects this session."));
             }
@@ -5429,7 +5429,7 @@ internal sealed partial class DataRetentionService(
             {
                 conflicts.Add(
                     new DataRetentionConflict(
-                        "Data.BudgetReservationOutstanding",
+                        ErrorCodes.Data.BudgetReservationOutstanding,
                         Guid.Parse(reader.GetString(0)).ToString("D"),
                         "An outstanding budget reservation protects the accounting chain."));
             }
@@ -5441,24 +5441,72 @@ internal sealed partial class DataRetentionService(
             .ThenBy(static conflict => conflict.ResourceId, StringComparer.Ordinal)];
     }
 
-    /// <summary>The message of a global-reset conflict for a durable operation a host start settles.</summary>
-    private const string ActiveOperationGlobalMessage =
-        "An active durable operation conflicts with this global reset.";
+    private static DataRetentionConflict GlobalOperationConflict(
+        string operationId,
+        bool waitsForOperator,
+        string kind,
+        int checkpointVersion,
+        LongRunningOperationState state,
+        string? terminalCode)
+    {
+        const string inspectionPrerequisite =
+            "If the host is stopped, start it with 'arcanum serve' before using HTTP-backed operation commands. "
+            + "If startup cannot serve, preserve recovery evidence and resolve the startup blocker before continuing; "
+            + "do not start another reset. A successful start does not prove recovery. ";
 
-    /// <summary>The message of a global-reset conflict for a durable operation that waits for an operator.</summary>
-    private const string OperationNeedsAttentionGlobalMessage =
-        "A durable operation is waiting for an operator and conflicts with this global reset.";
+        string inspection = $"Inspect 'arcanum operation show {operationId}'. ";
 
-    private static DataRetentionConflict GlobalOperationConflict(string operationId, bool waitsForOperator) =>
-        waitsForOperator
-            ? new DataRetentionConflict(
-                ErrorCodes.Data.OperationNeedsAttention,
-                operationId,
-                OperationNeedsAttentionGlobalMessage)
-            : new DataRetentionConflict(
-                "Data.ActiveOperation",
-                operationId,
-                ActiveOperationGlobalMessage);
+        string guidance;
+
+        if ((kind == LongRunningOperationKinds.DataRetentionMutation && checkpointVersion == 4)
+            || (kind == LongRunningOperationKinds.DataRetentionFactoryReset && checkpointVersion == 2))
+        {
+            guidance = LongRunningOperationRecoveryRegistry.OwnerRecoveryGuidance.Replace(
+                "<id>", operationId, StringComparison.Ordinal);
+        }
+        else if (LongRunningOperationRecoveryRegistry.Find(kind) is not { } descriptor
+            || checkpointVersion < descriptor.MinCheckpointVersion || checkpointVersion > descriptor.MaxCheckpointVersion)
+        {
+            guidance = inspection + "The recorded recovery kind or checkpoint is unsupported. Preserve its evidence and resolve "
+                + "the compatibility blocker before another reset; a host start is not proof of repair.";
+        }
+        else if (kind == LongRunningOperationKinds.LongRestSweep && state == LongRunningOperationState.Pending)
+        {
+            guidance = inspection + $"This Long Rest request is Pending. If it is no longer wanted, use 'arcanum operation cancel {operationId}'. "
+                + "Pending work cannot be retried to clear this blocker.";
+        }
+        else if (kind == LongRunningOperationKinds.LongRestSweep && terminalCode == "LongRest.TransportUnknown")
+        {
+            guidance = inspection + $"Unknown provider usage permits only 'arcanum operation cancel {operationId}' to clear this parked sweep; "
+                + "do not replay it to discard uncertain accounting.";
+        }
+        else if (kind == LongRunningOperationKinds.LongRestSweep && terminalCode == "long_rest.authorized_request_required")
+        {
+            guidance = inspection + "This protected sweep needs a fresh eligible authenticated Session request. "
+                + "Retry alone grants no authority.";
+        }
+        else if (kind is LongRunningOperationKinds.DataRetentionMutation or LongRunningOperationKinds.DataRetentionFactoryReset
+            && terminalCode?.StartsWith("Covenant.", StringComparison.Ordinal) == true)
+        {
+            guidance = inspection + "Admission stays closed until erasure recovery proves safe reopening. Resolve the recorded blocker, "
+                + "then restart the host to recover the same operation. Do not start a second reset or factory erasure. "
+                + "Restarting does not repair missing recovery evidence.";
+        }
+        else
+        {
+            guidance = inspection + "Start the host with 'arcanum serve' to allow its owning recovery and inspect the recorded outcome. "
+                + "If it remains blocked, follow that operation's kind-specific repair guidance; starting the host does not guarantee repair. "
+                + (kind == LongRunningOperationKinds.LongRestSweep
+                    ? "Eligible clean Long Rest sweeps may be readmitted by their hosted worker."
+                    : string.Empty);
+        }
+
+        return new DataRetentionConflict(
+            waitsForOperator ? ErrorCodes.Data.OperationNeedsAttention : ErrorCodes.Data.ActiveOperation,
+            operationId,
+            "A durable operation conflicts with this global reset. " + inspectionPrerequisite + guidance
+                + " Once it is settled, stop the host with 'arcanum serve quit' and obtain a fresh reset plan.");
+    }
 
     private async Task<DataRetentionConflict[]> ReadGlobalConflictsAsync(
         CancellationToken cancellationToken,
@@ -5479,12 +5527,13 @@ internal sealed partial class DataRetentionService(
                 ? string.Empty
                 : "AND lower(replace(Id, '-', '')) <> @excludedOperationId";
 
-            // The second column says whether a host start could settle the row. One that waits for an
-            // operator is reported under its own code, because starting the host does not clear it.
+            // Keep the existing attention classification; minimum recorded metadata selects truthful
+            // guidance without hydrating checkpoint payloads or changing recovery authority.
             command.CommandText =
                 $"""
                 SELECT Id,
-                       CASE WHEN {LongRunningOperationStore.WaitsForOperatorPredicate} THEN 1 ELSE 0 END
+                       CASE WHEN {LongRunningOperationStore.WaitsForOperatorPredicate} THEN 1 ELSE 0 END,
+                       Kind, CheckpointVersion, State, TerminalErrorCode
                 FROM LongRunningOperations
                 WHERE State IN ({string.Join(",", ActiveOperationStates)})
                   {operationExclusion}
@@ -5511,7 +5560,11 @@ internal sealed partial class DataRetentionService(
                 conflicts.Add(
                     GlobalOperationConflict(
                         Guid.Parse(reader.GetString(0)).ToString("D"),
-                        reader.GetInt64(1) != 0));
+                        reader.GetInt64(1) != 0,
+                        reader.GetString(2),
+                        reader.GetInt32(3),
+                        (LongRunningOperationState)reader.GetInt32(4),
+                        reader.IsDBNull(5) ? null : reader.GetString(5)));
             }
         }
 
@@ -5535,7 +5588,7 @@ internal sealed partial class DataRetentionService(
             {
                 conflicts.Add(
                     new DataRetentionConflict(
-                        "Data.BudgetReservationOutstanding",
+                        ErrorCodes.Data.BudgetReservationOutstanding,
                         Guid.Parse(reader.GetString(0)).ToString("D"),
                         "An outstanding budget reservation conflicts with this global reset."));
             }
@@ -5583,7 +5636,7 @@ internal sealed partial class DataRetentionService(
                     // A cancelled execution whose body has not drained still owns the daemon's single-flight slot.
                     || daemonExecutions.IsAwaitingDrain(execution.Id))
                 .Select(static execution => new DataRetentionConflict(
-                    "Data.DaemonExecutionActive",
+                    ErrorCodes.Data.DaemonExecutionActive,
                     execution.Id,
                     "An active daemon execution conflicts with this global reset.")),
         ];

@@ -41,11 +41,11 @@ internal sealed partial class CampaignRollupStore
         {
             List<Source> page = await ReadSourcePageAsync(connection, transaction, rollup.ArtifactId, after, ct).ConfigureAwait(false);
 
-            foreach (Source source in page)
-            {
-                (Metadata contribution, GenerationProvenance sourceProvenance) = await VerifySourceAsync(
-                    connection, transaction, rollup.CampaignId, source, authority, ct).ConfigureAwait(false);
+            IReadOnlyList<(Metadata Artifact, GenerationProvenance Provenance)> verified = await VerifySourcePageAsync(
+                connection, transaction, rollup.CampaignId, page, authority, ct).ConfigureAwait(false);
 
+            foreach ((Metadata contribution, GenerationProvenance sourceProvenance) in verified)
+            {
                 sensitivity = ContentSensitivityAlgebra.Maximum(sensitivity, contribution.Sensitivity);
 
                 actualProvenance = actualProvenance.Merge(sourceProvenance);

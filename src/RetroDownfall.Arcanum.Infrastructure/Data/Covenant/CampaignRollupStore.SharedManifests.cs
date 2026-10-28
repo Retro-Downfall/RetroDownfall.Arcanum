@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -185,11 +186,11 @@ internal sealed partial class CampaignRollupStore
             {
                 List<Source> page = await ReadSourcePageAsync(connection, transaction, segment.Id, after, ct, shared: true).ConfigureAwait(false);
 
-                foreach (Source source in page)
-                {
-                    (Metadata contribution, GenerationProvenance sourceProvenance) = await VerifySourceAsync(
-                        connection, transaction, rollup.CampaignId, source, authority, ct).ConfigureAwait(false);
+                IReadOnlyList<(Metadata Artifact, GenerationProvenance Provenance)> verified = await VerifySourcePageAsync(
+                    connection, transaction, rollup.CampaignId, page, authority, ct).ConfigureAwait(false);
 
+                foreach ((Metadata contribution, GenerationProvenance sourceProvenance) in verified)
+                {
                     AppendSource(hash, contribution);
 
                     sensitivity = ContentSensitivityAlgebra.Maximum(sensitivity, contribution.Sensitivity);
@@ -233,31 +234,170 @@ internal sealed partial class CampaignRollupStore
         }
     }
 
-    private async Task<(Metadata Artifact, GenerationProvenance Provenance)> VerifySourceAsync(
-        SqliteConnection connection, SqliteTransaction transaction, Guid campaignId, Source source,
+    private async Task<IReadOnlyList<(Metadata Artifact, GenerationProvenance Provenance)>> VerifySourcePageAsync(
+        SqliteConnection connection, SqliteTransaction transaction, Guid campaignId, IReadOnlyList<Source> sources,
         ICovenantSnapshotReadLease? authority, CancellationToken ct)
     {
-        Metadata contribution = await ReadMetadataAsync(connection, transaction, source.ArtifactId, true, ct).ConfigureAwait(false)
-            ?? throw Refuse(Stale("A retained Campaign source revision no longer exists."));
-
-        State? state = await ReadStateAsync(connection, transaction, source.SessionId, true, ct).ConfigureAwait(false);
-
-        Guid? canonical = await ReadCanonicalCampaignAsync(connection, transaction, source.SessionId, ct).ConfigureAwait(false);
-
-        if (source.CampaignId != campaignId || contribution.CampaignId != campaignId
-            || contribution.SessionId != source.SessionId || state?.ArtifactId != contribution.ArtifactId || state.RefoldRequired
-            || source.Revision != contribution.Revision || source.Revision != state.Revision
-            || source.ContentDigest != contribution.ContentDigest || source.SensitivityDigest != contribution.SensitivityDigest
-            || source.ThroughSequence != contribution.ThroughSequence || source.ThroughSequence != state.ThroughSequence
-            || canonical != campaignId)
+        if (sources.Count == 0)
         {
-            throw Refuse(Stale("A Campaign publication's consumed contribution no longer matches its exact current source."));
+            return [];
         }
 
-        await RevalidateAsync(authority, campaignId, contribution.Sensitivity, ct).ConfigureAwait(false);
+        if (sources.Count > MetadataPageSize)
+        {
+            throw Refuse(Stale("A Campaign source page exceeds its bounded metadata window."));
+        }
 
-        ArtifactSensitivityLabel? label = await VerifyArtifactLabelAsync(connection, transaction, contribution, ct).ConfigureAwait(false);
+        List<(string Name, object? Value)> parameters = [];
 
-        return (contribution, label?.Provenance ?? CleanProvenance);
+        List<string> rows = [];
+
+        for (int index = 0; index < sources.Count; index++)
+        {
+            string session = "$session" + index;
+
+            string artifact = "$artifact" + index;
+
+            rows.Add($"({session}, {artifact})");
+
+            parameters.Add((session, Format(sources[index].SessionId)));
+
+            parameters.Add((artifact, Format(sources[index].ArtifactId)));
+        }
+
+        Dictionary<Guid, (Metadata Artifact, State? State, Guid? Campaign)> evidence = [];
+
+        await using (SqliteCommand command = Command(connection, transaction,
+            $"""
+            WITH requested(SessionId, ArtifactId) AS (VALUES {string.Join(", ", rows)})
+            SELECT requested.SessionId,
+                artifact.ArtifactId, artifact.CampaignId, artifact.SessionId, artifact.Revision,
+                artifact.ContentDigest, artifact.SensitivityCode, artifact.SensitivityDigest,
+                artifact.SourceGeneration, artifact.SourceManifestDigest, artifact.SummarizedThroughSequence,
+                0, length(CAST(artifact.Content AS BLOB)),
+                state.SessionId, state.CurrentArtifactId, state.Revision, state.SourceGeneration,
+                state.RefoldRequired, state.SummarizedThroughSequence, state.UpdatedAtUtc,
+                session.Id, binding.BindingKindCode, binding.CampaignId, campaign.Id
+            FROM requested
+            LEFT JOIN campaign_contribution_artifacts artifact ON artifact.ArtifactId = requested.ArtifactId
+            LEFT JOIN campaign_contribution_state state ON state.SessionId = requested.SessionId
+            LEFT JOIN "Sessions" session ON session.Id = requested.SessionId
+            LEFT JOIN session_campaign_bindings binding ON binding.SessionId = session.Id
+            LEFT JOIN "Campaigns" campaign ON campaign.Id = binding.CampaignId
+            ORDER BY requested.SessionId;
+            """, parameters.ToArray()))
+        {
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                if (reader.IsDBNull(1))
+                {
+                    throw Refuse(Stale("A retained Campaign source revision no longer exists."));
+                }
+
+                evidence.Add(Guid.Parse(reader.GetString(0)),
+                    (ReadMetadataRow(reader, 1), reader.IsDBNull(13) ? null : ReadStateRow(reader, 14),
+                        ReadCanonicalCampaignRow(reader, 20)));
+            }
+        }
+
+        Dictionary<Guid, Metadata> byArtifact = [];
+
+        foreach (Source source in sources)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            (Metadata contribution, State? state, Guid? canonical) = evidence[source.SessionId];
+
+            if (source.CampaignId != campaignId || contribution.CampaignId != campaignId
+                || contribution.SessionId != source.SessionId || state?.ArtifactId != contribution.ArtifactId || state.RefoldRequired
+                || source.Revision != contribution.Revision || source.Revision != state.Revision
+                || source.ContentDigest != contribution.ContentDigest || source.SensitivityDigest != contribution.SensitivityDigest
+                || source.ThroughSequence != contribution.ThroughSequence || source.ThroughSequence != state.ThroughSequence
+                || canonical != campaignId)
+            {
+                throw Refuse(Stale("A Campaign publication's consumed contribution no longer matches its exact current source."));
+            }
+
+            // Every protected source is authorized before the batch opens any label payload.
+            await RevalidateAsync(authority, campaignId, contribution.Sensitivity, ct).ConfigureAwait(false);
+
+            byArtifact.Add(contribution.ArtifactId, contribution);
+        }
+
+        parameters.Clear();
+
+        List<string> keys = [];
+
+        for (int index = 0; index < sources.Count; index++)
+        {
+            string parameter = "$key" + index;
+
+            keys.Add(parameter);
+
+            parameters.Add((parameter, CovenantIdentitySql.Key(sources[index].ArtifactId)));
+        }
+
+        parameters.Add(("$kind", (int)SensitiveArtifactKind.CampaignContribution));
+
+        Dictionary<Guid, ArtifactSensitivityLabel> labels = [];
+
+        await using (SqliteCommand command = Command(connection, transaction,
+            "SELECT " + ArtifactSensitivityLedger.LabelColumnListAsLabel
+                + ", label.SensitivityDigest, label.ArtifactLabelDigest FROM artifact_sensitivity label"
+                + " WHERE label.ArtifactKindCode = $kind AND lower(replace(label.ArtifactId, '-', '')) IN ("
+                + string.Join(", ", keys) + ");", parameters.ToArray()))
+        {
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                string rawId = reader.GetString(2);
+
+                if (!Guid.TryParse(rawId, out Guid id) || rawId != Format(id)
+                    || !byArtifact.TryGetValue(id, out Metadata? metadata) || labels.ContainsKey(id))
+                {
+                    throw Refuse(new Error(ErrorCodes.Covenant.IntegrityFailure,
+                        "A Campaign source has ambiguous or noncanonical sensitivity label identity evidence."));
+                }
+
+                // Recheck immediately before decoding, including revocation during the batch read.
+                await RevalidateAsync(authority, campaignId, metadata.Sensitivity, ct).ConfigureAwait(false);
+
+                Result<ArtifactSensitivityLabel> materialized = ArtifactSensitivityLedger.Materialize(reader);
+
+                if (materialized.IsFailure)
+                {
+                    throw Refuse(materialized.Error);
+                }
+
+                ArtifactSensitivityLabel label = materialized.Value;
+
+                if (new CovenantDigest((byte[])reader.GetValue(16)) != label.SensitivityDigest
+                    || new CovenantDigest((byte[])reader.GetValue(17)) != label.LabelDigest)
+                {
+                    throw Refuse(new Error(ErrorCodes.Covenant.IntegrityFailure,
+                        "A Campaign source sensitivity label cannot reproduce its stored digest."));
+                }
+
+                labels.Add(id, label);
+            }
+        }
+
+        List<(Metadata Artifact, GenerationProvenance Provenance)> verified = [];
+
+        foreach (Source source in sources)
+        {
+            Metadata metadata = byArtifact[source.ArtifactId];
+
+            labels.TryGetValue(source.ArtifactId, out ArtifactSensitivityLabel? label);
+
+            _ = VerifyArtifactLabel(metadata, label);
+
+            verified.Add((metadata, label?.Provenance ?? CleanProvenance));
+        }
+
+        return verified;
     }
 }

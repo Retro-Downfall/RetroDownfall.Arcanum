@@ -550,21 +550,17 @@ internal sealed class InstallationResetService(
             BindingId = bindingId,
         };
 
-        // What a stopped host cannot drain becomes a blocker, here, before any effect. Without this
-        // they would surface only in the nested erasure, after the daemon is uninstalled and the claim
-        // is durable, where every refusal keeps the record and the host then refuses to start. Each
-        // carries the remedy that is true for its kind: a host start runs the recovery of the durable
-        // operations that have one and of stranded batches, and settles what an interrupted batch or
-        // subagent left; a durable operation that waits for an operator stays as it is across any
-        // number of starts and is cleared by cancelling or retrying it against a started host; and an
-        // idempotency lease is time-bounded.
+        // Refuse before daemon/claim effects. Durable-operation diagnostics already carry their
+        // exact recovery context; a code-only suffix must not invent generic retry/cancel authority.
         InstallationResetIssueSummary[] undrainable = stoppedHostGlobal && canonical is not null
             ?
             [
                 .. canonical.Conflicts.Select(static conflict =>
                     new InstallationResetIssueSummary(
                         conflict.Code,
-                        conflict.Message + " " + RemedyFor(conflict.Code),
+                        conflict.Code is ErrorCodes.Data.ActiveOperation or ErrorCodes.Data.OperationNeedsAttention
+                            ? conflict.Message
+                            : conflict.Message + " " + RemedyFor(conflict.Code),
                         conflict.ResourceId)),
                 .. await ReadStandaloneTransitionBlockersAsync(cancellationToken)
                     .ConfigureAwait(false),
@@ -674,15 +670,17 @@ internal sealed class InstallationResetService(
         "The lease is time-bounded and starting the host does not shorten it. Retry once it has expired.";
 
     internal const string OperatorSettlesRemedy =
-        "Start the host with `arcanum serve`, run `arcanum operation cancel <id>` (or "
-        + "`arcanum operation retry <id>` and let it finish), stop it with `arcanum serve quit`, and retry.";
+        "If the host is stopped, start it with `arcanum serve` before using HTTP-backed operation commands. "
+        + "If startup cannot serve, preserve recovery evidence and resolve the startup blocker; starting does not prove recovery. "
+        + "Inspect the identified operation with `arcanum operation show <id>` and follow its recorded recovery guidance. "
+        + "Once it is settled, stop the host with `arcanum serve quit` and obtain a fresh reset plan.";
 
     /// <summary>The remedy that is true for a conflict kind a stopped host cannot drain.</summary>
     internal static string RemedyFor(string conflictCode) => conflictCode switch
     {
-        "Data.IdempotencyLeaseActive" => LeaseExpiryRemedy,
+        ErrorCodes.Data.IdempotencyLeaseActive => LeaseExpiryRemedy,
         ErrorCodes.Data.OperationNeedsAttention => OperatorSettlesRemedy,
-        "Data.InferenceRunActive" or "Data.BudgetReservationOutstanding" => InterruptedWorkRemedy,
+        ErrorCodes.Data.InferenceRunActive or ErrorCodes.Data.BudgetReservationOutstanding => InterruptedWorkRemedy,
         _ => StartHostOnceRemedy,
     };
 
@@ -731,7 +729,7 @@ internal sealed class InstallationResetService(
 
         if (pair.IsFailure)
         {
-            return [TransitionBlocker(pair.Error.Code, pair.Error.Message)];
+            return [TransitionBlocker(pair.Error.Code, pair.Error.Message, recoverableInspection: false)];
         }
 
         return pair.Value.NestedTransitionEvidence
@@ -744,8 +742,10 @@ internal sealed class InstallationResetService(
                 : [];
     }
 
-    private static InstallationResetIssueSummary TransitionBlocker(string code, string message) =>
-        new(code, message + " " + StartHostOnceRemedy);
+    private static InstallationResetIssueSummary TransitionBlocker(string code, string message, bool recoverableInspection = true) =>
+        new(code, message + " " + (recoverableInspection
+            ? "Preserve the transition evidence and start the host to attempt its existing recovery. Inspect the recorded outcome before stopping the host and obtaining a fresh reset plan; restarting does not guarantee repair."
+            : "Preserve the transition evidence and resolve this inspection failure before another reset. Restarting does not repair corrupt or missing evidence; use the documented recovery guidance for this refusal."));
 
     public Result<InstallationResetPlan> BindOnlineDataPlan(
         InstallationResetPlanRequest request,
@@ -980,7 +980,7 @@ internal sealed class InstallationResetService(
 
             if (!SameFullRequest(existing, request)
                 || existing.FullInstallationResetRemediationClaim is not
-                    { Version: 1 } acceptedClaim
+                { Version: 1 } acceptedClaim
                 || !remediationVerifier.MatchesAuthenticatedClaim(
                     request.ExternalRemediation,
                     installation.Value,

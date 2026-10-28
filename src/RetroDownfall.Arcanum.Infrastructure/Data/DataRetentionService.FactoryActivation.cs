@@ -569,7 +569,7 @@ internal sealed partial class DataRetentionService
     // confirmed plan; the closed pre-canonical snapshot refuses any Running row left by drain.
     // Every other conflict remains a pre-launch refusal.
     private static DataRetentionConflict? FirstUndrainableFactoryConflict(DataRetentionPlan plan) =>
-        plan.Conflicts.FirstOrDefault(static conflict => conflict.Code != "Data.InferenceRunActive");
+        plan.Conflicts.FirstOrDefault(static conflict => conflict.Code != ErrorCodes.Data.InferenceRunActive);
 
     // A refusal the lease-maintained segment has already recorded durably, carried out of that
     // segment as the error it recorded so the caller returns it unchanged.

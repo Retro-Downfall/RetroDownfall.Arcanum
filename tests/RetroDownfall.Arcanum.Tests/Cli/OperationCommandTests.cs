@@ -182,6 +182,23 @@ public sealed class OperationCommandTests
         Assert.DoesNotContain("restart the host", result.Output, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("show", "GET")]
+    [InlineData("cancel", "POST")]
+    [InlineData("retry", "POST")]
+    public async Task Operation_inspection_and_actions_need_a_serving_HTTP_host(string action, string method)
+    {
+        RecordingHandler handler = new([]) { HostUnavailable = true };
+
+        CliTestResult result = await RunCommand(handler, ["operation", action, OperationId, "--json"], 240);
+
+        Assert.Equal(3, result.ExitCode);
+
+        Assert.Contains(handler.Requests, request => request.Method.Method == method
+            && request.RequestUri!.AbsolutePath == "/api/operations/" + OperationId
+                + (action == "show" ? string.Empty : "/" + action));
+    }
+
     private static LongRunningOperationDto Operation() => new(
         Guid.Parse(OperationId),
         LongRunningOperationKinds.DataRetentionMutation,
@@ -254,6 +271,8 @@ public sealed class OperationCommandTests
 
         public string? ResponseJson { get; init; }
 
+        public bool HostUnavailable { get; init; }
+
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -263,6 +282,11 @@ public sealed class OperationCommandTests
             AnsiConsole.Profile.Width = Width;
 
             Requests.Add(new HttpRequestMessage(request.Method, request.RequestUri));
+
+            if (HostUnavailable)
+            {
+                throw new HttpRequestException("The offline fixture host is unavailable.");
+            }
 
             byte[] json = JsonSerializer.SerializeToUtf8Bytes(
                 new ApiResponse<ListPageResult<LongRunningOperationDto>>(new ListPageResult<LongRunningOperationDto>(rows, false), true, null),
