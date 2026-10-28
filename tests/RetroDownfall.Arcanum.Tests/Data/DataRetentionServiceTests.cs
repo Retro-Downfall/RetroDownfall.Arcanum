@@ -3864,7 +3864,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         ILogger<DataRetentionService>? logger = null,
         CovenantErasureCoordinator? erasureCoordinator = null,
         DataRetentionLeaseMaintainer? leaseMaintainer = null,
-        LongRunningOperationOwnership? operationOwnership = null)
+        LongRunningOperationOwnership? operationOwnership = null,
+        ICovenantOperationGate? covenantGate = null)
     {
         ILongRunningOperationStore operations = operationStore
             ?? new LongRunningOperationStore(
@@ -3884,7 +3885,8 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             policyStore,
             covenantErasureCoordinator: erasureCoordinator,
             leaseMaintainer: leaseMaintainer,
-            operationOwnership: operationOwnership);
+            operationOwnership: operationOwnership,
+            covenantGate: covenantGate);
     }
 
     private LexiconService CreateLexiconService(ArcanumDbContext? context = null) =>

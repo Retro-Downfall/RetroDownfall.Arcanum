@@ -2861,7 +2861,7 @@ internal sealed partial class DataRetentionService(
             requiresConfirmation: true);
     }
 
-    private async Task AddSessionPruneCandidatesAsync(
+    private async Task<IReadOnlyDictionary<string, DateTimeOffset>> AddSessionPruneCandidatesAsync(
         DataRetentionRequest request,
         RetentionSettings retention,
         int remaining,
@@ -2871,9 +2871,11 @@ internal sealed partial class DataRetentionService(
         List<string> candidates,
         CancellationToken cancellationToken)
     {
+        Dictionary<string, DateTimeOffset> selectedCutoffs = new(StringComparer.Ordinal);
+
         if (remaining <= 0)
         {
-            return;
+            return selectedCutoffs;
         }
 
         foreach ((string status, RetentionRuleSettings rule) in new[]
@@ -2933,7 +2935,20 @@ internal sealed partial class DataRetentionService(
                 if (sessionPlan.Blockers.Length == 0
                     && sessionPlan.Conflicts.Length == 0)
                 {
-                    candidates.Add("session:" + sessionId.ToString("D"));
+                    string candidate = "session:" + sessionId.ToString("D");
+
+                    if (selectedCutoffs.TryGetValue(candidate, out DateTimeOffset previousCutoff))
+                    {
+                        if (cutoff < previousCutoff) selectedCutoffs[candidate] = cutoff;
+
+                        continue;
+                    }
+                    else
+                    {
+                        selectedCutoffs.Add(candidate, cutoff);
+                    }
+
+                    candidates.Add(candidate);
 
                     items.AddRange(sessionPlan.Items);
 
@@ -2941,6 +2956,8 @@ internal sealed partial class DataRetentionService(
                 }
             }
         }
+
+        return selectedCutoffs;
     }
 
     private async Task<DataRetentionPlan> BuildResetMemoryPlanAsync(

@@ -343,7 +343,7 @@ internal sealed partial class DataRetentionService
             candidates,
             cancellationToken).ConfigureAwait(false);
 
-        await AddSessionPruneCandidatesAsync(
+        IReadOnlyDictionary<string, DateTimeOffset> selectedSessionCutoffs = await AddSessionPruneCandidatesAsync(
             request,
             retention,
             limit - candidates.Count,
@@ -495,7 +495,8 @@ internal sealed partial class DataRetentionService
                 plan.CandidateIds,
                 plan.GeneratedAt,
                 retention,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                selectedSessionCutoffs).ConfigureAwait(false);
 
         _frozenPruneAuthorities.Add(
             plan,
@@ -2416,20 +2417,28 @@ internal sealed partial class DataRetentionService
 
                     DateTimeOffset leaseExpiresAt = UtcInstantText.Parse(blockedReader.GetString(1));
 
+                    bool leaseActive = leaseExpiresAt > PrunePlanningTimestamp;
+
+                    string reasonCode = leaseActive ? "Data.IdempotencyLeaseActive" : "Data.IdempotencyLeaseExpired";
+
+                    string message = leaseActive
+                        ? "An active idempotency lease cannot be pruned."
+                        : "This unfinished idempotency lease has expired. Existing admitted host cleanup can remove the claim only after both creation and lease expiry are older than 24 hours. Request a fresh plan after cleanup; the request is not replayed.";
+
                     blockers.Add(
                         new DataRetentionBlocker(
                             RetentionDataClass.IdempotencyClaims,
                             id.ToString("D"),
-                            "Data.IdempotencyLeaseActive",
-                            leaseExpiresAt > PrunePlanningTimestamp
-                                ? "An active idempotency lease cannot be pruned."
-                                : "An unfinished idempotency claim requires reconciliation before pruning."));
+                            reasonCode,
+                            message));
 
                     conflicts.Add(
                         new DataRetentionConflict(
-                            "Data.IdempotencyLeaseActive",
+                            reasonCode,
                             id.ToString("D"),
-                            "An unfinished idempotency claim protects its request state."));
+                            leaseActive
+                                ? "An unfinished idempotency claim protects its request state."
+                                : "The expired unfinished claim remains protected until existing admitted aged-claim cleanup removes it; re-plan afterward."));
                 }
             }
 
@@ -3039,13 +3048,23 @@ internal sealed partial class DataRetentionService
         IEnumerable<string> candidates,
         DateTimeOffset generatedAt,
         RetentionSettings retention,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, DateTimeOffset>? selectedCutoffs = null)
     {
         Dictionary<string, DateTimeOffset> cutoffs =
             new(StringComparer.Ordinal);
 
         foreach (string candidate in candidates)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (selectedCutoffs is not null && selectedCutoffs.TryGetValue(candidate, out DateTimeOffset selectedCutoff))
+            {
+                cutoffs.Add(candidate, selectedCutoff);
+
+                continue;
+            }
+
             CandidateAgeBoundary? boundary = await ReadCandidateAgeBoundaryAsync(
                 candidate,
                 generatedAt,

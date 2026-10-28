@@ -239,7 +239,7 @@ internal sealed partial class DataRetentionService
     /// changes. Covenant reset and factory reset do select the family, so every content-free aggregate
     /// must instead be bound to the preview the operator confirmed.
     /// </remarks>
-    private static DataRetentionPlan BindCovenantErasurePlanIdentity(
+    private DataRetentionPlan BindCovenantErasurePlanIdentity(
         DataRetentionPlan plan,
         DataRetentionCovenantInventory inventory)
     {
@@ -258,6 +258,16 @@ internal sealed partial class DataRetentionService
 
         if (!bindsInventory)
         {
+            if (_frozenPruneAuthorities.TryGetValue(plan, out FrozenPruneAuthority? authority))
+            {
+                _frozenPruneAuthorities.Add(attached, authority);
+            }
+
+            if (_pruneSnapshots.TryGetValue(plan, out PruneSnapshot? snapshot))
+            {
+                _pruneSnapshots.Add(attached, snapshot);
+            }
+
             return attached;
         }
 
