@@ -22,9 +22,13 @@ public sealed partial class BudgetReservationServiceTests : IAsyncLifetime
 
     private ArcanumDbContext? _db;
 
-    public BudgetReservationServiceTests(GrimoireFixture fixture)
+    private readonly Xunit.Abstractions.ITestOutputHelper _snapshotOutput;
+
+    public BudgetReservationServiceTests(GrimoireFixture fixture, Xunit.Abstractions.ITestOutputHelper snapshotOutput)
     {
         _fixture = fixture;
+
+        _snapshotOutput = snapshotOutput;
     }
 
     public Task InitializeAsync()
@@ -471,8 +475,8 @@ public sealed partial class BudgetReservationServiceTests : IAsyncLifetime
         }
 
         // While the first reservation is parked after its sums and before its insert, the immediate write
-        // transaction keeps the second from reading the ledger at all. A second connection that reaches its own
-        // decision point inside this window decided on the same ledger the first one did.
+        // transaction keeps the second from reaching an authoritative decision. Its optional read-ahead is
+        // untrusted until validated under that writer; reaching this hook would decide on the same ledger.
         Task windowOutcome = await Task.WhenAny(secondAtDecision.Task, Task.Delay(TimeSpan.FromMilliseconds(500)));
 
         bool secondDecidedWhileFirstWasParked = windowOutcome == secondAtDecision.Task;
@@ -483,7 +487,7 @@ public sealed partial class BudgetReservationServiceTests : IAsyncLifetime
         // spend Microsoft.Data.Sqlite's whole 30 second busy-snapshot retry before this could report the overlap.
         Assert.False(
             secondDecidedWhileFirstWasParked,
-            "The second connection read the spend ledger while the first reservation was between its sums and its insert.");
+            "The second connection reached its budget decision while the first reservation was between its sums and its insert.");
 
         Result<BudgetReservation> firstResult = await firstReserve.WaitAsync(TimeSpan.FromSeconds(30));
 

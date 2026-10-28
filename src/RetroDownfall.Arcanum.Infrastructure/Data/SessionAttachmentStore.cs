@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Caching;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Storage;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -80,6 +81,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     /// <see cref="SqliteBusyRetry"/>.
     /// </summary>
     internal Func<CancellationToken, Task>? AfterBytesCommittedBeforeDbForTesting { get; set; }
+
+    internal Func<string, bool>? CopyDirectoryFlushForTesting { get; set; }
 
     /// <summary>
     /// Test seam: replaces the per-session byte budget, which is otherwise clamped to at least 1 MiB, so the
@@ -623,18 +626,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
                 registeredDestinations.Add(newAbsolute);
 
-                await AtomicCopyFileAsync(oldAbsolute, newAbsolute, cancellationToken).ConfigureAwait(false);
-
-                if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
+                IdentityOwnedFileSystemArtifact copiedBlob = await AtomicCopyFileAsync(
+                    oldAbsolute,
                     newAbsolute,
-                    FileSystemObjectKind.RegularFile,
-                    out IdentityOwnedFileSystemArtifact copiedBlob))
-                {
-                    TryDeleteFile(newAbsolute);
-
-                    throw new IOException(
-                        "Attachment promotion could not capture the promoted blob identity.");
-                }
+                    cancellationToken).ConfigureAwait(false);
 
                 plans.Add(new PromotionPlan(
                     row,
@@ -717,7 +712,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         {
             foreach (PromotionPlan plan in plans)
             {
-                TryDeleteFile(plan.NewAbsolutePath);
+                TryDeleteOwnedCopy(plan.NewBlob);
             }
 
             throw;
@@ -2624,11 +2619,13 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         }
     }
 
-    private static async Task AtomicCopyFileAsync(
+    private async Task<IdentityOwnedFileSystemArtifact> AtomicCopyFileAsync(
         string source,
         string destination,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         string? parentDir = Path.GetDirectoryName(destination);
 
         if (string.IsNullOrEmpty(parentDir))
@@ -2642,31 +2639,115 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         using IDisposable staging = RegisterPublication(tempPath);
 
+        IdentityOwnedFileSystemArtifact? temporary = null;
+
+        IdentityOwnedFileSystemArtifact? published = null;
+
         try
         {
             await using (FileStream destStream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath))
-            await using (FileStream srcStream = new(
-                             source,
-                             FileMode.Open,
-                             FileAccess.Read,
-                             FileShare.Read,
-                             bufferSize: 4096,
-                             useAsync: true))
             {
+                if (!IdentityOwnedFileSystemCleanup.TryCaptureOpenFile(
+                        tempPath,
+                        destStream.SafeFileHandle,
+                        out IdentityOwnedFileSystemArtifact created))
+                {
+                    throw new IOException("Attachment copy could not capture the created file identity.");
+                }
+
+                temporary = created;
+
+                await using FileStream srcStream = new(
+                    source,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    bufferSize: 4096,
+                    useAsync: true);
+
                 await srcStream.CopyToAsync(destStream, cancellationToken).ConfigureAwait(false);
 
                 await destStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+                destStream.Flush(flushToDisk: true);
             }
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            ValidateCopiedFileIdentity(temporary.Value);
 
             SecureFilePermissions.ApplyOwnerOnlyFile(tempPath);
 
             File.Move(tempPath, destination, overwrite: false);
 
+            // The creating handle supplies ownership. A later pathname observation can only verify it.
+            published = temporary.Value with { Path = Path.GetFullPath(destination) };
+
             SecureFilePermissions.ApplyOwnerOnlyFile(destination);
+
+            Func<string, bool> flushDirectory = CopyDirectoryFlushForTesting ?? DurableDirectoryFlush.TryFlushParentOf;
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!flushDirectory(destination))
+            {
+                throw new IOException("Attachment copy could not durably publish the file directory entry.");
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Also persist the Session-directory entry. Existing does not imply durably created.
+            if (!flushDirectory(parentDir))
+            {
+                throw new IOException("Attachment copy could not durably publish the Session directory entry.");
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            ValidateCopiedFileIdentity(published.Value);
+
+            return published.Value;
+        }
+        catch
+        {
+            if (published is { } copy)
+            {
+                TryDeleteOwnedCopy(copy);
+            }
+
+            throw;
         }
         finally
         {
-            TryDeleteFile(tempPath);
+            if (temporary is { } copy)
+            {
+                TryDeleteOwnedCopy(copy);
+            }
+        }
+    }
+
+    private static void ValidateCopiedFileIdentity(IdentityOwnedFileSystemArtifact expected)
+    {
+        if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
+                expected.Path,
+                FileSystemObjectKind.RegularFile,
+                out IdentityOwnedFileSystemArtifact current)
+            || current.Metadata != expected.Metadata)
+        {
+            throw new IOException("Attachment copy refused to publish missing or replaced bytes.");
+        }
+    }
+
+    private static void TryDeleteOwnedCopy(IdentityOwnedFileSystemArtifact copy)
+    {
+        try
+        {
+            _ = IdentityOwnedFileSystemCleanup.TryDelete(copy);
+        }
+        catch (Exception)
+        {
+            // Compensation must never replace the original copy, barrier, or cancellation failure.
+            // Unknown/replaced paths remain untouched for reconciliation.
         }
     }
 

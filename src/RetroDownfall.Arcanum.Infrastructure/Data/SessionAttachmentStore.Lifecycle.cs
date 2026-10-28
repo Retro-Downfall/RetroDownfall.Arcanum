@@ -379,16 +379,10 @@ internal sealed partial class SessionAttachmentStore
                     await BeforeForkCopyForTesting(destAbsolute, cancellationToken).ConfigureAwait(false);
                 }
 
-                await AtomicCopyFileAsync(sourceAbsolute, destAbsolute, cancellationToken).ConfigureAwait(false);
-
-                if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
-                        destAbsolute,
-                        FileSystemObjectKind.RegularFile,
-                        out IdentityOwnedFileSystemArtifact blobAuthority))
-                {
-                    throw new IOException(
-                        "Fork copy could not capture the owned attachment blob identity.");
-                }
+                IdentityOwnedFileSystemArtifact blobAuthority = await AtomicCopyFileAsync(
+                    sourceAbsolute,
+                    destAbsolute,
+                    cancellationToken).ConfigureAwait(false);
 
                 copies.Add(blobAuthority);
 

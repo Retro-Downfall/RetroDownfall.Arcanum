@@ -31,7 +31,7 @@ internal sealed class BudgetReservationService(
     internal Func<DateTimeOffset>? UtcNowForTesting { get; set; }
 
     /// <summary>
-    /// Runs inside <see cref="ReserveAsync"/> after the connection is open and immediately before its write
+    /// Runs inside ReserveAsync and AdjustAsync after optional committed read-ahead and immediately before the write
     /// transaction begins, so a test that proves a second connection waits for the first can start its waiting
     /// window at the moment the second one is about to ask for the lock, not at the moment its task was queued.
     /// </summary>
@@ -72,6 +72,9 @@ internal sealed class BudgetReservationService(
                 {
                     SqliteConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
+                    using CommittedReadAhead? committedHint = await ReadCommittedAheadAsync(
+                        connection, request.BudgetPeriod, cancellationToken).ConfigureAwait(false);
+
                     if (BeforeWriteTransactionForTesting is not null)
                     {
                         await BeforeWriteTransactionForTesting(cancellationToken).ConfigureAwait(false);
@@ -81,7 +84,7 @@ internal sealed class BudgetReservationService(
                     // already-cancelled token can never strand an open write transaction on the scoped connection.
                     await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
-                    decimal committed = await SumCommittedAsync(connection, transaction, request.BudgetPeriod, cancellationToken)
+                    decimal committed = await ReadCommittedForDecisionAsync(connection, transaction, request.BudgetPeriod, committedHint, cancellationToken)
                         .ConfigureAwait(false);
 
                     decimal outstanding = await SumOutstandingAsync(connection, transaction, request.BudgetPeriod, cancellationToken)
@@ -167,6 +170,16 @@ internal sealed class BudgetReservationService(
                 {
                     SqliteConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
+                    string? hintedPeriod = await ReadReservationPeriodHintAsync(connection, reservationId, requested, cancellationToken).ConfigureAwait(false);
+
+                    using CommittedReadAhead? committedHint = hintedPeriod is null ? null
+                        : await ReadCommittedAheadAsync(connection, hintedPeriod, cancellationToken).ConfigureAwait(false);
+
+                    if (BeforeWriteTransactionForTesting is not null)
+                    {
+                        await BeforeWriteTransactionForTesting(cancellationToken).ConfigureAwait(false);
+                    }
+
                     // BeginTransaction(deferred: false) is BEGIN IMMEDIATE with a disposal-time rollback, so an
                     // already-cancelled token can never strand an open write transaction on the scoped connection.
                     await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
@@ -207,10 +220,11 @@ internal sealed class BudgetReservationService(
                         return;
                     }
 
-                    decimal committed = await SumCommittedAsync(
+                    decimal committed = await ReadCommittedForDecisionAsync(
                             connection,
                             transaction,
                             budgetPeriod,
+                            committedHint,
                             cancellationToken)
                         .ConfigureAwait(false);
                     decimal outstanding = await SumOutstandingAsync(
@@ -705,6 +719,160 @@ internal sealed class BudgetReservationService(
             outputTokens: 0L,
             cachedTokens: 0L,
             pricing);
+
+    // A speculative subtotal never owns a decision. Only the existing writer may validate it,
+    // or discard it and read the authoritative rows itself. No value survives this invocation.
+    private static async Task<CommittedReadAhead?> ReadCommittedAheadAsync(
+        SqliteConnection connection, string period, CancellationToken cancellationToken)
+    {
+        CommittedReadAhead hint = new(connection, period);
+
+        bool retained = false;
+
+        try
+        {
+            CommittedReadStamp? before = await ReadCommittedStampAsync(connection, null, cancellationToken).ConfigureAwait(false);
+
+            if (before is null || !hint.Uninterrupted) return null;
+
+            decimal total = await SumCommittedAsync(connection, null, period, cancellationToken).ConfigureAwait(false);
+
+            CommittedReadStamp? after = await ReadCommittedStampAsync(connection, null, cancellationToken).ConfigureAwait(false);
+
+            if (after != before || !hint.Uninterrupted) return null;
+
+            hint.Stamp = before.Value;
+
+            hint.Total = total;
+
+            retained = true;
+
+            return hint;
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested
+            && exception is FormatException or OverflowException or ArgumentOutOfRangeException or InvalidDataException or SqliteException)
+        {
+            // In particular, bad speculative money must not turn an authoritative Adjust no-op
+            // into an error. If a value is needed, the unchanged writer fold decides or throws.
+            return null;
+        }
+        finally
+        {
+            if (!retained) hint.Dispose();
+        }
+    }
+
+    private static async Task<decimal> ReadCommittedForDecisionAsync(
+        SqliteConnection connection, SqliteTransaction transaction, string period,
+        CommittedReadAhead? hint, CancellationToken cancellationToken)
+    {
+        if (hint is not null && hint.Uninterrupted && string.Equals(hint.Period, period, StringComparison.Ordinal))
+        {
+            CommittedReadStamp? current = null;
+
+            try
+            {
+                current = await ReadCommittedStampAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            }
+            catch (SqliteException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // An unavailable optional proof can never bless the subtotal.
+            }
+
+            if (hint.Uninterrupted && current == hint.Stamp) return hint.Total;
+        }
+
+        return await SumCommittedAsync(connection, transaction, period, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<string?> ReadReservationPeriodHintAsync(
+        SqliteConnection connection, Guid reservationId, decimal requested, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using DbCommand command = connection.CreateCommand();
+
+            command.CommandText = "SELECT \"ReservedUsd\", \"BudgetPeriod\" FROM \"BudgetReservations\" WHERE \"Id\" = @id AND \"Status\" = @reserved";
+
+            AddParameter(command, "@id", reservationId.ToString("N"));
+
+            AddParameter(command, "@reserved", (int)BudgetReservationStatus.Reserved);
+
+            await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            // Avoid a day-sized speculative read for an ordinary no-raise. This only selects
+            // optional work: the current row and every decision are still reread under writer.
+            return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+                && requested > ExactUsdText.Read(reader, 0) ? reader.GetString(1) : null;
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested
+            && exception is FormatException or OverflowException or InvalidDataException or SqliteException)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<CommittedReadStamp?> ReadCommittedStampAsync(
+        SqliteConnection connection, SqliteTransaction? transaction, CancellationToken cancellationToken)
+    {
+        await using DbCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = "SELECT (SELECT schema_version FROM pragma_schema_version), (SELECT data_version FROM pragma_data_version), total_changes();";
+
+        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            && reader.GetValue(0) is long schema && schema >= 0
+            && reader.GetValue(1) is long data && data >= 0
+            && reader.GetValue(2) is long changes && changes >= 0
+            ? new CommittedReadStamp(schema, data, changes) : null;
+    }
+
+    private readonly record struct CommittedReadStamp(long Schema, long Data, long Changes);
+
+    private sealed class CommittedReadAhead : IDisposable
+    {
+        private readonly SqliteConnection _connection;
+
+        private readonly object? _nativeHandle;
+
+        private volatile bool _interrupted;
+
+        private bool _disposed;
+
+        internal CommittedReadAhead(SqliteConnection connection, string period)
+        {
+            _connection = connection;
+
+            Period = period;
+
+            connection.StateChange += ConnectionStateChanged;
+
+            _nativeHandle = connection.Handle;
+        }
+
+        internal string Period { get; }
+
+        internal CommittedReadStamp Stamp { get; set; }
+
+        internal decimal Total { get; set; }
+
+        internal bool Uninterrupted => !_disposed && !_interrupted && _connection.State == ConnectionState.Open
+            && _nativeHandle is not null && ReferenceEquals(_nativeHandle, _connection.Handle);
+
+        private void ConnectionStateChanged(object? sender, StateChangeEventArgs change) => _interrupted = true;
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+
+            _disposed = true;
+
+            _connection.StateChange -= ConnectionStateChanged;
+        }
+    }
 
     private static async Task<decimal> SumCommittedAsync(
         DbConnection connection,

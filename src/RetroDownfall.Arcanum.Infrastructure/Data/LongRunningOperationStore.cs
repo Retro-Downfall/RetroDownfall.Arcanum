@@ -392,11 +392,11 @@ internal sealed partial class LongRunningOperationStore(
 
             _ = UtcInstantSql.AddParameter(command, "@created", request.CreatedAt);
 
-            Add(command, "@now", Format(utcNow));
+            Add(command, "@now", UtcInstantText.Format(utcNow));
 
             Add(command, "@owner", owner);
 
-            Add(command, "@lease", Format(leaseExpiresAt));
+            Add(command, "@lease", UtcInstantText.Format(leaseExpiresAt));
 
             Add(command, "@summary", summary);
         }
@@ -1073,9 +1073,9 @@ internal sealed partial class LongRunningOperationStore(
 
             Add(command, "@owner", Bound(ownerId, MaxOwnerLength));
 
-            Add(command, "@now", Format(utcNow));
+            Add(command, "@now", UtcInstantText.Format(utcNow));
 
-            Add(command, "@lease", Format(leaseExpiresAt));
+            Add(command, "@lease", UtcInstantText.Format(leaseExpiresAt));
 
             Add(command, "@running", (int)LongRunningOperationState.Running);
 
