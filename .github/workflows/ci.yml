@@ -153,7 +153,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: arcanum-coverage-report
           path: |
@@ -208,7 +208,7 @@ jobs:
 
       - name: Upload primary source analysis evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hosted-producer-primary-analysis
           path: .tmp/coverage/analysis/
@@ -256,7 +256,7 @@ jobs:
 
       - name: Upload additional source analysis evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hosted-producer-additional-analysis
           path: .tmp/coverage/analysis/
@@ -306,7 +306,7 @@ jobs:
 
       - name: Upload fixture source analysis evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hosted-producer-fixture-analysis
           path: .tmp/coverage/analysis/
@@ -358,7 +358,7 @@ jobs:
 
       - name: Upload fixture build source analysis evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hosted-producer-fixture-build-analysis
           path: .tmp/coverage/analysis/
@@ -408,7 +408,7 @@ jobs:
 
       - name: Upload serve host source analysis evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hosted-producer-serve-host-analysis
           path: .tmp/coverage/analysis/
@@ -484,7 +484,7 @@ jobs:
 
       - name: Upload source analysis authority
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hosted-producer-analysis-authority
           path: .tmp/coverage/analysis-authority/
@@ -559,7 +559,7 @@ jobs:
 
       - name: Upload the prompt cache fixture report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: prompt-cache-fixture
           path: prompt-cache-fixture.json*
@@ -602,7 +602,7 @@ jobs:
       # the coverage upload in build-test already does not.
       - name: Upload the Covenant benchmark run
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: covenant-benchmark-run
           path: covenant-benchmark-run.json
@@ -761,7 +761,7 @@ jobs:
 
       - name: Upload Long Rest native evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-long-rest-win-x64
           path: .tmp/windows-long-rest-win-x64/
@@ -1003,7 +1003,7 @@ jobs:
 
       - name: Upload Long Rest native evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-long-rest-win-arm64
           path: .tmp/windows-long-rest-win-arm64/
