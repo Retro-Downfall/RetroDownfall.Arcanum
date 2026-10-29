@@ -274,21 +274,11 @@ internal static class CovenantStoreSql
         return $"""
             SELECT
                 (SELECT COUNT(*) FROM covenant_heads WHERE {scopePredicate} AND CurrentOperationCode = 1 AND {notTouched}),
-                (SELECT COUNT(*) FROM covenant_versions v
-                    JOIN covenant_entries e ON e.EntryId = v.EntryId
-                    WHERE e.{scopePredicate}),
-                (SELECT COUNT(*) FROM covenant_versions v
-                    JOIN covenant_entries e ON e.EntryId = v.EntryId
-                    WHERE e.{scopePredicate} AND v.OperationCode = 1),
-                (SELECT COALESCE(SUM(v.CompiledByteCost), 0) FROM covenant_versions v
-                    JOIN covenant_entries e ON e.EntryId = v.EntryId
-                    WHERE e.{scopePredicate}),
-                (SELECT COUNT(*) FROM covenant_versions v
-                    JOIN covenant_entries e ON e.EntryId = v.EntryId
-                    WHERE e.{scopePredicate} AND v.OriginCode IN (2, 3)),
-                (SELECT COALESCE(SUM(v.CompiledByteCost), 0) FROM covenant_versions v
-                    JOIN covenant_entries e ON e.EntryId = v.EntryId
-                    WHERE e.{scopePredicate} AND v.OriginCode IN (2, 3)),
+                COUNT(*),
+                COUNT(CASE WHEN v.OperationCode = 1 THEN 1 END),
+                COALESCE(SUM(v.CompiledByteCost), 0),
+                COUNT(CASE WHEN v.OriginCode IN (2, 3) THEN 1 END),
+                COALESCE(SUM(CASE WHEN v.OriginCode IN (2, 3) THEN v.CompiledByteCost END), 0),
                 (SELECT COUNT(*) FROM covenant_mutation_receipts WHERE {receiptsPredicate}),
                 (SELECT COUNT(*) FROM covenant_version_attachment_provenance p
                     JOIN covenant_versions v ON v.VersionId = p.VersionId
@@ -297,7 +287,10 @@ internal static class CovenantStoreSql
                 (SELECT COUNT(*) FROM covenant_search_outbox),
                 (SELECT COUNT(*) FROM covenant_heads WHERE CampaignId IS NULL AND CurrentOperationCode = 1
                     AND {(campaignScoped ? "1 = 1" : notTouched)})
-                    + {campaignSideOfTurnLoad};
+                    + {campaignSideOfTurnLoad}
+            FROM covenant_versions v
+            JOIN covenant_entries e ON e.EntryId = v.EntryId
+            WHERE e.{scopePredicate};
             """;
     }
 
