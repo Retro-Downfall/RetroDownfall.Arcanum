@@ -287,7 +287,13 @@ internal sealed partial class SpellDirectory : IDisposable
 
             byte[] buffer = new byte[24 + name.Length];
 
-            buffer[0] = replace ? (byte)1 : (byte)0;
+            // FileRenameInformationEx keeps an already-open reader on the old file while
+            // the replacement becomes the directory entry. Plain replacement refuses it.
+            const uint replaceIfExists = 0x00000001;
+
+            const uint posixSemantics = 0x00000002;
+
+            BinaryPrimitives.WriteUInt32LittleEndian(buffer, replace ? replaceIfExists | posixSemantics : 0);
 
             // FILE_RENAME_INFORMATION binds the relative name to the retained destination directory.
             BinaryPrimitives.WriteInt64LittleEndian(buffer.AsSpan(8), targetDirectory._handle.DangerousGetHandle().ToInt64());
@@ -296,7 +302,11 @@ internal sealed partial class SpellDirectory : IDisposable
 
             name.CopyTo(buffer.AsSpan(20));
 
-            renamed = SetWindowsInformation(sourceHandle, buffer, 10);
+            const int fileRenameInformation = 10;
+
+            const int fileRenameInformationEx = 65;
+
+            renamed = SetWindowsInformation(sourceHandle, buffer, replace ? fileRenameInformationEx : fileRenameInformation);
 
             GC.KeepAlive(targetDirectory);
         }
