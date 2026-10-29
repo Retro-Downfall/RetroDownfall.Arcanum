@@ -145,6 +145,29 @@ public sealed class CovenantRecoveryCheckpointTests
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, decoded.Error.Code);
 
+        Assert.Equal(CovenantStartupFailureReason.UnreadableCheckpoint, decoded.Error.CovenantStartupFailure?.Reason);
+
+        Assert.Null(decoded.Error.CovenantStartupFailure?.OperationId);
+
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("null")]
+    [InlineData("private-payload-canary")]
+    [InlineData("{\"private-payload-canary\":true}")]
+    public void A_payload_that_cannot_decode_supplies_no_classified_startup_reason(string payload)
+    {
+        Result<CovenantIndexRebuildCheckpointV1> decoded =
+            CovenantRecoveryCheckpointCodec.DecodeIndexRebuild(Encoding.UTF8.GetBytes(payload));
+
+        Assert.True(decoded.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, decoded.Error.Code);
+
+        Assert.Null(decoded.Error.CovenantStartupFailure);
+
+        Assert.Equal("This Covenant recovery checkpoint cannot be resumed by this build.", decoded.Error.Message);
     }
 
     [Fact]
@@ -159,6 +182,8 @@ public sealed class CovenantRecoveryCheckpointTests
         Assert.True(decoded.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, decoded.Error.Code);
+
+        Assert.Null(decoded.Error.CovenantStartupFailure);
 
     }
 

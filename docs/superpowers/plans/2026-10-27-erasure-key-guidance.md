@@ -1,5 +1,0 @@
-# Erasure-key recovery guidance — RV263
-
-The existing native guard scenarios must direct unavailable/malformed and lost-key callers to the existing read-only `arcanum memory erasure status` command. Actual hosted Saga deferral must record the exact closed erasure code and command without exposing source text, keys, paths, exception messages or erased evidence. Keep provider calls/writes withheld, the pending page/cursor, independent deferral delay, and recovery after the key returns unchanged.
-
-Prove genuine RED on the native guard and real background-loop fixtures before runtime edits. Append the fixed command to the unavailable refusal. Put the one deferral Warning at the actual PrepareAsync refusal, where the typed cause exists, and remove the outer generic warning; no new attempt payload or authority is necessary. Preserve existing error taxonomy, safe Session GUID, and all control flow. Update DESIGN in the same candidate. Verify GREEN, causal reversal, complete owning families and required static gates, then independent review. No live/provider/OS credential store/install tests.

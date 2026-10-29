@@ -67,26 +67,8 @@ public sealed partial class LongRestSchemaEvolutionTests
 
     internal static async Task<GrimoireSchemaInstallResult> InstallHeadAsync(SqliteConnection connection)
     {
-        GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create();
-
-        GrimoireSchemaInitializationContext context = GrimoireSchemaTestInstaller.CreateContext();
-
-        GrimoireSchemaInstallResult installed = await installer.InstallAsync(connection, 64, context, CancellationToken.None);
-
-        GrimoireSchemaBackfillRunner runner = new(installer, TimeProvider.System);
-
-        for (int pass = 0; installed.Core.Health == GrimoireSchemaTierHealth.TransitionIncomplete && pass < 16; pass++)
-        {
-            GrimoireSchemaTransitionJournalRow? journal = await GrimoireSchemaTransitionJournal.ReadAsync(
-                connection, null, GrimoireSchemaTransactionTier.Core, CancellationToken.None);
-
-            Assert.NotNull(journal);
-
-            _ = await runner.AdvanceAsync(connection, GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core),
-                journal, context, 4, CancellationToken.None);
-
-            installed = await installer.InstallAsync(connection, 64, context, CancellationToken.None);
-        }
+        GrimoireSchemaInstallResult installed = await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(
+            connection, 64, CancellationToken.None);
 
         GrimoireSchemaInspectionResult inspection = await new GrimoireSchemaManifestInspector(GrimoireSchemaTierOwnershipRegistry.CreateDefault())
             .InspectAsync(connection, null, GrimoireSchemaManifests.Core, CancellationToken.None);

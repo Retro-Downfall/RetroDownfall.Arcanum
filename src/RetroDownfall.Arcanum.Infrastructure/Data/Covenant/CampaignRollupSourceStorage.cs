@@ -5,7 +5,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// <summary>Schema-aware logical membership and physical provenance cleanup predicates.</summary>
 internal static class CampaignRollupSourceStorage
 {
-    internal static async Task<bool> IsInstalledAsync(DbConnection connection, DbTransaction? transaction, CancellationToken ct)
+    internal static async Task<bool> IsInstalledAsync(DbConnection connection, DbTransaction? transaction, CancellationToken ct, RetentionSchemaCensus? schemaCensus = null)
     {
         await using DbCommand command = connection.CreateCommand();
 
@@ -18,7 +18,9 @@ internal static class CampaignRollupSourceStorage
                 + (SELECT COUNT(*) FROM pragma_table_info('campaign_rollup_artifacts') WHERE name = 'ManifestId');
             """;
 
-        return await command.ExecuteScalarAsync(ct).ConfigureAwait(false) switch
+        return (schemaCensus is null
+            ? await command.ExecuteScalarAsync(ct).ConfigureAwait(false)
+            : await schemaCensus.ReadScalarAsync(command, ct).ConfigureAwait(false)) switch
         {
             0L => false,
             4L => true,
@@ -26,10 +28,10 @@ internal static class CampaignRollupSourceStorage
         };
     }
 
-    internal static async Task ResolveMembershipAsync(DbCommand command, CancellationToken ct)
+    internal static async Task ResolveMembershipAsync(DbCommand command, CancellationToken ct, RetentionSchemaCensus? schemaCensus = null)
     {
         if (command.CommandText.Contains("campaign_rollup_source_membership", StringComparison.Ordinal)
-            && !await IsInstalledAsync(command.Connection!, command.Transaction, ct).ConfigureAwait(false))
+            && !await IsInstalledAsync(command.Connection!, command.Transaction, ct, schemaCensus).ConfigureAwait(false))
         {
             command.CommandText = command.CommandText.Replace("campaign_rollup_source_membership", "campaign_rollup_sources", StringComparison.Ordinal);
         }

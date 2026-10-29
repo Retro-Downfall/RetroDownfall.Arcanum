@@ -348,7 +348,14 @@ internal sealed class GrimoireSchemaInstaller(
             .InspectAsync(connection, transaction: null, chain.HeadManifest, cancellationToken)
             .ConfigureAwait(false);
 
-        return probe.IsValid
+        // A declared data-only suffix has the same physical shape at every version. Its named
+        // bounded sweeps must still journal and run; matching DDL cannot publish their completion.
+        bool unchangedDataPath = chain.Steps.Where(step => step.FromVersion >= recordedVersion)
+            .All(step => step.Statements.Count == 0 && step.Backfill is not null
+                && string.Equals(step.FromSourceDefinitionFingerprint,
+                    chain.HeadManifest.SourceDefinitionFingerprint, StringComparison.Ordinal));
+
+        return probe.IsValid && !unchangedDataPath
             ? Refuse(chain, tier, GrimoireSchemaTierHealth.MixedCatalogVersions)
             : await RunStepsAsync(
                 connection,

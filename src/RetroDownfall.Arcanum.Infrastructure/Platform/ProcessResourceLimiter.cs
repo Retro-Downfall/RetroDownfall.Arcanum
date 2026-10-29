@@ -53,9 +53,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Platform;
 /// </para>
 /// <para>
 /// Known gap: cgroups v2 cgroup membership covers the entire process subtree (grandchildren included),
-/// but the <c>ulimit</c>/setrlimit path only bounds the direct child — a grandchild process spawned by
-/// the tool script is not rlimit-bound by this mechanism (CPU time and descriptors; the macOS memory
-/// monitor sums the whole tracked tree). This is an accepted limitation of setrlimit, not a bug.
+/// but inherited <c>ulimit</c>/setrlimit ceilings apply per process, not to the tree's aggregate CPU
+/// time, descriptor use, or (on Linux without cgroups) address space. Descendants inherit those
+/// per-process limits; the macOS memory monitor separately sums the whole tracked tree.
 /// </para>
 /// </remarks>
 public sealed class ProcessResourceLimiter : IProcessResourceLimiter

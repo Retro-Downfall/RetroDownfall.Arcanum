@@ -87,6 +87,7 @@ public sealed class ToolRiskClassifierTests
         "delete_lexicon",
         "scribe_lexicon",
         "read_saga",
+        "recall_memory",
         "search_archives",
         "retire_covenant",
         "propose_covenant",
@@ -114,11 +115,11 @@ public sealed class ToolRiskClassifierTests
     }
 
     [Fact]
-    public void Known_tool_inventory_contains_31_distinct_names()
+    public void Known_tool_inventory_contains_32_distinct_names()
     {
-        Assert.Equal(31, KnownToolNames.Length);
+        Assert.Equal(32, KnownToolNames.Length);
 
-        Assert.Equal(31, KnownToolNames.Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(32, KnownToolNames.Distinct(StringComparer.Ordinal).Count());
     }
 
     [Fact]
@@ -130,9 +131,9 @@ public sealed class ToolRiskClassifierTests
 
         IReadOnlyList<WardToolInventoryRow> rows = ReadWardToolInventory(design);
 
-        Assert.Equal(31, rows.Count);
+        Assert.Equal(32, rows.Count);
 
-        Assert.Equal(31, rows.Select(static row => row.Name).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(32, rows.Select(static row => row.Name).Distinct(StringComparer.Ordinal).Count());
 
         Assert.Equal(
             KnownToolNames.OrderBy(static name => name, StringComparer.Ordinal).ToArray(),

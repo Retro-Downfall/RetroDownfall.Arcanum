@@ -20,7 +20,7 @@ public sealed class OwnershipProvenanceIndexSchemaTests
         Assert.DoesNotContain(CoreSchemaVersionTwentyNineFixture.Objects,
             static item => item.Sql.Contains(IndexName, StringComparison.Ordinal));
 
-        Assert.Equal(31, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        Assert.Equal(33, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
         Assert.Equal(7, GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion);
 

@@ -863,7 +863,9 @@ public sealed partial class LocalOllamaLongRestQualificationHarnessContractTests
 
         Assert.True(start >= 0, "The design no longer describes the Long Rest qualification.");
 
-        int end = design.IndexOf("**Why a Windows lane exists.**", start, StringComparison.Ordinal);
+        int end = design.IndexOf("**Why Windows lanes exist.**", start, StringComparison.Ordinal);
+
+        Assert.True(end > start, "The Long Rest qualification section no longer ends at the Windows qualification section.");
 
         string section = design[start..end];
 

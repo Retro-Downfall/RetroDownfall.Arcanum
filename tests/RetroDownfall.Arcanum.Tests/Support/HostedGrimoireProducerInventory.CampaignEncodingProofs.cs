@@ -140,6 +140,11 @@ internal static partial class HostedGrimoireProducerInventory
                 return false;
             }
 
+            if (IsExactBuiltinUtf8EncoderFactory(expression, model))
+            {
+                return true;
+            }
+
             if (model.GetOperation(expression) is IInvocationOperation factory
                 && factory.TargetMethod.Name == "GetEncoder"
                 && factory.TargetMethod.Parameters.Length == 0

@@ -233,10 +233,16 @@ public sealed class MemoryDelegationEndpointTests
     }
 
     [Theory]
-    [InlineData(ErrorCodes.Validation.AttachedFiles)]
-    [InlineData("Validation.PromptTooLong")]
-    [InlineData(ErrorCodes.MemoryDelegation.InvalidGrant)]
-    public async Task A_source_error_cannot_claim_local_preflight_or_body_diagnostic_provenance(string code)
+    [InlineData("Validation.AttachedFiles", HttpStatusCode.BadRequest)]
+    [InlineData("Validation.PromptTooLong", HttpStatusCode.BadRequest)]
+    [InlineData("Validation.AdditionalSystemPromptTooLong", HttpStatusCode.BadRequest)]
+    [InlineData("Validation.TooManyStatelessMessages", HttpStatusCode.BadRequest)]
+    [InlineData("Validation.TooManyContentParts", HttpStatusCode.BadRequest)]
+    [InlineData("Validation.StatelessMessageTooLong", HttpStatusCode.BadRequest)]
+    [InlineData("Validation.SpellOverride", HttpStatusCode.BadRequest)]
+    [InlineData("MemoryDelegation.InvalidGrant", HttpStatusCode.BadRequest)]
+    [InlineData("Validation.UnrecognizedFutureCode", HttpStatusCode.InternalServerError)]
+    public async Task A_source_error_cannot_claim_local_preflight_or_body_diagnostic_provenance(string code, HttpStatusCode expectedStatus)
     {
         await using var factory = MemoryErasureRouteDriver.CreateFactory(new InMemoryOsCredentialStore());
 
@@ -262,7 +268,7 @@ public sealed class MemoryDelegationEndpointTests
 
         Assert.Contains(code, json);
 
-        Assert.Equal(code == "Validation.PromptTooLong" ? HttpStatusCode.InternalServerError : HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(expectedStatus, response.StatusCode);
 
         Assert.Contains("The memory delegation request could not be completed.", json);
 

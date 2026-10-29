@@ -39,61 +39,11 @@ public sealed class ConstraintInventoryTests
     };
 
     /// <summary>
-    /// Test names the inventory already carried on main that do not name a test in the tree. They are
-    /// a known backlog: the ratchet below fails when a new unresolved name appears, and when one of
-    /// these is corrected or removed without being taken off this list.
-    /// </summary>
-    private static readonly HashSet<string> UnresolvedTestNameBacklog = new(StringComparer.Ordinal)
-    {
-        "ChatLayoutRendererTests",
-
-        "DaemonSettingsTests",
-
-        "EmbeddingSettingsTests",
-
-        "EncryptedBlobDiagnosticsTests",
-
-        "FileConfigurationPresetPersistenceTests",
-
-        "IncantationPaneTests",
-
-        "InferenceAndToolsTests",
-
-        "InferenceAndToolsTests.Excess_human_prompt_reservation_waits_for_capacity_and_then_runs",
-
-        "MarkdigSpectreRendererTests",
-
-        "MarkdigSpectreRendererTests.Render_oversized_markdown_preserves_late_content_through_chunked_rendering",
-
-        "McpCommandTests",
-
-        "McpConnectionManagerTests",
-
-        "NativeWebToolsTests",
-
-        "OpenAiV1ChatCompletionsEndpointTests",
-
-        "PerplexityWebProviderTests",
-
-        "RequestBoundsTests",
-
-        "SessionContextPinMaterializerTests.Large_file_pin_streams_a_bounded_preview_and_full_hash",
-
-        "SseConnectionLimiterTests",
-
-        "WebResearchProviderTests",
-
-        "WebToolResultSerializerTests",
-
-        "WorkspaceCheckSdkResolverTests",
-    };
-
-    /// <summary>
     /// Each constraint's <c>tests</c> list is where a reader goes to find the proof of its current value,
     /// so a name there has to resolve to a test class, or to a method on one, somewhere in the test tree.
     /// </summary>
     [Fact]
-    public void Every_constraint_names_tests_that_exist_outside_the_known_backlog()
+    public void Every_constraint_names_tests_that_exist()
     {
         string testRoot = Path.Combine(FindRepositoryRoot(), "tests");
 
@@ -108,21 +58,7 @@ public sealed class ConstraintInventoryTests
                 continue;
             }
 
-            foreach (ClassDeclarationSyntax type in CSharpSyntaxTree
-                .ParseText(File.ReadAllText(file), new CSharpParseOptions(LanguageVersion.Preview))
-                .GetRoot()
-                .DescendantNodes()
-                .OfType<ClassDeclarationSyntax>())
-            {
-                string name = type.Identifier.Text;
-
-                testNames.Add(name);
-
-                foreach (MethodDeclarationSyntax method in type.Members.OfType<MethodDeclarationSyntax>())
-                {
-                    testNames.Add(name + "." + method.Identifier.Text);
-                }
-            }
+            testNames.UnionWith(DeclaredTestNames(File.ReadAllText(file)));
         }
 
         using JsonDocument inventory = LoadInventory();
@@ -138,19 +74,68 @@ public sealed class ConstraintInventoryTests
             .Where(name => !testNames.Contains(name))
             .Order(StringComparer.Ordinal)];
 
-        string[] unexpected = [.. unresolved.Where(static name => !UnresolvedTestNameBacklog.Contains(name))];
-
-        string[] corrected = [.. UnresolvedTestNameBacklog
-            .Where(name => !unresolved.Contains(name, StringComparer.Ordinal))
-            .Order(StringComparer.Ordinal)];
-
         Assert.True(
-            unexpected.Length == 0 && corrected.Length == 0,
-            "Constraint test names that resolve to no test: "
-            + string.Join(", ", unexpected)
-            + global::System.Environment.NewLine
-            + "Backlog names that now resolve or are no longer used (remove them from the backlog): "
-            + string.Join(", ", corrected));
+            unresolved.Length == 0,
+            "Constraint test names that resolve to no test: " + string.Join(", ", unresolved));
+    }
+
+    [Theory]
+    [InlineData("Fact", "DeclaredTests.Runs", true)]
+    [InlineData("Theory", "DeclaredTests", true)]
+    [InlineData("SkippableFact", "DeclaredTests.Runs", true)]
+    [InlineData("SkippableTheory", "DeclaredTests", true)]
+    [InlineData("Fact", "MissingTests", false)]
+    [InlineData("Fact", "DeclaredTests.Missing", false)]
+    [InlineData("Fact", "DeclaredTests.Helper", false)]
+    [InlineData("Fact", "EmptyTests", false)]
+    public void Test_reference_resolution_requires_a_declared_test(string attribute, string reference, bool expected)
+    {
+        string source = $"class DeclaredTests {{ [{attribute}] public void Runs() {{ }} public void Helper() {{ }} }} class EmptyTests {{ }}";
+
+        Assert.Equal(expected, DeclaredTestNames(source).Contains(reference));
+    }
+
+    private static HashSet<string> DeclaredTestNames(string source)
+    {
+        HashSet<string> names = new(StringComparer.Ordinal);
+
+        foreach (ClassDeclarationSyntax type in CSharpSyntaxTree
+            .ParseText(source, new CSharpParseOptions(LanguageVersion.Preview))
+            .GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>())
+        {
+            foreach (MethodDeclarationSyntax method in type.Members.OfType<MethodDeclarationSyntax>())
+            {
+                if (!method.AttributeLists.SelectMany(static list => list.Attributes)
+                    .Any(static attribute => attribute.Name.ToString() is "Fact" or "Theory" or "FactAttribute" or "TheoryAttribute"
+                        or "SkippableFact" or "SkippableTheory" or "SkippableFactAttribute" or "SkippableTheoryAttribute"))
+                {
+                    continue;
+                }
+
+                names.Add(type.Identifier.Text);
+
+                names.Add(type.Identifier.Text + "." + method.Identifier.Text);
+            }
+        }
+
+        return names;
+    }
+
+    [Fact]
+    public void Every_constraint_source_location_names_an_existing_file()
+    {
+        using JsonDocument inventory = LoadInventory();
+
+        foreach (JsonElement constraint in inventory.RootElement.GetProperty("constraints").EnumerateArray())
+        {
+            foreach (string location in RequiredStringArray(constraint, "sourceLocations"))
+            {
+                string relative = location.Split('#')[0];
+
+                Assert.True(File.Exists(Path.Combine(FindRepositoryRoot(), relative)),
+                    $"Constraint '{RequiredString(constraint, "id")}' names missing source '{location}'.");
+            }
+        }
     }
 
     [Fact]
@@ -290,9 +275,9 @@ public sealed class ConstraintInventoryTests
         string reportPath = Path.Combine(
             repositoryRoot,
             "docs",
-            "Arcanum.ConstraintReduction.20260803.md");
+            "Arcanum.DESIGN.md");
 
-        Assert.True(File.Exists(reportPath), $"Missing constraint-reduction report: {reportPath}");
+        Assert.True(File.Exists(reportPath), $"Missing maintained constraint inventory: {reportPath}");
 
         HashSet<string> jsonIds = inventory.RootElement
             .GetProperty("constraints")
@@ -445,7 +430,10 @@ public sealed class ConstraintInventoryTests
     {
         string path = Path.Combine(
             FindRepositoryRoot(),
-            "docs",
+            "tests",
+            "RetroDownfall.Arcanum.Tests",
+            "TestData",
+            "Contracts",
             "Arcanum.ConstraintInventory.json");
 
         Assert.True(File.Exists(path), $"Missing structured constraint inventory: {path}");

@@ -528,9 +528,7 @@ public sealed partial class CovenantConnectionDrainTests
         List<string> offenders =
         [
             .. ProductionSourceInventory.Sources()
-                .Where(static source => source.Names("new SqliteConnection(")
-                    || source.Names("SqliteConnection connection = new(")
-                    || source.Names("new SqliteConnectionStringBuilder"))
+                .Where(RequiresPoolingDeclaration)
                 .Where(static source => !source.Names("Pooling = false"))
                 .Where(static source => !PooledByDesign(source))
                 .Select(static source => source.RelativePath),

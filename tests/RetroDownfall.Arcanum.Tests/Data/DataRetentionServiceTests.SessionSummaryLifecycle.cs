@@ -55,6 +55,10 @@ public sealed partial class DataRetentionServiceTests
         if (protectedSummary)
         {
             Assert.Equal(1, await CountAsync("artifact_sensitivity", "ArtifactId", Canonical(summary.Value.ArtifactId)));
+
+            Assert.Contains(applied.Value.Conflicts, static conflict => conflict.Code == "Covenant.ForbiddenAuthority");
+
+            Assert.DoesNotContain(applied.Value.Conflicts, static conflict => conflict.Code == "Data.PlanChanged");
         }
     }
 }

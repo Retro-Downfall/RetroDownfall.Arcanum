@@ -188,7 +188,8 @@ internal static class CampaignSummaryLifecycle
         Guid sessionId,
         CancellationToken cancellationToken,
         bool includeOwnerRows = true,
-        HashSet<string>? rowKeys = null)
+        HashSet<string>? rowKeys = null,
+        RetentionSchemaCensus? schemaCensus = null)
     {
         await using DbCommand installed = connection.CreateCommand();
 
@@ -196,7 +197,9 @@ internal static class CampaignSummaryLifecycle
 
         installed.CommandText = "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'campaign_rollup_artifacts');";
 
-        if (Convert.ToInt64(await installed.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+        if (Convert.ToInt64(schemaCensus is null
+                ? await installed.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)
+                : await schemaCensus.ReadScalarAsync(installed, cancellationToken).ConfigureAwait(false),
                 System.Globalization.CultureInfo.InvariantCulture) == 0)
         {
             return new CampaignSummaryClosureSnapshot(0, "");
@@ -217,7 +220,10 @@ internal static class CampaignSummaryLifecycle
             ("artifact_sensitivity", "(ArtifactKindCode = 15 AND lower(replace(ArtifactId, '-', '')) IN (SELECT lower(replace(ArtifactId, '-', '')) FROM campaign_contribution_artifacts WHERE SessionId = $ownerId)) OR (ArtifactKindCode = 14 AND lower(replace(ArtifactId, '-', '')) IN (SELECT lower(replace(RollupArtifactId, '-', '')) FROM campaign_rollup_source_membership WHERE SessionId = $ownerId))", "LabelId || ':' || ArtifactRevision || ':' || hex(ArtifactContentDigest)", "LabelId"),
         ];
 
-        if (await CampaignRollupSourceStorage.IsInstalledAsync(connection, transaction, cancellationToken).ConfigureAwait(false))
+        bool sharedProvenance = await CampaignRollupSourceStorage.IsInstalledAsync(
+            connection, transaction, cancellationToken, schemaCensus).ConfigureAwait(false);
+
+        if (sharedProvenance)
         {
             string unreferenced = CampaignRollupSourceStorage.UnreferencedSegments(rollups);
 
@@ -248,7 +254,20 @@ internal static class CampaignSummaryLifecycle
 
             Add(command, "$ownerId", Format(sessionId));
 
-            await CampaignRollupSourceStorage.ResolveMembershipAsync(command, cancellationToken).ConfigureAwait(false);
+            if (transaction is not null)
+            {
+                // Only reads follow the classification in this caller-owned transaction: no guard
+                // callbacks, writes or savepoints can invalidate it during this closure phase.
+                // Autocommit callers below must still observe DDL between their separate reads.
+                if (!sharedProvenance)
+                {
+                    command.CommandText = command.CommandText.Replace("campaign_rollup_source_membership", "campaign_rollup_sources", StringComparison.Ordinal);
+                }
+            }
+            else
+            {
+                await CampaignRollupSourceStorage.ResolveMembershipAsync(command, cancellationToken, schemaCensus).ConfigureAwait(false);
+            }
 
             await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 

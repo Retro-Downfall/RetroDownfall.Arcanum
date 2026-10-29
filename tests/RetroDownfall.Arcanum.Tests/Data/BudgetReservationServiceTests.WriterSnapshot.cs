@@ -155,6 +155,8 @@ public sealed partial class BudgetReservationServiceTests
             }
             catch (TimeoutException)
             {
+                // Release the held read in finally before the committedBeforeRelease assertion
+                // reports the blocked writer; neither background task may be stranded by the failure.
             }
         }
         finally

@@ -188,7 +188,8 @@ public sealed class CovenantDerivedOutputInventoryTests
 
             IReadOnlyList<AnnalsErasureStep> subject = AnnalsErasurePlan.ForSubjectQuery(
                 store,
-                $"SELECT SubjectId FROM annal_claims WHERE {CovenantIdentitySql.Keyed("SubjectId", "$artifactKey")}");
+                $"SELECT SubjectId FROM annal_claims WHERE {CovenantIdentitySql.Keyed("SubjectId", "$artifactKey")}",
+                normalizedSubjectParameter: "$artifactKey");
 
             Assert.Equal(
                 subject.Select(s => $"DELETE FROM {s.Table} WHERE {s.Predicate};"),
@@ -197,6 +198,10 @@ public sealed class CovenantDerivedOutputInventoryTests
             Assert.Equal(
                 subject.Select(s => $"SELECT count(*) FROM {s.Table} WHERE {s.Predicate};"),
                 claimed.Select(t => t.CountBy("$artifactKey")));
+
+            Assert.Equal(
+                subject.Select(s => s.Receipts),
+                claimed.Select(t => t.ReceiptSelection("$artifactKey")));
 
             Assert.Equal(subjectTable, plan.Artifact!.Table);
         }

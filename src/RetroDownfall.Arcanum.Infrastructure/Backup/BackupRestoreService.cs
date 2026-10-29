@@ -1837,15 +1837,14 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             .ConfigureAwait(false);
 
         // A destination that holds erasure evidence needs the staged generation at every head before the
-        // evidence can be joined to it. Every other restore keeps its migration exactly as it was.
+        // evidence can be joined to it. Other restores still finish any explicitly blocking Core prefix.
         bool joinsErasureEvidence =
             request.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation
             && erasure.Kind is BackupRestoreErasureEvidenceKind.Present;
 
-        // Without evidence the tier results are deliberately not folded into the restore outcome:
-        // convergence of the staged snapshot is judged by the schema identity recorded below, and a
-        // tier that reports unavailable or mid-run here is finished by the host at its own next
-        // bootstrap. With evidence they decide whether the drain below runs.
+        // Without evidence, ordinary nonblocking work may remain for the host; a declared Core
+        // readiness barrier and its predecessors must finish before the staged generation commits.
+        // With evidence the results also decide whether the complete staged drain below runs.
         GrimoireSchemaInstallResult migrated;
 
         try
@@ -1869,6 +1868,34 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             return StageResult.Failed(Issue(BackupRestoreSchemaDrain.Unjoinable(exception.GetType().Name)));
         }
 
+        bool blockingCore = await GrimoireSchemaReadinessDrain.RequiredAsync(
+            connection, _schemaInstaller.Chains, cancellationToken).ConfigureAwait(false);
+
+        if (blockingCore && maintenance is null)
+        {
+            return StageResult.Failed(joinsErasureEvidence
+                ? Issue(BackupRestoreSchemaDrain.Unjoinable("RequiredInstallationLockMissing"))
+                : RequiredCoreUpgradeFailed("RequiredInstallationLockMissing"));
+        }
+
+        using GrimoireSchemaQuiescentExecution? execution = blockingCore
+            ? GrimoireSchemaQuiescentExecution.ForStagedRestore(connection, maintenance!, _paths.GrimoireDirectory, stagedDatabase)
+            : null;
+
+        if (blockingCore && !joinsErasureEvidence)
+        {
+            try
+            {
+                migrated = await GrimoireSchemaReadinessDrain.DrainAsync(connection, _schemaInstaller,
+                    new GrimoireSchemaBackfillRunner(_schemaInstaller, _timeProvider), _options.EmbeddingDimensions,
+                    schemaContext, execution!, migrated, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or SqliteException)
+            {
+                return StageResult.Failed(RequiredCoreUpgradeFailed(exception.GetType().Name));
+            }
+        }
+
         if (joinsErasureEvidence)
         {
             // Before the staged Covenant reconcile, the safety backup and the commit: a drain that cannot
@@ -1882,7 +1909,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     migrated,
                     _options.EmbeddingDimensions,
                     schemaContext,
-                    cancellationToken)
+                    cancellationToken,
+                    execution)
                 .ConfigureAwait(false);
 
             if (drained.IsFailure)
@@ -2975,6 +3003,12 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
     /// </remarks>
     private static BackupVerifyIssue Issue(Error error) =>
         new(error.Code, error.Message);
+
+    private static BackupVerifyIssue RequiredCoreUpgradeFailed(string diagnostics) =>
+        new(
+            "backup.restore_failed",
+            "The archive's required Core schema upgrade could not finish before commit; the current installation "
+            + "is unchanged. Resolve the schema refusal before retrying the restore. Diagnostics: " + diagnostics);
 
     /// <summary>
     /// The refusal for a secret the restore would overwrite whose prior state a rollback could not

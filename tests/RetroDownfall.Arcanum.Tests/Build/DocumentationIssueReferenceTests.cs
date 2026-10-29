@@ -18,8 +18,7 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// explained themselves purely as "outside issue #55 scope", so the record said what work it was not
 /// part of instead of what the value guarantees.</para>
 /// <para>The document set mirrors <see cref="RetiredServerNamespaceTests"/>: documents whose vocabulary
-/// is a contract, plus the two structured inventories that are read the same way. Dated review
-/// snapshots are historical records of a single run and are deliberately left alone.</para>
+/// is a contract, plus the two structured inventories that are read the same way. Machine contracts live in test data; maintained documentation lives directly under docs/.</para>
 /// <para>The pattern accepts the tracker spellings <c>issue #55</c>, <c>issue-55</c>, and
 /// <c>issue 55</c>, plus a bare <c>#55</c> token when whitespace, an opening bracket, or an opening
 /// parenthesis places it in prose, so <c>(#55)</c> and <c>[#55]</c> are caught. It deliberately
@@ -49,9 +48,9 @@ public sealed class DocumentationIssueReferenceTests
 
         "docs/Compendium.README.md",
 
-        "docs/Arcanum.ConstraintInventory.json",
+        "tests/RetroDownfall.Arcanum.Tests/TestData/Contracts/Arcanum.ConstraintInventory.json",
 
-        "docs/Arcanum.CommandMap.json",
+        "tests/RetroDownfall.Arcanum.Tests/TestData/Contracts/Arcanum.CommandMap.json",
     ];
 
     private static readonly Regex TrackerIssueReference = new(

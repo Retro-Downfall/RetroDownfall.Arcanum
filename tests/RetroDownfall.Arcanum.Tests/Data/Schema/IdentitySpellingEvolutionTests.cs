@@ -48,7 +48,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// </remarks>
 public sealed class IdentitySpellingEvolutionTests
 {
-
     /// <summary>A Campaign spelled the way the object-relational writer spells one.</summary>
     private static readonly Guid CampaignIdentity = new("A0000000-0000-4000-8000-00000000000C");
 
@@ -89,7 +88,6 @@ public sealed class IdentitySpellingEvolutionTests
     [Fact]
     public void Version_four_reconstruction_matches_the_pinned_fingerprint()
     {
-
         Assert.Equal(
             "35B3B5AD90B8BE3571516C88CB0FDF4F8E61712F86F8D1134D07D92B3F980AC1",
             CoreSchemaVersionFourFixture.Fingerprint);
@@ -98,7 +96,6 @@ public sealed class IdentitySpellingEvolutionTests
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core);
 
         Assert.Equal(CoreSchemaVersionFourFixture.Fingerprint, core.SourceDefinitionFingerprintFor(4));
-
     }
 
     /// <summary>
@@ -108,7 +105,6 @@ public sealed class IdentitySpellingEvolutionTests
     [Fact]
     public async Task Evolving_a_version_four_installation_reaches_the_shipped_version_five_tree()
     {
-
         IReadOnlyDictionary<string, string> evolved = await GuardDefinitionsAsync(evolve: true);
 
         IReadOnlyDictionary<string, string> fresh = await GuardDefinitionsAsync(evolve: false);
@@ -121,13 +117,10 @@ public sealed class IdentitySpellingEvolutionTests
 
         foreach ((string name, string definition) in fresh)
         {
-
             Assert.Equal(
                 GrimoireSqlNormalizer.Normalize(definition),
                 GrimoireSqlNormalizer.Normalize(evolved[name]));
-
         }
-
     }
 
     /// <summary>
@@ -153,7 +146,6 @@ public sealed class IdentitySpellingEvolutionTests
     [Fact]
     public async Task A_legacy_spelled_embedding_is_repaired_onto_the_entry_it_belongs_to()
     {
-
         await using IdentitySpellingUpgradeHarness harness = await IdentitySpellingUpgradeHarness.StartAsync();
 
         await harness.SeedSessionAsync(SessionIdentity, CampaignIdentity, campaignCanonical: true);
@@ -169,7 +161,6 @@ public sealed class IdentitySpellingEvolutionTests
         Assert.Equal(Canonical(EntryIdentity), await harness.ScalarStringAsync("SELECT EntryId FROM entry_embeddings"));
 
         Assert.Equal(1, await harness.EmbeddedEntryCountAsync());
-
     }
 
     /// <summary>
@@ -187,7 +178,6 @@ public sealed class IdentitySpellingEvolutionTests
     [Fact]
     public async Task A_legacy_spelled_campaign_reference_is_repaired_onto_the_campaign_it_names()
     {
-
         await using IdentitySpellingUpgradeHarness harness = await IdentitySpellingUpgradeHarness.StartAsync();
 
         await harness.SeedSessionAsync(SessionIdentity, CampaignIdentity, campaignCanonical: false);
@@ -201,7 +191,6 @@ public sealed class IdentitySpellingEvolutionTests
             await harness.ScalarStringAsync("SELECT \"CampaignId\" FROM \"Sessions\""));
 
         Assert.Equal(1, await harness.SessionsInCampaignAsync(Canonical(CampaignIdentity)));
-
     }
 
     /// <summary>
@@ -223,7 +212,6 @@ public sealed class IdentitySpellingEvolutionTests
     [Fact]
     public async Task An_embedding_whose_entry_is_not_canonical_is_left_paired_rather_than_half_moved()
     {
-
         await using IdentitySpellingUpgradeHarness harness = await IdentitySpellingUpgradeHarness.StartAsync();
 
         await harness.SeedSessionAsync(SessionIdentity, CampaignIdentity, campaignCanonical: true);
@@ -239,7 +227,6 @@ public sealed class IdentitySpellingEvolutionTests
         Assert.Equal(Legacy(EntryIdentity), await harness.ScalarStringAsync("SELECT EntryId FROM entry_embeddings"));
 
         Assert.Equal(1, await harness.EmbeddedEntryCountAsync());
-
     }
 
     /// <summary>
@@ -257,7 +244,6 @@ public sealed class IdentitySpellingEvolutionTests
     [Fact]
     public async Task A_canonical_installation_reaches_head_and_rewrites_nothing()
     {
-
         await using IdentitySpellingUpgradeHarness harness = await IdentitySpellingUpgradeHarness.StartAsync();
 
         await harness.SeedSessionAsync(SessionIdentity, CampaignIdentity, campaignCanonical: true);
@@ -275,7 +261,6 @@ public sealed class IdentitySpellingEvolutionTests
         Assert.Equal(
             Canonical(CampaignIdentity),
             await harness.ScalarStringAsync("SELECT \"CampaignId\" FROM \"Sessions\""));
-
     }
 
     /// <summary>
@@ -314,7 +299,6 @@ public sealed class IdentitySpellingEvolutionTests
     [Fact]
     public async Task The_attachment_family_moves_together_and_every_provenance_join_still_resolves()
     {
-
         await using IdentitySpellingUpgradeHarness harness = await IdentitySpellingUpgradeHarness.StartAsync();
 
         await harness.SeedSessionAsync(SessionIdentity, CampaignIdentity, campaignCanonical: true);
@@ -386,7 +370,6 @@ public sealed class IdentitySpellingEvolutionTests
         Assert.Equal(
             Legacy(SessionIdentity),
             await harness.ScalarStringAsync("SELECT RetrievalScope FROM session_attachment_chunks"));
-
     }
 
     /// <summary>
@@ -409,7 +392,6 @@ public sealed class IdentitySpellingEvolutionTests
     [Fact]
     public async Task A_consultation_left_behind_by_a_canonical_attachment_is_repaired_onto_it()
     {
-
         await using IdentitySpellingUpgradeHarness harness = await IdentitySpellingUpgradeHarness.StartAsync();
 
         await harness.SeedSessionAsync(SessionIdentity, CampaignIdentity, campaignCanonical: true);
@@ -429,7 +411,6 @@ public sealed class IdentitySpellingEvolutionTests
             await harness.ScalarStringAsync("SELECT AttachmentId FROM attachment_memory_consultations"));
 
         Assert.Equal(1, await harness.BoundConsultationsAsync());
-
     }
 
     /// <summary>
@@ -447,7 +428,6 @@ public sealed class IdentitySpellingEvolutionTests
     [Fact]
     public async Task A_consultation_whose_attachment_is_gone_is_left_where_it_is()
     {
-
         await using IdentitySpellingUpgradeHarness harness = await IdentitySpellingUpgradeHarness.StartAsync();
 
         await harness.SeedSessionAsync(SessionIdentity, CampaignIdentity, campaignCanonical: true);
@@ -461,7 +441,6 @@ public sealed class IdentitySpellingEvolutionTests
         Assert.Equal(
             Legacy(SecondAttachmentIdentity),
             await harness.ScalarStringAsync("SELECT AttachmentId FROM attachment_memory_consultations"));
-
     }
 
     /// <summary>
@@ -483,7 +462,6 @@ public sealed class IdentitySpellingEvolutionTests
     [Fact]
     public async Task Both_spellings_of_one_campaign_binding_and_the_memories_that_inherited_them_are_settled()
     {
-
         await using IdentitySpellingUpgradeHarness harness = await IdentitySpellingUpgradeHarness.StartAsync();
 
         await harness.SeedSessionAsync(SessionIdentity, CampaignIdentity, campaignCanonical: true);
@@ -513,7 +491,6 @@ public sealed class IdentitySpellingEvolutionTests
             await harness.RowsHoldingAsync("saga_memories", "CampaignId", Canonical(CampaignIdentity)));
 
         Assert.Equal(0L, await harness.NonCanonicalRowCountAsync());
-
     }
 
     /// <summary>
@@ -531,7 +508,6 @@ public sealed class IdentitySpellingEvolutionTests
     [Fact]
     public async Task A_binding_naming_a_campaign_that_no_longer_exists_is_settled_anyway()
     {
-
         await using IdentitySpellingUpgradeHarness harness = await IdentitySpellingUpgradeHarness.StartAsync();
 
         await harness.SeedSessionAsync(SessionIdentity, CampaignIdentity, campaignCanonical: true);
@@ -547,7 +523,6 @@ public sealed class IdentitySpellingEvolutionTests
         Assert.Equal(
             Canonical(DeletedCampaignIdentity),
             await harness.ScalarStringAsync("SELECT CampaignId FROM session_campaign_bindings"));
-
     }
 
     /// <summary>
@@ -571,7 +546,6 @@ public sealed class IdentitySpellingEvolutionTests
     [Fact]
     public async Task The_verifier_answers_for_exactly_the_declared_identity_columns()
     {
-
         Assert.Equal(
             [
                 ("Sessions", "Id"),
@@ -644,11 +618,8 @@ public sealed class IdentitySpellingEvolutionTests
 
         foreach ((string table, string column) in IdentitySpellingBackfill.VerifiedColumns)
         {
-
             Assert.Equal(0L, await CountAsync(connection, table, column));
-
         }
-
     }
 
     /// <summary>
@@ -678,7 +649,6 @@ public sealed class IdentitySpellingEvolutionTests
     [Fact]
     public async Task A_dash_free_or_short_identity_is_counted_although_it_is_already_uppercase()
     {
-
         using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
@@ -704,7 +674,6 @@ public sealed class IdentitySpellingEvolutionTests
         await InsertEmbeddingAsync(connection, Canonical(SessionIdentity));
 
         Assert.Equal(2L, await CountAsync(connection, "entry_embeddings", "EntryId"));
-
     }
 
     /// <summary>
@@ -731,7 +700,6 @@ public sealed class IdentitySpellingEvolutionTests
     [Fact]
     public async Task A_hand_edited_dash_free_identity_is_reported_rather_than_repaired_into_a_second_wrong_spelling()
     {
-
         await using IdentitySpellingUpgradeHarness harness = await IdentitySpellingUpgradeHarness.StartAsync();
 
         await harness.SeedSessionAsync(SessionIdentity, CampaignIdentity, campaignCanonical: true);
@@ -747,7 +715,6 @@ public sealed class IdentitySpellingEvolutionTests
         Assert.Equal(dashFree, await harness.ScalarStringAsync("SELECT \"Id\" FROM \"SessionAttachments\""));
 
         Assert.Equal(1L, await harness.NonCanonicalRowCountAsync());
-
     }
 
     /// <summary>Asks the sweep's own question of one column, so no test carries a second copy of it.</summary>
@@ -765,7 +732,6 @@ public sealed class IdentitySpellingEvolutionTests
     /// </summary>
     private static async Task InsertEmbeddingAsync(SqliteConnection connection, string entryId)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText =
@@ -774,7 +740,6 @@ public sealed class IdentitySpellingEvolutionTests
         _ = command.Parameters.AddWithValue("$id", entryId);
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     /// <summary>The canonical spelling: uppercase, dashed, 36 characters, as the provider renders it.</summary>
@@ -791,14 +756,12 @@ public sealed class IdentitySpellingEvolutionTests
     /// </summary>
     private static async Task<IReadOnlyDictionary<string, string>> GuardDefinitionsAsync(bool evolve)
     {
-
         using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
 
         if (evolve)
         {
-
             GrimoireSchemaInstallResult seed = await GrimoireSchemaTestInstaller.InstallAsync(
                 connection,
                 CoreSchemaVersionFourFixture.ChainSet(),
@@ -808,7 +771,6 @@ public sealed class IdentitySpellingEvolutionTests
             // If the fixture ever regressed to producing a version-5 tree, the "evolved" arm would
             // install nothing further and the comparison against "fresh" would pass vacuously.
             Assert.Equal(4, seed.Core.SchemaVersion);
-
         }
 
         _ = await GrimoireSchemaTestInstaller.InstallAsync(
@@ -828,18 +790,13 @@ public sealed class IdentitySpellingEvolutionTests
 
         while (await reader.ReadAsync(CancellationToken.None))
         {
-
             if (!reader.IsDBNull(1))
             {
-
                 definitions[reader.GetString(0)] = reader.GetString(1);
-
             }
-
         }
 
         return definitions;
-
     }
 
     /// <summary>
@@ -853,7 +810,6 @@ public sealed class IdentitySpellingEvolutionTests
     /// </remarks>
     private sealed class IdentitySpellingUpgradeHarness : IAsyncDisposable
     {
-
         private const string Timestamp = "2026-01-01T00:00:00.0000000+00:00";
 
         private readonly EvolutionScratchDatabase _file;
@@ -870,7 +826,6 @@ public sealed class IdentitySpellingEvolutionTests
             ServiceProvider services,
             GrimoireSchemaTransitionCoordinator coordinator)
         {
-
             _file = file;
 
             _connection = connection;
@@ -878,12 +833,10 @@ public sealed class IdentitySpellingEvolutionTests
             _services = services;
 
             _coordinator = coordinator;
-
         }
 
         internal static async Task<IdentitySpellingUpgradeHarness> StartAsync()
         {
-
             EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
             SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
@@ -919,7 +872,6 @@ public sealed class IdentitySpellingEvolutionTests
                 TimeProvider.System);
 
             return new IdentitySpellingUpgradeHarness(file, connection, services, coordinator);
-
         }
 
         /// <summary>
@@ -929,7 +881,6 @@ public sealed class IdentitySpellingEvolutionTests
         /// </summary>
         internal async Task SeedSessionAsync(Guid session, Guid campaign, bool campaignCanonical)
         {
-
             await ExecuteAsync(
                 """
                 INSERT INTO "Campaigns" ("Id", "Name", "NameLower", "Path", "Type", "Settings", "CreatedAt", "UpdatedAt")
@@ -939,7 +890,6 @@ public sealed class IdentitySpellingEvolutionTests
                 ("$now", Timestamp));
 
             await SeedSessionUnderExistingCampaignAsync(session, campaign, campaignCanonical);
-
         }
 
         /// <summary>A second Session inside a Campaign an earlier seed already created.</summary>
@@ -979,7 +929,6 @@ public sealed class IdentitySpellingEvolutionTests
         /// </remarks>
         internal Task SeedBindingAsync(Guid session, Guid campaign, bool campaignCanonical)
         {
-
             using CovenantSqliteAuthorizationScope scope = CovenantSqliteConnectionInitializer.Instance
                 .Authorize(_connection, CovenantSqliteAuthorizationKind.SessionBindingWrite);
 
@@ -991,7 +940,6 @@ public sealed class IdentitySpellingEvolutionTests
                 ("$session", Canonical(session)),
                 ("$campaign", campaignCanonical ? Canonical(campaign) : Legacy(campaign)),
                 ("$now", Timestamp));
-
         }
 
         /// <summary>
@@ -1035,7 +983,6 @@ public sealed class IdentitySpellingEvolutionTests
         /// </remarks>
         internal async Task SeedLegacyAttachmentFamilyAsync(Guid attachment, Guid session, Guid entry)
         {
-
             await InsertAttachmentAsync(Legacy(attachment), Legacy(session), Legacy(entry));
 
             await InsertChunkAsync(Legacy(attachment), Legacy(session));
@@ -1047,7 +994,6 @@ public sealed class IdentitySpellingEvolutionTests
             await SeedSagaProvenanceAsync(session, Legacy(attachment));
 
             await SeedLexiconProvenanceAsync(session, Legacy(attachment));
-
         }
 
         /// <summary>
@@ -1159,28 +1105,23 @@ public sealed class IdentitySpellingEvolutionTests
         /// </remarks>
         internal async Task<long> NonCanonicalRowCountAsync()
         {
-
             long total = 0;
 
             foreach ((string table, string column) in IdentitySpellingBackfill.VerifiedColumns)
             {
-
                 total += await IdentitySpellingBackfill.CountNonCanonicalAsync(
                     _connection,
                     transaction: null,
                     table,
                     column,
                     CancellationToken.None);
-
             }
 
             return total;
-
         }
 
         internal async Task UpgradeAsync()
         {
-
             _ = await GrimoireSchemaTestInstaller.InstallAsync(
                 _connection,
                 GrimoireSchemaVersionChains.Default,
@@ -1189,20 +1130,19 @@ public sealed class IdentitySpellingEvolutionTests
 
             while ((await _coordinator.RunOnceAsync(CancellationToken.None)).Value.Advanced)
             {
-
             }
+
+            _ = await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(_connection, 1536, CancellationToken.None);
 
             Assert.Equal(
                 GrimoireSchemaVersionChains.CoreSchemaVersion,
                 await ScalarAsync(
                     "SELECT SchemaVersion FROM grimoire_feature_schemas WHERE TransactionTierCode = 0;"));
-
         }
 
         /// <summary>How many rows of one column hold exactly this value, compared the way a reader does.</summary>
         internal async Task<int> RowsHoldingAsync(string table, string column, string value)
         {
-
             await using SqliteCommand command = _connection.CreateCommand();
 
             command.CommandText = $"""SELECT COUNT(*) FROM "{table}" WHERE "{column}" = $value;""";
@@ -1212,12 +1152,10 @@ public sealed class IdentitySpellingEvolutionTests
             return Convert.ToInt32(
                 await command.ExecuteScalarAsync(CancellationToken.None),
                 CultureInfo.InvariantCulture);
-
         }
 
         internal async Task<string?> ScalarStringAsync(string sql)
         {
-
             await using SqliteCommand command = _connection.CreateCommand();
 
             command.CommandText = sql;
@@ -1225,18 +1163,15 @@ public sealed class IdentitySpellingEvolutionTests
             object? value = await command.ExecuteScalarAsync(CancellationToken.None);
 
             return value is DBNull or null ? null : (string)value;
-
         }
 
         public async ValueTask DisposeAsync()
         {
-
             await _services.DisposeAsync();
 
             await _connection.DisposeAsync();
 
             _file.Dispose();
-
         }
 
         /// <summary>
@@ -1247,7 +1182,6 @@ public sealed class IdentitySpellingEvolutionTests
         /// </summary>
         private async Task SeedSagaProvenanceAsync(Guid session, string attachmentId)
         {
-
             string memoryId = Legacy(Guid.Parse("E0000000-0000-4000-8000-000000000001"));
 
             await ExecuteAsync(
@@ -1270,7 +1204,6 @@ public sealed class IdentitySpellingEvolutionTests
                 ("$session", Legacy(session)),
                 ("$attachment", attachmentId),
                 ("$now", Timestamp));
-
         }
 
         /// <summary>
@@ -1280,7 +1213,6 @@ public sealed class IdentitySpellingEvolutionTests
         /// </summary>
         private async Task SeedLexiconProvenanceAsync(Guid session, string attachmentId)
         {
-
             string lexiconEntryId = Guid.Parse("F0000000-0000-4000-8000-000000000001").ToString("N");
 
             await ExecuteAsync(
@@ -1303,7 +1235,6 @@ public sealed class IdentitySpellingEvolutionTests
                 ("$session", Legacy(session)),
                 ("$attachment", attachmentId),
                 ("$now", Timestamp));
-
         }
 
         private Task InsertAttachmentAsync(string attachmentId, string sessionId, string entryId) =>
@@ -1366,25 +1297,20 @@ public sealed class IdentitySpellingEvolutionTests
 
         private async Task ExecuteAsync(string sql, params (string Name, object? Value)[] parameters)
         {
-
             await using SqliteCommand command = _connection.CreateCommand();
 
             command.CommandText = sql;
 
             foreach ((string name, object? value) in parameters)
             {
-
                 _ = command.Parameters.AddWithValue(name, value ?? DBNull.Value);
-
             }
 
             _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         private async Task<int> ScalarAsync(string sql)
         {
-
             await using SqliteCommand command = _connection.CreateCommand();
 
             command.CommandText = sql;
@@ -1392,21 +1318,16 @@ public sealed class IdentitySpellingEvolutionTests
             return Convert.ToInt32(
                 await command.ExecuteScalarAsync(CancellationToken.None),
                 CultureInfo.InvariantCulture);
-
         }
-
     }
 
     /// <summary>The one open connection the harness has, which a request scope would otherwise supply.</summary>
     private sealed class FixedCoreConnectionSource(SqliteConnection connection) : ICovenantConnectionSource
     {
-
         public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken) =>
             ValueTask.FromResult(connection);
 
         public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken) =>
             ValueTask.FromResult(connection);
-
     }
-
 }

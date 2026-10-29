@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -88,25 +87,95 @@ public sealed class SemanticSpellRouter(
         IReadOnlyList<SpellMetadata> spells,
         string userPrompt,
         CancellationToken cancellationToken,
+        Action<string, int>? observeEmbedding = null) =>
+        (await ResolveWithQueryAsync(spells, userPrompt, cancellationToken, observeEmbedding).ConfigureAwait(false)).Decision;
+
+    internal sealed record RoutingResolution(SpellRoutingDecision Decision, QueryEmbeddingHandoff? QueryEmbedding);
+
+    // Transient query data only; no retrieval eligibility or source authority is retained.
+    internal sealed record QueryEmbeddingHandoff(
+        string Probe,
+        Embedding<float> Embedding,
+        EmbeddingProvenance Provenance,
+        int RequestedDimensions,
+        int ObservedDimensions);
+
+    internal bool TryReuseQueryEmbedding(QueryEmbeddingHandoff? handoff, string probe,
+        EmbeddingSettings turnSettings, out Embedding<float>? embedding)
+    {
+        embedding = null;
+
+        if (handoff is null || !string.Equals(handoff.Probe, probe, StringComparison.Ordinal)
+            || !MatchesBinding(handoff, turnSettings)
+            || !MatchesBinding(handoff, settings.CurrentValue.ResolveEmbeddings())
+            || handoff.Embedding.Vector.Length != handoff.ObservedDimensions
+            || !IsUsableVector(handoff.Embedding.Vector.Span)
+            || !TryReadProvenance(handoff.Embedding, out EmbeddingProvenance? currentProvenance)
+            || currentProvenance is null
+            || !string.Equals(currentProvenance.Identity, handoff.Provenance.Identity, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        embedding = handoff.Embedding;
+
+        return true;
+    }
+
+    private static bool MatchesBinding(QueryEmbeddingHandoff handoff, EmbeddingSettings current) =>
+        current.Enabled && current.Dimensions == handoff.RequestedDimensions
+        && !string.IsNullOrWhiteSpace(current.Provider) && !string.IsNullOrWhiteSpace(current.Model)
+        && string.Equals(new EmbeddingProvenance(current.Provider, current.Model).Identity,
+            handoff.Provenance.Identity, StringComparison.Ordinal);
+
+    private static bool TryReadProvenance(Embedding<float> embedding, out EmbeddingProvenance? provenance)
+    {
+        provenance = embedding.AdditionalProperties is { } properties
+            && properties.TryGetValue(EmbeddingProvenance.MetadataKey, out object? value)
+            ? value as EmbeddingProvenance : null;
+
+        return provenance is not null;
+    }
+
+    private static bool IsUsableVector(ReadOnlySpan<float> vector)
+    {
+        if (vector.IsEmpty) return false;
+
+        foreach (float value in vector)
+        {
+            if (!float.IsFinite(value)) return false;
+        }
+
+        return true;
+    }
+
+    internal async Task<RoutingResolution> ResolveWithQueryAsync(
+        IReadOnlyList<SpellMetadata> spells,
+        string userPrompt,
+        CancellationToken cancellationToken,
         Action<string, int>? observeEmbedding = null)
     {
+        QueryEmbeddingHandoff? queryHandoff = null;
+
+        RoutingResolution Complete(SpellRoutingDecision decision) => new(decision, queryHandoff);
+
         ArcanumSettings epoch = settings.CurrentValue;
 
         EmbeddingSettings embeddings = epoch.ResolveEmbeddings();
 
         if (!embeddings.Enabled || !embeddings.SemanticSpellRoutingEnabled)
         {
-            return SpellRoutingDecision.FullGrimoire();
+            return Complete(SpellRoutingDecision.FullGrimoire());
         }
 
         if (spells.Count == 0)
         {
-            return SpellRoutingDecision.FullGrimoire();
+            return Complete(SpellRoutingDecision.FullGrimoire());
         }
 
         try
         {
-            ConcurrentDictionary<string, Embedding<float>>? spellEmbeddings = await spellWeaveCache
+            IReadOnlyDictionary<string, Embedding<float>>? spellEmbeddings = await spellWeaveCache
                 .GetOrCreateAsync(spells, cancellationToken, observeEmbedding)
                 .ConfigureAwait(false);
 
@@ -114,14 +183,14 @@ public sealed class SemanticSpellRouter(
             {
                 WarnFallback(epoch, FallbackReason.CatalogUnavailable);
 
-                return SpellRoutingDecision.FullGrimoire();
+                return Complete(SpellRoutingDecision.FullGrimoire());
             }
 
             if (!weaveService.IsAvailable)
             {
                 WarnFallback(epoch, FallbackReason.ProviderUnavailable);
 
-                return SpellRoutingDecision.FullGrimoire();
+                return Complete(SpellRoutingDecision.FullGrimoire());
             }
 
             observeEmbedding?.Invoke("spell-routing-embedding", 1);
@@ -134,7 +203,18 @@ public sealed class SemanticSpellRouter(
             {
                 WarnFallback(epoch, FallbackReason.PromptEmbeddingFailed);
 
-                return SpellRoutingDecision.FullGrimoire();
+                return Complete(SpellRoutingDecision.FullGrimoire());
+            }
+
+            if (TryReadProvenance(promptEmbedResult.Value, out EmbeddingProvenance? provenance)
+                && provenance is not null
+                && !string.IsNullOrWhiteSpace(embeddings.Provider) && !string.IsNullOrWhiteSpace(embeddings.Model)
+                && string.Equals(provenance.Identity,
+                    new EmbeddingProvenance(embeddings.Provider, embeddings.Model).Identity, StringComparison.Ordinal)
+                && IsUsableVector(promptEmbedResult.Value.Vector.Span))
+            {
+                queryHandoff = new(userPrompt, promptEmbedResult.Value, provenance,
+                    embeddings.Dimensions, promptEmbedResult.Value.Vector.Length);
             }
 
             ReadOnlySpan<float> queryVector = promptEmbedResult.Value.Vector.Span;
@@ -175,7 +255,7 @@ public sealed class SemanticSpellRouter(
                     WarnFallback(epoch, FallbackReason.CatalogVectorsMissing);
                 }
 
-                return SpellRoutingDecision.FullGrimoire();
+                return Complete(SpellRoutingDecision.FullGrimoire());
             }
 
             scored.Sort(static (a, b) => b.Similarity.CompareTo(a.Similarity));
@@ -186,7 +266,7 @@ public sealed class SemanticSpellRouter(
             {
                 (SpellMetadata Spell, float Similarity) top = scored[0];
 
-                return SpellRoutingDecision.DirectResonance(top.Similarity >= similarityThreshold ? top.Spell : null);
+                return Complete(SpellRoutingDecision.DirectResonance(top.Similarity >= similarityThreshold ? top.Spell : null));
             }
 
             int topK = ArcanumSettingClamps.EmbeddingsSpellRoutingHybridTopK(embeddings.SpellRoutingHybridTopK);
@@ -212,10 +292,10 @@ public sealed class SemanticSpellRouter(
             {
                 logger.LogDebug("SemanticSpellRouter: no candidate cleared the similarity threshold in hybrid mode; falling back to full-catalog LLM routing.");
 
-                return SpellRoutingDecision.FullGrimoire();
+                return Complete(SpellRoutingDecision.FullGrimoire());
             }
 
-            return SpellRoutingDecision.FilteredDivination(candidates);
+            return Complete(SpellRoutingDecision.FilteredDivination(candidates));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -225,7 +305,7 @@ public sealed class SemanticSpellRouter(
         {
             WarnFallback(epoch, FallbackReason.UnexpectedError, ex);
 
-            return SpellRoutingDecision.FullGrimoire();
+            return Complete(SpellRoutingDecision.FullGrimoire());
         }
     }
 }

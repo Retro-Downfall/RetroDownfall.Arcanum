@@ -513,9 +513,9 @@ internal sealed class CovenantLocalErasureStorageHealth : ICovenantLocalErasureS
         CancellationToken cancellationToken)
     {
 
-        // Before the handle, not only after it. The sidecar-free handle is opened immutable, which
-        // tells the engine the file cannot change underneath it — so a write-ahead log that did exist
-        // would be ignored and this verification would answer from superseded pages.
+        // Before the handle, not only after it. Immutable opening skips locking and change detection;
+        // it does not prove the closed lifecycle or absence of residual files. Require those facts
+        // independently before trusting the candidate read, and verify absence again around it.
         Result before = await ProveAbsentAsync(CovenantResidualArtifacts.Declared, authority, cancellationToken)
             .ConfigureAwait(false);
 

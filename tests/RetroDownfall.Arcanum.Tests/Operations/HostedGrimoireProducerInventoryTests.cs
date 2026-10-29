@@ -21209,7 +21209,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void OrdinaryProjectionPreservesRecoveryMembershipAcrossRootOrder(bool exactFirst)
+    public void OrdinaryProjectionPreservesRecoveryMembershipAcrossRootOrder(bool exactFirst) =>
+        AssertProjectionPreservesRecoveryMembershipAcrossRootOrder(exactFirst, nested: false);
+
+    private static void AssertProjectionPreservesRecoveryMembershipAcrossRootOrder(bool exactFirst, bool nested)
     {
         const string target = "RetroDownfall.Arcanum.Infrastructure.Operations.RecoveryMembershipTarget";
 
@@ -21220,8 +21223,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             + "internal static void Unbound() => Shared(null!); "
             + "internal static void Exact() => Shared(new LongRunningOperation(LongRunningOperationKinds.Db, 0)); "
             + "private static void Shared(LongRunningOperation ignored) { "
+            + (nested ? "void Nested(LongRunningOperation nestedIgnored) { " : "")
             + "System.IO.File.Exists(\"reachable\"); "
-            + "if (false) System.IO.File.Delete(\"unreachable\"); } } }";
+            + "if (false) System.IO.File.Delete(\"unreachable\"); "
+            + (nested ? "} Nested(ignored); " : "")
+            + "} } }";
 
         CSharpCompilation compilation = Compile(source);
 
@@ -35216,7 +35222,79 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             .Order(StringComparer.Ordinal)
             .ToArray();
 
-        Assert.Equal(HostedGrimoireProducerInventory.SchemaBackfillStrategies.Order(StringComparer.Ordinal), configured);
+        const string censusName = "RetroDownfall.Arcanum.Infrastructure.Data.Schema.InstallationTurnQuotaBackfill";
+
+        // The closed strategy table owns the ordinary slot. Core33's separate quiescent
+        // slot resolves through the unique authored implementation of its internal interface.
+        Assert.Equal(HostedGrimoireProducerInventory.SchemaBackfillStrategies.Append(censusName).Order(StringComparer.Ordinal), configured);
+
+        INamedTypeSymbol quiescent = infrastructure.GetTypeByMetadataName("RetroDownfall.Arcanum.Infrastructure.Data.Schema.IGrimoireQuiescentBackfill")!;
+
+        INamedTypeSymbol restartable = infrastructure.GetTypeByMetadataName("RetroDownfall.Arcanum.Infrastructure.Data.Schema.IGrimoireRestartableReadOnlyBackfill")!;
+
+        INamedTypeSymbol census = Assert.Single(infrastructure.SyntaxTrees
+            .SelectMany(tree => tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
+                .Select(type => infrastructure.GetSemanticModel(tree).GetDeclaredSymbol(type)))
+            .OfType<INamedTypeSymbol>(),
+            type => type.AllInterfaces.Contains(quiescent, SymbolEqualityComparer.Default));
+
+        Assert.Equal(censusName, census.ToDisplayString());
+
+        Assert.Contains(restartable, census.AllInterfaces, SymbolEqualityComparer.Default);
+
+        Assert.DoesNotContain(censusName, HostedGrimoireProducerInventory.SchemaBackfillStrategies);
+
+        IMethodSymbol ordinary = Assert.Single(census.GetMembers("AdvanceBatchAsync").OfType<IMethodSymbol>());
+
+        MethodDeclarationSyntax refusal = Assert.IsType<MethodDeclarationSyntax>(Assert.Single(ordinary.DeclaringSyntaxReferences).GetSyntax());
+
+        Assert.NotNull(refusal.ExpressionBody);
+
+        ThrowExpressionSyntax thrown = Assert.IsType<ThrowExpressionSyntax>(refusal.ExpressionBody.Expression);
+
+        SemanticModel censusModel = infrastructure.GetSemanticModel(refusal.SyntaxTree);
+
+        InvocationExpressionSyntax refusalCall = Assert.IsType<InvocationExpressionSyntax>(thrown.Expression);
+
+        Assert.Empty(refusalCall.ArgumentList.Arguments);
+
+        IMethodSymbol refusalFactory = Assert.IsAssignableFrom<IMethodSymbol>(censusModel.GetSymbolInfo(refusalCall).Symbol);
+
+        Assert.True(refusalFactory.IsStatic);
+
+        Assert.Empty(refusalFactory.Parameters);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(census, refusalFactory.ContainingType));
+
+        MethodDeclarationSyntax factorySyntax = Assert.IsType<MethodDeclarationSyntax>(Assert.Single(refusalFactory.DeclaringSyntaxReferences).GetSyntax());
+
+        Assert.NotNull(factorySyntax.ExpressionBody);
+
+        IObjectCreationOperation exception = Assert.IsAssignableFrom<IObjectCreationOperation>(censusModel.GetOperation(factorySyntax.ExpressionBody.Expression));
+
+        Assert.Equal("System.InvalidOperationException", exception.Type!.ToDisplayString());
+
+        Assert.Null(exception.Initializer);
+
+        Assert.True(Assert.Single(exception.Arguments).Value.ConstantValue.HasValue);
+
+        SyntaxTree runner = Assert.Single(infrastructure.SyntaxTrees, static tree => tree.FilePath.EndsWith("/GrimoireSchemaBackfillRunner.cs", StringComparison.Ordinal));
+
+        SemanticModel runnerModel = infrastructure.GetSemanticModel(runner);
+
+        ConditionalExpressionSyntax dispatch = Assert.Single(runner.GetRoot().DescendantNodes().OfType<ConditionalExpressionSyntax>(),
+            branch => branch.Condition is IsPatternExpressionSyntax { Pattern: DeclarationPatternSyntax pattern }
+                && SymbolEqualityComparer.Default.Equals(runnerModel.GetTypeInfo(pattern.Type).Type, quiescent));
+
+        IMethodSymbol quiescentSlot = Assert.Single(quiescent.GetMembers("AdvanceQuiescentBatchAsync").OfType<IMethodSymbol>());
+
+        Assert.Single(dispatch.WhenTrue.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>(),
+            call => SymbolEqualityComparer.Default.Equals(runnerModel.GetSymbolInfo(call).Symbol, quiescentSlot));
+
+        IMethodSymbol ordinarySlot = Assert.Single(infrastructure.GetTypeByMetadataName("RetroDownfall.Arcanum.Infrastructure.Data.Schema.IGrimoireSchemaBackfill")!.GetMembers("AdvanceBatchAsync").OfType<IMethodSymbol>());
+
+        Assert.Single(dispatch.WhenFalse.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>(),
+            call => SymbolEqualityComparer.Default.Equals(runnerModel.GetSymbolInfo(call).Symbol, ordinarySlot));
     }
 
     [Theory]

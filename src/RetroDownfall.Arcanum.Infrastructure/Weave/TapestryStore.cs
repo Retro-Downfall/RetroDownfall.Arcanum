@@ -2,6 +2,7 @@ using System.Data;
 using System.Data.Common;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -1028,7 +1029,7 @@ internal sealed partial class TapestryStore(
     private const string RetentionScopePredicate = "ScopeKind IN ('Session','SessionAttachment') AND (@entries=1 OR ScopeKind='SessionAttachment') AND lower(replace(ScopeId,'-',''))=@sessionKey";
 
     internal static async Task<long> ReadRetentionGraphRowsAsync(DbConnection connection, DbTransaction? transaction,
-        Guid sessionId, bool includeEntries, CancellationToken cancellationToken)
+        Guid sessionId, bool includeEntries, CancellationToken cancellationToken, RetentionSchemaCensus? schemaCensus = null)
     {
         await using DbCommand count = connection.CreateCommand();
 
@@ -1048,7 +1049,9 @@ internal sealed partial class TapestryStore(
 
         long rows = Convert.ToInt64(await count.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
 
-        if (await SagaVectorMirror.ClassifyAsync(connection, transaction, TapestryStorageKeys.VectorTable, cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable)
+        if (schemaCensus is null
+            ? await SagaVectorMirror.ClassifyAsync(connection, transaction, TapestryStorageKeys.VectorTable, cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable
+            : await schemaCensus.ExistsAsync((SqliteConnection)connection, TapestryStorageKeys.VectorTable, cancellationToken).ConfigureAwait(false))
         {
             count.CommandText = $"""
                 SELECT COUNT(*) FROM tapestry_node_embeddings_vec WHERE NodeId IN (

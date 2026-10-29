@@ -46,7 +46,11 @@ internal static partial class HostedGrimoireProducerInventory
 
     // Whether a member the traversal enters with an admitted origin bound to the given parameter holds an admission seed, and whether
     // it may contain an admission origin. The two existential questions that read every admission binding of a member.
-    internal static (bool Seed, bool MayContain) ProbeAdmissionBinding(CSharpCompilation compilation, SyntaxNode memberDeclaration, ParameterSyntax boundParameter)
+    internal static (bool Seed, bool MayContain) ProbeAdmissionBinding(CSharpCompilation compilation, SyntaxNode memberDeclaration, ParameterSyntax boundParameter) =>
+        ProbeAdmissionBinding(compilation, memberDeclaration, compilation.GetSemanticModel(boundParameter.SyntaxTree).GetDeclaredSymbol(boundParameter)
+            ?? throw new InvalidOperationException("The node must declare a parameter."));
+
+    internal static (bool Seed, bool MayContain) ProbeAdmissionBinding(CSharpCompilation compilation, SyntaxNode memberDeclaration, IParameterSymbol parameter)
     {
         SemanticModel model = compilation.GetSemanticModel(memberDeclaration.SyntaxTree);
 
@@ -58,8 +62,6 @@ internal static partial class HostedGrimoireProducerInventory
         };
 
         IMethodSymbol symbol = declared as IMethodSymbol ?? throw new InvalidOperationException("The node must declare a method.");
-
-        IParameterSymbol parameter = model.GetDeclaredSymbol(boundParameter) ?? throw new InvalidOperationException("The node must declare a parameter.");
 
         AuthoredMember member = new(symbol, memberDeclaration, model)
         {
@@ -74,10 +76,52 @@ internal static partial class HostedGrimoireProducerInventory
         return graph.ProbeAdmissionBinding(member);
     }
 
+    internal static (bool Admitted, bool Complete, bool SeedBefore, bool MayBefore, bool SeedAfter, bool MayAfter, bool Retained)[]
+        ProbeNestedAdmissionProjection(CSharpCompilation compilation, SyntaxNode declaration, IParameterSymbol parameter, bool admittedFirst)
+    {
+        SemanticModel model = compilation.GetSemanticModel(declaration.SyntaxTree);
+
+        IMethodSymbol symbol = (declaration is AnonymousFunctionExpressionSyntax
+            ? model.GetSymbolInfo(declaration).Symbol
+            : model.GetDeclaredSymbol(declaration)) as IMethodSymbol
+            ?? throw new InvalidOperationException("The node must declare a method.");
+
+        AuthoredMember member = new(symbol, declaration is LambdaExpressionSyntax lambda ? lambda.Body : declaration, model);
+
+        ProducerGraph graph = new([compilation], DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false);
+
+        return graph.ProbeNestedAdmissionProjection(member, parameter, admittedFirst);
+    }
+
     private sealed partial class ProducerGraph
     {
         internal (bool Seed, bool MayContain) ProbeAdmissionBinding(AuthoredMember member) =>
             (HasAdmissionSeed(member), MayContainAdmissionOrigin(member));
+
+        internal (bool Admitted, bool Complete, bool SeedBefore, bool MayBefore, bool SeedAfter, bool MayAfter, bool Retained)[]
+            ProbeNestedAdmissionProjection(AuthoredMember member, IParameterSymbol parameter, bool admittedFirst)
+        {
+            return new[] { admittedFirst, !admittedFirst }.Select(admitted =>
+            {
+                AuthoredMember bound = member with
+                {
+                    AdmissionBindings = new Dictionary<ISymbol, IReadOnlySet<string>>(SymbolEqualityComparer.Default)
+                    {
+                        [parameter] = admitted ? new HashSet<string> { "work@nested-own-probe" } : new HashSet<string>(),
+                    },
+                };
+
+                bool complete = TryRegisterEvaluationEnvironmentToken(bound) is not null;
+
+                (bool seedBefore, bool mayBefore) = ProbeAdmissionBinding(bound);
+
+                AuthoredMember projected = ProjectTraversalEvaluationEnvironment(bound, out _, out _);
+
+                (bool seedAfter, bool mayAfter) = ProbeAdmissionBinding(projected);
+
+                return (admitted, complete, seedBefore, mayBefore, seedAfter, mayAfter, projected.AdmissionBindings?.ContainsKey(parameter) == true);
+            }).ToArray();
+        }
 
         // Constant Value Identity. A bound value whose normalized source is a compile-time constant stands for its value
         // wherever the constant was written, because every consumer of such a source evaluates it (a branch condition, a
@@ -272,28 +316,106 @@ internal static partial class HostedGrimoireProducerInventory
 
         // Foreign Parameter Projection. A parameter is in scope only in the method that declares it and in the lambdas and
         // local functions declared inside that method. A member that cannot be nested in a method (an accessor, a
-        // constructor, an operator, a conversion, an explicit interface implementation) therefore can neither name a
-        // parameter of an ordinary method nor run code that does, so a binding for such a parameter is dead in its
-        // environment. It reaches the member only because an instance call passes its caller's whole context on to the
+        // constructor, an operator, a conversion, an explicit interface implementation) cannot name a foreign parameter
+        // owned by an ordinary method, local function or lambda. A binding not reached through the dependency closure
+        // is therefore dead in its environment. It reaches the member only because an instance call passes its caller's whole context on to the
         // receiver's members, and keeping it multiplies the member's states by every distinct binding of every caller
-        // parameter above it. A lambda or a local function keeps every binding, since it may be nested in the owner. Two
+        // parameter above it. A lambda or a local function keeps enclosing method bindings; a same-compilation authored owner
+        // proven outside that lexical chain is foreign too. Its own exact by-value parameters may enter the dependency scan,
+        // with nonempty admission and recovery bindings retained per invocation. Unknown owners and by-reference parameters
+        // remain conservative. Two
         // questions read every admission binding of a member and not the one a name selects (HasAdmissionSeed and
         // MayContainAdmissionOrigin); they ignore this binding by the same rule (HasLiveAdmissionOrigin), so the answer does
-        // not depend on whether the projection ran.
+        // not depend on whether the projection ran. Primary-constructor parameters remain in scope across their type and
+        // are deliberately excluded from this rule; nested targets retain the bindings of their enclosing scopes.
         internal static bool MemberCannotBeNestedInAMethod(AuthoredMember member) =>
             member.Symbol.MethodKind is not (MethodKind.LocalFunction or MethodKind.AnonymousFunction);
 
         // The two questions that read every admission binding of a member (whether it holds an admission seed and whether it may
         // contain an admission origin) are existential, so a binding the member cannot reach must not answer them. A parameter of
-        // an ordinary method other than the member itself is such a binding in a member that cannot be nested in a method: the
-        // projection drops it before the traversal asks, and asking by this rule gives the same answer for a member that was
-        // not projected, which also covers a callback body that inherited the context of the member it was declared in.
-        private static bool IsForeignOrdinaryParameter(AuthoredMember member, ISymbol symbol) =>
-            MemberCannotBeNestedInAMethod(member)
-            && symbol is IParameterSymbol { ContainingSymbol: IMethodSymbol { MethodKind: MethodKind.Ordinary } owner }
-            && !SymbolEqualityComparer.Default.Equals(owner.OriginalDefinition, member.Symbol.OriginalDefinition);
+        // an ordinary method, local function or lambda other than the member itself is such a binding in a non-nested member: the
+        // projection drops it before the traversal asks. For nested targets, exact authored declaration identity proves whether
+        // the owner is outside the semantic containing-method chain. Uncertain owners retain their bindings. Applying the
+        // same rule before projection prevents an unrelated caller context from becoming a callback's admission seed.
+        private static bool IsForeignMethodScopedParameter(AuthoredMember member, ISymbol symbol)
+        {
+            if (symbol is not IParameterSymbol
+                {
+                    ContainingSymbol: IMethodSymbol
+                    {
+                        MethodKind: MethodKind.Ordinary or MethodKind.LocalFunction or MethodKind.AnonymousFunction,
+                    } owner,
+                } parameter
+                || SymbolEqualityComparer.Default.Equals(owner.OriginalDefinition, member.Symbol.OriginalDefinition))
+            {
+                return false;
+            }
+
+            if (MemberCannotBeNestedInAMethod(member))
+            {
+                return true;
+            }
+
+            if (parameter.RefKind != RefKind.None || !HasExactAuthoredOwner(member, owner))
+            {
+                return false;
+            }
+
+            ISymbol? scope = member.Symbol;
+
+            for (int depth = 0; depth < DefaultEvaluationEnvironmentMaximumDepth; depth++)
+            {
+                if (scope is not IMethodSymbol method || !HasExactAuthoredOwner(member, method))
+                {
+                    return false;
+                }
+
+                if (SymbolEqualityComparer.Default.Equals(owner.OriginalDefinition, method.OriginalDefinition))
+                {
+                    return false;
+                }
+
+                scope = method.ContainingSymbol;
+
+                if (scope is INamedTypeSymbol)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsExactNestedOwnByValueParameter(AuthoredMember member, ISymbol symbol) =>
+            !MemberCannotBeNestedInAMethod(member)
+            && symbol is IParameterSymbol { RefKind: RefKind.None, ContainingSymbol: IMethodSymbol owner }
+            && SymbolEqualityComparer.Default.Equals(owner.OriginalDefinition, member.Symbol.OriginalDefinition)
+            && HasExactAuthoredOwner(member, owner);
+
+        private static bool HasExactAuthoredOwner(AuthoredMember member, IMethodSymbol owner)
+        {
+            IMethodSymbol definition = owner.OriginalDefinition;
+
+            if (!SymbolEqualityComparer.Default.Equals(definition.ContainingAssembly, member.Model.Compilation.Assembly)
+                || definition.DeclaringSyntaxReferences is not [SyntaxReference reference]
+                || !member.Model.Compilation.ContainsSyntaxTree(reference.SyntaxTree))
+            {
+                return false;
+            }
+
+            SyntaxNode declaration = reference.GetSyntax();
+
+            SemanticModel model = member.Model.Compilation.GetSemanticModel(reference.SyntaxTree);
+
+            ISymbol? declared = declaration is AnonymousFunctionExpressionSyntax
+                ? model.GetSymbolInfo(declaration).Symbol
+                : model.GetDeclaredSymbol(declaration);
+
+            return declared is IMethodSymbol method
+                && SymbolEqualityComparer.Default.Equals(method.OriginalDefinition, definition);
+        }
 
         private static bool HasLiveAdmissionOrigin(AuthoredMember member) =>
-            member.AdmissionBindings?.Any(pair => pair.Value.Count > 0 && !IsForeignOrdinaryParameter(member, pair.Key)) == true;
+            member.AdmissionBindings?.Any(pair => pair.Value.Count > 0 && !IsForeignMethodScopedParameter(member, pair.Key)) == true;
     }
 }

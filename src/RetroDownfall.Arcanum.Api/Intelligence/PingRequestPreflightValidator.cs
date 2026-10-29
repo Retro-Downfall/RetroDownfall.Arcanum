@@ -222,11 +222,11 @@ internal sealed record PingRequestFailureDetails(PingRequestFailureReason Reason
         PingRequestFailureReason.AttachmentMissing or PingRequestFailureReason.AttachmentPathMissing
             or PingRequestFailureReason.AttachmentPathTooLong or PingRequestFailureReason.AttachmentTooLarge
             or PingRequestFailureReason.AttachmentsTotalTooLarge => ErrorCodes.Validation.AttachedFiles,
-        PingRequestFailureReason.PromptTooLong => "Validation.PromptTooLong",
-        PingRequestFailureReason.AdditionalPromptTooLong => "Validation.AdditionalSystemPromptTooLong",
-        PingRequestFailureReason.TooManyMessages => "Validation.TooManyStatelessMessages",
-        PingRequestFailureReason.TooManyParts => "Validation.TooManyContentParts",
-        PingRequestFailureReason.MessageTooLong => "Validation.StatelessMessageTooLong",
+        PingRequestFailureReason.PromptTooLong => ErrorCodes.Validation.PromptTooLong,
+        PingRequestFailureReason.AdditionalPromptTooLong => ErrorCodes.Validation.AdditionalSystemPromptTooLong,
+        PingRequestFailureReason.TooManyMessages => ErrorCodes.Validation.TooManyStatelessMessages,
+        PingRequestFailureReason.TooManyParts => ErrorCodes.Validation.TooManyContentParts,
+        PingRequestFailureReason.MessageTooLong => ErrorCodes.Validation.StatelessMessageTooLong,
         PingRequestFailureReason.ReasoningEffort => ErrorCodes.Validation.InvalidReasoningEffort,
         PingRequestFailureReason.ReasoningOutput => ErrorCodes.Validation.InvalidReasoningOutput,
         PingRequestFailureReason.ReasoningExclusive => ErrorCodes.Validation.ReasoningEffortAndBudgetMutuallyExclusive,
@@ -253,11 +253,11 @@ internal sealed record PingRequestFailureDetails(PingRequestFailureReason Reason
 
     internal static PingRequestFailureDetails? FromKnownCode(string code) => code switch
     {
-        "Validation.PromptTooLong" => new(PingRequestFailureReason.PromptTooLong, Limit: ArcanumSettingClamps.MaxPingPromptChars(ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars)),
-        "Validation.AdditionalSystemPromptTooLong" => new(PingRequestFailureReason.AdditionalPromptTooLong, Limit: ArcanumSettingClamps.MaxPingPromptChars(ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars)),
-        "Validation.TooManyStatelessMessages" => new(PingRequestFailureReason.TooManyMessages, Limit: ArcanumSettingClamps.MaxStatelessMessages(ArcanumRuntimeDefaults.Intelligence.MaxStatelessMessages)),
-        "Validation.TooManyContentParts" => new(PingRequestFailureReason.TooManyParts, Limit: ArcanumSettingClamps.MaxContentPartsPerMessage(ArcanumRuntimeDefaults.Intelligence.MaxContentPartsPerMessage)),
-        "Validation.StatelessMessageTooLong" => new(PingRequestFailureReason.MessageTooLong, Limit: ArcanumSettingClamps.MaxEntryContentBytes(ArcanumRuntimeDefaults.Sessions.MaxEntryContentBytes)),
+        ErrorCodes.Validation.PromptTooLong => new(PingRequestFailureReason.PromptTooLong, Limit: ArcanumSettingClamps.MaxPingPromptChars(ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars)),
+        ErrorCodes.Validation.AdditionalSystemPromptTooLong => new(PingRequestFailureReason.AdditionalPromptTooLong, Limit: ArcanumSettingClamps.MaxPingPromptChars(ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars)),
+        ErrorCodes.Validation.TooManyStatelessMessages => new(PingRequestFailureReason.TooManyMessages, Limit: ArcanumSettingClamps.MaxStatelessMessages(ArcanumRuntimeDefaults.Intelligence.MaxStatelessMessages)),
+        ErrorCodes.Validation.TooManyContentParts => new(PingRequestFailureReason.TooManyParts, Limit: ArcanumSettingClamps.MaxContentPartsPerMessage(ArcanumRuntimeDefaults.Intelligence.MaxContentPartsPerMessage)),
+        ErrorCodes.Validation.StatelessMessageTooLong => new(PingRequestFailureReason.MessageTooLong, Limit: ArcanumSettingClamps.MaxEntryContentBytes(ArcanumRuntimeDefaults.Sessions.MaxEntryContentBytes)),
         ErrorCodes.Validation.InvalidReasoningEffort => new(PingRequestFailureReason.ReasoningEffort),
         ErrorCodes.Validation.InvalidReasoningOutput => new(PingRequestFailureReason.ReasoningOutput),
         ErrorCodes.Validation.ReasoningEffortAndBudgetMutuallyExclusive => new(PingRequestFailureReason.ReasoningExclusive),

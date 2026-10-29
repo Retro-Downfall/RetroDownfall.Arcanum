@@ -151,13 +151,13 @@ internal sealed partial class DataRetentionService
         foreach (Guid owner in selectedSessions.Concat(selectedEntryOwners).Distinct().Order())
         {
             _ = await CampaignSummaryLifecycle.ReadSessionClosureAsync(
-                connection, null, owner, cancellationToken, includeOwnerRows: selectedSessions.Contains(owner), rowKeys: campaignRows)
+                connection, null, owner, cancellationToken, includeOwnerRows: selectedSessions.Contains(owner), rowKeys: campaignRows, schemaCensus: _pruneSchemaCensus.Value)
                 .ConfigureAwait(false);
 
             if (!selectedSessions.Contains(owner))
             {
                 SessionSummaryClosureSnapshot summaries = await SessionSummaryLifecycle.ReadClosureAsync(
-                    connection, null, owner, cancellationToken).ConfigureAwait(false);
+                    connection, null, owner, cancellationToken, _pruneSchemaCensus.Value).ConfigureAwait(false);
 
                 if (summaries.Rows > 0)
                 {

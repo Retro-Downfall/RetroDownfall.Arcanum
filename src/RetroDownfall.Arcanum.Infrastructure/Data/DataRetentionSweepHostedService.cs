@@ -153,7 +153,8 @@ internal sealed class DataRetentionSweepHostedService(
                 if (result.IsFailure)
                 {
                     logger.LogWarning(
-                        "Automatic retention sweep did not complete: {ErrorCode} {ErrorMessage}",
+                        "Automatic retention sweep operation {OperationId} did not complete: {ErrorCode} {ErrorMessage}",
+                        result.Error.RetentionOperationId,
                         result.Error.Code,
                         result.Error.Message);
 

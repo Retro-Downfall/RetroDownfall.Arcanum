@@ -259,6 +259,8 @@ public sealed partial class WizardIntelligenceProvider
 
         ResolvedSpell? resolvedSpell = null;
 
+        SemanticSpellRouter.QueryEmbeddingHandoff? routingQuery = null;
+
         string routingMode;
 
         bool hasExplicitSpell = !string.IsNullOrWhiteSpace(turn.OverrideSpellName)
@@ -286,7 +288,7 @@ public sealed partial class WizardIntelligenceProvider
 
                 : null;
 
-            Result<ResolvedSpell?> routed = await ResolveRoutedSpellAsync(
+            Result<RoutedSpellResolution> routed = await ResolveRoutedSpellAsync(
                 turn,
 
                 lease.ChatClient,
@@ -307,7 +309,9 @@ public sealed partial class WizardIntelligenceProvider
                 return Result<ContextPreviewResult>.Failure(routed.Error);
             }
 
-            resolvedSpell = routed.Value;
+            resolvedSpell = routed.Value.Spell;
+
+            routingQuery = routed.Value.QueryEmbedding;
 
             routingMode = previewRequest.NoRetrieval
 
@@ -344,7 +348,7 @@ public sealed partial class WizardIntelligenceProvider
         {
             previewTapestrySelection = await tapestryInvocationValidator.AuthorizeAsync(turn, invocationContext, cancellationToken).ConfigureAwait(false);
 
-            queryEmbedding = await ResolveRagQueryEmbeddingAsync(turn, previewTapestrySelection is not null, cancellationToken, retrievalDiagnostics).ConfigureAwait(false);
+            queryEmbedding = await ResolveRagQueryEmbeddingAsync(turn, previewTapestrySelection is not null, cancellationToken, retrievalDiagnostics, routingQuery).ConfigureAwait(false);
 
             semanticContext = await RetrieveSemanticContextAsync(turn, queryEmbedding, cancellationToken, retrievalDiagnostics).ConfigureAwait(false);
 

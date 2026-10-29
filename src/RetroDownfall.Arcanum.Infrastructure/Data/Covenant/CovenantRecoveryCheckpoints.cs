@@ -179,7 +179,7 @@ public static partial class CovenantRecoveryCheckpointCodec
         if (payload.Length is 0 or > CovenantRecoveryJsonContext.MaxCheckpointBytes)
         {
 
-            return Unrecoverable<T>();
+            return Unrecoverable<T>(null);
 
         }
 
@@ -188,7 +188,7 @@ public static partial class CovenantRecoveryCheckpointCodec
 
             if (deserialize(payload.ToArray()) is not { } decoded)
             {
-                return Unrecoverable<T>();
+                return Unrecoverable<T>(null);
             }
 
             return validate(decoded) is { } refusal
@@ -199,19 +199,19 @@ public static partial class CovenantRecoveryCheckpointCodec
         catch (JsonException)
         {
 
-            return Unrecoverable<T>();
+            return Unrecoverable<T>(null);
 
         }
         catch (NotSupportedException)
         {
 
-            return Unrecoverable<T>();
+            return Unrecoverable<T>(null);
 
         }
 
     }
 
-    private static Result<T> Unrecoverable<T>(CovenantStartupFailureReason? reason = null) =>
+    private static Result<T> Unrecoverable<T>(CovenantStartupFailureReason? reason) =>
         Result<T>.Failure(
             new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,

@@ -1,5 +1,0 @@
-# Erasure diagnostic source guard integration repair
-
-The combined remediation gate exposed that the content-free erasure log scan still knows only the original placeholders. The reviewed entry-erasure service now emits a mutation GUID, fixed stage, closed failure classification, nullable numeric SQLite codes, a rollback flag, a closed receipt-state string, the disposition enum and a whitelisted error code. Preserve these useful diagnostics and the existing source scan.
-
-Use tests first to prove that these names are accepted only in the owning file and that private arguments remain refused. Add a file-scoped reviewed name set rather than broadening the global names or exempting the service. Native entry-erasure privacy and settlement tests remain in qualification. If the adversarial probes expose another blind spot, repair it under its own failing test. Production behavior, schema, authority and wire contracts remain unchanged. Run all structural and native entry-erasure families plus formatting checks; independently review the exact change before integrating it. Installation and live provider tests remain paused.

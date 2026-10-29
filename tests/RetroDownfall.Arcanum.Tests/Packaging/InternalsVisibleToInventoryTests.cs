@@ -25,12 +25,14 @@ public sealed class InternalsVisibleToInventoryTests
 
     // The prompt-cache benchmark seeds its controlled public-fixture availability from the
     // production CovenantRuntimeGenerationState.Initial projection.
+    // SqliteReaderSmoke initializes the exact internal native runtime before its Native AOT
+    // reader regression cases; it cannot replace that bootstrap with an unverified SQLite provider.
     [InlineData(
         "src/RetroDownfall.Arcanum.Infrastructure/RetroDownfall.Arcanum.Infrastructure.csproj",
         "RetroDownfall.Arcanum.Api,RetroDownfall.Arcanum.Api.DevHost,RetroDownfall.Arcanum.Cli,"
         + "RetroDownfall.Arcanum.Covenant.Benchmarks,RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks,"
         + "RetroDownfall.Arcanum.PromptCache.Benchmarks,RetroDownfall.Arcanum.RegexAotSmoke,"
-        + "RetroDownfall.Arcanum.Tests")]
+        + "RetroDownfall.Arcanum.SqliteReaderSmoke,RetroDownfall.Arcanum.Tests")]
 
     [InlineData(
         "src/RetroDownfall.Arcanum.Secrets/RetroDownfall.Arcanum.Secrets.csproj",

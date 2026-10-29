@@ -28,7 +28,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// </remarks>
 public sealed class MemoryAnnalsEvolutionTests
 {
-
     private static readonly Guid CampaignA = new("A0000000-0000-4000-8000-000000000001");
 
     static MemoryAnnalsEvolutionTests() => SqliteNativeRuntime.Instance.Initialize();
@@ -41,18 +40,15 @@ public sealed class MemoryAnnalsEvolutionTests
     [Fact]
     public void The_shipped_chain_pins_the_fingerprint_the_version_two_tree_published()
     {
-
         GrimoireSchemaVersionChain core =
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core);
 
         Assert.Equal(CoreSchemaVersionTwoFixture.Fingerprint, core.SourceDefinitionFingerprintFor(2));
-
     }
 
     [Fact]
     public async Task Every_existing_saga_memory_and_lexicon_entry_receives_exactly_one_claim()
     {
-
         await using AnnalsUpgradeHarness harness = await AnnalsUpgradeHarness.StartAsync();
 
         string memory = await harness.SeedMemoryAsync("a conclusion", SagaMemoryScopeKind.Global);
@@ -74,7 +70,6 @@ public sealed class MemoryAnnalsEvolutionTests
         Assert.Equal(2, await harness.ClaimCountAsync());
 
         Assert.Equal(2, await harness.HeadCountAsync());
-
     }
 
     /// <summary>
@@ -84,7 +79,6 @@ public sealed class MemoryAnnalsEvolutionTests
     [Fact]
     public async Task A_backfilled_claim_records_that_nobody_attested_it()
     {
-
         await using AnnalsUpgradeHarness harness = await AnnalsUpgradeHarness.StartAsync();
 
         string memory = await harness.SeedMemoryAsync("a conclusion", SagaMemoryScopeKind.Global);
@@ -96,7 +90,6 @@ public sealed class MemoryAnnalsEvolutionTests
         Assert.Equal(AnnalOrigin.SystemBackfilled, claim.Origin);
 
         Assert.Null(claim.SourceSessionId);
-
     }
 
     /// <summary>
@@ -106,7 +99,6 @@ public sealed class MemoryAnnalsEvolutionTests
     [Fact]
     public async Task A_backfilled_version_is_recorded_at_the_memorys_own_timestamp_and_not_the_sweeps()
     {
-
         await using AnnalsUpgradeHarness harness = await AnnalsUpgradeHarness.StartAsync();
 
         string memory = await harness.SeedMemoryAsync("an old conclusion", SagaMemoryScopeKind.Global);
@@ -120,7 +112,6 @@ public sealed class MemoryAnnalsEvolutionTests
         Assert.Equal(AnnalsUpgradeHarness.SeededTimestamp, claim.ValidFromUtc);
 
         Assert.Null(claim.ValidToUtc);
-
     }
 
     /// <summary>
@@ -133,7 +124,6 @@ public sealed class MemoryAnnalsEvolutionTests
     public async Task An_unresolved_saga_memory_is_never_laundered_into_global_authority(
         SagaMemoryScopeKind seeded)
     {
-
         await using AnnalsUpgradeHarness harness = await AnnalsUpgradeHarness.StartAsync();
 
         string memory = await harness.SeedMemoryAsync("an ambiguous conclusion", seeded);
@@ -147,13 +137,11 @@ public sealed class MemoryAnnalsEvolutionTests
         Assert.NotEqual(SagaMemoryScopeKind.Global, claim.ScopeKind);
 
         Assert.Null(claim.CampaignId);
-
     }
 
     [Fact]
     public async Task A_campaign_scoped_saga_memory_keeps_its_campaign()
     {
-
         await using AnnalsUpgradeHarness harness = await AnnalsUpgradeHarness.StartAsync();
 
         string memory = await harness.SeedMemoryAsync(
@@ -168,7 +156,6 @@ public sealed class MemoryAnnalsEvolutionTests
         Assert.Equal(SagaMemoryScopeKind.Campaign, claim.ScopeKind);
 
         Assert.Equal(CampaignA.ToString(), claim.CampaignId);
-
     }
 
     /// <summary>
@@ -178,7 +165,6 @@ public sealed class MemoryAnnalsEvolutionTests
     [Fact]
     public async Task A_global_lexicon_entry_is_claimed_global_and_a_campaign_scoped_one_names_its_campaign()
     {
-
         await using AnnalsUpgradeHarness harness = await AnnalsUpgradeHarness.StartAsync();
 
         string global = await harness.SeedLexiconEntryAsync("config");
@@ -198,7 +184,6 @@ public sealed class MemoryAnnalsEvolutionTests
         Assert.Equal(SagaMemoryScopeKind.Campaign, scopedClaim.ScopeKind);
 
         Assert.Equal(CampaignA.ToString(), scopedClaim.CampaignId);
-
     }
 
     /// <summary>
@@ -209,16 +194,13 @@ public sealed class MemoryAnnalsEvolutionTests
     [Fact]
     public async Task The_backfill_is_idempotent_and_safe_to_interrupt()
     {
-
         await using AnnalsUpgradeHarness harness = await AnnalsUpgradeHarness.StartAsync();
 
         for (int index = 0; index < 60; index++)
         {
-
             _ = await harness.SeedMemoryAsync($"conclusion {index}", SagaMemoryScopeKind.Global);
 
             _ = await harness.SeedLexiconEntryAsync($"entity-{index}");
-
         }
 
         await harness.UpgradeInOnePassAtATimeAsync();
@@ -234,7 +216,6 @@ public sealed class MemoryAnnalsEvolutionTests
         Assert.False((await harness.RunOnePassAsync()).Value.Advanced);
 
         Assert.Equal(120, await harness.ClaimCountAsync());
-
     }
 
     /// <summary>
@@ -243,7 +224,6 @@ public sealed class MemoryAnnalsEvolutionTests
     [Fact]
     public async Task An_interrupted_upgrade_leaves_the_tier_below_head_until_the_sweep_drains()
     {
-
         await using AnnalsUpgradeHarness harness = await AnnalsUpgradeHarness.StartAsync();
 
         _ = await harness.SeedMemoryAsync("a conclusion", SagaMemoryScopeKind.Global);
@@ -257,7 +237,6 @@ public sealed class MemoryAnnalsEvolutionTests
         await harness.DrainAsync();
 
         Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await harness.RecordedVersionAsync());
-
     }
 
     /// <summary>One claim as production wrote it, joined across the three tables that hold it.</summary>
@@ -279,7 +258,6 @@ public sealed class MemoryAnnalsEvolutionTests
     /// </summary>
     private sealed class AnnalsUpgradeHarness : IAsyncDisposable
     {
-
         /// <summary>The timestamp every seeded row carries, so an assertion can name it exactly.</summary>
         internal static readonly DateTimeOffset SeededTimestamp = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
@@ -297,7 +275,6 @@ public sealed class MemoryAnnalsEvolutionTests
             ServiceProvider services,
             GrimoireSchemaTransitionCoordinator coordinator)
         {
-
             _file = file;
 
             _connection = connection;
@@ -305,12 +282,10 @@ public sealed class MemoryAnnalsEvolutionTests
             _services = services;
 
             _coordinator = coordinator;
-
         }
 
         internal static async Task<AnnalsUpgradeHarness> StartAsync()
         {
-
             EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
             SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
@@ -346,7 +321,6 @@ public sealed class MemoryAnnalsEvolutionTests
                 TimeProvider.System);
 
             return new AnnalsUpgradeHarness(file, connection, services, coordinator);
-
         }
 
         internal Task<GrimoireSchemaInstallResult> InstallShippedChainAsync() =>
@@ -361,45 +335,38 @@ public sealed class MemoryAnnalsEvolutionTests
 
         internal async Task DrainAsync()
         {
-
             while ((await RunOnePassAsync()).Value.Advanced)
             {
-
             }
 
+            _ = await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(_connection, 1536, CancellationToken.None);
         }
 
         internal async Task UpgradeAsync()
         {
-
             _ = await InstallShippedChainAsync();
 
             await DrainAsync();
 
             Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await RecordedVersionAsync());
-
         }
 
         /// <summary>The same upgrade, one bounded pass at a time, which is what an interrupted host does.</summary>
         internal async Task UpgradeInOnePassAtATimeAsync()
         {
-
             _ = await InstallShippedChainAsync();
 
             for (int pass = 0; pass < 400; pass++)
             {
-
                 if (!(await RunOnePassAsync()).Value.Advanced)
                 {
-
                     break;
-
                 }
-
             }
 
-            Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await RecordedVersionAsync());
+            _ = await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(_connection, 1536, CancellationToken.None);
 
+            Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await RecordedVersionAsync());
         }
 
         /// <summary>A version-2 Saga row, carrying the scope classification version 2 gave it.</summary>
@@ -408,7 +375,6 @@ public sealed class MemoryAnnalsEvolutionTests
             SagaMemoryScopeKind scopeKind,
             string? campaignId = null)
         {
-
             string id = Guid.NewGuid().ToString();
 
             await ExecuteAsync(
@@ -424,13 +390,11 @@ public sealed class MemoryAnnalsEvolutionTests
                 ("$campaignId", campaignId));
 
             return id;
-
         }
 
         /// <summary>A version-2 Lexicon row, carrying the scope column version 2 gave it.</summary>
         internal async Task<string> SeedLexiconEntryAsync(string nameNormalized, string? scopeCampaignId = null)
         {
-
             string id = Guid.NewGuid().ToString();
 
             await ExecuteAsync(
@@ -445,12 +409,10 @@ public sealed class MemoryAnnalsEvolutionTests
                 ("$scope", scopeCampaignId ?? string.Empty));
 
             return id;
-
         }
 
         internal async Task<ClaimRow> ReadClaimAsync(AnnalSubjectStore subjectStore, string subjectId)
         {
-
             await using SqliteCommand command = _connection.CreateCommand();
 
             command.CommandText =
@@ -488,7 +450,6 @@ public sealed class MemoryAnnalsEvolutionTests
             Assert.False(await reader.ReadAsync(CancellationToken.None), "a durable row carried more than one claim");
 
             return row;
-
         }
 
         internal Task<int> ClaimCountAsync() => ScalarAsync("SELECT COUNT(*) FROM annal_claims;");
@@ -502,13 +463,11 @@ public sealed class MemoryAnnalsEvolutionTests
 
         public async ValueTask DisposeAsync()
         {
-
             await _services.DisposeAsync();
 
             await _connection.DisposeAsync();
 
             _file.Dispose();
-
         }
 
         private static string Timestamp => SeededTimestamp.ToString("o", CultureInfo.InvariantCulture);
@@ -518,25 +477,20 @@ public sealed class MemoryAnnalsEvolutionTests
 
         private async Task ExecuteAsync(string sql, params (string Name, object? Value)[] parameters)
         {
-
             await using SqliteCommand command = _connection.CreateCommand();
 
             command.CommandText = sql;
 
             foreach ((string name, object? value) in parameters)
             {
-
                 _ = command.Parameters.AddWithValue(name, value ?? DBNull.Value);
-
             }
 
             _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         private async Task<int> ScalarAsync(string sql)
         {
-
             await using SqliteCommand command = _connection.CreateCommand();
 
             command.CommandText = sql;
@@ -544,21 +498,16 @@ public sealed class MemoryAnnalsEvolutionTests
             return Convert.ToInt32(
                 await command.ExecuteScalarAsync(CancellationToken.None),
                 CultureInfo.InvariantCulture);
-
         }
-
     }
 
     /// <summary>The one open connection the harness has, which a request scope would otherwise supply.</summary>
     private sealed class FixedCoreConnectionSource(SqliteConnection connection) : ICovenantConnectionSource
     {
-
         public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken) =>
             ValueTask.FromResult(connection);
 
         public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken) =>
             ValueTask.FromResult(connection);
-
     }
-
 }

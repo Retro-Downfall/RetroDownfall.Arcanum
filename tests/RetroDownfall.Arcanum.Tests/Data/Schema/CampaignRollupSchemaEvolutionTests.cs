@@ -26,17 +26,21 @@ public sealed class CampaignRollupSchemaEvolutionTests
         Assert.Equal(CoreSchemaVersionTwentyFourFixture.PublishedFingerprint,
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core).SourceDefinitionFingerprintFor(24));
 
-        await using SqliteConnection evolved = await OpenAsync();
+        using EvolutionScratchDatabase evolvedFile = EvolutionScratchDatabase.Create();
 
-        await using SqliteConnection fresh = await OpenAsync();
+        using EvolutionScratchDatabase freshFile = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection evolved = await evolvedFile.OpenAsync(CancellationToken.None);
+
+        await using SqliteConnection fresh = await freshFile.OpenAsync(CancellationToken.None);
 
         await GrimoireSchemaTestInstaller.InstallAsync(evolved, CoreSchemaVersionTwentyFourFixture.ChainSet(), 1536, CancellationToken.None);
 
         await SeedPublishedCampaignAsync(evolved);
 
-        await InstallHeadAsync(evolved, shared: true);
+        Assert.True((await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(evolved, 1536, CancellationToken.None)).Core.IsHealthy);
 
-        await InstallHeadAsync(fresh, shared: true);
+        Assert.True((await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(fresh, 1536, CancellationToken.None)).Core.IsHealthy);
 
         Assert.Equal(await DefinitionsAsync(fresh), await DefinitionsAsync(evolved));
 

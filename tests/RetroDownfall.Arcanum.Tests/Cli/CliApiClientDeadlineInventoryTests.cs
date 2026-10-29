@@ -183,6 +183,7 @@ public sealed class CliApiClientDeadlineInventoryTests
         PutCampaignCodexAsync
         QuerySessionsAsync
         QuitServerAsync
+        ReadDataPruneDiagnosticsAsync
         ReadWorkspaceFileAsync
         RefreshSessionAttachmentAsync
         RegisterWorkspaceAsync

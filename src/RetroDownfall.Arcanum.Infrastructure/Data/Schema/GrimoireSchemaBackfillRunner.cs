@@ -41,7 +41,8 @@ internal sealed class GrimoireSchemaBackfillRunner(GrimoireSchemaInstaller insta
         GrimoireSchemaTransitionJournalRow journal,
         GrimoireSchemaInitializationContext context,
         int maxBatches,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        GrimoireSchemaQuiescentExecution? execution = null)
     {
         ArgumentNullException.ThrowIfNull(connection);
 
@@ -63,6 +64,31 @@ internal sealed class GrimoireSchemaBackfillRunner(GrimoireSchemaInstaller insta
                 + "hand it here.");
         }
 
+        if (step.Backfill is IGrimoireQuiescentBackfill && execution is null)
+        {
+            throw new InvalidOperationException("This schema sweep requires a quiescent startup or staged restore execution.");
+        }
+
+        bool restart = step.Backfill is IGrimoireRestartableReadOnlyBackfill
+            && !execution!.HasBegunReadOnlyCensus(step.Backfill.Name);
+
+        if (restart)
+        {
+            GrimoireSchemaRecordedTier? recorded = await GrimoireSchemaInstaller.ReadRecordedTierAsync(
+                connection, chain, cancellationToken).ConfigureAwait(false);
+
+            GrimoireSchemaTransitionJournalRow? current = await GrimoireSchemaTransitionJournal.ReadAsync(
+                connection, null, chain.TransactionTier, cancellationToken).ConfigureAwait(false);
+
+            if (current != journal || GrimoireSchemaEvolutionPlanner.Decide(chain, recorded, true, journal).Action
+                != GrimoireSchemaEvolutionAction.ResumeRun)
+            {
+                throw new InvalidOperationException("The read-only schema census cannot restart an unrecognized journal.");
+            }
+
+            ((IGrimoireRestartableReadOnlyBackfill)step.Backfill).ValidateRestartCursor(journal.BackfillCursor, journal.BackfillRowsProcessed);
+        }
+
         GrimoireSchemaTransitionJournalRow row = journal;
 
         int batches = 0;
@@ -78,9 +104,13 @@ internal sealed class GrimoireSchemaBackfillRunner(GrimoireSchemaInstaller insta
 
             try
             {
-                GrimoireSchemaBackfillBatch batch = await step.Backfill
-                    .AdvanceBatchAsync(connection, transaction, row.BackfillCursor, cancellationToken)
-                    .ConfigureAwait(false);
+                execution?.Require(connection);
+
+                string? effectiveCursor = restart ? null : row.BackfillCursor;
+
+                GrimoireSchemaBackfillBatch batch = step.Backfill is IGrimoireQuiescentBackfill quiescent
+                    ? await quiescent.AdvanceQuiescentBatchAsync(connection, transaction, effectiveCursor, execution!, cancellationToken).ConfigureAwait(false)
+                    : await step.Backfill.AdvanceBatchAsync(connection, transaction, row.BackfillCursor, cancellationToken).ConfigureAwait(false);
 
                 if (batch.RowsProcessed > step.Backfill.MaxRowsPerBatch)
                 {
@@ -97,7 +127,7 @@ internal sealed class GrimoireSchemaBackfillRunner(GrimoireSchemaInstaller insta
                     // The cursor is written in the same transaction as the work it describes, which is
                     // the whole of "never advance past uncommitted work": there is no ordering between
                     // the two to get wrong.
-                    if (batch.RowsProcessed == 0 && string.Equals(batch.NextCursor, row.BackfillCursor, StringComparison.Ordinal))
+                    if (batch.RowsProcessed == 0 && string.Equals(batch.NextCursor, effectiveCursor, StringComparison.Ordinal))
                     {
                         throw new InvalidOperationException("The schema backfill made no durable progress.");
                     }
@@ -110,10 +140,17 @@ internal sealed class GrimoireSchemaBackfillRunner(GrimoireSchemaInstaller insta
                         row.CompletedThroughVersion,
                         step.Backfill.Name,
                         batch.NextCursor,
-                        row.BackfillRowsProcessed + batch.RowsProcessed,
+                        checked((restart ? 0 : row.BackfillRowsProcessed) + batch.RowsProcessed),
                         cancellationToken).ConfigureAwait(false);
 
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                    if (restart)
+                    {
+                        execution!.MarkReadOnlyCensusBegun(step.Backfill.Name);
+
+                        restart = false;
+                    }
 
                     batches++;
 
@@ -151,7 +188,7 @@ internal sealed class GrimoireSchemaBackfillRunner(GrimoireSchemaInstaller insta
                     step.ToVersion,
                     backfillName: null,
                     backfillCursor: null,
-                    row.BackfillRowsProcessed + batch.RowsProcessed,
+                    checked((restart ? 0 : row.BackfillRowsProcessed) + batch.RowsProcessed),
                     cancellationToken).ConfigureAwait(false);
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);

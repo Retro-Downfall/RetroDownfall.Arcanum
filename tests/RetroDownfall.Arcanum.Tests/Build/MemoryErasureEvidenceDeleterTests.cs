@@ -78,8 +78,8 @@ public sealed class MemoryErasureEvidenceDeleterTests
     private static readonly string[] AllowedFingerprintReleaseCallers =
     [
         "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMemoryReviewService.cs::ApplyDecisionAsync",
-        "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMemoryReviewService.cs::PrepareAsync",
-        "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMutationService.cs::CommitAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMemoryReviewService.cs::PrepareCoreAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMutationService.cs::CommitAttemptAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMutationService.cs::PrepareAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.Curation.cs::CorrectAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureRelease.cs::ReleaseCoreAsync",

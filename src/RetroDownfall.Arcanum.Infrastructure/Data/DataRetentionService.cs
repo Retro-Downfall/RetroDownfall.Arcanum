@@ -601,15 +601,21 @@ internal sealed partial class DataRetentionService(
 
     private async Task<DataRetentionPlan> PlanCoreAsync(
         DataRetentionRequest request,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool completeDiagnostics = false,
+        DateTimeOffset? observedAt = null,
+        PruneDiagnosticWindow? diagnosticWindow = null)
     {
         Result<DataRetentionPlanAdmission> admission = await PlanAdmissionCoreAsync(
             request,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            completeDiagnostics: completeDiagnostics,
+            observedAt: observedAt,
+            diagnosticWindow: diagnosticWindow).ConfigureAwait(false);
 
         if (admission.IsFailure)
         {
-            return await BuildPlanAsync(request, cancellationToken).ConfigureAwait(false);
+            return await BuildPlanAsync(request, cancellationToken, completeDiagnostics, observedAt, diagnosticWindow).ConfigureAwait(false);
         }
 
         if (admission.Value.ReadLease is not null)
@@ -626,7 +632,10 @@ internal sealed partial class DataRetentionService(
     private async Task<Result<DataRetentionPlanAdmission>> PlanAdmissionCoreAsync(
         DataRetentionRequest request,
         CancellationToken cancellationToken = default,
-        DataRetentionPlanAdmissionCapability capability = DataRetentionPlanAdmissionCapability.Request)
+        DataRetentionPlanAdmissionCapability capability = DataRetentionPlanAdmissionCapability.Request,
+        bool completeDiagnostics = false,
+        DateTimeOffset? observedAt = null,
+        PruneDiagnosticWindow? diagnosticWindow = null)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -660,7 +669,7 @@ internal sealed partial class DataRetentionService(
 
             return Result<DataRetentionPlanAdmission>.Success(
                 new DataRetentionPlanAdmission(
-                    await BuildPlanAsync(request, cancellationToken).ConfigureAwait(false),
+                    await BuildPlanAsync(request, cancellationToken, completeDiagnostics, observedAt, diagnosticWindow).ConfigureAwait(false),
                     ReadLease: null));
         }
 
@@ -670,7 +679,10 @@ internal sealed partial class DataRetentionService(
         {
             DataRetentionPlan plan = await BuildPlanAsync(
                 request,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                completeDiagnostics,
+                observedAt,
+                diagnosticWindow).ConfigureAwait(false);
 
             Result<DataRetentionCovenantInventory> inventory = await InventoryCovenantAsync(
                 lease,
@@ -752,7 +764,10 @@ internal sealed partial class DataRetentionService(
 
     private Task<DataRetentionPlan> BuildPlanAsync(
         DataRetentionRequest request,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        bool completeDiagnostics = false,
+        DateTimeOffset? observedAt = null,
+        PruneDiagnosticWindow? diagnosticWindow = null) =>
         request.Operation switch
         {
             DataRetentionOperation.DeleteSession when request.TargetId is Guid sessionId =>
@@ -762,7 +777,7 @@ internal sealed partial class DataRetentionService(
                 BuildDeleteAttachmentPlanAsync(request, attachmentId, cancellationToken),
 
             DataRetentionOperation.Prune =>
-                BuildUnifiedPrunePlanAsync(request, cancellationToken),
+                BuildUnifiedPrunePlanAsync(request, cancellationToken, completeDiagnostics, observedAt, diagnosticWindow),
 
             DataRetentionOperation.ResetMemory when request.MemoryScope is not null =>
                 BuildResetMemoryPlanAsync(request, cancellationToken),
@@ -834,9 +849,13 @@ internal sealed partial class DataRetentionService(
                 nameof(workLease));
         }
 
-        return continuation is null
+        DataRetentionHostedSweepOutcome outcome = continuation is null
             ? await StartHostedPruneAsync(workLease, cancellationToken).ConfigureAwait(false)
             : await ResumeHostedPruneAsync(continuation, workLease, cancellationToken).ConfigureAwait(false);
+
+        return continuation is not null && outcome.Result is { IsFailure: true } result
+            ? outcome with { Result = Result<DataRetentionApplyResult>.Failure(WithRetentionOperation(result.Error, continuation.OperationId)) }
+            : outcome;
     }
 
     private async Task<DataRetentionHostedSweepOutcome> StartHostedPruneAsync(
@@ -845,17 +864,19 @@ internal sealed partial class DataRetentionService(
     {
         if (_operationOwnership is null)
         {
-            return ConcludedHostedPrune(HostedPruneFailure(
-                "Automatic retention cannot establish process-local operation ownership."));
+            return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(new Error(
+                ErrorCodes.Data.Conflict,
+                "Automatic retention cannot establish process-local operation ownership; no durable operation was started.")));
         }
 
         DataRetentionPlan plan;
 
         try
         {
-            plan = await PlanAsync(
+            plan = await PlanCoreAsync(
                 new DataRetentionRequest(DataRetentionOperation.Prune),
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                completeDiagnostics: true).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -898,7 +919,7 @@ internal sealed partial class DataRetentionService(
                 operation,
                 ownerId,
                 LongRunningOperationState.Failed,
-                HostedPruneError("Automatic retention could not claim its durable operation."),
+                new Error(ErrorCodes.Data.Conflict, "Automatic retention could not claim its durable operation before any candidate began."),
                 CancellationToken.None).ConfigureAwait(false);
 
             return ConcludedHostedPrune(refused);
@@ -940,7 +961,7 @@ internal sealed partial class DataRetentionService(
 
             if (execution.Failure is { } failure)
             {
-                return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(failure));
+                return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(WithRetentionOperation(failure, operation!.Id)));
             }
 
             candidateCompleted = HasCandidateEffect(execution.Applied);
@@ -1092,7 +1113,7 @@ internal sealed partial class DataRetentionService(
 
             if (recovery.Execution?.Failure is { } failure)
             {
-                return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(failure));
+                return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(WithRetentionOperation(failure, operation!.Id)));
             }
 
             resumedCandidateCompleted = HasCandidateEffect(recovery.Execution?.Applied);
@@ -1255,9 +1276,9 @@ internal sealed partial class DataRetentionService(
                 cancellationToken: cancellationToken).ConfigureAwait(false))
         {
             return Result<DataRetentionApplyResult>.Failure(
-                new Error(
+                WithRetentionOperation(new Error(
                     ErrorCodes.Data.OperationNotFinalized,
-                    "The data change was applied, but the durable operation could not be finalized; retry is safe."));
+                    "The data change was applied, but the durable operation could not be finalized; retry is safe."), operationId));
         }
 
         return Result<DataRetentionApplyResult>.Success(applied);
@@ -1290,10 +1311,10 @@ internal sealed partial class DataRetentionService(
             durableErrorCode ?? error.Code,
             cancellationToken).ConfigureAwait(false);
 
-        return Result<DataRetentionApplyResult>.Failure(
+        return Result<DataRetentionApplyResult>.Failure(WithRetentionOperation(
             settled
                 ? error
-                : HostedPruneError("Automatic retention could not record its durable disposition."));
+                : HostedPruneError("Automatic retention could not record its durable disposition."), operation.Id));
     }
 
     private async Task<Error> SettleHostedCandidateFailureAsync(
@@ -1371,7 +1392,7 @@ internal sealed partial class DataRetentionService(
                 CancellationToken.None,
                 durableErrorCode).ConfigureAwait(false);
 
-            return settled.Error;
+            return WithRetentionOperation(settled.Error, operationId);
         }
         catch (Exception settlementException)
         {
@@ -1380,8 +1401,8 @@ internal sealed partial class DataRetentionService(
                 "Automatic retention operation {OperationId} could not record its candidate failure while the effect frontier was held.",
                 operationId);
 
-            return HostedPruneError(
-                "The automatic retention candidate failed and its durable operation remains available for recovery.");
+            return WithRetentionOperation(HostedPruneError(
+                "The automatic retention candidate failed and its durable operation remains available for recovery."), operationId);
         }
     }
 
@@ -1421,6 +1442,15 @@ internal sealed partial class DataRetentionService(
     private static Result<DataRetentionApplyResult> HostedPruneFailure(string message) =>
         Result<DataRetentionApplyResult>.Failure(HostedPruneError(message));
 
+    private static Error WithRetentionOperation(Error error, Guid operationId) =>
+        operationId == Guid.Empty || error.RetentionOperationId == operationId
+            ? error
+            : error with
+            {
+                Message = $"{error.Message} Operation {operationId:D}.",
+                RetentionOperationId = operationId,
+            };
+
     private static Error HostedPruneError(string message) =>
         new(ErrorCodes.Data.ReconciliationFailed, message);
 
@@ -1443,9 +1473,10 @@ internal sealed partial class DataRetentionService(
 
         try
         {
-            current = await PlanAsync(
+            current = await PlanCoreAsync(
                 request.Request,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                completeDiagnostics: true).ConfigureAwait(false);
         }
         catch (ManagedTreeInventoryRefusalException refusal)
         {
@@ -1571,7 +1602,7 @@ internal sealed partial class DataRetentionService(
 
         try
         {
-            return await ApplyStartedOrdinaryAsync(
+            Result<DataRetentionApplyResult> result = await ApplyStartedOrdinaryAsync(
                 request,
                 current,
                 operation,
@@ -1580,6 +1611,10 @@ internal sealed partial class DataRetentionService(
                 expectedSessionSnapshot,
                 expectedAttachmentSnapshot,
                 cancellationToken).ConfigureAwait(false);
+
+            return result.IsFailure
+                ? Result<DataRetentionApplyResult>.Failure(WithRetentionOperation(result.Error, operation.Id))
+                : result;
         }
         finally
         {
@@ -2635,7 +2670,8 @@ internal sealed partial class DataRetentionService(
     private async Task<DataRetentionPlan> BuildDeleteSessionPlanAsync(
         DataRetentionRequest request,
         Guid sessionId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool includeLabelDiagnostics = false)
     {
         SessionPlanSnapshot? snapshot = await ReadSessionSnapshotAsync(
             sessionId,
@@ -2753,6 +2789,24 @@ internal sealed partial class DataRetentionService(
                 sessionId,
                 cancellationToken).ConfigureAwait(false));
 
+        if (includeLabelDiagnostics)
+        {
+            foreach (Guid entryId in snapshot.EntryIds)
+            {
+                string? labelCause = await ReadPruneLabelRefusalAsync(
+                    SensitiveArtifactKind.AssistantEntry, entryId, cancellationToken).ConfigureAwait(false);
+
+                if (labelCause is null) continue;
+
+                blockers.Add(new DataRetentionBlocker(
+                    string.Equals(snapshot.Status, "archived", StringComparison.OrdinalIgnoreCase)
+                        ? RetentionDataClass.ArchivedSessions : RetentionDataClass.ActiveSessions,
+                    sessionId.ToString("D"), labelCause, PruneLabelMessage(labelCause), sessionId));
+
+                break;
+            }
+        }
+
         DataRetentionConflict[] conflicts = await ReadSessionConflictsAsync(
             sessionId,
             cancellationToken).ConfigureAwait(false);
@@ -2866,8 +2920,8 @@ internal sealed partial class DataRetentionService(
         RetentionSettings retention,
         int remaining,
         List<DataRetentionPlanItem> items,
-        List<DataRetentionBlocker> blockers,
-        List<DataRetentionConflict> conflicts,
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers,
+        RetentionDiagnosticCollection<DataRetentionConflict> conflicts,
         List<string> candidates,
         CancellationToken cancellationToken)
     {
@@ -2900,18 +2954,8 @@ internal sealed partial class DataRetentionService(
 
             foreach (Guid sessionId in diagnosticSessionIds)
             {
-                DataRetentionPlan sessionPlan = await BuildDeleteSessionPlanAsync(
-                    request with
-                    {
-                        Operation = DataRetentionOperation.DeleteSession,
-                        TargetId = sessionId,
-                    },
-                    sessionId,
-                    cancellationToken).ConfigureAwait(false);
-
-                blockers.AddRange(sessionPlan.Blockers);
-
-                conflicts.AddRange(sessionPlan.Conflicts);
+                await AddSessionPruneDiagnosticsAsync(
+                    sessionId, retention, blockers, conflicts, cancellationToken).ConfigureAwait(false);
             }
 
             Guid[] sessionIds = await ReadEligibleSessionIdsBeforeAsync(
@@ -2930,7 +2974,15 @@ internal sealed partial class DataRetentionService(
                         TargetId = sessionId,
                     },
                     sessionId,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    includeLabelDiagnostics: true).ConfigureAwait(false);
+
+                foreach (DataRetentionBlocker blocker in sessionPlan.Blockers)
+                {
+                    AddDiagnosticForSession(blockers, blocker, sessionId);
+                }
+
+                conflicts.AddRange(sessionPlan.Conflicts);
 
                 if (sessionPlan.Blockers.Length == 0
                     && sessionPlan.Conflicts.Length == 0)
@@ -2958,6 +3010,56 @@ internal sealed partial class DataRetentionService(
         }
 
         return selectedCutoffs;
+    }
+
+    private async Task AddSessionPruneDiagnosticsAsync(
+        Guid sessionId,
+        RetentionSettings retention,
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers,
+        RetentionDiagnosticCollection<DataRetentionConflict> conflicts,
+        CancellationToken cancellationToken)
+    {
+        if (retention.ProtectedSessionIds.Contains(sessionId))
+        {
+            AddDiagnosticForSession(blockers, new DataRetentionBlocker(
+                RetentionDataClass.ArchivedSessions, sessionId.ToString("D"), ErrorCodes.Data.SessionHold,
+                "The session is protected by an explicit operator retention hold."), sessionId);
+        }
+
+        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT Id, 0 AS Kind
+            FROM Entries
+            WHERE lower(replace(SessionId, '-', '')) = @sessionId AND IsPinned <> 0
+            UNION ALL
+            SELECT Id, 1 AS Kind
+            FROM SessionContextPins
+            WHERE lower(replace(SessionId, '-', '')) = @sessionId
+            """;
+
+        Add(command, "@sessionId", sessionId.ToString("N"));
+
+        await using (DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                bool contextPin = reader.GetInt64(1) != 0;
+
+                string id = contextPin ? reader.GetString(0) : Guid.Parse(reader.GetString(0)).ToString("D");
+
+                AddDiagnosticForSession(blockers, new DataRetentionBlocker(RetentionDataClass.Entries, id,
+                    contextPin ? ErrorCodes.Data.ContextPin : ErrorCodes.Data.PinnedEntry,
+                    contextPin
+                        ? "A pinned context protects this session from deletion; inspect its pin and owning session."
+                        : "A pinned session entry protects this session from deletion."), sessionId);
+            }
+        }
+
+        _ = await AddBoundedSessionConflictDiagnosticsAsync(
+            sessionId, int.MaxValue, conflicts, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<DataRetentionPlan> BuildResetMemoryPlanAsync(
@@ -3722,8 +3824,10 @@ internal sealed partial class DataRetentionService(
     /// The Session owns its row in the turn capacity ledger, and that row leaves only through an
     /// authorized retention or capacity transaction. Its delete guard begins denied on every
     /// connection, including a pooled one handed back out, so the parent delete has to hold the
-    /// scope itself. The scope covers the delete alone and is released before the caller commits,
-    /// so no later statement in this transaction inherits it.
+    /// scope itself. The same immediate transaction returns the exact owner's installation quota
+    /// before deleting the parent. The quota guard owns its narrower capacity authorization; the
+    /// transaction adapter grants no authority and neither helper commits. Both scopes end before
+    /// the caller commits, and any failed delete or cancellation rolls back the quota release too.
     /// </remarks>
     private static async Task<int> DeleteSessionRowInTransactionAsync(
         DbConnection connection,
@@ -3736,12 +3840,29 @@ internal sealed partial class DataRetentionService(
                 (SqliteConnection)connection,
                 CovenantSqliteAuthorizationKind.SessionRetention);
 
-        return await ExecuteAsync(
+        CovenantMutationTransaction ownedTransaction = new((SqliteConnection)connection, (SqliteTransaction)transaction);
+
+        Result released = await new CovenantQuotaGuard().ReleaseSessionCapacityAsync(
+            sessionId, ownedTransaction, cancellationToken).ConfigureAwait(false);
+
+        if (released.IsFailure)
+        {
+            throw new InvalidOperationException(released.Error.Message);
+        }
+
+        int deleted = await ExecuteAsync(
             connection,
             transaction,
             "DELETE FROM Sessions WHERE lower(replace(Id, '-', '')) = @id",
             cancellationToken,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
+
+        if (deleted != 1)
+        {
+            throw new InvalidOperationException("The Session turn-capacity owner was not deleted after its quota release.");
+        }
+
+        return deleted;
     }
 
     private async Task<DataRetentionApplyResult> DeleteAttachmentAsync(
@@ -4226,10 +4347,10 @@ internal sealed partial class DataRetentionService(
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
 
         CampaignSummaryClosureSnapshot campaignContinuity = await CampaignSummaryLifecycle.ReadSessionClosureAsync(
-            connection, null, sessionId, cancellationToken).ConfigureAwait(false);
+            connection, null, sessionId, cancellationToken, schemaCensus: _pruneSchemaCensus.Value).ConfigureAwait(false);
 
         SessionSummaryClosureSnapshot summaries = await SessionSummaryLifecycle.ReadClosureAsync(
-            connection, null, sessionId, cancellationToken).ConfigureAwait(false);
+            connection, null, sessionId, cancellationToken, _pruneSchemaCensus.Value).ConfigureAwait(false);
 
         long longRestDiscovery = await LongRestLifecycle.ReadSessionClosureAsync(
             connection, null, sessionId, cancellationToken).ConfigureAwait(false);
@@ -4254,7 +4375,7 @@ internal sealed partial class DataRetentionService(
             longRestDiscovery,
             await MemoryEvaluationErasurePlan.ReadSessionClosureAsync(connection, null, sessionId, cancellationToken).ConfigureAwait(false),
             await CountTableAsync("saga_committed_uses", "AssistantEntryId IN (SELECT AssistantEntryId FROM assistant_entry_finalizations WHERE SessionId = @id)", cancellationToken, ("@id", sessionId.ToString("D").ToUpperInvariant())).ConfigureAwait(false),
-            await TapestryStore.ReadRetentionGraphRowsAsync(connection, null, sessionId, true, cancellationToken).ConfigureAwait(false));
+            await TapestryStore.ReadRetentionGraphRowsAsync(connection, null, sessionId, true, cancellationToken, _pruneSchemaCensus.Value).ConfigureAwait(false));
     }
 
     private async Task<AttachmentPlanSnapshot?> ReadAttachmentSnapshotAsync(
@@ -4354,7 +4475,7 @@ internal sealed partial class DataRetentionService(
             EmbeddingCount = embeddings,
             VectorEmbeddingCount = vectorEmbeddings,
             IndexStateCount = state,
-            TapestryRows = snapshot.SessionId is Guid owner ? await TapestryStore.ReadRetentionGraphRowsAsync(connection, null, owner, false, cancellationToken).ConfigureAwait(false) : 0,
+            TapestryRows = snapshot.SessionId is Guid owner ? await TapestryStore.ReadRetentionGraphRowsAsync(connection, null, owner, false, cancellationToken, _pruneSchemaCensus.Value).ConfigureAwait(false) : 0,
         };
     }
 
@@ -4448,47 +4569,9 @@ internal sealed partial class DataRetentionService(
             attachmentSnapshots.Add(attachment);
         }
 
-        long entryEmbeddings = await CountInTransactionAsync(
-            connection,
-            transaction,
-            "entry_embeddings",
-            "lower(replace(EntryId, '-', '')) IN (SELECT lower(replace(Id, '-', '')) FROM Entries WHERE lower(replace(SessionId, '-', '')) = @id)",
-            cancellationToken,
-            ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
-
-        long entryVectorEmbeddings = await CountInTransactionAsync(
-            connection,
-            transaction,
-            "entry_embeddings_vec",
-            "lower(replace(EntryId, '-', '')) IN (SELECT lower(replace(Id, '-', '')) FROM Entries WHERE lower(replace(SessionId, '-', '')) = @id)",
-            cancellationToken,
-            ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
-
-        // Counted from the entries for the reason the out-of-transaction twin gives: one search row
-        // per entry, and an UNINDEXED column is the only identity Entries_fts could answer by.
-        long entryFts = await CountInTransactionAsync(
-            connection,
-            transaction,
-            "Entries",
-            "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
-            ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
-
-        long consultations = await CountInTransactionAsync(
-            connection,
-            transaction,
-            "attachment_memory_consultations",
-            "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
-            ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
-
-        long sagaWatermarks = await CountInTransactionAsync(
-            connection,
-            transaction,
-            "saga_extraction_watermarks",
-            "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
-            ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
+        (long entryEmbeddings, long entryVectorEmbeddings, long entryFts, long consultations,
+            long sagaWatermarks, long committedUses) = await ReadSessionDerivedCountsInTransactionAsync(
+                connection, transaction, sessionId, cancellationToken).ConfigureAwait(false);
 
         CampaignSummaryClosureSnapshot campaignContinuity = await CampaignSummaryLifecycle.ReadSessionClosureAsync(
             connection, transaction, sessionId, cancellationToken).ConfigureAwait(false);
@@ -4518,7 +4601,7 @@ internal sealed partial class DataRetentionService(
             summaries,
             longRestDiscovery,
             await MemoryEvaluationErasurePlan.ReadSessionClosureAsync(connection, transaction, sessionId, cancellationToken).ConfigureAwait(false),
-            await CountInTransactionAsync(connection, transaction, "saga_committed_uses", "AssistantEntryId IN (SELECT AssistantEntryId FROM assistant_entry_finalizations WHERE SessionId = @id)", cancellationToken, ("@id", sessionId.ToString("D").ToUpperInvariant())).ConfigureAwait(false),
+            committedUses,
             await TapestryStore.ReadRetentionGraphRowsAsync(connection, transaction, sessionId, true, cancellationToken).ConfigureAwait(false));
     }
 
@@ -5101,6 +5184,90 @@ internal sealed partial class DataRetentionService(
             : Convert.ToString(result, CultureInfo.InvariantCulture);
     }
 
+    /// <summary>One fresh catalog read and one count statement inside the existing Session writer snapshot.</summary>
+    /// <remarks>
+    /// This is a closed read-only phase: no guard callbacks, writes, transaction boundaries or
+    /// savepoints occur between its catalog and counts. Its metadata never leaves the method, so a
+    /// subsequent invocation after DDL or rollback must classify again. Ordinary views remain absent
+    /// for transaction counts; mirrors preserve the plain-view/legacy-virtual distinction.
+    /// </remarks>
+    private static async Task<(long Embeddings, long Vectors, long Entries, long Consultations, long Watermarks, long Uses)>
+        ReadSessionDerivedCountsInTransactionAsync(
+            DbConnection connection,
+            DbTransaction transaction,
+            Guid sessionId,
+            CancellationToken cancellationToken)
+    {
+        const string entries = "lower(replace(EntryId, '-', '')) IN (SELECT lower(replace(Id, '-', '')) FROM Entries WHERE lower(replace(SessionId, '-', '')) = @id)";
+
+        const string owner = "lower(replace(SessionId, '-', '')) = @id";
+
+        (string Table, string Predicate)[] selections =
+        [
+            ("entry_embeddings", entries),
+            ("entry_embeddings_vec", entries),
+            // Entries_ai mirrors one FTS row per entry; the FTS SessionId column is unindexed.
+            ("Entries", owner),
+            ("attachment_memory_consultations", owner),
+            ("saga_extraction_watermarks", owner),
+            ("saga_committed_uses", "AssistantEntryId IN (SELECT AssistantEntryId FROM assistant_entry_finalizations WHERE SessionId = @canonicalId)"),
+        ];
+
+        HashSet<string> available = new(StringComparer.Ordinal);
+
+        await using (DbCommand catalog = connection.CreateCommand())
+        {
+            catalog.Transaction = transaction;
+
+            string[] names = new string[selections.Length];
+
+            for (int index = 0; index < selections.Length; index++)
+            {
+                names[index] = "@table" + index.ToString(CultureInfo.InvariantCulture);
+
+                Add(catalog, names[index], selections[index].Table);
+            }
+
+            catalog.CommandText = $"SELECT name, type, sql FROM sqlite_master WHERE name IN ({string.Join(",", names)})";
+
+            await using DbDataReader reader = await catalog.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                string table = reader.GetString(0);
+
+                string kind = reader.GetString(1);
+
+                bool mirror = SagaVectorMirror.IsMirrorName(table);
+
+                if (kind != "table" && !(mirror && kind == "view")) continue;
+
+                if (mirror && !reader.IsDBNull(2)
+                    && reader.GetString(2).Trim().StartsWith("CREATE VIRTUAL TABLE", StringComparison.OrdinalIgnoreCase)) continue;
+
+                _ = available.Add(table);
+            }
+        }
+
+        await using DbCommand counts = connection.CreateCommand();
+
+        counts.Transaction = transaction;
+
+        counts.CommandText = "SELECT " + string.Join(",", selections.Select(selection => available.Contains(selection.Table)
+            ? $"(SELECT COUNT(*) FROM \"{selection.Table}\" WHERE {selection.Predicate})"
+            : "0"));
+
+        Add(counts, "@id", sessionId.ToString("N"));
+
+        Add(counts, "@canonicalId", sessionId.ToString("D").ToUpperInvariant());
+
+        await using DbDataReader values = await counts.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        _ = await values.ReadAsync(cancellationToken).ConfigureAwait(false);
+
+        return (values.GetInt64(0), values.GetInt64(1), values.GetInt64(2), values.GetInt64(3), values.GetInt64(4), values.GetInt64(5));
+    }
+
     private static async Task<long> CountInTransactionAsync(
         DbConnection connection,
         DbTransaction transaction,
@@ -5284,7 +5451,7 @@ internal sealed partial class DataRetentionService(
                     RetentionDataClass.Entries,
                     reader.GetString(0),
                     ErrorCodes.Data.ContextPin,
-                    $"Pinned context '{reader.GetString(1)}' protects this session from deletion."));
+                    "A pinned context protects this session from deletion; inspect its pin and owning session."));
         }
 
         return [.. blockers];
@@ -6067,7 +6234,9 @@ internal sealed partial class DataRetentionService(
         IEnumerable<string> candidateIds,
         bool requiresConfirmation,
         string? planAuthority = null,
-        DateTimeOffset? generatedAt = null)
+        DateTimeOffset? generatedAt = null,
+        RetentionDiagnosticCollection<DataRetentionBlocker>? compactBlockers = null,
+        RetentionDiagnosticCollection<DataRetentionConflict>? compactConflicts = null)
     {
         DataRetentionPlanItem[] orderedItems =
             [.. items
@@ -6080,37 +6249,56 @@ internal sealed partial class DataRetentionService(
                     group.Sum(static item => item.DerivedRecords)))
                 .OrderBy(static item => item.DataClass)];
 
-        DataRetentionBlocker[] orderedBlockers =
-            [.. blockers
-                .DistinctBy(static blocker =>
-                    (blocker.DataClass, blocker.ResourceId, blocker.ReasonCode))
-                .OrderBy(static blocker => blocker.DataClass)
-                .ThenBy(static blocker => blocker.ResourceId, StringComparer.Ordinal)
-                .ThenBy(static blocker => blocker.ReasonCode, StringComparer.Ordinal)];
+        IEnumerable<DataRetentionBlocker> completeBlockers = blockers
+            .DistinctBy(static blocker => (blocker.DataClass, blocker.ResourceId, blocker.ReasonCode))
+            .OrderBy(static blocker => blocker.DataClass)
+            .ThenBy(static blocker => blocker.ResourceId, StringComparer.Ordinal)
+            .ThenBy(static blocker => blocker.ReasonCode, StringComparer.Ordinal);
 
-        DataRetentionConflict[] orderedConflicts =
-            [.. conflicts
-                .DistinctBy(static conflict =>
-                    (conflict.Code, conflict.ResourceId))
-                .OrderBy(static conflict => conflict.Code, StringComparer.Ordinal)
-                .ThenBy(static conflict => conflict.ResourceId, StringComparer.Ordinal)];
+        IEnumerable<DataRetentionConflict> completeConflicts = conflicts
+            .DistinctBy(static conflict => (conflict.Code, conflict.ResourceId))
+            .OrderBy(static conflict => conflict.Code, StringComparer.Ordinal)
+            .ThenBy(static conflict => conflict.ResourceId, StringComparer.Ordinal);
+
+        IEnumerable<DiagnosticFact> blockerFacts = compactBlockers is not null
+            ? compactBlockers.OrderedFacts()
+            : completeBlockers.Select(static blocker => new DiagnosticFact(blocker.DataClass, blocker.ResourceId,
+                blocker.ReasonCode, blocker.Message, blocker.HoldingSessionId));
+
+        IEnumerable<DiagnosticFact> conflictFacts = compactConflicts is not null
+            ? compactConflicts.OrderedFacts()
+            : completeConflicts.Select(static conflict => new DiagnosticFact(null, conflict.ResourceId,
+                conflict.Code, conflict.Message, conflict.HoldingSessionId));
+
+        bool bounded = compactBlockers is { Complete: false };
+
+        PruneDiagnosticWindow? window = compactBlockers?.Window;
+
+        DataRetentionBlocker[] orderedBlockers = MaterializeDiagnostics<DataRetentionBlocker>(blockerFacts,
+            window?.Offset ?? 0, window?.Limit ?? (bounded ? 20 : int.MaxValue));
+
+        DataRetentionConflict[] orderedConflicts = MaterializeDiagnostics<DataRetentionConflict>(conflictFacts,
+            window is { } page ? Math.Max(0, page.Offset - compactBlockers!.Count) : 0,
+            window is { } conflictPage ? conflictPage.Limit - orderedBlockers.Length : bounded ? 20 : int.MaxValue);
 
         string[] orderedCandidates =
             [.. candidateIds
                 .Distinct(StringComparer.Ordinal)];
 
-        string planId = ComputePlanId(
+        string planId = ComputePlanIdFromFacts(
             request,
             orderedItems,
-            orderedBlockers,
-            orderedConflicts,
+            blockerFacts,
+            conflictFacts,
             orderedCandidates,
             planAuthority);
+
+        DateTimeOffset observation = generatedAt ?? timeProvider.GetUtcNow();
 
         return new DataRetentionPlan(
             planId,
             request,
-            generatedAt ?? timeProvider.GetUtcNow(),
+            observation,
             orderedItems,
             orderedBlockers,
             orderedConflicts,
@@ -6119,7 +6307,11 @@ internal sealed partial class DataRetentionService(
             orderedItems.Sum(static item => item.EstimatedBytes),
             orderedItems.Sum(static item => item.DerivedRecords),
             orderedCandidates,
-            requiresConfirmation);
+            requiresConfirmation,
+            Diagnostics: compactBlockers is not null && compactConflicts is not null
+                ? BuildDiagnosticSummary(compactBlockers, compactConflicts, planId, request, observation,
+                    orderedBlockers.Length, orderedConflicts.Length)
+                : null);
     }
 
     private DataRetentionPlan EmptyPlan(
@@ -6136,12 +6328,24 @@ internal sealed partial class DataRetentionService(
     private static string ComputePlanId(
         DataRetentionRequest request,
         DataRetentionPlanItem[] items,
-        DataRetentionBlocker[] blockers,
-        DataRetentionConflict[] conflicts,
+        IEnumerable<DataRetentionBlocker> blockers,
+        IEnumerable<DataRetentionConflict> conflicts,
+        string[] candidates,
+        string? planAuthority) => ComputePlanIdFromFacts(request, items,
+            blockers.Select(static blocker => new DiagnosticFact(blocker.DataClass, blocker.ResourceId,
+                blocker.ReasonCode, blocker.Message, blocker.HoldingSessionId)),
+            conflicts.Select(static conflict => new DiagnosticFact(null, conflict.ResourceId,
+                conflict.Code, conflict.Message, conflict.HoldingSessionId)), candidates, planAuthority);
+
+    private static string ComputePlanIdFromFacts(
+        DataRetentionRequest request,
+        DataRetentionPlanItem[] items,
+        IEnumerable<DiagnosticFact> blockers,
+        IEnumerable<DiagnosticFact> conflicts,
         string[] candidates,
         string? planAuthority)
     {
-        StringBuilder canonical = new();
+        using RetentionPlanHasher canonical = new();
 
         canonical.Append((int)request.Operation)
             .Append('|')
@@ -6165,17 +6369,17 @@ internal sealed partial class DataRetentionService(
                 .Append(item.DerivedRecords);
         }
 
-        foreach (DataRetentionBlocker blocker in blockers)
+        foreach (DiagnosticFact blocker in blockers)
         {
             canonical.Append("|b:")
-                .Append((int)blocker.DataClass)
+                .Append((int)blocker.DataClass!.Value)
                 .Append(':')
                 .Append(blocker.ResourceId)
                 .Append(':')
-                .Append(blocker.ReasonCode);
+                .Append(blocker.Code);
         }
 
-        foreach (DataRetentionConflict conflict in conflicts)
+        foreach (DiagnosticFact conflict in conflicts)
         {
             canonical.Append("|c:")
                 .Append(conflict.Code)
@@ -6193,8 +6397,7 @@ internal sealed partial class DataRetentionService(
             canonical.Append("|a:").Append(planAuthority);
         }
 
-        byte[] hash = SHA256.HashData(
-            Encoding.UTF8.GetBytes(canonical.ToString()));
+        byte[] hash = canonical.Finish();
 
         return Convert.ToHexString(hash);
     }
@@ -6695,6 +6898,11 @@ internal sealed partial class DataRetentionService(
     {
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
+
+        if (_pruneSchemaCensus.Value is { } census && connection is SqliteConnection sqlite)
+        {
+            return await census.ExistsAsync(sqlite, table, cancellationToken).ConfigureAwait(false);
+        }
 
         if (SagaVectorMirror.IsMirrorName(table))
         {

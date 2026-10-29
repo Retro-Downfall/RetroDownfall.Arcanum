@@ -319,7 +319,8 @@ public sealed class GrimoireTurnWriter(
         TurnHandle handle,
         string? streamedContent,
         ProviderCallSensitivity? sensitivity = null,
-        CovenantTurnCommitBinding? covenantCommit = null)
+        CovenantTurnCommitBinding? covenantCommit = null,
+        SessionTurnClaimOutcome? interruptionOutcome = null)
     {
         if (handle.IsFinalized || handle.AssistantEntryId is null)
         {
@@ -333,7 +334,8 @@ public sealed class GrimoireTurnWriter(
                 streamedContent,
                 CancellationToken.None,
                 sensitivity,
-                covenantCommit).ConfigureAwait(false);
+                covenantCommit,
+                interruptionOutcome).ConfigureAwait(false);
         }
         catch (Exception)
         {

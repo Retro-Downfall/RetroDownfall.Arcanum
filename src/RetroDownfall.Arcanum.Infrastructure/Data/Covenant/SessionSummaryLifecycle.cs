@@ -92,9 +92,10 @@ internal static class SessionSummaryLifecycle
         DbConnection connection,
         DbTransaction? transaction,
         Guid sessionId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RetentionSchemaCensus? schemaCensus = null)
     {
-        if (!await IsInstalledAsync(connection, transaction, cancellationToken).ConfigureAwait(false))
+        if (!await IsInstalledAsync(connection, transaction, cancellationToken, schemaCensus).ConfigureAwait(false))
         {
             return new(0, "");
         }
@@ -141,7 +142,8 @@ internal static class SessionSummaryLifecycle
     internal static async Task<bool> IsInstalledAsync(
         DbConnection connection,
         DbTransaction? transaction,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RetentionSchemaCensus? schemaCensus = null)
     {
         await using DbCommand command = connection.CreateCommand();
 
@@ -149,7 +151,9 @@ internal static class SessionSummaryLifecycle
 
         command.CommandText = "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_summary_artifacts');";
 
-        return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+        return Convert.ToInt64(schemaCensus is null
+            ? await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)
+            : await schemaCensus.ReadScalarAsync(command, cancellationToken).ConfigureAwait(false),
             System.Globalization.CultureInfo.InvariantCulture) == 1;
     }
 

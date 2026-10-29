@@ -306,6 +306,7 @@ internal static class CliSurfaceExamples
 
         // Data lifecycle
         ["data status"] = ["arcanum data status"],
+        ["data prune-details"] = ["arcanum data prune-details --plan-id \"$PLAN_ID\" --snapshot-id \"$SNAPSHOT_ID\" --observed-at \"$OBSERVED_AT\" --json"],
         ["data retention show"] = ["arcanum data retention show"],
         ["data retention set"] = ["arcanum data retention set archived-sessions 90"],
         ["data encryption status"] = ["arcanum data encryption status"],

@@ -11,6 +11,19 @@ namespace RetroDownfall.Arcanum.Tests.Api.Primitives;
 public sealed class ArcanumErrorMapperTests
 {
     [Theory]
+    [InlineData("Validation.PromptTooLong", StatusCodes.Status400BadRequest)]
+    [InlineData("Validation.AdditionalSystemPromptTooLong", StatusCodes.Status400BadRequest)]
+    [InlineData("Validation.TooManyStatelessMessages", StatusCodes.Status400BadRequest)]
+    [InlineData("Validation.TooManyContentParts", StatusCodes.Status400BadRequest)]
+    [InlineData("Validation.StatelessMessageTooLong", StatusCodes.Status400BadRequest)]
+    [InlineData("Validation.SpellOverride", StatusCodes.Status400BadRequest)]
+    [InlineData("Validation.UnrecognizedFutureCode", StatusCodes.Status500InternalServerError)]
+    public void Request_bounds_and_explicit_spell_refusals_are_caller_errors(string code, int expected)
+    {
+        Assert.Equal(expected, ArcanumErrorMapper.ResolveStatusCode(code));
+    }
+
+    [Theory]
     [InlineData(ErrorCodes.Validation.InvalidPrompt, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Validation.AttachedFiles, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Validation.InvalidBody, StatusCodes.Status400BadRequest)]

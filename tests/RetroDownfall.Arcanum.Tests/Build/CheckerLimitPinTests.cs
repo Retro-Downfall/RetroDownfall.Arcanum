@@ -37,7 +37,7 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
         new("ef-model-code", "Value converters, value generators and comparers a model names", nameof(Production_holds_no_authored_ef_value_converter_generator_comparer_customizer_or_convention)),
         new("root-provider-context", "A context the container disposes when the host's root provider is disposed", nameof(The_only_context_that_outlives_a_scope_is_the_one_pooled_registration)),
         new("unknown-disposable", "a disposable of unknown provenance is not assumed to be a context", nameof(No_authored_context_is_converted_to_a_type_that_is_not_a_context)),
-        new("provider-state-change", "a state change the provider makes by itself is not an operation of this lane", nameof(The_one_connection_state_subscription_is_pinned_by_the_inventory_fixtures)),
+        new("provider-state-change", "a state change the provider makes by itself is not an operation of this lane", nameof(The_connection_state_handler_registry_is_pinned_by_the_inventory_fixtures)),
         new("framework-virtual-override", "a virtual member that the framework declares", nameof(Authored_overrides_of_framework_virtual_members_that_reach_a_site_are_exactly_the_reviewed_types)),
         new("serializer-logger-callbacks", "what a serializer or a logger calls on the value besides those slots", nameof(Production_has_no_serializer_callback_destructuring_template_or_converter_that_reaches_a_site)),
         new("serializer-property-reads", "a serializer reading a property", nameof(No_type_a_serializer_can_read_has_a_getter_that_reaches_a_site)),
@@ -640,11 +640,11 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
     }
 
     [Fact]
-    public void The_one_connection_state_subscription_is_pinned_by_the_inventory_fixtures()
+    public void The_connection_state_handler_registry_is_pinned_by_the_inventory_fixtures()
     {
-        // A state change the provider makes by itself is not an operation of the Interceptor and Logger lane. The product subscribes one named
-        // handler to DbConnection.StateChange and the inventory pins exactly that (Production_subscribes_exactly_one_named_handler_to_connection_state_changes).
-        Assert.Contains("Production_subscribes_exactly_one_named_handler_to_connection_state_changes", File.ReadAllText(Path.Combine(
+        // A state change the provider makes by itself is not an operation of the Interceptor and Logger lane. The product subscribes four named
+        // handlers to DbConnection.StateChange; the inventory pins their exact registry and matching removals.
+        Assert.Contains("Production_connection_state_subscriptions_match_the_closed_named_handler_registry", File.ReadAllText(Path.Combine(
             TestRepositoryPaths.RepositoryRoot(), "tests", "RetroDownfall.Arcanum.Tests", "Operations", "HostedGrimoireProducerInventoryTests.ConnectionState.cs")), StringComparison.Ordinal);
     }
 

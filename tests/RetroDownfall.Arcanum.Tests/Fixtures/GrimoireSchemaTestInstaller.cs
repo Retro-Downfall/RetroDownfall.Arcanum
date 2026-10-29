@@ -6,6 +6,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
@@ -136,9 +138,21 @@ internal static class GrimoireSchemaTestInstaller
 
     /// <summary>Explicitly drains bounded Core backfill passes for tests asserting the current head.</summary>
     internal static async Task<GrimoireSchemaInstallResult> InstallAndDrainCoreAsync(
-        SqliteConnection connection, int embeddingDimensions, CancellationToken cancellationToken)
+        SqliteConnection connection, int embeddingDimensions, CancellationToken cancellationToken, GrimoireSchemaVersionChainSet? chains = null)
     {
-        GrimoireSchemaInstaller installer = Create();
+        string database = Path.GetFullPath(new SqliteConnectionStringBuilder(connection.ConnectionString).DataSource);
+
+        string root = Path.GetDirectoryName(database)!;
+
+        using ArcanumMaintenanceLock held = ArcanumMaintenanceLock.AcquireDetailed(root).BorrowAcquiredLock();
+
+        using GrimoireSchemaQuiescentExecution execution = string.Equals(Path.GetFileName(database), "arcanum.db", StringComparison.Ordinal)
+            ? GrimoireSchemaQuiescentExecution.ForStartup(connection, held, root, new GrimoireDbReadiness())
+            : GrimoireSchemaQuiescentExecution.ForStagedRestore(connection, held, root, database);
+
+        chains ??= GrimoireSchemaVersionChains.Default;
+
+        GrimoireSchemaInstaller installer = Create(chains);
 
         GrimoireSchemaInitializationContext context = CreateContext();
 
@@ -154,8 +168,8 @@ internal static class GrimoireSchemaTestInstaller
                 GrimoireSchemaTransactionTier.Core, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("An incomplete Core install must have a transition journal.");
 
-            _ = await runner.AdvanceAsync(connection, GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core),
-                journal, context, 16, cancellationToken).ConfigureAwait(false);
+            _ = await runner.AdvanceAsync(connection, chains.ForTier(GrimoireSchemaTransactionTier.Core),
+                journal, context, 16, cancellationToken, execution).ConfigureAwait(false);
         }
 
         throw new InvalidOperationException("The test schema did not reach head within its bounded pass count.");

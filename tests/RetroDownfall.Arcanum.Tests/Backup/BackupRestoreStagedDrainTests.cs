@@ -113,7 +113,7 @@ public sealed partial class BackupRestoreStagedDrainTests
     /// The drain follows every tier, not only Core: an archive whose canonical tier also stops at a sweep
     /// can only reach that sweep once Core is at head. Core crosses the version-12 identity sweep
     /// and the version-16 Campaign frontier sweep, then the version-18 Long Rest source identities
-    /// before the canonical sweep; Core28 adds the native-search projection sweep, taking five passes.
+    /// before the canonical sweep; Core28 adds native-search projection and Core33 adds quota census, taking six passes.
     /// </summary>
     [SkippableFact]
     public async Task An_archive_with_sweeps_pending_in_two_tiers_is_drained_through_both()
@@ -151,7 +151,7 @@ public sealed partial class BackupRestoreStagedDrainTests
         Assert.Equal(1L, await ScalarAsync(restored,
             $"SELECT COUNT(*) FROM long_rest_sources WHERE MemoryId = '{ArchivedMemoryId}' AND MutationEpoch = 1"));
 
-        Assert.Contains(result.Phases, static p => p.Phase == BackupRestorePhase.Migrate && p.Detail.StartsWith("Drained staged schema transitions: 5 passes,", StringComparison.Ordinal));
+        Assert.Contains(result.Phases, static p => p.Phase == BackupRestorePhase.Migrate && p.Detail.StartsWith("Drained staged schema transitions: 6 passes,", StringComparison.Ordinal));
     }
 
     [SkippableFact]
@@ -200,7 +200,7 @@ public sealed partial class BackupRestoreStagedDrainTests
     }
 
     [SkippableFact]
-    public async Task A_destination_without_evidence_leaves_an_older_archive_pending_exactly_as_before()
+    public async Task A_destination_without_evidence_finishes_the_required_Core_prefix_before_commit()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -221,9 +221,9 @@ public sealed partial class BackupRestoreStagedDrainTests
 
         await using SqliteConnection restored = await harness.OpenLiveDatabaseAsync(archive.GrimoireSecret);
 
-        Assert.Equal(11, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
+        Assert.Equal(33, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
 
-        Assert.Equal(1L, await ScalarAsync(restored, "SELECT COUNT(*) FROM grimoire_schema_transitions"));
+        Assert.Equal(0L, await ScalarAsync(restored, "SELECT COUNT(*) FROM grimoire_schema_transitions"));
 
         Assert.DoesNotContain(result.Phases, static p => p.Detail.StartsWith("Drained", StringComparison.Ordinal));
     }
@@ -270,7 +270,7 @@ public sealed partial class BackupRestoreStagedDrainTests
     }
 
     [SkippableFact]
-    public async Task A_failing_staged_sweep_without_destination_evidence_still_restores()
+    public async Task A_failing_required_Core_predecessor_without_evidence_refuses_before_displacement()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -283,18 +283,30 @@ public sealed partial class BackupRestoreStagedDrainTests
             MemoryErasureRestoreHarness.CoreElevenCanonicalFive(),
             SeedArchivedMemoryAsync);
 
+        string before = await harness.LiveDatabaseDigestAsync();
+
         BackupRestoreService service = harness.CreateRestoreService(
             installer: InstallerWithCoreSweep(static name => new ThrowingBackfill(name)));
 
         BackupRestoreResult result = await RestoreAsync(service, archive.ArchivePath);
 
-        Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
 
-        await using SqliteConnection restored = await harness.OpenLiveDatabaseAsync(archive.GrimoireSecret);
+        BackupVerifyIssue issue = Assert.Single(result.Issues);
 
-        Assert.Equal(11, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
+        Assert.Equal("backup.restore_failed", issue.Code);
 
-        Assert.Equal(1L, await ScalarAsync(restored, "SELECT COUNT(*) FROM grimoire_schema_transitions"));
+        Assert.Contains("required Core schema upgrade", issue.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("erasure evidence", issue.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("sentinel-diagnostic", issue.Message, StringComparison.Ordinal);
+
+        Assert.EndsWith("Diagnostics: InvalidOperationException", issue.Message, StringComparison.Ordinal);
+
+        Assert.Equal(before, await harness.LiveDatabaseDigestAsync());
+
+        AssertNoStagingRemains(harness);
     }
 
     [SkippableFact(Timeout = 120_000)]
@@ -748,11 +760,11 @@ public sealed partial class BackupRestoreStagedDrainTests
 
         // Three passes exhaust the synthetic version-12 sweep. Core16 adds one empty Campaign
         // frontier batch/pass; Core18 adds one source-identity batch/pass for the real archived memory.
-        // Core28 adds one pass with four empty native-corpus projection batches.
+        // Core28 adds one pass with four empty native-corpus projection batches; Core33 adds one pass with two empty owner-census phases.
         Assert.Contains(
             result.Phases,
             static p => p.Phase == BackupRestorePhase.Migrate
-                && p.Detail == $"Drained staged schema transitions: 6 passes, {total + 6} batches, {total + 1} rows.");
+                && p.Detail == $"Drained staged schema transitions: 7 passes, {total + 8} batches, {total + 1} rows.");
     }
 
     /// <summary>

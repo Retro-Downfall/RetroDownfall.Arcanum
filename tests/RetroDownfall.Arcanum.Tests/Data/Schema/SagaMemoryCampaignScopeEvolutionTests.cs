@@ -35,7 +35,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// </remarks>
 public sealed class SagaMemoryCampaignScopeEvolutionTests
 {
-
     private static readonly Guid CampaignA = new("A0000000-0000-4000-8000-000000000001");
 
     private static readonly Guid CampaignB = new("B0000000-0000-4000-8000-000000000002");
@@ -51,18 +50,15 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
     [Fact]
     public void The_shipped_chain_pins_the_fingerprint_the_version_one_tree_published()
     {
-
         GrimoireSchemaVersionChain core =
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core);
 
         Assert.Equal(CoreSchemaVersionOneFixture.Fingerprint, core.SourceDefinitionFingerprintFor(1));
-
     }
 
     [Fact]
     public async Task A_memory_owned_by_a_campaign_bound_session_is_classified_to_that_campaign()
     {
-
         await using CampaignScopeUpgradeHarness harness = await CampaignScopeUpgradeHarness.StartAsync();
 
         Guid session = await harness.SeedCampaignSessionAsync(CampaignA);
@@ -74,13 +70,11 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
         Assert.Equal(
             (SagaMemoryScopeKind.Campaign, CampaignA),
             await harness.ReadScopeAsync(memory));
-
     }
 
     [Fact]
     public async Task A_memory_owned_by_a_global_only_session_is_classified_global()
     {
-
         await using CampaignScopeUpgradeHarness harness = await CampaignScopeUpgradeHarness.StartAsync();
 
         Guid session = await harness.SeedGlobalOnlySessionAsync();
@@ -92,7 +86,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
         Assert.Equal(
             (SagaMemoryScopeKind.Global, (Guid?)null),
             await harness.ReadScopeAsync(memory));
-
     }
 
     /// <summary>
@@ -102,7 +95,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
     [Fact]
     public async Task A_memory_with_no_owning_session_is_classified_global()
     {
-
         await using CampaignScopeUpgradeHarness harness = await CampaignScopeUpgradeHarness.StartAsync();
 
         string memory = await harness.SeedMemoryAsync(sessionId: null, "an unowned conclusion");
@@ -112,7 +104,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
         Assert.Equal(
             (SagaMemoryScopeKind.Global, (Guid?)null),
             await harness.ReadScopeAsync(memory));
-
     }
 
     /// <summary>
@@ -122,7 +113,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
     [Fact]
     public async Task A_memory_owned_by_a_legacy_unresolved_session_is_never_classified_global()
     {
-
         await using CampaignScopeUpgradeHarness harness = await CampaignScopeUpgradeHarness.StartAsync();
 
         Guid session = await harness.SeedLegacyUnresolvedSessionAsync();
@@ -134,7 +124,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
         Assert.Equal(
             (SagaMemoryScopeKind.LegacyUnresolved, (Guid?)null),
             await harness.ReadScopeAsync(memory));
-
     }
 
     /// <summary>
@@ -144,7 +133,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
     [Fact]
     public async Task A_memory_whose_session_no_longer_exists_is_never_classified_global()
     {
-
         await using CampaignScopeUpgradeHarness harness = await CampaignScopeUpgradeHarness.StartAsync();
 
         string memory = await harness.SeedMemoryAsync(Guid.NewGuid(), "an orphaned conclusion");
@@ -154,7 +142,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
         Assert.Equal(
             (SagaMemoryScopeKind.LegacyUnresolved, (Guid?)null),
             await harness.ReadScopeAsync(memory));
-
     }
 
     /// <summary>
@@ -163,7 +150,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
     [Fact]
     public async Task A_memory_owned_by_a_deleted_campaign_keeps_that_campaign_and_never_becomes_global()
     {
-
         await using CampaignScopeUpgradeHarness harness = await CampaignScopeUpgradeHarness.StartAsync();
 
         Guid session = await harness.SeedCampaignSessionAsync(CampaignB);
@@ -177,7 +163,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
         Assert.Equal(
             (SagaMemoryScopeKind.Campaign, CampaignB),
             await harness.ReadScopeAsync(memory));
-
     }
 
     /// <summary>
@@ -188,7 +173,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
     [Fact]
     public async Task The_backfill_is_idempotent_and_safe_to_interrupt()
     {
-
         await using CampaignScopeUpgradeHarness harness = await CampaignScopeUpgradeHarness.StartAsync();
 
         Guid campaignSession = await harness.SeedCampaignSessionAsync(CampaignA);
@@ -199,12 +183,10 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
 
         for (int index = 0; index < 40; index++)
         {
-
             owned.Add(
                 await harness.SeedMemoryAsync(
                     index % 2 == 0 ? campaignSession : globalSession,
                     $"conclusion {index}"));
-
         }
 
         await harness.UpgradeInOnePassAtATimeAsync();
@@ -213,13 +195,11 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
 
         for (int index = 0; index < owned.Count; index++)
         {
-
             Assert.Equal(
                 index % 2 == 0
                     ? (SagaMemoryScopeKind.Campaign, (Guid?)CampaignA)
                     : (SagaMemoryScopeKind.Global, null),
                 await harness.ReadScopeAsync(owned[index]));
-
         }
 
         // A finished run leaves nothing for a later pass to move, which is what makes an interrupted
@@ -227,7 +207,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
         Assert.False((await harness.RunOnePassAsync()).Value.Advanced);
 
         Assert.Equal(0, await harness.UnclassifiedCountAsync());
-
     }
 
     /// <summary>
@@ -244,7 +223,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
     [Fact]
     public async Task An_interrupted_upgrade_leaves_the_tier_below_head_until_every_sweep_drains()
     {
-
         await using CampaignScopeUpgradeHarness harness = await CampaignScopeUpgradeHarness.StartAsync();
 
         Guid session = await harness.SeedCampaignSessionAsync(CampaignA);
@@ -266,7 +244,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
         await harness.DrainAsync();
 
         Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await harness.RecordedVersionAsync());
-
     }
 
     /// <summary>
@@ -277,7 +254,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
     [Fact]
     public async Task An_upgraded_lexicon_entry_keeps_global_scope_and_its_name_stays_unique_there()
     {
-
         await using CampaignScopeUpgradeHarness harness = await CampaignScopeUpgradeHarness.StartAsync();
 
         await harness.SeedLexiconEntryAsync("config");
@@ -287,7 +263,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
         Assert.Equal(string.Empty, await harness.ReadLexiconScopeAsync("config"));
 
         _ = await Assert.ThrowsAsync<SqliteException>(() => harness.SeedLexiconEntryAsync("config"));
-
     }
 
     /// <summary>
@@ -296,7 +271,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
     [Fact]
     public async Task Two_campaigns_may_each_hold_a_lexicon_entry_of_the_same_name()
     {
-
         await using CampaignScopeUpgradeHarness harness = await CampaignScopeUpgradeHarness.StartAsync();
 
         await harness.SeedLexiconEntryAsync("config");
@@ -308,7 +282,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
         await harness.SeedLexiconEntryAsync("config", CampaignB.ToString());
 
         Assert.Equal(3, await harness.LexiconCountAsync("config"));
-
     }
 
     /// <summary>
@@ -316,7 +289,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
     /// </summary>
     private sealed class CampaignScopeUpgradeHarness : IAsyncDisposable
     {
-
         private readonly EvolutionScratchDatabase _file;
 
         private readonly SqliteConnection _connection;
@@ -331,7 +303,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
             ServiceProvider services,
             GrimoireSchemaTransitionCoordinator coordinator)
         {
-
             _file = file;
 
             _connection = connection;
@@ -339,12 +310,10 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
             _services = services;
 
             _coordinator = coordinator;
-
         }
 
         internal static async Task<CampaignScopeUpgradeHarness> StartAsync()
         {
-
             EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
             SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
@@ -380,7 +349,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
                 TimeProvider.System);
 
             return new CampaignScopeUpgradeHarness(file, connection, services, coordinator);
-
         }
 
         internal Task<GrimoireSchemaInstallResult> InstallShippedChainAsync() =>
@@ -396,24 +364,21 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
         /// <summary>Runs bounded passes until none advances, which is what a host does across restarts.</summary>
         internal async Task DrainAsync()
         {
-
             while ((await RunOnePassAsync()).Value.Advanced)
             {
-
             }
 
+            _ = await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(_connection, 1536, CancellationToken.None);
         }
 
         /// <summary>Installs the shipped chain and drains every sweep it opened.</summary>
         internal async Task UpgradeAsync()
         {
-
             _ = await InstallShippedChainAsync();
 
             await DrainAsync();
 
             Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await RecordedVersionAsync());
-
         }
 
         /// <summary>
@@ -421,28 +386,23 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
         /// </summary>
         internal async Task UpgradeInOnePassAtATimeAsync()
         {
-
             _ = await InstallShippedChainAsync();
 
             for (int pass = 0; pass < 200; pass++)
             {
-
                 if (!(await RunOnePassAsync()).Value.Advanced)
                 {
-
                     break;
-
                 }
-
             }
 
-            Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await RecordedVersionAsync());
+            _ = await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(_connection, 1536, CancellationToken.None);
 
+            Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await RecordedVersionAsync());
         }
 
         internal async Task<Guid> SeedCampaignSessionAsync(Guid campaignId)
         {
-
             await ExecuteAsync(
                 """
                 INSERT OR IGNORE INTO "Campaigns"
@@ -456,7 +416,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
                 ("$now", Timestamp));
 
             return await SeedSessionAsync(campaignId);
-
         }
 
         /// <summary>
@@ -466,13 +425,11 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
         /// </summary>
         internal async Task<Guid> SeedGlobalOnlySessionAsync()
         {
-
             Guid sessionId = await InsertSessionRowAsync(campaignId: null);
 
             using (CovenantSqliteAuthorizationScope scope = CovenantSqliteConnectionInitializer.Instance
                 .Authorize(_connection, CovenantSqliteAuthorizationKind.SessionBindingWrite))
             {
-
                 await ExecuteAsync(
                     """
                     INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
@@ -480,13 +437,11 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
                     """,
                     ("$id", sessionId.ToString()),
                     ("$now", Timestamp));
-
             }
 
             await ConvergeVersionOneAsync();
 
             return sessionId;
-
         }
 
         /// <summary>
@@ -506,7 +461,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
         /// </summary>
         internal async Task<string> SeedMemoryAsync(Guid? sessionId, string content)
         {
-
             string id = Guid.NewGuid().ToString();
 
             await ExecuteAsync(
@@ -520,7 +474,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
                 ("$sessionId", sessionId?.ToString()));
 
             return id;
-
         }
 
         internal Task SeedLexiconEntryAsync(string nameNormalized, string? scopeCampaignId = null) =>
@@ -547,7 +500,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
 
         internal async Task<(SagaMemoryScopeKind Kind, Guid? CampaignId)> ReadScopeAsync(string memoryId)
         {
-
             await using SqliteCommand command = _connection.CreateCommand();
 
             // Deliberately unquoted. SQLite falls back to reading a double-quoted identifier that
@@ -567,7 +519,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
             return (
                 (SagaMemoryScopeKind)reader.GetInt32(0),
                 reader.IsDBNull(1) ? null : Guid.Parse(reader.GetString(1)));
-
         }
 
         internal Task<int> UnclassifiedCountAsync() =>
@@ -575,7 +526,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
 
         internal async Task<string> ReadLexiconScopeAsync(string nameNormalized)
         {
-
             await using SqliteCommand command = _connection.CreateCommand();
 
             command.CommandText =
@@ -584,7 +534,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
             _ = command.Parameters.AddWithValue("$name", nameNormalized);
 
             return (string)(await command.ExecuteScalarAsync(CancellationToken.None))!;
-
         }
 
         internal Task<int> LexiconCountAsync(string nameNormalized) =>
@@ -597,13 +546,11 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
 
         public async ValueTask DisposeAsync()
         {
-
             await _services.DisposeAsync();
 
             await _connection.DisposeAsync();
 
             _file.Dispose();
-
         }
 
         private static string Timestamp =>
@@ -611,18 +558,15 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
 
         private async Task<Guid> SeedSessionAsync(Guid? campaignId)
         {
-
             Guid sessionId = await InsertSessionRowAsync(campaignId);
 
             await ConvergeVersionOneAsync();
 
             return sessionId;
-
         }
 
         private async Task<Guid> InsertSessionRowAsync(Guid? campaignId)
         {
-
             Guid sessionId = Guid.NewGuid();
 
             await ExecuteAsync(
@@ -635,7 +579,6 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
                 ("$now", Timestamp));
 
             return sessionId;
-
         }
 
         /// <summary>
@@ -653,54 +596,42 @@ public sealed class SagaMemoryCampaignScopeEvolutionTests
 
         private async Task ExecuteAsync(string sql, params (string Name, object? Value)[] parameters)
         {
-
             await using SqliteCommand command = _connection.CreateCommand();
 
             command.CommandText = sql;
 
             foreach ((string name, object? value) in parameters)
             {
-
                 _ = command.Parameters.AddWithValue(name, value ?? DBNull.Value);
-
             }
 
             _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         private async Task<int> ScalarAsync(string sql, params (string Name, object? Value)[] parameters)
         {
-
             await using SqliteCommand command = _connection.CreateCommand();
 
             command.CommandText = sql;
 
             foreach ((string name, object? value) in parameters)
             {
-
                 _ = command.Parameters.AddWithValue(name, value ?? DBNull.Value);
-
             }
 
             return Convert.ToInt32(
                 await command.ExecuteScalarAsync(CancellationToken.None),
                 CultureInfo.InvariantCulture);
-
         }
-
     }
 
     /// <summary>The one open connection the harness has, which a request scope would otherwise supply.</summary>
     private sealed class FixedCoreConnectionSource(SqliteConnection connection) : ICovenantConnectionSource
     {
-
         public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken) =>
             ValueTask.FromResult(connection);
 
         public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken) =>
             ValueTask.FromResult(connection);
-
     }
-
 }

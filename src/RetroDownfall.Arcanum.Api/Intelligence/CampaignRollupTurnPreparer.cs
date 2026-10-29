@@ -54,6 +54,11 @@ public sealed class CampaignRollupTurnSnapshot(
 
     public void MarkBegun() => _begun = true;
 
+    private SessionTurnClaimOutcome? _terminalOutcome;
+
+    internal void RecordTerminal(Error error) => _terminalOutcome = SessionTurnClaimOutcome.Discarded(
+        error.Code, Primitives.ArcanumErrorMapper.ResolveStatusCode(error.Code), []);
+
     private Result ValidateConfiguration()
     {
         ArcanumSettings configuration = settings.CurrentValue;
@@ -144,7 +149,7 @@ public sealed class CampaignRollupTurnSnapshot(
             if (!_begun && Replay is null && ClaimLease is { IsExecutable: true } lease && claims is not null)
             {
                 _ = await claims.CompleteAsync(lease,
-                    SessionTurnClaimOutcome.Discarded(ErrorCodes.Hub.SessionTurnRestoredInterrupted, 409, []),
+                    _terminalOutcome ?? SessionTurnClaimOutcome.Discarded(ErrorCodes.Hub.SessionTurnRestoredInterrupted, 409, []),
                     CancellationToken.None).ConfigureAwait(false);
             }
         }
@@ -391,27 +396,37 @@ public sealed class CampaignRollupTurnPreparer(
 
         bool transferred = false;
 
+        SessionTurnClaimOutcome? terminalOutcome = null;
+
+        Error RecordTerminal(Error error)
+        {
+            terminalOutcome = SessionTurnClaimOutcome.Discarded(error.Code,
+                Primitives.ArcanumErrorMapper.ResolveStatusCode(error.Code), []);
+
+            return error;
+        }
+
         try
         {
             if (invocation.CanReadCovenant)
             {
                 if (gate is null)
                 {
-                    return new Error(ErrorCodes.Covenant.Unavailable, "The authenticated turn lease is unavailable.");
+                    return RecordTerminal(new Error(ErrorCodes.Covenant.Unavailable, "The authenticated turn lease is unavailable."));
                 }
 
                 Result<CovenantTurnLease> acquired = await gate.AcquireTurnAsync(campaign, cancellationToken).ConfigureAwait(false);
 
                 if (acquired.IsFailure)
                 {
-                    return acquired.Error;
+                    return RecordTerminal(acquired.Error);
                 }
 
                 authority = acquired.Value;
 
                 if (!invocation.ReadAuthorityEpoch!.Matches(authority.Snapshot))
                 {
-                    return new Error(ErrorCodes.Covenant.StaleSnapshot, "The authenticated Campaign read authority changed.");
+                    return RecordTerminal(new Error(ErrorCodes.Covenant.StaleSnapshot, "The authenticated Campaign read authority changed."));
                 }
             }
 
@@ -434,7 +449,7 @@ public sealed class CampaignRollupTurnPreparer(
 
             if (maintainRollups && maintenance is null)
             {
-                return new Error(ErrorCodes.Covenant.Unavailable, "Campaign summary maintenance is unavailable.");
+                return RecordTerminal(new Error(ErrorCodes.Covenant.Unavailable, "Campaign summary maintenance is unavailable."));
             }
 
             LongRestConfigurationStamp? longRestStamp = null;
@@ -446,7 +461,7 @@ public sealed class CampaignRollupTurnPreparer(
                 if (!configuration.Enabled || !configuration.Stamp.IsValid
                     || acceptedLongRestStamp != configuration.Stamp)
                 {
-                    return new Error(ErrorCodes.Covenant.StaleSnapshot, "Long Rest changed before turn maintenance.");
+                    return RecordTerminal(new Error(ErrorCodes.Covenant.StaleSnapshot, "Long Rest changed before turn maintenance."));
                 }
 
                 longRestStamp = acceptedLongRestStamp;
@@ -457,7 +472,7 @@ public sealed class CampaignRollupTurnPreparer(
                 if (ConfigurationDigest(settings.CurrentValue) != configurationDigest
                     || (longRestStamp is not null && !longRestConfiguration.IsCurrent(longRestStamp)))
                 {
-                    return new Error(ErrorCodes.Covenant.StaleSnapshot, "The configuration accepted by this turn changed during maintenance.");
+                    return RecordTerminal(new Error(ErrorCodes.Covenant.StaleSnapshot, "The configuration accepted by this turn changed during maintenance."));
                 }
 
                 return Result.Success();
@@ -465,7 +480,7 @@ public sealed class CampaignRollupTurnPreparer(
 
             if (CurrentConfiguration() is { IsFailure: true } beforeMaintenance)
             {
-                return beforeMaintenance.Error;
+                return RecordTerminal(beforeMaintenance.Error);
             }
 
             if (maintainLongRest)
@@ -479,7 +494,7 @@ public sealed class CampaignRollupTurnPreparer(
                     // (which is an exception, not a result), still end it. A busy clean scope is skipped like any other Long Rest refusal.
                     if (!LongRestFaultPolicy.IsLongRestError(clean.Error.Code))
                     {
-                        return clean.Error;
+                        return RecordTerminal(clean.Error);
                     }
 
                     ArcanumMetrics.LongRestCleanScheduleRefusedTotal.Add(1, new KeyValuePair<string, object?>("code", clean.Error.Code));
@@ -489,7 +504,7 @@ public sealed class CampaignRollupTurnPreparer(
                     // The configuration the turn accepted must still hold: a flip A to B to A never lets a refused schedule through.
                     if (CurrentConfiguration() is { IsFailure: true } afterRefusal)
                     {
-                        return afterRefusal.Error;
+                        return RecordTerminal(afterRefusal.Error);
                     }
                 }
 
@@ -503,14 +518,14 @@ public sealed class CampaignRollupTurnPreparer(
                     {
                         if (CurrentConfiguration() is { IsFailure: true } currentConfiguration)
                         {
-                            return currentConfiguration.Error;
+                            return RecordTerminal(currentConfiguration.Error);
                         }
 
                         Result live = await gate.ValidateTurnLeaseAsync(authority, cancellationToken).ConfigureAwait(false);
 
                         if (live.IsFailure)
                         {
-                            return live.Error;
+                            return RecordTerminal(live.Error);
                         }
 
                         Result<CovenantDigest?> candidate = await longRestDiscovery.ReadNextProtectedPartitionAsync(
@@ -518,7 +533,7 @@ public sealed class CampaignRollupTurnPreparer(
 
                         if (candidate.IsFailure)
                         {
-                            return candidate.Error;
+                            return RecordTerminal(candidate.Error);
                         }
 
                         if (candidate.Value is not { } partitionDigest)
@@ -532,7 +547,7 @@ public sealed class CampaignRollupTurnPreparer(
 
                         if (partition.IsFailure)
                         {
-                            return partition.Error;
+                            return RecordTerminal(partition.Error);
                         }
 
                         // Clean-Only Busy Skip: a busy protected partition is not skipped. Only exact protected work finishing
@@ -544,7 +559,7 @@ public sealed class CampaignRollupTurnPreparer(
 
                         if (operation.IsFailure)
                         {
-                            return operation.Error;
+                            return RecordTerminal(operation.Error);
                         }
 
                         if (operation.Value.State is not LongRunningOperationState.Completed)
@@ -561,7 +576,7 @@ public sealed class CampaignRollupTurnPreparer(
 
                             if (prepared.IsFailure)
                             {
-                                return prepared.Error;
+                                return RecordTerminal(prepared.Error);
                             }
 
                             LongRestMaintenanceCapability capability = prepared.Value;
@@ -579,12 +594,12 @@ public sealed class CampaignRollupTurnPreparer(
 
                             if (resumed.IsFailure)
                             {
-                                return resumed.Error;
+                                return RecordTerminal(resumed.Error);
                             }
 
                             if (resumed.Value.Phase is not LongRestSweepPhase.Completed || resumed.Value.DeferredReason is not null)
                             {
-                                return ProtectedMaintenanceDeferred(operation.Value.Id, resumed.Value.DeferredReason);
+                                return RecordTerminal(ProtectedMaintenanceDeferred(operation.Value.Id, resumed.Value.DeferredReason));
                             }
                         }
 
@@ -601,7 +616,7 @@ public sealed class CampaignRollupTurnPreparer(
                 {
                     if (CurrentConfiguration() is { IsFailure: true } current)
                     {
-                        return current.Error;
+                        return RecordTerminal(current.Error);
                     }
 
                     if (authority is null)
@@ -619,7 +634,7 @@ public sealed class CampaignRollupTurnPreparer(
 
                 if (sessionCapability.IsFailure)
                 {
-                    return sessionCapability.Error;
+                    return RecordTerminal(sessionCapability.Error);
                 }
 
                 Result<CampaignRollupMaintenanceResult> contributed = await maintenance!.ProcessSessionAsync(
@@ -627,14 +642,14 @@ public sealed class CampaignRollupTurnPreparer(
 
                 if (contributed.IsFailure)
                 {
-                    return contributed.Error;
+                    return RecordTerminal(contributed.Error);
                 }
 
                 Result<CampaignRollupMaintenanceCapability?> campaignCapability = await CapabilityAsync().ConfigureAwait(false);
 
                 if (campaignCapability.IsFailure)
                 {
-                    return campaignCapability.Error;
+                    return RecordTerminal(campaignCapability.Error);
                 }
 
                 Result<CampaignRollupMaintenanceResult> folded = await maintenance!.ProcessCampaignAsync(
@@ -642,12 +657,12 @@ public sealed class CampaignRollupTurnPreparer(
 
                 if (folded.IsFailure)
                 {
-                    return folded.Error;
+                    return RecordTerminal(folded.Error);
                 }
 
                 if (CurrentConfiguration() is { IsFailure: true } beforeRead)
                 {
-                    return beforeRead.Error;
+                    return RecordTerminal(beforeRead.Error);
                 }
 
                 // Operational maintenance deferrals still reach this fresh, validating read.
@@ -656,7 +671,7 @@ public sealed class CampaignRollupTurnPreparer(
 
                 if (current.IsFailure)
                 {
-                    return current.Error;
+                    return RecordTerminal(current.Error);
                 }
 
                 artifact = current.Value;
@@ -664,7 +679,7 @@ public sealed class CampaignRollupTurnPreparer(
 
             if (CurrentConfiguration() is { IsFailure: true } finalConfiguration)
             {
-                return finalConfiguration.Error;
+                return RecordTerminal(finalConfiguration.Error);
             }
 
             CampaignRollupTurnSnapshot snapshot = new(artifact, campaign, boundRequest, store, settings, resolver, authority, lease, claims,
@@ -673,6 +688,16 @@ public sealed class CampaignRollupTurnPreparer(
             transferred = true;
 
             return Result<CampaignRollupTurnSnapshot?>.Success(snapshot);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            RecordTerminal(new Error(ErrorCodes.Hub.Error, "Turn preparation failed."));
+
+            throw;
         }
         finally
         {
@@ -683,7 +708,7 @@ public sealed class CampaignRollupTurnPreparer(
                     if (lease.IsExecutable)
                     {
                         _ = await claims.CompleteAsync(lease,
-                            SessionTurnClaimOutcome.Discarded(ErrorCodes.Hub.SessionTurnRestoredInterrupted, 409, []), CancellationToken.None).ConfigureAwait(false);
+                            terminalOutcome ?? SessionTurnClaimOutcome.Discarded(ErrorCodes.Hub.SessionTurnRestoredInterrupted, 409, []), CancellationToken.None).ConfigureAwait(false);
                     }
                 }
                 finally

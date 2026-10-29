@@ -497,6 +497,24 @@ public sealed class DataRetentionRecoveryCheckpointTests
 
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void An_invalid_launch_owner_keeps_the_unclassified_recovery_refusal(bool factory)
+    {
+        Result<CovenantExclusiveRecoveryOwner> owner = factory
+            ? CovenantRecoveryCheckpointCodec.RecoveryOwner(FactoryReset() with { Version = 0 })
+            : CovenantRecoveryCheckpointCodec.RecoveryOwner(Reset() with { Version = 0 });
+
+        Assert.True(owner.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, owner.Error.Code);
+
+        Assert.Null(owner.Error.CovenantStartupFailure);
+
+        Assert.Equal("This Covenant recovery checkpoint cannot be resumed by this build.", owner.Error.Message);
+    }
+
     private static void AssertUnrecoverableCovenantLaunch(byte[] payload)
     {
 

@@ -2,6 +2,8 @@ using Microsoft.CodeAnalysis;
 
 using Microsoft.CodeAnalysis.CSharp;
 
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 using Xunit;
@@ -125,6 +127,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         if (closed) Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
             && diagnostic.Detail is "System.ClientModel.Primitives.ClientPipelineOptions.AddPolicy" or "System.ClientModel.Primitives.PipelinePolicy..ctor");
 
+        if (closed) Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.ClientModel.Primitives.ClientPipelineOptions.NetworkTimeout setter");
+
+        if (shape is "timeout-finite" or "timeout-default" or "timeout-dynamic" or "timeout-getter" or "timeout-spoof" or "timeout-shadow" or "timeout-conversion")
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail == "System.ClientModel.Primitives.ClientPipelineOptions.NetworkTimeout setter");
+        }
+
         if (shape is "constructor-effect" or "work-only" or "work-only-spaced" or "compact-group" or "after-scope" or "released")
         {
             HostedProducerSite effect = Assert.Single(result.Items, static site => site.EnclosingType == "SdkSetupPolicy" && site.Callee == "System.IO.File.Delete");
@@ -187,7 +198,126 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Equal(!closed, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
             && diagnostic.Detail == "OpenAI.Embeddings.EmbeddingClient..ctor"));
 
+        if (closed) Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.ClientModel.Primitives.ClientPipelineOptions.NetworkTimeout setter");
+
         Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Exists");
+    }
+
+    [Theory]
+    [InlineData("finite")]
+    [InlineData("default")]
+    [InlineData("getter")]
+    [InlineData("derived")]
+    [InlineData("local-mutation")]
+    [InlineData("opaque-mutation")]
+    [InlineData("alias-mutation")]
+    [InlineData("read")]
+    [InlineData("compound")]
+    public void SdkInfiniteTimeoutSetterProofRefusesOtherReceiversAndAccesses(string shape)
+    {
+        string value = shape switch
+        {
+            "finite" => "TimeSpan.FromSeconds(5)",
+            "default" => "default",
+            "getter" => "TimeoutInput.Value",
+            _ => "Timeout.InfiniteTimeSpan",
+        };
+
+        string creation = "new " + (shape == "derived" ? "DerivedOptions" : "OpenAI.OpenAIClientOptions")
+            + " { NetworkTimeout = " + value + " }";
+
+        string body = shape switch
+        {
+            "local-mutation" => "var options = new OpenAI.OpenAIClientOptions(); options.NetworkTimeout = Timeout.InfiniteTimeSpan;",
+            "opaque-mutation" => "TimeoutInput.Unknown().NetworkTimeout = Timeout.InfiniteTimeSpan;",
+            "alias-mutation" => "var options = new OpenAI.OpenAIClientOptions(); var alias = options; alias.NetworkTimeout = Timeout.InfiniteTimeSpan;",
+            "read" => "var options = " + creation + "; _ = options.NetworkTimeout;",
+            "compound" => "var options = " + creation + "; options.NetworkTimeout += TimeSpan.Zero;",
+            _ => "_ = " + creation + ";",
+        };
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(R2Admission + body
+            + " System.IO.File.Exists(\"timeout-refusal-control\"); await Task.CompletedTask;", """
+            internal sealed class DerivedOptions : OpenAI.OpenAIClientOptions { }
+            internal static class TimeoutInput
+            {
+                internal static extern OpenAI.OpenAIClientOptions Unknown();
+                internal static TimeSpan Value { get { System.IO.File.Delete("timeout-value-effect"); return Timeout.InfiniteTimeSpan; } }
+            }
+            """), "RetroDownfall.Arcanum.Api");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.ClientModel.Primitives.ClientPipelineOptions.NetworkTimeout" + (shape == "read" ? "" : " setter"));
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+        if (shape == "getter") Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete" && site.EnclosingType == "TimeoutInput");
+    }
+
+    [Theory]
+    [InlineData("CampaignRollupProviderClientFactory", "Chat")]
+    [InlineData("LongRestProviderClientFactory", "Chat")]
+    [InlineData("LongRestProviderClientFactory", "Embeddings")]
+    public void SdkInfiniteTimeoutActualFactoryInitializerOrderHasNoUnclassifiedSetter(string factory, string clientKind)
+    {
+        string relative = "src/RetroDownfall.Arcanum.Api/Intelligence/" + factory + ".cs";
+
+        CompilationUnitSyntax source = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), relative))).GetCompilationUnitRoot();
+
+        InitializerExpressionSyntax initializer = Assert.Single(source.DescendantNodes().OfType<BaseObjectCreationExpressionSyntax>()
+            .Select(static creation => creation.Initializer).OfType<InitializerExpressionSyntax>(),
+            static candidate => candidate.Expressions.OfType<AssignmentExpressionSyntax>().Any(static assignment => assignment.Left.ToString() == "NetworkTimeout"));
+
+        Assert.Equal(["Endpoint", "NetworkTimeout", "RetryPolicy", "Transport"], initializer.Expressions
+            .OfType<AssignmentExpressionSyntax>().Select(static assignment => assignment.Left.ToString()).Order(StringComparer.Ordinal).ToArray());
+
+        // Retain the actual assignment order and timeout/retry expressions. Only the fixture's
+        // endpoint and already-owned transport replace the factory's configuration/field inputs.
+        initializer = initializer.WithExpressions(SyntaxFactory.SeparatedList(initializer.Expressions.Select(expression =>
+        {
+            AssignmentExpressionSyntax assignment = Assert.IsType<AssignmentExpressionSyntax>(expression);
+
+            return (ExpressionSyntax)(assignment.Left.ToString() switch
+            {
+                "Endpoint" => assignment.WithRight(SyntaxFactory.ParseExpression("new System.Uri(\"https://fixture.invalid\")")),
+                "Transport" => assignment.WithRight(SyntaxFactory.ParseExpression("new System.ClientModel.Primitives.HttpClientPipelineTransport(http)")),
+                _ => assignment,
+            });
+        })));
+
+        string creation = "new OpenAI.OpenAIClientOptions " + initializer.NormalizeWhitespace().ToFullString();
+
+        bool returned = factory == "LongRestProviderClientFactory";
+
+        string helper = returned ? "internal static class FactoryOptions { internal static OpenAI.OpenAIClientOptions Create(System.Net.Http.HttpClient http) => " + creation + "; }" : "";
+
+        string client = clientKind == "Chat" ? "OpenAI.Chat.ChatClient" : "OpenAI.Embeddings.EmbeddingClient";
+
+        string body = R2Admission + "using System.Net.Http.HttpClient http = new(new System.Net.Http.SocketsHttpHandler()); "
+            + "var options = " + (returned ? "FactoryOptions.Create(http)" : creation) + "; "
+            + "_ = new " + client + "(\"model\", new System.ClientModel.ApiKeyCredential(\"synthetic\"), options); "
+            + "System.IO.File.Exists(\"actual-timeout-order-control\"); await Task.CompletedTask;";
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack("using System.ClientModel.Primitives; " + R2Source(body, helper), "RetroDownfall.Arcanum.Api");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == client + "..ctor");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.ClientModel.Primitives.ClientPipelineOptions.NetworkTimeout setter");
     }
 
     [Theory]
@@ -237,6 +367,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
             && diagnostic.Detail == "OpenAI.Embeddings.EmbeddingClient..ctor");
 
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.ClientModel.Primitives.ClientPipelineOptions.NetworkTimeout setter");
+
         Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Exists");
     }
 
@@ -253,7 +386,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
                 && diagnostic.Detail is "System.ClientModel.Primitives.ClientPipelineOptions.AddPolicy"
                     or "System.ClientModel.Primitives.PipelinePolicy..ctor"
-                    or "OpenAI.Chat.ChatClient..ctor")];
+                    or "OpenAI.Chat.ChatClient..ctor"
+                    or "System.ClientModel.Primitives.ClientPipelineOptions.NetworkTimeout setter")];
 
         Assert.True(failures.Length == 0, HostedGrimoireProducerInventory.RenderDiagnosticReport(failures));
 
@@ -272,6 +406,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         var options = new OpenAI.OpenAIClientOptions
         {
             Endpoint = new Uri("https://fixture.invalid"),
+            NetworkTimeout = Timeout.InfiniteTimeSpan,
             RetryPolicy = new System.ClientModel.Primitives.ClientRetryPolicy(0),
             Transport = new System.ClientModel.Primitives.HttpClientPipelineTransport(http),
         };
@@ -279,6 +414,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         options.AddPolicy(policy, System.ClientModel.Primitives.PipelinePosition.PerCall);
 
         _ = new OpenAI.Chat.ChatClient("fixture-model", new System.ClientModel.ApiKeyCredential("fixture-key"), options);
+
+        Assert.Equal(Timeout.InfiniteTimeSpan, options.NetworkTimeout);
+
+        Assert.Throws<InvalidOperationException>(() => options.NetworkTimeout = Timeout.InfiniteTimeSpan);
+
+        System.Reflection.MethodInfo setter = typeof(System.ClientModel.Primitives.ClientPipelineOptions)
+            .GetProperty(nameof(System.ClientModel.Primitives.ClientPipelineOptions.NetworkTimeout))!.SetMethod!;
+
+        Assert.Equal(["AssertNotFrozen"], ClrMethodBodyReader.CalledMethods(setter).Select(static method => method.Name).ToArray());
 
         Assert.Equal(0, policy.ProcessCalls);
 

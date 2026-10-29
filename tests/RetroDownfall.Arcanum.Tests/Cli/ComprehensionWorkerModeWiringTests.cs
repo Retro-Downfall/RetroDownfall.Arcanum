@@ -46,7 +46,7 @@ public sealed class ComprehensionWorkerModeWiringTests
             CliSurfaceTests.Walk(CliSurfaceTests.BuildMap()),
             static command => command.Path.Contains(ComprehensionWorkerEntry.ModeArgument, StringComparison.Ordinal));
 
-        string committed = File.ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", "Arcanum.CommandMap.json"));
+        string committed = File.ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "tests", "RetroDownfall.Arcanum.Tests", "TestData", "Contracts", "Arcanum.CommandMap.json"));
 
         Assert.DoesNotContain(ComprehensionWorkerEntry.ModeArgument, committed, StringComparison.Ordinal);
     }

@@ -12,10 +12,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// The transaction-bound guard for canonical Covenant quotas and turn-capacity reservations.
 /// </summary>
 /// <remarks>
-/// Every method requires the caller's live transaction, performs no commit and no retry, and borrows
-/// one <see cref="CovenantSqliteAuthorizationKind.TurnCapacityMutation"/> scope across its complete
-/// multi-statement sequence before disposing it. It never lends that authorization to a caller: the
-/// scope is what stops direct SQL from minting capacity, and handing it out would make that
+/// Every method requires the caller's live transaction and performs no commit or retry. Mutations
+/// borrow one <see cref="CovenantSqliteAuthorizationKind.TurnCapacityMutation"/> scope for their
+/// counter transition and dispose it before returning. Reading a deletion owner grants no scope.
+/// It never lends authorization to a caller: the scope stops direct SQL from minting capacity,
+/// and handing it out would make that
 /// guarantee decorative.
 ///
 /// <para>The claim and finalization methods touch only always-present core tables. That is what lets
@@ -169,10 +170,229 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
     /// <summary>
     /// Whole-Session retention decrementing installation totals from the exact locked Session row.
     /// </summary>
-    public async ValueTask<Result> ReleaseSessionCapacityAsync(
+    public ValueTask<Result> ReleaseSessionCapacityAsync(
         SessionTurnCapacityReleaseRequest request,
         CovenantMutationTransaction transaction,
+        CancellationToken cancellationToken) =>
+        ReleaseSessionCapacityCoreAsync(request, transaction, cancellationToken);
+
+    /// <summary>
+    /// Reads the exact capacity owner inside the caller's Session-deletion transaction. The caller
+    /// must delete that Session before committing, or roll back the entire transaction on failure.
+    /// </summary>
+    internal async ValueTask<Result> ReleaseSessionCapacityAsync(
+        Guid sessionId,
+        CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+
+        string storedSessionId;
+
+        SessionTurnCapacityReleaseRequest request;
+
+        await using (SqliteCommand command = transaction.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT s.Id, q.ClaimCount, q.ReservedFinalizationCount, q.ConsumedFinalizationCount
+                FROM Sessions s
+                LEFT JOIN session_turn_quota_state q ON q.SessionId = s.Id
+                JOIN installation_turn_quota_state i ON i.StateKey = 1
+                WHERE lower(replace(s.Id, '-', '')) = $session;
+                """;
+
+            Bind(command, "$session", sessionId.ToString("N"));
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) || reader.IsDBNull(1))
+            {
+                return new Error(ErrorCodes.Covenant.StaleSnapshot,
+                    "The Session turn-capacity owner is missing before retention.");
+            }
+
+            storedSessionId = reader.GetString(0);
+
+            request = new SessionTurnCapacityReleaseRequest(sessionId,
+                reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3));
+
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                return new Error(ErrorCodes.Covenant.StaleSnapshot,
+                    "The Session turn-capacity owner is ambiguous before retention.");
+            }
+        }
+
+        // A zero owner has nothing to return. The native transition guard deliberately rejects
+        // a no-op UPDATE, and must keep doing so for every ordinary capacity mutation.
+        return request.ExpectedClaimCount == 0 && request.ExpectedReservedCount == 0 && request.ExpectedConsumedCount == 0
+            ? Result.Success()
+            : await ReleaseSessionCapacityCoreAsync(request, transaction, cancellationToken, storedSessionId).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Returns all installation capacity after the factory writer has deleted every Session owner.
+    /// The caller must roll back its existing transaction on any refusal or cancellation.
+    /// </summary>
+    internal async ValueTask<Result> ReleaseFactoryCapacityAsync(
+        CovenantMutationTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+
+        long claims;
+
+        long reserved;
+
+        long consumed;
+
+        await using (SqliteCommand read = transaction.CreateCommand())
+        {
+            read.CommandText = """
+                SELECT ClaimCount, ReservedFinalizationCount, ConsumedFinalizationCount
+                FROM installation_turn_quota_state
+                WHERE StateKey = 1
+                  AND typeof(ClaimCount) = 'integer'
+                  AND typeof(ReservedFinalizationCount) = 'integer'
+                  AND typeof(ConsumedFinalizationCount) = 'integer'
+                  AND ClaimCount BETWEEN 0 AND $claimLimit
+                  AND ReservedFinalizationCount BETWEEN 0 AND ClaimCount
+                  AND ConsumedFinalizationCount >= 0
+                  AND ConsumedFinalizationCount <= $finalizationLimit - ReservedFinalizationCount
+                  AND NOT EXISTS (SELECT 1 FROM Sessions)
+                  AND NOT EXISTS (SELECT 1 FROM session_turn_quota_state);
+                """;
+
+            Bind(read, "$claimLimit", CovenantLimits.MaxPublicTurnClaimsInstallationWide);
+
+            Bind(read, "$finalizationLimit", CovenantLimits.MaxAssistantFinalizationGuardsInstallationWide);
+
+            await using SqliteDataReader reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                return new Error(ErrorCodes.Covenant.StaleSnapshot,
+                    "Factory reset did not prove an empty capacity owner set and valid installation counters.");
+            }
+
+            claims = reader.GetInt64(0);
+
+            reserved = reader.GetInt64(1);
+
+            consumed = reader.GetInt64(2);
+        }
+
+        if (claims == 0 && reserved == 0 && consumed == 0)
+        {
+            return Result.Success();
+        }
+
+        using CovenantSqliteAuthorizationScope authorization = Authorize(transaction);
+
+        await using SqliteCommand command = transaction.CreateCommand();
+
+        command.CommandText = """
+            UPDATE installation_turn_quota_state
+            SET ClaimCount = 0, ReservedFinalizationCount = 0, ConsumedFinalizationCount = 0
+            WHERE StateKey = 1
+              AND ClaimCount = $claims
+              AND ReservedFinalizationCount = $reserved
+              AND ConsumedFinalizationCount = $consumed
+              AND NOT EXISTS (SELECT 1 FROM Sessions)
+              AND NOT EXISTS (SELECT 1 FROM session_turn_quota_state);
+            """;
+
+        Bind(command, "$claims", claims);
+
+        Bind(command, "$reserved", reserved);
+
+        Bind(command, "$consumed", consumed);
+
+        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+        {
+            return new Error(ErrorCodes.Covenant.StaleSnapshot,
+                "Factory reset could not return installation capacity.");
+        }
+
+        command.CommandText = """
+            SELECT COUNT(*) FROM installation_turn_quota_state
+            WHERE StateKey = 1 AND ClaimCount = 0 AND ReservedFinalizationCount = 0 AND ConsumedFinalizationCount = 0
+              AND NOT EXISTS (SELECT 1 FROM Sessions)
+              AND NOT EXISTS (SELECT 1 FROM session_turn_quota_state);
+            """;
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) == 1
+            ? Result.Success()
+            : new Error(ErrorCodes.Covenant.StaleSnapshot,
+                "Factory reset did not preserve its empty capacity state.");
+    }
+
+    /// <summary>Applies a proven quiescent owner census without changing any surviving owner.</summary>
+    internal async ValueTask<Result> CorrectInstallationCapacityAsync(
+        long expectedClaims, long expectedReserved, long expectedConsumed,
+        long claims, long reserved, long consumed,
+        CovenantMutationTransaction transaction,
+        Schema.GrimoireSchemaQuiescentExecution execution,
+        CancellationToken cancellationToken)
+    {
+        execution.Require(transaction.Connection);
+
+        if (claims < 0 || reserved < 0 || consumed < 0
+            || claims > expectedClaims || reserved > expectedReserved || consumed > expectedConsumed
+            || expectedClaims > CovenantLimits.MaxPublicTurnClaimsInstallationWide
+            || expectedReserved > expectedClaims
+            || expectedConsumed > CovenantLimits.MaxAssistantFinalizationGuardsInstallationWide - expectedReserved
+            || reserved > claims || expectedReserved - reserved > expectedClaims - claims)
+        {
+            return new Error(ErrorCodes.Covenant.StaleSnapshot, "The installation quota census is incoherent.");
+        }
+
+        if (claims == expectedClaims && reserved == expectedReserved && consumed == expectedConsumed)
+        {
+            return Result.Success();
+        }
+
+        using CovenantSqliteAuthorizationScope authorization = Authorize(transaction);
+
+        await using SqliteCommand command = transaction.CreateCommand();
+
+        command.CommandText = """
+            UPDATE installation_turn_quota_state
+            SET ClaimCount = $claims, ReservedFinalizationCount = $reserved, ConsumedFinalizationCount = $consumed
+            WHERE StateKey = 1 AND ClaimCount = $expectedClaims
+              AND ReservedFinalizationCount = $expectedReserved AND ConsumedFinalizationCount = $expectedConsumed
+              AND typeof(ClaimCount) = 'integer' AND typeof(ReservedFinalizationCount) = 'integer'
+              AND typeof(ConsumedFinalizationCount) = 'integer';
+            """;
+
+        Bind(command, "$claims", claims);
+
+        Bind(command, "$reserved", reserved);
+
+        Bind(command, "$consumed", consumed);
+
+        Bind(command, "$expectedClaims", expectedClaims);
+
+        Bind(command, "$expectedReserved", expectedReserved);
+
+        Bind(command, "$expectedConsumed", expectedConsumed);
+
+        int affected = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return affected == 1
+            ? Result.Success()
+            : new Error(ErrorCodes.Covenant.StaleSnapshot, "The installation quota census lost its expected totals.");
+    }
+
+    private async ValueTask<Result> ReleaseSessionCapacityCoreAsync(
+        SessionTurnCapacityReleaseRequest request,
+        CovenantMutationTransaction transaction,
+        CancellationToken cancellationToken,
+        string? storedSessionId = null)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -200,7 +420,14 @@ internal sealed class CovenantQuotaGuard(ICovenantSqliteConnectionInitializer in
               );
             """;
 
-        BindIdentity(command, "$session", request.SessionId);
+        if (storedSessionId is null)
+        {
+            BindIdentity(command, "$session", request.SessionId);
+        }
+        else
+        {
+            Bind(command, "$session", storedSessionId);
+        }
 
         Bind(command, "$claims", request.ExpectedClaimCount);
 

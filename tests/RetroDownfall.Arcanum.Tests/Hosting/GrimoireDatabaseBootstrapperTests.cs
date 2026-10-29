@@ -38,7 +38,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Hosting;
 
 [Collection(HostedServiceLifetimeCollection.Name)]
-public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
+public sealed partial class GrimoireDatabaseBootstrapperTests : IDisposable
 {
     private readonly string _tempDir;
 
@@ -3881,7 +3881,8 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         HostProcessToolsMarkerReadStatus? markerReadStatusOverride = null,
         IMemoryErasureKeyProvider? erasureKeys = null,
         IGrimoireDbReadiness? readiness = null,
-        CovenantOperationGate? startupGate = null)
+        CovenantOperationGate? startupGate = null,
+        GrimoireSchemaVersionChainSet? chains = null)
     {
         ServiceCollection services = new();
 
@@ -3910,6 +3911,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         services.AddSingleton<IOsCredentialStore>(credentials);
 
         _ = services.AddGrimoireSchemaInstallation();
+
+        if (chains is not null)
+        {
+            services.Replace(ServiceDescriptor.Singleton(chains));
+        }
 
         if (includeHostProcessTools)
         {

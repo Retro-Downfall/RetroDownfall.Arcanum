@@ -11,7 +11,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
-public sealed class DataRetentionSweepHostedServiceTests
+public sealed partial class DataRetentionSweepHostedServiceTests
 {
     [Fact]
     public async Task ClosedGateSkipsAutomaticSweepBeforeScope()

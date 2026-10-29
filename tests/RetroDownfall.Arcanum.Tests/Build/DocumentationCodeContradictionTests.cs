@@ -543,11 +543,18 @@ public sealed class DocumentationCodeContradictionTests
             ],
             namingFiles);
 
-        string oathRow = Assert.Single(
-            ReadDocument("Arcanum.OATH.md").Split('\n'),
-            static line => line.StartsWith("| **#89** |", StringComparison.Ordinal));
+        string oathClaim = DocumentSection(
+            ReadDocument("Arcanum.OATH.md"),
+            "### 7.3 Establish the durable turn claim",
+            "### 7.4 Read history and labels under authority");
 
-        Assert.Contains("consumed by eligible Campaign rollup turns under #77", oathRow, StringComparison.Ordinal);
+        Assert.Contains("`CampaignRollupTurnPreparer`", oathClaim, StringComparison.Ordinal);
+
+        Assert.Contains("enabled Long Rest", oathClaim, StringComparison.Ordinal);
+
+        Assert.Contains("enabled Campaign rollups in a Campaign", oathClaim, StringComparison.Ordinal);
+
+        Assert.Contains("not universal to every public inference request", oathClaim, StringComparison.Ordinal);
 
         string writer = ReadSource("Api", "Intelligence", "GrimoireTurnWriter.cs");
 

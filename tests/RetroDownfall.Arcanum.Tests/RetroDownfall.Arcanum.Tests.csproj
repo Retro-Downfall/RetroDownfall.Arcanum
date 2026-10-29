@@ -113,6 +113,39 @@
 
   </ItemGroup>
 
+  <!-- Keep the jailed child outside Coverlet's instrumented test output. Its unload tracker writes files. -->
+  <Target Name="RecordManagedDocumentWorkerClosure" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
+
+    <MSBuild Projects="../../src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj" Targets="GetTargetPath" BuildInParallel="false">
+
+      <Output TaskParameter="TargetOutputs" ItemName="_DocumentWorkerTarget" />
+
+    </MSBuild>
+
+    <PropertyGroup>
+
+      <_DocumentWorkerDirectory>@(_DocumentWorkerTarget->'%(RootDir)%(Directory)')</_DocumentWorkerDirectory>
+
+    </PropertyGroup>
+
+    <Error Condition="'$(_DocumentWorkerDirectory)' == ''" Text="The same-build Cli output path is unavailable for the managed document worker." />
+
+    <ItemGroup>
+
+      <_DocumentWorkerFile Include="$(_DocumentWorkerDirectory)/**/*" Exclude="$(_DocumentWorkerDirectory)/**/*.pdb" />
+
+    </ItemGroup>
+
+    <GetFileHash Files="@(_DocumentWorkerFile)" Algorithm="SHA256">
+
+      <Output TaskParameter="Items" ItemName="_DocumentWorkerHashedFile" />
+
+    </GetFileHash>
+
+    <WriteLinesToFile File="$(OutDir)document-worker.sha256" Lines="@(_DocumentWorkerHashedFile->'%(FileHash) %(FullPath)')" Overwrite="true" />
+
+  </Target>
+
   <!--
     Resource-limit kill scenarios spawn Unix shell/Python scripts and assert POSIX signal-kill
     behavior (SIGXCPU/SIGKILL via setrlimit/cgroups v2); there is no equivalent on Windows, so the

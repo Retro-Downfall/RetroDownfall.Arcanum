@@ -580,6 +580,8 @@ public sealed class SagaMemoryMidUpgradeWriteTests
         {
         }
 
+        _ = await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(connection, TestDimensions, CancellationToken.None);
+
         Assert.Equal(
             GrimoireSchemaVersionChains.CoreSchemaVersion,
             await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));

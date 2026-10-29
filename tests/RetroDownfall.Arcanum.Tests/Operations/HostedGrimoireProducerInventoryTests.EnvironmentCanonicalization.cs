@@ -615,6 +615,492 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.True(constructorMayContain);
     }
 
+    [Theory]
+    [InlineData(false, false, 1)]
+    [InlineData(true, false, 1)]
+    [InlineData(false, true, 2)]
+    [InlineData(true, true, 2)]
+    public void NestedOwnParameterProbe_OnlyUsedOwnValuesSplitStates(bool lambda, bool used, int expected)
+    {
+        string helper = "public static class NestedOwn { public static void Run() { "
+            + (lambda ? "System.Func<bool, int> Target = own => " : "int Target(bool own) => ")
+            + (used ? "own ? 1 : 2;" : "1;")
+            + " _ = Target(false); _ = Target(true); } }";
+
+        var (result, nested) = DiscoverNestedOwnProbe(helper, "NestedOwn.Run();");
+
+        Assert.Empty(result.Diagnostics);
+
+        Assert.Equal(expected, nested.Length);
+    }
+
+    [Theory]
+    [InlineData(false, false, true, false, 1)]
+    [InlineData(true, false, true, false, 1)]
+    [InlineData(false, true, false, false, 1)]
+    [InlineData(true, true, false, false, 1)]
+    [InlineData(false, true, true, false, 1)]
+    [InlineData(true, true, true, false, 1)]
+    [InlineData(false, false, true, true, 2)]
+    [InlineData(true, false, true, true, 2)]
+    [InlineData(false, true, false, true, 2)]
+    [InlineData(true, true, false, true, 2)]
+    [InlineData(false, true, true, true, 2)]
+    [InlineData(true, true, true, true, 2)]
+    public void NestedOwnParameterProbe_GenericAndCrossCompilationBindingsRemainExact(
+        bool lambda, bool generic, bool crossCompilation, bool used, int expected)
+    {
+        string helper = "public static class NestedOwn" + (generic ? "<T>" : "") + " { public static void Run() { "
+            + (lambda ? "System.Func<bool, int> Target = own => " : "int Target(bool own) => ")
+            + (used ? "own ? 1 : 2;" : "1;")
+            + " _ = Target(false); _ = Target(true); } }";
+
+        var (result, nested) = DiscoverNestedOwnProbe(helper, "NestedOwn" + (generic ? "<int>" : "") + ".Run();", crossCompilation);
+
+        Assert.Empty(result.Diagnostics);
+
+        Assert.Equal(expected, nested.Length);
+    }
+
+    [Theory]
+    [InlineData(true, "outer")]
+    [InlineData(false, "nested-helper")]
+    [InlineData(true, "nested-helper")]
+    [InlineData(false, "forwarded")]
+    [InlineData(true, "forwarded")]
+    public void NestedOwnParameterProbe_CapturedAndForwardedValuesStayDistinct(bool lambda, string shape)
+    {
+        string targetBody = shape switch
+        {
+            "outer" => "return outer ? 1 : 2;",
+            "nested-helper" => "int Later() => own ? 1 : 2; return Later();",
+            _ => "return Read(own);",
+        };
+
+        string helper = "public static class NestedOwn { private static int Read(bool value) => value ? 1 : 2; public static void Run(bool outer) { "
+            + (lambda ? "System.Func<bool, int> Target = own => " : "int Target(bool own) ")
+            + "{ " + targetBody + " }" + (lambda ? ";" : "")
+            + " _ = Target(false); " + (shape == "outer" ? "" : "_ = Target(true);") + " } }";
+
+        var (result, nested) = DiscoverNestedOwnProbe(helper,
+            shape == "outer" ? "NestedOwn.Run(false); NestedOwn.Run(true);" : "NestedOwn.Run(false);");
+
+        Assert.Empty(result.Diagnostics);
+
+        Assert.Equal(2, nested.Length);
+    }
+
+    [Theory]
+    [InlineData(false, "ref")]
+    [InlineData(true, "ref")]
+    [InlineData(false, "out")]
+    [InlineData(true, "out")]
+    [InlineData(false, "in")]
+    [InlineData(true, "in")]
+    public void NestedOwnParameterProbe_ByReferenceBindingsRemainConservative(bool lambda, string modifier)
+    {
+        string helper = "public delegate int OwnReference(" + modifier + " bool value); public static class NestedOwn { public static void Run() { "
+            + (lambda ? "OwnReference Target = (" + modifier + " bool own) => " : "int Target(" + modifier + " bool own) ")
+            + "{ " + (modifier == "out" ? "own = false; " : "") + "return 1; }" + (lambda ? ";" : "")
+            + " bool left = false; bool right = true; _ = Target(" + modifier + " left); _ = Target(" + modifier + " right); } }";
+
+        var (result, nested) = DiscoverNestedOwnProbe(helper, "NestedOwn.Run();");
+
+        Assert.Empty(result.Diagnostics);
+
+        Assert.NotEmpty(nested);
+
+        AssertNestedProjectionBindings(helper, "own", admittedFirst: false, retainEmpty: true);
+
+        AssertNestedProjectionBindings(helper, "own", admittedFirst: true, retainEmpty: true);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NestedOwnParameterProbe_AdmissionFrontiersRemainDistinct(bool lambda)
+    {
+        string helper = "public static class NestedOwn { public static void Run() { "
+            + (lambda ? "System.Func<bool, int> Target = own => " : "int Target(bool own) => ")
+            + "1; _ = Target(false); _ = Target(true); } }";
+
+        var (result, nested) = DiscoverNestedOwnProbe(helper, "NestedOwn.Run(); " + R2Admission + " NestedOwn.Run();");
+
+        Assert.Empty(result.Diagnostics);
+
+        Assert.Equal(2, nested.Select(static state => (state.WorkFrontier, state.EffectFrontier)).Distinct().Count());
+
+        Assert.Contains(nested, static state => state.WorkFrontier is null && state.EffectFrontier is null);
+
+        Assert.Contains(nested, static state => state.WorkFrontier is not null && state.EffectFrontier is not null);
+
+        Assert.Equal(2, nested.Length);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NestedOwnParameterProbe_RecoveryMembershipSurvivesAcrossRootOrder(bool exactFirst) =>
+        AssertProjectionPreservesRecoveryMembershipAcrossRootOrder(exactFirst, nested: true);
+
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, true, false)]
+    [InlineData(false, false, true)]
+    [InlineData(true, false, true)]
+    [InlineData(false, true, true)]
+    [InlineData(true, true, true)]
+    public void NestedOwnParameterProbe_AdmissionAnswersAndEnclosingBindingsSurviveProjection(
+        bool lambda, bool admittedFirst, bool enclosing)
+    {
+        string helper = "public static class NestedOwn { public static void Run(object outer) { "
+            + (lambda ? "System.Func<object, int> Target = own => " : "int Target(object own) => ")
+            + "1; _ = Target(outer); } }";
+
+        AssertNestedProjectionBindings(helper, enclosing ? "outer" : "own", admittedFirst, retainEmpty: enclosing);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NestedOwnParameterProbe_SelectedRegionsKeepIndependentAuthority(bool lambda)
+    {
+        string helper = "public static class NestedOwn { public static void Run() { "
+            + (lambda ? "System.Func<bool, int> Target = own => " : "int Target(bool own) ")
+            + "{ System.IO.File.Exists(\"nested-selected\"); return 1; }" + (lambda ? ";" : "")
+            + " _ = Target(false); _ = Target(true); } }";
+
+        string source = R2Source(R2Admission + " NestedOwn.Run(); NestedOwn.Run(); await Task.CompletedTask;", helper);
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerOperationEntry[] roots = [OrdinaryRoot(CallRoot(source, "NestedOwn.Run", 0)), OrdinaryRoot(CallRoot(source, "NestedOwn.Run", 1))];
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", roots)], [], admittedStateObserver: observed.Enqueue);
+
+        Assert.Empty(result.Diagnostics);
+
+        ParameterSyntax own = compilation.SyntaxTrees.Single().GetRoot().DescendantNodes().OfType<ParameterSyntax>()
+            .Single(static parameter => parameter.Identifier.ValueText == "own");
+
+        SyntaxNode declaration = own.Ancestors().First(static node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax);
+
+        int targetStart = declaration is LambdaExpressionSyntax anonymous ? anonymous.Body.SpanStart : declaration.SpanStart;
+
+        foreach (HostedProducerOperationEntry root in roots)
+        {
+            HostedProducerSite site = Assert.Single(result.Items, site => site.AuthorityOperationId == root.OperationId
+                && site.Callee == "System.IO.File.Exists");
+
+            Assert.NotNull(site.WorkFrontierCapsuleId);
+
+            Assert.NotNull(site.EffectFrontierCapsuleId);
+
+            Assert.Single(observed, state => state.RootOperation == root.OperationId
+                && state.Method.StartsWith("M:NestedOwn", StringComparison.Ordinal)
+                && state.SpanStart == targetStart);
+        }
+    }
+
+    private static void AssertNestedProjectionBindings(string source, string binding, bool admittedFirst, bool retainEmpty)
+    {
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        SyntaxNode root = compilation.SyntaxTrees.Single().GetRoot();
+
+        ParameterSyntax own = root.DescendantNodes().OfType<ParameterSyntax>().Single(static parameter => parameter.Identifier.ValueText == "own");
+
+        SyntaxNode declaration = own.Ancestors().First(static node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax);
+
+        ParameterSyntax bound = root.DescendantNodes().OfType<ParameterSyntax>().Single(parameter => parameter.Identifier.ValueText == binding);
+
+        IParameterSymbol parameter = compilation.GetSemanticModel(bound.SyntaxTree).GetDeclaredSymbol(bound)!;
+
+        var projected = HostedGrimoireProducerInventory.ProbeNestedAdmissionProjection(compilation, declaration, parameter, admittedFirst);
+
+        Assert.Equal(2, projected.Length);
+
+        Assert.All(projected, state =>
+        {
+            Assert.True(state.Complete);
+
+            Assert.Equal(state.Admitted, state.SeedBefore);
+
+            Assert.Equal(state.Admitted, state.MayBefore);
+
+            Assert.Equal(state.Admitted, state.SeedAfter);
+
+            Assert.Equal(state.Admitted, state.MayAfter);
+
+            Assert.Equal(state.Admitted || retainEmpty, state.Retained);
+        });
+    }
+
+    private static (HostedProducerDiscovery<HostedProducerSite> Result, HostedProducerAdmittedStateObservation[] States)
+        DiscoverNestedOwnProbe(string helper, string body, bool crossCompilation = false)
+    {
+        CSharpCompilation compilation;
+
+        HostedProducerDiscovery<HostedProducerSite> result;
+
+        HostedProducerAdmittedStateObservation[] states;
+
+        if (crossCompilation)
+        {
+            compilation = CompileWithProductionReferencePack(helper).WithAssemblyName("NestedOwnLibrary");
+
+            CSharpCompilation caller = CompileWithProductionReferencePack(R2Source(body + " await Task.CompletedTask;"), "RetroDownfall.Arcanum.Api")
+                .AddReferences(compilation.ToMetadataReference());
+
+            Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+            Assert.Empty(caller.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+            System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
+
+            result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [compilation, caller], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observed.Enqueue);
+
+            states = [.. observed];
+        }
+        else
+        {
+            (compilation, result, states) = ClosedValueDiscover(body, helper);
+        }
+
+        SyntaxNode root = compilation.SyntaxTrees.Single().GetRoot();
+
+        ParameterSyntax parameter = root.DescendantNodes().OfType<ParameterSyntax>()
+            .Single(static candidate => candidate.Identifier.ValueText == "own");
+
+        SyntaxNode declaration = parameter.Ancestors().First(static node =>
+            node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax);
+
+        int bodyStart = declaration is LambdaExpressionSyntax anonymous ? anonymous.Body.SpanStart : declaration.SpanStart;
+
+        HostedProducerAdmittedStateObservation[] nested = [.. states.Where(state => state.SpanStart == bodyStart
+            && state.Method.StartsWith("M:NestedOwn", StringComparison.Ordinal))];
+
+        return (result, nested);
+    }
+
+    [Theory]
+    [InlineData(true, "own", true)]
+    [InlineData(false, "own", true)]
+    [InlineData(true, "parent", true)]
+    [InlineData(false, "parent", true)]
+    [InlineData(true, "ancestor", true)]
+    [InlineData(false, "ancestor", true)]
+    [InlineData(true, "construction", true)]
+    [InlineData(false, "construction", true)]
+    [InlineData(true, "caller", false)]
+    [InlineData(false, "caller", false)]
+    [InlineData(true, "siblingLocal", false)]
+    [InlineData(false, "siblingLocal", false)]
+    [InlineData(true, "siblingLambda", false)]
+    [InlineData(false, "siblingLambda", false)]
+    public void LexicalAncestorProbe_AdmissionIgnoresOnlyParametersOutsideTheTargetScope(
+        bool lambda, string binding, bool retained)
+    {
+        string target = lambda
+            ? "System.Func<object, int> Target = own => 0;"
+            : "int Target(object own) => 0;";
+
+        string source = """
+            sealed class Holder(object construction)
+            {
+                public static int Via(object caller) => 0;
+
+                public int Outer(object ancestor)
+                {
+                    int Sibling(object siblingLocal) => 0;
+
+                    System.Func<object, int> sibling = siblingLambda => 0;
+
+                    int Parent(object parent)
+                    {
+                        TARGET
+
+                        return Target(parent);
+                    }
+
+                    return Parent(ancestor) + Sibling(construction) + sibling(construction);
+                }
+            }
+            """.Replace("TARGET", target, StringComparison.Ordinal);
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        SyntaxNode root = compilation.SyntaxTrees.Single().GetRoot();
+
+        ParameterSyntax own = root.DescendantNodes().OfType<ParameterSyntax>().Single(static parameter => parameter.Identifier.ValueText == "own");
+
+        SyntaxNode declaration = own.Ancestors().First(static node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax);
+
+        ParameterSyntax parameter = root.DescendantNodes().OfType<ParameterSyntax>().Single(parameter => parameter.Identifier.ValueText == binding);
+
+        (bool seed, bool mayContain) = HostedGrimoireProducerInventory.ProbeAdmissionBinding(compilation, declaration, parameter);
+
+        Assert.Equal(retained, seed);
+
+        Assert.Equal(retained, mayContain);
+    }
+
+    [Theory]
+    [InlineData(false, false, false, 1)]
+    [InlineData(true, false, false, 2)]
+    [InlineData(false, true, false, 1)]
+    [InlineData(true, true, false, 2)]
+    [InlineData(false, false, true, 1)]
+    [InlineData(true, false, true, 2)]
+    [InlineData(false, true, true, 1)]
+    [InlineData(true, true, true, 2)]
+    public void LexicalAncestorProbe_CallbackRetainsItsCapturedFlagButNotItsInvokerFlag(
+        bool captures, bool generic, bool crossCompilation, int expected)
+    {
+        string helper = """
+            public sealed class CallbackHolder(System.Func<int> callback) : System.IDisposable
+            {
+                private readonly System.IO.MemoryStream stream = new();
+
+                public int Call(bool invoker)
+                {
+                    int value = callback();
+
+                    return invoker ? value : 0;
+                }
+
+                public void Dispose() => stream.Dispose();
+            }
+
+            public static class NestedFactory
+            {
+                public static void Run(bool captured)
+                {
+                    using var holder = new CallbackHolder(() => VALUE);
+
+                    _ = holder.Call(false);
+
+                    _ = holder.Call(true);
+                }
+            }
+            """.Replace("VALUE", captures ? "captured ? 1 : 2" : "1", StringComparison.Ordinal);
+
+        if (generic)
+        {
+            helper = helper.Replace("class NestedFactory", "class NestedFactory<T>", StringComparison.Ordinal);
+        }
+
+        string factory = generic ? "NestedFactory<int>" : "NestedFactory";
+
+        string body = factory + ".Run(false); " + factory + ".Run(true);";
+
+        HostedProducerDiscovery<HostedProducerSite> result;
+
+        HostedProducerAdmittedStateObservation[] states;
+
+        if (crossCompilation)
+        {
+            CSharpCompilation library = CompileWithProductionReferencePack(helper).WithAssemblyName("NestedScopeLibrary");
+
+            CSharpCompilation caller = CompileWithProductionReferencePack(R2Source(body + " await Task.CompletedTask;"), "RetroDownfall.Arcanum.Api")
+                .AddReferences(library.ToMetadataReference());
+
+            Assert.Empty(library.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+            Assert.Empty(caller.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+            System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+            result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [library, caller], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observations.Enqueue);
+
+            states = [.. observations];
+        }
+        else
+        {
+            (_, result, states) = ClosedValueDiscover(body, helper);
+        }
+
+        HostedProducerAdmittedStateObservation[] callbacks = [.. states.Where(static state => state.Method.StartsWith("M:NestedFactory", StringComparison.Ordinal)
+            && state.Method.EndsWith(".", StringComparison.Ordinal))];
+
+        Assert.Equal(["HOSTED_SITE_EFFECT_FRONTIER_MISSING", "HOSTED_SITE_WORK_FRONTIER_MISSING"], result.Diagnostics.Select(static diagnostic => diagnostic.Code).Distinct().Order(StringComparer.Ordinal));
+
+        Assert.All(result.Diagnostics, static diagnostic => Assert.Equal("System.IO.Stream.Dispose", diagnostic.Detail));
+
+        Assert.Equal(expected, callbacks.Length);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LexicalAncestorProbe_AnOwnerFromAnotherCompilationStaysConservative(bool retargetedGeneric)
+    {
+        CSharpCompilation origin = Compile("public sealed class Foreign<T> { public static void Own(T binding) { } }")
+            .WithAssemblyName("ForeignBindings");
+
+        CSharpCompilation target = Compile("public static class Target { public static int Run() { System.Func<int> callback = () => 0; return callback(); } }")
+            .AddReferences(origin.ToMetadataReference());
+
+        Assert.Empty(target.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        INamedTypeSymbol foreign = Assert.IsAssignableFrom<INamedTypeSymbol>((retargetedGeneric ? target : origin).GetTypeByMetadataName("Foreign`1"));
+
+        if (retargetedGeneric)
+        {
+            foreign = foreign.Construct(target.GetSpecialType(SpecialType.System_Object));
+        }
+
+        IParameterSymbol parameter = Assert.Single(Assert.Single(foreign.GetMembers("Own").OfType<IMethodSymbol>()).Parameters);
+
+        SyntaxNode declaration = target.SyntaxTrees.Single().GetRoot().DescendantNodes().OfType<AnonymousFunctionExpressionSyntax>().Single();
+
+        (bool seed, bool mayContain) = HostedGrimoireProducerInventory.ProbeAdmissionBinding(target, declaration, parameter);
+
+        Assert.True(seed);
+
+        Assert.True(mayContain);
+    }
+
+    [Theory]
+    [InlineData("ref")]
+    [InlineData("out")]
+    [InlineData("in")]
+    public void LexicalAncestorProbe_ForeignByReferenceParametersRemainConservative(string modifier)
+    {
+        string source = "static class Owner { public static void Other(" + modifier + " object foreign) { "
+            + (modifier == "out" ? "foreign = null!;" : "")
+            + " } public static int Run() { System.Func<int> callback = () => 0; return callback(); } }";
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        SyntaxNode root = compilation.SyntaxTrees.Single().GetRoot();
+
+        SyntaxNode declaration = root.DescendantNodes().OfType<AnonymousFunctionExpressionSyntax>().Single();
+
+        ParameterSyntax parameter = root.DescendantNodes().OfType<ParameterSyntax>().Single();
+
+        (bool seed, bool mayContain) = HostedGrimoireProducerInventory.ProbeAdmissionBinding(compilation, declaration, parameter);
+
+        Assert.True(seed);
+
+        Assert.True(mayContain);
+    }
+
     // The lease an accessor or a constructor is entered with is a name only in the method that passed it, so what the
     // traversal concludes about a callback declared in the accessor does not depend on whether such a lease was passed.
     private static string[] ForeignLeaseVerdict(string members, string call)

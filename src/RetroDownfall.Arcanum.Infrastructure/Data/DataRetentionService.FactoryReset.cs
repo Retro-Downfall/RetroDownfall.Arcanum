@@ -465,6 +465,32 @@ internal sealed partial class DataRetentionService
                     "Factory-reset data changed after preview; request a new dry-run before retrying.");
             }
 
+            CovenantMutationTransaction ownedTransaction = new((SqliteConnection)connection, (SqliteTransaction)transaction);
+
+            Result released = await new CovenantQuotaGuard().ReleaseFactoryCapacityAsync(
+                ownedTransaction, cancellationToken).ConfigureAwait(false);
+
+            if (released.IsFailure)
+            {
+                await using DbCommand diagnostic = connection.CreateCommand();
+
+                diagnostic.Transaction = transaction;
+
+                diagnostic.CommandText = """
+                    SELECT CASE
+                        WHEN EXISTS (SELECT 1 FROM Sessions) THEN 'Sessions'
+                        WHEN EXISTS (SELECT 1 FROM session_turn_quota_state) THEN 'session_turn_quota_state'
+                        ELSE 'installation_turn_quota_state' END;
+                    """;
+
+                string target = (string)(await diagnostic.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
+
+                logger.LogWarning("Factory-reset operation {OperationId} at {Stage}: target {Target} refused the capacity proof before commit; roll back and preserve recovery evidence.",
+                    operationId, "FactoryCapacityRefused", target);
+
+                throw new InvalidOperationException("Factory reset could not return installation turn capacity.");
+            }
+
             ValidateFactoryFileSystemSnapshot(fileSystem);
 
             // The launch row is preserved and reread rather than renewed. It used to have its lease
@@ -519,14 +545,19 @@ internal sealed partial class DataRetentionService
 
             long bytes = fileSystem.Files.Sum(static file => file.Bytes);
 
-            bool reconciled = await ReconcileFactoryResetAsync(
+            string? retainedTarget = await ReconcileFactoryResetAsync(
                 operationId,
                 CancellationToken.None).ConfigureAwait(false);
 
+            bool reconciled = retainedTarget is null;
+
             if (!reconciled)
             {
+                logger.LogWarning("Factory-reset operation {OperationId} at {Stage}: target {Target} retained data after commit; preserve recovery evidence.",
+                    operationId, "FactoryTargetRetained", retainedTarget);
+
                 throw new RetentionQuarantineRecoveryRequiredException(
-                    "Factory reset committed, but post-commit reconciliation found retained owned data.");
+                    $"Factory reset committed, but post-commit reconciliation found retained owned data at {retainedTarget}.");
             }
 
             return new DataRetentionApplyResult(
@@ -590,6 +621,9 @@ internal sealed partial class DataRetentionService
                 StringComparison.Ordinal)
             || operation.RecoveryPolicy != LongRunningOperationRecoveryPolicy.RestartIdempotently)
         {
+            logger.LogWarning("Factory-reset recovery {OperationId} at {Stage}: the operation kind or recovery policy is incompatible with this handler; preserve the existing record.",
+                operation.Id, "InvalidRecoveryRequest");
+
             return LongRunningOperationRecoveryResult.Failed(
                 LongRunningOperationErrorCodes.InvalidRecoveryResult);
         }
@@ -608,14 +642,20 @@ internal sealed partial class DataRetentionService
 
         if (operation.CheckpointVersion != 0)
         {
+            logger.LogWarning("Factory-reset recovery {OperationId} at {Stage}: checkpoint version {CheckpointVersion} requires its supported recovery path; preserve the existing record.",
+                operation.Id, "CheckpointVersionUnsupported", operation.CheckpointVersion);
+
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Covenant.ManualRecoveryRequired);
         }
 
         if (string.IsNullOrWhiteSpace(operation.LeaseOwner))
         {
+            logger.LogWarning("Factory-reset recovery {OperationId} at {Stage}: a legacy operation has no durable lease owner; preserve the existing operation for recovery.",
+                operation.Id, "LegacyOwnerMissing");
+
             return LongRunningOperationRecoveryResult.RequiresAttention(
-                ErrorCodes.Covenant.MaintenanceFailed);
+                ErrorCodes.Data.ReconciliationFailed);
         }
 
         try
@@ -636,6 +676,9 @@ internal sealed partial class DataRetentionService
 
             if (plan.Conflicts.Length > 0)
             {
+                logger.LogWarning("Factory-reset recovery {OperationId} at {Stage}: {ConflictCount} active conflicts prevent cleanup; inspect the existing operation and its current preview.",
+                    operation.Id, "LegacyPlanConflicts", plan.Conflicts.Length);
+
                 return LongRunningOperationRecoveryResult.Failed(ErrorCodes.Data.Conflict);
             }
 
@@ -674,6 +717,9 @@ internal sealed partial class DataRetentionService
         }
         catch (RetentionConflictException)
         {
+            logger.LogWarning("Factory-reset recovery {OperationId} at {Stage}: a current conflict prevented cleanup; inspect the existing operation before retrying.",
+                operation.Id, "LegacyConflict");
+
             return LongRunningOperationRecoveryResult.Failed(
                 ErrorCodes.Data.Conflict);
         }
@@ -866,58 +912,60 @@ internal sealed partial class DataRetentionService
         return MapCovenantErasureRecovery(recovered);
     }
 
-    private async Task<bool> ReconcileFactoryResetAsync(
+    private async Task<string?> ReconcileFactoryResetAsync(
         Guid operationId,
         CancellationToken cancellationToken)
     {
-        bool reconciled = true;
+        string? firstRetained = null;
 
+        // Retain the entire verification pass. A later unreadable check is never hidden by an earlier retained target.
         foreach (FactoryTablePlan table in FactoryDeletionTables)
         {
-            reconciled &= await CountTableAsync(
-                table.Table,
-                null,
-                cancellationToken).ConfigureAwait(false) == 0;
+            if (await CountTableAsync(table.Table, null, cancellationToken).ConfigureAwait(false) != 0)
+            {
+                firstRetained ??= table.Table;
+            }
         }
 
-        reconciled &= CountManagedTreeContents(_attachmentsRoot, ManagedDataRootRole.Attachments).Files == 0;
+        if (CountManagedTreeContents(_attachmentsRoot, ManagedDataRootRole.Attachments).Files != 0)
+        {
+            firstRetained ??= "attachments";
+        }
 
-        reconciled &= CountManagedTreeContents(_filesRoot, ManagedDataRootRole.Files).Files == 0;
+        if (CountManagedTreeContents(_filesRoot, ManagedDataRootRole.Files).Files != 0)
+        {
+            firstRetained ??= "files";
+        }
 
-        (long remainingAuditLogs, _) = CountFactoryLogFiles(
-            _logsRoot,
-            "audit-????????.jsonl");
+        (long remainingAuditLogs, _) = CountFactoryLogFiles(_logsRoot, "audit-????????.jsonl");
 
-        (long remainingGuardrailLogs, _) = CountFactoryLogFiles(
-            _logsRoot,
-            "guardrails-????????.jsonl");
+        (long remainingGuardrailLogs, _) = CountFactoryLogFiles(_logsRoot, "guardrails-????????.jsonl");
 
-        reconciled &= remainingAuditLogs == 0;
+        if (remainingAuditLogs != 0) firstRetained ??= "auditLogs";
 
-        reconciled &= remainingGuardrailLogs == 0;
+        if (remainingGuardrailLogs != 0) firstRetained ??= "guardrailLogs";
 
-        reconciled &= await CountTableAsync(
-            "LongRunningOperations",
-            $"State IN ({FactoryTerminalOperationStates}) AND lower(replace(Id, '-', '')) <> @currentId",
-            cancellationToken,
-            ("@currentId", operationId.ToString("N"))).ConfigureAwait(false) == 0;
+        if (await CountTableAsync("LongRunningOperations",
+                $"State IN ({FactoryTerminalOperationStates}) AND lower(replace(Id, '-', '')) <> @currentId",
+                cancellationToken, ("@currentId", operationId.ToString("N"))).ConfigureAwait(false) != 0)
+        {
+            firstRetained ??= "terminalOperations";
+        }
 
-        reconciled &= await CountTableAsync(
-            "LongRunningOperations",
-            "lower(replace(Id, '-', '')) = @currentId",
-            cancellationToken,
-            ("@currentId", operationId.ToString("N"))).ConfigureAwait(false) == 1;
+        if (await CountTableAsync("LongRunningOperations", "lower(replace(Id, '-', '')) = @currentId",
+                cancellationToken, ("@currentId", operationId.ToString("N"))).ConfigureAwait(false) != 1)
+        {
+            firstRetained ??= "currentOperation";
+        }
 
         if (daemonExecutions is not null)
         {
-            DaemonExecutionSummary[] remaining = await daemonExecutions.GetHistoryAsync(
-                null,
-                cancellationToken).ConfigureAwait(false);
+            DaemonExecutionSummary[] remaining = await daemonExecutions.GetHistoryAsync(null, cancellationToken).ConfigureAwait(false);
 
-            reconciled &= remaining.All(execution => !IsDeletableTerminalDaemonExecution(execution));
+            if (remaining.Any(IsDeletableTerminalDaemonExecution)) firstRetained ??= "daemonHistory";
         }
 
-        return reconciled;
+        return firstRetained;
     }
 
     private async Task<DataRetentionConflict[]> ReadFactoryConflictsInTransactionAsync(

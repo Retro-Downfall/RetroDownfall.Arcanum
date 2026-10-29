@@ -64,6 +64,8 @@ internal sealed partial class DataRetentionService
 
     private readonly AsyncLocal<DateTimeOffset?> _prunePlanningTimestamp = new();
 
+    private readonly AsyncLocal<RetentionSchemaCensus?> _pruneSchemaCensus = new();
+
     private DateTimeOffset PrunePlanningTimestamp =>
         _prunePlanningTimestamp.Value
         ?? timeProvider.GetUtcNow();
@@ -283,11 +285,20 @@ internal sealed partial class DataRetentionService
 
     private async Task<DataRetentionPlan> BuildUnifiedPrunePlanAsync(
         DataRetentionRequest request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool completeDiagnostics = false,
+        DateTimeOffset? observedAt = null,
+        PruneDiagnosticWindow? diagnosticWindow = null)
     {
         DateTimeOffset? previous = _prunePlanningTimestamp.Value;
 
-        DateTimeOffset generatedAt = timeProvider.GetUtcNow();
+        RetentionSchemaCensus? previousCensus = _pruneSchemaCensus.Value;
+
+        using RetentionSchemaCensus census = new();
+
+        _pruneSchemaCensus.Value = census;
+
+        DateTimeOffset generatedAt = observedAt ?? timeProvider.GetUtcNow();
 
         _prunePlanningTimestamp.Value = generatedAt;
 
@@ -296,18 +307,24 @@ internal sealed partial class DataRetentionService
             return await BuildUnifiedPrunePlanCoreAsync(
                 request,
                 generatedAt,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                completeDiagnostics,
+                diagnosticWindow).ConfigureAwait(false);
         }
         finally
         {
             _prunePlanningTimestamp.Value = previous;
+
+            _pruneSchemaCensus.Value = previousCensus;
         }
     }
 
     private async Task<DataRetentionPlan> BuildUnifiedPrunePlanCoreAsync(
         DataRetentionRequest request,
         DateTimeOffset generatedAt,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool completeDiagnostics,
+        PruneDiagnosticWindow? diagnosticWindow)
     {
         RetentionSettings retention = SnapshotRetention(CurrentRetention);
 
@@ -315,9 +332,9 @@ internal sealed partial class DataRetentionService
 
         List<DataRetentionPlanItem> items = [];
 
-        List<DataRetentionBlocker> blockers = [];
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers = new(completeDiagnostics, diagnosticWindow);
 
-        List<DataRetentionConflict> conflicts = [];
+        RetentionDiagnosticCollection<DataRetentionConflict> conflicts = new(completeDiagnostics, diagnosticWindow);
 
         List<string> candidates = [];
 
@@ -404,6 +421,7 @@ internal sealed partial class DataRetentionService
             retention,
             limit,
             items,
+            blockers,
             candidates,
             cancellationToken).ConfigureAwait(false);
 
@@ -411,6 +429,7 @@ internal sealed partial class DataRetentionService
             retention,
             limit,
             items,
+            blockers,
             candidates,
             cancellationToken).ConfigureAwait(false);
 
@@ -473,12 +492,14 @@ internal sealed partial class DataRetentionService
         DataRetentionPlan finalized = FinalizePlan(
             request,
             items,
-            blockers,
-            conflicts,
+            [],
+            [],
             candidates,
             requiresConfirmation: true,
             planAuthority: BuildPrunePolicyAuthority(retention),
-            generatedAt: generatedAt);
+            generatedAt: generatedAt,
+            compactBlockers: blockers,
+            compactConflicts: conflicts);
 
         // Attached before the frozen-authority registration below, which is keyed by reference: a
         // `with` after it would register the authority against a plan instance nothing else holds, and
@@ -627,8 +648,8 @@ internal sealed partial class DataRetentionService
         RetentionSettings retention,
         int limit,
         List<DataRetentionPlanItem> items,
-        List<DataRetentionBlocker> blockers,
-        List<DataRetentionConflict> conflicts,
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers,
+        RetentionDiagnosticCollection<DataRetentionConflict> conflicts,
         List<string> candidates,
         HashSet<Guid> selectedBatches,
         CancellationToken cancellationToken)
@@ -764,8 +785,8 @@ internal sealed partial class DataRetentionService
         int limit,
         HashSet<Guid> selectedBatches,
         List<DataRetentionPlanItem> items,
-        List<DataRetentionBlocker> blockers,
-        List<DataRetentionConflict> conflicts,
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers,
+        RetentionDiagnosticCollection<DataRetentionConflict> conflicts,
         List<string> candidates,
         CancellationToken cancellationToken)
     {
@@ -871,8 +892,8 @@ internal sealed partial class DataRetentionService
         DateTimeOffset cutoff,
         int diagnosticLimit,
         HashSet<Guid> selectedSessions,
-        List<DataRetentionBlocker> blockers,
-        List<DataRetentionConflict> conflicts,
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers,
+        RetentionDiagnosticCollection<DataRetentionConflict> conflicts,
         CancellationToken cancellationToken)
     {
         DbConnection connection = await OpenConnectionAsync(
@@ -963,55 +984,57 @@ internal sealed partial class DataRetentionService
             "@selectedDiagnostic",
             selectedSessionIds);
 
-        List<(Guid Id, Guid SessionId, bool Pinned, bool ContextPinned)> protectedEntries = [];
+        HashSet<Guid> conflictOwners = [];
 
         await using (DbDataReader reader = await command
                          .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                protectedEntries.Add(
-                    (
-                        Guid.Parse(reader.GetString(0)),
-                        Guid.Parse(reader.GetString(1)),
-                        reader.GetInt64(2) != 0,
-                        reader.GetInt64(3) != 0
-                    ));
+                Guid id = Guid.Parse(reader.GetString(0));
+
+                Guid sessionId = Guid.Parse(reader.GetString(1));
+
+                bool pinned = reader.GetInt64(2) != 0;
+
+                bool contextPinned = reader.GetInt64(3) != 0;
+
+                conflictOwners.Add(sessionId);
+
+                if (pinned)
+                {
+                    AddDiagnosticForSession(blockers,
+                        new DataRetentionBlocker(
+                            RetentionDataClass.Entries,
+                            id.ToString("D"),
+                            ErrorCodes.Data.PinnedEntry,
+                            "A pinned entry cannot be pruned."), sessionId);
+                }
+                else if (protectedSessionIds.Contains(sessionId))
+                {
+                    AddDiagnosticForSession(blockers,
+                        new DataRetentionBlocker(
+                            RetentionDataClass.Entries,
+                            id.ToString("D"),
+                            ErrorCodes.Data.SessionHold,
+                            "An operator-retained session protects its entries."), sessionId);
+                }
+                else if (contextPinned)
+                {
+                    AddDiagnosticForSession(blockers,
+                        new DataRetentionBlocker(
+                            RetentionDataClass.Entries,
+                            id.ToString("D"),
+                            ErrorCodes.Data.ContextPin,
+                            "A pinned session-entry context protects this entry."), sessionId);
+                }
             }
         }
 
         int remainingConflictDiagnostics = diagnosticLimit;
 
-        foreach ((Guid id, Guid sessionId, bool pinned, bool contextPinned) in protectedEntries)
+        foreach (Guid sessionId in conflictOwners)
         {
-            if (pinned)
-            {
-                blockers.Add(
-                    new DataRetentionBlocker(
-                        RetentionDataClass.Entries,
-                        id.ToString("D"),
-                        ErrorCodes.Data.PinnedEntry,
-                        "A pinned entry cannot be pruned."));
-            }
-            else if (protectedSessionIds.Contains(sessionId))
-            {
-                blockers.Add(
-                    new DataRetentionBlocker(
-                        RetentionDataClass.Entries,
-                        id.ToString("D"),
-                        ErrorCodes.Data.SessionHold,
-                        "An operator-retained session protects its entries."));
-            }
-            else if (contextPinned)
-            {
-                blockers.Add(
-                    new DataRetentionBlocker(
-                        RetentionDataClass.Entries,
-                        id.ToString("D"),
-                        ErrorCodes.Data.ContextPin,
-                        "A pinned session-entry context protects this entry."));
-            }
-
             remainingConflictDiagnostics = await AddBoundedSessionConflictDiagnosticsAsync(
                 sessionId,
                 remainingConflictDiagnostics,
@@ -1025,8 +1048,8 @@ internal sealed partial class DataRetentionService
         DateTimeOffset cutoff,
         int diagnosticLimit,
         HashSet<Guid> selectedSessions,
-        List<DataRetentionBlocker> blockers,
-        List<DataRetentionConflict> conflicts,
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers,
+        RetentionDiagnosticCollection<DataRetentionConflict> conflicts,
         CancellationToken cancellationToken)
     {
         DbConnection connection = await OpenConnectionAsync(
@@ -1118,45 +1141,46 @@ internal sealed partial class DataRetentionService
             "@selectedAttachmentDiagnostic",
             selectedSessionIds);
 
-        List<(Guid Id, Guid SessionId, bool ContextPinned)> protectedAttachments = [];
+        HashSet<Guid> conflictOwners = [];
 
         await using (DbDataReader reader = await command
                          .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                protectedAttachments.Add(
-                    (
-                        Guid.Parse(reader.GetString(0)),
-                        Guid.Parse(reader.GetString(1)),
-                        reader.GetInt64(2) != 0
-                    ));
+                Guid id = Guid.Parse(reader.GetString(0));
+
+                Guid sessionId = Guid.Parse(reader.GetString(1));
+
+                bool contextPinned = reader.GetInt64(2) != 0;
+
+                conflictOwners.Add(sessionId);
+
+                if (protectedSessionIds.Contains(sessionId))
+                {
+                    AddDiagnosticForSession(blockers,
+                        new DataRetentionBlocker(
+                            RetentionDataClass.AttachmentVersions,
+                            id.ToString("D"),
+                            ErrorCodes.Data.SessionHold,
+                            "An operator-retained session protects its attachments."), sessionId);
+                }
+                else if (contextPinned)
+                {
+                    AddDiagnosticForSession(blockers,
+                        new DataRetentionBlocker(
+                            RetentionDataClass.AttachmentVersions,
+                            id.ToString("D"),
+                            ErrorCodes.Data.PinnedAttachment,
+                            "A pinned attachment/context protects this attachment from deletion."), sessionId);
+                }
             }
         }
 
         int remainingConflictDiagnostics = diagnosticLimit;
 
-        foreach ((Guid id, Guid sessionId, bool contextPinned) in protectedAttachments)
+        foreach (Guid sessionId in conflictOwners)
         {
-            if (protectedSessionIds.Contains(sessionId))
-            {
-                blockers.Add(
-                    new DataRetentionBlocker(
-                        RetentionDataClass.AttachmentVersions,
-                        id.ToString("D"),
-                        ErrorCodes.Data.SessionHold,
-                        "An operator-retained session protects its attachments."));
-            }
-            else if (contextPinned)
-            {
-                blockers.Add(
-                    new DataRetentionBlocker(
-                        RetentionDataClass.AttachmentVersions,
-                        id.ToString("D"),
-                        ErrorCodes.Data.PinnedAttachment,
-                        "A pinned attachment/context protects this attachment from deletion."));
-            }
-
             remainingConflictDiagnostics = await AddBoundedSessionConflictDiagnosticsAsync(
                 sessionId,
                 remainingConflictDiagnostics,
@@ -1169,8 +1193,8 @@ internal sealed partial class DataRetentionService
         RetentionSettings retention,
         DateTimeOffset cutoff,
         int diagnosticLimit,
-        List<DataRetentionBlocker> blockers,
-        List<DataRetentionConflict> conflicts,
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers,
+        RetentionDiagnosticCollection<DataRetentionConflict> conflicts,
         CancellationToken cancellationToken)
     {
         DbConnection connection = await OpenConnectionAsync(
@@ -1251,55 +1275,57 @@ internal sealed partial class DataRetentionService
             "@protectedEmbeddingDiagnostic",
             protectedSessionIds);
 
-        List<(Guid EntryId, Guid SessionId, bool Pinned, bool ContextPinned)> protectedEmbeddings = [];
+        HashSet<Guid> conflictOwners = [];
 
         await using (DbDataReader reader = await command
                          .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                protectedEmbeddings.Add(
-                    (
-                        Guid.Parse(reader.GetString(0)),
-                        Guid.Parse(reader.GetString(1)),
-                        reader.GetInt64(2) != 0,
-                        reader.GetInt64(3) != 0
-                    ));
+                Guid entryId = Guid.Parse(reader.GetString(0));
+
+                Guid sessionId = Guid.Parse(reader.GetString(1));
+
+                bool pinned = reader.GetInt64(2) != 0;
+
+                bool contextPinned = reader.GetInt64(3) != 0;
+
+                conflictOwners.Add(sessionId);
+
+                if (pinned)
+                {
+                    AddDiagnosticForSession(blockers,
+                        new DataRetentionBlocker(
+                            RetentionDataClass.SessionEntryEmbeddings,
+                            entryId.ToString("D"),
+                            ErrorCodes.Data.PinnedEntry,
+                            "A pinned entry protects its derived embeddings."), sessionId);
+                }
+                else if (protectedSessionIds.Contains(sessionId))
+                {
+                    AddDiagnosticForSession(blockers,
+                        new DataRetentionBlocker(
+                            RetentionDataClass.SessionEntryEmbeddings,
+                            entryId.ToString("D"),
+                            ErrorCodes.Data.SessionHold,
+                            "An operator-retained session protects its derived entry embeddings."), sessionId);
+                }
+                else if (contextPinned)
+                {
+                    AddDiagnosticForSession(blockers,
+                        new DataRetentionBlocker(
+                            RetentionDataClass.SessionEntryEmbeddings,
+                            entryId.ToString("D"),
+                            ErrorCodes.Data.ContextPin,
+                            "A pinned session-entry context protects its derived embeddings."), sessionId);
+                }
             }
         }
 
         int remainingConflictDiagnostics = diagnosticLimit;
 
-        foreach ((Guid entryId, Guid sessionId, bool pinned, bool contextPinned) in protectedEmbeddings)
+        foreach (Guid sessionId in conflictOwners)
         {
-            if (pinned)
-            {
-                blockers.Add(
-                    new DataRetentionBlocker(
-                        RetentionDataClass.SessionEntryEmbeddings,
-                        entryId.ToString("D"),
-                        ErrorCodes.Data.PinnedEntry,
-                        "A pinned entry protects its derived embeddings."));
-            }
-            else if (protectedSessionIds.Contains(sessionId))
-            {
-                blockers.Add(
-                    new DataRetentionBlocker(
-                        RetentionDataClass.SessionEntryEmbeddings,
-                        entryId.ToString("D"),
-                        ErrorCodes.Data.SessionHold,
-                        "An operator-retained session protects its derived entry embeddings."));
-            }
-            else if (contextPinned)
-            {
-                blockers.Add(
-                    new DataRetentionBlocker(
-                        RetentionDataClass.SessionEntryEmbeddings,
-                        entryId.ToString("D"),
-                        ErrorCodes.Data.ContextPin,
-                        "A pinned session-entry context protects its derived embeddings."));
-            }
-
             remainingConflictDiagnostics = await AddBoundedSessionConflictDiagnosticsAsync(
                 sessionId,
                 remainingConflictDiagnostics,
@@ -1311,12 +1337,17 @@ internal sealed partial class DataRetentionService
     private async Task<int> AddBoundedSessionConflictDiagnosticsAsync(
         Guid sessionId,
         int remaining,
-        List<DataRetentionConflict> conflicts,
+        RetentionDiagnosticCollection<DataRetentionConflict> conflicts,
         CancellationToken cancellationToken)
     {
         if (remaining <= 0)
         {
             return 0;
+        }
+
+        if (!conflicts.ObservedSessions.Add(sessionId))
+        {
+            return remaining;
         }
 
         DbConnection connection = await OpenConnectionAsync(
@@ -1389,11 +1420,11 @@ internal sealed partial class DataRetentionService
                     "An outstanding budget reservation protects the accounting chain.",
             };
 
-            conflicts.Add(
+            AddDiagnosticForSession(conflicts,
                 new DataRetentionConflict(
                     code,
                     Guid.Parse(reader.GetString(1)).ToString("D"),
-                    message));
+                    message), sessionId);
 
             remaining--;
         }
@@ -1421,8 +1452,8 @@ internal sealed partial class DataRetentionService
         HashSet<Guid> selectedSessions,
         HashSet<Guid> selectedEntryOwners,
         List<DataRetentionPlanItem> items,
-        List<DataRetentionBlocker> blockers,
-        List<DataRetentionConflict> conflicts,
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers,
+        RetentionDiagnosticCollection<DataRetentionConflict> conflicts,
         List<string> candidates,
         CancellationToken cancellationToken)
     {
@@ -1610,6 +1641,17 @@ internal sealed partial class DataRetentionService
                 continue;
             }
 
+            string? labelCause = await ReadPruneLabelRefusalAsync(
+                SensitiveArtifactKind.AssistantEntry, id, cancellationToken).ConfigureAwait(false);
+
+            if (labelCause is not null)
+            {
+                AddDiagnosticForSession(blockers, new DataRetentionBlocker(RetentionDataClass.Entries,
+                    id.ToString("D"), labelCause, PruneLabelMessage(labelCause)), sessionId);
+
+                continue;
+            }
+
             long embeddings = await CountTableAsync(
                 "entry_embeddings",
                 "lower(replace(EntryId, '-', '')) = @id",
@@ -1667,8 +1709,8 @@ internal sealed partial class DataRetentionService
         int limit,
         HashSet<Guid> selectedSessions,
         List<DataRetentionPlanItem> items,
-        List<DataRetentionBlocker> blockers,
-        List<DataRetentionConflict> conflicts,
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers,
+        RetentionDiagnosticCollection<DataRetentionConflict> conflicts,
         List<string> candidates,
         CancellationToken cancellationToken)
     {
@@ -1840,8 +1882,8 @@ internal sealed partial class DataRetentionService
         int limit,
         HashSet<Guid> selectedSessions,
         List<DataRetentionPlanItem> items,
-        List<DataRetentionBlocker> blockers,
-        List<DataRetentionConflict> conflicts,
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers,
+        RetentionDiagnosticCollection<DataRetentionConflict> conflicts,
         List<string> candidates,
         CancellationToken cancellationToken)
     {
@@ -2037,8 +2079,8 @@ internal sealed partial class DataRetentionService
         RetentionSettings retention,
         int limit,
         List<DataRetentionPlanItem> items,
-        List<DataRetentionBlocker> blockers,
-        List<DataRetentionConflict> conflicts,
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers,
+        RetentionDiagnosticCollection<DataRetentionConflict> conflicts,
         List<string> candidates,
         CancellationToken cancellationToken)
     {
@@ -2127,6 +2169,7 @@ internal sealed partial class DataRetentionService
         RetentionSettings retention,
         int limit,
         List<DataRetentionPlanItem> items,
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers,
         List<string> candidates,
         CancellationToken cancellationToken)
     {
@@ -2162,8 +2205,21 @@ internal sealed partial class DataRetentionService
             cancellationToken,
             ("@cutoff", FormatTimestamp(cutoff))).ConfigureAwait(false);
 
+        List<string> eligibleIds = [];
+
         foreach (string id in ids)
         {
+            string? labelCause = Guid.TryParse(id, out Guid artifactId)
+                ? await ReadPruneLabelRefusalAsync(SensitiveArtifactKind.Saga, artifactId, cancellationToken).ConfigureAwait(false)
+                : null;
+
+            if (labelCause is not null)
+            {
+                blockers.Add(new DataRetentionBlocker(RetentionDataClass.SagaMemories, id, labelCause, PruneLabelMessage(labelCause)));
+
+                continue;
+            }
+
             long derived = await CountTableAsync(
                 "saga_memory_embeddings",
                 "MemoryId = @id",
@@ -2188,6 +2244,8 @@ internal sealed partial class DataRetentionService
                 cancellationToken,
                 ("@id", id)).ConfigureAwait(false);
 
+            eligibleIds.Add(id);
+
             candidates.Add(SagaCandidatePrefix + id);
 
             items.Add(
@@ -2199,9 +2257,9 @@ internal sealed partial class DataRetentionService
                     derived));
         }
 
-        if (ids.Length > 0)
+        if (eligibleIds.Count > 0)
         {
-            string selectedIds = JsonSerializer.Serialize(ids, ArcanumCoreJsonContext.Default.StringArray);
+            string selectedIds = JsonSerializer.Serialize(eligibleIds.ToArray(), ArcanumCoreJsonContext.Default.StringArray);
 
             const string subjectQuery = "SELECT value FROM json_each(@longRestMemoryIds)";
 
@@ -2263,13 +2321,14 @@ internal sealed partial class DataRetentionService
         RetentionSettings retention,
         int limit,
         List<DataRetentionPlanItem> items,
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers,
         List<string> candidates,
         CancellationToken cancellationToken)
     {
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection,
-            () => AddLexiconCandidatesCoreAsync(connection, retention, limit, items, candidates, cancellationToken),
+            () => AddLexiconCandidatesCoreAsync(connection, retention, limit, items, blockers, candidates, cancellationToken),
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -2278,6 +2337,7 @@ internal sealed partial class DataRetentionService
         RetentionSettings retention,
         int limit,
         List<DataRetentionPlanItem> items,
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers,
         List<string> candidates,
         CancellationToken cancellationToken)
     {
@@ -2315,6 +2375,17 @@ internal sealed partial class DataRetentionService
 
         foreach (string id in ids)
         {
+            string? labelCause = Guid.TryParse(id, out Guid artifactId)
+                ? await ReadPruneLabelRefusalAsync(SensitiveArtifactKind.Lexicon, artifactId, cancellationToken).ConfigureAwait(false)
+                : null;
+
+            if (labelCause is not null)
+            {
+                blockers.Add(new DataRetentionBlocker(RetentionDataClass.LexiconEntries, id, labelCause, PruneLabelMessage(labelCause)));
+
+                continue;
+            }
+
             long derived = await CountTableAsync(
                 "lexicon_fact_attachment_provenance",
                 "EntryId = @id",
@@ -2376,8 +2447,8 @@ internal sealed partial class DataRetentionService
         RetentionSettings retention,
         int limit,
         List<DataRetentionPlanItem> items,
-        List<DataRetentionBlocker> blockers,
-        List<DataRetentionConflict> conflicts,
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers,
+        RetentionDiagnosticCollection<DataRetentionConflict> conflicts,
         List<string> candidates,
         CancellationToken cancellationToken)
     {
@@ -2554,8 +2625,8 @@ internal sealed partial class DataRetentionService
         RetentionSettings retention,
         int limit,
         List<DataRetentionPlanItem> items,
-        List<DataRetentionBlocker> blockers,
-        List<DataRetentionConflict> conflicts,
+        RetentionDiagnosticCollection<DataRetentionBlocker> blockers,
+        RetentionDiagnosticCollection<DataRetentionConflict> conflicts,
         List<string> candidates,
         CancellationToken cancellationToken)
     {
@@ -2592,7 +2663,8 @@ internal sealed partial class DataRetentionService
                            SELECT 1
                            FROM BudgetReservations reservation
                            WHERE lower(replace(reservation.RunId, '-', '')) = lower(replace(run.Id, '-', ''))
-                             AND reservation.Status IN (@reserved, @uncertainPaid))
+                             AND reservation.Status IN (@reserved, @uncertainPaid)),
+                       run.SessionId
                 FROM InferenceRuns run
                 WHERE julianday(COALESCE(run.CompletedAt, run.StartedAt)) <= julianday(@cutoff)
                   AND (
@@ -2631,6 +2703,10 @@ internal sealed partial class DataRetentionService
 
                 bool retainedSession = blockedReader.GetInt64(2) != 0;
 
+                Guid? holder = retainedSession && !blockedReader.IsDBNull(4)
+                    ? Guid.Parse(blockedReader.GetString(4))
+                    : null;
+
                 bool reserved = blockedReader.GetInt64(3) != 0;
 
                 bool active = status == InferenceRunStatus.Running || reserved;
@@ -2641,14 +2717,14 @@ internal sealed partial class DataRetentionService
                         ? ErrorCodes.Data.BudgetReservationOutstanding
                         : ErrorCodes.Data.SessionAccountingAuthority;
 
-                blockers.Add(
+                AddDiagnosticForSession(blockers,
                     new DataRetentionBlocker(
                         RetentionDataClass.InferenceRuns,
                         runId.ToString("D"),
                         code,
                         active
                             ? "Active accounting state cannot be pruned."
-                            : "Accounting for a retained session remains available to explain its cost."));
+                            : "Accounting for a retained session remains available to explain its cost."), holder);
 
                 if (active)
                 {
@@ -3398,6 +3474,39 @@ internal sealed partial class DataRetentionService
         CancellationToken cancellationToken,
         bool observeDurableCancellation = false)
     {
+        RetentionSchemaCensus? previous = _pruneSchemaCensus.Value;
+
+        using RetentionSchemaCensus census = new();
+
+        _pruneSchemaCensus.Value = census;
+
+        try
+        {
+            return await ApplyUnifiedPruneWithSchemaAsync(
+                operationId, ownerId, plan, startIndex, checkpointVersion, saveCheckpoints,
+                frozenCutoffs, forcedPreservedCandidates, retainedPendingJournal, workLease,
+                cancellationToken, observeDurableCancellation).ConfigureAwait(false);
+        }
+        finally
+        {
+            _pruneSchemaCensus.Value = previous;
+        }
+    }
+
+    private async Task<DataRetentionPruneExecutionOutcome> ApplyUnifiedPruneWithSchemaAsync(
+        Guid operationId,
+        string ownerId,
+        DataRetentionPlan plan,
+        int startIndex,
+        int checkpointVersion,
+        bool saveCheckpoints,
+        IReadOnlyDictionary<string, DateTimeOffset>? frozenCutoffs,
+        IReadOnlySet<string>? forcedPreservedCandidates,
+        RetentionMutationJournal? retainedPendingJournal,
+        IGrimoireWorkLease? workLease,
+        CancellationToken cancellationToken,
+        bool observeDurableCancellation = false)
+    {
         const int checkpointInterval = PruneCheckpointInterval;
 
         int currentCheckpointVersion = checkpointVersion;
@@ -3587,8 +3696,13 @@ internal sealed partial class DataRetentionService
 
                 if (!deleted.Reconciled)
                 {
+                    (string kind, Guid? identity) = PruneDiagnosticIdentity(candidate);
+
+                    logger.LogWarning("Retention operation {OperationId} at {Stage}: candidate kind {CandidateKind}, identity {CandidateId} remains after deletion; preserve its checkpoint for recovery.",
+                        operationId, "CandidateRetained", kind, identity);
+
                     throw new IOException(
-                        "Post-delete reconciliation found retained owned data for the current candidate.");
+                        $"Post-delete reconciliation found retained owned data for {kind} candidate {identity?.ToString("D") ?? "without a public GUID"}.");
                 }
 
                 if (observeDurableCancellation
@@ -3600,7 +3714,7 @@ internal sealed partial class DataRetentionService
                         new Error(LongRunningOperationRecoveryOutcomes.Cancelled, "Retention prune cancellation was observed."));
                 }
 
-                bool preserved = deleted.PinnedAfterPlanning || deleted.Rows == 0
+                bool preserved = deleted.PreservationCode is not null || deleted.PinnedAfterPlanning || deleted.Rows == 0
                     && deleted.Files == 0
                     && deleted.Derived == 0
                     && await CandidateStillExistsAsync(
@@ -3625,9 +3739,11 @@ internal sealed partial class DataRetentionService
                 {
                     appliedConflicts.Add(
                         new DataRetentionConflict(
-                            deleted.PinnedAfterPlanning ? ErrorCodes.Data.PinnedAfterPlanning : ErrorCodes.Data.PlanChanged,
+                            deleted.PreservationCode ?? (deleted.PinnedAfterPlanning ? ErrorCodes.Data.PinnedAfterPlanning : ErrorCodes.Data.PlanChanged),
                             candidate,
-                            deleted.PinnedAfterPlanning
+                            deleted.PreservationCode is { } labelCause
+                                ? PruneLabelMessage(labelCause)
+                                : deleted.PinnedAfterPlanning
                                 ? "The Lexicon entry was pinned after planning and was preserved."
                                 : "The retention candidate changed or became protected after planning; it was preserved."));
 
@@ -4295,8 +4411,7 @@ internal sealed partial class DataRetentionService
                         .Contains(pendingJournal.Target, StringComparer.Ordinal))
                 {
                     return new DataRetentionPruneRecoveryExecution(
-                        LongRunningOperationRecoveryResult.RequiresAttention(
-                            ErrorCodes.Data.ReconciliationFailed),
+                        MutationRecoveryRefused(operation, RetentionMutationRecoveryCause.JournalTargetInvalid, "prune-candidate"),
                         Execution: null);
                 }
 
@@ -4308,7 +4423,7 @@ internal sealed partial class DataRetentionService
 
                     LongRunningOperationRecoveryResult journalRecovery =
                         await RecoverPrunePendingJournalAsync(
-                            operation.Id,
+                            operation,
                             pendingJournal,
                             targetExists,
                             cancellationToken).ConfigureAwait(false);
@@ -4429,36 +4544,31 @@ internal sealed partial class DataRetentionService
             == LongRunningOperationState.Cancelling;
 
     private Task<LongRunningOperationRecoveryResult> RecoverPrunePendingJournalAsync(
-        Guid operationId,
+        LongRunningOperation operation,
         RetentionMutationJournal journal,
         bool targetExists,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        Dictionary<RetentionMutationJournalEntry, IdentityOwnedFileSystemQuarantine>
-            quarantines;
+        RetentionMutationRecoveryDiagnostic diagnostic = new();
+
+        Dictionary<RetentionMutationJournalEntry, IdentityOwnedFileSystemQuarantine> quarantines;
 
         try
         {
-            quarantines = DiscoverMutationQuarantines(
-                operationId,
-                journal,
-                targetExists);
+            quarantines = DiscoverMutationQuarantines(operation.Id, journal, targetExists, diagnostic);
         }
         catch (InvalidDataException)
         {
-            return Task.FromResult(
-                LongRunningOperationRecoveryResult.RequiresAttention(
-                    ErrorCodes.Data.ReconciliationFailed));
+            return Task.FromResult(MutationRecoveryRefused(operation, diagnostic.Cause, "prune-candidate"));
         }
 
         foreach (RetentionMutationJournalEntry entry in journal.Entries)
         {
             string root = RootForRole(entry.RootRole);
 
-            string originalPath = Path.GetFullPath(
-                Path.Combine(root, entry.RelativePath));
+            string originalPath = Path.GetFullPath(Path.Combine(root, entry.RelativePath));
 
             if (quarantines.TryGetValue(entry, out IdentityOwnedFileSystemQuarantine quarantine))
             {
@@ -4468,31 +4578,28 @@ internal sealed partial class DataRetentionService
 
                 if (!recovered)
                 {
-                    return Task.FromResult(
-                        LongRunningOperationRecoveryResult.RequiresAttention(
-                            ErrorCodes.Data.ReconciliationFailed));
+                    return Task.FromResult(MutationRecoveryRefused(operation, targetExists
+                        ? RetentionMutationRecoveryCause.QuarantineRestoreRefused
+                        : RetentionMutationRecoveryCause.QuarantineFinalizeRefused, "prune-candidate"));
                 }
             }
 
-            bool originalExists = IdentityOwnedFileSystemCleanup.TryCapturePath(
-                originalPath,
-                FileSystemObjectKind.RegularFile,
-                out IdentityOwnedFileSystemArtifact original);
+            bool originalExists = IdentityOwnedFileSystemCleanup.TryCapturePath(originalPath,
+                FileSystemObjectKind.RegularFile, out IdentityOwnedFileSystemArtifact original);
 
             if (targetExists && (!originalExists || original.Metadata != entry.Metadata)
                 || !targetExists && originalExists && original.Metadata == entry.Metadata)
             {
-                return Task.FromResult(
-                    LongRunningOperationRecoveryResult.RequiresAttention(
-                        ErrorCodes.Data.ReconciliationFailed));
+                return Task.FromResult(MutationRecoveryRefused(operation, targetExists
+                    ? RetentionMutationRecoveryCause.OriginalFileMissingOrChanged
+                    : RetentionMutationRecoveryCause.CommittedOriginalStillPresent, "prune-candidate"));
             }
         }
 
-        return Task.FromResult(
-            targetExists
-                ? LongRunningOperationRecoveryResult.Failed(
-                    ErrorCodes.Data.ReconciliationFailed)
-                : LongRunningOperationRecoveryResult.Completed());
+        return Task.FromResult(targetExists
+            ? MutationRecoveryOutcome(operation, RetentionMutationRecoveryCause.PrecommitFilesRecovered,
+                "prune-candidate", LongRunningOperationRecoveryResult.Failed(ErrorCodes.Data.ReconciliationFailed))
+            : LongRunningOperationRecoveryResult.Completed());
     }
 
     private static (
@@ -4672,6 +4779,30 @@ internal sealed partial class DataRetentionService
             pendingJournal);
     }
 
+    private static (string Kind, Guid? Identity) PruneDiagnosticIdentity(string candidate)
+    {
+        string[] prefixes =
+        [
+            BatchCandidatePrefix, FileCandidatePrefix, "session:", EntryCandidatePrefix,
+            AttachmentCandidatePrefix, EntryEmbeddingCandidatePrefix, WorkspaceCandidatePrefix,
+            SagaCandidatePrefix, LexiconCandidatePrefix, CampaignRollupCandidatePrefix,
+            CampaignContributionCandidatePrefix, AuditLogCandidatePrefix, GuardrailLogCandidatePrefix,
+            IdempotencyClaimCandidatePrefix, IdempotencyKeyCandidatePrefix, AccountingCandidatePrefix,
+            AccountingAdjustmentCandidatePrefix, BudgetAlertCandidatePrefix, OperationCandidatePrefix,
+            SanctumCandidatePrefix, DaemonCandidatePrefix,
+        ];
+
+        foreach (string prefix in prefixes)
+        {
+            if (candidate.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                return (prefix[..^1], Guid.TryParse(candidate[prefix.Length..], out Guid id) && id != Guid.Empty ? id : null);
+            }
+        }
+
+        return ("unknown", null);
+    }
+
     private static bool IsValidCheckpointCandidate(string candidate)
     {
         if (string.IsNullOrWhiteSpace(candidate) || candidate.Length > 2_048)
@@ -4783,11 +4914,15 @@ internal sealed partial class DataRetentionService
             DataRetentionPlan current = await BuildDeleteSessionPlanAsync(
                 new DataRetentionRequest(DataRetentionOperation.DeleteSession, sessionId),
                 sessionId,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                includeLabelDiagnostics: true).ConfigureAwait(false);
 
             if (current.Blockers.Length > 0 || current.Conflicts.Length > 0)
             {
-                return CandidateDeleteResult.Empty;
+                string? labelCause = current.Blockers.Select(static blocker => blocker.ReasonCode)
+                    .FirstOrDefault(static code => code is ErrorCodes.Covenant.ForbiddenAuthority or ErrorCodes.Covenant.Unavailable);
+
+                return labelCause is null ? CandidateDeleteResult.Empty : CandidateDeleteResult.Preserved(labelCause);
             }
 
             // The Session delete refuses a labelled Entry outright, which is right for the route that
@@ -4808,9 +4943,9 @@ internal sealed partial class DataRetentionService
                     mutationJournal,
                     cancellationToken: cancellationToken).ConfigureAwait(false);
             }
-            catch (RetentionCovenantLabelException)
+            catch (RetentionCovenantLabelException refusal)
             {
-                return CandidateDeleteResult.Empty;
+                return CandidateDeleteResult.Preserved(ClosedPruneLabelCause(refusal.Error));
             }
 
             return CandidateDeleteResult.From(result);
@@ -5908,15 +6043,13 @@ internal sealed partial class DataRetentionService
             // Skipping keeps the label pointing at content that still exists, which is the invariant the
             // raw delete broke (§10.20.2). Asked first, inside the transaction that deletes, so no label
             // can be committed between the answer and the delete.
-            if ((await EnsureArtifactUnlabeledAsync(
-                    SensitiveArtifactKind.AssistantEntry,
-                    entryId,
-                    connection,
-                    transaction,
-                    cancellationToken).ConfigureAwait(false)).IsFailure)
+            Result unlabeled = await EnsureArtifactUnlabeledAsync(
+                SensitiveArtifactKind.AssistantEntry, entryId, connection, transaction, cancellationToken).ConfigureAwait(false);
+
+            if (unlabeled.IsFailure)
             {
-                // Nothing has been written, and disposing the transaction on the way out rolls it back.
-                return CandidateDeleteResult.Empty;
+                // Nothing has been written; preserve the configured guard's closed cause.
+                return CandidateDeleteResult.Preserved(ClosedPruneLabelCause(unlabeled.Error));
             }
 
             string? boundarySessionId = await ScalarStringInTransactionAsync(
@@ -5976,7 +6109,8 @@ internal sealed partial class DataRetentionService
             {
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
-                return CandidateDeleteResult.Empty;
+                return CandidateDeleteResult.Preserved(ClosedPruneLabelCause(
+                    summaryUnlabeled.IsFailure ? summaryUnlabeled.Error : campaignUnlabeled.Error));
             }
 
             if (vectorTableExists)
@@ -6437,19 +6571,19 @@ internal sealed partial class DataRetentionService
     /// between the answer and the delete. A label table that cannot be read answers "labelled", and
     /// the sweep leaves the candidate where it is.</para>
     /// </remarks>
-    private async ValueTask<bool> CandidateIsLabeledAsync(
+    private async ValueTask<string?> ReadCandidateLabelRefusalAsync(
         SensitiveArtifactKind kind,
         string candidateId,
         DbConnection connection,
         DbTransaction transaction,
-        CancellationToken cancellationToken) =>
-        Guid.TryParse(candidateId, out Guid artifactId)
-        && (await EnsureArtifactUnlabeledAsync(
-                kind,
-                artifactId,
-                connection,
-                transaction,
-                cancellationToken).ConfigureAwait(false)).IsFailure;
+        CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(candidateId, out Guid artifactId)) return null;
+
+        Result unlabeled = await EnsureArtifactUnlabeledAsync(kind, artifactId, connection, transaction, cancellationToken).ConfigureAwait(false);
+
+        return unlabeled.IsFailure ? ClosedPruneLabelCause(unlabeled.Error) : null;
+    }
 
     private async Task<CandidateDeleteResult> DeleteSagaCandidateAsync(
         string memoryId,
@@ -6477,15 +6611,15 @@ internal sealed partial class DataRetentionService
 
         try
         {
-            if (await CandidateIsLabeledAsync(
+            if (await ReadCandidateLabelRefusalAsync(
                     SensitiveArtifactKind.Saga,
                     memoryId,
                     connection,
                     transaction,
-                    cancellationToken).ConfigureAwait(false))
+                    cancellationToken).ConfigureAwait(false) is string labelCause)
             {
                 // Nothing has been written, and disposing the transaction on the way out rolls it back.
-                return CandidateDeleteResult.Empty;
+                return CandidateDeleteResult.Preserved(labelCause);
             }
 
             // Before embedding, provenance or canonical mutations invalidate generation selectors. The
@@ -6642,15 +6776,15 @@ internal sealed partial class DataRetentionService
 
         try
         {
-            if (await CandidateIsLabeledAsync(
+            if (await ReadCandidateLabelRefusalAsync(
                     SensitiveArtifactKind.Lexicon,
                     entryId,
                     connection,
                     transaction,
-                    cancellationToken).ConfigureAwait(false))
+                    cancellationToken).ConfigureAwait(false) is string labelCause)
             {
                 // Nothing has been written, and disposing the transaction on the way out rolls it back.
-                return CandidateDeleteResult.Empty;
+                return CandidateDeleteResult.Preserved(labelCause);
             }
 
             rowId = await ScalarStringInTransactionAsync(
@@ -7192,10 +7326,14 @@ internal sealed partial class DataRetentionService
         long Bytes,
         long Derived,
         bool Reconciled,
-        bool PinnedAfterPlanning = false)
+        bool PinnedAfterPlanning = false,
+        string? PreservationCode = null)
     {
         public static CandidateDeleteResult Empty { get; } =
             new(0, 0, 0, 0, true);
+
+        public static CandidateDeleteResult Preserved(string cause) => new(0, 0, 0, 0, true,
+            PreservationCode: cause is ErrorCodes.Covenant.ForbiddenAuthority ? cause : ErrorCodes.Covenant.Unavailable);
 
         public static CandidateDeleteResult From(DataRetentionApplyResult result) =>
             new(

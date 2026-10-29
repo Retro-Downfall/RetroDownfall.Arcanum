@@ -32,7 +32,7 @@ public static class PingRequestBoundsValidator
         if (!string.IsNullOrEmpty(request.Prompt) && request.Prompt.Length > maxPromptChars)
         {
             return Result.Failure(new Error(
-                "Validation.PromptTooLong",
+                ErrorCodes.Validation.PromptTooLong,
                 $"Prompt exceeds the maximum length ({maxPromptChars} characters)."));
         }
 
@@ -41,7 +41,7 @@ public static class PingRequestBoundsValidator
         if (!string.IsNullOrEmpty(request.AdditionalSystemPrompt) && request.AdditionalSystemPrompt.Length > maxPromptChars)
         {
             return Result.Failure(new Error(
-                "Validation.AdditionalSystemPromptTooLong",
+                ErrorCodes.Validation.AdditionalSystemPromptTooLong,
                 $"AdditionalSystemPrompt exceeds the maximum length ({maxPromptChars} characters)."));
         }
 
@@ -54,7 +54,7 @@ public static class PingRequestBoundsValidator
             if (stateless.Count > maxMessages)
             {
                 return Result.Failure(new Error(
-                    "Validation.TooManyStatelessMessages",
+                    ErrorCodes.Validation.TooManyStatelessMessages,
                     $"StatelessMessages exceeds the maximum count ({maxMessages})."));
             }
 
@@ -72,7 +72,7 @@ public static class PingRequestBoundsValidator
                 if (message.ContentParts is { Count: > 0 } messageParts && messageParts.Count > maxContentParts)
                 {
                     return Result.Failure(new Error(
-                        "Validation.TooManyContentParts",
+                        ErrorCodes.Validation.TooManyContentParts,
                         $"StatelessMessages[{i}] exceeds the maximum content parts ({maxContentParts})."));
                 }
 
@@ -85,7 +85,7 @@ public static class PingRequestBoundsValidator
                 if (messageBytes > maxEntryBytes)
                 {
                     return Result.Failure(new Error(
-                        "Validation.StatelessMessageTooLong",
+                        ErrorCodes.Validation.StatelessMessageTooLong,
                         $"StatelessMessages[{i}] content exceeds the maximum size ({maxEntryBytes} bytes, UTF-8)."));
                 }
             }

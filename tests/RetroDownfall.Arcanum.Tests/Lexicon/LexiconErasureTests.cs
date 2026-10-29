@@ -8,9 +8,11 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Memory;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -535,6 +537,15 @@ public sealed class LexiconErasureTests(GrimoireFixture fixture)
 
     private static async Task InstallAsync(SqliteConnection connection, GrimoireSchemaVersionChainSet chains, int version)
     {
+        string database = Path.GetFullPath(new SqliteConnectionStringBuilder(connection.ConnectionString).DataSource);
+
+        string root = Path.GetDirectoryName(database)!;
+
+        using ArcanumMaintenanceLock held = ArcanumMaintenanceLock.AcquireDetailed(root).BorrowAcquiredLock();
+
+        using GrimoireSchemaQuiescentExecution execution = GrimoireSchemaQuiescentExecution.ForStartup(
+            connection, held, root, new GrimoireDbReadiness());
+
         GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create(chains);
 
         GrimoireSchemaInitializationContext context = GrimoireSchemaTestInstaller.CreateContext();
@@ -563,7 +574,8 @@ public sealed class LexiconErasureTests(GrimoireFixture fixture)
                 journal,
                 context,
                 maxBatches: 128,
-                Token);
+                Token,
+                execution);
 
             Assert.True(progress.StepComplete, $"The bounded fixture backfill did not complete {journal.BackfillName}.");
 

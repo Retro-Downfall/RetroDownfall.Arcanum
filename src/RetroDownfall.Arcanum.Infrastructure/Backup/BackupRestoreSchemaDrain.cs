@@ -16,12 +16,12 @@ internal sealed record BackupRestoreSchemaDrainReceipt(int Passes, int BatchesRu
 /// installation's erasure evidence against a generation that is recorded at every head.
 /// </summary>
 /// <remarks>
-/// <para>An older archive's migration stops at the first step that carries a sweep, and the host finishes
-/// that sweep after commit. That is enough for a restore with nothing to apply. It is not enough for one
-/// whose destination holds erasure evidence: the evidence tables, and the store shapes the evidence is
-/// matched against, exist only at head, so the staged copy is drained there before anything is joined to
-/// it. This is the one place outside the host that drains a sweep. The copy is private to the restore,
-/// which holds the maintenance lock throughout, so no live reader waits behind it.</para>
+/// <para>An older archive initially stops at its first sweep. Ordinary optional sweeps may finish
+/// after commit, but an explicitly readiness-blocking Core prefix and its predecessors must drain in
+/// the private staged generation even without destination erasure evidence. The caller supplies the
+/// exact staged quiescent execution for that work. When the destination holds erasure evidence, this
+/// complete drain additionally brings every tier to head before the evidence is joined. The staged
+/// copy is private and the restore holds the installation maintenance lock throughout.</para>
 ///
 /// <para>A drain is needed exactly when the transition journal has a row or a tier is recorded below this
 /// build's head, a tier recorded at no version included. A tier recorded at head needs none, whatever its
@@ -75,7 +75,8 @@ internal static class BackupRestoreSchemaDrain
         GrimoireSchemaInstallResult migrated,
         int embeddingDimensions,
         GrimoireSchemaInitializationContext context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        GrimoireSchemaQuiescentExecution? execution = null)
     {
         ArgumentNullException.ThrowIfNull(staged);
 
@@ -124,7 +125,8 @@ internal static class BackupRestoreSchemaDrain
                             row,
                             context,
                             MaxBatchesPerPass,
-                            cancellationToken)
+                            cancellationToken,
+                            execution)
                         .ConfigureAwait(false);
 
                     batches += advanced.BatchesRun;

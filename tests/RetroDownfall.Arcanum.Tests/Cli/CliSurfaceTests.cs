@@ -197,7 +197,7 @@ public sealed class CliSurfaceTests
     }
 
     /// <summary>
-    /// <c>docs/Arcanum.CommandMap.json</c> is the committed, machine-readable command contract.
+    /// <c>tests/RetroDownfall.Arcanum.Tests/TestData/Contracts/Arcanum.CommandMap.json</c> is the committed, machine-readable command contract.
     /// Regenerate it with <c>ARCANUM_UPDATE_COMMAND_MAP=1 dotnet test --filter
     /// Committed_command_map_matches_the_live_tree</c> and review the diff: an unintended entry in
     /// that diff is an unintended change to the public CLI surface.
@@ -613,7 +613,8 @@ public sealed class CliSurfaceTests
 
     private static string CommandReferencePath() =>
         Path.Combine(
-            Path.GetDirectoryName(CommandMapPath())!,
+            global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot(),
+            "docs",
             "Arcanum.Command.Reference.md");
 
     internal static CliSurfaceMap BuildMap()
@@ -648,7 +649,10 @@ public sealed class CliSurfaceTests
     {
         return Path.Combine(
             global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot(),
-            "docs",
+            "tests",
+            "RetroDownfall.Arcanum.Tests",
+            "TestData",
+            "Contracts",
             "Arcanum.CommandMap.json");
     }
 

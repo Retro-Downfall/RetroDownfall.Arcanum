@@ -5507,10 +5507,12 @@ internal static partial class HostedGrimoireProducerInventory
                 HashSet<ISymbol> retained = new(
                     candidates.Where(candidate =>
                         candidate is not IParameterSymbol parameter
-                        || !MemberCannotBeNestedInAMethod(member)
+                        || (!MemberCannotBeNestedInAMethod(member)
+                            && !IsForeignMethodScopedParameter(member, parameter)
+                            && !IsExactNestedOwnByValueParameter(member, parameter))
                         || parameter.ContainingSymbol is not IMethodSymbol
                         {
-                            MethodKind: MethodKind.Ordinary,
+                            MethodKind: MethodKind.Ordinary or MethodKind.LocalFunction or MethodKind.AnonymousFunction,
                         }),
                     SymbolEqualityComparer.Default);
 
@@ -5543,6 +5545,20 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 required = new HashSet<ISymbol>(
                     required.Concat(recoveryBindings.Keys),
+                    SymbolEqualityComparer.Default);
+            }
+
+            // An unused nested-own parameter may still carry admission authority.
+            // Membership varies per invocation, so retain it outside the syntax cache.
+            if (member.AdmissionBindings is { Count: > 0 } admissionBindings
+                && admissionBindings.Any(pair => pair.Value.Count > 0
+                    && IsExactNestedOwnByValueParameter(member, pair.Key)
+                    && !required.Contains(pair.Key)))
+            {
+                required = new HashSet<ISymbol>(
+                    required.Concat(admissionBindings
+                        .Where(pair => pair.Value.Count > 0 && IsExactNestedOwnByValueParameter(member, pair.Key))
+                        .Select(static pair => pair.Key)),
                     SymbolEqualityComparer.Default);
             }
 
@@ -8319,6 +8335,11 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     return target;
                 }
+            }
+
+            if (ResolveExactInheritedRegisteredSlot(method, member, node) is { } inherited)
+            {
+                return inherited;
             }
 
             // An authored default is only effective when the exact concrete receiver or each
@@ -21887,15 +21908,15 @@ internal static partial class HostedGrimoireProducerInventory
                             continue;
                         }
 
-                        if (Vocabulary.TryGetValue(callee, out HostedProducerSiteKind kind))
+                        if (reads && Vocabulary.TryGetValue(callee, out HostedProducerSiteKind kind))
                         {
                             emittedEvidence = MergeEvidence(emittedEvidence, AddSite(kind, callee, member, rootType, operationId, node, effectGroup, workAdmitted));
                         }
-                        else if (externalPropertyKind is { } externalGetterKind)
+                        else if (reads && externalPropertyKind is { } externalGetterKind)
                         {
                             emittedEvidence = MergeEvidence(emittedEvidence, AddSite(externalGetterKind, callee, member, rootType, operationId, node, effectGroup, workAdmitted));
                         }
-                        else if (RequiresExternalBoundaryClassification(
+                        else if (reads && RequiresExternalBoundaryClassification(
                             property,
                             member.Model.Compilation,
                             mutation: false,
@@ -25310,7 +25331,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         private static bool IsIteratorMember(AuthoredMember member) => member.Syntax.DescendantNodesAndSelf(node => node == member.Syntax || node is not AnonymousFunctionExpressionSyntax and not LocalFunctionStatementSyntax).Any(static node => node is YieldStatementSyntax);
 
-        private static bool IsLazyDirectoryEnumeration(string callee) => callee is "System.IO.Directory.EnumerateDirectories" or "System.IO.Directory.EnumerateFileSystemEntries" or "System.IO.Directory.EnumerateFiles";
+        private static bool IsLazyDirectoryEnumeration(string callee) => callee is "System.IO.Directory.EnumerateDirectories" or "System.IO.Directory.EnumerateFileSystemEntries" or "System.IO.Directory.EnumerateFiles" or "System.IO.DirectoryInfo.EnumerateFiles";
 
         private static bool IsEagerEnumerationTerminal(IMethodSymbol method)
         {
@@ -26445,6 +26466,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedPrimitiveQueueProperty(property, mutation, node, context)
                 || IsReviewedExactInt128Limit(property, mutation)
                 || IsReviewedExactMeAiDimensionsProperty(property, mutation)
+                || IsExactInfiniteSdkNetworkTimeoutInitializer(property, mutation, node, model)
                 || IsReviewedNonProducerExternalMember(property, mutation)
                 || !mutation && IsReviewedInMemoryXmlReaderMember(property, node, model, context)
                 || !mutation && IsReviewedFrameworkEventDataRead(property)
@@ -28067,6 +28089,11 @@ internal static partial class HostedGrimoireProducerInventory
             IMethodSymbol definition = method.ReducedFrom ?? method;
 
             string type = TypeKey(definition.ContainingType);
+
+            if (IsExactLongCountTerminal(definition) || IsExactInt32MaxTerminal(definition))
+            {
+                return true;
+            }
 
             if (!(type == "System.Linq.Enumerable"
                     && definition.Name is "Any" or "Contains" or "Count" or "First" or "FirstOrDefault" or "Last" or "SequenceEqual" or "Single" or "Sum" or "ToHashSet"
@@ -42343,6 +42370,13 @@ internal static partial class HostedGrimoireProducerInventory
                 return true;
             }
 
+            if (IsExactLocalSqliteCommandCleanup(member, resource, exactType, cleanup))
+            {
+                external = new("Microsoft.Data.Sqlite.SqliteCommand.Dispose", HostedProducerSiteKind.DatabaseAccess);
+
+                return true;
+            }
+
             if (IsReviewedExactMechanicalCleanup(exactType, cleanup))
             {
                 return true;
@@ -46470,7 +46504,16 @@ internal static partial class HostedGrimoireProducerInventory
                     continue;
                 }
 
-                values[target.Symbol.Parameters[parameter.Ordinal]] = new(
+                IParameterSymbol targetParameter = target.Symbol.Parameters[parameter.Ordinal];
+
+                // Match ordinary and captured binding: a framework token carries no cleanup or authority.
+                // Keep evaluating the argument and the callback; only its irrelevant supplier provenance is omitted.
+                if (targetParameter.RefKind == RefKind.None && IsExactCancellationToken(targetParameter.Type))
+                {
+                    continue;
+                }
+
+                values[targetParameter] = new(
                     caller,
                     argument.Expression);
             }
@@ -54150,6 +54193,12 @@ internal static partial class HostedGrimoireProducerInventory
                 return HostedProducerSiteKind.FileSystemRead;
             }
 
+            if (method is { IsStatic: false, Name: "EnumerateFiles" }
+                && IsExactFrameworkType(method.ContainingType, "System.IO.DirectoryInfo", typeof(DirectoryInfo).Assembly.GetName()))
+            {
+                return HostedProducerSiteKind.FileSystemRead;
+            }
+
             if (Vocabulary.TryGetValue(callee, out HostedProducerSiteKind kind))
             {
                 return kind;
@@ -54399,7 +54448,8 @@ internal static partial class HostedGrimoireProducerInventory
         {
             string type = TypeKey(method.ContainingType);
 
-            return type == "Microsoft.Data.Sqlite.SqliteCommand"
+            return IsExactSqliteBusyTimeout(method)
+                || type == "Microsoft.Data.Sqlite.SqliteCommand"
                     && method.Name.StartsWith("Execute", StringComparison.Ordinal)
                 || type == "Microsoft.Data.Sqlite.SqliteConnection"
                     && method.Name is "BeginTransaction" or "ClearAllPools" or "ClearPool" or "Open" or "OpenAsync"
@@ -54532,7 +54582,9 @@ internal static partial class HostedGrimoireProducerInventory
         {
             string type = TypeKey(property.ContainingType);
 
-            return type == "Microsoft.Data.Sqlite.SqliteCommand"
+            return IsExactSqliteTimeoutSetting(property, mutation)
+                || IsExactSqliteConnectionStringRead(property, mutation)
+                || type == "Microsoft.Data.Sqlite.SqliteCommand"
                     && property.Name is "CommandText" or "Connection" or "Parameters" or "Transaction"
                 || type == "Microsoft.Data.Sqlite.SqliteConnection"
                     && property.Name is "DataSource" or "Handle" or "State"

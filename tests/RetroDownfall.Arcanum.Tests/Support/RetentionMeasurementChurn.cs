@@ -59,10 +59,20 @@ internal sealed class RetentionMeasurementChurn : IAsyncDisposable
 
             return churn;
         }
-        catch
+        catch (Exception startupFailure)
         {
-            try { await churn.DisposeAsync(); }
-            catch { }
+            try
+            {
+                await churn.DisposeAsync();
+            }
+            catch (Exception cleanupFailure) when (ReferenceEquals(cleanupFailure, startupFailure))
+            {
+                // The ready signal and writer expose the same fault; preserve its original throw below.
+            }
+            catch (Exception cleanupFailure)
+            {
+                throw new AggregateException("Retention churn startup and cleanup both failed.", startupFailure, cleanupFailure);
+            }
 
             throw;
         }

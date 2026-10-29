@@ -128,7 +128,8 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
             return;
         }
 
-        Assert.Equal(Pinned(read), plan);
+        Assert.True(string.Equals(Pinned(read), plan, StringComparison.Ordinal),
+            $"The complete {read} plan changed.\nExpected:\n{Pinned(read)}Actual:\n{plan}");
     }
 
     private static readonly string[] DeletedKeysetPlans =
@@ -153,6 +154,11 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
     /// index supplies only the first term, and the load then orders its window by <c>"Sequence"</c>
     /// after the planner has chosen the <c>CreatedAt</c> index to serve the range filter. Those sorts
     /// are part of what is pinned, so they cannot grow or move unremarked either.</para>
+    ///
+    /// <para>The native memory-search owner index covers the timestamp boundary/count probes and
+    /// the same-timestamp Saga window. Those probes still seek by SessionId and CreatedAt, with
+    /// Sequence bounds where applicable; the complete plan retains every materialization and sort.
+    /// The payload loads keep their existing CreatedAt or Sequence index where the planner chooses it.</para>
     /// </remarks>
     private static string Pinned(string read) =>
         read switch
@@ -176,20 +182,20 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
                 "SEARCH <object> USING INDEX IX_Entries_SessionId_Sequence (SessionId=?)\n",
 
             "CountAfter" =>
-                "SEARCH <object> USING COVERING INDEX IX_Entries_SessionId_CreatedAt (SessionId=? AND CreatedAt>?)\n",
+                "SEARCH <object> USING COVERING INDEX idx_memory_search_Entries_owner (SessionId=? AND CreatedAt>?)\n",
 
             "LoadAfterWatermarkThroughTimestampGroup" =>
                 """
                 SEARCH <object> USING INDEX IX_Entries_SessionId_CreatedAt (SessionId=? AND CreatedAt>?)
                 SCALAR SUBQUERY 2
                 MATERIALIZE <object>
-                SEARCH <object> USING INDEX IX_Entries_SessionId_CreatedAt (SessionId=? AND CreatedAt>?)
+                SEARCH <object> USING COVERING INDEX idx_memory_search_Entries_owner (SessionId=? AND CreatedAt>?)
                 USE TEMP B-TREE FOR LAST TERM OF ORDER BY
                 SCAN <object>
                 SCALAR SUBQUERY 3
                 SCAN <object>
                 SCALAR SUBQUERY 5
-                SEARCH <object> USING COVERING INDEX IX_Entries_SessionId_CreatedAt (SessionId=? AND CreatedAt>?)
+                SEARCH <object> USING COVERING INDEX idx_memory_search_Entries_owner (SessionId=? AND CreatedAt>?)
                 SCALAR SUBQUERY 2
                 SCAN <object>
                 SCALAR SUBQUERY 3
@@ -200,10 +206,10 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
 
             "CountAfterWatermarkThroughTimestampGroup" =>
                 """
-                SEARCH <object> USING COVERING INDEX IX_Entries_SessionId_CreatedAt (SessionId=? AND CreatedAt>?)
+                SEARCH <object> USING COVERING INDEX idx_memory_search_Entries_owner (SessionId=? AND CreatedAt>?)
                 SCALAR SUBQUERY 2
                 MATERIALIZE <object>
-                SEARCH <object> USING INDEX IX_Entries_SessionId_CreatedAt (SessionId=? AND CreatedAt>?)
+                SEARCH <object> USING COVERING INDEX idx_memory_search_Entries_owner (SessionId=? AND CreatedAt>?)
                 USE TEMP B-TREE FOR LAST TERM OF ORDER BY
                 SCAN <object>
                 SCALAR SUBQUERY 3
@@ -220,7 +226,7 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
                 SCAN <object>
                 SCALAR SUBQUERY 5
                 MATERIALIZE <object>
-                SEARCH <object> USING INDEX IX_Entries_SessionId_Sequence (SessionId=? AND Sequence>? AND Sequence<?)
+                SEARCH <object> USING COVERING INDEX idx_memory_search_Entries_owner (SessionId=? AND CreatedAt=? AND Sequence>? AND Sequence<?)
                 SCALAR SUBQUERY 2
                 SCAN <object>
                 SCAN <object>
@@ -242,7 +248,7 @@ public sealed class EntryTemporalQueryPlanTests : IAsyncLifetime
                 SCAN <object>
                 SCALAR SUBQUERY 5
                 CO-ROUTINE <object>
-                SEARCH <object> USING INDEX IX_Entries_SessionId_Sequence (SessionId=? AND Sequence>? AND Sequence<?)
+                SEARCH <object> USING COVERING INDEX idx_memory_search_Entries_owner (SessionId=? AND CreatedAt=? AND Sequence>? AND Sequence<?)
                 SCALAR SUBQUERY 2
                 SCAN <object>
                 SCAN <object>

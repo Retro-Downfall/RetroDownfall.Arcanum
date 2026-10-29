@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Logging;
@@ -57,7 +56,7 @@ public sealed class SpellWeaveCacheTests
 
         List<SpellMetadata> spells = [new SpellMetadata("Alpha", "alpha desc", "/a/SPELL.md")];
 
-        ConcurrentDictionary<string, Embedding<float>>? result = await cache.GetOrCreateAsync(spells, CancellationToken.None);
+        IReadOnlyDictionary<string, Embedding<float>>? result = await cache.GetOrCreateAsync(spells, CancellationToken.None);
 
         Assert.NotNull(result);
 
@@ -75,9 +74,9 @@ public sealed class SpellWeaveCacheTests
 
         List<SpellMetadata> spells = [new SpellMetadata("Alpha", "alpha desc", "/a/SPELL.md")];
 
-        ConcurrentDictionary<string, Embedding<float>>? first = await cache.GetOrCreateAsync(spells, CancellationToken.None);
+        IReadOnlyDictionary<string, Embedding<float>>? first = await cache.GetOrCreateAsync(spells, CancellationToken.None);
 
-        ConcurrentDictionary<string, Embedding<float>>? second = await cache.GetOrCreateAsync(spells, CancellationToken.None);
+        IReadOnlyDictionary<string, Embedding<float>>? second = await cache.GetOrCreateAsync(spells, CancellationToken.None);
 
         Assert.Equal(1, weave.EmbedBatchCallCount);
 
@@ -97,7 +96,7 @@ public sealed class SpellWeaveCacheTests
 
         List<SpellMetadata> withNewSpell = [.. original, new SpellMetadata("Beta", "beta desc", "/b/SPELL.md")];
 
-        ConcurrentDictionary<string, Embedding<float>>? result = await cache.GetOrCreateAsync(withNewSpell, CancellationToken.None);
+        IReadOnlyDictionary<string, Embedding<float>>? result = await cache.GetOrCreateAsync(withNewSpell, CancellationToken.None);
 
         Assert.Equal(2, weave.EmbedBatchCallCount);
 
@@ -123,7 +122,7 @@ public sealed class SpellWeaveCacheTests
 
         List<SpellMetadata> withoutBeta = [original[0]];
 
-        ConcurrentDictionary<string, Embedding<float>>? result = await cache.GetOrCreateAsync(withoutBeta, CancellationToken.None);
+        IReadOnlyDictionary<string, Embedding<float>>? result = await cache.GetOrCreateAsync(withoutBeta, CancellationToken.None);
 
         Assert.Equal(2, weave.EmbedBatchCallCount);
 
@@ -212,7 +211,7 @@ public sealed class SpellWeaveCacheTests
             new SpellMetadata("Beta", "beta desc", "/b/SPELL.md"),
         ];
 
-        ConcurrentDictionary<string, Embedding<float>>? result = await cache.GetOrCreateAsync(spells, CancellationToken.None);
+        IReadOnlyDictionary<string, Embedding<float>>? result = await cache.GetOrCreateAsync(spells, CancellationToken.None);
 
         Assert.Null(result);
 
@@ -233,7 +232,7 @@ public sealed class SpellWeaveCacheTests
 
         SpellWeaveCache cache = new(weave, new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()), NullLogger<SpellWeaveCache>.Instance);
 
-        ConcurrentDictionary<string, Embedding<float>>? result = await cache.GetOrCreateAsync(
+        IReadOnlyDictionary<string, Embedding<float>>? result = await cache.GetOrCreateAsync(
             [new SpellMetadata("Alpha", "desc", "/a/SPELL.md")],
             CancellationToken.None);
 
@@ -249,7 +248,7 @@ public sealed class SpellWeaveCacheTests
 
         SpellWeaveCache cache = new(weave, new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()), NullLogger<SpellWeaveCache>.Instance);
 
-        ConcurrentDictionary<string, Embedding<float>>? result = await cache.GetOrCreateAsync(
+        IReadOnlyDictionary<string, Embedding<float>>? result = await cache.GetOrCreateAsync(
             [new SpellMetadata("Alpha", "desc", "/a/SPELL.md")],
             CancellationToken.None);
 
@@ -265,18 +264,239 @@ public sealed class SpellWeaveCacheTests
 
         List<SpellMetadata> spells = [new SpellMetadata("Alpha", "desc", "/a/SPELL.md")];
 
-        Task<ConcurrentDictionary<string, Embedding<float>>?>[] tasks =
+        Task<IReadOnlyDictionary<string, Embedding<float>>?>[] tasks =
         [
             cache.GetOrCreateAsync(spells, CancellationToken.None),
             cache.GetOrCreateAsync(spells, CancellationToken.None),
             cache.GetOrCreateAsync(spells, CancellationToken.None),
         ];
 
-        ConcurrentDictionary<string, Embedding<float>>?[] results = await Task.WhenAll(tasks);
+        IReadOnlyDictionary<string, Embedding<float>>?[] results = await Task.WhenAll(tasks);
 
         Assert.Equal(1, weave.EmbedBatchCallCount);
 
         Assert.All(results, static r => Assert.NotNull(r));
+    }
+
+    [Fact]
+    public async Task Alternating_catalogs_reuse_each_catalog_without_reembedding_or_crossing_vectors()
+    {
+        FakeWeaveService weave = new();
+
+        using SpellWeaveCache cache = new(weave, new TestOptionsMonitor<ArcanumSettings>(new()), NullLogger<SpellWeaveCache>.Instance);
+
+        SpellMetadata[] first = [new("Shared", "global description", "/global/SPELL.md"), new("LocalA", "local A", "/a/SPELL.md")];
+
+        SpellMetadata[] second = [new("Shared", "global description", "/global/SPELL.md"), new("LocalB", "local B", "/b/SPELL.md")];
+
+        for (int turn = 0; turn < 6; turn++)
+        {
+            var result = await cache.GetOrCreateAsync(turn % 2 == 0 ? first : second, CancellationToken.None);
+
+            Assert.NotNull(result);
+
+            Assert.Equal(2, result.Count);
+
+            Assert.True(result.ContainsKey(turn % 2 == 0 ? "LocalA" : "LocalB"));
+
+            Assert.False(result.ContainsKey(turn % 2 == 0 ? "LocalB" : "LocalA"));
+        }
+
+        Assert.Equal(2, weave.EmbedBatchCallCount);
+    }
+
+    [Fact]
+    public async Task Catalog_cache_has_a_fixed_eight_snapshot_bound_and_retains_recently_used_catalog()
+    {
+        FakeWeaveService weave = new();
+
+        using SpellWeaveCache cache = new(weave, new TestOptionsMonitor<ArcanumSettings>(new()), NullLogger<SpellWeaveCache>.Instance);
+
+        SpellMetadata[] Catalog(int index) => [new($"Spell{index}", $"description {index}", $"/{index}/SPELL.md")];
+
+        for (int index = 0; index < 8; index++) Assert.NotNull(await cache.GetOrCreateAsync(Catalog(index), CancellationToken.None));
+
+        Assert.NotNull(await cache.GetOrCreateAsync(Catalog(0), CancellationToken.None));
+
+        Assert.Equal(8, weave.EmbedBatchCallCount);
+
+        Assert.NotNull(await cache.GetOrCreateAsync(Catalog(8), CancellationToken.None));
+
+        Assert.NotNull(await cache.GetOrCreateAsync(Catalog(0), CancellationToken.None));
+
+        Assert.Equal(9, weave.EmbedBatchCallCount);
+
+        Assert.NotNull(await cache.GetOrCreateAsync(Catalog(1), CancellationToken.None));
+
+        Assert.Equal(10, weave.EmbedBatchCallCount);
+    }
+
+    [Fact]
+    public async Task Published_catalog_map_cannot_be_mutated_by_a_caller()
+    {
+        FakeWeaveService weave = new();
+
+        using SpellWeaveCache cache = new(weave, new TestOptionsMonitor<ArcanumSettings>(new()), NullLogger<SpellWeaveCache>.Instance);
+
+        var result = await cache.GetOrCreateAsync([new("Alpha", "description", "/a/SPELL.md")], CancellationToken.None);
+
+        Assert.NotNull(result);
+
+        Assert.False(result is IDictionary<string, Embedding<float>> { IsReadOnly: false });
+    }
+
+    [Fact]
+    public async Task Waiting_catalog_refresh_uses_the_captured_metadata_not_a_mutated_caller_list()
+    {
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        FakeWeaveService weave = new()
+        {
+            BeforeBatchAsync = async ct => { entered.TrySetResult(); await release.Task.WaitAsync(ct); },
+        };
+
+        using SpellWeaveCache cache = new(weave, new TestOptionsMonitor<ArcanumSettings>(new()), NullLogger<SpellWeaveCache>.Instance);
+
+        var first = cache.GetOrCreateAsync([new("First", "first", "/first/SPELL.md")], CancellationToken.None);
+
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        SpellMetadata[] metadata = [new("Original", "original", "/original/SPELL.md")];
+
+        var waiting = cache.GetOrCreateAsync(metadata, CancellationToken.None);
+
+        metadata[0] = new("Replacement", "replacement", "/replacement/SPELL.md");
+
+        release.SetResult();
+
+        Assert.NotNull(await first);
+
+        var result = await waiting;
+
+        Assert.NotNull(result);
+
+        Assert.True(result.ContainsKey("Original"));
+
+        Assert.False(result.ContainsKey("Replacement"));
+    }
+
+    [Fact]
+    public async Task Configuration_change_during_generation_does_not_publish_under_the_old_binding()
+    {
+        MutableTestOptionsMonitor<ArcanumSettings> monitor = new(new()
+        {
+            Integrations = new() { Embeddings = new() { Provider = "provider", Model = "before", Dimensions = 768 } },
+        });
+
+        ArcanumSettings original = monitor.CurrentValue;
+
+        FakeWeaveService weave = new()
+        {
+            BeforeBatchAsync = _ =>
+            {
+                monitor.CurrentValue = original with
+                {
+                    Integrations = original.Integrations with { Embeddings = original.Integrations.Embeddings with { Model = "after" } },
+                };
+
+                return Task.CompletedTask;
+            },
+        };
+
+        using SpellWeaveCache cache = new(weave, monitor, NullLogger<SpellWeaveCache>.Instance);
+
+        SpellMetadata[] catalog = [new("Alpha", "description", "/a/SPELL.md")];
+
+        Assert.Null(await cache.GetOrCreateAsync(catalog, CancellationToken.None));
+
+        monitor.CurrentValue = original;
+
+        weave.BeforeBatchAsync = null;
+
+        Assert.NotNull(await cache.GetOrCreateAsync(catalog, CancellationToken.None));
+
+        Assert.Equal(2, weave.EmbedBatchCallCount);
+    }
+
+    [Fact]
+    public async Task Concurrent_alternating_catalogs_embed_each_catalog_once()
+    {
+        FakeWeaveService weave = new() { Delay = TimeSpan.FromMilliseconds(25) };
+
+        using SpellWeaveCache cache = new(weave, new TestOptionsMonitor<ArcanumSettings>(new()), NullLogger<SpellWeaveCache>.Instance);
+
+        var requests = Enumerable.Range(0, 16).Select(index => cache.GetOrCreateAsync(
+            [new($"Spell{index % 2}", $"description {index % 2}", "/spell/SPELL.md")], CancellationToken.None)).ToArray();
+
+        var results = await Task.WhenAll(requests);
+
+        for (int index = 0; index < results.Length; index++) Assert.True(results[index]!.ContainsKey($"Spell{index % 2}"));
+
+        Assert.Equal(2, weave.EmbedBatchCallCount);
+    }
+
+    [Theory]
+    [InlineData("failure")]
+    [InlineData("exception")]
+    [InlineData("cancellation")]
+    public async Task Failed_refresh_preserves_existing_catalogs_and_does_not_publish_the_failed_catalog(string mode)
+    {
+        FakeWeaveService weave = new();
+
+        using SpellWeaveCache cache = new(weave, new TestOptionsMonitor<ArcanumSettings>(new()), NullLogger<SpellWeaveCache>.Instance);
+
+        SpellMetadata[] first = [new("First", "first", "/first/SPELL.md")];
+
+        SpellMetadata[] second = [new("Second", "second", "/second/SPELL.md")];
+
+        SpellMetadata[] failed = [new("Failed", "failed", "/failed/SPELL.md")];
+
+        var firstSnapshot = await cache.GetOrCreateAsync(first, CancellationToken.None);
+
+        var secondSnapshot = await cache.GetOrCreateAsync(second, CancellationToken.None);
+
+        using CancellationTokenSource caller = new();
+
+        weave.FailBatch = mode == "failure";
+
+        weave.BeforeBatchAsync = ct =>
+        {
+            if (mode == "exception") throw new InvalidOperationException("controlled failure");
+
+            if (mode == "cancellation")
+            {
+                caller.Cancel();
+
+                ct.ThrowIfCancellationRequested();
+            }
+
+            return Task.CompletedTask;
+        };
+
+        if (mode == "cancellation")
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cache.GetOrCreateAsync(failed, caller.Token));
+        }
+        else
+        {
+            Assert.Null(await cache.GetOrCreateAsync(failed, caller.Token));
+        }
+
+        weave.FailBatch = false;
+
+        weave.BeforeBatchAsync = null;
+
+        Assert.Same(firstSnapshot, await cache.GetOrCreateAsync(first, CancellationToken.None));
+
+        Assert.Same(secondSnapshot, await cache.GetOrCreateAsync(second, CancellationToken.None));
+
+        Assert.Equal(3, weave.EmbedBatchCallCount);
+
+        Assert.NotNull(await cache.GetOrCreateAsync(failed, CancellationToken.None));
+
+        Assert.Equal(4, weave.EmbedBatchCallCount);
     }
 
     private sealed class FakeWeaveService : IWeaveService
@@ -288,6 +508,8 @@ public sealed class SpellWeaveCacheTests
 
         public TimeSpan Delay { get; set; }
 
+        public Func<CancellationToken, Task>? BeforeBatchAsync { get; set; }
+
         public int EmbedBatchCallCount { get; private set; }
 
         public bool IsAvailable => Available;
@@ -295,6 +517,9 @@ public sealed class SpellWeaveCacheTests
         public async Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
         {
             EmbedBatchCallCount++;
+
+            if (BeforeBatchAsync is not null) await BeforeBatchAsync(cancellationToken);
+
             if (BatchException is not null) throw BatchException;
 
             if (Delay > TimeSpan.Zero)

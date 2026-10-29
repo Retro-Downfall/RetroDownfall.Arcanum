@@ -1,0 +1,1 @@
+DROP TRIGGER IF EXISTS memory_search_session_attachment_chunks_insert;

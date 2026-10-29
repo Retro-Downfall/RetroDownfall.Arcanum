@@ -18,12 +18,13 @@ public sealed class SemanticSpellRouterTests
 {
     private static readonly SpellMetadata DiagnosticSpell = new("private-spell-canary", "private-description-canary", "/private/spell-canary/SPELL.md");
 
+    // Published cache maps are immutable. Cache refresh failure/retry is covered at the real
+    // provider boundary by SpellWeaveCacheTests.Failed_refresh_preserves_existing_catalogs_and_does_not_publish_the_failed_catalog.
     [Theory]
     [InlineData("catalog", "catalog_unavailable")]
     [InlineData("provider", "provider_unavailable")]
     [InlineData("prompt", "prompt_embedding_failed")]
     [InlineData("dimension", "dimension_mismatch")]
-    [InlineData("missing", "catalog_vectors_missing")]
     [InlineData("unexpected", "unexpected_error")]
     public async Task Diagnostics_RealScopedRoutersWarnOncePerClosedReasonAndMonitorEpoch(string mode, string reason)
     {
@@ -367,8 +368,6 @@ public sealed class SemanticSpellRouterTests
             if (mode == "prompt") Weave.FailEmbed = true;
 
             if (mode == "dimension") Weave.QueryVector = [1f, 0f, 0f];
-
-            if (mode == "missing") vectors.Clear();
 
             if (mode == "unexpected") Weave.QueryException = new InvalidOperationException("private-exception-canary");
         }

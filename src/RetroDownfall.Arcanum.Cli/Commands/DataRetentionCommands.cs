@@ -111,6 +111,46 @@ internal sealed class DataRetentionCommands(
             });
     }
 
+    public async Task<int> PruneDetails(
+        string? planId,
+        string? snapshotId,
+        string? observedAt,
+        string? continuation,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (planId is null || planId.Length != 64 || !planId.All(static character => char.IsAsciiHexDigit(character))
+            || snapshotId is null || snapshotId.Length != 64 || !snapshotId.All(static character => char.IsAsciiHexDigit(character))
+            || !DateTimeOffset.TryParse(observedAt, CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind, out DateTimeOffset observation)
+            || observation == default || limit is < 1 or > 200)
+        {
+            dispatcher.WriteDiagnostic("Supply the preview's 64-character --plan-id and --snapshot-id, and --observed-at GeneratedAt, with --limit from 1 through 200.");
+
+            return (int)CliExitCode.ConfigurationError;
+        }
+
+        Result<DataRetentionDiagnosticPage> result = await apiClient.ReadDataPruneDiagnosticsAsync(
+            new(new(DataRetentionOperation.Prune), planId, snapshotId, observation, continuation, limit), cancellationToken).ConfigureAwait(false);
+
+        return WriteResult(result, ArcanumJsonContext.Default.DataRetentionDiagnosticPage, page =>
+        {
+            dispatcher.WritePayload($"Prune diagnostics {page.PlanId}; complete total: {FormatCount(page.TotalCount)}.");
+
+            foreach (DataRetentionDiagnosticDetail detail in page.Details)
+            {
+                string holder = detail.HoldingSessionId is Guid sessionId ? $"; holding Session {sessionId:D}" : string.Empty;
+
+                dispatcher.WritePayload($"  {detail.Code} {detail.ResourceId}{holder}: {detail.Message}");
+            }
+
+            if (page.NextContinuation is not null)
+            {
+                dispatcher.WritePayload($"Continuation: {page.NextContinuation}");
+            }
+        });
+    }
+
     public async Task<int> Prune(
         bool dryRun,
         bool apply,
@@ -449,8 +489,8 @@ internal sealed class DataRetentionCommands(
             + $"{FormatCount(plan.DerivedRecords)} derived records");
 
         dispatcher.WritePayload(
-            $"Blockers: {FormatCount(plan.Blockers.Length)}; "
-            + $"conflicts: {FormatCount(plan.Conflicts.Length)}; "
+            $"Blockers: {FormatCount(plan.Diagnostics?.BlockerCount ?? plan.Blockers.LongLength)}; "
+            + $"conflicts: {FormatCount(plan.Diagnostics?.ConflictCount ?? plan.Conflicts.LongLength)}; "
             + $"confirmation required: {(plan.RequiresConfirmation ? "yes" : "no")}");
 
         if (plan.SagaCuration is { } saga)
@@ -477,18 +517,34 @@ internal sealed class DataRetentionCommands(
                 + $"{FormatCount(item.DerivedRecords)} derived records");
         }
 
-        foreach (DataRetentionBlocker blocker in plan.Blockers)
+        foreach (DataRetentionBlocker blocker in plan.Blockers.Take(20))
         {
             dispatcher.WritePayload(
                 $"  Blocked {FormatName(blocker.DataClass)} "
                 + $"{blocker.ResourceId}: {blocker.ReasonCode} - {blocker.Message}");
         }
 
-        foreach (DataRetentionConflict conflict in plan.Conflicts)
+        foreach (DataRetentionConflict conflict in plan.Conflicts.Take(20))
         {
             dispatcher.WritePayload(
                 $"  Conflict {conflict.ResourceId}: "
                 + $"{conflict.Code} - {conflict.Message}");
+        }
+
+        if (plan.Diagnostics is { } diagnostics)
+        {
+            dispatcher.WritePayload($"Diagnostic snapshot: {diagnostics.SnapshotId}; observed at {diagnostics.ObservedAt:O}.");
+        }
+
+        long omitted = (plan.Diagnostics?.BlockerCount ?? plan.Blockers.LongLength)
+            + (plan.Diagnostics?.ConflictCount ?? plan.Conflicts.LongLength)
+            - Math.Min(20, plan.Blockers.Length) - Math.Min(20, plan.Conflicts.Length);
+
+        if (omitted > 0)
+        {
+            dispatcher.WritePayload(plan.Diagnostics is null
+                ? $"Omitted human-output details: {FormatCount(omitted)}. Use data prune --dry-run --json for this host's complete arrays."
+                : $"Omitted details: {FormatCount(omitted)}. Read all current details with data prune-details using this PlanId, diagnostic SnapshotId, and GeneratedAt.");
         }
     }
 
@@ -511,18 +567,26 @@ internal sealed class DataRetentionCommands(
             + $"blockers: {FormatCount(result.Blockers.Length)}; "
             + $"conflicts: {FormatCount(result.Conflicts.Length)}");
 
-        foreach (DataRetentionBlocker blocker in result.Blockers)
+        foreach (DataRetentionBlocker blocker in result.Blockers.Take(20))
         {
             dispatcher.WritePayload(
                 $"  Blocked {FormatName(blocker.DataClass)} "
                 + $"{blocker.ResourceId}: {blocker.ReasonCode} - {blocker.Message}");
         }
 
-        foreach (DataRetentionConflict conflict in result.Conflicts)
+        foreach (DataRetentionConflict conflict in result.Conflicts.Take(20))
         {
             dispatcher.WritePayload(
                 $"  Conflict {conflict.ResourceId}: "
                 + $"{conflict.Code} - {conflict.Message}");
+        }
+
+        long omitted = result.Blockers.LongLength + result.Conflicts.LongLength
+            - Math.Min(20, result.Blockers.Length) - Math.Min(20, result.Conflicts.Length);
+
+        if (omitted > 0)
+        {
+            dispatcher.WritePayload($"Omitted human details: {FormatCount(omitted)}. Apply --json retains the complete result; historical details are not reconstructed by prune-details.");
         }
     }
 

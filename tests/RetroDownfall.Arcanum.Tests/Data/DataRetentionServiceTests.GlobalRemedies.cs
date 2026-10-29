@@ -211,15 +211,24 @@ public sealed partial class DataRetentionServiceTests
             """,
             ("@id", reservationId.ToString("N")), ("@run", runId.ToString("N")), ("@now", OldTimestamp));
 
-        List<DataRetentionConflict> conflicts = [];
-
         MethodInfo projection = typeof(DataRetentionService).GetMethod("AddBoundedSessionConflictDiagnosticsAsync",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
 
+        object accumulator = Activator.CreateInstance(projection.GetParameters()[2].ParameterType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, [true, null], null)!;
+
         Task<int> read = Assert.IsType<Task<int>>(projection.Invoke(CreateService(),
-            [sessionId, 3, conflicts, CancellationToken.None]), exactMatch: false);
+            [sessionId, 3, accumulator, CancellationToken.None]), exactMatch: false);
 
         Assert.Equal(0, await read);
+
+        object facts = accumulator.GetType().GetProperty("Facts", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(accumulator)!;
+
+        MethodInfo materialize = typeof(DataRetentionService).GetMethod("MaterializeDiagnostics",
+            BindingFlags.Static | BindingFlags.NonPublic)!.MakeGenericMethod(typeof(DataRetentionConflict));
+
+        DataRetentionConflict[] conflicts = Assert.IsType<DataRetentionConflict[]>(materialize.Invoke(null, [facts, 0L, 3]));
 
         Assert.Equal(new[]
         {

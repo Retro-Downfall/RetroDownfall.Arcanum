@@ -7,7 +7,7 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// <summary>
 /// The CLI command handlers are filed by the domain they drive: <c>Cli.Commands.Conclave</c> for the
 /// Apprentice and Conclave families, <c>Cli.Commands.Tower</c> for the authored resources. The verbs
-/// themselves did not move — <c>docs/Arcanum.CommandMap.json</c> is the contract that proves it, and
+/// themselves did not move — <c>tests/RetroDownfall.Arcanum.Tests/TestData/Contracts/Arcanum.CommandMap.json</c> is the contract that proves it, and
 /// <c>CliSurfaceTests.Committed_command_map_matches_the_live_tree</c> is what enforces it.
 /// </summary>
 /// <remarks>
@@ -18,7 +18,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// </remarks>
 public sealed class CliDomainSplitContractTests
 {
-
     private const string RetiredNamespace = "RetroDownfall.Arcanum.Cli.Commands.TheForge";
 
     /// <summary>The one verb family that starts a desktop process, and may therefore name one.</summary>
@@ -27,7 +26,6 @@ public sealed class CliDomainSplitContractTests
     [Fact]
     public void Cli_declares_no_type_in_the_retired_namespace()
     {
-
         string[] strays = typeof(PromptCommands).Assembly
             .GetTypes()
             .Where(static type => type.Namespace is string ns
@@ -38,13 +36,11 @@ public sealed class CliDomainSplitContractTests
             .ToArray();
 
         Assert.Empty(strays);
-
     }
 
     [Fact]
     public void No_cli_type_is_named_for_the_desktop_application()
     {
-
         string[] offenders = typeof(PromptCommands).Assembly
             .GetTypes()
             .Where(static type => !type.Name.StartsWith('<'))
@@ -54,13 +50,11 @@ public sealed class CliDomainSplitContractTests
             .ToArray();
 
         Assert.Empty(offenders);
-
     }
 
     [Fact]
     public void The_apprentice_and_conclave_handlers_are_declared_together()
     {
-
         Assert.Equal(
             "RetroDownfall.Arcanum.Cli.Commands.Conclave",
             typeof(ApprenticeCommands).Namespace);
@@ -68,7 +62,6 @@ public sealed class CliDomainSplitContractTests
         Assert.Equal(
             typeof(ApprenticeCommands).Namespace,
             typeof(ConclaveCommands).Namespace);
-
     }
 
     /// <summary>
@@ -79,7 +72,6 @@ public sealed class CliDomainSplitContractTests
     [Fact]
     public void Only_the_application_launch_verbs_name_the_desktop_application()
     {
-
         string[] offenders = [.. CliSurfaceTests
             .Walk(CliSurfaceTests.BuildMap())
             .Where(static command =>
@@ -89,11 +81,9 @@ public sealed class CliDomainSplitContractTests
             .Order(StringComparer.Ordinal)];
 
         Assert.Empty(offenders);
-
     }
 
     private static bool IsApplicationLaunch(string path) =>
         string.Equals(path, ApplicationLaunchVerb, StringComparison.Ordinal)
         || path.StartsWith(ApplicationLaunchVerb + " ", StringComparison.Ordinal);
-
 }

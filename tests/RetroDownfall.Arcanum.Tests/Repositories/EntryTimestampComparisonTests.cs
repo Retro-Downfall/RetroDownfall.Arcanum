@@ -175,7 +175,7 @@ public sealed class EntryTimestampComparisonTests(GrimoireFixture fixture) : IAs
     }
 
     [SkippableFact]
-    public async Task Timestamp_filtered_session_queries_keep_injection_payloads_as_literal_data()
+    public async Task Timestamp_filtered_session_queries_reject_invalid_status_and_keep_title_payloads_as_literal_data()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -191,10 +191,12 @@ public sealed class EntryTimestampComparisonTests(GrimoireFixture fixture) : IAs
 
         DateTimeOffset to = from.AddMinutes(2);
 
-        SessionQueryResult injectedStatus = (await sessions.QueryAsync(
-            new SessionQueryRequest(Status: "active' OR 1=1 --", From: from, To: to), Token)).Value;
+        Result<SessionQueryResult> injectedStatus = await sessions.QueryAsync(
+            new SessionQueryRequest(Status: "active' OR 1=1 --", From: from, To: to), Token);
 
-        Assert.Empty(injectedStatus.Summaries);
+        Assert.True(injectedStatus.IsFailure);
+
+        Assert.Equal(ErrorCodes.Session.InvalidStatus, injectedStatus.Error.Code);
 
         SessionQueryResult literalTitle = (await sessions.QueryAsync(
             new SessionQueryRequest(Title: hostileTitle, From: from, To: to), Token)).Value;

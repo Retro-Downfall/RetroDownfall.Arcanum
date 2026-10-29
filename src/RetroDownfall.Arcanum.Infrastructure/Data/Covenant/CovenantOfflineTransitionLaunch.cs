@@ -156,7 +156,7 @@ public static partial class CovenantRecoveryCheckpointCodec
                     launch.OperationId,
                     launch.Operation,
                     new CovenantDigest(Convert.FromHexString(launch.EffectDigest))))
-            : Unrecoverable<CovenantExclusiveRecoveryOwner>();
+            : Unrecoverable<CovenantExclusiveRecoveryOwner>(null);
 
     /// <summary>The exclusive owner a factory launch names, on the same terms.</summary>
     public static Result<CovenantExclusiveRecoveryOwner> RecoveryOwner(
@@ -167,7 +167,7 @@ public static partial class CovenantRecoveryCheckpointCodec
                     launch.OperationId,
                     launch.Operation,
                     new CovenantDigest(Convert.FromHexString(launch.EffectDigest))))
-            : Unrecoverable<CovenantExclusiveRecoveryOwner>();
+            : Unrecoverable<CovenantExclusiveRecoveryOwner>(null);
 
     /// <summary>
     /// Whether this Covenant launch is one the codec would accept from durable storage.

@@ -160,6 +160,34 @@ internal static partial class CliCommandTree
 
         data.Add(prune);
 
+        Command pruneDetails = new("prune-details", "Read one complete-identity-bound page of current prune diagnostics.");
+
+        Option<string?> detailPlanId = new("--plan-id") { Required = true, Description = "Complete plan identity returned by the prune preview." };
+
+        Option<string?> detailSnapshotId = new("--snapshot-id") { Required = true, Description = "Diagnostic snapshot identity returned by the prune preview." };
+
+        Option<string?> detailObservedAt = new("--observed-at") { Required = true, Description = "Observation timestamp returned by the prune preview." };
+
+        Option<string?> detailContinuation = new("--continuation") { Description = "Opaque continuation from the preceding diagnostics page." };
+
+        Option<int> detailLimit = new("--limit") { DefaultValueFactory = _ => 100, Description = "Maximum diagnostics in one page (1-200; default 100)." };
+
+        pruneDetails.Add(detailPlanId);
+
+        pruneDetails.Add(detailSnapshotId);
+
+        pruneDetails.Add(detailObservedAt);
+
+        pruneDetails.Add(detailContinuation);
+
+        pruneDetails.Add(detailLimit);
+
+        pruneDetails.SetAction(async (ParseResult result, CancellationToken cancellationToken) =>
+            await handler.Value.PruneDetails(result.GetValue(detailPlanId), result.GetValue(detailSnapshotId), result.GetValue(detailObservedAt),
+                result.GetValue(detailContinuation), result.GetValue(detailLimit), cancellationToken).ConfigureAwait(false));
+
+        data.Add(pruneDetails);
+
         Command deleteSession = new(
             "delete-session",
             "Delete a session and its session-scoped dependents after confirmation.");

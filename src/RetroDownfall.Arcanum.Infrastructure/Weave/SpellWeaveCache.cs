@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+using System.Collections.Frozen;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -16,8 +16,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 ///
 /// Re-embeds the full spell catalog when the catalog changes (a spell added, removed, or its
 /// description edited) or when the embedding provider/model/dimensions change (an operator hot-reload)
-/// — comparing against the last-cached snapshot. Re-embedding happens under a lock so concurrent
-/// first-access callers cannot double-embed the same catalog.
+/// — retaining up to eight least-recently-used catalog snapshots. Re-embedding happens under a
+/// semaphore so concurrent first-access callers cannot double-embed the same catalog. A short
+/// metadata lock updates recency without holding up cache hits behind provider work.
 ///
 /// Falls back to <c>null</c> (never throws) when The Weave is unavailable or the embedding call fails —
 /// <c>SemanticSpellRouter</c> treats that as "fall back to LLM-based routing", never a functional
@@ -30,16 +31,15 @@ public sealed class SpellWeaveCache(
 {
     private readonly SemaphoreSlim _lock = new(1, 1);
 
-    /// <summary>
-    /// Published as a single immutable snapshot (rather than separate <c>_cache</c>/<c>_cachedMetadata</c>
-    /// fields) so the lock-free fast-path read below can never observe a torn combination — vectors
-    /// from one refresh paired with metadata from another.
-    /// </summary>
-    private volatile CacheSnapshot? _snapshot;
+    private const int MaximumCatalogs = 8;
+
+    private readonly object _cacheGate = new();
+
+    private readonly List<CacheSnapshot> _snapshots = [];
 
     private sealed record CacheSnapshot(
         CatalogKey Key,
-        ConcurrentDictionary<string, Embedding<float>> Cache);
+        IReadOnlyDictionary<string, Embedding<float>> Cache);
 
     private sealed record CatalogKey(
         (string Name, string Description)[] Spells,
@@ -70,31 +70,29 @@ public sealed class SpellWeaveCache(
         }
     }
 
-    public async Task<ConcurrentDictionary<string, Embedding<float>>?> GetOrCreateAsync(
+    public async Task<IReadOnlyDictionary<string, Embedding<float>>?> GetOrCreateAsync(
         IReadOnlyList<SpellMetadata> metadata,
         CancellationToken cancellationToken,
         Action<string, int>? observeEmbedding = null)
     {
         CatalogKey currentKey = BuildCatalogKey(metadata);
 
-        CacheSnapshot? snapshot = _snapshot;
-
-        if (snapshot is not null && currentKey.Matches(snapshot.Key))
+        if (TryGetCached(currentKey) is { } cached)
         {
-            return snapshot.Cache;
+            return cached;
         }
 
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
-            // Re-check after acquiring the lock: another caller may already have refreshed the cache
-            // while this call was waiting, in which case there is nothing left to do.
-            snapshot = _snapshot;
+            // The caller's catalog was copied before waiting. Resolve the current provider binding
+            // only after acquiring the generation semaphore, then check for a competing refresh.
+            currentKey = WithCurrentBinding(currentKey);
 
-            if (snapshot is not null && currentKey.Matches(snapshot.Key))
+            if (TryGetCached(currentKey) is { } refreshed)
             {
-                return snapshot.Cache;
+                return refreshed;
             }
 
             if (!weaveService.IsAvailable)
@@ -102,11 +100,11 @@ public sealed class SpellWeaveCache(
                 return null;
             }
 
-            string[] descriptions = new string[metadata.Count];
+            string[] descriptions = new string[currentKey.Spells.Length];
 
-            for (int i = 0; i < metadata.Count; i++)
+            for (int i = 0; i < currentKey.Spells.Length; i++)
             {
-                descriptions[i] = metadata[i].Description;
+                descriptions[i] = currentKey.Spells[i].Description;
             }
 
             observeEmbedding?.Invoke("spell-catalog-embedding", descriptions.Length);
@@ -124,16 +122,32 @@ public sealed class SpellWeaveCache(
                 return null;
             }
 
-            // IWeaveService answers exactly one vector per description or fails, so metadata[i]
-            // pairs with embedResult.Value[i] positionally.
-            ConcurrentDictionary<string, Embedding<float>> next = new(StringComparer.Ordinal);
-
-            for (int i = 0; i < metadata.Count; i++)
+            if (!currentKey.Matches(WithCurrentBinding(currentKey)))
             {
-                next[metadata[i].Name] = embedResult.Value[i];
+                logger.LogDebug(
+                    "SpellWeaveCache failed to refresh the spell catalog ({Reason}); falling back to LLM-based spell routing.",
+                    "catalog_binding_changed");
+
+                return null;
             }
 
-            _snapshot = new CacheSnapshot(currentKey, next);
+            // IWeaveService answers exactly one vector per description or fails. Publish a frozen
+            // map so a consumer cannot remove another caller's catalog entries.
+            Dictionary<string, Embedding<float>> entries = new(StringComparer.Ordinal);
+
+            for (int i = 0; i < currentKey.Spells.Length; i++)
+            {
+                entries[currentKey.Spells[i].Name] = embedResult.Value[i];
+            }
+
+            FrozenDictionary<string, Embedding<float>> next = entries.ToFrozenDictionary(StringComparer.Ordinal);
+
+            lock (_cacheGate)
+            {
+                if (_snapshots.Count == MaximumCatalogs) _snapshots.RemoveAt(0);
+
+                _snapshots.Add(new CacheSnapshot(currentKey, next));
+            }
 
             return next;
         }
@@ -154,6 +168,34 @@ public sealed class SpellWeaveCache(
         {
             _lock.Release();
         }
+    }
+
+    private IReadOnlyDictionary<string, Embedding<float>>? TryGetCached(CatalogKey key)
+    {
+        lock (_cacheGate)
+        {
+            for (int index = 0; index < _snapshots.Count; index++)
+            {
+                CacheSnapshot snapshot = _snapshots[index];
+
+                if (!key.Matches(snapshot.Key)) continue;
+
+                _snapshots.RemoveAt(index);
+
+                _snapshots.Add(snapshot);
+
+                return snapshot.Cache;
+            }
+        }
+
+        return null;
+    }
+
+    private CatalogKey WithCurrentBinding(CatalogKey key)
+    {
+        EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
+
+        return key with { Provider = embeddings.Provider, Model = embeddings.Model, Dimensions = embeddings.Dimensions };
     }
 
     private CatalogKey BuildCatalogKey(IReadOnlyList<SpellMetadata> metadata)

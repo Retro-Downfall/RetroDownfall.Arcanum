@@ -18,10 +18,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     // A ceiling is meant to be the maximum, over one, two and three root workers, of what the root analyses, plus the margin, so a
     // discovery under any of the three stays at or under it, CI's two included (the production lanes run two). A root a handoff
     // re-roots into is entered once from its own declaration and once from the traversal that hands off to it, and which worker each
-    // entry lands on decides whether the closure is admitted for one entry or for both, so its count depends on the arrangement:
-    // ApprenticeService.RunApprenticeAsync analysed 3,090 states under one worker, 1,545 under two and 3,090 under three when it was
-    // measured (e9eaee35); which worker a family lands on is decided by timing. A row is taken from the largest of the three counts; it is
-    // not taken from the one that was measured last.
+    // entry lands on decides whether the closure is admitted for one entry or for both, so its count depends on the arrangement.
+    // Which worker a family lands on is decided by timing. A row is taken from the largest of the three counts, never just the last run.
     private const int HeadroomPercentOfCap = 90;
 
     private readonly record struct HeadroomCeiling(string RootType, string RootOperation, int Ceiling);
@@ -90,130 +88,86 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         return [.. violations.Order(StringComparer.Ordinal)];
     }
 
-    // A row is the largest count any root-worker arrangement the runner can produce reports for the root (one, two or three workers),
-    // plus a margin of five percent with a floor of eight states, rounded up to a multiple of eight. The count of a root that a handoff
-    // re-roots into depends on the arrangement: under one worker every entry shares one state cache and the closure is admitted once
-    // for each distinct entry, while under two or three workers an entry that lands on another worker admits its own, and which worker
-    // a family lands on is decided by timing. So the serial count is the largest, and it is the one a table row must hold. A selection
-    // root is named without the digest after its tilde. A row whose comment names a count per arrangement is held at the largest.
-    //
-    // Measured on 2026-10-17, once under each of one, two and three root workers (the primary discovery reported the committed 6,729
-    // manifest rows and no diagnostic under all three), every one of the sixty-nine primary roots equals its maximum plus the margin to
-    // the state. The three arrangements agree on every root but the two handoff roots named above, and the largest ceiling is 7,200 of
-    // the 7,372 the cap allows (the pre-bootstrap transition recovery, at 6,856 states). The plan of a global or all reset inspects the
-    // offline-transition journal and does not recover it, so the two stopped-host apply roots and the attested apply stand at 5,011,
-    // 5,864 and 6,266 states; the attested apply is the larger because its shared data step reaches the stopped-host fresh and resume
-    // arms' steps as well. The startup root stands at 5,620 states, which includes the outage clause of the healthy-catalog inspection
-    // it reaches. The additional partition was measured under each too and stands the same under all three, since none of its roots is
-    // re-rooted into.
-    // Remeasured at ecddc578 on 2026-10-20 under one, two and three root workers: every discovery reported the same
-    // 6,833 primary sites and zero diagnostics. The fifteen source-grown roots below use the maximum across all three
-    // arrangements and the unchanged margin rule; the other fifty-four rows remain unchanged.
-    // Remeasured at 41206473 on 2026-10-21 under one, two and three root workers: all three primary manifests are
-    // byte-identical at 6,859 sites with zero diagnostics. Three source-grown roots change ceilings below; the other
-    // sixty-six primary rows retain their prescribed ceilings. Two of those also grow by two states, as noted beside
-    // their unchanged rows. The additional partition has 1,544 sites,
-    // zero diagnostics and unchanged ceilings for all thirty roots under each arrangement.
-    // Remeasured on 2026-10-22 for the Comprehension format extractors (#177) under one, two and three root workers: every
-    // discovery reported the committed 6,863 primary sites and zero diagnostics. SessionAttachmentIndexingService.ExecuteAsync
-    // grows from 1,226 to 3,066 states in every arrangement, so its row is 3,066 plus the margin; the other sixty-eight primary
-    // rows and the thirty additional rows are each their unchanged maximum plus the margin.
-    // Remeasured on 2026-10-23 for PDF text-layer extraction (#163) under one, two and three root workers: every discovery
-    // reported the same 6,870 primary sites and zero diagnostics. SessionAttachmentIndexingService.ExecuteAsync grows from
-    // 3,066 to 3,192 states in every arrangement, so its row is 3,192 plus the margin; the other sixty-eight primary rows
-    // each measured their unchanged maximum.
-    // Remeasured on 2026-10-23 after every document host was given one shared reserve-and-read step, with the parse the only
-    // per-host code and the indexer reading every document before it begins a PDF's effect group, under one, two and three root
-    // workers (the three-worker regeneration reported the regenerated 6,865 primary sites and zero diagnostics):
-    // SessionAttachmentIndexingService.ExecuteAsync falls from 3,192 to 3,188 states in every arrangement, because the snapshot
-    // read is analysed before the extraction's effect group is begun, not inside it, and both hosts now reach the one shared
-    // read; 3,188 plus the margin is still 3,352, so its row is unchanged. The other sixty-eight primary rows each measured
-    // their unchanged maximum.
-    // Remeasured on 2026-10-23 after the isolated worker kinds became format-neutral and the in-process parse observed the
-    // fault of cancelling a source it had already disposed, under one, two and three root workers (the one-worker discovery
-    // matched the committed 6,865-row manifest with zero diagnostics): SessionAttachmentIndexingService.ExecuteAsync grows from
-    // 3,188 to 3,192 states in every arrangement. Two states are the isolated host reading its heading and verdict reasons from
-    // its format's worker profile, and two are the continuation by which the in-process host's cancellation request observes
-    // that fault, which the checker enters as an asynchronous callback (with that request alone restored, the root measured
-    // 3,190). 3,192 plus the margin is still 3,352, so its row is unchanged. The other sixty-eight primary rows each measured
-    // their unchanged maximum under one worker. Under three, the handoff root
-    // LongRunningOperationStartupHostedService.ContinueInBackgroundAsync measured 2,134 states in both three-worker runs, half
-    // the 4,268 of its one-worker entry, which its row already holds.
+    // A row is the maximum measured under one, two and three root workers, plus max(8, ceil(maximum * 0.05)),
+    // rounded up to a multiple of eight. Selection roots omit the digest after the tilde. Hard/model/effect limits are unchanged.
+    // Reviewed analysis input tree 671e62177b2000bc8916e3b9f1816d430a47f770 produced identical complete manifests and zero
+    // diagnostics in all three arrangements: 7,303 primary sites / 69 roots, and 1,678 additional sites / 30 roots.
+    // The largest primary maximum is 6,832 (ceiling 7,176), below the unchanged 7,372 ceiling bound of the 8,192-state cap.
+    // RunApprenticeAsync measured 3,146 / 3,146 / 1,573; its maximum is retained. The two Long Rest roots are distinct:
+    // ProcessAdmittedAsync measured 5,456 in every arrangement, and LongRestSweepHostedService.ExecuteAsync measured 3,744.
+    // Additional root counts agree across all three arrangements. Changed rows record their reviewed closure and exact counts;
+    // their reasons identify the complete current closure, not an attribution of each net state change to one source edit.
     private static readonly HeadroomCeiling[] ProductionRootCeilings =
     [
-        new("A2ASendingLeaseRenewer", "RetroDownfall.Arcanum.Infrastructure.A2A.A2ASendingLeaseRenewer.ExecuteAsync", 200), // measured 186
+        new("A2ASendingLeaseRenewer", "RetroDownfall.Arcanum.Infrastructure.A2A.A2ASendingLeaseRenewer.ExecuteAsync", 224), // measured 208, 208, 208 under one, two and three workers; reviewed short-ledger timeout and command-cleanup closure
         new("A2ASendingLeaseRenewer", "RetroDownfall.Arcanum.Infrastructure.A2A.A2ASendingLeaseRenewer.Forget", 16), // measured 2
         new("A2ASendingLeaseRenewer", "RetroDownfall.Arcanum.Infrastructure.A2A.A2ASendingLeaseRenewer.Track", 16), // measured 2
-        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.CancelAsync", 224), // measured 210
-        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ExecuteAsync", 416), // measured 394
-        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.InterveneAsync", 240), // measured 224
-        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.PauseAsync", 216), // measured 201
-        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ResumeAsync", 232), // measured 215
-        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ReweaveAsync", 224), // measured 207
-        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync", 3248), // measured 3092, 1546 and 3092 under one, two and three workers; Session creation delegates to the extracted bound-Session helper; physical database sites are unchanged
-        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.StartAsync", 240), // measured 223
+        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.CancelAsync", 232), // measured 214, 214, 214 under one, two and three workers; reviewed Apprentice control, callback and bound-Session closure
+        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ExecuteAsync", 424), // measured 402, 402, 402 under one, two and three workers; reviewed Apprentice control, callback and bound-Session closure
+        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.InterveneAsync", 240), // measured 228, 228, 228 under one, two and three workers; prescribed ceiling unchanged
+        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.PauseAsync", 216), // measured 205, 205, 205 under one, two and three workers; prescribed ceiling unchanged
+        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ResumeAsync", 232), // measured 219, 219, 219 under one, two and three workers; prescribed ceiling unchanged
+        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ReweaveAsync", 224), // measured 211, 211, 211 under one, two and three workers; prescribed ceiling unchanged
+        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync", 3304), // measured 3146, 3146, 1573 under one, two and three workers; reviewed Apprentice control, callback and bound-Session closure
+        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.StartAsync", 240), // measured 227, 227, 227 under one, two and three workers; prescribed ceiling unchanged
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.StopAsync", 16), // measured 5
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.SubscribeChronicleAsync", 24), // measured 12
         new("ArcanumSecurityStartupChecks", "RetroDownfall.Arcanum.Infrastructure.Hosting.ArcanumSecurityStartupChecks.StartAsync", 16), // measured 3
         new("ArcanumSecurityStartupChecks", "RetroDownfall.Arcanum.Infrastructure.Hosting.ArcanumSecurityStartupChecks.StopAsync", 16), // measured 1
         new("ArcanumSettingsClampStartupLogger", "RetroDownfall.Arcanum.Infrastructure.Hosting.ArcanumSettingsClampStartupLogger.StartAsync", 16), // measured 7
         new("ArcanumSettingsClampStartupLogger", "RetroDownfall.Arcanum.Infrastructure.Hosting.ArcanumSettingsClampStartupLogger.StopAsync", 16), // measured 1
-        new("BatchProcessingService", "RetroDownfall.Arcanum.Api.Intelligence.BatchProcessingService.ExecuteAsync", 2888), // measured 2744, 2744, 2744 under one, two and three workers; exact same-product baseline/repaired proof comparison, unchanged hard/model/effect limits
+        new("BatchProcessingService", "RetroDownfall.Arcanum.Api.Intelligence.BatchProcessingService.ExecuteAsync", 3056), // measured 2910, 2910, 2910 under one, two and three workers; reviewed batch JSONL, accounting recovery and owned-writer cleanup closure
         new("BatchProcessingService", "RetroDownfall.Arcanum.Api.Intelligence.BatchProcessingService.IsBatchInFlight", 16), // measured 1
-        new("BatchProcessingService", "RetroDownfall.Arcanum.Api.Intelligence.BatchProcessingService.StartAsync", 512), // measured 486
+        new("BatchProcessingService", "RetroDownfall.Arcanum.Api.Intelligence.BatchProcessingService.StartAsync", 528), // measured 500, 500, 500 under one, two and three workers; reviewed batch JSONL, accounting recovery and owned-writer cleanup closure
         new("BatchProcessingService", "RetroDownfall.Arcanum.Api.Intelligence.BatchProcessingService.StopAsync", 16), // measured 2
-        new("CovenantFeatureConfigurationPublisher", "RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantFeatureConfigurationPublisher.StartAsync", 24), // measured 10
+        new("CovenantFeatureConfigurationPublisher", "RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantFeatureConfigurationPublisher.StartAsync", 24), // measured 12, 12, 12 under one, two and three workers; prescribed ceiling unchanged
         new("CovenantFeatureConfigurationPublisher", "RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantFeatureConfigurationPublisher.StopAsync", 16), // measured 2
-        new("CovenantMaintenanceHostedService", "RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantMaintenanceHostedService.ExecuteAsync", 720), // measured 684, 684 and 684 under one, two and three workers; owner cleanup now owns the capsule mutation barrier and its drain
-        new("DataRetentionSweepHostedService", "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionSweepHostedService.ExecuteAsync", 3160), // measured 3006, 3006, 3006 under one, two and three workers; exact same-product baseline/repaired proof comparison, unchanged hard/model/effect limits
-        new("EntryWeavingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.EntryWeavingService.ExecuteAsync", 776), // measured 736
+        new("CovenantMaintenanceHostedService", "RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantMaintenanceHostedService.ExecuteAsync", 768), // measured 724, 724, 724 under one, two and three workers; reviewed family maintenance and connection-state callback closure
+        new("DataRetentionSweepHostedService", "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionSweepHostedService.ExecuteAsync", 4496), // measured 4278, 4278, 4278 under one, two and three workers; reviewed complete retention census/pruning, labeled-artifact guard and ledger closure
+        new("EntryWeavingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.EntryWeavingService.ExecuteAsync", 792), // measured 754, 754, 754 under one, two and three workers; reviewed entry weaving and Saga mirror cleanup closure
         new("FileEncryptionKeyBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.FileEncryptionKeyBootstrapHostedService.StartAsync", 296), // measured 278
         new("FileEncryptionKeyBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.FileEncryptionKeyBootstrapHostedService.StopAsync", 16), // measured 1
-        new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StartAsync", 5944), // measured 5660, 5660 and 5660 under one, two and three workers; operation expiry inspection now reaches the startup-priority descriptor projection, adding two states within the unchanged prescribed ceiling
-        new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StopAsync", 200), // measured 186
+        new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StartAsync", 6328), // measured 6020, 6020, 6020 under one, two and three workers; reviewed startup recovery, Core33 quiescent census and connection-state cleanup closure
+        new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StopAsync", 208), // measured 192, 192, 192 under one, two and three workers; reviewed physical-connection shutdown and connection-state callback closure
         new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.TakeGeneratedMasterApiKey", 16), // measured 1
-        new("GrimoireSchemaTransitionHostedService", "RetroDownfall.Arcanum.Infrastructure.Covenant.GrimoireSchemaTransitionHostedService.ExecuteAsync", 816), // measured 772
-        // The Long Rest roots carry the cost of the Long Rest closure. A seam proves every leaf in one statement, which decodes a snapshot and
-        // a label from a joined row (SnapshotFrom, Materialize and the digests a label constructor reaches, analysed in each of the fifty
-        // or so contexts that reach VerifyFrozenMetadataAsync) beside the per-leaf read a step makes, and the Lease-Handoff chain, the
-        // receiver proof, the capability and fence currency rules, the Pairing Gate, the clique packs and the Fold Check add their own
-        // members to the two roots. The capsule mutation barrier adds its owned drain to the Long Rest store paths. Under one,
-        // two and three workers the measured maxima are 5514 and 3674 states, so the unchanged margin rule yields
-        // 5792 and 3864 (5514 + 276 = 5790 and 3674 + 184 = 3858, each rounded up to a multiple of eight).
-        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance.ProcessAdmittedAsync", 5792), // measured 5514, 5514 and 5514 under one, two and three workers; Long Rest store mutation paths now own capsule mutation barriers
-        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.LongRestSweepHostedService.ExecuteAsync", 3864), // measured 3674, 3674 and 3674 under one, two and three workers; Long Rest store mutation paths now own capsule mutation barriers
-        new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync", 4904), // measured 4666, 4666, 2333 under one, two and three workers; exact same-product baseline/repaired proof comparison, unchanged hard/model/effect limits
+        new("GrimoireSchemaTransitionHostedService", "RetroDownfall.Arcanum.Infrastructure.Covenant.GrimoireSchemaTransitionHostedService.ExecuteAsync", 928), // measured 882, 882, 882 under one, two and three workers; reviewed Core33 quiescent/restartable census closure
+        // Both Long Rest roots retain snapshot/label decoding, lease handoff, receiver and fence proofs, pairing/clique/fold
+        // checks and owned capsule-mutation drains. The complete measured maxima are 5,456 and 3,744 across all arrangements.
+        // The unchanged margin rule gives 5,456 + 273 = 5,729 -> 5,736 and 3,744 + 188 = 3,932 -> 3,936.
+        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance.ProcessAdmittedAsync", 5736), // measured 5456, 5456, 5456 under one, two and three workers; reviewed Long Rest store closure after exact cleanup-token projection; lower maximum lowers the ratchet
+        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.LongRestSweepHostedService.ExecuteAsync", 3936), // measured 3744, 3744, 3744 under one, two and three workers; reviewed Long Rest admission, ledger and store-cleanup closure
+        new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync", 5944), // measured 5658, 5658, 5658 under one, two and three workers; reviewed complete recovery dispatch, retention census and short-ledger closure
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync", 16), // measured 3
-        new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0", 2016), // measured 1920, 1920, 1920 under one, two and three workers; exact same-product baseline/repaired proof comparison, unchanged hard/model/effect limits
+        new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0", 2520), // measured 2393, 2393, 2393 under one, two and three workers; reviewed complete recovery dispatch, retention census and short-ledger closure
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StopAsync", 16), // measured 5
-        new("Loremaster", "RetroDownfall.Arcanum.Infrastructure.Hosting.Loremaster.ExecuteAsync", 4872), // measured 4636, 4636, 4636 under one, two and three workers; exact same-product baseline/repaired proof comparison, unchanged hard/model/effect limits
-        new("McpServerBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Mcp.McpServerBootstrapHostedService.RunOrdinaryBootstrapAsync::call:RetroDownfall.Arcanum.Infrastructure.Mcp.IMcpGlobalInitializationCoordinator.InitializeGlobalAsync#0", 512), // measured 484 under one worker and under three, 242 under two
+        new("Loremaster", "RetroDownfall.Arcanum.Infrastructure.Hosting.Loremaster.ExecuteAsync", 5080), // measured 4832, 4832, 4832 under one, two and three workers; reviewed summary maintenance and retention schema-census closure
+        new("McpServerBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Mcp.McpServerBootstrapHostedService.RunOrdinaryBootstrapAsync::call:RetroDownfall.Arcanum.Infrastructure.Mcp.IMcpGlobalInitializationCoordinator.InitializeGlobalAsync#0", 512), // measured 486, 486, 486 under one, two and three workers; prescribed ceiling unchanged
         new("McpServerBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Mcp.McpServerBootstrapHostedService.StartAsync", 16), // measured 3
-        new("McpServerBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Mcp.McpServerBootstrapHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Mcp.IMcpGlobalInitializationCoordinator.InitializeGlobalAsync#0", 232), // measured 217
+        new("McpServerBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Mcp.McpServerBootstrapHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Mcp.IMcpGlobalInitializationCoordinator.InitializeGlobalAsync#0", 232), // measured 218, 218, 218 under one, two and three workers; prescribed ceiling unchanged
         new("McpServerBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Mcp.McpServerBootstrapHostedService.StopAsync", 72), // measured 57
         new("PidFileService", "RetroDownfall.Arcanum.Infrastructure.Hosting.PidFileService.StartAsync", 24), // measured 13
         new("PidFileService", "RetroDownfall.Arcanum.Infrastructure.Hosting.PidFileService.StopAsync", 16), // measured 1
         new("ProviderHealthProbeService", "RetroDownfall.Arcanum.Infrastructure.Resilience.ProviderHealthProbeService.ExecuteAsync", 40), // measured 26
-        new("RetroDownfall.Arcanum.Cli.Commands.BackupCommands", "RetroDownfall.Arcanum.Cli.Commands.BackupCommands.Create", 1840), // measured 1752, 1752 and 1752 under one, two and three workers; archive path validation now uses the shipped Unicode NFC implementation and bounded identity preflight
-        new("RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService", "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService.RestoreAsync", 3800), // measured 3618, 3618 and 3618 under one, two and three workers; restore reaches shipped Unicode NFC/preflight, destination marker inventory, finalization capacity, authenticated attachment inspection and explicit secret rollback/cache invalidation
-        new("RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery", "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery.RecoverBeforeBootstrapAsync", 7232), // measured 6887, 6887 and 6887 under one, two and three workers; offline erasure recovery reaches the capsule maintenance drain
-        new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFreshUnderMaintenanceLockAsync", 5320), // measured 5063, 5063 and 5063 under one, two and three workers; reset and offline erasure recovery reach the capsule maintenance drain and changed mirrored-credential read closure
-        new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFullUnderMaintenanceLockAsync", 6640), // measured 6318, 6318 and 6318 under one, two and three workers; reset and offline erasure recovery reach the capsule maintenance drain and changed mirrored-credential read closure
-        new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyUnderMaintenanceLockAsync", 6216), // measured 5916, 5916 and 5916 under one, two and three workers; reset and offline erasure recovery reach the capsule maintenance drain and changed mirrored-credential read closure
-        new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.StoppedHostFactoryErasure", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.StoppedHostFactoryErasure.ApplyAsync", 1448), // measured 1375, 1375 and 1375 under one, two and three workers; stopped-host erasure recovery reaches the capsule maintenance drain
+        new("RetroDownfall.Arcanum.Cli.Commands.BackupCommands", "RetroDownfall.Arcanum.Cli.Commands.BackupCommands.Create", 1880), // measured 1788, 1788, 1788 under one, two and three workers; reviewed archive snapshot, ownership and short-ledger closure
+        new("RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService", "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService.RestoreAsync", 3920), // measured 3726, 3726, 3726 under one, two and three workers; reviewed restore publication and Core33 quiescent schema-drain closure
+        new("RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery", "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery.RecoverBeforeBootstrapAsync", 7176), // measured 6832, 6832, 6832 under one, two and three workers; reviewed offline retention/ledger closure after exact cleanup-token projection; lower maximum lowers the ratchet
+        new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFreshUnderMaintenanceLockAsync", 5752), // measured 5475, 5475, 5475 under one, two and three workers; reviewed complete retention/reset, labeled-artifact guard and short-ledger closure
+        new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFullUnderMaintenanceLockAsync", 6968), // measured 6629, 6629, 6629 under one, two and three workers; reviewed complete retention/reset, labeled-artifact guard and short-ledger closure
+        new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyUnderMaintenanceLockAsync", 6648), // measured 6328, 6328, 6328 under one, two and three workers; reviewed complete retention/reset, labeled-artifact guard and short-ledger closure
+        new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.StoppedHostFactoryErasure", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.StoppedHostFactoryErasure.ApplyAsync", 1480), // measured 1408, 1408, 1408 under one, two and three workers; reviewed stopped-host erasure and short-ledger cleanup closure
         new("SagaExtractionService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SagaExtractionService.EnqueueExtraction", 32), // measured 21
-        new("SagaExtractionService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SagaExtractionService.ExecuteAsync", 1408), // measured 1338, 1338 and 1338 under one, two and three workers; Saga store mutations now own the capsule mutation barrier and its drain
-        new("SessionAttachmentIndexingService", "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.ExecuteAsync", 3352), // measured 3192, 3192 and 3192 under one, two and three workers; beside the detached parser callback of the seven Comprehension format extractors (#177), the isolated PDF path (#163) adds the external effect group begun after the shared reserve-and-read step and the worker seam's provider call
-        new("SessionAttachmentIndexingService", "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.TryEnqueue", 16), // measured 4
-        new("SessionAttachmentPendingGcHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SessionAttachmentPendingGcHostedService.StartAsync", 80), // measured 65
+        new("SagaExtractionService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SagaExtractionService.ExecuteAsync", 1432), // measured 1358, 1358, 1358 under one, two and three workers; reviewed Saga write-gate, store and vector-mirror cleanup closure
+        new("SessionAttachmentIndexingService", "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.ExecuteAsync", 3368), // measured 3204, 3204, 3204 under one, two and three workers; reviewed attachment indexing, isolated-document callbacks and owned cleanup closure
+        new("SessionAttachmentIndexingService", "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.TryEnqueue", 16), // measured 5, 5, 5 under one, two and three workers; prescribed ceiling unchanged
+        new("SessionAttachmentPendingGcHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SessionAttachmentPendingGcHostedService.StartAsync", 80), // measured 68, 68, 68 under one, two and three workers; prescribed ceiling unchanged
         new("SessionAttachmentPendingGcHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SessionAttachmentPendingGcHostedService.StopAsync", 16), // measured 1
-        new("TapestryWeavingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.TapestryWeavingService.ExecuteAsync", 448), // measured 424
-        new("UnseenServantService", "RetroDownfall.Arcanum.Infrastructure.Hosting.UnseenServantService.ExecuteAsync", 1168), // measured 1106
+        new("TapestryWeavingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.TapestryWeavingService.ExecuteAsync", 456), // measured 434, 434, 434 under one, two and three workers; reviewed Tapestry weaving and Saga mirror cleanup closure
+        new("UnseenServantService", "RetroDownfall.Arcanum.Infrastructure.Hosting.UnseenServantService.ExecuteAsync", 1192), // measured 1130, 1130, 1130 under one, two and three workers; reviewed maintenance worker and completion-owned cleanup closure
         new("UnseenServantService", "RetroDownfall.Arcanum.Infrastructure.Hosting.UnseenServantService.StopAsync", 16), // measured 2
-        new("WorkspaceIndexingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.WorkspaceIndexingService.ExecuteAsync", 3080), // measured 2926
+        new("WorkspaceIndexingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.WorkspaceIndexingService.ExecuteAsync", 3112), // measured 2960, 2960, 2960 under one, two and three workers; reviewed workspace watcher, indexing and vector-mirror cleanup closure
         new("WorkspaceIndexingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.WorkspaceIndexingService.GetRuntimeStatus", 16), // measured 3
-        new("WorkspaceIndexingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.WorkspaceIndexingService.QueueIndexNow", 1272), // measured 1205
-        new("WorkspaceIndexingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.WorkspaceIndexingService.RegisterWorkspace", 1168), // measured 1111
+        new("WorkspaceIndexingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.WorkspaceIndexingService.QueueIndexNow", 1288), // measured 1220, 1220, 1220 under one, two and three workers; reviewed workspace watcher, indexing and vector-mirror cleanup closure
+        new("WorkspaceIndexingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.WorkspaceIndexingService.RegisterWorkspace", 1184), // measured 1126, 1126, 1126 under one, two and three workers; reviewed workspace watcher, indexing and vector-mirror cleanup closure
         new("WorkspaceIndexingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.WorkspaceIndexingService.ResolveIndexedWorkspacePath", 16), // measured 3
         new("WorkspaceIndexingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.WorkspaceIndexingService.StopAsync", 16), // measured 8
         new("WorkspaceIndexingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.WorkspaceIndexingService.UnregisterWorkspace", 24), // measured 13
@@ -240,21 +194,20 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     // kind of discovery: the shared lazy `AdditionalProductionSiteDiscovery` that the other additional-partition tests already
     // read, never a second one. Its roots do not depend on the arrangement of root workers (no handoff re-roots into one), so a
     // row is the one count plus the same margin.
-    // Remeasured at fixed checker 8c5e973f on 2026-10-20: all thirty counts agree with the prior candidate
-    // CI worker2 measurement; five source-grown rows change and the other twenty-five remain unchanged.
+    // All thirty counts agree under one, two and three workers on the reviewed input tree named above.
     private static readonly HeadroomCeiling[] AdditionalRootCeilings =
     [
-        new("RetroDownfall.Arcanum.Infrastructure.A2A.A2AInboundSendingRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.A2A.A2AInboundSendingRecoveryHandler.RecoverAsync", 184), // measured 174
+        new("RetroDownfall.Arcanum.Infrastructure.A2A.A2AInboundSendingRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.A2A.A2AInboundSendingRecoveryHandler.RecoverAsync", 192), // measured 178, 178, 178 under one, two and three workers; reviewed inbound sending-recovery collaborator closure
         new("RetroDownfall.Arcanum.Infrastructure.A2A.A2AOutboundSendingRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.A2A.A2AOutboundSendingRecoveryHandler.RecoverAsync", 16), // measured 5
         new("RetroDownfall.Arcanum.Infrastructure.Backup.BackupCreateRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Backup.BackupCreateRecoveryHandler.RecoverAsync", 40), // measured 31
         new("RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreStagingIndex", "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreStagingIndex.Add", 40), // measured 25
-        new("RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantFamilyReinitializeRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantFamilyReinitializeRecoveryHandler.RecoverAsync", 32), // measured 18
+        new("RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantFamilyReinitializeRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantFamilyReinitializeRecoveryHandler.RecoverAsync", 24), // measured 16, 16, 16 under one, two and three workers; reviewed family-reinitialize recovery closure; lower maximum lowers the ratchet
         new("RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantIndexRebuildRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantIndexRebuildRecoveryHandler.RecoverAsync", 32), // measured 18
-        new("RetroDownfall.Arcanum.Infrastructure.Data.CovenantLaunchGapFactoryResetRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.CovenantLaunchGapFactoryResetRecoveryHandler.RecoverAsync", 3280), // measured 3119; fixed-checker worker1 and prior CI worker2 agree; factory/mutation erasure recovery reaches the capsule maintenance drain
-        new("RetroDownfall.Arcanum.Infrastructure.Data.CovenantLaunchGapMutationRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.CovenantLaunchGapMutationRecoveryHandler.RecoverAsync", 3104), // measured 2953; fixed-checker worker1 and prior CI worker2 agree; factory/mutation erasure recovery reaches the capsule maintenance drain
-        new("RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionFactoryResetRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionFactoryResetRecoveryHandler.RecoverAsync", 3280), // measured 3118; fixed-checker worker1 and prior CI worker2 agree; factory/mutation erasure recovery reaches the capsule maintenance drain
-        new("RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionMutationRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionMutationRecoveryHandler.RecoverAsync", 3104), // measured 2952; fixed-checker worker1 and prior CI worker2 agree; factory/mutation erasure recovery reaches the capsule maintenance drain
-        new("RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionRecoveryHandler.RecoverAsync", 1008), // measured 960, 960, 960 under one, two and three workers; exact same-product baseline/repaired proof comparison, unchanged hard/model/effect limits
+        new("RetroDownfall.Arcanum.Infrastructure.Data.CovenantLaunchGapFactoryResetRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.CovenantLaunchGapFactoryResetRecoveryHandler.RecoverAsync", 3408), // measured 3241, 3241, 3241 under one, two and three workers; reviewed complete factory-retention census, ledger and mirror cleanup closure
+        new("RetroDownfall.Arcanum.Infrastructure.Data.CovenantLaunchGapMutationRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.CovenantLaunchGapMutationRecoveryHandler.RecoverAsync", 3168), // measured 3017, 3017, 3017 under one, two and three workers; reviewed workspace-retention census, ledger and mirror cleanup closure
+        new("RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionFactoryResetRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionFactoryResetRecoveryHandler.RecoverAsync", 3392), // measured 3229, 3229, 3229 under one, two and three workers; reviewed complete factory-retention census, ledger and mirror cleanup closure
+        new("RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionMutationRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionMutationRecoveryHandler.RecoverAsync", 3168), // measured 3016, 3016, 3016 under one, two and three workers; reviewed workspace-retention census, ledger and mirror cleanup closure
+        new("RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionRecoveryHandler.RecoverAsync", 1392), // measured 1324, 1324, 1324 under one, two and three workers; reviewed complete pruning replay, census, labeled-artifact guard and ledger closure
         new("RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog", "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog.get_AllObjects", 16), // measured 1
         new("RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog", "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog.get_CanonicalSchemaFingerprint", 16), // measured 1
         new("RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog", "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog.get_CoreObjects", 16), // measured 1
@@ -270,10 +223,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetActiveStore", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetActiveStore.SameBinding", 16), // measured 1
         new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetActiveStore", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetActiveStore.SamePayload", 24), // measured 16
         new("RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.LongRestSweepRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.LongRestSweepRecoveryHandler.RecoverAsync", 32), // measured 21
-        new("RetroDownfall.Arcanum.Infrastructure.Operations.MemoryEvaluationRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Operations.MemoryEvaluationRecoveryHandler.RecoverAsync", 352), // measured 333 under one, two and three workers; validates retained evidence and settles interrupted evaluation arms without dispatch
-        new("RetroDownfall.Arcanum.Infrastructure.Operations.SubagentRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Operations.SubagentRecoveryHandler.RecoverAsync", 192), // measured 181
-        new("RetroDownfall.Arcanum.Infrastructure.Storage.BlobEncryptionKeyRotationRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Storage.BlobEncryptionKeyRotationRecoveryHandler.RecoverAsync", 376), // measured 354, 354, 354 under one, two and three workers on reviewed coherent aa995 product; durable blob inventory/ownership recovery adds work; unchanged margin and hard/model/effect limits
-        new("RetroDownfall.Arcanum.Infrastructure.Storage.BlobEncryptionMigrationRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Storage.BlobEncryptionMigrationRecoveryHandler.RecoverAsync", 376), // measured 354, 354, 354 under one, two and three workers on reviewed coherent aa995 product; durable blob inventory/ownership recovery adds work; unchanged margin and hard/model/effect limits
+        new("RetroDownfall.Arcanum.Infrastructure.Operations.MemoryEvaluationRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Operations.MemoryEvaluationRecoveryHandler.RecoverAsync", 360), // measured 340, 340, 340 under one, two and three workers; reviewed retained-evidence validation and interrupted-evaluation ledger closure
+        new("RetroDownfall.Arcanum.Infrastructure.Operations.SubagentRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Operations.SubagentRecoveryHandler.RecoverAsync", 200), // measured 185, 185, 185 under one, two and three workers; reviewed subagent recovery and terminal collaborator closure
+        new("RetroDownfall.Arcanum.Infrastructure.Storage.BlobEncryptionKeyRotationRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Storage.BlobEncryptionKeyRotationRecoveryHandler.RecoverAsync", 384), // measured 359, 359, 359 under one, two and three workers; reviewed blob inventory, ownership, lifecycle and short-ledger cleanup closure
+        new("RetroDownfall.Arcanum.Infrastructure.Storage.BlobEncryptionMigrationRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Storage.BlobEncryptionMigrationRecoveryHandler.RecoverAsync", 384), // measured 359, 359, 359 under one, two and three workers; reviewed blob inventory, ownership, lifecycle and short-ledger cleanup closure
     ];
 
     [Fact]
@@ -282,6 +235,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     public void Every_additional_root_stays_within_its_ratchet_ceiling()
     {
         HostedProducerDiscovery<HostedProducerSite> discovery = HostedGrimoireProducerInventory.AdditionalProductionSiteDiscovery;
+
+        Assert.Empty(discovery.Diagnostics);
 
         HostedProducerAnalysisMetrics metrics = Assert.IsType<HostedProducerAnalysisMetrics>(discovery.AnalysisMetrics);
 

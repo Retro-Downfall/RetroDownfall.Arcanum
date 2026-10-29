@@ -13,13 +13,19 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 public sealed partial class HostedGrimoireProducerInventoryTests
 {
     [Theory]
-    [InlineData(true, "literal")]
-    [InlineData(false, "literal")]
-    [InlineData(true, "typed-input")]
-    [InlineData(false, "typed-input")]
-    [InlineData(true, "effectful-typed-input")]
-    [InlineData(false, "effectful-typed-input")]
-    public void HostedContinuationActualCommandSourceKeepsBorrowedConnectionAndOwnedCommandDistinct(bool sealedSqlite, string connectionShape)
+    [InlineData(true, "literal", false)]
+    [InlineData(true, "literal", true)]
+    [InlineData(false, "literal", false)]
+    [InlineData(false, "literal", true)]
+    [InlineData(true, "typed-input", false)]
+    [InlineData(true, "typed-input", true)]
+    [InlineData(false, "typed-input", false)]
+    [InlineData(false, "typed-input", true)]
+    [InlineData(true, "effectful-typed-input", false)]
+    [InlineData(true, "effectful-typed-input", true)]
+    [InlineData(false, "effectful-typed-input", false)]
+    [InlineData(false, "effectful-typed-input", true)]
+    public void HostedContinuationActualCommandSourceKeepsBorrowedConnectionAndOwnedCommandDistinct(bool sealedSqlite, string connectionShape, bool useCensus)
     {
         string relative = "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CampaignRollupSourceStorage.cs";
 
@@ -41,13 +47,22 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             _ => "new Microsoft.Data.Sqlite.SqliteConnection()",
         };
 
-        string body = R2Admission
-            + "System.Data.Common.DbConnection connection = " + connection + "; "
-            + "_ = await RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CampaignRollupSourceStorage.IsInstalledAsync(connection, null, token); "
-            + "await using System.Data.Common.DbCommand command = connection.CreateCommand(); command.CommandText = \"campaign_rollup_source_membership\"; "
-            + "await RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CampaignRollupSourceStorage.ResolveMembershipAsync(command, token); await Task.CompletedTask;";
+        // Keep the new optional scalar lane real in this source fixture. Its full census
+        // and mirror dependency compile alongside the original command ownership source.
+        SyntaxTree census = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src/RetroDownfall.Arcanum.Infrastructure/Data/RetentionSchemaCensus.cs")), path: "src/RetroDownfall.Arcanum.Infrastructure/Data/RetentionSchemaCensus.cs");
 
-        CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(body, "internal static class NativeCommandInput { internal static extern Microsoft.Data.Sqlite.SqliteConnection Take(); internal static Microsoft.Data.Sqlite.SqliteConnection EffectfulTake() { System.IO.File.Delete(\"command-input\"); return Take(); } }"), "RetroDownfall.Arcanum.Api").AddSyntaxTrees(actual, globals);
+        SyntaxTree mirror = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src/RetroDownfall.Arcanum.Infrastructure/Data/SagaVectorMirror.cs")), path: "src/RetroDownfall.Arcanum.Infrastructure/Data/SagaVectorMirror.cs");
+
+        string censusArgument = useCensus ? ", census" : "";
+
+        string body = R2Admission
+            + (useCensus ? "using var census = new RetroDownfall.Arcanum.Infrastructure.Data.RetentionSchemaCensus(); " : "")
+            + "System.Data.Common.DbConnection connection = " + connection + "; "
+            + "_ = await RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CampaignRollupSourceStorage.IsInstalledAsync(connection, null, token" + censusArgument + "); "
+            + "await using System.Data.Common.DbCommand command = connection.CreateCommand(); command.CommandText = \"campaign_rollup_source_membership\"; "
+            + "await RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CampaignRollupSourceStorage.ResolveMembershipAsync(command, token" + censusArgument + "); await Task.CompletedTask;";
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(body, "internal static class NativeCommandInput { internal static extern Microsoft.Data.Sqlite.SqliteConnection Take(); internal static Microsoft.Data.Sqlite.SqliteConnection EffectfulTake() { System.IO.File.Delete(\"command-input\"); return Take(); } }"), "RetroDownfall.Arcanum.Api").AddSyntaxTrees(actual, census, mirror, globals);
 
         Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
 
@@ -81,6 +96,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             && diagnostic.Detail == "System.Data.Common.DbCommand.Connection");
 
         Assert.Contains(result.Items, static site => site.Callee == "System.Data.Common.DbCommand.ExecuteScalarAsync" && site.WorkFrontierCapsuleId is not null);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        if (useCensus) Assert.Contains(result.Items, static site => site.SourcePath.EndsWith("/RetentionSchemaCensus.cs", StringComparison.Ordinal)
+            && site.Kind == HostedProducerSiteKind.DatabaseAccess && site.WorkFrontierCapsuleId is not null);
 
         Assert.DoesNotContain(result.Items, static site => site.Callee is "System.Data.Common.DbConnection.Dispose" or "System.Data.Common.DbConnection.DisposeAsync"
             or "Microsoft.Data.Sqlite.SqliteConnection.Dispose" or "Microsoft.Data.Sqlite.SqliteConnection.DisposeAsync");

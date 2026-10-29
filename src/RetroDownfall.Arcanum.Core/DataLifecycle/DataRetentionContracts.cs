@@ -272,12 +272,14 @@ public sealed record DataRetentionBlocker(
     RetentionDataClass DataClass,
     string ResourceId,
     string ReasonCode,
-    string Message);
+    string Message,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? HoldingSessionId = null);
 
 public sealed record DataRetentionConflict(
     string Code,
     string ResourceId,
-    string Message);
+    string Message,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? HoldingSessionId = null);
 
 /// <summary>
 /// What operator curation of the Saga store means for one plan: how many memories are pinned, and how
@@ -323,7 +325,9 @@ public sealed record DataRetentionPlan(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     DataRetentionLexiconCurationInventory? LexiconCuration = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    DataRetentionMemoryErasureInventory? MemoryErasure = null);
+    DataRetentionMemoryErasureInventory? MemoryErasure = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DataRetentionDiagnostics? Diagnostics = null);
 
 /// <summary>
 /// A plan and the optional Covenant read lease that protects its response until serialization ends.
@@ -372,6 +376,10 @@ public interface IDataRetentionService
         DataRetentionRequest request,
         CancellationToken cancellationToken = default,
         DataRetentionPlanAdmissionCapability capability = DataRetentionPlanAdmissionCapability.Request);
+
+    Task<Result<DataRetentionDiagnosticPageAdmission>> ReadPruneDiagnosticsAdmissionAsync(
+        DataRetentionPruneDiagnosticsRequest request,
+        CancellationToken cancellationToken = default);
 
     Task<Result<DataRetentionApplyResult>> ApplyAsync(
         DataRetentionApplyRequest request,
@@ -686,3 +694,51 @@ public sealed class ManagedTreeInventoryRefusalException : IOException
         return display.ToString();
     }
 }
+
+/// <summary>Exact complete diagnostic totals with globally bounded preview samples.</summary>
+public sealed record DataRetentionDiagnostics(
+    long BlockerCount,
+    long ConflictCount,
+    DataRetentionReasonCount[] BlockerReasons,
+    DataRetentionReasonCount[] ConflictReasons,
+    long HoldingSessionCount,
+    DataRetentionHoldingSession[] HoldingSessions,
+    string SnapshotId,
+    bool DetailsComplete,
+    long OmittedBlockerCount = 0,
+    long OmittedConflictCount = 0,
+    long OmittedHoldingSessionCount = 0,
+    DateTimeOffset ObservedAt = default);
+
+public sealed record DataRetentionReasonCount(RetentionDataClass? DataClass, string Code, long Count);
+
+public sealed record DataRetentionHoldingSession(Guid SessionId, long BlockerCount, long ConflictCount);
+
+public sealed record DataRetentionPruneDiagnosticsRequest(
+    [property: JsonRequired] DataRetentionRequest Request,
+    [property: JsonRequired] string ExpectedPlanId,
+    [property: JsonRequired] string ExpectedSnapshotId,
+    [property: JsonRequired] DateTimeOffset ObservedAt,
+    string? Continuation = null,
+    int Limit = 100);
+
+public sealed record DataRetentionDiagnosticDetail(
+    bool IsBlocker,
+    RetentionDataClass? DataClass,
+    string ResourceId,
+    string Code,
+    string Message,
+    Guid? HoldingSessionId);
+
+public sealed record DataRetentionDiagnosticPage(
+    string PlanId,
+    DateTimeOffset ObservedAt,
+    long TotalCount,
+    long BlockerCount,
+    long ConflictCount,
+    DataRetentionDiagnosticDetail[] Details,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? NextContinuation);
+
+public sealed record DataRetentionDiagnosticPageAdmission(
+    DataRetentionDiagnosticPage Page,
+    ICovenantSnapshotReadLease? ReadLease);

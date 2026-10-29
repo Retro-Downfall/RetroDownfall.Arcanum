@@ -268,15 +268,37 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
     [Fact]
     [Trait("Category", "HostedProducerProductionAnalysis")]
-    public void Production_subscribes_exactly_one_named_handler_to_connection_state_changes()
+    public void Production_connection_state_subscriptions_match_the_closed_named_handler_registry()
     {
-        HostedGrimoireProducerInventory.ConnectionStateSubscription subscription = Assert.Single(
-            HostedGrimoireProducerInventory.ProbeConnectionStateSubscriptions(HostedGrimoireProducerInventory.ProductionCompilations));
+        string[] actual = HostedGrimoireProducerInventory.ProbeConnectionStateSubscriptions(HostedGrimoireProducerInventory.ProductionCompilations)
+            .Select(subscription =>
+            {
+                SemanticModel model = subscription.Compilation.GetSemanticModel(subscription.Tree);
 
-        // The enrolment interceptor releases a physical connection that is closed from outside EF, and nothing else
-        // attaches to the event, so the registry the traversal reads is closed.
-        Assert.Equal("CovenantConnectionEnrolmentInterceptor.cs", Path.GetFileName(subscription.Tree.FilePath));
+                IMethodSymbol handler = Assert.IsAssignableFrom<IMethodSymbol>(model.GetSymbolInfo(subscription.Assignment.Right).Symbol);
 
-        Assert.Equal("OnPhysicalStateChanged", subscription.Assignment.Right.ToString());
+                IEventSymbol stateChange = Assert.IsAssignableFrom<IEventSymbol>(model.GetSymbolInfo(subscription.Assignment.Left).Symbol);
+
+                ISymbol owner = model.GetEnclosingSymbol(subscription.Assignment.SpanStart)!;
+
+                Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax removal = Assert.Single(subscription.Tree.GetRoot().DescendantNodes()
+                    .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax>(),
+                    assignment => assignment.IsKind(SyntaxKind.SubtractAssignmentExpression)
+                        && SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(assignment.Left).Symbol, stateChange)
+                        && SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(assignment.Right).Symbol, handler));
+
+                return Path.GetFileName(subscription.Tree.FilePath) + "|" + handler.ContainingType.ToDisplayString() + "." + handler.Name
+                    + "|" + owner.Name + "|" + model.GetEnclosingSymbol(removal.SpanStart)!.Name;
+            })
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(
+        [
+            "BudgetReservationService.cs|RetroDownfall.Arcanum.Infrastructure.Data.BudgetReservationService.CommittedReadAhead.ConnectionStateChanged|.ctor|Dispose",
+            "CovenantConnectionEnrolmentInterceptor.cs|RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantConnectionEnrolmentInterceptor.OnPhysicalStateChanged|BeginOpen|CompleteRelease",
+            "GrimoireSchemaQuiescentExecution.cs|RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaQuiescentExecution.OnStateChange|.ctor|Dispose",
+            "RetentionSchemaCensus.cs|RetroDownfall.Arcanum.Infrastructure.Data.RetentionSchemaCensus.OnStateChange|ReadVersionAsync|Dispose",
+        ], actual);
     }
 }

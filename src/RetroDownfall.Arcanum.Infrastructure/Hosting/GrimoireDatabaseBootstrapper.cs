@@ -931,6 +931,22 @@ public static class GrimoireDatabaseBootstrapper
             expectedInstallationId,
             cancellationToken).ConfigureAwait(false);
 
+        if (await GrimoireSchemaReadinessDrain.RequiredAsync(installConnection, installer.Chains, cancellationToken).ConfigureAwait(false))
+        {
+            if (heldInstallationLock is null)
+            {
+                throw new GrimoireDatabaseUnavailableException("A readiness-blocking Core data transition requires the installation maintenance lock.");
+            }
+
+            using GrimoireSchemaQuiescentExecution execution = GrimoireSchemaQuiescentExecution.ForStartup(
+                installConnection, heldInstallationLock, grimoireDirectory,
+                scope.ServiceProvider.GetRequiredService<IGrimoireDbReadiness>());
+
+            result = await GrimoireSchemaReadinessDrain.DrainAsync(installConnection, installer,
+                new GrimoireSchemaBackfillRunner(installer, TimeProvider.System), dimensions, context,
+                execution, result, cancellationToken).ConfigureAwait(false);
+        }
+
         // The provisional pre-schema classification belongs to this process only after the
         // authenticated active envelope and the converged database authority prove they name the
         // same installation. Keep this immediately before Covenant publication/reconciliation.

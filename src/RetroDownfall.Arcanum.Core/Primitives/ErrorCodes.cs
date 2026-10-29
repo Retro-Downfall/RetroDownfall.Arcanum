@@ -89,6 +89,21 @@ public static class ErrorCodes
 
         public const string InvalidPrompt = "Validation.InvalidPrompt";
 
+        /// <summary>The prompt exceeds its configured character limit.</summary>
+        public const string PromptTooLong = "Validation.PromptTooLong";
+
+        /// <summary>The additional system prompt exceeds its configured character limit.</summary>
+        public const string AdditionalSystemPromptTooLong = "Validation.AdditionalSystemPromptTooLong";
+
+        /// <summary>The stateless history contains more messages than configured.</summary>
+        public const string TooManyStatelessMessages = "Validation.TooManyStatelessMessages";
+
+        /// <summary>A stateless message contains more content parts than configured.</summary>
+        public const string TooManyContentParts = "Validation.TooManyContentParts";
+
+        /// <summary>A stateless message exceeds its configured UTF-8 byte limit.</summary>
+        public const string StatelessMessageTooLong = "Validation.StatelessMessageTooLong";
+
         public const string InvalidTemperature = "Validation.InvalidTemperature";
 
         public const string InvalidTopP = "Validation.InvalidTopP";

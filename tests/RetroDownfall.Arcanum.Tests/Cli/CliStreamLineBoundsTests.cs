@@ -142,28 +142,34 @@ public sealed class CliStreamLineBoundsTests
         Assert.Equal("edge", only.Message);
     }
 
-    [Fact]
-    public async Task Research_stream_reports_a_line_over_the_limit_as_an_invalid_response_and_continues()
+    [Theory]
+    [InlineData(1)]
+    [InlineData(400)]
+    public async Task Research_stream_reports_a_line_over_the_limit_as_an_invalid_response_and_continues(int excessCharacters)
     {
-        string oversized = JsonSerializer.Serialize(
-            new WebResearchStreamFrame
-            {
-                Type = WebResearchStreamFrameType.Progress,
-                Message = new string('y', 400),
-            },
-            ArcanumJsonContext.Default.WebResearchStreamFrame);
+        WebResearchStreamFrame progress = new()
+        {
+            Type = WebResearchStreamFrameType.Progress,
+            Message = "after",
+        };
 
         string accepted = JsonSerializer.Serialize(
-            new WebResearchStreamFrame
-            {
-                Type = WebResearchStreamFrameType.Progress,
-                Message = "after",
-            },
+            progress,
             ArcanumJsonContext.Default.WebResearchStreamFrame);
+
+        string oversized = JsonSerializer.Serialize(
+            progress with { Message = progress.Message + new string('y', excessCharacters) },
+            ArcanumJsonContext.Default.WebResearchStreamFrame);
+
+        // Derive the boundary from the actual wire contract, including optional envelope fields.
+        // The following event is exactly at the limit; the discarded event exceeds it by the stated amount.
+        int limit = accepted.Length;
+
+        Assert.Equal(limit + excessCharacters, oversized.Length);
 
         ArcanumApiClient client = CreateClient(
             Ndjson(oversized + "\n" + accepted + "\n"),
-            maxStreamLineLength: 128);
+            maxStreamLineLength: limit);
 
         List<WebResearchStreamFrame> frames = await CollectAsync(
             client.ResearchWebAsync(
@@ -178,9 +184,14 @@ public sealed class CliStreamLineBoundsTests
 
                 Assert.Equal("Api.InvalidResponse", discarded.Code);
 
-                Assert.Contains("128 characters", discarded.Message, StringComparison.Ordinal);
+                Assert.Contains($"{limit} characters", discarded.Message, StringComparison.Ordinal);
             },
-            kept => Assert.Equal("after", kept.Message));
+            kept =>
+            {
+                Assert.Equal(WebResearchStreamFrameType.Progress, kept.Type);
+
+                Assert.Equal(progress.Message, kept.Message);
+            });
     }
 
     [Fact]

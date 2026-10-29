@@ -834,7 +834,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (capabilityValidation.IsFailure)
                 {
-                    return Result<PromptTurnResult>.Failure(capabilityValidation.Error);
+                    return lastFailure = Result<PromptTurnResult>.Failure(capabilityValidation.Error);
                 }
 
                 ChatClientLease lease;
@@ -885,7 +885,7 @@ public sealed partial class WizardIntelligenceProvider(
                     // The concrete lease can differ from the settings used for preflight/resolution.
                     if (memoryDelegation is not null && !MemoryDelegationNativeCandidates.SupportsTools(lease.Provider, lease.ResolvedModel))
                     {
-                        return Result<PromptTurnResult>.Failure(MemoryDelegationNativeCandidates.Unavailable());
+                        return lastFailure = Result<PromptTurnResult>.Failure(MemoryDelegationNativeCandidates.Unavailable());
                     }
 
                     InferenceAttemptResult attempt = await DrainBufferedInferenceAttemptAsync(
@@ -940,7 +940,7 @@ public sealed partial class WizardIntelligenceProvider(
         }
         finally
         {
-            await ResolveDeferredTurnAsync(seed).ConfigureAwait(false);
+            await ResolveDeferredTurnAsync(seed, !callerToken.IsCancellationRequested && lastFailure.IsFailure ? lastFailure.Error : null).ConfigureAwait(false);
         }
 
         return lastFailure;
@@ -1240,6 +1240,15 @@ public sealed partial class WizardIntelligenceProvider(
         // Built once for the whole logical run and shared by every candidate (DESIGN §10.7.2).
         TurnContextSeed streamSeed = new();
 
+        Error? deferredTerminal = null;
+
+        IntelligenceEvent TerminalFrame(Error error, bool partialReplyDropped = false)
+        {
+            deferredTerminal = error;
+
+            return ErrorFrame(error, partialReplyDropped);
+        }
+
         // Suppress exact informational repeats only across attempts, never genuine progress within one attempt.
         Dictionary<string, int> informationalOrigins = new(StringComparer.Ordinal);
 
@@ -1259,7 +1268,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (capabilityValidation.IsFailure)
                 {
-                    yield return ErrorFrame(capabilityValidation.Error);
+                    yield return TerminalFrame(capabilityValidation.Error);
 
                     yield break;
                 }
@@ -1309,7 +1318,7 @@ public sealed partial class WizardIntelligenceProvider(
                         continue;
                     }
 
-                    yield return ErrorFrame(new Error(
+                    yield return TerminalFrame(new Error(
                         ErrorCodes.Hub.Error,
                         chatClientFactory is ChatClientFactory ? PublicInferenceFailureMessage : BuildInferenceFailureMessage(candidateProvider, leaseBuildFailure)));
 
@@ -1384,7 +1393,7 @@ public sealed partial class WizardIntelligenceProvider(
                         continue;
                     }
 
-                    yield return ErrorFrame(new Error(
+                    yield return TerminalFrame(new Error(
                         ErrorCodes.Hub.Error,
                         ModelCallExecutor is global::RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor ? PublicInferenceFailureMessage : BuildInferenceFailureMessage(candidateProvider, moveNextFailure)),
                         classification.PartialReplyDropped);
@@ -1473,7 +1482,7 @@ public sealed partial class WizardIntelligenceProvider(
                         continue;
                     }
 
-                    yield return ErrorFrame(new Error(
+                    yield return TerminalFrame(new Error(
                         ErrorCodes.Hub.Error,
                         ModelCallExecutor is global::RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor ? PublicInferenceFailureMessage : BuildInferenceFailureMessage(candidateProvider, moveNextFailure)),
                         classification.PartialReplyDropped);
@@ -1514,6 +1523,11 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (gateEvent is not null)
                 {
+                    if (gateEvent.Type == IntelligenceEventType.Error)
+                    {
+                        deferredTerminal = new Error(gateEvent.Data ?? ErrorCodes.Hub.Error, gateEvent.Message);
+                    }
+
                     yield return gateEvent;
                 }
 
@@ -1565,7 +1579,7 @@ public sealed partial class WizardIntelligenceProvider(
                             midStreamFailure.GetType().FullName);
                     }
 
-                    yield return ErrorFrame(new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage),
+                    yield return TerminalFrame(new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage),
                         classification.PartialReplyDropped);
                 }
 
@@ -1585,7 +1599,9 @@ public sealed partial class WizardIntelligenceProvider(
         }
         finally
         {
-            await ResolveDeferredTurnAsync(streamSeed).ConfigureAwait(false);
+            // Once yielded, the terminal error owns replay even if the caller disconnects before cleanup.
+            // A cancellation before any terminal frame leaves deferredTerminal null.
+            await ResolveDeferredTurnAsync(streamSeed, deferredTerminal).ConfigureAwait(false);
         }
     }
 
@@ -1599,7 +1615,7 @@ public sealed partial class WizardIntelligenceProvider(
     /// is untouched: the writer no-ops on <c>IsFinalized</c> and on a null assistant entry, and it
     /// swallows its own failures so this can never mask the run's terminal error.
     /// </summary>
-    private async Task ResolveDeferredTurnAsync(TurnContextSeed seed)
+    private async Task ResolveDeferredTurnAsync(TurnContextSeed seed, Error? terminalError = null)
     {
         if (seed.Turn is not { } deferred)
         {
@@ -1609,7 +1625,9 @@ public sealed partial class WizardIntelligenceProvider(
         try
         {
             await grimoireTurnWriter
-                .TryResolveInterruptedOnStreamExitAsync(deferred, null)
+                .TryResolveInterruptedOnStreamExitAsync(deferred, null,
+                    interruptionOutcome: terminalError is { } error ? SessionTurnClaimOutcome.RestoredInterrupted(
+                        error.Code, Primitives.ArcanumErrorMapper.ResolveStatusCode(error.Code), []) : null)
                 .ConfigureAwait(false);
         }
         finally
@@ -1691,6 +1709,76 @@ public sealed partial class WizardIntelligenceProvider(
         MemoryDelegationRootBinding? memoryDelegation = null)
 #pragma warning restore CS8425
     {
+        InferenceAttemptExitCleanup cleanup = new();
+
+        Error? unexpected = null;
+
+        IAsyncEnumerator<IntelligenceEvent> iterator = RunInferenceAttemptCoreAsync(lease, request, invocationContext,
+            prompt, mode, classification, inferenceToken, callerToken, auditContext, cleanup, seed, canFallBack,
+            covenantScope, memoryDelegation).GetAsyncEnumerator(inferenceToken);
+
+        try
+        {
+            while (true)
+            {
+                bool moved;
+
+                try
+                {
+                    moved = await iterator.MoveNextAsync().ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (callerToken.IsCancellationRequested || inferenceToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception)
+                {
+                    unexpected = new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage);
+
+                    throw;
+                }
+
+                if (!moved) yield break;
+
+                yield return iterator.Current;
+            }
+        }
+        finally
+        {
+            try
+            {
+                await iterator.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                if (cleanup.CompleteAsync is { } complete) await complete(unexpected).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private sealed class InferenceAttemptExitCleanup
+    {
+        public Func<Error?, Task>? CompleteAsync { get; set; }
+    }
+
+#pragma warning disable CS8425
+    private async IAsyncEnumerable<IntelligenceEvent> RunInferenceAttemptCoreAsync(
+        ChatClientLease lease,
+        PingRequest request,
+        ArcanumInvocationContext invocationContext,
+        string prompt,
+        TurnResponseMode mode,
+        StreamFailureClassification classification,
+        CancellationToken inferenceToken,
+        CancellationToken callerToken,
+        InferenceAuditContext? auditContext,
+        InferenceAttemptExitCleanup exitCleanup,
+        TurnContextSeed? seed = null,
+        bool canFallBack = false,
+        CovenantTurnScope? covenantScope = null,
+        MemoryDelegationRootBinding? memoryDelegation = null)
+#pragma warning restore CS8425
+    {
         bool streaming = mode == TurnResponseMode.Streaming;
 
         CompatibilityDiagnostics.Attempt? compatibilityAttempt = _compatibilityDiagnostics?.Capture(lease);
@@ -1725,9 +1813,28 @@ public sealed partial class WizardIntelligenceProvider(
         // Failed even when the caller cancels while the turn unwinds.
         bool streamFailureReported = false;
 
+        CampaignRollupTurnSnapshot? campaignTurn = null;
+
+        SessionTurnClaimOutcome? terminalOutcome = null;
+
+        SessionTurnClaimOutcome RecordTerminal(Error error)
+        {
+            terminalOutcome = SessionTurnClaimOutcome.RestoredInterrupted(error.Code,
+                Primitives.ArcanumErrorMapper.ResolveStatusCode(error.Code), []);
+
+            if (!ShouldDeferTurnToNextCandidate(seed, canFallBack, classification, streamAccumulator.Length))
+            {
+                campaignTurn?.RecordTerminal(error);
+            }
+
+            return terminalOutcome;
+        }
+
         async Task<IntelligenceEvent> FailureFrameAsync(Error error)
         {
             streamFailureReported = true;
+
+            RecordTerminal(error);
 
             if (streaming
                 && !grimoireTurn.IsFinalized
@@ -1740,7 +1847,7 @@ public sealed partial class WizardIntelligenceProvider(
                     grimoireTurn,
                     streamAccumulator.ToString(),
                     covenantScope.DerivedSensitivity,
-                    stagedCommit).ConfigureAwait(false);
+                    stagedCommit, terminalOutcome).ConfigureAwait(false);
             }
 
             return ErrorFrame(error, streaming && grimoireTurn.PartialReplyDropped);
@@ -1763,6 +1870,48 @@ public sealed partial class WizardIntelligenceProvider(
         // re-applied inside ProcessWithLiveWardsAsync before each tool call, and the turn's own
         // bookkeeping and cleanup go through these captured objects rather than ambient reads.
         TurnAmbientSet streamTurnAmbients = new();
+
+        async Task CompleteAttemptAsync(Error? unexpected)
+        {
+            if (!ShouldDeferTurnToNextCandidate(
+                    seed,
+                    canFallBack,
+                    classification,
+                    streamAccumulator.Length))
+            {
+                if (terminalOutcome is null)
+                {
+                    if (unexpected is { } failure) RecordTerminal(failure);
+                    else if (classification.BufferedTerminal is { IsFailure: true } terminal) RecordTerminal(terminal.Error);
+                }
+
+                try
+                {
+                    // Reached after a failed finalize as well as after a genuine interrupt, and the
+                    // handle is still unfinalized in both. Passing the staged batch is what stops this
+                    // cleanup from committing the answer a moment after the atomic arm refused to.
+                    await grimoireTurnWriter
+                        .TryResolveInterruptedOnStreamExitAsync(
+                            grimoireTurn,
+                            streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
+                            covenantScope?.DerivedSensitivity,
+                            covenantScope?.StagedCommit(), terminalOutcome)
+                        .ConfigureAwait(false);
+                }
+                finally
+                {
+                    // An exception can bypass FailureFrameAsync while the caller is still connected.
+                    // Its outer error projection needs the disposition established by this cleanup.
+                    classification.PartialReplyDropped = grimoireTurn.PartialReplyDropped;
+
+                    // Idempotent after the successful handoff; a necessary backstop for every path
+                    // that exits before reaching it.
+                    grimoireTurnWriter.CompleteSagaExtractionHandoff(grimoireTurn);
+                }
+            }
+        }
+
+        exitCleanup.CompleteAsync = CompleteAttemptAsync;
 
         try
         {
@@ -1819,8 +1968,6 @@ public sealed partial class WizardIntelligenceProvider(
             {
                 yield return new IntelligenceEvent(IntelligenceEventType.Status, "Mage is generating response...");
             }
-
-            CampaignRollupTurnSnapshot? campaignTurn = null;
 
             // A server tool can add protected sensitivity after the first dispatch. Reserve genuine Session ownership
             // before any tool executes, even when no memory is currently admitted and maintenance is disabled.
@@ -2063,7 +2210,8 @@ public sealed partial class WizardIntelligenceProvider(
                 }
 
                 await grimoireTurnWriter
-                    .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
+                    .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None,
+                        interruptionOutcome: RecordTerminal(new Error(streamAttachmentPrep.ErrorCode, streamAttachmentPrep.ErrorMessage)))
                     .ConfigureAwait(false);
 
                 yield break;
@@ -2307,7 +2455,8 @@ public sealed partial class WizardIntelligenceProvider(
                 }
 
                 await grimoireTurnWriter
-                    .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
+                    .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None,
+                        interruptionOutcome: RecordTerminal(streamAccountingBegin.Error))
                     .ConfigureAwait(false);
 
                 yield break;
@@ -2341,6 +2490,8 @@ public sealed partial class WizardIntelligenceProvider(
 
             ResolvedSpell? streamResolvedSpell;
 
+            SemanticSpellRouter.QueryEmbeddingHandoff? streamRoutingQuery = null;
+
             if (request.SkipSpellRouting)
             {
                 streamResolvedSpell = null;
@@ -2354,7 +2505,7 @@ public sealed partial class WizardIntelligenceProvider(
                     ? streamSpellRoot
                     : null;
 
-                Result<ResolvedSpell?> streamRoutedSpell = await ResolveRoutedSpellAsync(
+                Result<RoutedSpellResolution> streamRoutedSpell = await ResolveRoutedSpellAsync(
                     request,
                     chatClient,
                     lease.Provider,
@@ -2370,7 +2521,8 @@ public sealed partial class WizardIntelligenceProvider(
                             .ResolveInterruptedAndMarkFinalizedAsync(
                                 grimoireTurn,
                                 null,
-                                CancellationToken.None)
+                                CancellationToken.None,
+                        interruptionOutcome: RecordTerminal(streamRoutedSpell.Error))
                             .ConfigureAwait(false);
 
                         classification.BufferedTerminal = Result<PromptTurnResult>.Failure(streamRoutedSpell.Error);
@@ -2384,7 +2536,9 @@ public sealed partial class WizardIntelligenceProvider(
                     yield break;
                 }
 
-                streamResolvedSpell = streamRoutedSpell.Value;
+                streamResolvedSpell = streamRoutedSpell.Value.Spell;
+
+                streamRoutingQuery = streamRoutedSpell.Value.QueryEmbedding;
             }
 
             ParsedSpell? streamActiveSpell = streamResolvedSpell?.Primary;
@@ -2408,7 +2562,7 @@ public sealed partial class WizardIntelligenceProvider(
             }
             else
             {
-                streamQueryEmbedding = await ResolveRagQueryEmbeddingAsync(request, streamTapestrySelection is not null, inferenceToken, retrievalDiagnostics).ConfigureAwait(false);
+                streamQueryEmbedding = await ResolveRagQueryEmbeddingAsync(request, streamTapestrySelection is not null, inferenceToken, retrievalDiagnostics, streamRoutingQuery).ConfigureAwait(false);
 
                 if (seed is not null)
                 {
@@ -2765,7 +2919,8 @@ public sealed partial class WizardIntelligenceProvider(
                             .ResolveInterruptedAndMarkFinalizedAsync(
                                 grimoireTurn,
                                 null,
-                                CancellationToken.None)
+                                CancellationToken.None,
+                        interruptionOutcome: RecordTerminal(new Error(ErrorCodes.Validation.AttachedFiles, promoteError)))
                             .ConfigureAwait(false);
 
                         yield break;
@@ -2848,7 +3003,8 @@ public sealed partial class WizardIntelligenceProvider(
                     .ResolveInterruptedAndMarkFinalizedAsync(
                         grimoireTurn,
                         null,
-                        CancellationToken.None)
+                        CancellationToken.None,
+                        interruptionOutcome: RecordTerminal(effectiveClientTools.Error))
                     .ConfigureAwait(false);
 
                 yield return await FailureFrameAsync(effectiveClientTools.Error);
@@ -2899,7 +3055,8 @@ public sealed partial class WizardIntelligenceProvider(
                             .ResolveInterruptedAndMarkFinalizedAsync(
                                 grimoireTurn,
                                 null,
-                                CancellationToken.None)
+                                CancellationToken.None,
+                        interruptionOutcome: RecordTerminal(referenceError))
                             .ConfigureAwait(false);
 
                         yield break;
@@ -3064,7 +3221,8 @@ public sealed partial class WizardIntelligenceProvider(
                             .ResolveInterruptedAndMarkFinalizedAsync(
                                 grimoireTurn,
                                 null,
-                                CancellationToken.None)
+                                CancellationToken.None,
+                        interruptionOutcome: RecordTerminal(boundaryError))
                             .ConfigureAwait(false);
 
                         yield break;
@@ -3330,7 +3488,8 @@ public sealed partial class WizardIntelligenceProvider(
                                 .ResolveInterruptedAndMarkFinalizedAsync(
                                     grimoireTurn,
                                     null,
-                                    CancellationToken.None)
+                                    CancellationToken.None,
+                        interruptionOutcome: RecordTerminal(streamContextGate.Error))
                                 .ConfigureAwait(false);
 
                             classification.BufferedTerminal = Result<PromptTurnResult>.Failure(streamContextGate.Error);
@@ -3372,7 +3531,8 @@ public sealed partial class WizardIntelligenceProvider(
                                 .ResolveInterruptedAndMarkFinalizedAsync(
                                     grimoireTurn,
                                     null,
-                                    CancellationToken.None)
+                                    CancellationToken.None,
+                        interruptionOutcome: RecordTerminal(streamCovenantGate.Error))
                                 .ConfigureAwait(false);
 
                             classification.BufferedTerminal = Result<PromptTurnResult>.Failure(streamCovenantGate.Error);
@@ -3840,7 +4000,8 @@ public sealed partial class WizardIntelligenceProvider(
                                     .ResolveInterruptedAndMarkFinalizedAsync(
                                         grimoireTurn,
                                         null,
-                                        CancellationToken.None)
+                                        CancellationToken.None,
+                        interruptionOutcome: RecordTerminal(inferenceTypedError ?? new Error(ErrorCodes.Hub.Error, inferenceError)))
                                     .ConfigureAwait(false);
                             }
 
@@ -4411,10 +4572,7 @@ public sealed partial class WizardIntelligenceProvider(
                         CancellationToken.None,
                         covenantScope?.DerivedSensitivity,
                         covenantScope?.StagedCommit(),
-                        interruptionOutcome: SessionTurnClaimOutcome.RestoredInterrupted(
-                            terminalInferenceError.Code,
-                            Primitives.ArcanumErrorMapper.ResolveStatusCode(terminalInferenceError.Code),
-                            [])).ConfigureAwait(false);
+                        interruptionOutcome: RecordTerminal(terminalInferenceError)).ConfigureAwait(false);
                 }
 
                 yield return await FailureFrameAsync(terminalInferenceError);
@@ -4732,7 +4890,8 @@ public sealed partial class WizardIntelligenceProvider(
                 }
 
                 await grimoireTurnWriter
-                    .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
+                    .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None,
+                        interruptionOutcome: RecordTerminal(guardrailsStreamOutput.Error))
                     .ConfigureAwait(false);
 
                 yield return await FailureFrameAsync(guardrailsStreamOutput.Error);
@@ -4953,37 +5112,6 @@ public sealed partial class WizardIntelligenceProvider(
                         "Failed to complete turn accounting for streamed inference; exception type {ExceptionType}, session {SessionId}.",
                         ex.GetType().FullName,
                         grimoireTurn.SessionId);
-                }
-            }
-
-            if (!ShouldDeferTurnToNextCandidate(
-                    seed,
-                    canFallBack,
-                    classification,
-                    streamAccumulator.Length))
-            {
-                try
-                {
-                    // Reached after a failed finalize as well as after a genuine interrupt, and the
-                    // handle is still unfinalized in both. Passing the staged batch is what stops this
-                    // cleanup from committing the answer a moment after the atomic arm refused to.
-                    await grimoireTurnWriter
-                        .TryResolveInterruptedOnStreamExitAsync(
-                            grimoireTurn,
-                            streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
-                            covenantScope?.DerivedSensitivity,
-                            covenantScope?.StagedCommit())
-                        .ConfigureAwait(false);
-                }
-                finally
-                {
-                    // An exception can bypass FailureFrameAsync while the caller is still connected.
-                    // Its outer error projection needs the disposition established by this cleanup.
-                    classification.PartialReplyDropped = grimoireTurn.PartialReplyDropped;
-
-                    // Idempotent after the successful handoff; a necessary backstop for every path
-                    // that exits before reaching it.
-                    grimoireTurnWriter.CompleteSagaExtractionHandoff(grimoireTurn);
                 }
             }
         }
@@ -5439,7 +5567,9 @@ public sealed partial class WizardIntelligenceProvider(
             new IntelligenceToolCallEvent(denied.CallId, denied.ToolName, denied.ArgsSnapshot, toolCallIndex));
     }
 
-    private async Task<Result<ResolvedSpell?>> ResolveRoutedSpellAsync(
+    private sealed record RoutedSpellResolution(ResolvedSpell? Spell, SemanticSpellRouter.QueryEmbeddingHandoff? QueryEmbedding);
+
+    private async Task<Result<RoutedSpellResolution>> ResolveRoutedSpellAsync(
         PingRequest request,
         IChatClient chatClient,
         ProviderSettings mainProvider,
@@ -5448,6 +5578,11 @@ public sealed partial class WizardIntelligenceProvider(
         CancellationToken cancellationToken,
         Action<string, int>? observeEmbedding = null)
     {
+        SemanticSpellRouter.QueryEmbeddingHandoff? queryEmbedding = null;
+
+        Result<RoutedSpellResolution> Complete(ResolvedSpell? spell) =>
+            Result<RoutedSpellResolution>.Success(new(spell, queryEmbedding));
+
         long maxSpellFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes();
 
         if (!string.IsNullOrWhiteSpace(request.OverrideSpellPath))
@@ -5458,7 +5593,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (validated.IsFailure)
             {
-                return Result<ResolvedSpell?>.Failure(validated.Error);
+                return Result<RoutedSpellResolution>.Failure(validated.Error);
             }
 
             ParsedSpell? overrideSpell = await SpellScanner
@@ -5467,8 +5602,8 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (overrideSpell is null)
             {
-                return Result<ResolvedSpell?>.Failure(new Error(
-                    "Validation.SpellOverride",
+                return Result<RoutedSpellResolution>.Failure(new Error(
+                    ErrorCodes.Validation.SpellOverride,
                     "The explicitly selected Spell version could not be loaded. Check that the requested version is available, within the Spell file size limit, and has valid frontmatter."));
             }
 
@@ -5481,7 +5616,7 @@ public sealed partial class WizardIntelligenceProvider(
                     logger)
                 .ConfigureAwait(false);
 
-            return Result<ResolvedSpell?>.Success(resolvedOverride);
+            return Complete(resolvedOverride);
         }
 
         IReadOnlyList<SpellMetadata> spellMetadata = await SpellScanner
@@ -5501,7 +5636,7 @@ public sealed partial class WizardIntelligenceProvider(
         {
             if (!TryResolveOverrideSpellMetadata(request.OverrideSpellName, spellMetadata, out SpellMetadata? overridePick))
             {
-                return Result<ResolvedSpell?>.Failure(
+                return Result<RoutedSpellResolution>.Failure(
                     new Error(
                         ErrorCodes.Validation.SpellOverride,
                         $"No spell matches OverrideSpellName '{request.OverrideSpellName.Trim()}'. Expected a SPELL.md frontmatter name or parent folder name."));
@@ -5513,9 +5648,13 @@ public sealed partial class WizardIntelligenceProvider(
         {
             string semanticProbe = GetSemanticRouterUserProbe(request);
 
-            SpellRoutingDecision routingDecision = await semanticSpellRouter
-                .ResolveAsync(spellMetadata, semanticProbe, cancellationToken, observeEmbedding)
+            SemanticSpellRouter.RoutingResolution routing = await semanticSpellRouter
+                .ResolveWithQueryAsync(spellMetadata, semanticProbe, cancellationToken, observeEmbedding)
                 .ConfigureAwait(false);
+
+            SpellRoutingDecision routingDecision = routing.Decision;
+
+            queryEmbedding = routing.QueryEmbedding;
 
             if (routingDecision.Mode == SpellRoutingDecisionMode.DirectResonance)
             {
@@ -5610,7 +5749,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (matchedMetadata is null)
         {
-            return Result<ResolvedSpell?>.Success(
+            return Complete(
                 routerEntities.Count == 0
                     ? null
                     : ResolvedSpell.EntitiesOnly(routerEntities));
@@ -5622,7 +5761,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (activeSpell is null)
         {
-            return Result<ResolvedSpell?>.Success(
+            return Complete(
                 routerEntities.Count == 0
                     ? null
                     : ResolvedSpell.EntitiesOnly(routerEntities));
@@ -5638,7 +5777,7 @@ public sealed partial class WizardIntelligenceProvider(
                 spellMetadata)
             .ConfigureAwait(false);
 
-        return Result<ResolvedSpell?>.Success(resolved with { Entities = routerEntities });
+        return Complete(resolved with { Entities = routerEntities });
     }
 
     /// <summary>
@@ -5860,7 +5999,8 @@ public sealed partial class WizardIntelligenceProvider(
     /// neither feature needs an embedding this turn (both disabled), or when embedding fails for any
     /// reason — callers treat <c>null</c> as "skip RAG retrieval for this turn", never as an error.
     /// </summary>
-    private async Task<Embedding<float>?> ResolveRagQueryEmbeddingAsync(PingRequest request, bool tapestryEligible, CancellationToken cancellationToken, RetrievalDiagnostics? diagnostics = null)
+    private async Task<Embedding<float>?> ResolveRagQueryEmbeddingAsync(PingRequest request, bool tapestryEligible, CancellationToken cancellationToken, RetrievalDiagnostics? diagnostics = null,
+        SemanticSpellRouter.QueryEmbeddingHandoff? routingQuery = null)
     {
         if (SubagentExecutionAmbient.IsIsolated)
         {
@@ -5893,7 +6033,7 @@ public sealed partial class WizardIntelligenceProvider(
             return null;
         }
 
-        return await EmbedQueryAsync(GetSemanticRouterUserProbe(request), cancellationToken, diagnostics).ConfigureAwait(false);
+        return await EmbedQueryAsync(GetSemanticRouterUserProbe(request), cancellationToken, diagnostics, routingQuery).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -5901,7 +6041,8 @@ public sealed partial class WizardIntelligenceProvider(
     /// unavailable, embedding call failure) — returns <c>null</c> instead. Actual failures produce one
     /// content-free Warning per logical turn; expected skips do not report an outage.
     /// </summary>
-    private async Task<Embedding<float>?> EmbedQueryAsync(string prompt, CancellationToken cancellationToken, RetrievalDiagnostics? diagnostics)
+    private async Task<Embedding<float>?> EmbedQueryAsync(string prompt, CancellationToken cancellationToken, RetrievalDiagnostics? diagnostics,
+        SemanticSpellRouter.QueryEmbeddingHandoff? routingQuery)
     {
         bool invoked = false;
 
@@ -5912,6 +6053,20 @@ public sealed partial class WizardIntelligenceProvider(
         try
         {
             if (!weaveService.IsAvailable) return null;
+
+            if (routingQuery is not null)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (semanticSpellRouter.TryReuseQueryEmbedding(routingQuery, prompt, settings.Value.ResolveEmbeddings(), out Embedding<float>? reused))
+                {
+                    provenance = routingQuery.Provenance;
+
+                    outcome = "The shared retrieval embedding reuses the successful routing query; no additional provider invocation or token usage was recorded.";
+
+                    return reused;
+                }
+            }
 
             invoked = true;
 

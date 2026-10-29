@@ -149,6 +149,46 @@ internal static class DataRetentionEndpoints
             .WithName("PlanDataRetentionPrune");
 
         apiGroup.MapPost(
+            "/data/prune/diagnostics",
+            async (DataRetentionPruneDiagnosticsRequest? request, IDataRetentionService service,
+                HttpContext httpContext, CancellationToken cancellationToken) =>
+            {
+                if (request is null || request.Request is not { Operation: DataRetentionOperation.Prune }
+                    || string.IsNullOrWhiteSpace(request.ExpectedPlanId) || request.ExpectedPlanId.Length != 64
+                    || !request.ExpectedPlanId.All(static character => char.IsAsciiHexDigit(character))
+                    || string.IsNullOrWhiteSpace(request.ExpectedSnapshotId) || request.ExpectedSnapshotId.Length != 64
+                    || !request.ExpectedSnapshotId.All(static character => char.IsAsciiHexDigit(character))
+                    || request.ObservedAt == default || request.Limit is < 1 or > 200)
+                {
+                    return Failure(httpContext, new Error(ErrorCodes.Data.InvalidRequest,
+                        "Supply a prune preview's PlanId, diagnostic SnapshotId, and GeneratedAt, with a detail limit from 1 through 200."),
+                        StatusCodes.Status400BadRequest, ArcanumJsonContext.Default.ApiResponseDataRetentionDiagnosticPage);
+                }
+
+                Result<DataRetentionDiagnosticPageAdmission> result = await service
+                    .ReadPruneDiagnosticsAdmissionAsync(request, cancellationToken).ConfigureAwait(false);
+
+                if (result.IsFailure)
+                {
+                    return Failure(httpContext, result.Error, ResolveStatusCode(result.Error.Code),
+                        ArcanumJsonContext.Default.ApiResponseDataRetentionDiagnosticPage);
+                }
+
+                if (result.Value.ReadLease is { } lease)
+                {
+                    return new CovenantProtectedJsonResult<DataRetentionDiagnosticPage>(lease,
+                        Result<DataRetentionDiagnosticPage>.Success(result.Value.Page),
+                        ArcanumJsonContext.Default.ApiResponseDataRetentionDiagnosticPage);
+                }
+
+                return Failure(httpContext, new Error(ErrorCodes.Covenant.MaintenanceFailed,
+                    "The required Covenant planning capability is unavailable."),
+                    ResolveStatusCode(ErrorCodes.Covenant.MaintenanceFailed),
+                    ArcanumJsonContext.Default.ApiResponseDataRetentionDiagnosticPage);
+            })
+            .WithName("ReadDataRetentionPruneDiagnostics");
+
+        apiGroup.MapPost(
             "/data/prune",
             async (
                 DataRetentionApplyRequest? request,

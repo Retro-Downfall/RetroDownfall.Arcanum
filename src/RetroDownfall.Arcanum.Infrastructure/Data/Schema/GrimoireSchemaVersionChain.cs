@@ -50,7 +50,6 @@ internal sealed record GrimoireSchemaVersionStep(
 /// </remarks>
 internal sealed class GrimoireSchemaVersionChain
 {
-
     private readonly Dictionary<int, GrimoireSchemaVersionStep> _byFromVersion;
 
     internal GrimoireSchemaVersionChain(
@@ -58,7 +57,6 @@ internal sealed class GrimoireSchemaVersionChain
         IReadOnlyList<GrimoireSchemaObject> headObjects,
         IReadOnlyList<GrimoireSchemaVersionStep> steps)
     {
-
         ArgumentNullException.ThrowIfNull(headManifest);
 
         ArgumentNullException.ThrowIfNull(headObjects);
@@ -73,11 +71,9 @@ internal sealed class GrimoireSchemaVersionChain
 
         if (steps.Count != headManifest.Version - 1)
         {
-
             throw new InvalidOperationException(
                 $"The {headManifest.TransactionTier} schema chain declares {steps.Count} step(s) for head "
                 + $"version {headManifest.Version}; a chain needs exactly one step per version above 1.");
-
         }
 
         _byFromVersion = new Dictionary<int, GrimoireSchemaVersionStep>(steps.Count);
@@ -88,94 +84,85 @@ internal sealed class GrimoireSchemaVersionChain
 
         foreach (GrimoireSchemaVersionStep step in steps)
         {
-
             if (step.TransactionTier != headManifest.TransactionTier || step.Family != headManifest.Family)
             {
-
                 throw new InvalidOperationException(
                     $"A schema step for {step.Family}/{step.TransactionTier} was declared on the "
                     + $"{headManifest.Family}/{headManifest.TransactionTier} chain.");
-
             }
 
             if (step.ToVersion != step.FromVersion + 1)
             {
-
                 throw new InvalidOperationException(
                     $"The {headManifest.TransactionTier} schema step {step.FromVersion} to {step.ToVersion} "
                     + "is not consecutive; a step that skipped a version would make the chain's order unverifiable.");
-
             }
 
             if (step.FromVersion != expectedFrom)
             {
-
                 throw new InvalidOperationException(
                     $"The {headManifest.TransactionTier} schema chain expected a step leaving version "
                     + $"{expectedFrom} and found one leaving version {step.FromVersion}.");
-
             }
 
-            if (step.Statements.Count == 0)
+            if (step.Statements.Count == 0 && step.Backfill is null)
             {
-
                 throw new InvalidOperationException(
                     $"The {headManifest.TransactionTier} schema step {step.FromVersion} to {step.ToVersion} "
                     + "declares no statement.");
-
             }
 
             HashSet<int> ordinals = new(step.Statements.Count);
 
             foreach (GrimoireSchemaTransitionStatement statement in step.Statements)
             {
-
                 if (!ordinals.Add(statement.Ordinal))
                 {
-
                     throw new InvalidOperationException(
                         $"The {headManifest.TransactionTier} schema step {step.FromVersion} to "
                         + $"{step.ToVersion} declares ordinal {statement.Ordinal} twice; the ordinal is "
                         + "the install order, so two statements sharing one have no defined order.");
-
                 }
-
             }
 
             if (step.FromSourceDefinitionFingerprint.Length != 64)
             {
-
                 throw new InvalidOperationException(
                     $"The {headManifest.TransactionTier} schema step {step.FromVersion} to {step.ToVersion} "
                     + "pins a source-definition fingerprint that is not 64 characters.");
+            }
 
+            if (step.Backfill is not null
+                && (string.IsNullOrWhiteSpace(step.Backfill.Name) || step.Backfill.Name.Length > 64
+                    || step.Backfill.MaxRowsPerBatch <= 0))
+            {
+                throw new InvalidOperationException("A schema backfill requires a 1-to-64-character name and a positive row bound.");
+            }
+
+            if (step.Backfill is IGrimoireQuiescentBackfill && step.TransactionTier != GrimoireSchemaTransactionTier.Core)
+            {
+                throw new InvalidOperationException("Only Core may declare a readiness-blocking data sweep.");
             }
 
             if (step.Backfill is not null && !backfillNames.Add(step.Backfill.Name))
             {
-
                 throw new InvalidOperationException(
                     $"The {headManifest.TransactionTier} schema chain names backfill "
                     + $"'{step.Backfill.Name}' on more than one step; the journal identifies a pending "
                     + "sweep by name, so two steps sharing one name are indistinguishable after a restart.");
-
             }
 
             _byFromVersion[step.FromVersion] = step;
 
             expectedFrom = step.ToVersion;
-
         }
 
         if (steps.Count > 0 && expectedFrom != headManifest.Version)
         {
-
             throw new InvalidOperationException(
                 $"The {headManifest.TransactionTier} schema chain's last step reaches version {expectedFrom}, "
                 + $"not head version {headManifest.Version}.");
-
         }
-
     }
 
     internal GrimoireSchemaFamily Family => HeadManifest.Family;
@@ -203,15 +190,12 @@ internal sealed class GrimoireSchemaVersionChain
 
     internal bool TryGetStep(int fromVersion, out GrimoireSchemaVersionStep step)
     {
-
         bool found = _byFromVersion.TryGetValue(fromVersion, out GrimoireSchemaVersionStep? resolved);
 
         step = resolved!;
 
         return found;
-
     }
-
 }
 
 /// <summary>
@@ -225,47 +209,35 @@ internal sealed class GrimoireSchemaVersionChain
 /// </remarks>
 internal sealed class GrimoireSchemaVersionChainSet
 {
-
     private readonly Dictionary<GrimoireSchemaTransactionTier, GrimoireSchemaVersionChain> _chains;
 
     internal GrimoireSchemaVersionChainSet(IReadOnlyList<GrimoireSchemaVersionChain> chains)
     {
-
         ArgumentNullException.ThrowIfNull(chains);
 
         _chains = new Dictionary<GrimoireSchemaTransactionTier, GrimoireSchemaVersionChain>(chains.Count);
 
         foreach (GrimoireSchemaVersionChain chain in chains)
         {
-
             if (!_chains.TryAdd(chain.TransactionTier, chain))
             {
-
                 throw new InvalidOperationException(
                     $"Two schema chains were declared for the {chain.TransactionTier} transaction tier.");
-
             }
-
         }
 
         foreach (GrimoireSchemaTransactionTier tier in Enum.GetValues<GrimoireSchemaTransactionTier>())
         {
-
             if (!_chains.ContainsKey(tier))
             {
-
                 throw new InvalidOperationException(
                     $"No schema chain was declared for the {tier} transaction tier.");
-
             }
-
         }
-
     }
 
     internal GrimoireSchemaVersionChain ForTier(GrimoireSchemaTransactionTier tier) =>
         _chains.TryGetValue(tier, out GrimoireSchemaVersionChain? chain)
             ? chain
             : throw new ArgumentOutOfRangeException(nameof(tier));
-
 }

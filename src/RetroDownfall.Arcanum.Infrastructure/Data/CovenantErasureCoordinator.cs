@@ -2065,10 +2065,10 @@ internal sealed class CovenantErasureCoordinator(
 
         CovenantClosedPeriodAuthority? maintenance = null;
 
-        // Opened after the quiesce rather than before it. A fresh run whose quiesce fails has closed
-        // nothing and touched nothing. Authenticated recovery is different: it arrived with both real
-        // gates already closed and a prior process's active journal, so failure before reconstruction
-        // must retain those authorities without inventing a no-journal rollback.
+        // A fresh run opens the journal after writer quiescence. Its launch row and Covenant lease
+        // already exist; a failed quiesce may close writer admission but erases no content. The abort
+        // must restore writer readiness before rollback. Authenticated recovery instead arrives with
+        // both gates closed and an active journal, which failure before reconstruction must retain.
         GrimoireOfflineTransitionPhaseSession? phases = null;
 
         // Resolved from the journal once it is open, and never from the checkpoint. The journal is

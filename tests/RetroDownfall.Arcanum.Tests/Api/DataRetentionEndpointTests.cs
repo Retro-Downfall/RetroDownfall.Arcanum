@@ -2012,6 +2012,12 @@ public sealed partial class DataRetentionEndpointTests
                         "This fake has no Covenant planning lease.")));
         }
 
+        public Task<Result<DataRetentionDiagnosticPageAdmission>> ReadPruneDiagnosticsAdmissionAsync(
+            DataRetentionPruneDiagnosticsRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<DataRetentionDiagnosticPageAdmission>.Failure(
+                new Error(ErrorCodes.Covenant.MaintenanceFailed, "This fake has no diagnostic page capability.")));
+
         public Task<Result<DataRetentionApplyResult>> ApplyAsync(
             DataRetentionApplyRequest request,
             CancellationToken cancellationToken = default)

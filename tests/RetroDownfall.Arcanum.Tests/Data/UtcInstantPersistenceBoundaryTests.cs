@@ -735,6 +735,8 @@ public sealed class UtcInstantPersistenceBoundaryTests
             "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/ManagedFileWriteIntentRecoveryService.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/SessionDerivedArtifactStore.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/SessionSummaryMaintenanceStore.cs",
+            // Diagnostic context and snapshot hashes format observation instants, not database writes.
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Diagnostics.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Pruning.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs",

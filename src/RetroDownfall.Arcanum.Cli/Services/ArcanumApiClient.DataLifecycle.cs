@@ -66,6 +66,17 @@ public sealed partial class ArcanumApiClient
             cancellationToken);
     }
 
+    public Task<Result<DataRetentionDiagnosticPage>> ReadDataPruneDiagnosticsAsync(
+        DataRetentionPruneDiagnosticsRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(request,
+            ArcanumJsonContext.Default.DataRetentionPruneDiagnosticsRequest);
+
+        return SendRequestAsync(HttpMethod.Post, "api/data/prune/diagnostics", json, JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseDataRetentionDiagnosticPage, cancellationToken);
+    }
+
     public Task<Result<DataRetentionApplyResult>> ApplyDataPruneAsync(
         DataRetentionApplyRequest request,
         CancellationToken cancellationToken = default)

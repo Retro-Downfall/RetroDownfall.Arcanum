@@ -52,9 +52,8 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 [Trait("Category", "Integration")]
 
-public sealed class CovenantLabeledRetentionRouteTests
+public sealed partial class CovenantLabeledRetentionRouteTests
 {
-
     private static readonly Guid Generation = Guid.Parse("5E6F7081-92A3-4B5C-8D9E-0F1A2B3C4D5E");
 
     /// <summary>
@@ -68,7 +67,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
     public async Task A_labeled_entry_survives_the_retention_prune_route()
     {
-
         RequireSqlCipher();
 
         await using ArcanumWebApplicationFactory factory = new();
@@ -81,7 +79,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
         await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
         {
-
             SqliteConnection connection = await OpenAsync(scope);
 
             await SeedSessionAsync(connection, sessionId);
@@ -93,7 +90,6 @@ public sealed class CovenantLabeledRetentionRouteTests
                 SensitiveArtifactKind.AssistantEntry,
                 entryId,
                 sessionId);
-
         }
 
         HttpResponseMessage enabled = await client.PutAsync(
@@ -120,7 +116,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         Assert.Equal(1, await CountAsync(verify, "Entries", "Id", entryId));
 
         Assert.Equal(1, await CountAsync(verify, "artifact_sensitivity", "ArtifactId", entryId));
-
     }
 
     /// <summary>
@@ -134,7 +129,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
     public async Task A_labeled_entry_refuses_the_session_delete_route()
     {
-
         RequireSqlCipher();
 
         await using ArcanumWebApplicationFactory factory = new();
@@ -147,7 +141,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
         await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
         {
-
             SqliteConnection connection = await OpenAsync(scope);
 
             await SeedSessionAsync(connection, sessionId);
@@ -159,7 +152,6 @@ public sealed class CovenantLabeledRetentionRouteTests
                 SensitiveArtifactKind.AssistantEntry,
                 entryId,
                 sessionId);
-
         }
 
         HttpResponseMessage deleted = await client.DeleteAsync(
@@ -178,7 +170,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         Assert.Equal(1, await CountAsync(verify, "Entries", "Id", entryId));
 
         Assert.Equal(1, await CountAsync(verify, "Sessions", "Id", sessionId));
-
     }
 
     /// <summary>
@@ -192,7 +183,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
     public async Task A_labeled_saga_memory_refuses_the_untargeted_memory_reset_route()
     {
-
         RequireSqlCipher();
 
         await using ArcanumWebApplicationFactory factory = new();
@@ -203,7 +193,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
         await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
         {
-
             SqliteConnection connection = await OpenAsync(scope);
 
             await SeedSagaMemoryAsync(connection, memoryId);
@@ -213,7 +202,6 @@ public sealed class CovenantLabeledRetentionRouteTests
                 SensitiveArtifactKind.Saga,
                 memoryId,
                 sessionId: null);
-
         }
 
         HttpResponseMessage reset = await client.PostAsync(
@@ -235,7 +223,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         Assert.Equal(1, await CountAsync(verify, "saga_memories", "Id", memoryId));
 
         Assert.Equal(1, await CountAsync(verify, "artifact_sensitivity", "ArtifactId", memoryId));
-
     }
 
     /// <summary>
@@ -254,7 +241,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
     public async Task A_labeled_memory_survives_the_retention_prune_route(string store)
     {
-
         RequireSqlCipher();
 
         await using ArcanumWebApplicationFactory factory = new();
@@ -267,20 +253,15 @@ public sealed class CovenantLabeledRetentionRouteTests
 
         await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
         {
-
             SqliteConnection connection = await OpenAsync(scope);
 
             if (saga)
             {
-
                 await SeedSagaMemoryAsync(connection, artifactId);
-
             }
             else
             {
-
                 await SeedLexiconEntryAsync(connection, artifactId);
-
             }
 
             await LabelAsync(
@@ -288,7 +269,6 @@ public sealed class CovenantLabeledRetentionRouteTests
                 saga ? SensitiveArtifactKind.Saga : SensitiveArtifactKind.Lexicon,
                 artifactId,
                 sessionId: null);
-
         }
 
         HttpResponseMessage enabled = await client.PutAsync(
@@ -317,7 +297,6 @@ public sealed class CovenantLabeledRetentionRouteTests
             await CountAsync(verify, saga ? "saga_memories" : "lexicon_entries", "Id", artifactId));
 
         Assert.Equal(1, await CountAsync(verify, "artifact_sensitivity", "ArtifactId", artifactId));
-
     }
 
     /// <summary>
@@ -339,7 +318,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
     public async Task A_memory_reset_asks_the_label_guard_inside_its_transaction(string store)
     {
-
         RequireSqlCipher();
 
         bool saga = string.Equals(store, "saga", StringComparison.Ordinal);
@@ -350,7 +328,6 @@ public sealed class CovenantLabeledRetentionRouteTests
             saga ? "saga_memories" : "lexicon_entries",
             async client =>
             {
-
                 MemoryResetRequest request = new(saga ? MemoryResetScope.Saga : MemoryResetScope.Lexicon);
 
                 HttpResponseMessage planned = await client.PostAsync(
@@ -373,9 +350,7 @@ public sealed class CovenantLabeledRetentionRouteTests
                 ApiResponse<DataRetentionApplyResult> body = await ReadAsync(reset);
 
                 Assert.True(body.IsSuccess, body.Error?.Message);
-
             });
-
     }
 
     /// <summary>
@@ -390,7 +365,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
     public async Task A_prune_asks_the_label_guard_inside_each_candidates_transaction(string store)
     {
-
         RequireSqlCipher();
 
         bool saga = string.Equals(store, "saga", StringComparison.Ordinal);
@@ -401,7 +375,6 @@ public sealed class CovenantLabeledRetentionRouteTests
             saga ? "saga_memories" : "lexicon_entries",
             async client =>
             {
-
                 HttpResponseMessage enabled = await client.PutAsync(
                     "/api/data/retention",
                     Json(
@@ -418,9 +391,7 @@ public sealed class CovenantLabeledRetentionRouteTests
                         ArcanumJsonContext.Default.DataRetentionApplyRequest));
 
                 Assert.Equal(HttpStatusCode.OK, pruned.StatusCode);
-
-            });
-
+            }, observePrunePreview: true);
     }
 
     /// <summary>
@@ -431,7 +402,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
     public async Task A_prune_asks_the_label_guard_inside_each_entrys_transaction()
     {
-
         RequireSqlCipher();
 
         await AssertGuardAskedInsideTheDeleteTransactionAsync(
@@ -440,7 +410,6 @@ public sealed class CovenantLabeledRetentionRouteTests
             "Entries",
             async client =>
             {
-
                 HttpResponseMessage enabled = await client.PutAsync(
                     "/api/data/retention",
                     Json(
@@ -457,9 +426,7 @@ public sealed class CovenantLabeledRetentionRouteTests
                         ArcanumJsonContext.Default.DataRetentionApplyRequest));
 
                 Assert.Equal(HttpStatusCode.OK, pruned.StatusCode);
-
-            });
-
+            }, observePrunePreview: true);
     }
 
     /// <summary>
@@ -474,7 +441,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
     public async Task A_session_delete_asks_the_label_guard_inside_its_transaction()
     {
-
         RequireSqlCipher();
 
         Guid sessionId = Guid.NewGuid();
@@ -483,24 +449,19 @@ public sealed class CovenantLabeledRetentionRouteTests
             SensitiveArtifactKind.AssistantEntry,
             async (connection, entryId) =>
             {
-
                 await SeedSessionAsync(connection, sessionId);
 
                 await SeedEntryAsync(connection, sessionId, entryId);
-
             },
             "Entries",
             async client =>
             {
-
                 HttpResponseMessage deleted = await client.DeleteAsync($"/api/data/sessions/{sessionId:D}");
 
                 ApiResponse<DataRetentionApplyResult> body = await ReadAsync(deleted);
 
                 Assert.True(body.IsSuccess, body.Error?.Message);
-
             });
-
     }
 
     /// <summary>
@@ -516,7 +477,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
     public async Task An_unreadable_label_refuses_the_session_delete_route()
     {
-
         RequireSqlCipher();
 
         await using ArcanumWebApplicationFactory factory = HostWithUnreadableGuard();
@@ -529,13 +489,11 @@ public sealed class CovenantLabeledRetentionRouteTests
 
         await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
         {
-
             SqliteConnection connection = await OpenAsync(scope);
 
             await SeedSessionAsync(connection, sessionId);
 
             await SeedEntryAsync(connection, sessionId, entryId);
-
         }
 
         HttpResponseMessage deleted = await client.DeleteAsync(
@@ -556,7 +514,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         Assert.Equal(1, await CountAsync(verify, "Entries", "Id", entryId));
 
         Assert.Equal(1, await CountAsync(verify, "Sessions", "Id", sessionId));
-
     }
 
     /// <summary>
@@ -576,7 +533,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
     public async Task An_unreadable_label_refuses_the_untargeted_memory_reset_route(string store)
     {
-
         RequireSqlCipher();
 
         bool saga = string.Equals(store, "saga", StringComparison.Ordinal);
@@ -589,22 +545,16 @@ public sealed class CovenantLabeledRetentionRouteTests
 
         await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
         {
-
             SqliteConnection connection = await OpenAsync(scope);
 
             if (saga)
             {
-
                 await SeedSagaMemoryAsync(connection, artifactId);
-
             }
             else
             {
-
                 await SeedLexiconEntryAsync(connection, artifactId);
-
             }
-
         }
 
         HttpResponseMessage reset = await client.PostAsync(
@@ -628,7 +578,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         Assert.Equal(
             1,
             await CountAsync(verify, saga ? "saga_memories" : "lexicon_entries", "Id", artifactId));
-
     }
 
     /// <summary>
@@ -644,7 +593,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
     public async Task An_unreadable_label_makes_the_prune_skip_the_entry_candidate()
     {
-
         RequireSqlCipher();
 
         await using ArcanumWebApplicationFactory factory = HostWithUnreadableGuard();
@@ -657,13 +605,11 @@ public sealed class CovenantLabeledRetentionRouteTests
 
         await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
         {
-
             SqliteConnection connection = await OpenAsync(scope);
 
             await SeedSessionAsync(connection, sessionId);
 
             await SeedEntryAsync(connection, sessionId, entryId);
-
         }
 
         HttpResponseMessage enabled = await client.PutAsync(
@@ -690,7 +636,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         Assert.Equal(1, await CountAsync(verify, "Entries", "Id", entryId));
 
         Assert.Equal(1, await CountAsync(verify, "Sessions", "Id", sessionId));
-
     }
 
     /// <summary>
@@ -708,7 +653,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
     public async Task A_session_delete_asks_the_label_guard_in_chunks_not_once_per_entry()
     {
-
         RequireSqlCipher();
 
         GuardQuestionCounts counts = new();
@@ -723,13 +667,11 @@ public sealed class CovenantLabeledRetentionRouteTests
 
         await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
         {
-
             SqliteConnection connection = await OpenAsync(scope);
 
             await SeedSessionAsync(connection, sessionId);
 
             entryIds = await SeedEntriesAsync(connection, sessionId, 600);
-
         }
 
         HttpResponseMessage deleted = await client.DeleteAsync($"/api/data/sessions/{sessionId:D}");
@@ -754,7 +696,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         Assert.Equal(0, await CountAsync(verify, "Entries", "Id", entryIds[0]));
 
         Assert.Equal(0, await CountAsync(verify, "Sessions", "Id", sessionId));
-
     }
 
     /// <summary>
@@ -774,7 +715,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
     public async Task A_labeled_entry_in_any_chunk_refuses_the_session_delete_route(int position)
     {
-
         RequireSqlCipher();
 
         GuardQuestionCounts counts = new();
@@ -789,7 +729,6 @@ public sealed class CovenantLabeledRetentionRouteTests
 
         await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
         {
-
             SqliteConnection connection = await OpenAsync(scope);
 
             await SeedSessionAsync(connection, sessionId);
@@ -801,7 +740,6 @@ public sealed class CovenantLabeledRetentionRouteTests
                 SensitiveArtifactKind.AssistantEntry,
                 entryIds[position],
                 sessionId);
-
         }
 
         HttpResponseMessage deleted = await client.DeleteAsync($"/api/data/sessions/{sessionId:D}");
@@ -821,7 +759,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         Assert.Equal(1, await CountAsync(verify, "Sessions", "Id", sessionId));
 
         Assert.Equal(1, await CountAsync(verify, "artifact_sensitivity", "ArtifactId", entryIds[position]));
-
     }
 
     /// <summary>
@@ -832,10 +769,12 @@ public sealed class CovenantLabeledRetentionRouteTests
         SensitiveArtifactKind kind,
         Func<SqliteConnection, Guid, Task> seed,
         string table,
-        Func<HttpClient, Task> operation)
+        Func<HttpClient, Task> operation,
+        bool observePrunePreview = false)
     {
-
         SqliteConnection? intruderConnection = null;
+
+        int previewQuestions = 0;
 
         LabelIntruder intruder = new(
             _ => Task.FromResult(intruderConnection!),
@@ -845,7 +784,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         {
             ServiceOverrides = services =>
             {
-
                 // The transaction form is the registration that builds the guard; the Core form forwards to
                 // it, so replacing this one puts the intruder in front of every caller.
                 Func<IServiceProvider, object> real = services
@@ -854,8 +792,10 @@ public sealed class CovenantLabeledRetentionRouteTests
                     ?? throw new InvalidOperationException("The guard is registered by a factory.");
 
                 services.AddScoped<ICovenantLabeledArtifactTransactionGuard>(
-                    sp => new LabelIntrusionGuard((ICovenantLabeledArtifactTransactionGuard)real(sp), intruder));
-
+                    sp => observePrunePreview
+                        ? new PrunePreviewIntrusionGuard((ICovenantLabeledArtifactTransactionGuard)real(sp), intruder,
+                            () => previewQuestions++)
+                        : new LabelIntrusionGuard((ICovenantLabeledArtifactTransactionGuard)real(sp), intruder));
             },
         };
 
@@ -867,11 +807,9 @@ public sealed class CovenantLabeledRetentionRouteTests
 
         await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
         {
-
             SqliteConnection connection = await OpenAsync(scope);
 
             await seed(connection, artifactId);
-
         }
 
         Result<IGrimoireOrdinaryConnectionLease> opened = await factory.Services
@@ -885,6 +823,8 @@ public sealed class CovenantLabeledRetentionRouteTests
         intruderConnection = lease.Connection;
 
         await operation(client);
+
+        Assert.Equal(observePrunePreview ? 1 : 0, previewQuestions);
 
         Assert.Equal(1, intruder.Attempts);
 
@@ -902,7 +842,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         Assert.Equal(1, intruder.AskedInsideTransaction);
 
         Assert.Equal(0, intruder.AskedOutsideTransaction);
-
     }
 
     /// <summary>
@@ -928,7 +867,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         {
             ServiceOverrides = services =>
             {
-
                 Func<IServiceProvider, object> real = services
                     .Last(static descriptor => descriptor.ServiceType == typeof(ICovenantLabeledArtifactTransactionGuard))
                     .ImplementationFactory
@@ -936,31 +874,25 @@ public sealed class CovenantLabeledRetentionRouteTests
 
                 services.AddScoped<ICovenantLabeledArtifactTransactionGuard>(
                     sp => new CountingLabeledArtifactGuard((ICovenantLabeledArtifactTransactionGuard)real(sp), counts));
-
             },
         };
 
     private static async Task<SqliteConnection> OpenAsync(AsyncServiceScope scope)
     {
-
         ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
 
         SqliteConnection connection = (SqliteConnection)db.Database.GetDbConnection();
 
         if (connection.State is not ConnectionState.Open)
         {
-
             await db.Database.OpenConnectionAsync(CancellationToken.None);
-
         }
 
         return connection;
-
     }
 
     private static async Task SeedSessionAsync(SqliteConnection connection, Guid sessionId)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = """
@@ -973,7 +905,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         _ = command.Parameters.AddWithValue("$created", Backdated);
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private static async Task SeedEntryAsync(
@@ -982,7 +913,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         Guid entryId,
         long sequence = 1)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = """
@@ -1000,7 +930,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         _ = command.Parameters.AddWithValue("$sequence", sequence);
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     /// <summary>
@@ -1009,38 +938,31 @@ public sealed class CovenantLabeledRetentionRouteTests
     /// </summary>
     private static async Task<Guid[]> SeedEntriesAsync(SqliteConnection connection, Guid sessionId, int count)
     {
-
         Guid[] ids = [.. Enumerable.Range(0, count).Select(static _ => Guid.NewGuid())];
 
         await using SqliteTransaction transaction = connection.BeginTransaction();
 
         for (int index = 0; index < ids.Length; index++)
         {
-
             await SeedEntryAsync(connection, sessionId, ids[index], index + 1L);
-
         }
 
         await transaction.CommitAsync(CancellationToken.None);
 
         return ids;
-
     }
 
     private static async Task SeedSessionWithEntryAsync(SqliteConnection connection, Guid entryId)
     {
-
         Guid sessionId = Guid.NewGuid();
 
         await SeedSessionAsync(connection, sessionId);
 
         await SeedEntryAsync(connection, sessionId, entryId);
-
     }
 
     private static async Task SeedSagaMemoryAsync(SqliteConnection connection, Guid memoryId)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = """
@@ -1053,12 +975,10 @@ public sealed class CovenantLabeledRetentionRouteTests
         _ = command.Parameters.AddWithValue("$created", Backdated);
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private static async Task SeedLexiconEntryAsync(SqliteConnection connection, Guid entryId)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = """
@@ -1071,7 +991,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         _ = command.Parameters.AddWithValue("$updated", Backdated);
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private static async Task LabelAsync(
@@ -1080,7 +999,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         Guid artifactId,
         Guid? sessionId)
     {
-
         IArtifactSensitivityLedger ledger = scope.ServiceProvider
             .GetRequiredService<IArtifactSensitivityLedger>();
 
@@ -1100,7 +1018,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         Assert.True(receipt.IsSuccess, receipt.IsFailure ? receipt.Error.Message : string.Empty);
 
         Assert.NotNull(receipt.Value.LabelId);
-
     }
 
     private static async Task<long> CountAsync(
@@ -1109,7 +1026,6 @@ public sealed class CovenantLabeledRetentionRouteTests
         string column,
         Guid id)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText =
@@ -1120,20 +1036,17 @@ public sealed class CovenantLabeledRetentionRouteTests
         return Convert.ToInt64(
             await command.ExecuteScalarAsync(CancellationToken.None),
             System.Globalization.CultureInfo.InvariantCulture);
-
     }
 
     private static async Task<ApiResponse<DataRetentionApplyResult>> ReadAsync(
         HttpResponseMessage response)
     {
-
         string payload = await response.Content.ReadAsStringAsync();
 
         return System.Text.Json.JsonSerializer.Deserialize(
             payload,
             ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult)
             ?? throw new InvalidOperationException($"Unreadable retention response: {payload}");
-
     }
 
     private static StringContent Json<T>(
@@ -1146,18 +1059,14 @@ public sealed class CovenantLabeledRetentionRouteTests
 
     private static CovenantDigest Digest(byte seed)
     {
-
         byte[] bytes = new byte[32];
 
         for (int index = 0; index < bytes.Length; index++)
         {
-
             bytes[index] = (byte)(seed + index);
-
         }
 
         return new CovenantDigest(bytes);
-
     }
 
     private static string Canonical(Guid id) => id.ToString("D").ToUpperInvariant();
@@ -1171,5 +1080,4 @@ public sealed class CovenantLabeledRetentionRouteTests
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
-
 }
