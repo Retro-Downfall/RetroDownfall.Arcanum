@@ -285,6 +285,22 @@ class CoverageWorkflowTests(unittest.TestCase):
                 self.assertNotEqual(0, result.returncode)
                 self.assertEqual([], calls)
 
+    def test_ci_installs_ripgrep_before_native_packaging_and_coverage(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        body = workflow.split("  build-test:\n", 1)[1].split(
+            "\n  hosted-producer-primary-analysis:", 1
+        )[0]
+        install = body.index("run: command -v rg >/dev/null 2>&1 || brew install ripgrep")
+        for consumer in (
+            "run: ./scripts/packaging/macos/common_test.sh",
+            "./scripts/coverage.sh --threshold --ci-runtime-only",
+        ):
+            with self.subTest(consumer=consumer):
+                self.assertLess(
+                    install, body.index(consumer),
+                    "The build-test job must install ripgrep before its first consumer",
+                )
+
     def test_canonical_workflow_commands_partition_and_reconcile_complete_analysis(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
 
