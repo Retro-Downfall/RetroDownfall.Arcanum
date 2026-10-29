@@ -51,17 +51,44 @@ public sealed class CommandCenterSessionAttachmentBindingTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Successful_resume_fetches_destination_attachments_without_a_filesystem_event(bool confirm)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Successful_resume_fetches_destination_attachments_without_a_filesystem_event(bool confirm, bool holdDestinationResponse)
     {
         await using Harness h = new();
         h.State.ApplySessionMeta(h.Source, "Source", "Active", 0);
         h.Monitor.Start(h.State, h.Updates.Writer, h.Cancellation.Token);
         await h.UntilAsync(() => h.State.SessionAttachments.Any(static row => row.LogicalKey == "source"));
 
-        await h.ResumeAsync(h.Destination, confirm);
-        await h.DriveAsync();
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        if (holdDestinationResponse)
+        {
+            h.BeforeAttachmentResponse = token => release.Task.WaitAsync(token);
+        }
+
+        try
+        {
+            await h.ResumeAsync(h.Destination, confirm);
+
+            if (holdDestinationResponse)
+            {
+                await h.UntilAsync(() => h.AttachmentRequests.Contains(h.Destination));
+
+                Assert.Equal(h.Destination, h.State.SessionId);
+
+                Assert.Empty(h.State.SessionAttachments);
+            }
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        // Wait for the asynchronous refresh to publish the destination projection.
+        await h.UntilAsync(() => h.State.SessionAttachments.Any(static row => row.LogicalKey == "destination"));
 
         Assert.Equal(h.Destination, h.State.SessionId);
         Assert.Contains(h.Destination, h.AttachmentRequests);

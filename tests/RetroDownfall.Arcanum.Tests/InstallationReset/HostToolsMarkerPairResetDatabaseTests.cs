@@ -534,7 +534,14 @@ public sealed class HostToolsMarkerPairResetDatabaseTests
     }
 
     [Fact]
-    public async Task Production_checkpoint_deadline_is_exactly_five_seconds_and_supports_a_short_test_deadline()
+    public Task Production_checkpoint_deadline_is_exactly_five_seconds_and_supports_a_short_test_deadline() =>
+        AssertCheckpointDeadlineAsync(holdCallerContext: false);
+
+    [Fact]
+    public Task Checkpoint_cancellation_and_rollback_do_not_wait_for_the_callers_context() =>
+        AssertCheckpointDeadlineAsync(holdCallerContext: true);
+
+    private static async Task AssertCheckpointDeadlineAsync(bool holdCallerContext)
     {
 
         await using CovenantSchemaScratchDatabase database =
@@ -608,27 +615,65 @@ public sealed class HostToolsMarkerPairResetDatabaseTests
 
         Assert.True(captured.IsSuccess, captured.Error.Message);
 
-        Task<Result> clearing = session.CompareClearCommitAndProveDurableAsync(
-            captured.Value,
-            Token);
+        HeldContinuationContext? held = holdCallerContext ? new() : null;
+
+        SynchronizationContext? original = SynchronizationContext.Current;
+
+        Task<Result> clearing;
+
+        try
+        {
+            if (held is not null)
+            {
+                SynchronizationContext.SetSynchronizationContext(held);
+            }
+
+            clearing = session.CompareClearCommitAndProveDurableAsync(captured.Value, Token);
+        }
+        finally
+        {
+            // The controlled context belongs only to the invocation, never to the test's awaits.
+            SynchronizationContext.SetSynchronizationContext(original);
+        }
 
         Result result;
 
         try
         {
+            if (held is not null)
+            {
+                Assert.Same(held, seam.CommitContext);
+            }
 
             result = await clearing.WaitAsync(TimeSpan.FromSeconds(5));
 
+            Assert.True(seam.CommitToken.IsCancellationRequested);
+
+            Assert.Equal(0, held?.PendingCount ?? 0);
         }
         catch (TimeoutException)
         {
+            if (held is not null)
+            {
+                // Distinguish a fired timer from a fixture continuation stranded on the caller.
+                Assert.True(seam.CommitToken.IsCancellationRequested);
+
+                Assert.False(seam.CancellationObserved.Task.IsCompleted);
+
+                Assert.True(held.PendingCount > 0);
+            }
+
+            throw;
+        }
+        finally
+        {
+            // A failing control must release both the captured continuation and the suspended seam
+            // before session disposal waits for its gate. Late posts are forwarded after release.
+            held?.Release();
 
             seam.ReleaseAfterOuterGuard();
 
             _ = await clearing.WaitAsync(TimeSpan.FromSeconds(5));
-
-            throw;
-
         }
 
         await seam.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -1883,12 +1928,68 @@ public sealed class HostToolsMarkerPairResetDatabaseTests
 
     }
 
+    private sealed class HeldContinuationContext : SynchronizationContext
+    {
+        private readonly object _gate = new();
+
+        private readonly Queue<(SendOrPostCallback Callback, object? State)> _pending = new();
+
+        private bool _released;
+
+        internal int PendingCount
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _pending.Count;
+                }
+            }
+        }
+
+        public override void Post(SendOrPostCallback callback, object? state)
+        {
+            lock (_gate)
+            {
+                if (!_released)
+                {
+                    _pending.Enqueue((callback, state));
+
+                    return;
+                }
+            }
+
+            base.Post(callback, state);
+        }
+
+        internal void Release()
+        {
+            (SendOrPostCallback Callback, object? State)[] pending;
+
+            lock (_gate)
+            {
+                _released = true;
+
+                pending = _pending.ToArray();
+
+                _pending.Clear();
+            }
+
+            foreach (var (callback, state) in pending)
+            {
+                callback(state);
+            }
+        }
+    }
+
     private sealed class CheckpointCancellationTestSeam(string providerSecret)
         : IHostToolsMarkerPairResetDatabaseTestSeam
     {
 
         private readonly TaskCompletionSource _neverCompletes = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal SynchronizationContext? CommitContext { get; private set; }
 
         internal TaskCompletionSource CancellationObserved { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1911,10 +2012,13 @@ public sealed class HostToolsMarkerPairResetDatabaseTests
 
             CommitToken = checkpointCancellationToken;
 
+            CommitContext = SynchronizationContext.Current;
+
             try
             {
 
-                await _neverCompletes.Task.WaitAsync(checkpointCancellationToken);
+                // Simulate a provider wait without adding a dependency on the test runner's context.
+                await _neverCompletes.Task.WaitAsync(checkpointCancellationToken).ConfigureAwait(false);
 
             }
             catch (OperationCanceledException)

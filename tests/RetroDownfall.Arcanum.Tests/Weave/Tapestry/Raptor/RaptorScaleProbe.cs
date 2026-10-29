@@ -152,7 +152,7 @@ public sealed partial class RaptorScaleProbe(ITestOutputHelper output)
 
             AssertMemoCounters(graph.Value);
 
-            AssertRecall(points, graph.Value, 32);
+            AssertApproximateRecallWithinBudget(points, graph.Value, budget);
         }
         catch (OperationCanceledException)
         {
@@ -613,6 +613,13 @@ public sealed partial class RaptorScaleProbe(ITestOutputHelper output)
 
         Assert.InRange(graph.MemoAllocatedBytes, 1, 260L * 1024 * 1024);
     }
+
+    private void AssertApproximateRecallWithinBudget(
+        RaptorPoint[] points,
+        RaptorNeighborGraph graph,
+        Budget budget,
+        Action? oraclePairObserved = null) =>
+        AssertRecall(points, graph, 32, budget.Token, oraclePairObserved);
 
     private void AssertRecall(RaptorPoint[] points, RaptorNeighborGraph graph, int samples, CancellationToken cancellationToken = default, Action? oraclePairObserved = null)
     {

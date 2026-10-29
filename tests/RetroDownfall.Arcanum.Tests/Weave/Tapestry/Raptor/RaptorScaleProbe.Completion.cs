@@ -10,6 +10,77 @@ namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry.Raptor;
 public sealed partial class RaptorScaleProbe
 {
     [Fact]
+    public void Legacy_approximate_recall_stops_before_work_when_its_budget_is_canceled()
+    {
+        RaptorPoint[] points = Corpus(100);
+
+        var graph = new RaptorNeighborGraphBuilder().Build(points, 9, 751, CancellationToken.None);
+
+        Assert.True(graph.IsSuccess);
+
+        using Budget budget = new(240);
+
+        budget.Cancel("time");
+
+        int pairs = 0;
+
+        OperationCanceledException canceled = Assert.ThrowsAny<OperationCanceledException>(() =>
+            AssertApproximateRecallWithinBudget(points, graph.Value, budget, () => pairs++));
+
+        Assert.Equal(budget.Token, canceled.CancellationToken);
+
+        Assert.Equal(0, pairs);
+    }
+
+    [Fact]
+    public void Legacy_approximate_recall_stops_during_real_oracle_pair_work()
+    {
+        RaptorPoint[] points = Corpus(100);
+
+        var graph = new RaptorNeighborGraphBuilder().Build(points, 9, 751, CancellationToken.None);
+
+        Assert.True(graph.IsSuccess);
+
+        using Budget budget = new(240);
+
+        int pairs = 0;
+
+        OperationCanceledException canceled = Assert.ThrowsAny<OperationCanceledException>(() =>
+            AssertApproximateRecallWithinBudget(points, graph.Value, budget, () =>
+            {
+                if (++pairs == 64) budget.Cancel("memory");
+            }));
+
+        Assert.Equal(budget.Token, canceled.CancellationToken);
+
+        Assert.Equal(64, pairs);
+    }
+
+    [Fact]
+    public void Legacy_approximate_recall_keeps_the_complete_uncanceled_validation()
+    {
+        RaptorPoint[] points = Corpus(100);
+
+        var graph = new RaptorNeighborGraphBuilder().Build(points, 9, 751, CancellationToken.None);
+
+        Assert.True(graph.IsSuccess);
+
+        using Budget budget = new(240);
+
+        RecordingOutput recorded = new();
+
+        RaptorScaleProbe probe = new(recorded);
+
+        int pairs = 0;
+
+        probe.AssertApproximateRecallWithinBudget(points, graph.Value, budget, () => pairs++);
+
+        Assert.Equal(32 * 99, pairs);
+
+        Assert.Contains(recorded.Lines, line => line.Contains("nonself_recall=1", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Stage_measurement_does_not_call_a_kernel_refusal_completed()
     {
         RecordingOutput recorded = new();
