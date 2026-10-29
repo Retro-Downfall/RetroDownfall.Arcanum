@@ -136,7 +136,8 @@ jobs:
 
       # The macOS signing helpers pick an identity out of the operator's keychain, and every way
       # they can pick the wrong one still produces a signature that verifies. Drive them through
-      # stubbed `security`/`codesign`; nothing here touches a keychain or signs anything.
+      # stubbed `security`/`codesign`. Native bundle controls additionally use ad-hoc signatures
+      # on disposable fixtures; neither test path touches a real signing identity or keychain.
       - name: Test the macOS signing helpers
         run: ./scripts/packaging/macos/common_test.sh
 

@@ -61,8 +61,8 @@ public sealed class MacOsSigningScriptTests
     }
 
     /// <summary>
-    /// The <c>.app</c> path signs the same tree: build-app-dmg.sh copies the publish directory verbatim
-    /// into <c>Contents/MacOS/</c>, so a nested dylib is exactly as deep there as it is in the CLI zip.
+    /// The <c>.app</c> path signs the code tree remaining after build-app-dmg.sh relocates published
+    /// licenses to Resources. A nested dylib stays as deep in MacOS as it is in the CLI zip.
     /// A plain <c>find</c> walk is pre-order, not depth-first, so it hands back shallow files before the
     /// subdirectories it has not descended into yet; ordering has to be imposed after the walk. What
     /// gets ordered is every file in that directory, not every Mach-O: codesign seals a bundle's

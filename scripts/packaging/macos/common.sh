@@ -239,9 +239,9 @@ order_macho_paths_deepest_first() {
   fi
 }
 
-# Sign Mach-O files inside a .app: nested libs/helpers first, then main executable, then bundle.
-# build-app-dmg.sh copies the publish directory verbatim into Contents/MacOS, so this walks the same
-# tree shape as sign_publish_dir and needs the same deepest-first ordering and partial-tree guard.
+# Sign files remaining in a .app's code directory, then the main executable and bundle.
+# The assembler moves published licenses to Resources; native and managed code stays in MacOS
+# and needs the same deepest-first ordering and partial-tree guard as sign_publish_dir.
 sign_app_bundle() {
   local app_path="$1"
   local entitlements="${2:-}"

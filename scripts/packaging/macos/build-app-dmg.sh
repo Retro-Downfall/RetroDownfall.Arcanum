@@ -220,6 +220,13 @@ fi
 cp "$ICNS" "$APP_PATH/Contents/Resources/$(basename "$ICNS")"
 cp -a "$PUBLISH_DIR"/. "$APP_PATH/Contents/MacOS/"
 
+# License and provenance documents are resources, not nested code. In Contents/MacOS,
+# codesign interprets dotted directories such as Microsoft.Data.Sqlite.Core as bundles.
+# Preserve the complete license tree and its bytes in the bundle's sealed resources.
+if [[ -d "$APP_PATH/Contents/MacOS/licenses" ]]; then
+  mv "$APP_PATH/Contents/MacOS/licenses" "$APP_PATH/Contents/Resources/licenses"
+fi
+
 # Debug symbols are not part of a shipped app. They are several megabytes of internals nobody
 # installing the DMG can use, and every one of them is another file the bundle seal has to cover --
 # codesign treats everything under Contents/MacOS as nested code, whatever its type, so a .pdb that

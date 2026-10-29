@@ -7,8 +7,9 @@
 # path's secure timestamp switched off. Each of those produces an artifact that signs and verifies
 # and is still wrong, so they are pinned here.
 #
-# `security` and `codesign` are driven through stubs on PATH; nothing here touches a real keychain
-# or signs anything.
+# The identity-resolution tests drive `security` and `codesign` through stubs on PATH; they do not
+# touch a real keychain or sign anything. On macOS, the final bundle regression uses real ad-hoc signing
+# of disposable fixtures, without accessing an identity or keychain.
 #
 # Usage: common_test.sh [path-to-common.sh]
 
@@ -27,6 +28,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 BIN="$WORK/bin"
 mkdir -p "$BIN"
+NATIVE_TEST_PATH="$PATH"
 PATH="$BIN:$PATH"
 export PATH
 
@@ -422,3 +424,9 @@ if [[ "$FAILED" -ne 0 ]]; then
 fi
 
 echo "all macOS signing helper tests passed"
+
+if [[ "$(uname -s)" == Darwin ]]; then
+  PATH="$NATIVE_TEST_PATH" /bin/bash "$TEST_DIR/app_bundle_test.sh"
+else
+  echo "SKIP: native app bundle signing requires macOS"
+fi
