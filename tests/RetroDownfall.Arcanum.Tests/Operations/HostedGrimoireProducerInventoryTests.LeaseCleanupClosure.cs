@@ -176,10 +176,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void HostedContinuationActualLeaseProductionSubsetKeepsAdapterAndBorrowedTransportProvenance()
     {
-        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProductionSites(
-            HostedProducerProductionPartition.Primary, ["Loremaster"]);
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
-        Assert.NotEmpty(result.Items);
+        HostedProducerSite[] observed = ObserveFullProductionRoot(result, "Loremaster");
+
+        Assert.NotEmpty(observed);
 
         HostedProducerInventoryDiagnostic[] failures = [.. result.Diagnostics.Where(static diagnostic =>
             diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
@@ -188,6 +189,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.True(failures.Length == 0, HostedGrimoireProducerInventory.RenderDiagnosticReport(failures));
 
-        Assert.Contains(result.Items, static site => site.Callee == "System.ClientModel.Primitives.PipelineMessage..ctor" || site.Kind == HostedProducerSiteKind.ProviderCall);
+        Assert.Contains(observed, static site => site.Callee == "System.ClientModel.Primitives.PipelineMessage..ctor" || site.Kind == HostedProducerSiteKind.ProviderCall);
     }
 }

@@ -256,12 +256,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void HostedContinuationActualDigestProductionSubsetRetainsRealSqlWork()
     {
-        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProductionSites(
-            HostedProducerProductionPartition.Primary, ["Loremaster"]);
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
-        Assert.NotEmpty(result.Items);
+        HostedProducerSite[] observed = ObserveFullProductionRoot(result, "Loremaster");
 
-        Assert.All(result.Items, static site => Assert.Equal("Loremaster", site.RootType));
+        Assert.NotEmpty(observed);
+
+        Assert.All(observed, static site => Assert.Equal("Loremaster", site.RootType));
 
         HostedProducerInventoryDiagnostic[] failures = [.. result.Diagnostics.Where(static diagnostic =>
             diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" && diagnostic.Identity.Contains("/CampaignRollupStore.Read.cs:", StringComparison.Ordinal)
@@ -271,7 +272,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.True(failures.Length == 0, HostedGrimoireProducerInventory.RenderDiagnosticReport(failures));
 
-        Assert.Contains(result.Items, static site => site.MemberIdentity.Contains(".ReadEntryChunksAsync(", StringComparison.Ordinal)
+        Assert.Contains(observed, static site => site.MemberIdentity.Contains(".ReadEntryChunksAsync(", StringComparison.Ordinal)
             && site.Callee == "System.Data.Common.DbCommand.ExecuteScalarAsync" && site.WorkFrontierCapsuleId is not null);
     }
 

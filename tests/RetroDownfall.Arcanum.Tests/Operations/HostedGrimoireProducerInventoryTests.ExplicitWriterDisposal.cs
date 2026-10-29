@@ -134,13 +134,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ExplicitWriterDisposal_actual_batch_preserves_physical_rows_and_records_each_logical_call()
     {
-        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProductionSites(
-            HostedProducerProductionPartition.Primary,
-            ["RetroDownfall.Arcanum.Api.Intelligence.BatchProcessingService.ExecuteAsync"]);
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.ProductionSiteDiscovery;
+
+        HostedProducerSite[] observed = ObserveFullProductionRoot(result, "BatchProcessingService", "RetroDownfall.Arcanum.Api.Intelligence.BatchProcessingService.ExecuteAsync");
 
         Assert.True(result.Diagnostics.Count == 0, HostedGrimoireProducerInventory.RenderDiagnosticReport(result.Diagnostics));
 
-        HostedProducerSite[] logical = [.. result.Items.Where(static site =>
+        HostedProducerSite[] logical = [.. observed.Where(static site =>
             site.Callee == "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.DisposeAsync")];
 
         Assert.Equal(4, logical.Length);
@@ -156,7 +156,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         string[] reviewed = File.ReadAllLines(HostedGrimoireProducerInventory.CapsuleManifestPath);
 
-        string physical = HostedGrimoireProducerInventory.RenderCapsuleManifest(result.Items.Except(logical));
+        string physical = HostedGrimoireProducerInventory.RenderCapsuleManifest(observed.Except(logical));
 
         foreach (string row in physical.Split('\n').Skip(2).Where(static row => row.Length != 0)) Assert.Contains(row, reviewed);
 
@@ -166,7 +166,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         output.WriteLine("EXPLICIT_WRITER_LOGICAL_END");
 
-        output.WriteLine("EXPLICIT_WRITER_PHYSICAL_COUNT=" + result.Items.Except(logical).Count());
+        output.WriteLine("EXPLICIT_WRITER_PHYSICAL_COUNT=" + observed.Except(logical).Count());
     }
 
     private static HostedProducerDiscovery<HostedProducerSite> ExplicitWriterDisposalDiscover(string body, string helper)

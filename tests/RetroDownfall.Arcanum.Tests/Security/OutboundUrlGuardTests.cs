@@ -26,6 +26,41 @@ public sealed class OutboundUrlGuardTests
     }
 
     [Theory]
+    [InlineData(null, "URL is required.")]
+    [InlineData("", "URL is required.")]
+    [InlineData("not-a-valid-uri", "URL must be an absolute http or https URI.")]
+    [InlineData("ftp://example.com/file", "URL must use the http or https scheme.")]
+    [InlineData("https://\u00A0/", "URL must include a host.")]
+    public async Task Provider_probe_keeps_typed_invalid_url_failures_before_dns(string? url, string message)
+    {
+        int calls = 0;
+
+        IDnsResolver dns = new CoordinatedDnsResolver(IPAddress.Loopback, () => calls++, Task.CompletedTask);
+
+        Result result = await OutboundUrlGuard.ValidateProviderEndpointForProbeAsync(url, dns);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Validation.InvalidUrl, result.Error.Code);
+
+        Assert.Equal(message, result.Error.Message);
+
+        Assert.Equal(0, calls);
+    }
+
+    [Fact]
+    public async Task Provider_probe_keeps_typed_dns_failure_for_an_empty_answer()
+    {
+        Result result = await OutboundUrlGuard.ValidateProviderEndpointForProbeAsync("https://no-answer.example/", _dns);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Provider.DnsFailed, result.Error.Code);
+
+        Assert.Equal("Could not resolve host 'no-answer.example'.", result.Error.Message);
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]

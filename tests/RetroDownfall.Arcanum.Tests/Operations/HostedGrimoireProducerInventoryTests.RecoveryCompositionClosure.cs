@@ -10,9 +10,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void HostedContinuationActualStartupAndOwnerRecoveryKeepClosedDispatchAfterCompositionProof()
     {
-        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProductionSites(
-            HostedProducerProductionPartition.Primary,
-            ["LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery.RecoverBeforeBootstrapAsync"]);
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.ProductionSiteDiscovery;
+
+        _ = ObserveFullProductionRoot(result, "LongRunningOperationStartupHostedService");
+
+        _ = ObserveFullProductionRoot(result,
+            "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery",
+            "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery.RecoverBeforeBootstrapAsync");
 
         Assert.NotEmpty(result.Items);
 

@@ -733,15 +733,15 @@ internal sealed class BudgetReservationService(
         {
             CommittedReadStamp? before = await ReadCommittedStampAsync(connection, null, cancellationToken).ConfigureAwait(false);
 
-            if (before is null || !hint.Uninterrupted) return null;
+            if (before is not CommittedReadStamp beforeStamp || !hint.Uninterrupted) return null;
 
             decimal total = await SumCommittedAsync(connection, null, period, cancellationToken).ConfigureAwait(false);
 
             CommittedReadStamp? after = await ReadCommittedStampAsync(connection, null, cancellationToken).ConfigureAwait(false);
 
-            if (after != before || !hint.Uninterrupted) return null;
+            if (after is not CommittedReadStamp afterStamp || afterStamp != beforeStamp || !hint.Uninterrupted) return null;
 
-            hint.Stamp = before.Value;
+            hint.Stamp = beforeStamp;
 
             hint.Total = total;
 
@@ -779,7 +779,7 @@ internal sealed class BudgetReservationService(
                 // An unavailable optional proof can never bless the subtotal.
             }
 
-            if (hint.Uninterrupted && current == hint.Stamp) return hint.Total;
+            if (hint.Uninterrupted && current is CommittedReadStamp currentStamp && currentStamp == hint.Stamp) return hint.Total;
         }
 
         return await SumCommittedAsync(connection, transaction, period, cancellationToken).ConfigureAwait(false);

@@ -181,12 +181,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void HostedContinuationActualCommandProductionSubsetKeepsRealSqlWork()
     {
-        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProductionSites(
-            HostedProducerProductionPartition.Primary, ["Loremaster"]);
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
-        Assert.NotEmpty(result.Items);
+        HostedProducerSite[] observed = ObserveFullProductionRoot(result, "Loremaster");
 
-        Assert.All(result.Items, static site => Assert.Equal("Loremaster", site.RootType));
+        Assert.NotEmpty(observed);
+
+        Assert.All(observed, static site => Assert.Equal("Loremaster", site.RootType));
 
         HostedProducerInventoryDiagnostic[] failures = [.. result.Diagnostics.Where(static diagnostic =>
             diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
@@ -195,7 +196,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.True(failures.Length == 0, HostedGrimoireProducerInventory.RenderDiagnosticReport(failures));
 
-        Assert.Contains(result.Items, static site => site.SourcePath.EndsWith("/CampaignRollupSourceStorage.cs", StringComparison.Ordinal)
+        Assert.Contains(observed, static site => site.SourcePath.EndsWith("/CampaignRollupSourceStorage.cs", StringComparison.Ordinal)
             && site.Kind == HostedProducerSiteKind.DatabaseAccess && site.WorkFrontierCapsuleId is not null);
     }
 }

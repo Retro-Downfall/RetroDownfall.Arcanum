@@ -21,6 +21,10 @@ internal static class CovenantStoreSql
 {
     internal const int CampaignOwnerKindCode = 1;
 
+    // Only immutable command text is retained. Each execution still binds its own values and reads
+    // its own admitted transaction; neither a row nor an authority decision lives in this cache.
+    private static readonly MutationReadTemplates MutationReads = new();
+
     /// <summary>
     /// Removes one Campaign's mutation receipts, seeking the scope index rather than walking every
     /// Campaign's receipts.
@@ -231,7 +235,9 @@ internal static class CovenantStoreSql
         LIMIT $take;
         """;
 
-    internal static string QuotaSnapshot(bool campaignScoped, int excludedKeyCount)
+    internal static string QuotaSnapshot(bool campaignScoped, int excludedKeyCount) => MutationReads.QuotaSnapshot(campaignScoped, excludedKeyCount);
+
+    private static string BuildQuotaSnapshot(bool campaignScoped, int excludedKeyCount)
     {
         // The keys this batch is about to rewrite, removed from the two counters that measure active
         // heads. A write to a key that already has one replaces that head rather than adding a head,
@@ -295,7 +301,9 @@ internal static class CovenantStoreSql
             """;
     }
 
-    internal static string SectionOccupancy(bool campaignScoped, int excludedKeyCount) => $"""
+    internal static string SectionOccupancy(bool campaignScoped, int excludedKeyCount) => MutationReads.SectionOccupancy(campaignScoped, excludedKeyCount);
+
+    private static string BuildSectionOccupancy(bool campaignScoped, int excludedKeyCount) => $"""
         SELECT COUNT(*),
                COALESCE(SUM(h.CompiledByteCost), 0),
                COALESCE(MAX(v.RequiredFenceLength), 0)
@@ -377,7 +385,9 @@ internal static class CovenantStoreSql
         WHERE h.CurrentVersionId IN ({string.Join(", ", Enumerable.Range(0, versionCount).Select(static index => $"$version{index}"))});
         """;
 
-    internal static string Detail(bool campaignScoped) => $"""
+    internal static string Detail(bool campaignScoped) => MutationReads.Detail(campaignScoped);
+
+    private static string BuildDetail(bool campaignScoped) => $"""
         SELECT st.DatasetGeneration, st.CanonicalSearchSequence, epochs.KeyEpoch, lanes.*
         FROM covenant_state st
         LEFT JOIN (
@@ -411,7 +421,9 @@ internal static class CovenantStoreSql
     /// non-null Campaign and only an equality implies that. An <c>IS</c> comparison would walk every
     /// curation head the Campaign holds, and detail runs for every search hit.</para>
     /// </remarks>
-    internal static string DetailCuration(bool campaignScoped) => $"""
+    internal static string DetailCuration(bool campaignScoped) => MutationReads.DetailCuration(campaignScoped);
+
+    private static string BuildDetailCuration(bool campaignScoped) => $"""
         SELECT ch.LaneCode, ch.IsPinned, ch.IsMasked, ch.CurrentRevision
         FROM covenant_curation_heads ch
         WHERE {(campaignScoped ? "ch.CampaignId = $campaign" : "ch.CampaignId IS NULL")} AND ch.NormalizedKey = $key
@@ -469,7 +481,9 @@ internal static class CovenantStoreSql
     /// column comparison, and its parameter is bound as a <see cref="Guid"/> instead, so the
     /// <c>"Campaigns"</c> primary key index still serves it.</para>
     /// </remarks>
-    internal static string DependentHeadScan(bool allCampaigns) => $"""
+    internal static string DependentHeadScan(bool allCampaigns) => MutationReads.DependentHeadScan(allCampaigns);
+
+    private static string BuildDependentHeadScan(bool allCampaigns) => $"""
         SELECT c."Id",
                MAX(CASE WHEN h.LaneCode = 1 THEN h.CurrentLaneRevision ELSE 0 END) AS ConfirmedRevision,
                MAX(CASE WHEN h.LaneCode = 2 THEN h.CurrentLaneRevision ELSE 0 END) AS ProposedRevision
@@ -489,7 +503,9 @@ internal static class CovenantStoreSql
         WHERE st.StateKey = 1;
         """;
 
-    internal static string LocalHeadFactsSql(bool campaignScoped) => $"""
+    internal static string LocalHeadFactsSql(bool campaignScoped) => MutationReads.LocalHeadFactsSql(campaignScoped);
+
+    private static string BuildLocalHeadFactsSql(bool campaignScoped) => $"""
         SELECT h.LaneCode, h.CurrentOperationCode
         FROM covenant_heads h
         WHERE {(campaignScoped ? "h.CampaignId = $campaign" : "h.CampaignId IS NULL")}
@@ -546,5 +562,64 @@ internal static class CovenantStoreSql
                    AND ch.KeyEpoch = epoch.Binding
             WHERE st.StateKey = 1;
             """;
+    }
+
+    /// <summary>Finite SQL shapes for ordinary operator and bounded staged-mutation reads.</summary>
+    internal sealed class MutationReadTemplates
+    {
+        private readonly string[,] _quota = new string[2, CovenantLimits.MaxStagedMutationsPerTurn + 1];
+
+        private readonly string[,] _section = new string[2, CovenantLimits.MaxStagedMutationsPerTurn + 1];
+
+        private readonly string[] _detail = new string[2];
+
+        private readonly string[] _curation = new string[2];
+
+        private readonly string[] _dependent = new string[2];
+
+        private readonly string[] _local = new string[2];
+
+        internal MutationReadTemplates()
+        {
+            for (int scope = 0; scope < 2; scope++)
+            {
+                bool campaignScoped = scope != 0;
+
+                for (int count = 0; count <= CovenantLimits.MaxStagedMutationsPerTurn; count++)
+                {
+                    _quota[scope, count] = BuildQuotaSnapshot(campaignScoped, count);
+
+                    _section[scope, count] = BuildSectionOccupancy(campaignScoped, count);
+                }
+
+                _detail[scope] = BuildDetail(campaignScoped);
+
+                _curation[scope] = BuildDetailCuration(campaignScoped);
+
+                _dependent[scope] = BuildDependentHeadScan(campaignScoped);
+
+                _local[scope] = BuildLocalHeadFactsSql(campaignScoped);
+            }
+        }
+
+        // Other callers keep the existing builder semantics, including refusal of negative counts;
+        // caller-controlled counts never grow the retained table.
+        internal string QuotaSnapshot(bool campaignScoped, int excludedKeyCount) =>
+            (uint)excludedKeyCount <= CovenantLimits.MaxStagedMutationsPerTurn
+                ? _quota[campaignScoped ? 1 : 0, excludedKeyCount]
+                : BuildQuotaSnapshot(campaignScoped, excludedKeyCount);
+
+        internal string SectionOccupancy(bool campaignScoped, int excludedKeyCount) =>
+            (uint)excludedKeyCount <= CovenantLimits.MaxStagedMutationsPerTurn
+                ? _section[campaignScoped ? 1 : 0, excludedKeyCount]
+                : BuildSectionOccupancy(campaignScoped, excludedKeyCount);
+
+        internal string Detail(bool campaignScoped) => _detail[campaignScoped ? 1 : 0];
+
+        internal string DetailCuration(bool campaignScoped) => _curation[campaignScoped ? 1 : 0];
+
+        internal string DependentHeadScan(bool allCampaigns) => _dependent[allCampaigns ? 1 : 0];
+
+        internal string LocalHeadFactsSql(bool campaignScoped) => _local[campaignScoped ? 1 : 0];
     }
 }

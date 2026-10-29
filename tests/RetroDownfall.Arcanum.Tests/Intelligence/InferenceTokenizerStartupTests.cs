@@ -8,6 +8,8 @@ using Microsoft.Extensions.DependencyInjection;
 
 using Microsoft.Extensions.Logging;
 
+using Microsoft.Extensions.Options;
+
 using Microsoft.ML.Tokenizers;
 
 using RetroDownfall.Arcanum.Api;
@@ -16,12 +18,19 @@ using RetroDownfall.Arcanum.Api.Configuration;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
 
+using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
-public sealed class InferenceTokenizerStartupTests
+[Collection("ProcessEnvironment")]
+public sealed class InferenceTokenizerStartupTests : IDisposable
 {
+    private readonly ArcanumTestHomeScope _home = new("arcanum-tokenizer-startup-tests");
+
+    public void Dispose() => _home.Dispose();
+
     [Fact]
     public void Actual_startup_filter_initializes_default_before_pipeline_configuration()
     {
@@ -63,6 +72,16 @@ public sealed class InferenceTokenizerStartupTests
         TestCapturingLogger<InferenceTokenizerResolver> logger = new();
 
         using ServiceProvider services = CreateServices(logger);
+
+        ArcanumSettings settings = services.GetRequiredService<IOptions<ArcanumSettings>>().Value;
+
+        ProviderSettings provider = Assert.Single(settings.Providers);
+
+        Assert.Equal("local-test-provider", provider.Name);
+
+        Assert.Equal("not-an-encoding-model", Assert.Single(provider.Models).Name);
+
+        Assert.Equal("not-an-encoding-model", settings.DefaultModel);
 
         IStartupFilter filter = Assert.Single(services.GetServices<IStartupFilter>(), static value => value is ConfigurationStartupValidator);
 
@@ -162,7 +181,7 @@ public sealed class InferenceTokenizerStartupTests
 
             ["Arcanum:Providers:0:Type"] = "OpenAICompatible",
 
-            ["Arcanum:Providers:0:Models:0"] = "not-an-encoding-model",
+            ["Arcanum:Providers:0:Models:0:Name"] = "not-an-encoding-model",
 
             ["Arcanum:DefaultModel"] = "not-an-encoding-model",
         });

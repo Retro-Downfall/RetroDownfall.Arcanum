@@ -1195,30 +1195,29 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionAttachmentExtractionRetainsItsExactAdmittedLifetime()
     {
-        // Keep the real production compilations, bindings, premises and refusal rules. Selecting one
-        // service makes extraction-shape regressions diagnosable without traversing unrelated roots.
-        HostedProducerDiscovery<HostedProducerSite> scoped = HostedGrimoireProducerInventory.DiscoverProductionSites(
-            HostedProducerProductionPartition.Primary, ["SessionAttachmentIndexingService"]);
+        HostedProducerDiscovery<HostedProducerSite> full = HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
-        Assert.NotEmpty(scoped.Items);
+        HostedProducerSite[] observed = ObserveFullProductionRoot(full, "SessionAttachmentIndexingService");
 
-        output.WriteLine("BOUNDED_ATTACHMENT_CAPSULES_BEGIN");
+        Assert.NotEmpty(observed);
 
-        output.WriteLine(HostedGrimoireProducerInventory.RenderCapsuleManifest(scoped.Items));
+        output.WriteLine("FULL_GRAPH_ATTACHMENT_CAPSULES_BEGIN");
 
-        output.WriteLine("BOUNDED_ATTACHMENT_CAPSULES_END");
+        output.WriteLine(HostedGrimoireProducerInventory.RenderCapsuleManifest(observed));
 
-        Assert.All(scoped.Items, static site => Assert.Equal("SessionAttachmentIndexingService", site.RootType));
+        output.WriteLine("FULL_GRAPH_ATTACHMENT_CAPSULES_END");
 
-        Assert.Contains(scoped.Items, static site =>
+        Assert.All(observed, static site => Assert.Equal("SessionAttachmentIndexingService", site.RootType));
+
+        Assert.Contains(observed, static site =>
             site.Callee == "RetroDownfall.Arcanum.Core.Storage.ISessionAttachmentStore.OpenReadAsync");
 
-        Assert.Contains(scoped.Items, static site =>
+        Assert.Contains(observed, static site =>
             site.SourcePath.EndsWith("/Data/SessionAttachmentStore.cs", StringComparison.Ordinal)
             && site.Member == "ReadBytesAsync"
             && site.Callee == "System.IO.Stream.ReadAsync");
 
-        Assert.Contains(scoped.Items, static site =>
+        Assert.Contains(observed, static site =>
             site.SourcePath.EndsWith("/Storage/EncryptedBlobStore.cs", StringComparison.Ordinal)
             && site.Member == "DisposeAsync"
             && site.Callee == "System.IO.FileStream.DisposeAsync"
@@ -1226,7 +1225,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             && site.WorkFrontierCapsuleId is not null
             && site.EffectFrontierCapsuleId is null);
 
-        Assert.Contains(scoped.Items, static site =>
+        Assert.Contains(observed, static site =>
             site.SourcePath.EndsWith("/Data/SessionAttachmentStore.cs", StringComparison.Ordinal)
             && site.Member == "DisposeAsync"
             && site.Callee == "System.IO.FileStream.DisposeAsync"
@@ -1236,19 +1235,19 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         // The isolated PDF host reaches its worker process only through the reviewed seam, as a provider call; the runner
         // behind it is not traversed.
-        Assert.Contains(scoped.Items, static site =>
+        Assert.Contains(observed, static site =>
             site.SourcePath.EndsWith("/Weave/SessionAttachmentIsolatedDocumentHost.cs", StringComparison.Ordinal)
             && site.Callee == "RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.IDocumentExtractionWorker.RunAsync"
             && site.Kind == HostedProducerSiteKind.ProviderCall);
 
-        Assert.DoesNotContain(scoped.Items, static site =>
+        Assert.DoesNotContain(observed, static site =>
             site.SourcePath.Contains("/Process/CappedChildProcessRunner.cs", StringComparison.Ordinal));
 
         Assert.True(
-            scoped.Diagnostics.Count == 0,
+            full.Diagnostics.Count == 0,
             string.Join(
                 global::System.Environment.NewLine,
-                scoped.Diagnostics.Select(static diagnostic =>
+                full.Diagnostics.Select(static diagnostic =>
                     $"{diagnostic.Code}: {diagnostic.Identity}: {diagnostic.Detail}")));
     }
 

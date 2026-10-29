@@ -483,6 +483,54 @@ public sealed partial class BudgetReservationServiceTests
         await AssertConnectionIsNotInATransactionAsync();
     }
 
+    [SkippableTheory]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task A_missing_stamp_after_speculation_cannot_authorize_the_budget_decision(int missingStamp)
+    {
+        RequireSqlCipher();
+
+        DateTimeOffset now = new(2035, 6, 7, 12, 0, 0, TimeSpan.Zero);
+
+        Guid run = await StartRunAsync("missing-late-proof", now);
+
+        await SeedSnapshotBillsAsync(run, now, 32);
+
+        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 1m });
+
+        service.UtcNowForTesting = () => now;
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        int stamps = 0;
+
+        connection.CreateFunction("total_changes", () => ++stamps == missingStamp ? (long?)null : 0L);
+
+        using BudgetNativeTrace trace = new(connection);
+
+        Result<BudgetReservation> result = await service.ReserveAsync(new(run, 0.5m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)));
+
+        Assert.True(result.IsSuccess);
+
+        trace.AssertNoCallbackFault();
+
+        Assert.Equal(missingStamp, stamps);
+
+        NativeBudgetStatement[] folds = trace.Statements.Where(static f => f.IsCommittedFold).ToArray();
+
+        Assert.Equal(2, folds.Length);
+
+        Assert.False(folds[0].InsideTransaction);
+
+        Assert.True(folds[1].InsideTransaction);
+
+        Assert.All(folds, fold => Assert.Equal(32, fold.Rows));
+
+        Assert.Equal(0.5m, await service.GetTodayOutstandingReservationsAsync());
+
+        await AssertConnectionIsNotInATransactionAsync();
+    }
+
     [SkippableFact]
     public async Task A_noninteger_native_change_stamp_is_not_narrowed_into_a_valid_proof()
     {

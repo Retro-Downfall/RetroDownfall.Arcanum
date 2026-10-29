@@ -25,12 +25,14 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             candidate.EnclosingType.EndsWith(".InstallationResetService", StringComparison.Ordinal)
                 && candidate.Member == "ApplyFullUnderMaintenanceLockAsync").ChainId;
 
-        var discovery = HostedGrimoireProducerInventory.DiscoverProductionSites(HostedProducerProductionPartition.Primary, [root]);
+        HostedProducerDiscovery<HostedProducerSite> discovery = HostedGrimoireProducerInventory.ProductionSiteDiscovery;
+
+        HostedProducerSite[] observed = ObserveFullProductionRoot(discovery, "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService", root);
 
         Assert.DoesNotContain(discovery.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED"
             && diagnostic.Detail.Contains("ICovenantLabeledArtifactGuard.EnsureUnlabeledAsync", StringComparison.Ordinal));
 
-        Assert.Contains(discovery.Items, static site => site.EnclosingType.EndsWith(".ArtifactSensitivityLedger", StringComparison.Ordinal)
+        Assert.Contains(observed, static site => site.EnclosingType.EndsWith(".ArtifactSensitivityLedger", StringComparison.Ordinal)
             && site.Member == "ReadLabelWithinAsync" && site.Kind == HostedProducerSiteKind.DatabaseAccess);
     }
 

@@ -281,12 +281,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void HostedContinuationActualBatchProductionSubsetRetainsPhysicalWriterCleanup()
     {
-        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProductionSites(
-            HostedProducerProductionPartition.Primary, ["RetroDownfall.Arcanum.Api.Intelligence.BatchProcessingService.ExecuteAsync"]);
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
-        Assert.NotEmpty(result.Items);
+        HostedProducerSite[] observed = ObserveFullProductionRoot(result, "BatchProcessingService", "RetroDownfall.Arcanum.Api.Intelligence.BatchProcessingService.ExecuteAsync");
 
-        Assert.All(result.Items, static site => Assert.Equal("BatchProcessingService", site.RootType));
+        Assert.NotEmpty(observed);
+
+        Assert.All(observed, static site => Assert.Equal("BatchProcessingService", site.RootType));
 
         HostedProducerInventoryDiagnostic[] failures = [.. result.Diagnostics.Where(static diagnostic =>
             diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
@@ -294,7 +295,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.True(failures.Length == 0, HostedGrimoireProducerInventory.RenderDiagnosticReport(failures));
 
-        Assert.Contains(result.Items, static site => site.SourcePath.EndsWith("/Storage/EncryptedBlobStore.cs", StringComparison.Ordinal)
+        Assert.Contains(observed, static site => site.SourcePath.EndsWith("/Storage/EncryptedBlobStore.cs", StringComparison.Ordinal)
             && site.EnclosingType.Contains("StreamingEncryptedBlobWriter", StringComparison.Ordinal)
             && site.Callee == "System.IO.File.Delete" && site.WorkFrontierCapsuleId is not null && site.EffectFrontierCapsuleId is not null);
     }

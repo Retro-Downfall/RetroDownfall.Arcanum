@@ -47,8 +47,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Contains(HostedGrimoireProducerInventory.ProductionCompilations.SelectMany(static compilation => compilation.SyntaxTrees),
             static tree => tree.FilePath.EndsWith("/CovenantFeatureConfigurationPublisher.cs", StringComparison.Ordinal));
 
-        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProductionSites(
-            HostedProducerProductionPartition.Primary, ["CovenantFeatureConfigurationPublisher"]);
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.ProductionSiteDiscovery;
+
+        Assert.NotNull(result.AnalysisMetrics);
+
+        Assert.Contains(result.AnalysisMetrics.RootTraversals, static root =>
+            root.RootType == "CovenantFeatureConfigurationPublisher" && root.AnalyzedStates > 0);
 
         HostedProducerInventoryDiagnostic[] failures = [.. result.Diagnostics.Where(static diagnostic =>
             diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"

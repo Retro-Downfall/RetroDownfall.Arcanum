@@ -377,10 +377,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void HostedContinuationActualProviderFactoriesRetainClosedSdkPolicySetup()
     {
-        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProductionSites(
-            HostedProducerProductionPartition.Primary, ["Loremaster"]);
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
-        Assert.NotEmpty(result.Items);
+        HostedProducerSite[] observed = ObserveFullProductionRoot(result, "Loremaster");
+
+        Assert.NotEmpty(observed);
 
         HostedProducerInventoryDiagnostic[] failures = [.. result.Diagnostics.Where(static diagnostic =>
             diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
@@ -391,7 +392,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.True(failures.Length == 0, HostedGrimoireProducerInventory.RenderDiagnosticReport(failures));
 
-        Assert.Contains(result.Items, static site => site.Kind == HostedProducerSiteKind.ProviderCall);
+        Assert.Contains(observed, static site => site.Kind == HostedProducerSiteKind.ProviderCall);
     }
 
     [Fact]

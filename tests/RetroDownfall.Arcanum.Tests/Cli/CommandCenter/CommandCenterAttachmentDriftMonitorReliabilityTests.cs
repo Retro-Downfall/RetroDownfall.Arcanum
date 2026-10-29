@@ -241,6 +241,8 @@ public sealed class CommandCenterAttachmentDriftMonitorReliabilityTests
 
         release.SetResult();
 
+        await fixture.UntilAsync(() => fixture.Requests.Count == 2);
+
         await fixture.DriveAsync();
 
         Assert.Equal(2, fixture.Requests.Count);
@@ -421,6 +423,8 @@ public sealed class CommandCenterAttachmentDriftMonitorReliabilityTests
         await fixture.UntilAsync(() => fixture.Requests.Count == 1);
 
         fixture.Watcher.Change(fixture.Root, "obj/build.tmp");
+
+        await fixture.UntilAsync(() => fixture.Requests.Count == 2);
 
         await fixture.DriveAsync();
 
