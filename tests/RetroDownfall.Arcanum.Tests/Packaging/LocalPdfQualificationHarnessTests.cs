@@ -227,12 +227,6 @@ public sealed class LocalPdfQualificationHarnessTests
                 Content = new StringContent(ResponseBody, Encoding.UTF8, "application/json"),
             };
 
-            response.Headers.TryAddWithoutValidation("Cache-Control", "no-store, private");
-
-            response.Headers.TryAddWithoutValidation("Pragma", "no-cache");
-
-            response.Content.Headers.TryAddWithoutValidation("Expires", "0");
-
             return response;
         }
     }

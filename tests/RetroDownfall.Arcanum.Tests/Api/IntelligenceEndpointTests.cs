@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
@@ -11,7 +12,9 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Packaging;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -23,6 +26,104 @@ public sealed class IntelligenceEndpointTests
     public IntelligenceEndpointTests(ArcanumWebApplicationFactory factory)
     {
         _factory = factory;
+    }
+
+    [SkippableFact]
+    public async Task Pdf_qualification_accepts_ordinary_unattended_headers_while_attended_recall_stays_protected()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string? ordinaryCacheControl = null;
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings =>
+            {
+                settings.Features.Covenant = true;
+
+                settings.Features.AgentMemoryRecall = true;
+
+                settings.Features.LongRest = false;
+
+                settings.Features.CampaignRollups = false;
+
+                return settings;
+            },
+            BeforeEndpoint = async (context, next) =>
+            {
+                await next(context);
+
+                if (context.Request.Path == "/api/intelligence/ping")
+                    ordinaryCacheControl = context.Response.Headers.CacheControl.ToString();
+            },
+        };
+
+        factory.FakeIntelligence.NextText = "pdf-result";
+
+        factory.FakeIntelligence.NextFinishReason = "stop";
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage created = await client.PostAsync("/api/sessions",
+            JsonContent.Create(new CreateSessionRequest(null, "PDF headers"), ArcanumJsonContext.Default.CreateSessionRequest));
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        using JsonDocument session = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+
+        Guid sessionId = session.RootElement.GetProperty("data").GetProperty("id").GetGuid();
+
+        byte[] pdf = PdfQualificationChallenge.BuildPdf(["Ordinary PDF header fixture"]);
+
+        using MultipartFormDataContent form = new();
+
+        using ByteArrayContent file = new(pdf);
+
+        file.Headers.ContentType = new("application/pdf");
+
+        form.Add(file, "file", PdfQualificationChallenge.FileName);
+
+        form.Add(new StringContent(PdfQualificationChallenge.LogicalName), "logicalName");
+
+        using HttpResponseMessage uploaded = await client.PostAsync($"/api/sessions/{sessionId:D}/attachments", form);
+
+        Assert.Equal(HttpStatusCode.Created, uploaded.StatusCode);
+
+        var attachment = await uploaded.Content.ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseSessionAttachmentDto);
+
+        Assert.NotNull(attachment?.Data);
+
+        PingRequest attended = new("recall", SessionId: sessionId, WorkingDirectory: factory.TempHome,
+            DisableMcpTools: true, UnattendedMode: false, SkipSpellRouting: true, ToolPolicy: ToolPolicy.ReadOnlyTools);
+
+        using HttpResponseMessage protectedReply = await client.PostAsync("/api/intelligence/ping-stream",
+            JsonContent.Create(attended, ArcanumJsonContext.Default.PingRequest));
+
+        Assert.Equal(HttpStatusCode.OK, protectedReply.StatusCode);
+
+        PublishedArcanumOllamaQualificationTests.AssertRecallProtectedHeaders(protectedReply);
+
+        string? answer = null;
+
+        Exception? failure = await Record.ExceptionAsync(async () => answer = await PublishedArcanumOllamaQualificationTests.RunPdfTurnAsync(
+            client, sessionId, "test-model", factory.TempHome, PdfQualificationChallenge.FirstPrompt,
+            attachment.Data.Id, CancellationToken.None));
+
+        Assert.True(factory.FakeIntelligence.LastRequest!.UnattendedMode);
+
+        Assert.True(factory.FakeIntelligence.LastRequest.DisableAllTools);
+
+        Assert.True(factory.FakeIntelligence.LastRequest.DisableMcpTools);
+
+        Assert.Equal(InvocationAttendance.Unattended, factory.FakeIntelligence.LastInvocation!.Attendance);
+
+        Assert.Equal(ToolPolicy.NoTools, factory.FakeIntelligence.LastInvocation.ToolPolicy);
+
+        Assert.Equal(string.Empty, ordinaryCacheControl);
+
+        Assert.Null(failure);
+
+        Assert.Equal("pdf-result", answer);
     }
 
     /// <summary>

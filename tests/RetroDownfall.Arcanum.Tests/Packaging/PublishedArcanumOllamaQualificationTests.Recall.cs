@@ -130,7 +130,7 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
         return document.RootElement.GetProperty("data").EnumerateArray().Reverse().Select(static row => row.Clone()).ToArray();
     }
 
-    private static void AssertRecallProtectedHeaders(HttpResponseMessage response)
+    internal static void AssertRecallProtectedHeaders(HttpResponseMessage response)
     {
         Assert.True(response.Headers.CacheControl?.NoStore,
             "The protected recall response must prohibit cache storage.");

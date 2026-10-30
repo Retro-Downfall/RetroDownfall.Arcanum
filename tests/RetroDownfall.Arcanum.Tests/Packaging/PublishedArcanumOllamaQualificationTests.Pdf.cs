@@ -30,7 +30,9 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        AssertRecallProtectedHeaders(response);
+        // This global, unattended, tools-disabled turn is ordinary inference. The protected
+        // header tuple belongs to eligible recall/Campaign responses, not every buffered ping.
+        // RunNativeMemoryRecallAsync separately verifies the attended recall stream's tuple.
 
         using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
 

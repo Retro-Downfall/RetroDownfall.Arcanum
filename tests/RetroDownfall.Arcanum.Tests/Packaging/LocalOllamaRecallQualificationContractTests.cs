@@ -22,6 +22,37 @@ public sealed class LocalOllamaRecallQualificationContractTests
     private const string Arguments = "{\"query\":\"local.recall.subject\",\"scope\":\"Covenant\",\"limit\":1}";
 
     [Theory]
+    [InlineData(null)]
+    [InlineData("no-store")]
+    [InlineData("private")]
+    [InlineData("pragma")]
+    [InlineData("expires")]
+    [InlineData("etag")]
+    [InlineData("last-modified")]
+    public void Attended_recall_requires_the_complete_protected_header_tuple(string? missing)
+    {
+        using HttpResponseMessage response = new() { Content = new StringContent(string.Empty) };
+
+        response.Headers.TryAddWithoutValidation("Cache-Control", missing switch
+        {
+            "no-store" => "private",
+            "private" => "no-store",
+            _ => "no-store, private",
+        });
+
+        if (missing != "pragma") response.Headers.TryAddWithoutValidation("Pragma", "no-cache");
+
+        if (missing != "expires") response.Content.Headers.TryAddWithoutValidation("Expires", "0");
+
+        if (missing == "etag") response.Headers.TryAddWithoutValidation("ETag", "\"synthetic-validator\"");
+
+        if (missing == "last-modified") response.Content.Headers.LastModified = DateTimeOffset.UnixEpoch;
+
+        if (missing is null) PublishedArcanumOllamaQualificationTests.AssertRecallProtectedHeaders(response);
+        else Assert.NotNull(Record.Exception(() => PublishedArcanumOllamaQualificationTests.AssertRecallProtectedHeaders(response)));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Native_recall_evidence_preserves_opaque_call_and_exact_result_and_consumes_version(bool includeNullCursor)

@@ -786,6 +786,10 @@ public sealed class SessionEndpointTests
 
         Assert.Equal(HttpStatusCode.OK, exported.StatusCode);
 
+        Assert.True(exported.Headers.CacheControl?.NoStore);
+
+        Assert.Equal("nosniff", Assert.Single(exported.Headers.GetValues("X-Content-Type-Options")));
+
         Assert.Equal(pdf, await exported.Content.ReadAsByteArrayAsync());
 
         using HttpResponseMessage pin = await client.PostAsync($"/api/sessions/{sessionId:D}/context-pins",
