@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -23,6 +24,7 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Packaging;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Tower;
@@ -734,6 +736,81 @@ public sealed class SessionEndpointTests
                 File.Delete(sourcePath);
             }
         }
+    }
+
+    [SkippableFact]
+    public async Task PostAttachments_Pdf_qualification_uses_the_canonical_upload_hash_for_pins_and_index_evidence()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionWithEntriesAsync(0);
+
+        PdfQualificationChallenge challenge = new(new string('a', 32), new string('b', 32), 71, 8, 83, 11);
+
+        byte[] pdf = challenge.BuildPdf();
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using MultipartFormDataContent form = new();
+
+        using ByteArrayContent file = new(pdf);
+
+        file.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+
+        form.Add(file, "file", PdfQualificationChallenge.FileName);
+
+        form.Add(new StringContent(PdfQualificationChallenge.LogicalName), "logicalName");
+
+        using HttpResponseMessage upload = await client.PostAsync($"/api/sessions/{sessionId:D}/attachments", form);
+
+        Assert.Equal(HttpStatusCode.Created, upload.StatusCode);
+
+        var payload = await upload.Content.ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseSessionAttachmentDto);
+
+        Assert.NotNull(payload);
+
+        Assert.True(payload.IsSuccess);
+
+        SessionAttachmentDto attachment = Assert.IsType<SessionAttachmentDto>(payload.Data);
+
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(pdf)), attachment.ContentSha256);
+
+        Assert.True(PdfQualificationEvidence.AttachmentMatches(attachment, sessionId, pdf),
+            "The grader must accept the actual upload DTO with its canonical uppercase digest.");
+
+        string hash = PdfQualificationEvidence.ContentSha256(pdf);
+
+        Assert.Equal(attachment.ContentSha256, hash);
+
+        using HttpResponseMessage exported = await client.GetAsync($"/api/sessions/{sessionId:D}/attachments/{attachment.Id:D}/content");
+
+        Assert.Equal(HttpStatusCode.OK, exported.StatusCode);
+
+        Assert.Equal(pdf, await exported.Content.ReadAsByteArrayAsync());
+
+        using HttpResponseMessage pin = await client.PostAsync($"/api/sessions/{sessionId:D}/context-pins",
+            JsonContent.Create(new CreateSessionContextPinRequest(SessionContextPinKind.Attachment,
+                attachment.Id.ToString("D"), PdfQualificationChallenge.LogicalName, hash),
+                ArcanumJsonContext.Default.CreateSessionContextPinRequest));
+
+        Assert.Equal(HttpStatusCode.OK, pin.StatusCode);
+
+        using JsonDocument pinJson = JsonDocument.Parse(await pin.Content.ReadAsStringAsync());
+
+        Assert.Equal(attachment.ContentSha256, pinJson.RootElement.GetProperty("data").GetProperty("contentVersion").GetString());
+
+        PdfPublishedChunk chunk = new(sessionId, attachment.Id, 1, attachment.ContentSha256, "application/pdf",
+            "Indexed", attachment.ContentSha256, "generation", "generation",
+            "[PDF page 1]\n" + string.Join('\n', challenge.DocumentLines), 64, 64, 256,
+            "2026-10-26T12:00:00.0000000+00:00", "2026-10-26T12:00:01.0000000+00:00");
+
+        Assert.True(PdfQualificationEvidence.IndexMatches([chunk], sessionId, attachment.Id, hash, 64, challenge));
+
+        Assert.False(PdfQualificationEvidence.IndexMatches([chunk with { Hash = hash.ToLowerInvariant() }],
+            sessionId, attachment.Id, hash, 64, challenge));
+
+        Assert.False(PdfQualificationEvidence.IndexMatches([chunk with { StateHash = hash.ToLowerInvariant() }],
+            sessionId, attachment.Id, hash, 64, challenge));
     }
 
     [SkippableFact]

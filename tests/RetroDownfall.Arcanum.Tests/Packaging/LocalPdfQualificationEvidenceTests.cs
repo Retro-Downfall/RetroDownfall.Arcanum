@@ -34,7 +34,7 @@ public sealed class LocalPdfQualificationEvidenceTests
 
         SessionAttachmentDto dto = new(Attachment, PdfQualificationChallenge.LogicalName, PdfQualificationChallenge.FileName,
             1, "bound/fixture.arcblob", "application/pdf", pdf.Length, SessionAttachmentKind.Binary,
-            Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(pdf)), DateTimeOffset.UtcNow, SessionId: Session);
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(pdf)), DateTimeOffset.UtcNow, SessionId: Session);
 
         Assert.True(PdfQualificationEvidence.AttachmentMatches(dto, Session, pdf));
 
@@ -43,7 +43,9 @@ public sealed class LocalPdfQualificationEvidenceTests
             dto with { SessionId = Guid.NewGuid() }, dto with { Kind = SessionAttachmentKind.Text },
             dto with { MimeType = "text/plain" }, dto with { ContentSha256 = new string('0', 64) },
             dto with { ByteLength = 1 }, dto with { Version = 2 }, dto with { OriginalFileName = "answer.pdf" },
-            dto with { LogicalKey = "answer" },
+            dto with { LogicalKey = "answer" }, dto with { ContentSha256 = dto.ContentSha256.ToLowerInvariant() },
+            dto with { ContentSha256 = dto.ContentSha256 + "0" }, dto with { SessionId = null },
+            dto with { Id = Guid.Empty },
         }) Assert.False(PdfQualificationEvidence.AttachmentMatches(wrong, Session, pdf));
     }
 

@@ -26,13 +26,16 @@ internal static class PdfQualificationEvidence
         };
     }
 
+    public static string ContentSha256(ReadOnlySpan<byte> bytes) =>
+        Convert.ToHexString(SHA256.HashData(bytes));
+
     public static bool AttachmentMatches(SessionAttachmentDto attachment, Guid sessionId, byte[] pdf) =>
         attachment.Id != Guid.Empty && attachment.SessionId == sessionId && attachment.Version == 1
             && attachment.Kind == SessionAttachmentKind.Binary && attachment.MimeType == "application/pdf"
             && attachment.LogicalKey == PdfQualificationChallenge.LogicalName
             && attachment.OriginalFileName == PdfQualificationChallenge.FileName
             && attachment.ByteLength == pdf.Length
-            && attachment.ContentSha256 == Convert.ToHexStringLower(SHA256.HashData(pdf));
+            && attachment.ContentSha256 == ContentSha256(pdf);
 
     public static bool TranscriptMatches(IReadOnlyList<JsonElement> before, IReadOnlyList<JsonElement> after,
         Guid sessionId, IReadOnlyList<string> prompts, IReadOnlyList<string> replies,

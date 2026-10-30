@@ -76,7 +76,7 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
         byte[] pdf = challenge.BuildPdf();
 
-        string hash = ComputeSha256(pdf);
+        string hash = PdfQualificationEvidence.ContentSha256(pdf);
 
         string configuration = await File.ReadAllTextAsync(Path.Combine(configurationDirectory, "arcanum.json"), token);
 
@@ -136,7 +136,7 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
         Assert.True(pdf.AsSpan().SequenceEqual(retained), "Exported PDF bytes must match the original upload exactly.");
 
-        Assert.Equal(hash, ComputeSha256(retained));
+        Assert.Equal(hash, PdfQualificationEvidence.ContentSha256(retained));
 
         string root = Path.GetFullPath(Path.Combine(configurationDirectory, "attachments")) + Path.DirectorySeparatorChar;
 
