@@ -26,6 +26,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
 public sealed class BackupService : IBackupService
@@ -1422,6 +1424,10 @@ public sealed class BackupService : IBackupService
             }.ToString());
 
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        // SQLite prepares guarded cascade paths even when no protected row is affected.
+        // Register their functions on this unpublished snapshot without granting write authority.
+        CovenantSqliteConnectionInitializer.Instance.EnsureAuthorizationFunctions(connection);
 
         await using SqliteCommand table = connection.CreateCommand();
 
