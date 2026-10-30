@@ -152,7 +152,7 @@ public sealed class HostHealthDiagnosticsTests
         Assert.Contains("HTTP 503", finding.Detail, StringComparison.Ordinal);
 
         Assert.Contains(
-            DoctorRemedyCommands.Lore,
+            DoctorRemedyCommands.WatchHealth,
             (finding.Remedies ?? []).Select(static remedy => remedy.Command));
     }
 

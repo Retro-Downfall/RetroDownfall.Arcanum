@@ -19,6 +19,9 @@ using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Commands;
+using RetroDownfall.Arcanum.Cli.Diagnostics;
+using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Core.Cli;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
@@ -62,6 +65,37 @@ public sealed class WatchCommandTests
         Assert.Contains("--tool", logs.Output, StringComparison.Ordinal);
 
         Assert.Contains("--reconnect", logs.Output, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(HealthStatus.Unhealthy, false)]
+    [InlineData(HealthStatus.Unhealthy, true)]
+    [InlineData(HealthStatus.Degraded, true)]
+    public void Doctor_health_remedy_invokes_authenticated_health_observation(HealthStatus status, bool includeComponents)
+    {
+        DoctorFinding finding = HostHealthComponentsCheck.Describe(new HealthProbeResult(
+            status == HealthStatus.Unhealthy ? HealthProbeState.UnhealthyStatus : HealthProbeState.Healthy,
+            status == HealthStatus.Unhealthy ? 503 : 200,
+            TimeSpan.Zero,
+            null,
+            Components: includeComponents ? [new HealthComponentDto("Grimoire", status, "needs attention")] : null));
+
+        DoctorRemedy remedy = Assert.Single(finding.Remedies!, item => item.Id == "host.inspect_components");
+
+        // A terminal HTTP refusal stops the polling action after one observation; no host is used.
+        ScriptedHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+
+        CliTestResult result = RunCommand(handler, [.. remedy.Command.Split(' ').Skip(1)]);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.Equal(HttpMethod.Get, request.Method);
+
+        Assert.Equal("/api/health", request.RequestUri!.AbsolutePath);
+
+        Assert.True(handler.SawProcessCapability);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
     }
 
     [Fact]

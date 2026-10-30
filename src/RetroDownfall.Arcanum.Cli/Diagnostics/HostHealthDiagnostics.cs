@@ -98,7 +98,7 @@ public sealed class HostHealthComponentsCheck(
                     new DoctorRemedy(
                         "host.inspect_components",
                         null,
-                        DoctorRemedyCommands.Lore,
+                        DoctorRemedyCommands.WatchHealth,
                         "Inspect the host's own health report for the failing components."),
                 ]);
         }
@@ -190,7 +190,7 @@ public sealed class HostHealthComponentsCheck(
                 new DoctorRemedy(
                     "host.inspect_components",
                     null,
-                    DoctorRemedyCommands.Lore,
+                    DoctorRemedyCommands.WatchHealth,
                     "Inspect the host's own health report for the named components."),
             ]);
     }

@@ -1,3 +1,4 @@
+using System.CommandLine;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
@@ -44,6 +45,10 @@ public sealed class DoctorRemedyCommandContractTests : IDisposable
 
         List<string> unresolved = [];
 
+        await using ServiceProvider provider = BuildServices().BuildServiceProvider();
+
+        RootCommand root = CliCommandTree.Build(provider, out _);
+
         foreach (string command in DoctorRemedyCommands.All)
         {
 
@@ -54,8 +59,10 @@ public sealed class DoctorRemedyCommandContractTests : IDisposable
                 [.. verbs, "--help"]);
 
             // An unknown verb never reaches a handler, so the parser reports it on stderr and exits
-            // with the closed configuration-error code. Help for a real verb always succeeds.
-            if (result.ExitCode != (int)CliExitCode.Success)
+            // with the closed configuration-error code. Group help can also succeed, so require
+            // an actual action on the selected command without --help overriding its action.
+            if (result.ExitCode != (int)CliExitCode.Success
+                || !ResolvesAction(root, command))
             {
 
                 unresolved.Add($"{command} (exit {result.ExitCode}: {result.Error.Trim()})");
@@ -67,6 +74,25 @@ public sealed class DoctorRemedyCommandContractTests : IDisposable
         Assert.Empty(unresolved);
 
     }
+
+    [Theory]
+    [InlineData("arcanum lore", false)]
+    [InlineData("arcanum config", false)]
+    [InlineData("arcanum watch", false)]
+    [InlineData("arcanum serve", true)]
+    [InlineData("arcanum watch health", true)]
+    [InlineData("arcanum key provider set <provider>", true)]
+    public async Task Action_resolution_distinguishes_groups_from_executable_commands(string command, bool expected)
+    {
+        await using ServiceProvider provider = BuildServices().BuildServiceProvider();
+
+        RootCommand root = CliCommandTree.Build(provider, out _);
+
+        Assert.Equal(expected, ResolvesAction(root, command));
+    }
+
+    private static bool ResolvesAction(RootCommand root, string command) =>
+        root.Parse(VerbPath(command)).CommandResult.Command.Action is not null;
 
     [Fact]
     public void Every_remediation_command_is_an_arcanum_command()

@@ -56,7 +56,7 @@ public static class DoctorRemedyCommands
 
     public const string DaemonStatus = "arcanum daemon status";
 
-    public const string Lore = "arcanum lore";
+    public const string WatchHealth = "arcanum watch health";
 
     public const string Serve = "arcanum serve";
 
@@ -97,7 +97,7 @@ public static class DoctorRemedyCommands
             OperationList,
             OperationListNeedingRepair,
             DaemonStatus,
-            Lore,
+            WatchHealth,
             Serve,
             DoctorList,
             RepairPermissions,
