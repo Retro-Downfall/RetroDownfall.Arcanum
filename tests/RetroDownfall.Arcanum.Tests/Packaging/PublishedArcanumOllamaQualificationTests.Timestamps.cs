@@ -109,7 +109,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
         using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
 
-        Assert.True(document.RootElement.GetProperty("isSuccess").GetBoolean());
+        Assert.True(document.RootElement.GetProperty("isSuccess").GetBoolean(),
+            "The timestamp page response must report success.");
 
         return document.RootElement.GetProperty("data").EnumerateArray().Select(static row => row.Clone()).ToArray();
     }

@@ -326,7 +326,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
             Assert.Equal(LogicalKey, firstVersion.GetProperty("logicalKey").GetString());
             Assert.Equal(1, firstVersion.GetProperty("version").GetInt32());
-            Assert.True(firstVersion.GetProperty("isRefreshable").GetBoolean());
+            Assert.True(firstVersion.GetProperty("isRefreshable").GetBoolean(),
+                "The initial attachment reference must be refreshable.");
 
             JsonElement firstPin = ParseObject((await RunCliAsync(
                 executable,
@@ -405,7 +406,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
             Assert.NotEqual(firstVersionId, secondVersionId);
             Assert.Equal(LogicalKey, refresh.GetProperty("logicalKey").GetString());
             Assert.Equal(2, refresh.GetProperty("version").GetInt32());
-            Assert.True(refresh.GetProperty("newVersionCreated").GetBoolean());
+            Assert.True(refresh.GetProperty("newVersionCreated").GetBoolean(),
+                "The attachment refresh must create a new version.");
             Assert.NotEqual(
                 firstVersion.GetProperty("contentSha256").GetString(),
                 refresh.GetProperty("contentSha256").GetString());
@@ -1340,7 +1342,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
         using JsonDocument document = JsonDocument.Parse(json);
         JsonElement data = document.RootElement.GetProperty("data");
 
-        Assert.True(data.GetProperty("nativeAot").GetBoolean());
+        Assert.True(data.GetProperty("nativeAot").GetBoolean(),
+            "The published host metadata must report Native AOT execution.");
         Assert.Equal(expectedGrimoireDirectory, data.GetProperty("grimoireDirectory").GetString());
         Assert.Equal(expectedConfigurationPath, data.GetProperty("configPath").GetString());
         Assert.Equal(expectedPort, data.GetProperty("port").GetInt32());

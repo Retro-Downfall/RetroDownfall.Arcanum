@@ -34,14 +34,16 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
         using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
 
-        Assert.True(document.RootElement.GetProperty("isSuccess").GetBoolean());
+        Assert.True(document.RootElement.GetProperty("isSuccess").GetBoolean(),
+            "The PDF turn response must report success.");
 
         JsonElement data = document.RootElement.GetProperty("data");
 
         Assert.Equal("stop", data.GetProperty("finishReason").GetString());
 
         Assert.True(!data.TryGetProperty("toolCalls", out JsonElement tools) || tools.ValueKind == JsonValueKind.Null
-            || tools.ValueKind == JsonValueKind.Array && tools.GetArrayLength() == 0);
+            || tools.ValueKind == JsonValueKind.Array && tools.GetArrayLength() == 0,
+            "The PDF turn must complete without tool calls.");
 
         return data.GetProperty("text").GetString()!;
     }
@@ -116,11 +118,13 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
         using JsonDocument upload = JsonDocument.Parse(await uploaded.Content.ReadAsStringAsync(token));
 
-        Assert.True(upload.RootElement.GetProperty("isSuccess").GetBoolean());
+        Assert.True(upload.RootElement.GetProperty("isSuccess").GetBoolean(),
+            "The PDF attachment upload must report success.");
 
         SessionAttachmentDto attachment = upload.RootElement.GetProperty("data").Deserialize(ArcanumJsonContext.Default.SessionAttachmentDto)!;
 
-        Assert.True(PdfQualificationEvidence.AttachmentMatches(attachment, sessionId, pdf));
+        Assert.True(PdfQualificationEvidence.AttachmentMatches(attachment, sessionId, pdf),
+            "The uploaded PDF attachment must match the session and original bytes.");
 
         using HttpResponseMessage exported = await api.GetAsync($"api/sessions/{sessionId:D}/attachments/{attachment.Id:D}/content", token);
 
@@ -144,7 +148,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
         try
         {
-            Assert.True(PdfQualificationEvidence.EncryptedPayloadMatches(encrypted, pdf, challenge));
+            Assert.True(PdfQualificationEvidence.EncryptedPayloadMatches(encrypted, pdf, challenge),
+                "The retained PDF payload must be encrypted and match the original document.");
         }
         finally
         {
@@ -163,7 +168,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
         JsonElement[] firstRows = await ReadRecallRowsAsync(api, sessionId, token);
 
         Assert.True(PdfQualificationEvidence.TranscriptMatches([], firstRows, sessionId,
-            [PdfQualificationChallenge.FirstPrompt], [first], await grimoire.ReadReplyModelsAsync(sessionId, token), textModel));
+            [PdfQualificationChallenge.FirstPrompt], [first], await grimoire.ReadReplyModelsAsync(sessionId, token), textModel),
+            "The first PDF turn must preserve the exact transcript and text model.");
 
         using HttpResponseMessage pinned = await api.PostAsync($"api/sessions/{sessionId:D}/context-pins",
             JsonContent.Create(new CreateSessionContextPinRequest(SessionContextPinKind.Attachment,
@@ -174,7 +180,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
         using JsonDocument pin = JsonDocument.Parse(await pinned.Content.ReadAsStringAsync(token));
 
-        Assert.True(pin.RootElement.GetProperty("isSuccess").GetBoolean());
+        Assert.True(pin.RootElement.GetProperty("isSuccess").GetBoolean(),
+            "The PDF attachment pin response must report success.");
 
         Assert.Equal(sessionId, pin.RootElement.GetProperty("data").GetProperty("sessionId").GetGuid());
 
@@ -202,7 +209,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
         Assert.True(PdfQualificationEvidence.TranscriptMatches(firstRows,
             await ReadRecallRowsAsync(api, sessionId, token), sessionId,
             [PdfQualificationChallenge.FirstPrompt, PdfQualificationChallenge.SecondPrompt], [first, second],
-            await grimoire.ReadReplyModelsAsync(sessionId, token), textModel));
+            await grimoire.ReadReplyModelsAsync(sessionId, token), textModel),
+            "The second PDF turn must preserve both exact transcript pairs and text model.");
 
         using CancellationTokenSource indexDeadline = CancellationTokenSource.CreateLinkedTokenSource(token);
 
@@ -223,7 +231,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
         int embeddingCount = traffic.Count(static request => request.Kind == LongRestProviderRequestKind.Embedding);
 
         Assert.True(LocalOllamaQualificationGuards.SameDurableRows(originalRows,
-            await ReadRecallRowsAsync(api, originalSessionId, token)));
+            await ReadRecallRowsAsync(api, originalSessionId, token)),
+            "The PDF qualification must preserve every original session entry.");
 
         Console.WriteLine($"PDF dependency evidence: text model={textModel}, Chat credential, calls=2; embedding model={options.Model}, Embedding credential, calls={embeddingCount}. This is functional PDF evidence; dedicated embedding qualification remains separate and last.");
     }

@@ -110,7 +110,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
 
-        Assert.True(document.RootElement.GetProperty("isSuccess").GetBoolean());
+        Assert.True(document.RootElement.GetProperty("isSuccess").GetBoolean(),
+            "The recall memory detail response must report success.");
 
         return document.RootElement.GetProperty("data").Clone();
     }
@@ -123,16 +124,19 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
 
-        Assert.True(document.RootElement.GetProperty("isSuccess").GetBoolean());
+        Assert.True(document.RootElement.GetProperty("isSuccess").GetBoolean(),
+            "The recall transcript response must report success.");
 
         return document.RootElement.GetProperty("data").EnumerateArray().Reverse().Select(static row => row.Clone()).ToArray();
     }
 
     private static void AssertRecallProtectedHeaders(HttpResponseMessage response)
     {
-        Assert.True(response.Headers.CacheControl?.NoStore);
+        Assert.True(response.Headers.CacheControl?.NoStore,
+            "The protected recall response must prohibit cache storage.");
 
-        Assert.True(response.Headers.CacheControl?.Private);
+        Assert.True(response.Headers.CacheControl?.Private,
+            "The protected recall response must declare private caching.");
 
         Assert.Equal("no-cache", response.Headers.Pragma.ToString());
 
