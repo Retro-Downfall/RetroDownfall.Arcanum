@@ -21,9 +21,11 @@ internal static class TestCredentialStorePolicy
 
     internal static IOsCredentialStore Create(IServiceProvider services)
     {
-        string? environmentName = services.GetService<IHostEnvironment>()?.EnvironmentName;
+        IHostEnvironment? environment = services.GetService<IHostEnvironment>();
 
-        return CreateForEnvironment(environmentName);
+        return environment is null
+            ? CreateForCurrentProcess()
+            : CreateForEnvironment(environment.EnvironmentName);
     }
 
     /// <summary>

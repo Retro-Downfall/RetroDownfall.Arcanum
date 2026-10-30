@@ -244,6 +244,90 @@ public sealed class TestCredentialStorePolicyTests
         }
     }
 
+    [Theory]
+    [InlineData(null, "Testing", "Testing", true, true, true)]
+    [InlineData(null, "Testing", null, true, true, false)]
+    [InlineData(null, null, "Testing", true, true, false)]
+    [InlineData(null, "Testing", "Production", true, true, false)]
+    [InlineData(null, "Production", "Testing", true, true, false)]
+    [InlineData(null, "Production", "Production", true, true, false)]
+    [InlineData(null, "Testing", "Testing", false, true, false)]
+    [InlineData(null, "Testing", "Testing", true, false, false)]
+    [InlineData("Production", "Testing", "Testing", true, true, false)]
+    [InlineData("", "Testing", "Testing", true, true, false)]
+    [InlineData("Testing", "Production", "Production", true, true, true)]
+    public void Client_mutation_di_uses_the_host_environment_or_the_strict_process_boundary(
+        string? hostEnvironment,
+        string? dotnetEnvironment,
+        string? aspNetCoreEnvironment,
+        bool exactOptIn,
+        bool isolatedHome,
+        bool expectedInMemory)
+    {
+        string testHome = CreateTestHome();
+
+        Dictionary<string, string?> desired = new()
+        {
+            ["ARCANUM_TEST_HOME"] = isolatedHome ? testHome : Path.GetTempPath(),
+            [OptInVariable] = exactOptIn ? "1" : null,
+            [DotnetEnvironmentVariable] = dotnetEnvironment,
+            [AspNetCoreEnvironmentVariable] = aspNetCoreEnvironment,
+        };
+
+        Dictionary<string, string?> original = desired.Keys.ToDictionary(
+            key => key,
+            global::System.Environment.GetEnvironmentVariable);
+
+        try
+        {
+            foreach ((string key, string? value) in desired)
+            {
+                global::System.Environment.SetEnvironmentVariable(key, value);
+            }
+
+            ServiceCollection services = new();
+
+            if (hostEnvironment is not null)
+            {
+                services.AddSingleton<IHostEnvironment>(new TestHostEnvironment(hostEnvironment));
+            }
+
+            services.AddArcanumClientMutationCoordination();
+
+            using ServiceProvider provider = services.BuildServiceProvider();
+
+            IOsCredentialStore credentials = provider.GetRequiredService<IOsCredentialStore>();
+
+            if (!expectedInMemory)
+            {
+                // Selection alone is observed: never probe or read the real OS backend.
+                Assert.IsType<OsCredentialStore>(credentials);
+
+                return;
+            }
+
+            InMemoryOsCredentialStore memory = Assert.IsType<InMemoryOsCredentialStore>(credentials);
+
+            InstallationStartupProbe startup = Assert.IsType<InstallationStartupProbe>(
+                provider.GetRequiredService<Core.DataLifecycle.IInstallationStartupProbe>());
+
+            Assert.Same(memory, startup.CredentialStore);
+
+            Assert.Equal(OsCredentialStoreStatus.NotFound, memory.ProbePresence("synthetic", "missing"));
+
+            Assert.Empty(Directory.EnumerateFiles(testHome, "*", SearchOption.AllDirectories));
+        }
+        finally
+        {
+            foreach ((string key, string? value) in original)
+            {
+                global::System.Environment.SetEnvironmentVariable(key, value);
+            }
+
+            Directory.Delete(testHome, recursive: true);
+        }
+    }
+
     private static Type ResolveCredentialStoreType(
         string environmentName,
         string? testHome,

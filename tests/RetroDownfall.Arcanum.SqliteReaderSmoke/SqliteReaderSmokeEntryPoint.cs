@@ -1,5 +1,8 @@
+using System.Data;
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.SqliteReaderSmoke;
 
@@ -30,6 +33,13 @@ public static class SqliteReaderSmokeEntryPoint
 
     private static void Run(string mode)
     {
+        if (mode == "cold-context")
+        {
+            VerifyColdContext();
+
+            return;
+        }
+
         bool table = mode is "table-zero" or "table-three" or "table-stream" or "disposed-stream";
 
         if (!table && mode is not ("computed-fixed" or "computed-length" or "computed-stream" or "computed-alias" or "single-expression" or "computed-empty" or "null-value" or "bad-ordinal"
@@ -235,6 +245,71 @@ public static class SqliteReaderSmokeEntryPoint
         if (check.ExecuteScalar() is not long value || value != 1)
         {
             throw new InvalidDataException("The connection is not usable after the boundary.");
+        }
+    }
+
+    private static void VerifyColdContext()
+    {
+        bool providerWasAbsent = false;
+
+        try
+        {
+            _ = SQLitePCL.raw.sqlite3_libversion();
+        }
+        catch (Exception exception) when (exception.Message.Contains("SetProvider", StringComparison.Ordinal))
+        {
+            providerWasAbsent = true;
+        }
+
+        if (!providerWasAbsent)
+        {
+            throw new InvalidDataException("The context regression requires a fresh process without a provider.");
+        }
+
+        string home = Path.Combine(Path.GetTempPath(), "arcanum-tests", "cold-context-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(home);
+
+        string? previousHome = Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        string? previousEnvironment = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+
+        try
+        {
+            Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", home);
+
+            Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
+
+            GrimoireDbPassphraseSource passphrase = new();
+
+            passphrase.SetPassphrase("synthetic-cold-context-passphrase");
+
+            DbContextOptionsBuilder<ArcanumDbContext> options = new();
+
+            ArcanumDbContextOptionsConfigurator.ConfigureNonServingFallback(options, passphrase);
+
+            // A configured context never uses the secret store; no database is opened here.
+            using ArcanumDbContext context = new(options.Options, null!, passphrase);
+
+            System.Data.Common.DbConnection connection = context.Database.GetDbConnection();
+
+            if (connection.State != ConnectionState.Closed || string.IsNullOrWhiteSpace(connection.ServerVersion))
+            {
+                throw new InvalidDataException("EF provider services must resolve before a database is opened.");
+            }
+
+            if (Directory.EnumerateFiles(home, "*", SearchOption.AllDirectories).Any())
+            {
+                throw new InvalidDataException("Constructing EF provider services must not create a database or secret.");
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", previousHome);
+
+            Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", previousEnvironment);
+
+            Directory.Delete(home, recursive: true);
         }
     }
 

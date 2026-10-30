@@ -6,6 +6,7 @@ namespace RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 public sealed class SqliteReaderOriginTests
 {
     [Theory]
+    [InlineData("cold-context")]
     [InlineData("computed-fixed")]
     [InlineData("computed-length")]
     [InlineData("computed-stream")]

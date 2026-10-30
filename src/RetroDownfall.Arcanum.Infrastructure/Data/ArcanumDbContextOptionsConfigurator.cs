@@ -77,6 +77,9 @@ internal static class ArcanumDbContextOptionsConfigurator
             Password = passphraseSource.Passphrase,
         }.ToString();
 
+        // EF provider services read SQLite's version before any connection-open interceptor runs.
+        SqliteNativeRuntime.Instance.Initialize();
+
         _ = optionsBuilder
             .UseSqlite(connectionString)
             .UseModel(ArcanumDbContextModel.Instance);
