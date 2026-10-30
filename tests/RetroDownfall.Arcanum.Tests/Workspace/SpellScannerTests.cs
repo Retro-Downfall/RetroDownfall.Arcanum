@@ -373,6 +373,96 @@ public sealed partial class SpellScannerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task LoadFullAsync_reloads_same_length_body_when_timestamp_is_unchanged()
+    {
+        const string relative = "spells/same-stamp/SPELL.md";
+
+        _workspace.WriteFile(relative, "---\nname: same-stamp\n---\nfirst body");
+
+        string path = Path.Combine(_workspace.Root, relative);
+
+        ParsedSpell first = Assert.IsType<ParsedSpell>(await SpellScanner.LoadFullAsync(path, _workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+
+        DateTime timestamp = File.GetLastWriteTimeUtc(path);
+
+        long length = new FileInfo(path).Length;
+
+        _workspace.WriteFile(relative, "---\nname: same-stamp\n---\nother body");
+
+        File.SetLastWriteTimeUtc(path, timestamp);
+
+        Assert.Equal(length, new FileInfo(path).Length);
+
+        Assert.Equal(timestamp, File.GetLastWriteTimeUtc(path));
+
+        ParsedSpell second = Assert.IsType<ParsedSpell>(await SpellScanner.LoadFullAsync(path, _workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+
+        Assert.Equal("first body", first.Body);
+
+        Assert.Equal("other body", second.Body);
+    }
+
+    [Fact]
+    public async Task LoadFullAsync_reloads_sidecar_when_body_is_unchanged()
+    {
+        const string relative = "spells/sidecar-refresh/SPELL.md";
+
+        _workspace.WriteFile(relative, "---\nname: sidecar-refresh\n---\nbody");
+
+        _workspace.WriteFile("spells/sidecar-refresh/SPELL.json", "{\"tags\":[\"first\"]}");
+
+        string path = Path.Combine(_workspace.Root, relative);
+
+        ParsedSpell first = Assert.IsType<ParsedSpell>(await SpellScanner.LoadFullAsync(path, _workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+
+        _workspace.WriteFile("spells/sidecar-refresh/SPELL.json", "{\"tags\":[\"other\"]}");
+
+        ParsedSpell second = Assert.IsType<ParsedSpell>(await SpellScanner.LoadFullAsync(path, _workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+
+        Assert.Contains("first", first.Tags!);
+
+        Assert.Contains("other", second.Tags!);
+
+        Assert.DoesNotContain("first", second.Tags!);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LoadFullAsync_reloads_script_names_when_body_is_unchanged(bool remove)
+    {
+        const string relative = "spells/script-refresh/SPELL.md";
+
+        _workspace.WriteFile(relative, "---\nname: script-refresh\n---\nbody");
+
+        string script = Path.Combine(_workspace.Root, "spells/script-refresh/scripts/run.sh");
+
+        if (remove)
+        {
+            _workspace.WriteFile("spells/script-refresh/scripts/run.sh", "echo test");
+        }
+
+        string path = Path.Combine(_workspace.Root, relative);
+
+        ParsedSpell first = Assert.IsType<ParsedSpell>(await SpellScanner.LoadFullAsync(path, _workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+
+        if (remove)
+        {
+            File.Delete(script);
+        }
+        else
+        {
+            _workspace.WriteFile("spells/script-refresh/scripts/run.sh", "echo test");
+        }
+
+        ParsedSpell second = Assert.IsType<ParsedSpell>(await SpellScanner.LoadFullAsync(path, _workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+
+        Assert.Equal(remove, first.AvailableScripts.Contains("run.sh"));
+
+        Assert.Equal(!remove, second.AvailableScripts.Contains("run.sh"));
+    }
+
+    [Fact]
     public async Task ScanSummariesAsync_maps_workspace_source()
     {
         IReadOnlyList<Core.Intelligence.Spells.SpellSummary> summaries =

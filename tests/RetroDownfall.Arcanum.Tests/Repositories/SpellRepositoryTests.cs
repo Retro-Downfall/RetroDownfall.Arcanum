@@ -293,7 +293,18 @@ public sealed partial class SpellRepositoryTests : IAsyncLifetime
 
             Assert.Equal(2, opens);
 
+            DateTime originalTimestamp = File.GetLastWriteTimeUtc(file);
+
+            long originalLength = new FileInfo(file).Length;
+
             await File.WriteAllTextAsync(file, "---\nname: catalog-probe\n---\nchanged executable body");
+
+            // Reproduce a filesystem timestamp collision without relying on scheduler timing.
+            File.SetLastWriteTimeUtc(file, originalTimestamp);
+
+            Assert.Equal(originalTimestamp, File.GetLastWriteTimeUtc(file));
+
+            Assert.NotEqual(originalLength, new FileInfo(file).Length);
 
             SpellDetail? detail = await repository.GetAsync("catalog-probe", _workspaceRoot, CancellationToken.None);
 

@@ -207,7 +207,7 @@ public sealed partial class SpellRepositoryTests
 
         try
         {
-            // Warm hydration so the seam below belongs to the export's separate read group.
+            // Warm parsed hydration; freshness checks still read inputs before the export read group.
             Assert.NotNull(await repository.GetAsync("export-contained", workspace, CancellationToken.None));
 
             DirectoryPivotAttempt attempt = new(pivot);
@@ -233,24 +233,31 @@ public sealed partial class SpellRepositoryTests
                 pivoted = true;
             }
 
-            if (artifact == "spec")
+            int bodyReads = 0;
+
+            bool exportReadEntered = false;
+
+            SecureFileReader.AfterOpenForTests = path =>
             {
-                // This seam fires at the export's actual bounded read, after warm-cache hydration.
-                SecureFileReader.AfterOpenForTests = path =>
+                if (path == specPath && ++bodyReads == 2)
                 {
-                    if (path == specPath && !attempt.Attempted)
+                    // The first bounded body read captures hydration; the second is export.
+                    exportReadEntered = true;
+
+                    if (artifact == "spec" && !attempt.Attempted)
                     {
                         Pivot();
                     }
-                };
-            }
-            else
+                }
+            };
+
+            if (artifact != "spec")
             {
                 FileHandleIdentityInterop.TryGetPathMetadataForTests = path =>
                 {
                     bool success = FileHandleIdentityInterop.TryGetPathMetadataIgnoringTestSeam(path, out FileHandleMetadata metadata);
 
-                    if (path == target && !attempt.Attempted)
+                    if (exportReadEntered && path == target && !attempt.Attempted)
                     {
                         Pivot();
                     }
@@ -260,6 +267,10 @@ public sealed partial class SpellRepositoryTests
             }
 
             SpellExportDto? exported = await repository.ExportAsync("export-contained", workspace, CancellationToken.None);
+
+            Assert.True(exportReadEntered);
+
+            Assert.Equal(2, bodyReads);
 
             attempt.AssertCompleted(pivoted);
 

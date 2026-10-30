@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -73,7 +74,7 @@ internal static class SpellScanner
 
     /// <summary>
     /// Per-key single-flight map for in-flight <see cref="LoadFullAsync"/> miss waves, keyed by
-    /// the same root, identity, timestamp and limits as <see cref="FullSpellCache"/>.
+    /// the same admitted input snapshot and limits as <see cref="FullSpellCache"/>.
     /// </summary>
     private static readonly ConcurrentDictionary<FullSpellCacheKey, CoalescedWork<ParsedSpell?>> FullSpellInFlight = new();
 
@@ -83,6 +84,9 @@ internal static class SpellScanner
         string Path,
         FileHandleIdentity FileIdentity,
         long MtimeTicks,
+        string BodyDigest,
+        string? SidecarDigest,
+        string ScriptNamesDigest,
         long MaxBytes,
         int? MaxDeclaredTools);
 
@@ -601,41 +605,15 @@ internal static class SpellScanner
             return null;
         }
 
-        string fullPath = Path.GetFullPath(filePath);
-
-        long mtimeTicks = File.GetLastWriteTimeUtc(fullPath).Ticks;
-
-        FullSpellCacheKey cacheKey = new(
-            sourceRoot!, authority.Identity, fullPath, metadata.Identity, mtimeTicks, maxFileSizeBytes, maxDeclaredTools);
-
-        if (FullSpellCache.TryGetValue(cacheKey, out ParsedSpell? cached))
-        {
-            return authority.Contains(probe) ? cached : null;
-        }
-
-        // A shared wave retains its own authority; a canceled joiner cannot dispose another caller's handles.
-        return await CoalesceWithCallerCancellationAsync(
-            FullSpellInFlight,
-            cacheKey,
-            async parseToken =>
-            {
-                ParsedSpell? result = await TryParseSpellFileAsync(
-                    fullPath,
-                    maxFileSizeBytes,
-                    maxDeclaredTools,
-                    sourceRoot,
-                    parseToken,
-                    metadata.Identity,
-                    authority.Identity).ConfigureAwait(false);
-
-                if (result is not null)
-                {
-                    FullSpellCache.Set(cacheKey, result);
-                }
-
-                return result;
-            },
-            cancellationToken).ConfigureAwait(false);
+        return await TryParseSpellFileAsync(
+            Path.GetFullPath(filePath),
+            maxFileSizeBytes,
+            maxDeclaredTools,
+            sourceRoot,
+            cancellationToken,
+            metadata.Identity,
+            authority.Identity,
+            useCache: true).ConfigureAwait(false);
     }
 
     private static string? ResolveSourceRoot(string filePath, string? workspaceRoot, string? discoveredRoot)
@@ -1354,7 +1332,8 @@ internal static class SpellScanner
         string? workspaceRootForRevalidation,
         CancellationToken cancellationToken,
         FileHandleIdentity? expectedIdentity = null,
-        FileHandleIdentity? expectedRootIdentity = null)
+        FileHandleIdentity? expectedRootIdentity = null,
+        bool useCache = false)
     {
         if (workspaceRootForRevalidation is not null
             && !WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRootForRevalidation, filePath))
@@ -1398,15 +1377,6 @@ internal static class SpellScanner
 
         string fullText = readResult.Text;
 
-        string directoryFallbackName = GetSpellDirectoryFallbackName(filePath);
-
-        SpellParseResult parsed = SpellFileParser.Parse(fullText, directoryFallbackName);
-
-        if (SpellFrontmatterValidator.ValidateParsed(parsed) is not null)
-        {
-            return null;
-        }
-
         string spellDirectoryPath = string.Empty;
 
         try
@@ -1427,9 +1397,7 @@ internal static class SpellScanner
             ? DiscoverAvailableScripts(spellDirectoryPath, authority, cancellationToken)
             : Array.Empty<string>();
 
-        SkillMetadata? skillMetadata = null;
-
-        string[] mergedTags = parsed.Tags;
+        string? sidecarText = null;
 
         if (spellDirectoryPath.Length > 0)
         {
@@ -1458,21 +1426,7 @@ internal static class SpellScanner
 
                     if (authority.Contains(sidecarStream) && sidecarRead.Status is SecureFileReadStatus.Success && sidecarRead.Text is not null)
                     {
-                        skillMetadata = JsonSerializer.Deserialize(sidecarRead.Text, ArcanumCoreJsonContext.Default.SkillMetadata);
-
-                        if (skillMetadata is not null
-                            && SkillJsonBoundsValidator.Validate(
-                                skillMetadata,
-                                ArcanumSettingClamps.MaxDeclaredTools(
-                                    maxDeclaredTools ?? ArcanumRuntimeDefaults.Spells.MaxDeclaredTools)) is not null)
-                        {
-                            skillMetadata = null;
-                        }
-
-                        if (skillMetadata is not null)
-                        {
-                            mergedTags = MergeTags(parsed.Tags, skillMetadata.Tags);
-                        }
+                        sidecarText = sidecarRead.Text;
                     }
                 }
                 catch (IOException)
@@ -1481,9 +1435,102 @@ internal static class SpellScanner
                 catch (UnauthorizedAccessException)
                 {
                 }
-                catch (JsonException)
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Parse exactly the bounded decoded inputs and names captured above. Timestamps alone cannot
+        // prove freshness, and a body stamp says nothing about sidecar or script-name changes.
+        if (!useCache)
+        {
+            return ParseSpellSnapshot(filePath, spellDirectoryPath, fullText, sidecarText, availableScripts, maxDeclaredTools);
+        }
+
+        FullSpellCacheKey cacheKey = new(
+            workspaceRootForRevalidation!,
+            authority.Identity,
+            filePath,
+            expectedIdentity!.Value,
+            File.GetLastWriteTimeUtc(bodyStream.SafeFileHandle).Ticks,
+            SnapshotDigest(fullText),
+            sidecarText is null ? null : SnapshotDigest(sidecarText),
+            SnapshotDigest(string.Join('\0', availableScripts)),
+            maxFileSizeBytes,
+            maxDeclaredTools);
+
+        if (FullSpellCache.TryGetValue(cacheKey, out ParsedSpell? cached))
+        {
+            return authority.Contains(bodyStream) ? cached : null;
+        }
+
+        ParsedSpell? result = await CoalesceWithCallerCancellationAsync(
+            FullSpellInFlight,
+            cacheKey,
+            parseToken =>
+            {
+                parseToken.ThrowIfCancellationRequested();
+
+                ParsedSpell? parsed = ParseSpellSnapshot(filePath, spellDirectoryPath, fullText, sidecarText, availableScripts, maxDeclaredTools);
+
+                if (parsed is not null)
                 {
+                    FullSpellCache.Set(cacheKey, parsed);
                 }
+
+                return Task.FromResult(parsed);
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        return authority.Contains(bodyStream) ? result : null;
+    }
+
+    // Inputs are independently framed key fields; null sidecar differs from an empty sidecar.
+    // Script names are ordinal-sorted by the secure enumerator and cannot contain NUL.
+    private static string SnapshotDigest(string text) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
+
+    private static ParsedSpell? ParseSpellSnapshot(
+        string filePath,
+        string spellDirectoryPath,
+        string fullText,
+        string? sidecarText,
+        IReadOnlyList<string> availableScripts,
+        int? maxDeclaredTools)
+    {
+        SpellParseResult parsed = SpellFileParser.Parse(fullText, GetSpellDirectoryFallbackName(filePath));
+
+        if (SpellFrontmatterValidator.ValidateParsed(parsed) is not null)
+        {
+            return null;
+        }
+
+        SkillMetadata? skillMetadata = null;
+
+        string[] mergedTags = parsed.Tags;
+
+        if (sidecarText is not null)
+        {
+            try
+            {
+                skillMetadata = JsonSerializer.Deserialize(sidecarText, ArcanumCoreJsonContext.Default.SkillMetadata);
+
+                if (skillMetadata is not null
+                    && SkillJsonBoundsValidator.Validate(
+                        skillMetadata,
+                        ArcanumSettingClamps.MaxDeclaredTools(
+                            maxDeclaredTools ?? ArcanumRuntimeDefaults.Spells.MaxDeclaredTools)) is not null)
+                {
+                    skillMetadata = null;
+                }
+
+                if (skillMetadata is not null)
+                {
+                    mergedTags = MergeTags(parsed.Tags, skillMetadata.Tags);
+                }
+            }
+            catch (JsonException)
+            {
             }
         }
 
