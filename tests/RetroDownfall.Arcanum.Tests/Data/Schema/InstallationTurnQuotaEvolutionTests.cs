@@ -26,7 +26,7 @@ public sealed class InstallationTurnQuotaEvolutionTests
         {
             await SeedCore32Async(first, 129);
 
-            GrimoireSchemaInstallResult installed = await GrimoireSchemaTestInstaller.InstallAsync(first, 1536, CancellationToken.None);
+            GrimoireSchemaInstallResult installed = await GrimoireSchemaTestInstaller.InstallAsync(first, CoreSchemaVersionThirtyThreeFixture.ChainSet(), 1536, CancellationToken.None);
 
             Assert.Equal(GrimoireSchemaTierHealth.TransitionIncomplete, installed.Core.Health);
 
@@ -96,7 +96,7 @@ public sealed class InstallationTurnQuotaEvolutionTests
 
         Assert.Equal(1L, await ScalarAsync(reopened, "SELECT ClaimCount FROM installation_turn_quota_state"));
 
-        Assert.True((await GrimoireSchemaTestInstaller.InstallAsync(reopened, 1536, CancellationToken.None)).Core.IsHealthy);
+        Assert.True((await GrimoireSchemaTestInstaller.InstallAsync(reopened, CoreSchemaVersionThirtyThreeFixture.ChainSet(), 1536, CancellationToken.None)).Core.IsHealthy);
 
         GrimoireSchemaRefusedException newer = await Assert.ThrowsAsync<GrimoireSchemaRefusedException>(() =>
             GrimoireSchemaTestInstaller.InstallAsync(reopened, CoreSchemaVersionThirtyTwoFixture.ChainSet(), 1536, CancellationToken.None));
@@ -116,7 +116,7 @@ public sealed class InstallationTurnQuotaEvolutionTests
 
         await SeedCore32Async(connection, 1);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionThirtyThreeFixture.ChainSet(), 1536, CancellationToken.None);
 
         string root = Path.GetDirectoryName(new SqliteConnectionStringBuilder(scratch.ConnectionString).DataSource)!;
 
@@ -177,7 +177,7 @@ public sealed class InstallationTurnQuotaEvolutionTests
 
         await SeedCore32Async(connection, 129);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionThirtyThreeFixture.ChainSet(), 1536, CancellationToken.None);
 
         string root = Path.GetDirectoryName(new SqliteConnectionStringBuilder(scratch.ConnectionString).DataSource)!;
 
@@ -216,7 +216,7 @@ public sealed class InstallationTurnQuotaEvolutionTests
 
         await SeedCore32Async(connection, 129);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionThirtyThreeFixture.ChainSet(), 1536, CancellationToken.None);
 
         string root = Path.GetDirectoryName(new SqliteConnectionStringBuilder(scratch.ConnectionString).DataSource)!;
 
@@ -256,8 +256,8 @@ public sealed class InstallationTurnQuotaEvolutionTests
 
         using GrimoireSchemaQuiescentExecution final = GrimoireSchemaQuiescentExecution.ForStartup(connection, held, root, new GrimoireDbReadiness());
 
-        GrimoireSchemaBackfillProgress completed = await new GrimoireSchemaBackfillRunner(GrimoireSchemaTestInstaller.Create(), TimeProvider.System).AdvanceAsync(
-            connection, GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core), (await JournalAsync(connection))!,
+        GrimoireSchemaBackfillProgress completed = await new GrimoireSchemaBackfillRunner(GrimoireSchemaTestInstaller.Create(CoreSchemaVersionThirtyThreeFixture.ChainSet()), TimeProvider.System).AdvanceAsync(
+            connection, CoreSchemaVersionThirtyThreeFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core), (await JournalAsync(connection))!,
             GrimoireSchemaTestInstaller.CreateContext(), 16, CancellationToken.None, final);
 
         Assert.True(completed.StepComplete);
@@ -289,7 +289,7 @@ public sealed class InstallationTurnQuotaEvolutionTests
         {
             await SeedCore32Async(first, 0);
 
-            await GrimoireSchemaTestInstaller.InstallAsync(first, 1536, CancellationToken.None);
+            await GrimoireSchemaTestInstaller.InstallAsync(first, CoreSchemaVersionThirtyThreeFixture.ChainSet(), 1536, CancellationToken.None);
 
             using GrimoireSchemaQuiescentExecution execution = GrimoireSchemaQuiescentExecution.ForStartup(first, held, root, new GrimoireDbReadiness());
 
@@ -308,8 +308,8 @@ public sealed class InstallationTurnQuotaEvolutionTests
 
         using GrimoireSchemaQuiescentExecution resumedExecution = GrimoireSchemaQuiescentExecution.ForStartup(resumed, resumedLock, root, new GrimoireDbReadiness());
 
-        GrimoireSchemaBackfillProgress final = await new GrimoireSchemaBackfillRunner(GrimoireSchemaTestInstaller.Create(), TimeProvider.System).AdvanceAsync(
-            resumed, GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core), (await JournalAsync(resumed))!,
+        GrimoireSchemaBackfillProgress final = await new GrimoireSchemaBackfillRunner(GrimoireSchemaTestInstaller.Create(CoreSchemaVersionThirtyThreeFixture.ChainSet()), TimeProvider.System).AdvanceAsync(
+            resumed, CoreSchemaVersionThirtyThreeFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core), (await JournalAsync(resumed))!,
             GrimoireSchemaTestInstaller.CreateContext(), 16, CancellationToken.None, resumedExecution);
 
         Assert.True(final.StepComplete);
@@ -323,6 +323,105 @@ public sealed class InstallationTurnQuotaEvolutionTests
         Assert.Null(await JournalAsync(resumed));
 
         Assert.Equal(0L, await ScalarAsync(resumed, "SELECT ClaimCount FROM installation_turn_quota_state"));
+    }
+
+    [Fact]
+    public async Task Core32_census_and_following_sql_step_publish_the_current_catalog_with_correct_quota_state()
+    {
+        using EvolutionScratchDatabase scratch = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await scratch.OpenAsync(CancellationToken.None);
+
+        await SeedCore32Async(connection, 1);
+
+        GrimoireSchemaInstallResult installed = await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(connection, 1536, CancellationToken.None);
+
+        Assert.True(installed.Core.IsHealthy);
+
+        Assert.Equal(34, await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
+
+        Assert.Equal(GrimoireSchemaCatalog.CoreSchemaFingerprint, installed.Core.SourceDefinitionFingerprint);
+
+        Assert.Null(await JournalAsync(connection));
+
+        Assert.Equal(1L, await ScalarAsync(connection, "SELECT ClaimCount FROM installation_turn_quota_state"));
+
+        Assert.Equal(1L, await ScalarAsync(connection, "SELECT ClaimCount FROM session_turn_quota_state"));
+
+        Assert.Equal(4L, await ScalarAsync(connection,
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type='trigger' AND name LIKE 'session_attachment_chunks_tapestry_revision_%' AND instr(sql, 'application/rtf') > 0"));
+
+        Assert.True((await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None)).Core.IsHealthy);
+    }
+
+    [Fact]
+    public async Task Failed_Core34_publication_preserves_the_completed_census_and_resumes_after_reopen()
+    {
+        using EvolutionScratchDatabase scratch = EvolutionScratchDatabase.Create();
+
+        GrimoireSchemaTransitionJournalRow completedCensus;
+
+        await using (SqliteConnection connection = await scratch.OpenAsync(CancellationToken.None))
+        {
+            await SeedCore32Async(connection, 1);
+
+            await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
+
+            string root = Path.GetDirectoryName(new SqliteConnectionStringBuilder(scratch.ConnectionString).DataSource)!;
+
+            using ArcanumMaintenanceLock held = ArcanumMaintenanceLock.AcquireDetailed(root).BorrowAcquiredLock();
+
+            using GrimoireSchemaQuiescentExecution execution = GrimoireSchemaQuiescentExecution.ForStartup(connection, held, root, new GrimoireDbReadiness());
+
+            GrimoireSchemaBackfillProgress census = await new GrimoireSchemaBackfillRunner(GrimoireSchemaTestInstaller.Create(), TimeProvider.System).AdvanceAsync(
+                connection, GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core), (await JournalAsync(connection))!,
+                GrimoireSchemaTestInstaller.CreateContext(), 16, CancellationToken.None, execution);
+
+            Assert.True(census.StepComplete);
+
+            completedCensus = (await JournalAsync(connection))!;
+
+            Assert.Equal(33, completedCensus.CompletedThroughVersion);
+
+            Assert.Equal(34, completedCensus.TargetVersion);
+
+            Assert.Null(completedCensus.BackfillName);
+
+            await using SqliteCommand fail = connection.CreateCommand();
+
+            fail.CommandText = """
+                CREATE TEMP TRIGGER refuse_rtf_publication BEFORE UPDATE OF SchemaVersion ON grimoire_feature_schemas
+                WHEN NEW.TransactionTierCode=0 AND NEW.SchemaVersion=34
+                BEGIN SELECT RAISE(ABORT,'publication refused'); END;
+                """;
+
+            await fail.ExecuteNonQueryAsync();
+
+            await Assert.ThrowsAsync<SqliteException>(() => GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None));
+
+            Assert.Equal(completedCensus, await JournalAsync(connection));
+
+            Assert.Equal(32, await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
+
+            Assert.Equal(1L, await ScalarAsync(connection, "SELECT ClaimCount FROM installation_turn_quota_state"));
+
+            Assert.Equal(0L, await ScalarAsync(connection,
+                "SELECT COUNT(*) FROM sqlite_schema WHERE type='trigger' AND name LIKE 'session_attachment_chunks_tapestry_revision_%' AND instr(sql, 'application/rtf') > 0"));
+        }
+
+        await using SqliteConnection resumed = await scratch.OpenAsync(CancellationToken.None);
+
+        Assert.Equal(completedCensus, await JournalAsync(resumed));
+
+        GrimoireSchemaInstallResult installed = await GrimoireSchemaTestInstaller.InstallAsync(resumed, 1536, CancellationToken.None);
+
+        Assert.True(installed.Core.IsHealthy);
+
+        Assert.Equal(34, installed.Core.SchemaVersion);
+
+        Assert.Null(await JournalAsync(resumed));
+
+        Assert.Equal(1L, await ScalarAsync(resumed, "SELECT ClaimCount FROM installation_turn_quota_state"));
     }
 
     private static async Task SeedCore32Async(SqliteConnection connection, int owners)
@@ -361,8 +460,8 @@ public sealed class InstallationTurnQuotaEvolutionTests
 
     private static async Task<GrimoireSchemaBackfillProgress> AdvanceAsync(SqliteConnection connection,
         GrimoireSchemaQuiescentExecution execution, CancellationToken cancellationToken = default) =>
-        await new GrimoireSchemaBackfillRunner(GrimoireSchemaTestInstaller.Create(), TimeProvider.System).AdvanceAsync(connection,
-            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core), (await JournalAsync(connection))!,
+        await new GrimoireSchemaBackfillRunner(GrimoireSchemaTestInstaller.Create(CoreSchemaVersionThirtyThreeFixture.ChainSet()), TimeProvider.System).AdvanceAsync(connection,
+            CoreSchemaVersionThirtyThreeFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core), (await JournalAsync(connection))!,
             GrimoireSchemaTestInstaller.CreateContext(), 1, cancellationToken, execution);
 
     private static Task<GrimoireSchemaTransitionJournalRow?> JournalAsync(SqliteConnection connection) =>

@@ -151,7 +151,7 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
     {
         HashSet<string> known =
         [
-            ".arccomp", ".docx", ".docm", ".xlsx", ".xlsm", ".pptx", ".pptm", ".odt", ".ods", ".odp", ".vsdx", ".vsdm",
+            ".arccomp", ".docx", ".docm", ".xlsx", ".xlsm", ".pptx", ".pptm", ".odt", ".ods", ".odp", ".vsdx", ".vsdm", ".rtf",
         ];
 
         HashSet<string> covered = [.. RegistryExtensions()];

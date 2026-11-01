@@ -85,6 +85,7 @@ internal static class ComprehensionFormatFixtures
         Make(SessionAttachmentComprehensionPolicy.OpenDocumentPresentationMimeType, "kickoff.odp", "odp", OpenDocumentPresentation),
         Make(SessionAttachmentComprehensionPolicy.VisioDrawingMimeType, "process-flow.vsdx", "vsdx", Visio),
         Make(SessionAttachmentComprehensionPolicy.VisioMacroEnabledDrawingMimeType, "process-flow-macros.vsdm", "vsdm", VisioMacroEnabled),
+        Make("application/rtf", "meeting-notes.rtf", "rtf", RichText),
     ];
 
     private static ComprehensionFormatFixture Make(
@@ -118,6 +119,12 @@ internal static class ComprehensionFormatFixtures
 
         return hash.ToString("x8", System.Globalization.CultureInfo.InvariantCulture);
     }
+
+    private static byte[] RichText(string visible, string hidden) =>
+        System.Text.Encoding.ASCII.GetBytes(
+            "{\\rtf1\\ansi\\ansicpg1252 Visible " + visible
+            + "{\\v " + hidden + "}{\\object{\\objdata " + hidden + "}}"
+            + "{\\pict " + hidden + "}{\\*\\unknown " + hidden + "}\\par}");
 
     // ---------------------------------------------------------------- Word
 

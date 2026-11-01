@@ -175,6 +175,7 @@ public sealed class AttachmentMimeDetectorTests
         { ".odp", "application/vnd.oasis.opendocument.presentation" },
         { ".vsdx", "application/vnd.ms-visio.drawing" },
         { ".vsdm", "application/vnd.ms-visio.drawing.macroenabled.12" },
+        { ".rtf", "application/rtf" },
     };
 
     [Theory]
@@ -227,7 +228,7 @@ public sealed class AttachmentMimeDetectorTests
     [InlineData(".ots")]
     [InlineData(".otp")]
     [InlineData(".fodt")]
-    [InlineData(".rtf")]
+    [InlineData(".rtfd")]
     [InlineData(".epub")]
     public void Detect_leaves_templates_and_unsupported_package_formats_unrecognized(string extension)
     {

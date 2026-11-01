@@ -21,6 +21,7 @@ public sealed class SessionAttachmentComprehensionPolicyTests
         { "application/vnd.ms-visio.drawing", "Visio drawing" },
         { "application/vnd.ms-visio.drawing.macroenabled.12", "Visio macro-enabled drawing (macros not read)" },
         { "application/pdf", "PDF document" },
+        { "application/rtf", "Rich Text Format document" },
     };
 
     [Fact]
@@ -55,6 +56,7 @@ public sealed class SessionAttachmentComprehensionPolicyTests
                     "application/vnd.ms-visio.drawing.macroenabled.12", "Visio macro-enabled drawing (macros not read)"),
                 new SessionAttachmentComprehensionFormat(
                     "application/pdf", "PDF document", SessionAttachmentRangeUnit.Pages, MayIncludeUnseenText: true),
+                new SessionAttachmentComprehensionFormat("application/rtf", "Rich Text Format document"),
             ],
             SessionAttachmentComprehensionPolicy.Formats);
     }
@@ -150,6 +152,7 @@ public sealed class SessionAttachmentComprehensionPolicyTests
                 SessionAttachmentComprehensionPolicy.VisioDrawingMimeType,
                 SessionAttachmentComprehensionPolicy.VisioMacroEnabledDrawingMimeType,
                 SessionAttachmentComprehensionPolicy.PdfMimeType,
+                SessionAttachmentComprehensionPolicy.RichTextFormatMimeType,
             ],
             SessionAttachmentComprehensionPolicy.Formats.Select(static format => format.MimeType));
     }
@@ -208,7 +211,7 @@ public sealed class SessionAttachmentComprehensionPolicyTests
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    [InlineData("application/rtf")]
+    [InlineData("application/epub+zip")]
     [InlineData("application/octet-stream")]
     [InlineData("application/msword")]
     [InlineData("application/vnd.openxmlformats-officedocument.wordprocessingml.template")]
@@ -255,7 +258,7 @@ public sealed class SessionAttachmentComprehensionPolicyTests
     }
 
     [Theory]
-    [InlineData("application/rtf")]
+    [InlineData("application/epub+zip")]
     [InlineData("application/octet-stream")]
     [InlineData("application/vnd.openxmlformats-officedocument.wordprocessingml.template")]
     public void IsEligibleDocument_refuses_a_mime_outside_the_registry(string mimeType)

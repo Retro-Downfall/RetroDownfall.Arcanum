@@ -13,7 +13,7 @@ public sealed class SessionAttachmentTurnServiceTests
 {
     [Theory]
     [InlineData(false, "application/vnd.arcanum.comprehension-text")]
-    [InlineData(true, "application/rtf")]
+    [InlineData(true, "application/epub+zip")]
     public async Task Comprehension_ineligible_reference_is_refused_before_reading(bool enabled, string mimeType)
     {
         SessionAttachmentRecord record = new(

@@ -78,7 +78,7 @@ public sealed class SessionAttachmentComprehensionSeamTests
 
     public static TheoryData<string> IneligibleBinaryMimeTypes() =>
     [
-        "application/rtf",
+        "application/epub+zip",
         "application/octet-stream",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
         "application/msword",

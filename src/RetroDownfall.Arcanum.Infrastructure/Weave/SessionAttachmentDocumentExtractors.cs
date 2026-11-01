@@ -7,7 +7,9 @@ using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 /// <summary>
-/// The closed set of extraction hosts, one per parser family. Each in-process host binds a concrete
+/// The composition root for reviewed build-time format extensions, one host per parser family.
+/// Each in-process family implements ISessionAttachmentDocumentExtractor; isolated families use
+/// IDocumentExtractionWorker and a fixed worker registration. Each in-process host binds a concrete
 /// extractor method group at construction, so quarantine is per family and the set of extractors that can
 /// run is visible to review and to the hosted-producer analysis. A macro-enabled variant shares the host of
 /// its base format, since both are read by the same parser and macros are never opened. PDF is parsed only
@@ -47,6 +49,10 @@ internal static class SessionAttachmentDocumentExtractors
         new VisioDrawingExtractor().ExtractAsync,
         TimeSpan.FromSeconds(5));
 
+    private static readonly SessionAttachmentDocumentExtractionHost RichText = new(
+        new RtfDocumentExtractor().ExtractAsync,
+        TimeSpan.FromSeconds(5));
+
     private static readonly SessionAttachmentIsolatedDocumentHost Pdf = new(
         new ProcessDocumentExtractionWorker(new ProcessResourceLimiter()),
         DocumentWorkerFormat.Pdf);
@@ -80,6 +86,7 @@ internal static class SessionAttachmentDocumentExtractors
             SessionAttachmentComprehensionPolicy.VisioDrawingMimeType
                 or SessionAttachmentComprehensionPolicy.VisioMacroEnabledDrawingMimeType => Visio,
             SessionAttachmentComprehensionPolicy.PdfMimeType => Pdf,
+            SessionAttachmentComprehensionPolicy.RichTextFormatMimeType => RichText,
             _ => null,
         };
     }
