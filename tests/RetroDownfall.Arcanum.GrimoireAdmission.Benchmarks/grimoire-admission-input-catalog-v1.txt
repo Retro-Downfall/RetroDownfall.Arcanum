@@ -1646,6 +1646,10 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V32/050_memor
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V32/060_memory_search_session_attachment_chunks_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V32/070_memory_search_session_attachment_chunks_update_drop.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V32/080_memory_search_session_attachment_chunks_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V34/010_session_attachment_chunks_tapestry_revision_insert.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V34/020_session_attachment_chunks_tapestry_revision_replace_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V34/030_session_attachment_chunks_tapestry_revision_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V34/040_session_attachment_chunks_tapestry_revision_delete.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/010_saga_memories_retired_at.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/020_saga_memories_pinned_at.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/030_saga_retirement_suppressions.sql
@@ -2482,6 +2486,9 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/Pdf/PdfTrailerEnc
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/Pdf/PdfUndefinedContents.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/PresentationDocumentExtractor.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/ProcessDocumentExtractionWorker.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/RtfDocumentExtractor.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/RtfTextScanner.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/SingleByteTextDecoder.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/SpreadsheetChildren.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/SpreadsheetDocumentExtractor.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/SpreadsheetHiddenColumns.cs

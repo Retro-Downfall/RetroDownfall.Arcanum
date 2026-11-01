@@ -135,6 +135,100 @@ public sealed class RtfDocumentExtractorEncodingTests
         Assert.Empty(result.Text);
     }
 
+    [Theory]
+    [InlineData(@"{\rtf1{\*\stylesheet{\s0\v Hidden Normal;}}IMPLICIT-SECRET}")]
+    [InlineData(@"{\rtf1{\*\defchp\v}IMPLICIT-SECRET}")]
+    [InlineData(@"{\rtf1{\*\defpap\v}IMPLICIT-SECRET}")]
+    [InlineData(@"{\rtf1{\stylesheet{\*\cs1\additive\v Hidden;}}A{\cs1 SECRET}B}")]
+    [InlineData(@"{\rtf1{\stylesheet{\s1\v Hidden;}}A{\s1 SECRET}B}")]
+    [InlineData(@"{\rtf1{\stylesheet{\s0\v Hidden Normal;}}IMPLICIT-SECRET}")]
+    [InlineData(@"{\rtf1{\stylesheet{\v Hidden Normal;}}IMPLICIT-SECRET}")]
+    [InlineData(@"{\rtf1{\stylesheet{\s0\sbasedon1 Normal;}{\s1\sbasedon0\v Hidden;}}SECRET}")]
+    [InlineData(@"{\rtf1{\stylesheet{\s0 Visible Normal;}}ordinary text}")]
+    [InlineData(@"{\rtf1 A{\cs1\v0 SECRET}B}")]
+    [InlineData(@"{\rtf1\s1 SECRET}")]
+    [InlineData(@"{\rtf1\ts1 SECRET}")]
+    [InlineData(@"{\rtf1\ds1 SECRET}")]
+    [InlineData(@"{\rtf1\defcs1 SECRET}")]
+    [InlineData(@"{\rtf1\defds1 SECRET}")]
+    [InlineData(@"{\rtf1{\defchp\v}IMPLICIT-SECRET}")]
+    [InlineData(@"{\rtf1{\defpap\v}IMPLICIT-SECRET}")]
+    public async Task Extract_declines_style_dependent_visibility_instead_of_exposing_unknown_text(string rtf)
+    {
+        SessionAttachmentExtractionResult result = await Extract(rtf);
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Failed, result.Status);
+
+        Assert.Empty(result.Text);
+
+        Assert.Equal("Document extraction failed.", result.FailureReason);
+    }
+
+    [Fact]
+    public async Task Extract_stylesheet_after_output_ceiling_still_fails()
+    {
+        SessionAttachmentExtractionResult result = await Extract("{\\rtf1 " + new string('a', 5000) + @"{\stylesheet{\s0\v Hidden;}}}", 4);
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Failed, result.Status);
+
+        Assert.Empty(result.Text);
+    }
+
+    [Theory]
+    [InlineData(@"{\rtf1 before{\*\unknown{\stylesheet{\s0\v Hidden;}}\cs1 ignored}after}")]
+    [InlineData(@"{\rtf1 before{\object{\stylesheet{\s0\v Hidden;}}\defchp ignored}after}")]
+    public async Task Extract_does_not_interpret_styles_inside_opaque_destinations(string rtf)
+    {
+        Assert.Equal("beforeafter", (await Extract(rtf)).Text);
+    }
+
+    [Theory]
+    [InlineData("fcharset0")]
+    [InlineData("cpg1252")]
+    [InlineData("ansicpg1252")]
+    public async Task Extract_font_metadata_with_inherited_font_ids_cannot_exceed_font_capacity(string declaration)
+    {
+        string rtf = "{\\rtf1 " + InheritedFontDeclarations(4097, declaration) + "text}";
+
+        SessionAttachmentExtractionResult result = await Extract(rtf);
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Failed, result.Status);
+
+        Assert.Empty(result.Text);
+    }
+
+    [Fact]
+    public async Task Extract_normal_font_declarations_cannot_extend_a_bypassed_font_capacity()
+    {
+        string rtf = "{\\rtf1 " + InheritedFontDeclarations(4097, "fcharset0") + @"{\fonttbl\f6000\fcharset0 Extra;}text}";
+
+        SessionAttachmentExtractionResult result = await Extract(rtf);
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Failed, result.Status);
+
+        Assert.Empty(result.Text);
+    }
+
+    [Fact]
+    public async Task Extract_existing_font_metadata_can_be_updated_at_capacity()
+    {
+        string rtf = "{\\rtf1 " + InheritedFontDeclarations(4096, "fcharset0") + @"\f0{\fonttbl\fcharset204}\'cf\'f0\'e8\'e2\'e5\'f2}";
+
+        Assert.Equal("Привет", (await Extract(rtf)).Text);
+    }
+
+    private static string InheritedFontDeclarations(int count, string declaration)
+    {
+        StringBuilder rtf = new();
+
+        for (int font = 0; font < count; font++)
+        {
+            rtf.Append("\\f").Append(font).Append("{\\fonttbl\\").Append(declaration).Append('}');
+        }
+
+        return rtf.ToString();
+    }
+
     private static Task<SessionAttachmentExtractionResult> Extract(string rtf, int maximumCharacters = 262_144)
     {
         byte[] bytes = Encoding.Latin1.GetBytes(rtf);

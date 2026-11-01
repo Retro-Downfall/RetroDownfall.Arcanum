@@ -63,7 +63,7 @@ internal ref struct RtfTextScanner(ReadOnlySpan<byte> bytes, ISessionAttachmentD
                         Reject();
                     }
 
-                    if (_state.UnicodeDestinationPrefix != 0)
+                    if (_state.UnicodeDestinationPrefix != 0 || _state.StarredDestinationPending)
                     {
                         Reject();
                     }
@@ -105,7 +105,7 @@ internal ref struct RtfTextScanner(ReadOnlySpan<byte> bytes, ISessionAttachmentD
                 case (byte)'}':
                     _fallback = 0;
 
-                    if (_depth == 0 || _state.UnicodeDestinationPrefix != 0 ||
+                    if (_depth == 0 || _state.UnicodeDestinationPrefix != 0 || _state.StarredDestinationPending ||
                         (_state.UnicodeAlternatives && _state.AlternativeChildren != 2))
                     {
                         Reject();
@@ -133,7 +133,7 @@ internal ref struct RtfTextScanner(ReadOnlySpan<byte> bytes, ISessionAttachmentD
                         Reject();
                     }
 
-                    if (_state.UnicodeAlternatives || _state.UnicodeDestinationPrefix != 0)
+                    if (_state.UnicodeAlternatives || _state.UnicodeDestinationPrefix != 0 || _state.StarredDestinationPending)
                     {
                         Reject();
                     }
@@ -181,6 +181,11 @@ internal ref struct RtfTextScanner(ReadOnlySpan<byte> bytes, ISessionAttachmentD
             _state.UnicodeDestinationPrefix = 2;
 
             return true;
+        }
+
+        if (_state.StarredDestinationPending && !IsLetter(symbol))
+        {
+            Reject();
         }
 
         if (_state.UnicodeDestinationPrefix == 2 && !IsLetter(symbol))
@@ -265,6 +270,10 @@ internal ref struct RtfTextScanner(ReadOnlySpan<byte> bytes, ISessionAttachmentD
 
             if (symbol == '*')
             {
+                // The following word identifies this destination. Recognized unsupported defaults must
+                // still be refused, but descendants of an already opaque destination remain uninterpreted.
+                _state.StarredDestinationPending = !_state.Skip;
+
                 _state.Skip = true;
 
                 _state.FontTable = false;
@@ -332,6 +341,16 @@ internal ref struct RtfTextScanner(ReadOnlySpan<byte> bytes, ISessionAttachmentD
             _position++;
         }
 
+        if (_state.StarredDestinationPending)
+        {
+            _state.StarredDestinationPending = false;
+
+            if (UnsupportedStyleControl(word))
+            {
+                Reject();
+            }
+        }
+
         if (_state.UnicodeDestinationPrefix == 2)
         {
             if (!word.SequenceEqual("ud"u8) || hasNumber)
@@ -375,6 +394,14 @@ internal ref struct RtfTextScanner(ReadOnlySpan<byte> bytes, ISessionAttachmentD
             return true;
         }
 
+        // Styles can supply hidden character properties through implicit defaults, selectors or inheritance.
+        // Until visibility is resolved for that entire style graph, decline these consumed shapes instead of
+        // treating unknown style properties as visible. Opaque destinations above remain uninterpreted.
+        if (!_state.Skip && UnsupportedStyleControl(word))
+        {
+            Reject();
+        }
+
         if (word.SequenceEqual("upr"u8) && !_state.Skip)
         {
             if (!groupStart || hasNumber)
@@ -403,12 +430,7 @@ internal ref struct RtfTextScanner(ReadOnlySpan<byte> bytes, ISessionAttachmentD
 
             if (_state.FontTable && !_fonts.ContainsKey(argument))
             {
-                if (_fonts.Count == 4096)
-                {
-                    Reject();
-                }
-
-                _fonts.Add(argument, _ansiCodePage);
+                SetFontCodePage(_ansiCodePage);
             }
         }
         else if (word.SequenceEqual("deff"u8))
@@ -578,6 +600,13 @@ internal ref struct RtfTextScanner(ReadOnlySpan<byte> bytes, ISessionAttachmentD
             Reject();
         }
 
+        // Font metadata may inherit its index from a containing group, so every insertion must pass
+        // this one capacity gate; selecting fN inside fonttbl is not the only way to introduce a key.
+        if (!_fonts.ContainsKey(_state.FontIndex) && _fonts.Count >= 4096)
+        {
+            Reject();
+        }
+
         _fonts[_state.FontIndex] = codePage;
     }
 
@@ -660,6 +689,17 @@ internal ref struct RtfTextScanner(ReadOnlySpan<byte> bytes, ISessionAttachmentD
         _ => throw new InvalidDataException("Invalid RTF hexadecimal escape."),
     };
 
+    private static bool UnsupportedStyleControl(ReadOnlySpan<byte> word) =>
+        word.SequenceEqual("stylesheet"u8) ||
+        word.SequenceEqual("s"u8) ||
+        word.SequenceEqual("cs"u8) ||
+        word.SequenceEqual("ts"u8) ||
+        word.SequenceEqual("ds"u8) ||
+        word.SequenceEqual("defcs"u8) ||
+        word.SequenceEqual("defds"u8) ||
+        word.SequenceEqual("defchp"u8) ||
+        word.SequenceEqual("defpap"u8);
+
     private static bool ExcludedDestination(ReadOnlySpan<byte> word) =>
         word.SequenceEqual("fonttbl"u8) ||
         word.SequenceEqual("colortbl"u8) ||
@@ -725,6 +765,8 @@ internal struct RtfGroupState
     public bool Deleted;
 
     public bool GroupStart;
+
+    public bool StarredDestinationPending;
 
     public bool UnicodeAlternatives;
 
