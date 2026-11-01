@@ -46,7 +46,7 @@ public sealed class SessionAttachmentDocumentExtractorsTests
     [InlineData("")]
     [InlineData("   ")]
     [InlineData("text/plain")]
-    [InlineData("application/rtf")]
+    [InlineData("application/epub+zip")]
     [InlineData("application/octet-stream")]
     [InlineData("application/vnd.openxmlformats-officedocument.wordprocessingml.template")]
     [InlineData("application/vnd.oasis.opendocument.text-template")]
@@ -101,6 +101,7 @@ public sealed class SessionAttachmentDocumentExtractorsTests
             SessionAttachmentComprehensionPolicy.OpenDocumentPresentationMimeType,
             SessionAttachmentComprehensionPolicy.VisioDrawingMimeType,
             SessionAttachmentComprehensionPolicy.PdfMimeType,
+            "application/rtf",
         ];
 
         SessionAttachmentDocumentHost[] hosts =
@@ -108,10 +109,12 @@ public sealed class SessionAttachmentDocumentExtractorsTests
             .. families.Select(static mimeType => SessionAttachmentDocumentExtractors.For(mimeType)!),
         ];
 
-        Assert.Equal(9, hosts.Distinct(ReferenceEqualityComparer.Instance).Count());
+        Assert.All(hosts, Assert.NotNull);
+
+        Assert.Equal(10, hosts.Distinct(ReferenceEqualityComparer.Instance).Count());
 
         Assert.Equal(
-            9,
+            10,
             SessionAttachmentComprehensionPolicy.Formats
                 .Select(static format => SessionAttachmentDocumentExtractors.For(format.MimeType))
                 .Distinct(ReferenceEqualityComparer.Instance)

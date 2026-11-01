@@ -53,14 +53,14 @@ public sealed partial class BackupRestoreStagedDrainTests
         using (ArcanumMaintenanceLock held = ArcanumMaintenanceLock.AcquireDetailed(harness.InstallationRoot).BorrowAcquiredLock())
         await using (SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(harness.DatabasePath, destination.GrimoireSecret, false, Token))
         {
-            await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, Token);
+            await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionThirtyThreeFixture.ChainSet(), 1536, Token);
 
             using GrimoireSchemaQuiescentExecution execution = GrimoireSchemaQuiescentExecution.ForStartup(connection, held, harness.InstallationRoot, new GrimoireDbReadiness());
 
             GrimoireSchemaTransitionJournalRow journal = (await GrimoireSchemaTransitionJournal.ReadAsync(connection, null, GrimoireSchemaTransactionTier.Core, Token))!;
 
-            var page = await new GrimoireSchemaBackfillRunner(GrimoireSchemaTestInstaller.Create(), TimeProvider.System).AdvanceAsync(
-                connection, GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core), journal,
+            var page = await new GrimoireSchemaBackfillRunner(GrimoireSchemaTestInstaller.Create(CoreSchemaVersionThirtyThreeFixture.ChainSet()), TimeProvider.System).AdvanceAsync(
+                connection, CoreSchemaVersionThirtyThreeFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core), journal,
                 GrimoireSchemaTestInstaller.CreateContext(), 1, Token, execution);
 
             Assert.Equal(128, page.RowsProcessed);
@@ -85,8 +85,8 @@ public sealed partial class BackupRestoreStagedDrainTests
 
         GrimoireSchemaTransitionJournalRow pending = (await GrimoireSchemaTransitionJournal.ReadAsync(resumed, null, GrimoireSchemaTransactionTier.Core, Token))!;
 
-        GrimoireSchemaBackfillProgress completed = await new GrimoireSchemaBackfillRunner(GrimoireSchemaTestInstaller.Create(), TimeProvider.System).AdvanceAsync(
-            resumed, GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core), pending,
+        GrimoireSchemaBackfillProgress completed = await new GrimoireSchemaBackfillRunner(GrimoireSchemaTestInstaller.Create(CoreSchemaVersionThirtyThreeFixture.ChainSet()), TimeProvider.System).AdvanceAsync(
+            resumed, CoreSchemaVersionThirtyThreeFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core), pending,
             GrimoireSchemaTestInstaller.CreateContext(), 16, Token, resumedExecution);
 
         Assert.True(completed.StepComplete);

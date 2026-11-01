@@ -512,6 +512,166 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.Equal("Document package exceeds its expansion bounds.", (await _index!.GetStateAsync(poison.Id, CancellationToken.None))!.FailureReason);
     }
 
+    public static TheoryData<string, string> MalformedRtfDocuments => new()
+    {
+        { "depth", "{\\rtf1 " + new string('{', 1000) + "secret" + new string('}', 1001) },
+        { "unbalanced", "{\\rtf1 secret" },
+        { "truncated escape", "{\\rtf1 secret\\'a" },
+        { "unknown code page", "{\\rtf1\\ansicpg99999 secret}" },
+        { "unterminated destination", "{\\rtf1 before{\\*\\unknown secret}" },
+    };
+
+    [SkippableTheory]
+    [MemberData(nameof(MalformedRtfDocuments))]
+    public async Task ExecuteAsync_MalformedRtf_FailsPoisonWithoutBlockingHealthyRtf(
+        string kind,
+        string source)
+    {
+        // The real RTF family must refuse hostile input without wedging the single-reader channel.
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Assert.NotEmpty(kind);
+
+        _settings.Features.Comprehension = true;
+
+        Guid sessionId = Guid.NewGuid();
+
+        ComprehensionFormatFixture document = ComprehensionFormatFixtures.For("application/rtf");
+
+        SessionAttachmentRecord poison = await PersistFormatAsync(
+            sessionId,
+            "poison",
+            "poison.rtf",
+            "application/rtf",
+            Encoding.ASCII.GetBytes(source));
+
+        SessionAttachmentRecord healthyDocument = await PersistFormatAsync(
+            sessionId, "document", document.FileName, document.MimeType, document.Package);
+
+        TaskCompletionSource<bool> healthyCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        FakeWeaveService weave = new();
+
+        // No host is injected: both documents use the registered RTF extension.
+        ObservingScopeFactory scopes = BuildScopeFactory(weave);
+
+        scopes.OnScopeDisposed = () =>
+        {
+            if (weave.EmbedBatchCallCount == 1)
+            {
+                healthyCompleted.TrySetResult(true);
+            }
+
+            return ValueTask.CompletedTask;
+        };
+
+        ImmediateTimeProvider retryTime = new(static () => { });
+
+        using SessionAttachmentIndexingService service = CreateService(
+            scopes,
+            OpenGate(),
+            timeProvider: retryTime);
+
+        Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(poison.Id, sessionId, Attempt: 7)));
+
+        Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(healthyDocument.Id, sessionId)));
+
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            await healthyCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            using CancellationTokenSource stop = new(TimeSpan.FromSeconds(10));
+
+            await service.StopAsync(stop.Token);
+        }
+
+        SessionAttachmentIndexState failed = await _index!.GetStateAsync(poison.Id, CancellationToken.None)
+            ?? throw new InvalidOperationException("The poison attachment has no index state.");
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, failed.Status);
+
+        Assert.Equal(7, failed.AttemptCount);
+
+        Assert.Equal("Document extraction failed.", failed.FailureReason);
+
+        Assert.NotNull(failed.ExtractedAt);
+
+        Assert.Empty(await _index.GetChunksForAttachmentAsync(poison.Id, CancellationToken.None));
+
+        Assert.Empty(retryTime.Delays);
+
+        Assert.Empty(service.DeferredRequests);
+
+        Assert.Equal(0, service.QueueReader.Count);
+
+        Assert.Empty(await _index.ReconcileAndFindPendingAsync(Dimensions, 10, CancellationToken.None));
+
+        foreach ((SessionAttachmentRecord record, ComprehensionFormatFixture fixture) in new[]
+        {
+            (healthyDocument, document),
+        })
+        {
+            SessionAttachmentIndexState indexed = await _index.GetStateAsync(record.Id, CancellationToken.None)
+                ?? throw new InvalidOperationException("The healthy attachment has no index state.");
+
+            Assert.Equal(SessionAttachmentIndexStatus.Indexed, indexed.Status);
+
+            Assert.Equal(0, indexed.AttemptCount);
+
+            Assert.Null(indexed.FailureReason);
+
+            SessionAttachmentIndexedChunk[] chunks = [.. await _index.GetChunksForAttachmentAsync(record.Id, CancellationToken.None)];
+
+            Assert.NotEmpty(chunks);
+
+            fixture.AssertSurfaces(string.Concat(chunks.Select(chunk => chunk.Content)));
+        }
+    }
+
+    [SkippableTheory]
+    [MemberData(nameof(MalformedRtfDocuments))]
+    public async Task ProcessOneAsync_MalformedRtf_ConcludesFailedAndIsNeverRetried(string kind, string source)
+    {
+        // Sensitivity: the deterministic-rejection branch of the processor. A bomb that reported ShouldRetry would be
+        // re-run with backoff for ever.
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Assert.NotEmpty(kind);
+
+        _settings.Features.Comprehension = true;
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord poison = await PersistFormatAsync(
+            sessionId,
+            "poison",
+            "poison.rtf",
+            "application/rtf",
+            Encoding.ASCII.GetBytes(source));
+
+        FakeWeaveService weave = new();
+
+        using SessionAttachmentIndexingService service = CreateService(BuildScopeFactory(weave), OpenGate());
+
+        SessionAttachmentIndexOutcome outcome = await service.ProcessOneAsync(
+            new SessionAttachmentIndexRequest(poison.Id, sessionId),
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexDisposition.Concluded, outcome.Disposition);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, outcome.Status);
+
+        Assert.False(outcome.ShouldRetry);
+
+        Assert.Equal(0, weave.EmbedBatchCallCount);
+
+        Assert.Equal("Document extraction failed.", (await _index!.GetStateAsync(poison.Id, CancellationToken.None))!.FailureReason);
+    }
+
     [SkippableFact]
     public async Task ProcessOneAsync_RefusedItsWorkLease_TouchesNothingAndKeepsItsIdentity()
     {

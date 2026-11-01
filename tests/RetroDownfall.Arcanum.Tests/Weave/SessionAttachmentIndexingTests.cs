@@ -1515,7 +1515,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         SessionAttachmentRecord office = await PersistBinaryAsync(sessionId, "office", "office.bin", mimeType);
 
-        SessionAttachmentRecord other = await PersistBinaryAsync(sessionId, "other", "other.rtf", "application/rtf");
+        SessionAttachmentRecord other = await PersistBinaryAsync(sessionId, "other", "other.epub", "application/epub+zip");
 
         SessionAttachmentIndexProcessor processor = CreateProcessor(new FakeWeaveService());
 
@@ -1738,9 +1738,9 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             null,
             null,
             "binary",
-            "binary.rtf",
+            "binary.epub",
             new byte[] { 0x00, 0x01, 0x02 },
-            "application/rtf",
+            "application/epub+zip",
             SessionAttachmentKind.Binary);
 
         FakeWeaveService weave = new();

@@ -25,6 +25,7 @@ internal static class ComprehensionSeamDocuments
         [SessionAttachmentComprehensionPolicy.VisioDrawingMimeType] = "Visio/hand-built-stencil.vsdx",
         [SessionAttachmentComprehensionPolicy.VisioMacroEnabledDrawingMimeType] = "Visio/hand-built-stencil.vsdm",
         [SessionAttachmentComprehensionPolicy.PdfMimeType] = "Pdf/cups-text.pdf",
+        ["application/rtf"] = "Rtf/textutil-basic.rtf",
     };
 
     /// <summary>The bytes of a document of the registry type <paramref name="mimeType"/>.</summary>

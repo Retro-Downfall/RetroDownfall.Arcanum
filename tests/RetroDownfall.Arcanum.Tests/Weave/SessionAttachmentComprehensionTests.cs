@@ -68,7 +68,7 @@ public sealed class SessionAttachmentComprehensionTests
     }
 
     [Theory]
-    [InlineData("application/rtf")]
+    [InlineData("application/epub+zip")]
     [InlineData("application/octet-stream")]
     [InlineData("image/png")]
     public async Task ExtractDocument_UnsupportedMime_DoesNotReadBytes(string mimeType)

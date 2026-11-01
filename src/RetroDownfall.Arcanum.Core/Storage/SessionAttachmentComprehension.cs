@@ -79,6 +79,8 @@ public static class SessionAttachmentComprehensionPolicy
 
     public const string PdfMimeType = "application/pdf";
 
+    public const string RichTextFormatMimeType = "application/rtf";
+
     // The registry's entries. TryGetFormat walks this array rather than Formats: an array's enumeration is
     // closed, while a read-only collection's enumerator runs whatever list it wraps.
     private static readonly SessionAttachmentComprehensionFormat[] FormatTable =
@@ -96,6 +98,7 @@ public static class SessionAttachmentComprehensionPolicy
             new(VisioDrawingMimeType, "Visio drawing"),
             new(VisioMacroEnabledDrawingMimeType, "Visio macro-enabled drawing (macros not read)"),
             new(PdfMimeType, "PDF document", SessionAttachmentRangeUnit.Pages, MayIncludeUnseenText: true),
+            new(RichTextFormatMimeType, "Rich Text Format document"),
         ];
 
     /// <summary>

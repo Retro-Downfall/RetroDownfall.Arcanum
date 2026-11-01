@@ -64,6 +64,7 @@ public static class AttachmentMimeDetector
             [".htm"] = "text/html",
             [".arccomp"] = SessionAttachmentComprehensionPolicy.MimeType,
             [".pdf"] = "application/pdf",
+            [".rtf"] = SessionAttachmentComprehensionPolicy.RichTextFormatMimeType,
             [".doc"] = "application/msword",
             [".docx"] = SessionAttachmentComprehensionPolicy.WordDocumentMimeType,
             [".docm"] = SessionAttachmentComprehensionPolicy.WordMacroEnabledDocumentMimeType,

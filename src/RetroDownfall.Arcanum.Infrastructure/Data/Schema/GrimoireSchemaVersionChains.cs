@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 33 and declares thirty-two steps, Covenant canonical is at version 7 and declares six,
+/// Core is at version 34 and declares thirty-three steps, Covenant canonical is at version 7 and declares six,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -143,8 +143,11 @@ internal static class GrimoireSchemaVersionChains
     /// rewriting their accepted spellings or changing deletion authority.</para>
     /// <para>Version 24 indexes Campaign continuity Session and output-artifact dependencies without
     /// changing source manifests, checkpoints, or their cascade relationships.</para>
+    /// <para>Version 34 excludes RTF document chunks from the Tapestry revision corpus, like the
+    /// other registered comprehension formats. It replaces the four attachment revision triggers
+    /// without changing source rows or inherited conservative revision counters.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 33;
+    internal const int CoreSchemaVersion = 34;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -351,6 +354,9 @@ internal static class GrimoireSchemaVersionChains
 
             // Core33 changes only data; the complete Core32 physical catalog is frozen unchanged.
             [(GrimoireSchemaTransactionTier.Core, 33)] = "1C23045251AE40A0439B47177D82B88629FB24D0FE3A95FEEFDE43441F2EB64A",
+
+            // Core33's data-only correction retained the frozen Core32 physical catalog.
+            [(GrimoireSchemaTransactionTier.Core, 34)] = "1C23045251AE40A0439B47177D82B88629FB24D0FE3A95FEEFDE43441F2EB64A",
 
             // Read out of the Covenant canonical head tree immediately before covenant_versions.sql
             // admitted receipt-free AgentApproved retirements. CovenantCanonicalSchemaVersionTwoFixture

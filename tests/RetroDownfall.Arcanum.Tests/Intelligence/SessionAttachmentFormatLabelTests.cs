@@ -24,6 +24,7 @@ public sealed class SessionAttachmentFormatLabelTests
         { "application/vnd.oasis.opendocument.text", "OpenDocument text" },
         { "application/vnd.oasis.opendocument.spreadsheet", "OpenDocument spreadsheet" },
         { "application/vnd.oasis.opendocument.presentation", "OpenDocument presentation" },
+        { "application/rtf", "Rich Text Format document" },
         { "application/vnd.ms-visio.drawing", "Visio drawing" },
         { "application/vnd.ms-visio.drawing.macroenabled.12", "Visio macro-enabled drawing (macros not read)" },
     };
@@ -104,7 +105,7 @@ public sealed class SessionAttachmentFormatLabelTests
 
     [Theory]
     [InlineData("text/plain")]
-    [InlineData("application/rtf")]
+    [InlineData("application/epub+zip")]
     [InlineData("application/octet-stream")]
     public void Retrieved_chunk_outside_the_registry_keeps_stating_its_range_as_lines(string mimeType)
     {
@@ -126,7 +127,7 @@ public sealed class SessionAttachmentFormatLabelTests
 
     [Theory]
     [InlineData("text/plain")]
-    [InlineData("application/rtf")]
+    [InlineData("application/epub+zip")]
     [InlineData("application/octet-stream")]
     [InlineData("application/vnd.openxmlformats-officedocument.wordprocessingml.template")]
     public void Retrieved_chunk_outside_the_registry_has_no_source_format_line(string mimeType)
@@ -220,7 +221,7 @@ public sealed class SessionAttachmentFormatLabelTests
 
     [Theory]
     [InlineData("text/plain")]
-    [InlineData("application/rtf")]
+    [InlineData("application/epub+zip")]
     [InlineData("application/vnd.openxmlformats-officedocument.wordprocessingml.template")]
     public void Comprehension_notice_refuses_a_record_outside_the_registry(string mimeType)
     {

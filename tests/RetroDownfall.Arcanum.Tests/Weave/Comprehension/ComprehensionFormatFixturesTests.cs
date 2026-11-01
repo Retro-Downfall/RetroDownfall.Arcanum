@@ -57,7 +57,7 @@ public sealed class ComprehensionFormatFixturesTests
     public async Task ExtractDocument_EveryFormatWithComprehensionOff_StaysNotEligibleAndNeverReadsTheDocument(string mimeType)
     {
         // Sensitivity: the IsEligibleDocument gate in the extractor facade. With the feature off the document is
-        // never read, so today's behaviour (an unindexed binary) holds for all eleven formats.
+        // never read, so today's behaviour (an unindexed binary) holds for every registered format.
         ComprehensionFormatFixture fixture = ComprehensionFormatFixtures.For(mimeType);
 
         NoOpSessionAttachmentStore store = new(
@@ -108,7 +108,7 @@ public sealed class ComprehensionFormatFixturesTests
 
         string[] actual = [.. ComprehensionFormatFixtures.All.Select(fixture => fixture.MimeType).Order(StringComparer.Ordinal)];
 
-        Assert.Equal(11, actual.Length);
+        Assert.Equal(12, actual.Length);
 
         Assert.Equal(expected, actual);
     }
@@ -138,6 +138,13 @@ public sealed class ComprehensionFormatFixturesTests
         // The packages are deflated, so inflate each readable entry and look for the sentinel inside. The deliberately
         // uninflatable macro parts of a Visio package declare a bomb-sized length and are skipped by the size bound.
         ComprehensionFormatFixture fixture = ComprehensionFormatFixtures.For(mimeType);
+
+        if (mimeType == "application/rtf")
+        {
+            Assert.Contains(fixture.HiddenSentinel, System.Text.Encoding.ASCII.GetString(fixture.Package), StringComparison.Ordinal);
+
+            return;
+        }
 
         using MemoryStream stream = new(fixture.Package, writable: false);
 

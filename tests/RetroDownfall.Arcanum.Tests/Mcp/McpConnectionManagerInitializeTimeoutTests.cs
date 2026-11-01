@@ -33,7 +33,11 @@ public sealed class McpConnectionManagerInitializeTimeoutTests
 
         // The handshake deadline used to surface as OperationCanceledException, which aborted this
         // call and every server after the first hung one.
+        DateTimeOffset initializationStartedUtc = DateTimeOffset.UtcNow;
+
         await manager.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(60));
+
+        DateTimeOffset initializationFinishedUtc = DateTimeOffset.UtcNow;
 
         foreach (string name in new[] { "hung-initialize-a", "hung-initialize-b" })
         {
@@ -46,7 +50,12 @@ public sealed class McpConnectionManagerInitializeTimeoutTests
 
             DateTimeOffset retryAfter = Assert.NotNull(hung.RestartAfterUtc);
 
-            Assert.True(retryAfter > DateTimeOffset.UtcNow, $"{name} must be backed off, not retried on the next turn.");
+            // The first server's backoff can expire while later starts or this continuation wait under
+            // load. Check that its deadline was scheduled during initialization, not that it is still future.
+            Assert.InRange(
+                retryAfter,
+                initializationStartedUtc + TimeSpan.FromSeconds(60),
+                initializationFinishedUtc + TimeSpan.FromSeconds(60));
         }
     }
 

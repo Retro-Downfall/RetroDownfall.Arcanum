@@ -105,7 +105,7 @@ public sealed partial class SessionAttachmentToolInjectionTests
     [Theory]
     [InlineData(false, true, "application/vnd.arcanum.comprehension-text")]
     [InlineData(true, false, "application/vnd.arcanum.comprehension-text")]
-    [InlineData(true, true, "application/rtf")]
+    [InlineData(true, true, "application/epub+zip")]
     public async Task Comprehension_ineligible_binary_is_refused_before_reading(
         bool enabled, bool retrievalEnabled, string mimeType)
     {
