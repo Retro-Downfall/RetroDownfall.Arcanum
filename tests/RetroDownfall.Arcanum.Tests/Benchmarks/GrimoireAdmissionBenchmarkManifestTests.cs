@@ -154,7 +154,28 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
 
         Assert.EndsWith("GrimoireConnectionAdmissionEpoch.cs", optional.Path, StringComparison.Ordinal);
 
-        Assert.Equal(936, catalog.Count(static entry => entry.Path.EndsWith(".sql", StringComparison.Ordinal)));
+        Assert.Equal(938, catalog.Count(static entry => entry.Path.EndsWith(".sql", StringComparison.Ordinal)));
+
+        using JsonDocument manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(
+            root,
+            "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/grimoire-admission-workload-v1.json")));
+
+        Assert.Equal(
+            ShapeDigest(catalog),
+            manifest.RootElement.GetProperty("inputCatalogShapeDigest").GetString());
+    }
+
+    [Fact]
+    public void Checked_in_input_catalog_closes_every_embedded_schema_resource_including_standalone_indexes()
+    {
+        string root = FindRepositoryRoot();
+
+        string path = Path.Combine(root,
+            "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/grimoire-admission-input-catalog-v1.txt");
+
+        (string Path, bool Optional)[] catalog = File.ReadAllLines(path)
+            .Select(static line => (line[2..], line.StartsWith("O\t", StringComparison.Ordinal)))
+            .ToArray();
 
         const string schemaPath = "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/";
 
@@ -176,13 +197,6 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
 
         Assert.Equal(selectedSchema, embeddedSchema);
 
-        using JsonDocument manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(
-            root,
-            "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/grimoire-admission-workload-v1.json")));
-
-        Assert.Equal(
-            ShapeDigest(catalog),
-            manifest.RootElement.GetProperty("inputCatalogShapeDigest").GetString());
     }
 
     [Fact]
