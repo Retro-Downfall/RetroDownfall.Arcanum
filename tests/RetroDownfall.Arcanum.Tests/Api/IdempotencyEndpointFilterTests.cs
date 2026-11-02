@@ -18,6 +18,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -398,9 +399,15 @@ public sealed class IdempotencyEndpointFilterTests
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        string workspaceRoot = _factory.TempHome;
+        // Other ApiHost tests can warm the shared catalog before this test writes its spell files.
+        ISpellRepository spells = _factory.Services.GetRequiredService<ISpellRepository>();
 
-        string spellDir = Path.Combine(workspaceRoot, "test-spell");
+        _ = await spells.ListAsync(_factory.TempHome, CancellationToken.None);
+
+        // Raw fixture writes belong to a new catalog root, independent of the shared cached snapshot.
+        string workspaceRoot = Path.Combine(_factory.TempHome, $"idempotent-spell-{Guid.NewGuid():N}");
+
+        string spellDir = Path.Combine(workspaceRoot, "spells", "test-spell");
 
         Directory.CreateDirectory(spellDir);
 

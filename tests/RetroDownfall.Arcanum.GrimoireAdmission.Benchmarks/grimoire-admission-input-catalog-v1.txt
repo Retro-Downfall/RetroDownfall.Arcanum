@@ -1013,7 +1013,6 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.Recall.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaRetirementSuppression.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaSuppressionKeyStore.cs
-R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaVectorMirror.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SanctumBreachRepository.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/CampaignForkFrontierBackfill.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Covenant/Accelerator/FullTextSearch/covenant_fts.sql
@@ -1169,6 +1168,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/FullTextSearch/memory_sea
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GrimoireCoreSchemaVersion.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GrimoireEmbeddingDimensionResolver.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GrimoireExpectedIndex.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GrimoireLegacyVectorMirrors.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GrimoireSchemaBackfillRunner.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GrimoireSchemaCatalog.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GrimoireSchemaDataInitializers.cs
@@ -1196,6 +1196,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/IGrimoireSchemaBackfill.c
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/IGrimoireSchemaDataInitializer.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/IdentitySpellingBackfill.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/InstallationTurnQuotaBackfill.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/LegacyVectorMirrorRetirementBackfill.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/LongRestFtsSyntheticManifest.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/LongRestSourceIdentityBackfill.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/MemoryAnnalsBackfill.cs

@@ -1647,6 +1647,12 @@ internal static partial class HostedGrimoireProducerInventory
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.UtcInstantCanonicalizationBackfill",
     };
 
+    internal static readonly IReadOnlySet<string> QuiescentSchemaBackfillStrategies = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "RetroDownfall.Arcanum.Infrastructure.Data.Schema.InstallationTurnQuotaBackfill",
+        "RetroDownfall.Arcanum.Infrastructure.Data.Schema.LegacyVectorMirrorRetirementBackfill",
+    };
+
     private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> ReviewedClosedDispatchTargets =
         new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
         {
@@ -3352,6 +3358,8 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly Dictionary<Compilation, int> compilationIdentities = new(ReferenceEqualityComparer.Instance);
 
+        private readonly bool hasAuthoredRetirementStrategy;
+
         private int bindingSymbolIdentityBuilds;
 
         private int memberMethodKeyBuilds;
@@ -3480,6 +3488,13 @@ internal static partial class HostedGrimoireProducerInventory
 
                     foreach (SyntaxNode node in tree.GetRoot().DescendantNodes())
                     {
+                        if (node is TypeDeclarationSyntax typeDeclaration
+                            && model.GetDeclaredSymbol(typeDeclaration) is INamedTypeSymbol declaredType
+                            && TypeKey(declaredType) == "RetroDownfall.Arcanum.Infrastructure.Data.Schema.LegacyVectorMirrorRetirementBackfill")
+                        {
+                            hasAuthoredRetirementStrategy = true;
+                        }
+
                         if (node is BaseMethodDeclarationSyntax or AccessorDeclarationSyntax or LocalFunctionStatementSyntax && model.GetDeclaredSymbol(node) is IMethodSymbol method)
                         {
                             AddMember(new(method, node, model));
@@ -8460,11 +8475,25 @@ internal static partial class HostedGrimoireProducerInventory
                 .ToArray();
         }
 
+        private IReadOnlySet<string>? QuiescentStrategies(IMethodSymbol method) =>
+            Normalize(method) == "RetroDownfall.Arcanum.Infrastructure.Data.Schema.IGrimoireQuiescentBackfill.AdvanceQuiescentBatchAsync"
+                && hasAuthoredRetirementStrategy
+                ? QuiescentSchemaBackfillStrategies
+                : null;
+
         private AuthoredMember[] ResolveStrategyTargets(IMethodSymbol method)
         {
-            if (Normalize(method) == "RetroDownfall.Arcanum.Infrastructure.Data.Schema.IGrimoireSchemaBackfill.AdvanceBatchAsync")
+            // Historical source has only the census implementation and retains its existing unique-target
+            // resolution. The retirement type activates a closed two-strategy lane, even if its slot is missing.
+            IReadOnlySet<string>? strategies = Normalize(method) == "RetroDownfall.Arcanum.Infrastructure.Data.Schema.IGrimoireSchemaBackfill.AdvanceBatchAsync"
+                ? SchemaBackfillStrategies
+                : QuiescentStrategies(method);
+
+            if (strategies is not null)
             {
-                return AuthoredMembers.Where(candidate => SchemaBackfillStrategies.Contains(TypeKey(candidate.Symbol.ContainingType)) && candidate.Symbol.ContainingType.AllInterfaces
+                return AuthoredMembers.Where(candidate => strategies.Contains(TypeKey(candidate.Symbol.ContainingType))
+                        && (strategies != QuiescentSchemaBackfillStrategies || !candidate.Symbol.IsAbstract)
+                        && candidate.Symbol.ContainingType.AllInterfaces
                         .Where(contract => contract.ContainingAssembly.Identity.Equals(method.ContainingAssembly.Identity) && TypeKey(contract) == TypeKey(method.ContainingType))
                         .SelectMany(static contract => contract.GetMembers())
                         .OfType<IMethodSymbol>()
@@ -21444,6 +21473,15 @@ internal static partial class HostedGrimoireProducerInventory
                             RefuseTraversalCompletion();
 
                             diagnostics.Add(new("HOSTED_STRATEGY_BINDING_UNRESOLVED", Location(node), callee + "; Every configured concrete strategy must bind exactly once."));
+                        }
+
+                        if (QuiescentStrategies(method) is { } quiescentStrategies
+                            && !strategyTargets.Select(static candidate => TypeKey(candidate.Symbol.ContainingType))
+                                .Order(StringComparer.Ordinal).SequenceEqual(quiescentStrategies.Order(StringComparer.Ordinal), StringComparer.Ordinal))
+                        {
+                            RefuseTraversalCompletion();
+
+                            diagnostics.Add(new("HOSTED_STRATEGY_BINDING_UNRESOLVED", Location(node), callee + "; Every configured quiescent strategy must bind its exact slot exactly once."));
                         }
 
                         bool unresolvedAuthoredTarget = target is null
