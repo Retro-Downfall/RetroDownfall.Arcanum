@@ -128,6 +128,14 @@ internal sealed class GrimoireSchemaManifestInspector(
 
         foreach (KeyValuePair<string, InstalledObject> pair in installed)
         {
+            if (manifest.TransactionTier == GrimoireSchemaTransactionTier.Core && manifest.Version >= 35
+                && LegacyVectorMirrorRetirementBackfill.IsRetiredName(pair.Key))
+            {
+                return GrimoireSchemaInspectionResult.Invalid(
+                    GrimoireSchemaInspectionFailure.UnexpectedObject,
+                    pair.Key);
+            }
+
             if (expected.Contains(pair.Key))
             {
                 continue;

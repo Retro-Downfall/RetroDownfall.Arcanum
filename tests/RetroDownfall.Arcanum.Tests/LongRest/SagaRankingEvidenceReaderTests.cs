@@ -28,6 +28,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
 
+[Collection(RetroDownfall.Arcanum.Tests.Collections.SqliteConnectionPoolCollection.Name)]
 public sealed class SagaRankingEvidenceReaderTests
 {
     private static readonly CovenantDigest Digest = new(new byte[32]);
@@ -46,7 +47,7 @@ public sealed class SagaRankingEvidenceReaderTests
             await h.ReportAsync([source], MemoryEvaluationOutcome.Harm);
         }
 
-        SagaMemoryStore store = new(h.Saga.Context, h.Saga.VectorAccelerator, h.Saga.Options,
+        SagaMemoryStore store = new(h.Saga.Context, h.Saga.Options,
             MemoryErasureTestKeys.Isolated(), timeProvider: new Instant(h.AsOf));
 
         var first = await store.ListAsync(null, null, MemoryScope.Installation, 3, 0, CancellationToken.None);
@@ -580,7 +581,7 @@ public sealed class SagaRankingEvidenceReaderTests
 
         await h.InsertAsync();
 
-        SagaMemoryStore store = new(h.Saga.Context, h.Saga.VectorAccelerator, h.Saga.Options,
+        SagaMemoryStore store = new(h.Saga.Context, h.Saga.Options,
             MemoryErasureTestKeys.Isolated(), timeProvider: new Instant(h.AsOf));
 
         var status = (await store.ReadRankingStatusAsync(MemoryScope.Installation, null, CancellationToken.None))!;
@@ -975,10 +976,10 @@ public sealed class SagaRankingEvidenceReaderTests
 
         internal async Task<DivinationResult[]> SearchAsync(float threshold)
         {
-            DivinationService service = new(Saga.Context, Saga.VectorAccelerator, NullLogger<DivinationService>.Instance,
+            DivinationService service = new(Saga.Context, NullLogger<DivinationService>.Instance,
                 Saga.Options, new Instant(AsOf));
 
-            return Require(await service.SearchAsync("saga_memory_embeddings_vec", "MemoryId", "Embedding",
+            return Require(await service.SearchAsync("saga_memory_embeddings", "MemoryId", "Embedding",
                 new Embedding<float>(Vector()), 1, threshold, CancellationToken.None));
         }
 

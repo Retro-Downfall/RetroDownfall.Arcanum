@@ -22,16 +22,13 @@ public sealed class LongRestRecallTests
 {
     private static readonly DateTimeOffset Recorded = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
-    [SkippableTheory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Unscoped_recall_filters_exact_suppressed_sources_before_the_result_limit(bool accelerator)
+    [SkippableFact]
+    public async Task Unscoped_recall_filters_exact_suppressed_sources_before_the_result_limit()
     {
         await using SagaStoreHarness h = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
 
         await SeedAsync(h);
 
-        h.VectorAccelerator.SetAvailable(accelerator);
 
         Result<DivinationResult[]> result = await SearchAsync(h);
 
@@ -40,10 +37,8 @@ public sealed class LongRestRecallTests
         Assert.Equal("survivor", Assert.Single(result.Value).Id);
     }
 
-    [SkippableTheory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Campaign_recall_filters_the_global_arm_before_scoring(bool accelerator)
+    [SkippableFact]
+    public async Task Campaign_recall_filters_the_global_arm_before_scoring()
     {
         await using SagaStoreHarness h = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
 
@@ -53,12 +48,11 @@ public sealed class LongRestRecallTests
 
         _ = await h.Store.InsertAsync("outside", "another Campaign", Recorded, outsideSession, null, null, Vector(1, 0), CancellationToken.None);
 
-        h.VectorAccelerator.SetAvailable(accelerator);
 
         DivinationCampaignScope scope = new("saga_memories", "Id", "ScopeKindCode", "CampaignId", 1, 2,
             Guid.Parse("12345678-1234-1234-1234-123456789012"));
 
-        Result<DivinationResult[]> result = await Service(h).SearchCampaignScopedAsync("saga_memory_embeddings_vec",
+        Result<DivinationResult[]> result = await Service(h).SearchCampaignScopedAsync("saga_memory_embeddings",
             "MemoryId", "Embedding", scope, new Embedding<float>(Vector(1, 0)), 1, 0.5f, CancellationToken.None);
 
         Assert.True(result.IsSuccess, result.Error.Message);
@@ -73,7 +67,7 @@ public sealed class LongRestRecallTests
 
         await SeedAsync(h);
 
-        Result<DivinationResult[]> result = await Service(h).SearchScopedAsync("saga_memory_embeddings_vec", "MemoryId", "Embedding",
+        Result<DivinationResult[]> result = await Service(h).SearchScopedAsync("saga_memory_embeddings", "MemoryId", "Embedding",
             "saga_memories", "Id", "Source", "test-source", new Embedding<float>(Vector(1, 0)), 1, 0.5f, CancellationToken.None);
 
         Assert.True(result.IsSuccess, result.Error.Message);
@@ -257,10 +251,8 @@ public sealed class LongRestRecallTests
         Assert.Equal(0, await h.CountAsync("long_rest_receipts", "1 = 1"));
     }
 
-    [SkippableTheory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Version_sixteen_readers_need_no_Long_Rest_tables_and_keep_each_existing_memory(bool accelerator)
+    [SkippableFact]
+    public async Task Version_sixteen_readers_need_no_Long_Rest_tables_and_keep_each_existing_memory()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -278,9 +270,8 @@ public sealed class LongRestRecallTests
 
         WeaveIndexAvailability availability = new();
 
-        availability.SetAvailable(accelerator);
 
-        SagaMemoryStore store = new(db, availability,
+        SagaMemoryStore store = new(db,
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings
             {
                 Features = new FeatureSettings { Annals = false },
@@ -300,10 +291,10 @@ public sealed class LongRestRecallTests
 
         Assert.True(await store.AnyRetrievableAsync(MemoryScope.Installation, CancellationToken.None));
 
-        DivinationService service = new(db, availability, NullLogger<DivinationService>.Instance,
+        DivinationService service = new(db, NullLogger<DivinationService>.Instance,
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
-        Result<DivinationResult[]> recall = await service.SearchAsync("saga_memory_embeddings_vec", "MemoryId", "Embedding",
+        Result<DivinationResult[]> recall = await service.SearchAsync("saga_memory_embeddings", "MemoryId", "Embedding",
             new Embedding<float>(Vector(1, 0)), 1, 0.5f, CancellationToken.None);
 
         Assert.True(recall.IsSuccess, recall.Error.Message);
@@ -364,10 +355,10 @@ public sealed class LongRestRecallTests
     }
 
     private static DivinationService Service(SagaStoreHarness h) =>
-        new(h.Context, h.VectorAccelerator, NullLogger<DivinationService>.Instance, h.Options);
+        new(h.Context, NullLogger<DivinationService>.Instance, h.Options);
 
     private static Task<Result<DivinationResult[]>> SearchAsync(SagaStoreHarness h) =>
-        Service(h).SearchAsync("saga_memory_embeddings_vec", "MemoryId", "Embedding", new Embedding<float>(Vector(1, 0)),
+        Service(h).SearchAsync("saga_memory_embeddings", "MemoryId", "Embedding", new Embedding<float>(Vector(1, 0)),
             1, 0.5f, CancellationToken.None);
 
     private static float[] Vector(float first, float second)

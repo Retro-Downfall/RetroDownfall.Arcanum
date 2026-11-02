@@ -45,24 +45,13 @@ internal sealed record BackupRestoreDatabaseReconciliation(
 /// </remarks>
 internal static class BackupRestoreDatabaseWorker
 {
-
-    /// <summary>
-    /// Every derived-vector table, paired with the accelerator mirror that projects it.
-    /// </summary>
-    /// <remarks>
-    /// The pairing is the point. A base table and its <c>*_vec</c> mirror hold one vector twice and
-    /// nothing keeps them in step — there is no trigger, and every other component that removes a base
-    /// vector removes the mirror row explicitly. A list of base tables alone is how a restore under a
-    /// different configured width came to hand the operator two tables that disagree about which rows
-    /// have vectors, with retrieval answering from the half that was left behind.
-    /// </remarks>
-    private static readonly (string Table, string Mirror, string Key)[] EmbeddingTables =
+    private static readonly string[] EmbeddingTables =
     [
-        ("entry_embeddings", "entry_embeddings_vec", "EntryId"),
-        ("session_attachment_embeddings", "session_attachment_embeddings_vec", "ChunkId"),
-        ("workspace_file_embeddings", "workspace_file_embeddings_vec", "ChunkId"),
-        ("saga_memory_embeddings", "saga_memory_embeddings_vec", "MemoryId"),
-        ("tapestry_node_embeddings", "tapestry_node_embeddings_vec", "NodeId"),
+        "entry_embeddings",
+        "session_attachment_embeddings",
+        "workspace_file_embeddings",
+        "saga_memory_embeddings",
+        "tapestry_node_embeddings",
     ];
 
     public static async Task<SqliteConnection> OpenAsync(
@@ -71,7 +60,6 @@ internal static class BackupRestoreDatabaseWorker
         bool readOnly,
         CancellationToken cancellationToken)
     {
-
         SqliteNativeRuntime.Instance.Initialize();
 
         GrimoireKdfSidecar sidecar = GrimoireKdfSidecarFile.Read(databasePath);
@@ -82,23 +70,18 @@ internal static class BackupRestoreDatabaseWorker
 
         try
         {
-
             passphrase = GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(
                 grimoireSecret,
                 salt);
-
         }
         finally
         {
-
             System.Security.Cryptography.CryptographicOperations.ZeroMemory(salt);
-
         }
 
         SqliteConnection connection = new(
             new SqliteConnectionStringBuilder
             {
-
                 DataSource = databasePath,
 
                 Password = passphrase,
@@ -106,12 +89,10 @@ internal static class BackupRestoreDatabaseWorker
                 Mode = readOnly ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWrite,
 
                 Pooling = false,
-
             }.ToString());
 
         try
         {
-
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
             // The staged snapshot is converged through the same installer the host uses, and the
@@ -128,17 +109,13 @@ internal static class BackupRestoreDatabaseWorker
                 .ConfigureAwait(false);
 
             return connection;
-
         }
         catch
         {
-
             await connection.DisposeAsync().ConfigureAwait(false);
 
             throw;
-
         }
-
     }
 
     public static Task<string> ReadSchemaIdentityAsync(
@@ -167,13 +144,11 @@ internal static class BackupRestoreDatabaseWorker
         GrimoireSchemaInitializationContext context,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(installer);
 
         ArgumentNullException.ThrowIfNull(context);
 
         return installer.InstallAsync(connection, embeddingDimensions, context, cancellationToken);
-
     }
 
     /// <summary>
@@ -196,7 +171,6 @@ internal static class BackupRestoreDatabaseWorker
         DateTimeOffset installedAtUtc,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentException.ThrowIfNullOrEmpty(masterKeyMaterial);
@@ -209,7 +183,6 @@ internal static class BackupRestoreDatabaseWorker
             ?? CovenantAuthorityBootstrapper.PrepareWithoutInstallationLock(
                 masterKeyMaterial,
                 installedAtUtc);
-
     }
 
     /// <summary>
@@ -221,7 +194,6 @@ internal static class BackupRestoreDatabaseWorker
         BackupPathRemapper remapper,
         CancellationToken cancellationToken)
     {
-
         Dictionary<BackupPathMappingKind, long> matches = Enum
             .GetValues<BackupPathMappingKind>()
             .ToDictionary(static kind => kind, static _ => 0L);
@@ -270,7 +242,6 @@ internal static class BackupRestoreDatabaseWorker
             cancellationToken).ConfigureAwait(false);
 
         return new BackupRestoreRemapOutcome(matches, [.. unmapped]);
-
     }
 
     /// <summary>
@@ -282,12 +253,9 @@ internal static class BackupRestoreDatabaseWorker
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         if (!await TableExistsAsync(connection, "SessionAttachments", cancellationToken).ConfigureAwait(false))
         {
-
             return 0;
-
         }
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -302,7 +270,6 @@ internal static class BackupRestoreDatabaseWorker
             """;
 
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -313,12 +280,9 @@ internal static class BackupRestoreDatabaseWorker
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         if (!await TableExistsAsync(connection, "LongRunningOperations", cancellationToken).ConfigureAwait(false))
         {
-
             return 0;
-
         }
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -369,177 +333,45 @@ internal static class BackupRestoreDatabaseWorker
 
         return deleted
             + await children.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
     /// Removes derived vectors whose dimension no longer matches this installation's configured
-    /// embedding size, and the accelerator mirror rows that projected them. They are recomputed on
+    /// embedding size. They are recomputed on
     /// demand; transporting them would poison similarity search with vectors from another provider or
     /// another model width.
     /// </summary>
-    /// <remarks>
-    /// The returned count is base-table rows only. A mirror row is the same vector projected, not a
-    /// second one, and counting it would double what the operator is told a restore left to rebuild.
-    /// </remarks>
     public static async Task<long> DropMismatchedEmbeddingsAsync(
         SqliteConnection connection,
         int embeddingDimensions,
         CancellationToken cancellationToken)
     {
-
         long removed = 0;
 
-        foreach ((string table, string mirror, string key) in EmbeddingTables)
+        foreach (string table in EmbeddingTables)
         {
-
             if (!await TableExistsAsync(connection, table, cancellationToken).ConfigureAwait(false))
             {
-
                 continue;
-
             }
 
             await using (SqliteCommand command = connection.CreateCommand())
             {
-
                 command.CommandText = $"DELETE FROM \"{table}\" WHERE \"Dim\" <> $dim;";
 
                 _ = command.Parameters.AddWithValue("$dim", embeddingDimensions);
 
                 removed += await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
             }
-
-            await DropOrphanedVectorMirrorRowsAsync(connection, table, mirror, key, cancellationToken)
-                .ConfigureAwait(false);
-
         }
 
         return removed;
-
-    }
-
-    /// <summary>
-    /// Removes every mirror row whose key no longer has a row in the table it mirrors.
-    /// </summary>
-    /// <remarks>
-    /// One pass over each table and the comparison in memory, rather than one statement that asks the
-    /// question per mirror row. The two families spell an identity differently — a mirror's key column
-    /// is deliberately outside the canonicalisation family — so the comparison has to be normalised;
-    /// doing that normalisation <em>inside</em> the statement puts a function on the base table's key
-    /// column, which makes its primary key unusable and turns the sweep into one full scan of the base
-    /// table per mirror row, under the maintenance lock, over tables as large as the Grimoire is.
-    ///
-    /// <para>The deletes stay keyed and one at a time: a mirror is a <c>vec0</c> virtual table on
-    /// builds that have the accelerator, and the keyed delete is its surface — the same shape the live
-    /// erasure kernel and the retention service use. Guarded by a classification of the mirror, so a
-    /// build without the accelerator never opens a legacy virtual mirror and still sweeps a plain one.</para>
-    ///
-    /// <para>Written against "has no base row" rather than "was in the batch just deleted", so a
-    /// snapshot that already arrived inconsistent converges too. The base pass runs after the
-    /// mismatched rows are gone, so what it collects is what survived.</para>
-    /// </remarks>
-    private static async Task DropOrphanedVectorMirrorRowsAsync(
-        SqliteConnection connection,
-        string table,
-        string mirror,
-        string key,
-        CancellationToken cancellationToken)
-    {
-
-        // Classified rather than probed for existence: a legacy vec0 virtual table also has a row in
-        // sqlite_master, and this runtime has no module to read or delete from it with, so sweeping it
-        // would fail the whole restore. Its rows are skipped, and a plain mirror is swept.
-        if (await SagaVectorMirror.ClassifyAsync(connection, null, mirror, cancellationToken).ConfigureAwait(false)
-            is not SagaVectorMirrorKind.PlainTable)
-        {
-
-            return;
-
-        }
-
-        HashSet<string> retained = new(StringComparer.Ordinal);
-
-        await using (SqliteCommand read = connection.CreateCommand())
-        {
-
-            read.CommandText = $"SELECT \"{key}\" FROM \"{table}\";";
-
-            await using SqliteDataReader reader = await read
-                .ExecuteReaderAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-
-                if (!reader.IsDBNull(0))
-                {
-
-                    _ = retained.Add(CovenantIdentitySql.Key(reader.GetString(0)));
-
-                }
-
-            }
-
-        }
-
-        List<string> orphaned = [];
-
-        await using (SqliteCommand read = connection.CreateCommand())
-        {
-
-            read.CommandText = $"SELECT \"{key}\" FROM \"{mirror}\";";
-
-            await using SqliteDataReader reader = await read
-                .ExecuteReaderAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-
-                if (reader.IsDBNull(0))
-                {
-
-                    continue;
-
-                }
-
-                string stored = reader.GetString(0);
-
-                if (!retained.Contains(CovenantIdentitySql.Key(stored)))
-                {
-
-                    // The stored spelling, not the normalised one: the delete below matches the column
-                    // exactly, which is what keeps it a keyed delete.
-                    orphaned.Add(stored);
-
-                }
-
-            }
-
-        }
-
-        foreach (string identity in orphaned)
-        {
-
-            await using SqliteCommand delete = connection.CreateCommand();
-
-            delete.CommandText = $"DELETE FROM \"{mirror}\" WHERE \"{key}\" = $identity;";
-
-            _ = delete.Parameters.AddWithValue("$identity", identity);
-
-            _ = await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-        }
-
     }
 
     public static async Task<BackupRestoreDatabaseReconciliation> ReconcileAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         long attachments = await CountRowsAsync(
             connection,
             "SessionAttachments",
@@ -571,7 +403,6 @@ internal static class BackupRestoreDatabaseWorker
             batches,
             EmbeddingsToRebuild: 0,
             PendingOperationsCleared: 0);
-
     }
 
     /// <summary>
@@ -582,12 +413,9 @@ internal static class BackupRestoreDatabaseWorker
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         if (!await TableExistsAsync(connection, "SessionAttachments", cancellationToken).ConfigureAwait(false))
         {
-
             return [];
-
         }
 
         List<string> paths = [];
@@ -604,18 +432,13 @@ internal static class BackupRestoreDatabaseWorker
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             if (!reader.IsDBNull(0))
             {
-
                 paths.Add(reader.GetString(0));
-
             }
-
         }
 
         return paths;
-
     }
 
     /// <summary>
@@ -634,12 +457,9 @@ internal static class BackupRestoreDatabaseWorker
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         if (!await TableExistsAsync(connection, "Campaigns", cancellationToken).ConfigureAwait(false))
         {
-
             return [];
-
         }
 
         HashSet<Guid> identities = [];
@@ -656,18 +476,13 @@ internal static class BackupRestoreDatabaseWorker
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             if (!reader.IsDBNull(0) && Guid.TryParse(reader.GetString(0), out Guid identity))
             {
-
                 _ = identities.Add(identity);
-
             }
-
         }
 
         return identities;
-
     }
 
     private static async Task RemapColumnAsync(
@@ -682,19 +497,15 @@ internal static class BackupRestoreDatabaseWorker
         CancellationToken cancellationToken,
         BackupPathMappingKind? fallbackKind = null)
     {
-
         if (!await TableExistsAsync(connection, table, cancellationToken).ConfigureAwait(false))
         {
-
             return;
-
         }
 
         List<(string Key, string Value)> rows = [];
 
         await using (SqliteCommand read = connection.CreateCommand())
         {
-
             read.CommandText =
                 $"SELECT \"{keyColumn}\", \"{column}\" FROM \"{table}\" WHERE \"{column}\" IS NOT NULL AND \"{column}\" <> '';";
 
@@ -704,16 +515,12 @@ internal static class BackupRestoreDatabaseWorker
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 rows.Add((reader.GetString(0), reader.GetString(1)));
-
             }
-
         }
 
         foreach ((string key, string value) in rows)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             BackupPathMappingKind effective = kind;
@@ -722,18 +529,14 @@ internal static class BackupRestoreDatabaseWorker
                 && (fallbackKind is null
                     || !remapper.TryRemap(fallbackKind.Value, value, out remapped)))
             {
-
                 _ = unmapped.Add(value);
 
                 continue;
-
             }
 
             if (fallbackKind is not null && !remapper.TryRemap(kind, value, out _))
             {
-
                 effective = fallbackKind.Value;
-
             }
 
             await using SqliteCommand update = connection.CreateCommand();
@@ -748,9 +551,7 @@ internal static class BackupRestoreDatabaseWorker
             _ = await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
             matches[effective]++;
-
         }
-
     }
 
     /// <summary>
@@ -764,19 +565,15 @@ internal static class BackupRestoreDatabaseWorker
         SortedSet<string> unmapped,
         CancellationToken cancellationToken)
     {
-
         if (!await TableExistsAsync(connection, "Campaigns", cancellationToken).ConfigureAwait(false))
         {
-
             return;
-
         }
 
         List<(string Id, string Json)> rows = [];
 
         await using (SqliteCommand read = connection.CreateCommand())
         {
-
             read.CommandText = """
                 SELECT "Id", "SanctumConfigJson" FROM "Campaigns"
                 WHERE "SanctumConfigJson" IS NOT NULL AND "SanctumConfigJson" <> '';
@@ -788,45 +585,34 @@ internal static class BackupRestoreDatabaseWorker
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 rows.Add((reader.GetString(0), reader.GetString(1)));
-
             }
-
         }
 
         foreach ((string id, string json) in rows)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             JsonNode? node;
 
             try
             {
-
                 node = JsonNode.Parse(json);
-
             }
             catch (JsonException)
             {
-
                 continue;
-
             }
 
             if (node?["allowedPaths"] is not JsonArray allowed)
             {
-
                 continue;
-
             }
 
             bool changed = false;
 
             for (int index = 0; index < allowed.Count; index++)
             {
-
                 // A hand-edited or partially corrupt allow-list can hold a number, object, array, or
                 // boolean. Those are not paths, so they are skipped exactly like the malformed-JSON
                 // case above rather than aborting the whole staging phase.
@@ -834,22 +620,17 @@ internal static class BackupRestoreDatabaseWorker
                     || !entry.TryGetValue(out string? value)
                     || value.Length == 0)
                 {
-
                     continue;
-
                 }
 
                 bool remappedAny = false;
 
                 foreach (BackupPathMappingKind kind in Enum.GetValues<BackupPathMappingKind>())
                 {
-
                     if (kind == BackupPathMappingKind.AttachmentSourceProvenance
                         || !remapper.TryRemap(kind, value, out string? remapped))
                     {
-
                         continue;
-
                     }
 
                     allowed[index] = JsonValue.Create(remapped);
@@ -861,23 +642,17 @@ internal static class BackupRestoreDatabaseWorker
                     remappedAny = true;
 
                     break;
-
                 }
 
                 if (!remappedAny)
                 {
-
                     _ = unmapped.Add(value);
-
                 }
-
             }
 
             if (!changed)
             {
-
                 continue;
-
             }
 
             await using SqliteCommand update = connection.CreateCommand();
@@ -891,9 +666,7 @@ internal static class BackupRestoreDatabaseWorker
             _ = update.Parameters.AddWithValue("$id", id);
 
             _ = await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
         }
-
     }
 
     private static async Task<long> CountRowsAsync(
@@ -912,12 +685,9 @@ internal static class BackupRestoreDatabaseWorker
         string requiredTable,
         CancellationToken cancellationToken)
     {
-
         if (!await TableExistsAsync(connection, requiredTable, cancellationToken).ConfigureAwait(false))
         {
-
             return 0;
-
         }
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -929,7 +699,6 @@ internal static class BackupRestoreDatabaseWorker
         return value is null or DBNull
             ? 0
             : Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     internal static async Task<bool> TableExistsAsync(
@@ -938,7 +707,6 @@ internal static class BackupRestoreDatabaseWorker
         CancellationToken cancellationToken,
         SqliteTransaction? transaction = null)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -950,7 +718,5 @@ internal static class BackupRestoreDatabaseWorker
         _ = command.Parameters.AddWithValue("$name", table);
 
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
-
     }
-
 }

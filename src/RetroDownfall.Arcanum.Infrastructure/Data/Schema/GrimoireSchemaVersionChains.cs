@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 34 and declares thirty-three steps, Covenant canonical is at version 7 and declares six,
+/// Core is at version 35 and declares thirty-four steps, Covenant canonical is at version 7 and declares six,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -146,8 +146,11 @@ internal static class GrimoireSchemaVersionChains
     /// <para>Version 34 excludes RTF document chunks from the Tapestry revision corpus, like the
     /// other registered comprehension formats. It replaces the four attachment revision triggers
     /// without changing source rows or inherited conservative revision counters.</para>
+    /// <para>Version 35 retires the five obsolete vector mirrors under a quiescent admission barrier.
+    /// It preserves durable BLOB embeddings and refuses virtual or unexpected mirror shapes that
+    /// cannot be safely removed without their original implementation.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 34;
+    internal const int CoreSchemaVersion = 35;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -358,6 +361,9 @@ internal static class GrimoireSchemaVersionChains
             // Core33's data-only correction retained the frozen Core32 physical catalog.
             [(GrimoireSchemaTransactionTier.Core, 34)] = "1C23045251AE40A0439B47177D82B88629FB24D0FE3A95FEEFDE43441F2EB64A",
 
+            // Frozen complete Core34 catalog; retiring optional mirrors changes no canonical object.
+            [(GrimoireSchemaTransactionTier.Core, 35)] = "1243F9B7B5256B4C07A71E030C145D20804297950101E93A5E411510D872E148",
+
             // Read out of the Covenant canonical head tree immediately before covenant_versions.sql
             // admitted receipt-free AgentApproved retirements. CovenantCanonicalSchemaVersionTwoFixture
             // reconstructs that tree with its frozen table resource and hashes it, so a wrong value here
@@ -439,6 +445,8 @@ internal static class GrimoireSchemaVersionChains
             [(GrimoireSchemaTransactionTier.Core, 28)] = new MemorySearchProjectionBackfill(),
 
             [(GrimoireSchemaTransactionTier.Core, 33)] = new InstallationTurnQuotaBackfill(),
+
+            [(GrimoireSchemaTransactionTier.Core, 35)] = new LegacyVectorMirrorRetirementBackfill(),
 
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 5)] = new CovenantReviewEventBackfill(),
         };

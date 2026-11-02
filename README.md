@@ -49,7 +49,7 @@ The Tapestry implements **RAPTOR** with global and local UMAP reduction, Gaussia
 Two search mechanisms back the memory system:
 
 - **Full-text search (FTS5):** native indexes over supported conversation, memory, workspace, and attachment projections. Session search supports FTS5 query syntax; the operator's `memory search` treats its input literally. Scope and eligibility checks still apply.
-- **Retrieval-Augmented Generation (RAG):** configured embedding models turn text into vectors so eligible files, notes, and conversation material can provide source context for a reply.
+- **Retrieval-Augmented Generation (RAG):** configured embedding models turn text into vectors so eligible files, notes, and conversation material can provide source context for a reply. Semantic search uses managed cosine over durable embedding BLOBs; the hermetic database runtime disallows dynamic extension loading.
 
 #### The Covenant: a rulebook you control
 Beyond ordinary memory, Arcanum can hold a **Covenant** — personal or project rules the assistant follows. Anything the assistant suggests is surfaced to you before it's trusted, and suggestions can never become rules on their own. Enabling the Covenant may mean those memories travel to where the assistant talks to the model — and Arcanum can't un-send them — so its protection ships by default and turning it on is a deliberate, protected choice.

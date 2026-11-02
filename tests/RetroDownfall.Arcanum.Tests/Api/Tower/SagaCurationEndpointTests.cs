@@ -269,16 +269,15 @@ public sealed class SagaCurationEndpointTests
     /// <para>The missing row is not cut by hand here. It is left behind by
     /// <c>BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync</c>, the production writer of this
     /// state: a Grimoire restored from a backup taken under a different configured embedding width keeps
-    /// every <c>saga_memories</c> row and drops the vector behind it — the base row and the vec0 mirror
-    /// row together — to be recomputed on demand. What a restore hands the operator is therefore a
-    /// memory with no vector in either table, and a correction is one of the verbs that is supposed to
+    /// every <c>saga_memories</c> row and drops its durable vector to be recomputed on demand. What a restore hands the operator is therefore a
+    /// memory with no durable vector, and a correction is one of the verbs that is supposed to
     /// give it one.</para>
     /// <para>The detail route is read before the correction as well as after, so a failure here is about
     /// the correction rather than about the arrangement: the first read is what proves the memory
     /// reached the state this case is about.</para>
     /// <para>The seeded vector is deliberately not the one <see cref="FakeWeaveService"/> answers, so
     /// every assertion below can tell the vector the correction published apart from the vector the
-    /// insert wrote. Without that they are the same bytes and a correction that wrote neither table
+    /// insert wrote. Without that they are the same bytes and a correction that wrote no embedding
     /// would still look right.</para>
     /// </remarks>
     [SkippableFact]
@@ -291,7 +290,6 @@ public sealed class SagaCurationEndpointTests
 
         HttpClient client = factory.CreateAuthenticatedClient();
 
-        await EnableTheVectorMirrorAsync(factory);
 
         await SeedMemoryAsync(factory, "mem-unembedded", OriginalContent, Vec(0f, 1f));
 
@@ -299,18 +297,11 @@ public sealed class SagaCurationEndpointTests
 
         Assert.NotNull(extracted);
 
-        // The production insert filled the mirror, not this case. An assertion about a table nothing
-        // production wrote to would hold just as well on a build where the mirror write never ran.
-        Assert.Equal(extracted, await EmbeddingAsync(factory, "saga_memory_embeddings_vec", "mem-unembedded"));
 
         await DropEmbeddingsTakenUnderAnotherWidthAsync(factory);
 
         Assert.Null(await EmbeddingAsync(factory, "saga_memory_embeddings", "mem-unembedded"));
 
-        // The mirror goes with the row it mirrors. Asserted rather than assumed, because the memory
-        // this case is about is the one with no vector anywhere: a mirror row left behind would be a
-        // vector the correction below never has to publish over.
-        Assert.Null(await EmbeddingAsync(factory, "saga_memory_embeddings_vec", "mem-unembedded"));
 
         using HttpResponseMessage before = await client.GetAsync("/api/memory/saga/mem-unembedded");
 
@@ -344,9 +335,6 @@ public sealed class SagaCurationEndpointTests
         // The corrected text's vector rather than the one the restore removed.
         Assert.NotEqual(extracted, published);
 
-        // And both tables hold it. Publishing into one and not the other is what this assertion is
-        // for: a correction that answered Applied while the two described different memories.
-        Assert.Equal(published, await EmbeddingAsync(factory, "saga_memory_embeddings_vec", "mem-unembedded"));
 
     }
 
@@ -1130,38 +1118,6 @@ public sealed class SagaCurationEndpointTests
             },
         };
 
-    /// <summary>
-    /// Builds the vec0 mirror and tells The Weave it is there, so the store's mirror writes run at all.
-    /// </summary>
-    /// <remarks>
-    /// No schema file installs that table — it exists only where an accelerator built it — and this
-    /// build ships none, so <c>WeaveIndexAvailability.IsVecAvailable</c> is false and every mirror write
-    /// in <c>SagaMemoryStore</c> is skipped. The Covenant erasure and retention suites stand a plain
-    /// table in for it the same way and for the same reason: a case about the two embedding tables
-    /// agreeing cannot be written at all on a build where only one of them is ever written. The flag is
-    /// set after the host is up because the bootstrapper clears it on its way through.
-    /// </remarks>
-    private static async Task EnableTheVectorMirrorAsync(ArcanumWebApplicationFactory factory)
-    {
-
-        using IServiceScope scope = factory.Services.CreateScope();
-
-        SqliteConnection connection = await OpenGrimoireAsync(
-            scope.ServiceProvider.GetRequiredService<ArcanumDbContext>());
-
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.CommandText =
-            """
-            CREATE TABLE "saga_memory_embeddings_vec" ("MemoryId" TEXT PRIMARY KEY, "Embedding" BLOB NOT NULL)
-            """;
-
-        _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
-        factory.Services.GetRequiredService<WeaveIndexAvailability>()
-            .SetAvailable(true, "Test mirror present.");
-
-    }
 
     /// <summary>
     /// Empties the Saga base embedding table the way a restore does, leaving every <c>saga_memories</c>

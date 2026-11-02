@@ -56,7 +56,6 @@ internal sealed partial class DataRetentionService
         new("SessionAttachments", RetentionDataClass.AttachmentVersions, FactoryRecordKind.Physical),
         new("session_attachment_chunks", RetentionDataClass.AttachmentChunks, FactoryRecordKind.Derived),
         new("session_attachment_embeddings", RetentionDataClass.AttachmentEmbeddings, FactoryRecordKind.Derived),
-        new("session_attachment_embeddings_vec", RetentionDataClass.AttachmentEmbeddings, FactoryRecordKind.Derived),
         new("session_attachment_index_state", RetentionDataClass.AttachmentEmbeddings, FactoryRecordKind.Derived),
         new("UploadedFiles", RetentionDataClass.UploadedFiles, FactoryRecordKind.Physical),
         new(
@@ -66,7 +65,6 @@ internal sealed partial class DataRetentionService
             "Status IN ('completed', 'failed', 'cancelled', 'expired')"),
         new("saga_memories", RetentionDataClass.SagaMemories, FactoryRecordKind.Physical),
         new("saga_memory_embeddings", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
-        new("saga_memory_embeddings_vec", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
         new("saga_memory_attachment_provenance", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
         new("saga_extraction_watermarks", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
         new("saga_retirement_suppressions", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
@@ -104,15 +102,12 @@ internal sealed partial class DataRetentionService
         new("WorkspaceContexts", RetentionDataClass.WorkspaceChunks, FactoryRecordKind.Physical),
         new("workspace_file_chunks", RetentionDataClass.WorkspaceChunks, FactoryRecordKind.Derived),
         new("workspace_file_embeddings", RetentionDataClass.WorkspaceEmbeddings, FactoryRecordKind.Derived),
-        new("workspace_file_embeddings_vec", RetentionDataClass.WorkspaceEmbeddings, FactoryRecordKind.Derived),
         new("entry_embeddings", RetentionDataClass.SessionEntryEmbeddings, FactoryRecordKind.Derived),
-        new("entry_embeddings_vec", RetentionDataClass.SessionEntryEmbeddings, FactoryRecordKind.Derived),
         new("tapestry_generations", RetentionDataClass.Tapestry, FactoryRecordKind.Derived),
         new("tapestry_edges", RetentionDataClass.Tapestry, FactoryRecordKind.Derived),
         new("tapestry_scope_revisions", RetentionDataClass.Tapestry, FactoryRecordKind.Derived),
         new("tapestry_nodes", RetentionDataClass.Tapestry, FactoryRecordKind.Derived),
         new("tapestry_node_embeddings", RetentionDataClass.Tapestry, FactoryRecordKind.Derived),
-        new("tapestry_node_embeddings_vec", RetentionDataClass.Tapestry, FactoryRecordKind.Derived),
         new("IdempotencyClaims", RetentionDataClass.IdempotencyClaims, FactoryRecordKind.Physical),
         new("IdempotencyKeys", RetentionDataClass.IdempotencyClaims, FactoryRecordKind.Physical),
         new("InferenceRuns", RetentionDataClass.InferenceRuns, FactoryRecordKind.Physical),
@@ -155,11 +150,6 @@ internal sealed partial class DataRetentionService
         new("long_rest_sources", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("long_rest_protected_receipt_inputs", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("long_rest_protected_receipt_evidence", RetentionDataClass.Annals, FactoryRecordKind.Derived),
-        new("session_attachment_embeddings_vec", RetentionDataClass.AttachmentEmbeddings, FactoryRecordKind.Derived),
-        new("entry_embeddings_vec", RetentionDataClass.SessionEntryEmbeddings, FactoryRecordKind.Derived),
-        new("workspace_file_embeddings_vec", RetentionDataClass.WorkspaceEmbeddings, FactoryRecordKind.Derived),
-        new("saga_memory_embeddings_vec", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
-        new("tapestry_node_embeddings_vec", RetentionDataClass.Tapestry, FactoryRecordKind.Derived),
         new("memory_search_documents", RetentionDataClass.Entries, FactoryRecordKind.Derived),
         new("memory_search_fts", RetentionDataClass.Entries, FactoryRecordKind.Derived),
         new("Entries_fts", RetentionDataClass.Entries, FactoryRecordKind.Derived),
@@ -1242,17 +1232,6 @@ internal sealed partial class DataRetentionService
         string table,
         CancellationToken cancellationToken)
     {
-        // A vector mirror is classified rather than probed, because a legacy virtual one also passes
-        // the probe below and cannot be deleted from here.
-        if (SagaVectorMirror.IsMirrorName(table))
-        {
-            return await IsPlainVectorMirrorAsync(
-                connection,
-                transaction,
-                table,
-                cancellationToken).ConfigureAwait(false);
-        }
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;

@@ -44,7 +44,6 @@ public sealed partial class SagaMemoryStoreTests : IAsyncLifetime
 
         _store = new SagaMemoryStore(
             _db,
-            new WeaveIndexAvailability(),
             new TestOptionsMonitor<ArcanumSettings>(
                 new ArcanumSettings
                 {
@@ -514,7 +513,7 @@ public sealed partial class SagaMemoryStoreTests : IAsyncLifetime
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // The fixture's store is configured for Dimensions=64 (see TestDimensions); a shorter vector
-        // must be rejected before any row is written, rather than silently corrupting the vec0 index.
+        // must be rejected before any row is written, rather than persisting a vector of the wrong width.
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => _store!.InsertAsync("mem-bad-dims", "a", DateTimeOffset.UtcNow, null, null, "extraction", [1f, 0f], CancellationToken.None));
 

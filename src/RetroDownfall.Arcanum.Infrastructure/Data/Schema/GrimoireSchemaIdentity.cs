@@ -34,9 +34,11 @@ internal static class GrimoireSchemaIdentity
 
     /// <summary>
     /// Hashes every <c>sqlite_master</c> row — object type, name, owning table, and the stored DDL
-    /// text — in a deterministic order. Optional <c>vec0</c> tables and FTS5 shadow tables are
-    /// included on purpose: they are part of what the file actually contains, and backup verification
+    /// text — in a deterministic order. Historical archives' <c>vec0</c> objects and FTS5 shadow tables
+    /// are included on purpose: they are part of what the file actually contains, and backup verification
     /// compares one snapshot against itself rather than across hosts.
+    /// Core35 admission separately requires the retired mirror names to be absent after migration;
+    /// this inventory must still identify a Core34 or older archive before that migration runs.
     /// </summary>
     public static async Task<string> ComputeAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {

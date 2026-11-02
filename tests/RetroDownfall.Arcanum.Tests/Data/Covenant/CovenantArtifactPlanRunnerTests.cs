@@ -62,20 +62,11 @@ public sealed class CovenantArtifactPlanRunnerTests
     {
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
 
-        await harness.CreatePlainVectorMirrorAsync();
-
-        harness.VectorAccelerator.SetAvailable(true);
-
         Guid target = Guid.NewGuid();
 
         await InsertAsync(harness, target, "the target memory");
 
         await InsertAsync(harness, Guid.NewGuid(), "an unrelated memory");
-
-        Assert.Equal(2, await harness.CountAsync("saga_memory_embeddings_vec", "1 = 1"));
-
-        // Off before the run: whether the mirror is purged is a property of the database, not the flag.
-        harness.VectorAccelerator.SetAvailable(false);
 
         // One review event per claim, because every head insert fires annal_review_events_head_insert.
         IReadOnlyList<MemoryErasureTableCount> expected =
@@ -85,7 +76,7 @@ public sealed class CovenantArtifactPlanRunnerTests
             new("long_rest_receipts", 0), new("long_rest_suppressions", 0), new("long_rest_receipt_inputs", 0),
             new("annal_review_decision_receipts", 0), new("annal_review_events", 1), new("annal_dependencies", 0),
             new("annal_heads", 1), new("saga_committed_uses", 0), new("annal_versions", 1), new("annal_claims", 1),
-            new("saga_memory_embeddings", 1), new("saga_memory_embeddings_vec", 1),
+            new("saga_memory_embeddings", 1),
             new("saga_memory_attachment_provenance", 0), new("saga_memories", 1),
         ];
 
@@ -96,8 +87,6 @@ public sealed class CovenantArtifactPlanRunnerTests
             CovenantArtifactPlanMode.Count);
 
         Assert.Equal(expected, counted.Targets);
-
-        Assert.Equal(SagaVectorMirrorKind.PlainTable, counted.VectorMirror);
 
         // The artifact is last, and only there.
         Assert.Equal("saga_memories", counted.Targets[^1].Table);
@@ -274,8 +263,6 @@ public sealed class CovenantArtifactPlanRunnerTests
 
         Assert.Equal(expected, counted.Targets);
 
-        Assert.Equal(SagaVectorMirrorKind.Absent, counted.VectorMirror);
-
         Assert.Equal(new MemoryErasureTableCount("lexicon_entries", 1), counted.Targets[^1]);
 
         Assert.Equal(1L, counted.ArtifactRows);
@@ -287,50 +274,6 @@ public sealed class CovenantArtifactPlanRunnerTests
         Assert.All(
             (await RunAsync(lexicon.Connection, SensitiveArtifactKind.Lexicon, seeded.Entry.Id, CovenantArtifactPlanMode.Count)).Targets,
             static remaining => Assert.Equal(0L, remaining.Rows));
-    }
-
-    [SkippableFact]
-    public async Task A_legacy_virtual_mirror_is_skipped_counted_as_zero_and_reported()
-    {
-        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
-
-        await harness.CreateLegacyVectorMirrorAsync();
-
-        Guid target = Guid.NewGuid();
-
-        await InsertAsync(harness, target, "the target memory");
-
-        // Nothing in this build can write into a virtual mirror, so its row is seeded as residue.
-        await harness.SeedVectorMirrorRowAsync(target.ToString());
-
-        CovenantArtifactPlanTally deleted = await RunAsync(
-            harness.Connection,
-            SensitiveArtifactKind.Saga,
-            target,
-            CovenantArtifactPlanMode.Delete);
-
-        Assert.Equal(SagaVectorMirrorKind.LegacyVirtualTable, deleted.VectorMirror);
-
-        // The whole ordered tally, so a skipped mirror that was duplicated or moved would show.
-        IReadOnlyList<MemoryErasureTableCount> expected =
-        [
-            .. EmptyEvaluationAndLongRestGenerationTargets(sourceRows: 1),
-            new("long_rest_protected_receipt_inputs", 0), new("long_rest_protected_receipt_evidence", 0),
-            new("long_rest_receipts", 0), new("long_rest_suppressions", 0), new("long_rest_receipt_inputs", 0),
-            new("annal_review_decision_receipts", 0), new("annal_review_events", 1), new("annal_dependencies", 0),
-            new("annal_heads", 1), new("saga_committed_uses", 0), new("annal_versions", 1), new("annal_claims", 1),
-            new("saga_memory_embeddings", 1), new("saga_memory_embeddings_vec", 0),
-            new("saga_memory_attachment_provenance", 0), new("saga_memories", 1),
-        ];
-
-        Assert.Equal(expected, deleted.Targets);
-
-        Assert.Equal(1L, deleted.ArtifactRows);
-
-        // Unreachable residue, reported rather than opened.
-        Assert.Equal(1, await harness.CountAsync("saga_memory_embeddings_vec", "1 = 1"));
-
-        Assert.Equal(0, await harness.CountAsync("saga_memories", "1 = 1"));
     }
 
     /// <summary>
@@ -360,7 +303,6 @@ public sealed class CovenantArtifactPlanRunnerTests
 
         SagaMemoryStore store = new(
             db,
-            new WeaveIndexAvailability(),
             new TestOptionsMonitor<ArcanumSettings>(
                 new ArcanumSettings
                 {
@@ -388,7 +330,7 @@ public sealed class CovenantArtifactPlanRunnerTests
             new("long_rest_receipts", 0), new("long_rest_suppressions", 0), new("long_rest_receipt_inputs", 0),
             new("annal_review_decision_receipts", 0), new("annal_review_events", 0), new("annal_dependencies", 0),
             new("annal_heads", 1), new("saga_committed_uses", 0), new("annal_versions", 1), new("annal_claims", 1),
-            new("saga_memory_embeddings", 1), new("saga_memory_embeddings_vec", 0),
+            new("saga_memory_embeddings", 1),
             new("saga_memory_attachment_provenance", 0), new("saga_memories", 1),
         ];
 
@@ -405,7 +347,7 @@ public sealed class CovenantArtifactPlanRunnerTests
     }
 
     [Fact]
-    public void Every_materialized_plan_has_at_most_one_conditional_mirror_and_never_mixes_projections_with_a_pointer_or_redaction()
+    public void Every_materialized_plan_uses_durable_targets_and_never_mixes_projections_with_a_pointer_or_redaction()
     {
         Assert.All(
             CovenantArtifactPurgePlans.MaterializedKinds,
@@ -413,10 +355,7 @@ public sealed class CovenantArtifactPlanRunnerTests
             {
                 CovenantArtifactPurgePlan plan = CovenantArtifactPurgePlans.Resolve(kind);
 
-                // A tally reports one mirror classification, so a plan may carry at most one mirror.
-                Assert.True(
-                    plan.Projections.Count(static target => target.ExistsConditionally) <= 1,
-                    $"{kind} has more than one conditional mirror.");
+                Assert.DoesNotContain(plan.Projections, target => target.Table.EndsWith("_vec", StringComparison.Ordinal));
 
                 // The consumers run the pointer and redaction before the runner's projections, which is
                 // only order-neutral while no plan has both.

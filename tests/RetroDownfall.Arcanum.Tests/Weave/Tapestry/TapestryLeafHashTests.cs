@@ -46,7 +46,7 @@ public sealed class TapestryLeafHashTests : IAsyncLifetime
 
         _db = _fixture.CreateContext(_dbPath);
 
-        _store = new TapestryStore(_db, new WeaveIndexAvailability());
+        _store = new TapestryStore(_db);
 
         if (GrimoireFixture.SqlCipherAvailable)
         {

@@ -264,7 +264,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(TimeProvider.System);
 
-        // Divination's managed cosine fallback is the only search path, and its availability flag is
+        // Divination's managed cosine scan is the only search path, and its status is
         // read on the CLI's own turn route. Its absence here was a real bug: schema installation
         // resolved it with GetRequiredService and the resulting throw silently forced the default
         // embedding dimension on every CLI bootstrap.

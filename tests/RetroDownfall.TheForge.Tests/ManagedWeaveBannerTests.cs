@@ -15,13 +15,25 @@ public sealed class ManagedWeaveBannerTests
     }
 
     [Fact]
-    public void ShouldShow_False_WhenDisabledOrVec0()
+    public void ShouldShow_False_WhenDisabledOrUnavailable()
     {
         Assert.False(ManagedWeaveBanner.ShouldShow(CreateMeta(embeddingsEnabled: false, mode: "disabled")));
 
-        Assert.False(ManagedWeaveBanner.ShouldShow(CreateMeta(embeddingsEnabled: true, mode: "vec0")));
+        Assert.False(ManagedWeaveBanner.ShouldShow(CreateMeta(embeddingsEnabled: true, mode: "unavailable")));
 
         Assert.False(ManagedWeaveBanner.ShouldShow(null));
+    }
+
+    [Fact]
+    public void Managed_banner_describes_complete_search_without_a_hypothetical_accelerator()
+    {
+        Assert.Contains("complete", ManagedWeaveBanner.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("50,000", ManagedWeaveBanner.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("fallback", ManagedWeaveBanner.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("sqlite-vec", ManagedWeaveBanner.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     private static InstanceMetadataDto CreateMeta(bool embeddingsEnabled, string mode) =>
@@ -45,7 +57,7 @@ public sealed class ManagedWeaveBannerTests
             embeddingsEnabled,
             mode,
             "diagnostic",
-            50_000,
+            0,
             "local",
             false,
             false,

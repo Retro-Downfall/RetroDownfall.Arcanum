@@ -338,7 +338,7 @@ public sealed class InstallationTurnQuotaEvolutionTests
 
         Assert.True(installed.Core.IsHealthy);
 
-        Assert.Equal(34, await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
+        Assert.Equal(35, await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
 
         Assert.Equal(GrimoireSchemaCatalog.CoreSchemaFingerprint, installed.Core.SourceDefinitionFingerprint);
 
@@ -365,7 +365,7 @@ public sealed class InstallationTurnQuotaEvolutionTests
         {
             await SeedCore32Async(connection, 1);
 
-            await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
+            await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionThirtyFourFixture.ChainSet(), 1536, CancellationToken.None);
 
             string root = Path.GetDirectoryName(new SqliteConnectionStringBuilder(scratch.ConnectionString).DataSource)!;
 
@@ -373,8 +373,8 @@ public sealed class InstallationTurnQuotaEvolutionTests
 
             using GrimoireSchemaQuiescentExecution execution = GrimoireSchemaQuiescentExecution.ForStartup(connection, held, root, new GrimoireDbReadiness());
 
-            GrimoireSchemaBackfillProgress census = await new GrimoireSchemaBackfillRunner(GrimoireSchemaTestInstaller.Create(), TimeProvider.System).AdvanceAsync(
-                connection, GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core), (await JournalAsync(connection))!,
+            GrimoireSchemaBackfillProgress census = await new GrimoireSchemaBackfillRunner(GrimoireSchemaTestInstaller.Create(CoreSchemaVersionThirtyFourFixture.ChainSet()), TimeProvider.System).AdvanceAsync(
+                connection, CoreSchemaVersionThirtyFourFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core), (await JournalAsync(connection))!,
                 GrimoireSchemaTestInstaller.CreateContext(), 16, CancellationToken.None, execution);
 
             Assert.True(census.StepComplete);
@@ -397,7 +397,7 @@ public sealed class InstallationTurnQuotaEvolutionTests
 
             await fail.ExecuteNonQueryAsync();
 
-            await Assert.ThrowsAsync<SqliteException>(() => GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None));
+            await Assert.ThrowsAsync<SqliteException>(() => GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionThirtyFourFixture.ChainSet(), 1536, CancellationToken.None));
 
             Assert.Equal(completedCensus, await JournalAsync(connection));
 
@@ -413,7 +413,7 @@ public sealed class InstallationTurnQuotaEvolutionTests
 
         Assert.Equal(completedCensus, await JournalAsync(resumed));
 
-        GrimoireSchemaInstallResult installed = await GrimoireSchemaTestInstaller.InstallAsync(resumed, 1536, CancellationToken.None);
+        GrimoireSchemaInstallResult installed = await GrimoireSchemaTestInstaller.InstallAsync(resumed, CoreSchemaVersionThirtyFourFixture.ChainSet(), 1536, CancellationToken.None);
 
         Assert.True(installed.Core.IsHealthy);
 

@@ -535,15 +535,11 @@ internal sealed class SagaMemoryErasureService(
         // versions of one claim, and prepare reports the same sum as the plan's rows to remove.
         long removedRows = erasing.Facts.Targets.Sum(static table => table.Rows);
 
-        bool legacyMirror = false;
-
         foreach (Member member in erasing.Members)
         {
-            CovenantArtifactPlanTally removed = await CovenantArtifactPlanRunner
+            _ = await CovenantArtifactPlanRunner
                 .RunAsync(connection, transaction, SensitiveArtifactKind.Saga, member.Key, CovenantArtifactPlanMode.Delete, cancellationToken)
                 .ConfigureAwait(false);
-
-            legacyMirror |= removed.VectorMirror is SagaVectorMirrorKind.LegacyVirtualTable;
         }
 
         int removedLabels = 0;
@@ -589,9 +585,7 @@ internal sealed class SagaMemoryErasureService(
             erasing.Facts.RetainedCopiesMask,
             ScrubPending,
             MemoryErasureScrubPendingReasons.ToMask(
-                legacyMirror
-                    ? [MemoryErasureScrubPendingReason.WalCheckpointPending, MemoryErasureScrubPendingReason.VectorIndexScrubUnverified]
-                    : [MemoryErasureScrubPendingReason.WalCheckpointPending]));
+                [MemoryErasureScrubPendingReason.WalCheckpointPending]));
 
         await MemoryErasureEvidence
             .InsertReceiptAsync(

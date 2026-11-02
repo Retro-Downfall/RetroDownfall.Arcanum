@@ -92,356 +92,43 @@ public sealed class BackupRestoreDatabaseWorkerTests
 
     }
 
-    /// <summary>
-    /// Reconciling the vector mirror costs one pass over each table rather than a scan of the base
-    /// table for every mirror row.
-    /// </summary>
-    /// <remarks>
-    /// A restore runs this under the maintenance lock, over tables that are as large as the Grimoire
-    /// is, so the shape of the work is a property worth pinning rather than an implementation detail.
-    /// Comparing normalised identities inside the statement — <c>lower(replace(key, '-', ''))</c> on
-    /// the base side — makes the base table's primary key unusable, so a correlated sweep degrades to
-    /// one full scan per mirror row.
-    ///
-    /// <para>Asserted over the statements production actually executed, captured through SQLite's own
-    /// trace hook and then planned back: no single statement may read more than one table. A
-    /// source-level assertion about the SQL text would pass the day someone wrote a different join
-    /// with the same cost.</para>
-    ///
-    /// <para>The behaviour is asserted in the same case, because a sweep that issued no statements at
-    /// all would satisfy every plan assertion here. The kept identity is deliberately spelled
-    /// uppercase-dashed in the base table and lowercase dash-free in the mirror — the two spellings
-    /// these two families actually use — so a rewrite that dropped the normalisation would delete a
-    /// mirror row whose vector is still live.</para>
-    /// </remarks>
-    [Fact]
-    public async Task The_vector_mirror_sweep_never_scans_the_base_table_once_per_mirror_row()
-    {
-
-        await using SqliteConnection connection = await OpenEmbeddingsAsync();
-
-        List<string> executed = [];
-
-        bool capturing = true;
-
-        raw.sqlite3_trace(
-            connection.Handle,
-            (_, statement) =>
-            {
-
-                if (capturing)
-                {
-
-                    executed.Add(statement);
-
-                }
-
-            },
-            null);
-
-        long removed = await BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync(
-            connection,
-            1536,
-            CancellationToken.None);
-
-        capturing = false;
-
-        Assert.Equal(1, removed);
-
-        Assert.Equal([KeptIdentity.ToUpperInvariant()], await IdentitiesAsync(connection, "entry_embeddings"));
-
-        // The mirror row for the surviving vector stays, spelled the way the mirror spells one; the
-        // one whose base row was just dropped and the one that never had a base row are both gone.
-        Assert.Equal(
-            [KeptIdentity.Replace("-", string.Empty).ToLowerInvariant()],
-            await IdentitiesAsync(connection, "entry_embeddings_vec"));
-
-        Assert.NotEmpty(executed);
-
-        foreach (string statement in executed)
-        {
-
-            IReadOnlyList<string> reads = PlannedTableReads(connection, statement);
-
-            Assert.True(
-                reads.Count <= 1,
-                $"One statement reads {reads.Count} tables — {string.Join(" then ", reads)} — so the "
-                + $"mirror sweep costs a pass over the base table per mirror row: {statement}");
-
-        }
-
-    }
-
-    /// <summary>
-    /// The sweep skips a legacy virtual mirror, which this runtime has no module to open, and still
-    /// sweeps a plain one in the same restore.
-    /// </summary>
-    /// <remarks>
-    /// An FTS5 virtual table stands in for the <c>vec0</c> mirror, because it records the same
-    /// <c>CREATE VIRTUAL TABLE</c> text, which is all that classifying a mirror reads. The stand-in can
-    /// be read and deleted from, so every one of its rows still being there afterwards, orphan
-    /// included, is what shows no statement reached it.
-    /// </remarks>
-    [Fact]
-    public async Task The_vector_mirror_sweep_skips_a_legacy_virtual_mirror_and_still_sweeps_a_plain_one()
-    {
-
-        await using SqliteConnection connection = await OpenEmbeddingsAsync(legacyVirtualMirror: true);
-
-        await using (SqliteCommand attachments = connection.CreateCommand())
-        {
-
-            attachments.CommandText = """
-                CREATE TABLE "session_attachment_embeddings" (
-                    "ChunkId" TEXT NOT NULL PRIMARY KEY,
-                    "Embedding" BLOB NOT NULL,
-                    "Dim" INTEGER NOT NULL);
-
-                CREATE TABLE "session_attachment_embeddings_vec" (
-                    "ChunkId" TEXT NOT NULL PRIMARY KEY,
-                    "Embedding" BLOB NOT NULL);
-
-                INSERT INTO "session_attachment_embeddings" VALUES ('kept-chunk', X'00', 1536);
-
-                INSERT INTO "session_attachment_embeddings_vec" VALUES ('kept-chunk', X'00');
-
-                INSERT INTO "session_attachment_embeddings_vec" VALUES ('orphaned-chunk', X'00');
-                """;
-
-            _ = await attachments.ExecuteNonQueryAsync();
-
-        }
-
-        long removed = await BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync(
-            connection,
-            1536,
-            CancellationToken.None);
-
-        Assert.Equal(1, removed);
-
-        Assert.Equal(
-            [
-                KeptIdentity.Replace("-", string.Empty).ToLowerInvariant(),
-                DroppedIdentity.Replace("-", string.Empty).ToLowerInvariant(),
-                OrphanedIdentity.Replace("-", string.Empty).ToLowerInvariant(),
-            ],
-            await IdentitiesAsync(connection, "entry_embeddings_vec"));
-
-        await using SqliteCommand read = connection.CreateCommand();
-
-        read.CommandText = "SELECT \"ChunkId\" FROM \"session_attachment_embeddings_vec\";";
-
-        Assert.Equal("kept-chunk", Assert.IsType<string>(await read.ExecuteScalarAsync()));
-
-    }
-
     [Theory]
-    [InlineData("entry_embeddings", "entry_embeddings_vec", "EntryId")]
-    [InlineData("session_attachment_embeddings", "session_attachment_embeddings_vec", "ChunkId")]
-    [InlineData("workspace_file_embeddings", "workspace_file_embeddings_vec", "ChunkId")]
-    [InlineData("saga_memory_embeddings", "saga_memory_embeddings_vec", "MemoryId")]
-    [InlineData("tapestry_node_embeddings", "tapestry_node_embeddings_vec", "NodeId")]
-    public async Task Dropping_a_mismatched_vector_sweeps_its_mirror_and_preexisting_orphans(
+    [InlineData("entry_embeddings", "EntryId")]
+    [InlineData("session_attachment_embeddings", "ChunkId")]
+    [InlineData("workspace_file_embeddings", "ChunkId")]
+    [InlineData("saga_memory_embeddings", "MemoryId")]
+    [InlineData("tapestry_node_embeddings", "NodeId")]
+    public async Task Dropping_mismatched_durable_vectors_preserves_matching_rows_and_is_idempotent(
         string table,
-        string mirror,
         string key)
     {
-        await using SqliteConnection connection = await OpenEmbeddingsAsync(table: table, mirrorTable: mirror, key: key);
-
-        long removed = await BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync(
-            connection,
-            1536,
-            CancellationToken.None);
-
-        // Only the mismatched base vector counts as work to rebuild: its mirror and an older orphan
-        // are projections, not two additional embeddings.
-        Assert.Equal(1, removed);
-
-        Assert.Equal(["A1A1A1A1-B2B2-4C3C-8D4D-5E5E6F6F7071"], await IdentitiesAsync(connection, table, key));
-
-        Assert.Equal(["a1a1a1a1b2b24c3c8d4d5e5e6f6f7071"], await IdentitiesAsync(connection, mirror, key));
-
-        Assert.Equal(0, await BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync(connection, 1536, CancellationToken.None));
-
-        Assert.Equal(["A1A1A1A1-B2B2-4C3C-8D4D-5E5E6F6F7071"], await IdentitiesAsync(connection, table, key));
-
-        Assert.Equal(["a1a1a1a1b2b24c3c8d4d5e5e6f6f7071"], await IdentitiesAsync(connection, mirror, key));
-    }
-
-    [Theory]
-    [InlineData("entry_embeddings", "entry_embeddings_vec", "EntryId")]
-    [InlineData("session_attachment_embeddings", "session_attachment_embeddings_vec", "ChunkId")]
-    [InlineData("workspace_file_embeddings", "workspace_file_embeddings_vec", "ChunkId")]
-    [InlineData("saga_memory_embeddings", "saga_memory_embeddings_vec", "MemoryId")]
-    [InlineData("tapestry_node_embeddings", "tapestry_node_embeddings_vec", "NodeId")]
-    public async Task A_missing_mirror_does_not_prevent_dropping_mismatched_base_vectors(
-        string table,
-        string mirror,
-        string key)
-    {
-        await using SqliteConnection connection = await OpenEmbeddingsAsync(table: table, mirrorTable: mirror, key: key);
-
-        await using (SqliteCommand drop = connection.CreateCommand())
-        {
-            drop.CommandText = $"DROP TABLE \"{mirror}\";";
-
-            _ = await drop.ExecuteNonQueryAsync();
-        }
-
-        Assert.Equal(1, await BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync(connection, 1536, CancellationToken.None));
-
-        Assert.Equal(["A1A1A1A1-B2B2-4C3C-8D4D-5E5E6F6F7071"], await IdentitiesAsync(connection, table, key));
-
-        Assert.Equal(0, await BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync(connection, 1536, CancellationToken.None));
-    }
-
-    [Theory]
-    [InlineData("entry_embeddings", "entry_embeddings_vec", "EntryId")]
-    [InlineData("session_attachment_embeddings", "session_attachment_embeddings_vec", "ChunkId")]
-    [InlineData("workspace_file_embeddings", "workspace_file_embeddings_vec", "ChunkId")]
-    [InlineData("saga_memory_embeddings", "saga_memory_embeddings_vec", "MemoryId")]
-    [InlineData("tapestry_node_embeddings", "tapestry_node_embeddings_vec", "NodeId")]
-    public async Task An_unavailable_vec0_mirror_does_not_prevent_base_cleanup_or_other_mirror_sweeps(
-        string table,
-        string mirror,
-        string key)
-    {
-        await using SqliteConnection connection = await OpenEmbeddingsAsync(table: table, mirrorTable: mirror, key: key);
-
-        string reachableTable = table == "entry_embeddings" ? "session_attachment_embeddings" : "entry_embeddings";
-
-        string reachableMirror = reachableTable + "_vec";
-
-        string reachableKey = table == "entry_embeddings" ? "ChunkId" : "EntryId";
-
-        await SeedEmbeddingsAsync(connection, reachableTable, reachableMirror, reachableKey);
-
-        await InstallUnavailableVectorMirrorAsync(connection, mirror, key);
-
-        await AssertUnavailableVectorMirrorAsync(connection, mirror);
-
-        Assert.Equal(2, await BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync(connection, 1536, CancellationToken.None));
-
-        Assert.Equal(["A1A1A1A1-B2B2-4C3C-8D4D-5E5E6F6F7071"], await IdentitiesAsync(connection, table, key));
-
-        Assert.Equal(["A1A1A1A1-B2B2-4C3C-8D4D-5E5E6F6F7071"], await IdentitiesAsync(connection, reachableTable, reachableKey));
-
-        Assert.Equal(["a1a1a1a1b2b24c3c8d4d5e5e6f6f7071"], await IdentitiesAsync(connection, reachableMirror, reachableKey));
-
-        Assert.Equal(0, await BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync(connection, 1536, CancellationToken.None));
-
-        await AssertUnavailableVectorMirrorAsync(connection, mirror);
-    }
-
-    /// <summary>
-    /// Models an imported snapshot's real unavailable-module schema without adding a vec0 extension.
-    /// This catalog surgery is confined to a disposable in-memory test database.
-    /// </summary>
-    private static async Task InstallUnavailableVectorMirrorAsync(SqliteConnection connection, string mirror, string key)
-    {
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.CommandText = $"""
-            DROP TABLE "{mirror}";
-
-            PRAGMA writable_schema = ON;
-
-            INSERT INTO sqlite_schema (type, name, tbl_name, rootpage, sql)
-            VALUES ('table', $mirror, $mirror, 0, $definition);
-
-            PRAGMA writable_schema = RESET;
-            """;
-
-        _ = command.Parameters.AddWithValue("$mirror", mirror);
-
-        _ = command.Parameters.AddWithValue("$definition", $"CREATE VIRTUAL TABLE \"{mirror}\" USING vec0(\"{key}\" TEXT PRIMARY KEY, Embedding FLOAT[768])");
-
-        _ = await command.ExecuteNonQueryAsync();
-    }
-
-    private static async Task AssertUnavailableVectorMirrorAsync(SqliteConnection connection, string mirror)
-    {
-        await using SqliteCommand read = connection.CreateCommand();
-
-        read.CommandText = $"SELECT * FROM \"{mirror}\";";
-
-        SqliteException error = await Assert.ThrowsAsync<SqliteException>(async () =>
-        {
-            await using SqliteDataReader reader = await read.ExecuteReaderAsync();
-        });
-
-        Assert.Equal(1, error.SqliteErrorCode);
-
-        Assert.Contains("no such module: vec0", error.Message, StringComparison.Ordinal);
-    }
-
-    private const string KeptIdentity = "a1a1a1a1-b2b2-4c3c-8d4d-5e5e6f6f7071";
-
-    private const string DroppedIdentity = "b2b2b2b2-c3c3-4d4d-8e5e-6f6f70708182";
-
-    private const string OrphanedIdentity = "c3c3c3c3-d4d4-4e5e-8f6f-707081819293";
-
-    /// <summary>
-    /// A base embedding table and its mirror, at the two widths and the three states that matter.
-    /// </summary>
-    private static async Task<SqliteConnection> OpenEmbeddingsAsync(
-        bool legacyVirtualMirror = false,
-        string table = "entry_embeddings",
-        string mirrorTable = "entry_embeddings_vec",
-        string key = "EntryId")
-    {
-
-        SqliteConnection connection = new("Data Source=:memory:");
+        await using SqliteConnection connection = new("Data Source=:memory:");
 
         await connection.OpenAsync();
 
-        await SeedEmbeddingsAsync(connection, table, mirrorTable, key, legacyVirtualMirror);
+        await using (SqliteCommand seed = connection.CreateCommand())
+        {
+            seed.CommandText = $"""
+                CREATE TABLE "{table}" ("{key}" TEXT PRIMARY KEY, Embedding BLOB NOT NULL, Dim INTEGER NOT NULL);
+                INSERT INTO "{table}" VALUES ('kept', X'0000803F', 1536), ('removed', X'0000003F', 768);
+                """;
 
-        return connection;
+            await seed.ExecuteNonQueryAsync();
+        }
 
-    }
+        Assert.Equal(1, await BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync(
+            connection, 1536, CancellationToken.None));
 
-    private static async Task SeedEmbeddingsAsync(
-        SqliteConnection connection,
-        string table,
-        string mirrorTable,
-        string key,
-        bool legacyVirtualMirror = false)
-    {
-        await using SqliteCommand create = connection.CreateCommand();
+        Assert.Equal(["kept"], await IdentitiesAsync(connection, table, key));
 
-        string mirror = legacyVirtualMirror
-            ? $"""CREATE VIRTUAL TABLE "{mirrorTable}" USING fts5("{key}", "Embedding");"""
-            : $"""
-              CREATE TABLE "{mirrorTable}" (
-                  "{key}" TEXT NOT NULL PRIMARY KEY,
-                  "Embedding" BLOB NOT NULL);
-              """;
+        await using SqliteCommand read = connection.CreateCommand();
 
-        create.CommandText = $"""
-            CREATE TABLE "{table}" (
-                "{key}" TEXT NOT NULL PRIMARY KEY,
-                "Embedding" BLOB NOT NULL,
-                "Dim" INTEGER NOT NULL);
+        read.CommandText = $"SELECT Embedding FROM \"{table}\";";
 
-            {mirror}
+        Assert.Equal(new byte[] { 0, 0, 128, 63 }, Assert.IsType<byte[]>(await read.ExecuteScalarAsync()));
 
-            INSERT INTO "{table}" VALUES ('{KeptIdentity.ToUpperInvariant()}', X'00', 1536);
-
-            INSERT INTO "{table}" VALUES ('{DroppedIdentity.ToUpperInvariant()}', X'00', 768);
-
-            INSERT INTO "{mirrorTable}"
-            VALUES ('{KeptIdentity.Replace("-", string.Empty).ToLowerInvariant()}', X'00');
-
-            INSERT INTO "{mirrorTable}"
-            VALUES ('{DroppedIdentity.Replace("-", string.Empty).ToLowerInvariant()}', X'00');
-
-            INSERT INTO "{mirrorTable}"
-            VALUES ('{OrphanedIdentity.Replace("-", string.Empty).ToLowerInvariant()}', X'00');
-            """;
-
-        _ = await create.ExecuteNonQueryAsync();
-
+        Assert.Equal(0, await BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync(
+            connection, 1536, CancellationToken.None));
     }
 
     private static async Task<string[]> IdentitiesAsync(SqliteConnection connection, string table, string key = "EntryId")

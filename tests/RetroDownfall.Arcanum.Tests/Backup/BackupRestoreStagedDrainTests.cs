@@ -113,7 +113,8 @@ public sealed partial class BackupRestoreStagedDrainTests
     /// The drain follows every tier, not only Core: an archive whose canonical tier also stops at a sweep
     /// can only reach that sweep once Core is at head. Core crosses the version-12 identity sweep
     /// and the version-16 Campaign frontier sweep, then the version-18 Long Rest source identities
-    /// before the canonical sweep; Core28 adds native-search projection and Core33 adds quota census, taking six passes.
+    /// before the canonical sweep; Core28 adds native-search projection, Core33 adds quota census,
+    /// and Core35 adds vector-mirror retirement, taking seven passes.
     /// </summary>
     [SkippableFact]
     public async Task An_archive_with_sweeps_pending_in_two_tiers_is_drained_through_both()
@@ -151,7 +152,11 @@ public sealed partial class BackupRestoreStagedDrainTests
         Assert.Equal(1L, await ScalarAsync(restored,
             $"SELECT COUNT(*) FROM long_rest_sources WHERE MemoryId = '{ArchivedMemoryId}' AND MutationEpoch = 1"));
 
-        Assert.Contains(result.Phases, static p => p.Phase == BackupRestorePhase.Migrate && p.Detail.StartsWith("Drained staged schema transitions: 6 passes,", StringComparison.Ordinal));
+        BackupRestorePhaseRecord drain = Assert.Single(result.Phases,
+            static phase => phase.Phase == BackupRestorePhase.Migrate
+                && phase.Detail.StartsWith("Drained staged schema transitions:", StringComparison.Ordinal));
+
+        Assert.StartsWith("Drained staged schema transitions: 7 passes,", drain.Detail, StringComparison.Ordinal);
     }
 
     [SkippableFact]
@@ -221,7 +226,7 @@ public sealed partial class BackupRestoreStagedDrainTests
 
         await using SqliteConnection restored = await harness.OpenLiveDatabaseAsync(archive.GrimoireSecret);
 
-        Assert.Equal(34, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
+        Assert.Equal(35, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
 
         Assert.Equal(0L, await ScalarAsync(restored, "SELECT COUNT(*) FROM grimoire_schema_transitions"));
 
@@ -761,10 +766,12 @@ public sealed partial class BackupRestoreStagedDrainTests
         // Three passes exhaust the synthetic version-12 sweep. Core16 adds one empty Campaign
         // frontier batch/pass; Core18 adds one source-identity batch/pass for the real archived memory.
         // Core28 adds one pass with four empty native-corpus projection batches; Core33 adds one pass with two empty owner-census phases.
-        Assert.Contains(
-            result.Phases,
-            static p => p.Phase == BackupRestorePhase.Migrate
-                && p.Detail == $"Drained staged schema transitions: 7 passes, {total + 8} batches, {total + 1} rows.");
+        // Core35 adds one empty vector-mirror retirement batch/pass without processing a source row.
+        BackupRestorePhaseRecord drain = Assert.Single(result.Phases,
+            static phase => phase.Phase == BackupRestorePhase.Migrate
+                && phase.Detail.StartsWith("Drained staged schema transitions:", StringComparison.Ordinal));
+
+        Assert.Equal($"Drained staged schema transitions: 8 passes, {total + 9} batches, {total + 1} rows.", drain.Detail);
     }
 
     /// <summary>

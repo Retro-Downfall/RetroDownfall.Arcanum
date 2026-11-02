@@ -709,7 +709,7 @@ public sealed class GrimoireTurnCommitterTests : IAsyncLifetime
             Integrations = new IntegrationSettings { Embeddings = new EmbeddingIntegrationSettings { Dimensions = 64 } },
         });
 
-        return new SagaMemoryStore(_db!, new WeaveIndexAvailability(), options, MemoryErasureTestKeys.Isolated());
+        return new SagaMemoryStore(_db!, options, MemoryErasureTestKeys.Isolated());
     }
 
     private async Task<long?> ScalarAsync(string sql, Guid id)

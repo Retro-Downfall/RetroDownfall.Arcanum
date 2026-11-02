@@ -9,7 +9,7 @@ public static class ManagedWeaveBanner
     public const string ModeManaged = "managed";
 
     public const string Message =
-        "The Weave is running in managed SIMD fallback mode. Retrieval works, but large corpora may be slower or limited to the first 50,000 scored rows. sqlite-vec acceleration is not shipped in this beta.";
+        "The Weave uses complete streamed managed SIMD search over durable embedding BLOBs. Every eligible row is scored with bounded top-K memory and no total row budget. Large corpora may take longer to search.";
 
     public static bool ShouldShow(InstanceMetadataDto? meta) =>
         meta is { EmbeddingsEnabled: true }

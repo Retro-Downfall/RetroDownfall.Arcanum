@@ -104,7 +104,6 @@ public sealed class SessionAttachmentPageProvenanceTests : IAsyncLifetime
 
         _index = new SessionAttachmentIndexRepository(
             _db,
-            new WeaveIndexAvailability(),
             new TestOptionsMonitor<ArcanumSettings>(_settings));
 
         return Task.CompletedTask;
@@ -508,7 +507,6 @@ public sealed class SessionAttachmentPageProvenanceTests : IAsyncLifetime
             new TestOptionsMonitor<ArcanumSettings>(_settings),
             new DivinationService(
                 _db!,
-                new WeaveIndexAvailability(),
                 NullLogger<DivinationService>.Instance,
                 new TestOptionsMonitor<ArcanumSettings>(_settings)),
             _index!,

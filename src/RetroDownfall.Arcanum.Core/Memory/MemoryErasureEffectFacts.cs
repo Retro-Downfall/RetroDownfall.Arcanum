@@ -69,6 +69,7 @@ public static class MemoryErasureTableCodes
     [
         "saga_memories",
         "saga_memory_embeddings",
+        // Historical digest code: reserved after mirror retirement; never reuse or reorder.
         "saga_memory_embeddings_vec",
         "saga_memory_attachment_provenance",
         "saga_retirement_suppressions",

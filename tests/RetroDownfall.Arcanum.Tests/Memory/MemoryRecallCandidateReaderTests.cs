@@ -86,7 +86,7 @@ public sealed class MemoryRecallCandidateReaderTests(GrimoireFixture fixture)
 
         WeaveIndexAvailability availability = new();
 
-        SagaMemoryStore saga = new(db, availability, options, MemoryErasureTestKeys.Isolated());
+        SagaMemoryStore saga = new(db, options, MemoryErasureTestKeys.Isolated());
 
         float[] embedding = new float[64];
 
@@ -166,7 +166,7 @@ public sealed class MemoryRecallCandidateReaderTests(GrimoireFixture fixture)
 
         WeaveIndexAvailability availability = new();
 
-        SagaMemoryStore saga = new(db, availability, options, MemoryErasureTestKeys.Isolated());
+        SagaMemoryStore saga = new(db, options, MemoryErasureTestKeys.Isolated());
 
         float[] vector = new float[64];
 
@@ -244,7 +244,7 @@ public sealed class MemoryRecallCandidateReaderTests(GrimoireFixture fixture)
 
         WeaveIndexAvailability availability = new();
 
-        SagaMemoryStore saga = new(db, availability, options, MemoryErasureTestKeys.Isolated());
+        SagaMemoryStore saga = new(db, options, MemoryErasureTestKeys.Isolated());
 
         float[] vector = new float[64];
 
@@ -280,9 +280,9 @@ public sealed class MemoryRecallCandidateReaderTests(GrimoireFixture fixture)
 
         services.AddSingleton<IWeaveService>(weave ?? new ConstantWeave(new float[64]));
 
-        services.AddSingleton<IDivinationService>(new DivinationService(db, availability, NullLogger<DivinationService>.Instance, options));
+        services.AddSingleton<IDivinationService>(new DivinationService(db, NullLogger<DivinationService>.Instance, options));
 
-        services.AddSingleton<ISagaMemoryStore>(new SagaMemoryStore(db, availability, options, MemoryErasureTestKeys.Isolated()));
+        services.AddSingleton<ISagaMemoryStore>(new SagaMemoryStore(db, options, MemoryErasureTestKeys.Isolated()));
 
         services.AddSingleton<ILexiconService>(lexicon);
 

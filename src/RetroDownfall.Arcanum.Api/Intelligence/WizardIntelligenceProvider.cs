@@ -6202,7 +6202,7 @@ public sealed partial class WizardIntelligenceProvider(
             // this workspace's genuinely-closest matches before the join below ever sees them.
             Result<DivinationResult[]> searchResult = await divinationService
                 .SearchScopedAsync(
-                    "workspace_file_embeddings_vec",
+                    "workspace_file_embeddings",
                     "ChunkId",
                     "Embedding",
                     "workspace_file_chunks",
@@ -6302,7 +6302,7 @@ public sealed partial class WizardIntelligenceProvider(
             Result<DivinationResult[]> searchResult = settings.Value.Features.CampaignScopedMemory
                 ? await divinationService
                     .SearchCampaignScopedAsync(
-                        SagaStorageKeys.VectorTable,
+                        SagaStorageKeys.EmbeddingTable,
                         SagaStorageKeys.EmbeddingKeyColumn,
                         SagaStorageKeys.EmbeddingColumn,
                         SagaStorageKeys.CampaignScope(invocationContext.Campaign?.CampaignId),
@@ -6313,7 +6313,7 @@ public sealed partial class WizardIntelligenceProvider(
                     .ConfigureAwait(false)
                 : await divinationService
                     .SearchAsync(
-                        SagaStorageKeys.VectorTable,
+                        SagaStorageKeys.EmbeddingTable,
                         SagaStorageKeys.EmbeddingKeyColumn,
                         SagaStorageKeys.EmbeddingColumn,
                         embedding,

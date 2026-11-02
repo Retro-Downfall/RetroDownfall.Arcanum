@@ -78,11 +78,11 @@ public sealed partial class WizardIntelligenceProviderTests
 
         settings.Features.CampaignRollups = false;
 
-        DivinationService search = new(saga.Context, saga.VectorAccelerator, NullLogger<DivinationService>.Instance,
+        DivinationService search = new(saga.Context, NullLogger<DivinationService>.Instance,
             new TestOptionsMonitor<ArcanumSettings>(settings));
 
         DivinationResult[] expected = LongRestSweepHarness.Require(await search.SearchAsync(
-            SagaStorageKeys.VectorTable, SagaStorageKeys.EmbeddingKeyColumn, SagaStorageKeys.EmbeddingColumn,
+            SagaStorageKeys.EmbeddingTable, SagaStorageKeys.EmbeddingKeyColumn, SagaStorageKeys.EmbeddingColumn,
             new(query), 8, 0.72f, CancellationToken.None));
 
         Assert.Equal(new[] { first, second }, expected.Select(hit => hit.Id));

@@ -20,18 +20,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// Both halves are fixed internal literals, never input. That is what makes it safe to interpolate
 /// them into the statement text SQLite gives no parameter form for.
 ///
-/// <para><c>ExistsConditionally</c> marks a table no schema file installs — the sqlite-vec mirrors,
-/// which are present only where that accelerator built them. Such a target names its table unquoted
-/// so <see cref="SagaVectorMirror"/> can classify it from <c>sqlite_master</c> before anything reads
-/// or deletes from it.</para>
-///
 /// <para><see cref="CountBy"/> and <see cref="DeleteBy"/> share one predicate on purpose. A plan's
 /// count is only a promise about its delete while the two select the same rows.</para>
 /// </remarks>
 internal sealed record CovenantArtifactPurgeTarget(
     string Table,
     string KeyColumn,
-    bool ExistsConditionally = false,
     AnnalSubjectStore? AnnalStore = null,
     int? RequiredFromCoreVersion = null,
     string? AdditionalPredicate = null,
@@ -97,7 +91,6 @@ internal static class CovenantArtifactPurgePlans
             SensitiveArtifactKind.AssistantEntry,
             [
                 new CovenantArtifactPurgeTarget("entry_embeddings", "EntryId"),
-                VectorMirror("entry_embeddings_vec", "EntryId"),
             ],
             new CovenantArtifactPurgeTarget("\"Entries\"", "\"Id\""),
             CurrentPointerTable: null,
@@ -130,7 +123,6 @@ internal static class CovenantArtifactPurgePlans
             [
                 .. AnnalsTargets(AnnalSubjectStore.Saga),
                 new CovenantArtifactPurgeTarget("saga_memory_embeddings", "MemoryId"),
-                VectorMirror("saga_memory_embeddings_vec", "MemoryId"),
                 new CovenantArtifactPurgeTarget("saga_memory_attachment_provenance", "MemoryId"),
             ],
             new CovenantArtifactPurgeTarget("saga_memories", "Id"),
@@ -149,7 +141,7 @@ internal static class CovenantArtifactPurgePlans
 
         [SensitiveArtifactKind.Embedding] = new(
             SensitiveArtifactKind.Embedding,
-            [VectorMirror("entry_embeddings_vec", "EntryId")],
+            [],
             new CovenantArtifactPurgeTarget("entry_embeddings", "EntryId"),
             CurrentPointerTable: null,
             RedactionSql: null),
@@ -196,26 +188,6 @@ internal static class CovenantArtifactPurgePlans
     private static IEnumerable<CovenantArtifactPurgeTarget> AnnalsTargets(AnnalSubjectStore store) =>
         AnnalsErasurePlan.ForStore(store)
             .Select(step => new CovenantArtifactPurgeTarget(step.Table, "SubjectId", AnnalStore: store, RequiredFromCoreVersion: step.RequiredFromCoreVersion));
-
-    /// <summary>
-    /// One embedding mirror the sqlite-vec accelerator owns, holding the same content as its BLOB
-    /// counterpart.
-    /// </summary>
-    /// <remarks>
-    /// Inside the erasure boundary because the mirror stores the embedding itself, not a pointer to
-    /// it: leaving it behind would keep Covenant-derived content reachable through the vector search
-    /// path after a purge reported success. No schema file installs these tables — the accelerator
-    /// creates them where it is present — so <see cref="CovenantArtifactPlanRunner"/> classifies the
-    /// table inside the caller's transaction before it counts or deletes: a plain table is purged
-    /// whatever the process's accelerator flag says, and a legacy <c>vec0</c> virtual table, which this
-    /// runtime cannot open, is skipped rather than failing the operation. The tally reports the skip,
-    /// and only an erase records it, on its receipt as <c>VectorIndexScrubUnverified</c>; this kernel's
-    /// retention purge and the staged restore purge skip it without failing the item and keep no
-    /// record of it. A plan carries at most one such mirror, because a tally reports one
-    /// classification.
-    /// </remarks>
-    private static CovenantArtifactPurgeTarget VectorMirror(string table, string keyColumn) =>
-        new(table, keyColumn, ExistsConditionally: true);
 
     /// <summary>
     /// The plan for a kind, or the label-only plan for a kind whose storage this build does not ship.

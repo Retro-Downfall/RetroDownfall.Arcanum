@@ -265,13 +265,6 @@ public sealed class SagaCurationServiceTests
 
         Assert.Equal(embeddingBefore, await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false));
 
-        // The vector mirror is not asserted here because this case never creates one: no schema file
-        // installs saga_memory_embeddings_vec, and an Unchanged correction rolls back before it would
-        // reach the mirror anyway. The mirror rule itself -- a plain mirror's row rewritten only while
-        // the accelerator is live and removed otherwise, a legacy virtual mirror never touched -- is
-        // pinned by SagaVectorMirrorTests, which stand a mirror up with
-        // SagaStoreHarness.CreatePlainVectorMirrorAsync and drive the flag through
-        // SagaStoreHarness.VectorAccelerator.
         AnnalClaimHead claimAfter = (await harness.Annals
             .GetClaimAsync(AnnalSubjectStore.Saga, "m-1", CancellationToken.None).ConfigureAwait(false))!;
 

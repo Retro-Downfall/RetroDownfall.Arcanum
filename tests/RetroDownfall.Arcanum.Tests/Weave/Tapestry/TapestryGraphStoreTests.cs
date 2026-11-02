@@ -29,7 +29,7 @@ public sealed partial class TapestryGraphStoreTests(GrimoireFixture fixture, Xun
 
         _db = fixture.CreateContext(_path);
 
-        _store = new TapestryStore(_db, new WeaveIndexAvailability());
+        _store = new TapestryStore(_db);
 
         await ExecuteAsync(Chunk("one") + Chunk("two") + Chunk("three"));
     }

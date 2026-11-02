@@ -625,42 +625,6 @@ public sealed class SagaErasureEndpointTests
     }
 
     /// <summary>
-    /// A legacy <c>vec0</c> mirror cannot be opened, so the erase skips it and records the residue it
-    /// could not reach on its receipt, where it stays: the reason never upgrades, whatever the log does.
-    /// </summary>
-    [SkippableFact]
-    public async Task A_legacy_vector_mirror_is_skipped_and_its_receipt_stays_unverified()
-    {
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(new InMemoryOsCredentialStore());
-
-        (_, MemoryErasureRouteDriver driver) = Connect(factory);
-
-        string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T);
-
-        // The shipping runtime has no vec0 module, so an FTS5 table stands in for the legacy mirror:
-        // it records the same CREATE VIRTUAL TABLE text, which is all that classifying a mirror reads.
-        await ExecuteAsync(factory, "CREATE VIRTUAL TABLE saga_memory_embeddings_vec USING fts5(MemoryId, Embedding);");
-
-        MemoryErasureRoundTrip<SagaEraseRequest> erased = await driver.EraseSagaAsync(target);
-
-        Assert.Equal(MemoryLocalErasureOutcome.RowsRemovedScrubPending, erased.Result.Local.Outcome);
-
-        Assert.Contains(MemoryErasureScrubPendingReason.VectorIndexScrubUnverified, erased.Result.Local.PendingReasons);
-
-        MemoryErasureResultDto replayed = await driver.ApplySagaAsync(erased.Apply with { PreflightToken = "x" });
-
-        Assert.True(replayed.Replayed);
-
-        Assert.Equal(MemoryLocalErasureOutcome.RowsRemovedScrubPending, replayed.Local.Outcome);
-
-        Assert.Contains(MemoryErasureScrubPendingReason.VectorIndexScrubUnverified, replayed.Local.PendingReasons);
-
-        await AssertNoOrphanClaimsAsync(factory);
-    }
-
-    /// <summary>
     /// A rolled-back erase reports its failure and nothing else: no receipt, no fingerprint, no result,
     /// and no post-commit scrub, because the scrub runs only for an erase that committed.
     /// </summary>
@@ -1372,11 +1336,11 @@ public sealed class SagaErasureEndpointTests
     }
 
     /// <summary>
-    /// The plan's mirror, attachment-provenance and review rows are measured, removed, and counted
+    /// The plan's embedding, attachment-provenance and review rows are measured, removed, and counted
     /// exactly, each through its own production writer.
     /// </summary>
     [SkippableFact]
-    public async Task An_erase_removes_the_mirror_provenance_and_review_rows_it_measured()
+    public async Task An_erase_removes_the_embeddings_provenance_and_review_rows_it_measured()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -1385,14 +1349,6 @@ public sealed class SagaErasureEndpointTests
         (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
 
         (Guid campaignA, Guid sessionA) = await BoundSessionAsync(factory, client, "a");
-
-        // No schema file installs the mirror; an accelerator builds it. A plain table stands in for a
-        // mirror this runtime can write, and The Weave is told it is there so the insert fills it.
-        await ExecuteAsync(
-            factory,
-            """CREATE TABLE "saga_memory_embeddings_vec" ("MemoryId" TEXT PRIMARY KEY, "Embedding" BLOB NOT NULL);""");
-
-        factory.Services.GetRequiredService<WeaveIndexAvailability>().SetAvailable(true, "Test mirror present.");
 
         string target = Guid.NewGuid().ToString();
 
@@ -1424,7 +1380,7 @@ public sealed class SagaErasureEndpointTests
 
         string[] ids = [target];
 
-        Assert.Equal(1, await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_embeddings_vec WHERE MemoryId IN ({0})", ids));
+        Assert.Equal(1, await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_embeddings WHERE MemoryId IN ({0})", ids));
 
         Assert.Equal(1, await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_attachment_provenance WHERE MemoryId IN ({0})", ids));
 
@@ -1442,7 +1398,7 @@ public sealed class SagaErasureEndpointTests
 
         Assert.Equal(before, erased.Result.Local.RemovedRowCount);
 
-        Assert.Equal(0, await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_embeddings_vec WHERE MemoryId IN ({0})", ids));
+        Assert.Equal(0, await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_embeddings WHERE MemoryId IN ({0})", ids));
 
         Assert.Equal(0, await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_attachment_provenance WHERE MemoryId IN ({0})", ids));
 
@@ -2037,15 +1993,6 @@ public sealed class SagaErasureEndpointTests
         foreach (string count in counts)
         {
             total += await CountForIdsAsync(factory, count, ids);
-        }
-
-        // A mirror exists only where a test built one in place of an accelerator, and only as a plain
-        // table; a legacy virtual mirror is never counted, because the plan skips it.
-        if (await ScalarAsync(
-                factory,
-                "SELECT count(*) FROM sqlite_master WHERE name = 'saga_memory_embeddings_vec' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%';") == 1)
-        {
-            total += await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_embeddings_vec WHERE MemoryId IN ({0})", ids);
         }
 
         if (requireRows)

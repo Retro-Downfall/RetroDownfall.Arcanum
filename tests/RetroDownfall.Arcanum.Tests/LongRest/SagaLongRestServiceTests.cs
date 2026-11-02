@@ -200,7 +200,7 @@ public sealed class SagaLongRestServiceTests
     }
 
     [SkippableFact]
-    public async Task Filtering_precedes_top_k_in_both_accelerator_states()
+    public async Task Filtering_precedes_top_k_in_managed_retrieval()
     {
         await using SagaStoreHarness h = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
 
@@ -208,19 +208,14 @@ public sealed class SagaLongRestServiceTests
 
         _ = await new SagaLongRestService(h.Context, TimeProvider.System).ApplyAsync(request, CancellationToken.None);
 
-        DivinationService divination = new(h.Context, h.VectorAccelerator, NullLogger<DivinationService>.Instance, h.Options);
+        DivinationService divination = new(h.Context, NullLogger<DivinationService>.Instance, h.Options);
 
-        foreach (bool accelerated in new[] { false, true })
-        {
-            h.VectorAccelerator.SetAvailable(accelerated);
+        Result<DivinationResult[]> hits = await divination.SearchAsync("saga_memory_embeddings", "MemoryId", "Embedding",
+            new Embedding<float>(h.Embedding()), 1, 0, CancellationToken.None);
 
-            Result<DivinationResult[]> hits = await divination.SearchAsync("saga_memory_embeddings_vec", "MemoryId", "Embedding",
-                new Embedding<float>(h.Embedding()), 1, 0, CancellationToken.None);
+        Assert.True(hits.IsSuccess, hits.IsFailure ? hits.Error.Message : "");
 
-            Assert.True(hits.IsSuccess, hits.IsFailure ? hits.Error.Message : "");
-
-            Assert.Equal("a", Assert.Single(hits.Value).Id);
-        }
+        Assert.Equal("a", Assert.Single(hits.Value).Id);
     }
 
     [SkippableFact]

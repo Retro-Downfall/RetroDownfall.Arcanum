@@ -565,7 +565,7 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
     /// A Session tree summarizes every non-empty entry of its Session, so a model-written summary of the
     /// erased entry's words stays retrievable after the purge reported success unless the purge reaches
     /// it. The tree is derived data the next sweep rebuilds from what is left, so the purge removes the
-    /// whole Session-kind tree of the owning Session, nodes, embeddings and the vector mirror included,
+    /// whole Session-kind tree of the owning Session, nodes and embeddings included,
     /// in the transaction that deletes the entry. Another Session's tree and the same Session's
     /// attachment tree are not derived from its entries and stay.
     /// </remarks>
@@ -619,13 +619,9 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
 
         Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM tapestry_node_embeddings WHERE NodeId = 'session-generation-node';"));
 
-        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM tapestry_node_embeddings_vec WHERE NodeId = 'session-generation-node';"));
-
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM tapestry_generations WHERE GenerationId = 'attachment-generation';"));
 
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM tapestry_generations WHERE GenerationId = 'other-session-generation';"));
-
-        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM tapestry_node_embeddings_vec WHERE NodeId = 'other-session-generation-node';"));
     }
 
     [Fact]
@@ -1094,13 +1090,12 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
 
         /// <summary>
         /// One published Tapestry generation with a single node, its embedding row and its plain
-        /// vector-mirror row, keyed by the scope id the sweep would have written.
+        /// durable embedding row, keyed by the scope id the sweep would have written.
         /// </summary>
         internal async Task SeedTapestryAsync(string scopeKind, string scopeId, string generationId)
         {
             await ExecuteAsync(
                 $"""
-                 CREATE TABLE IF NOT EXISTS tapestry_node_embeddings_vec (NodeId TEXT PRIMARY KEY, Embedding BLOB NOT NULL);
                  INSERT INTO tapestry_generations
                      (GenerationId, ScopeKind, ScopeId, Status, AlgorithmVersion, SettingsFingerprint,
                       SummaryRecipeVersion, EmbeddingDimension, CorpusFingerprint, LayerCount, NodeCount,
@@ -1115,7 +1110,6 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
                          'Summary', 'summary', 'a summary of the erased words', 'hash', 1,
                          '2026-08-16T00:00:00.0000000Z');
                  INSERT INTO tapestry_node_embeddings (NodeId, Embedding, Dim) VALUES ('{generationId}-node', x'00', 1);
-                 INSERT INTO tapestry_node_embeddings_vec (NodeId, Embedding) VALUES ('{generationId}-node', x'00');
                  """);
         }
 

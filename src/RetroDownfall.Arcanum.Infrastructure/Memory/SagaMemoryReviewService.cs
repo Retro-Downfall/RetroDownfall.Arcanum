@@ -29,7 +29,6 @@ internal sealed class SagaMemoryReviewService(
     ArcanumDbContext db,
     IWeaveService weave,
     IMemoryReviewTokenCodec tokenCodec,
-    WeaveIndexAvailability availability,
     IOptionsMonitor<ArcanumSettings> options,
     IMemoryErasureKeyProvider erasureKeys,
     IOperatorAuthorityContextIssuer releaseAuthority,
@@ -911,16 +910,6 @@ internal sealed class SagaMemoryReviewService(
             ("@embedding", blob),
             ("@dimensions", embedding.Length)).ConfigureAwait(false);
 
-        // The same rule SagaMemoryStore follows: written only while the accelerator is live, and the
-        // stale vector removed from a plain mirror when it is not.
-        _ = await SagaVectorMirror.UpsertAsync(
-            connection,
-            transaction,
-            target.SubjectId,
-            embedding,
-            availability.IsVecAvailable,
-            cancellationToken).ConfigureAwait(false);
-
         return await AnnalsClaimWriter.AppendCorrectionAsync(
             connection,
             transaction,
@@ -985,10 +974,6 @@ internal sealed class SagaMemoryReviewService(
             cancellationToken,
             "DELETE FROM saga_memory_embeddings WHERE MemoryId = @id",
             ("@id", target.SubjectId)).ConfigureAwait(false);
-
-        // Whatever the accelerator flag says, exactly as SagaMemoryStore.RetireAsync does.
-        _ = await SagaVectorMirror.DeleteAsync(connection, transaction, target.SubjectId, cancellationToken)
-            .ConfigureAwait(false);
 
         byte[] suppressionKey = await SagaSuppressionKeyStore.ReadOrCreateAsync(
             connection,

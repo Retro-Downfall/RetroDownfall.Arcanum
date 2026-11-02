@@ -10016,7 +10016,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         ordinaryServices.AddSingleton<IWorkspaceIndexingService>(workspaceIndexingService);
 
         ordinaryServices.AddSingleton<RetroDownfall.Arcanum.Core.Weave.Tapestry.ITapestryStore>(tapestryStore
-            ?? new RetroDownfall.Arcanum.Infrastructure.Weave.TapestryStore(db, new RetroDownfall.Arcanum.Infrastructure.Weave.WeaveIndexAvailability()));
+            ?? new RetroDownfall.Arcanum.Infrastructure.Weave.TapestryStore(db));
 
         ServiceProvider ordinaryProvider = ordinaryServices.BuildServiceProvider();
 

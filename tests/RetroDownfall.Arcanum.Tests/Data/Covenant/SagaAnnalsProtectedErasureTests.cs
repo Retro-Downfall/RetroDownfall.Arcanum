@@ -240,7 +240,6 @@ public sealed class SagaAnnalsProtectedErasureTests
             harness.Context,
             new NoEmbeddingWeaveService(),
             codec,
-            new WeaveIndexAvailability(),
             new TestOptionsMonitor<ArcanumSettings>(
                 new ArcanumSettings
                 {

@@ -121,7 +121,7 @@ internal static class WorkspaceDivinationEndpoints
                 // they ever reach the join.
                 Result<DivinationResult[]> searchResult = await divinationService
                     .SearchScopedAsync(
-                        "workspace_file_embeddings_vec",
+                        "workspace_file_embeddings",
                         "ChunkId",
                         "Embedding",
                         "workspace_file_chunks",

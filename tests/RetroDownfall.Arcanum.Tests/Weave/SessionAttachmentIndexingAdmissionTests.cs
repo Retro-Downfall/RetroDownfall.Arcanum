@@ -113,7 +113,6 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         _index = new SessionAttachmentIndexRepository(
             _db,
-            new WeaveIndexAvailability(),
             new TestOptionsMonitor<ArcanumSettings>(_settings));
 
         return Task.CompletedTask;

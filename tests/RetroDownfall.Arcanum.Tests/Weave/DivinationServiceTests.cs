@@ -54,6 +54,75 @@ public sealed class DivinationServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Managed_retrieval_preserves_frozen_ids_order_and_float_bits()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await InsertEmbeddingAsync(Identity("snapshot-a"), [1f, 0f, 0f]);
+
+        await InsertEmbeddingAsync(Identity("snapshot-b"), [0.9f, 0.1f, 0f]);
+
+        await InsertEmbeddingAsync(Identity("snapshot-tie"), [0.9f, 0.1f, 0f]);
+
+        await InsertEmbeddingAsync(Identity("snapshot-c"), [0.25f, 0.75f, 0.5f]);
+
+        await InsertEmbeddingAsync(Identity("snapshot-d"), [-1f, 0f, 0f]);
+
+        DivinationService service = CreateService();
+
+        StringBuilder snapshot = new();
+
+        foreach (float[] vector in new float[][] { [1f, 0f, 0f], [0.25f, 0.5f, 0.75f] })
+        {
+            Result<DivinationResult[]> result = await service.SearchAsync(
+                "entry_embeddings", "EntryId", "Embedding", new Embedding<float>(vector),
+                4, 0f, CancellationToken.None);
+
+            Assert.True(result.IsSuccess);
+
+            foreach (DivinationResult hit in result.Value)
+            {
+                snapshot.Append(hit.Id).Append(':')
+                    .Append(BitConverter.SingleToInt32Bits(hit.Similarity).ToString("X8"))
+                    .Append(';');
+            }
+
+            snapshot.Append('|');
+        }
+
+        // Frozen from the unmodified managed implementation before #171 production edits.
+        Assert.Equal(Encoding.UTF8.GetBytes("BDA6A194-4487-402A-1B30-634B46577A67:3F800000;4808EDC9-E4F5-E5BA-FA2B-5CBFD0EDCABB:3F7E6F2A;581CB093-03AB-F24E-61F3-1762C5246F5D:3F7E6F2A;4D7E5A7E-A688-0002-1766-46D637C6FB73:3E88D677;|4D7E5A7E-A688-0002-1766-46D637C6FB73:3F6DB6DB;4808EDC9-E4F5-E5BA-FA2B-5CBFD0EDCABB:3EA63925;581CB093-03AB-F24E-61F3-1762C5246F5D:3EA63925;BDA6A194-4487-402A-1B30-634B46577A67:3E88D677;|"), Encoding.UTF8.GetBytes(snapshot.ToString()));
+    }
+
+    [SkippableFact]
+    public async Task Retrieval_uses_the_named_durable_blob_table_without_suffix_translation()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        await connection.OpenAsync();
+
+        await using DbCommand command = connection.CreateCommand();
+
+        string durableTable = "durable_vec";
+
+        command.CommandText = "CREATE TABLE durable_vec (Id TEXT PRIMARY KEY, Embedding BLOB); INSERT INTO durable_vec VALUES ('durable', @embedding);";
+
+        AddParam(command, "@embedding", EmbeddingBlobCodec.Encode([1f, 0f, 0f]));
+
+        await command.ExecuteNonQueryAsync();
+
+        Result<DivinationResult[]> result = await CreateService().SearchAsync(
+            durableTable, "Id", "Embedding", new Embedding<float>(new float[] { 1f, 0f, 0f }),
+            1, 0f, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal("durable", Assert.Single(result.Value).Id);
+    }
+
+    [SkippableFact]
     public async Task SearchAsync_ManagedFallback_ReturnsResultsAboveThreshold_OrderedBySimilarity()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -64,12 +133,12 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         await InsertEmbeddingAsync(Identity("closer"), [0.9f, 0.1f, 0f]);
 
-        DivinationService service = CreateService(vecAvailable: false);
+        DivinationService service = CreateService();
 
         Embedding<float> query = new(new float[] { 1f, 0f, 0f });
 
         Result<DivinationResult[]> result = await service.SearchAsync(
-            "entry_embeddings_vec",
+            "entry_embeddings",
             "EntryId",
             "Embedding",
             query,
@@ -98,12 +167,12 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         await InsertEmbeddingAsync(Identity("orthogonal"), [0f, 1f, 0f]);
 
-        DivinationService service = CreateService(vecAvailable: false);
+        DivinationService service = CreateService();
 
         Embedding<float> query = new(new float[] { 1f, 0f, 0f });
 
         Result<DivinationResult[]> result = await service.SearchAsync(
-            "entry_embeddings_vec",
+            "entry_embeddings",
             "EntryId",
             "Embedding",
             query,
@@ -127,12 +196,12 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         await InsertEmbeddingAsync(Identity("c"), [0.98f, 0.02f, 0f]);
 
-        DivinationService service = CreateService(vecAvailable: false);
+        DivinationService service = CreateService();
 
         Embedding<float> query = new(new float[] { 1f, 0f, 0f });
 
         Result<DivinationResult[]> result = await service.SearchAsync(
-            "entry_embeddings_vec",
+            "entry_embeddings",
             "EntryId",
             "Embedding",
             query,
@@ -168,12 +237,12 @@ public sealed class DivinationServiceTests : IAsyncLifetime
             relativePath: "b.cs",
             vector: [1f, 0f, 0f]);
 
-        DivinationService service = CreateService(vecAvailable: false);
+        DivinationService service = CreateService();
 
         Embedding<float> query = new(new float[] { 1f, 0f, 0f });
 
         Result<DivinationResult[]> result = await service.SearchScopedAsync(
-            "workspace_file_embeddings_vec",
+            "workspace_file_embeddings",
             "ChunkId",
             "Embedding",
             "workspace_file_chunks",
@@ -201,12 +270,12 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         await InsertLegacyBudgetRegressionRowsAsync();
 
-        DivinationService service = CreateService(vecAvailable: false);
+        DivinationService service = CreateService();
 
         Embedding<float> query = new(new float[] { 1f, 0f, 0f });
 
         Result<DivinationResult[]> result = await service.SearchAsync(
-            "entry_embeddings_vec",
+            "entry_embeddings",
             "EntryId",
             "Embedding",
             query,
@@ -239,10 +308,10 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         await InsertEmbeddingAsync(Identity("zero"), [0f, 0f, 0f]);
 
-        DivinationService service = CreateService(vecAvailable: false);
+        DivinationService service = CreateService();
 
         Result<DivinationResult[]> result = await service.SearchAsync(
-            "entry_embeddings_vec",
+            "entry_embeddings",
             "EntryId",
             "Embedding",
             new Embedding<float>(new float[] { 1f, 0f, 0f }),
@@ -267,10 +336,10 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         // Five bytes is not a whole number of floats: the codec refuses to view it as a vector.
         await InsertRawEmbeddingAsync(Identity("corrupt"), [1, 2, 3, 4, 5], dim: 3);
 
-        DivinationService service = CreateService(vecAvailable: false);
+        DivinationService service = CreateService();
 
         Result<DivinationResult[]> result = await service.SearchAsync(
-            "entry_embeddings_vec",
+            "entry_embeddings",
             "EntryId",
             "Embedding",
             new Embedding<float>(new float[] { 1f, 0f, 0f }),
@@ -294,10 +363,10 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         await InsertEmbeddingAsync(Identity("b"), [0f, 1f]);
 
-        DivinationService service = CreateService(vecAvailable: false);
+        DivinationService service = CreateService();
 
         Result<DivinationResult[]> result = await service.SearchAsync(
-            "entry_embeddings_vec",
+            "entry_embeddings",
             "EntryId",
             "Embedding",
             new Embedding<float>(new float[] { 1f, 0f, 0f }),
@@ -329,10 +398,10 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         TestCapturingLogger<DivinationService> logger = new();
 
-        DivinationService service = CreateService(vecAvailable: false, logger);
+        DivinationService service = CreateService(logger);
 
         Result<DivinationResult[]> result = await service.SearchAsync(
-            "entry_embeddings_vec",
+            "entry_embeddings",
             "EntryId",
             "Embedding",
             new Embedding<float>(new float[] { 1f, 0f, 0f }),
@@ -393,10 +462,10 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         TestCapturingLogger<DivinationService> logger = new();
 
-        DivinationService service = CreateService(vecAvailable: false, logger);
+        DivinationService service = CreateService(logger);
 
         Result<DivinationResult[]> result = await service.SearchAsync(
-            "nullable_embeddings_vec",
+            "nullable_embeddings",
             "Id",
             "Embedding",
             new Embedding<float>(new float[] { 1f, 0f, 0f }),
@@ -433,10 +502,10 @@ public sealed class DivinationServiceTests : IAsyncLifetime
             await InsertEmbeddingAsync(id, [1f, 0f, 0f]);
         }
 
-        DivinationService service = CreateService(vecAvailable: false);
+        DivinationService service = CreateService();
 
         Result<DivinationResult[]> result = await service.SearchAsync(
-            "entry_embeddings_vec",
+            "entry_embeddings",
             "EntryId",
             "Embedding",
             new Embedding<float>(new float[] { 1f, 0f, 0f }),
@@ -450,19 +519,16 @@ public sealed class DivinationServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task SearchAsync_VecClaimedAvailableButTableMissing_NeverThrows_ReturnsFailure()
+    public async Task SearchAsync_MissingDurableTable_ReturnsSanitizedFailure()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        // Phase 1 ships managed-only (no sqlite-vec native asset), so entry_embeddings_vec never
-        // actually exists — this exercises the "vec0 claimed available but genuinely isn't usable"
-        // path and asserts it degrades to a Result.Failure rather than throwing.
-        DivinationService service = CreateService(vecAvailable: true);
+        DivinationService service = CreateService();
 
         Embedding<float> query = new(new float[] { 1f, 0f, 0f });
 
         Result<DivinationResult[]> result = await service.SearchAsync(
-            "entry_embeddings_vec",
+            "missing_embeddings",
             "EntryId",
             "Embedding",
             query,
@@ -475,13 +541,10 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Embeddings.ProviderUnavailable, result.Error.Code);
     }
 
-    private DivinationService CreateService(bool vecAvailable, ILogger<DivinationService>? logger = null)
+    private DivinationService CreateService(ILogger<DivinationService>? logger = null)
     {
-        WeaveIndexAvailability availability = new();
 
-        availability.SetAvailable(vecAvailable);
-
-        return new DivinationService(_db!, availability, logger ?? NullLogger<DivinationService>.Instance,
+        return new DivinationService(_db!, logger ?? NullLogger<DivinationService>.Instance,
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
     }
 

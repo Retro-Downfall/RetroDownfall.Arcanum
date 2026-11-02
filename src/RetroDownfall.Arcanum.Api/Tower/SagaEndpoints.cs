@@ -169,7 +169,7 @@ internal static class SagaEndpoints
                 Result<DivinationResult[]> searchResult = scope.IsEnforced
                     ? await divinationService
                         .SearchCampaignScopedAsync(
-                            SagaStorageKeys.VectorTable,
+                            SagaStorageKeys.EmbeddingTable,
                             SagaStorageKeys.EmbeddingKeyColumn,
                             SagaStorageKeys.EmbeddingColumn,
                             scope.ToSagaScope(),
@@ -180,7 +180,7 @@ internal static class SagaEndpoints
                         .ConfigureAwait(false)
                     : await divinationService
                         .SearchAsync(
-                            SagaStorageKeys.VectorTable,
+                            SagaStorageKeys.EmbeddingTable,
                             SagaStorageKeys.EmbeddingKeyColumn,
                             SagaStorageKeys.EmbeddingColumn,
                             embedResult.Value,

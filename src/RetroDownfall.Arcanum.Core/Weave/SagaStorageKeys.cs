@@ -16,8 +16,8 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 public static class SagaStorageKeys
 {
 
-    /// <summary>The vec0 acceleration table. Divination strips the suffix for the managed path.</summary>
-    public const string VectorTable = "saga_memory_embeddings_vec";
+    /// <summary>The durable embedding BLOB table searched by Divination.</summary>
+    public const string EmbeddingTable = "saga_memory_embeddings";
 
     /// <summary>The memory table joined for scoped searches; it carries the scope classification.</summary>
     public const string MemoryTable = "saga_memories";

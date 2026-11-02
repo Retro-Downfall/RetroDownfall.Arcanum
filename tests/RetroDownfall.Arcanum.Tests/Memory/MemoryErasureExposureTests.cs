@@ -384,7 +384,6 @@ public sealed class MemoryErasureExposureTests(GrimoireFixture fixture) : IAsync
 
         SagaMemoryStore store = new(
             _db!,
-            new WeaveIndexAvailability(),
             new TestOptionsMonitor<ArcanumSettings>(settings),
             MemoryErasureTestKeys.Isolated());
 

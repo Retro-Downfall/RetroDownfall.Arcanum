@@ -62,14 +62,6 @@ public sealed partial class DataRetentionServiceTests
 
         SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
 
-        await RecreateVectorTableAsync("entry_embeddings_vec", "EntryId");
-
-        await RecreateVectorTableAsync("session_attachment_embeddings_vec", "ChunkId");
-
-        await RecreateVectorTableAsync("workspace_file_embeddings_vec", "ChunkId");
-
-        await RecreateVectorTableAsync("saga_memory_embeddings_vec", "MemoryId");
-
         await SeedInventoryDerivedRowsAsync(
             sessionId,
             entryId,
@@ -77,8 +69,7 @@ public sealed partial class DataRetentionServiceTests
             attachment.ChunkId);
 
         // One real retirement, so the two curation tables the Saga class accounts for are not both
-        // empty. A mirror that names a table the installation never fills agrees with production
-        // whatever production does with it.
+        // empty; both remain part of the durable Saga inventory.
         _ = await WriteAndRetireSagaMemoryAsync(sessionId: null, "the operator prefers tabs");
 
         Guid uploadedFileId = Guid.NewGuid();
@@ -110,7 +101,7 @@ public sealed partial class DataRetentionServiceTests
             RetentionDataClass.AttachmentEmbeddings,
             await SumTableCountsAsync(
                 "session_attachment_embeddings",
-                "session_attachment_embeddings_vec",
+
                 "session_attachment_index_state"),
             "session_attachment_index_state");
 
@@ -118,17 +109,15 @@ public sealed partial class DataRetentionServiceTests
             status,
             RetentionDataClass.WorkspaceEmbeddings,
             await SumTableCountsAsync(
-                "workspace_file_embeddings",
-                "workspace_file_embeddings_vec"),
-            "workspace_file_embeddings_vec");
+                "workspace_file_embeddings"),
+            "workspace_file_embeddings");
 
         AssertStatusRows(
             status,
             RetentionDataClass.SessionEntryEmbeddings,
             await SumTableCountsAsync(
-                "entry_embeddings",
-                "entry_embeddings_vec"),
-            "entry_embeddings_vec");
+                "entry_embeddings"),
+            "entry_embeddings");
 
         AssertStatusRows(
             status,
@@ -136,7 +125,7 @@ public sealed partial class DataRetentionServiceTests
             await SumTableCountsAsync(
                 "saga_memories",
                 "saga_memory_embeddings",
-                "saga_memory_embeddings_vec",
+
                 "saga_memory_attachment_provenance",
                 "saga_extraction_watermarks",
                 "saga_retirement_suppressions",
@@ -186,12 +175,6 @@ public sealed partial class DataRetentionServiceTests
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
 
-        await RecreateVectorTableAsync("entry_embeddings_vec", "EntryId");
-
-        await RecreateVectorTableAsync("workspace_file_embeddings_vec", "ChunkId");
-
-        await RecreateVectorTableAsync("saga_memory_embeddings_vec", "MemoryId");
-
         await SeedPrunableDerivedRowsAsync(sessionId, entryId);
 
         ArcanumSettings settings = CreatePruneSettings();
@@ -214,7 +197,7 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(1, await CountAllAsync("long_rest_sources"));
 
-        Assert.Equal(10, plan.DerivedRecords);
+        Assert.Equal(7, plan.DerivedRecords);
 
         Result<DataRetentionApplyResult> result = await service.ApplyAsync(
             new DataRetentionApplyRequest(request, plan.PlanId),
@@ -226,21 +209,15 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(0, await CountAllAsync("entry_embeddings"));
 
-        Assert.Equal(0, await CountAllAsync("entry_embeddings_vec"));
-
         Assert.Equal(0, await CountAllAsync("workspace_file_chunks"));
 
         Assert.Equal(0, await CountAllAsync("workspace_file_embeddings"));
-
-        Assert.Equal(0, await CountAllAsync("workspace_file_embeddings_vec"));
 
         Assert.Equal(0, await CountAllAsync("saga_memories"));
 
         Assert.Equal(0, await CountAllAsync("long_rest_sources"));
 
         Assert.Equal(0, await CountAllAsync("saga_memory_embeddings"));
-
-        Assert.Equal(0, await CountAllAsync("saga_memory_embeddings_vec"));
 
         Assert.Equal(0, await CountAllAsync("saga_memory_attachment_provenance"));
 
@@ -517,16 +494,6 @@ public sealed partial class DataRetentionServiceTests
     {
         await SeedEntryEmbeddingAsync(entryId);
 
-        await InsertVectorAsync(
-            "entry_embeddings_vec",
-            "EntryId",
-            entryId.ToString());
-
-        await InsertVectorAsync(
-            "session_attachment_embeddings_vec",
-            "ChunkId",
-            attachmentChunkId);
-
         string workspaceChunkId = "inventory-workspace-" + Guid.NewGuid().ToString("N");
 
         await SeedWorkspaceRowsAsync(workspaceChunkId);
@@ -567,11 +534,6 @@ public sealed partial class DataRetentionServiceTests
     {
         await SeedEntryEmbeddingAsync(entryId);
 
-        await InsertVectorAsync(
-            "entry_embeddings_vec",
-            "EntryId",
-            entryId.ToString());
-
         await SeedWorkspaceRowsAsync("prunable-workspace");
 
         await SeedSagaRowsAsync(
@@ -605,11 +567,6 @@ public sealed partial class DataRetentionServiceTests
             """,
             ("@id", chunkId),
             ("@embedding", new byte[] { 0, 0, 128, 63 }));
-
-        await InsertVectorAsync(
-            "workspace_file_embeddings_vec",
-            "ChunkId",
-            chunkId);
     }
 
     private async Task SeedSagaRowsAsync(
@@ -633,11 +590,6 @@ public sealed partial class DataRetentionServiceTests
             """,
             ("@id", memoryId),
             ("@embedding", new byte[] { 0, 0, 128, 63 }));
-
-        await InsertVectorAsync(
-            "saga_memory_embeddings_vec",
-            "MemoryId",
-            memoryId);
 
         await ExecuteAsync(
             """
@@ -675,33 +627,6 @@ public sealed partial class DataRetentionServiceTests
             ("@sessionId", sessionId.ToString()),
             ("@attachmentId", Canonical(attachmentId)),
             ("@at", OldTimestamp));
-
-    private async Task RecreateVectorTableAsync(
-        string table,
-        string keyColumn)
-    {
-        await ExecuteAsync($"DROP TABLE IF EXISTS \"{table}\"");
-
-        await ExecuteAsync(
-            $"""
-            CREATE TABLE "{table}" (
-                "{keyColumn}" TEXT PRIMARY KEY,
-                "Embedding" BLOB NOT NULL
-            )
-            """);
-    }
-
-    private Task InsertVectorAsync(
-        string table,
-        string keyColumn,
-        string id) =>
-        ExecuteAsync(
-            $"""
-            INSERT INTO "{table}" ("{keyColumn}", "Embedding")
-            VALUES (@id, @embedding)
-            """,
-            ("@id", id),
-            ("@embedding", new byte[] { 0, 0, 128, 63 }));
 
     private async Task<long> SumTableCountsAsync(params string[] tables)
     {

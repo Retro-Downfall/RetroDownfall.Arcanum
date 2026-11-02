@@ -23,8 +23,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// complete generation after a restart or cancellation.</para>
 /// </summary>
 internal sealed partial class TapestryStore(
-    ArcanumDbContext db,
-    WeaveIndexAvailability availability) : ITapestryStore
+    ArcanumDbContext db) : ITapestryStore
 {
     /// <summary>
     /// The live-scope-id query for each corpus. Both <see cref="DiscoverScopesAsync"/> and
@@ -821,27 +820,6 @@ internal sealed partial class TapestryStore(
         AddParameter(embeddingCommand, "@dim", write.Embedding.Length);
 
         _ = await embeddingCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-        if (!availability.IsVecAvailable)
-        {
-            return;
-        }
-
-        await using DbCommand vecCommand = connection.CreateCommand();
-
-        vecCommand.Transaction = transaction;
-
-        vecCommand.CommandText =
-            """
-            INSERT OR REPLACE INTO "tapestry_node_embeddings_vec" ("NodeId", "Embedding")
-            VALUES (@nodeId, @embedding)
-            """;
-
-        AddParameter(vecCommand, "@nodeId", node.NodeId);
-
-        AddParameter(vecCommand, "@embedding", blob);
-
-        _ = await vecCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public Task SetParentAsync(
@@ -1029,7 +1007,7 @@ internal sealed partial class TapestryStore(
     private const string RetentionScopePredicate = "ScopeKind IN ('Session','SessionAttachment') AND (@entries=1 OR ScopeKind='SessionAttachment') AND lower(replace(ScopeId,'-',''))=@sessionKey";
 
     internal static async Task<long> ReadRetentionGraphRowsAsync(DbConnection connection, DbTransaction? transaction,
-        Guid sessionId, bool includeEntries, CancellationToken cancellationToken, RetentionSchemaCensus? schemaCensus = null)
+        Guid sessionId, bool includeEntries, CancellationToken cancellationToken)
     {
         await using DbCommand count = connection.CreateCommand();
 
@@ -1049,19 +1027,6 @@ internal sealed partial class TapestryStore(
 
         long rows = Convert.ToInt64(await count.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
 
-        if (schemaCensus is null
-            ? await SagaVectorMirror.ClassifyAsync(connection, transaction, TapestryStorageKeys.VectorTable, cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable
-            : await schemaCensus.ExistsAsync((SqliteConnection)connection, TapestryStorageKeys.VectorTable, cancellationToken).ConfigureAwait(false))
-        {
-            count.CommandText = $"""
-                SELECT COUNT(*) FROM tapestry_node_embeddings_vec WHERE NodeId IN (
-                    SELECT NodeId FROM tapestry_nodes WHERE GenerationId IN (
-                        SELECT GenerationId FROM tapestry_generations WHERE {RetentionScopePredicate}))
-                """;
-
-            rows += Convert.ToInt64(await count.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
-        }
-
         return rows;
     }
 
@@ -1080,16 +1045,7 @@ internal sealed partial class TapestryStore(
         return rows;
     }
 
-    /// <summary>
-    /// Deletes matching generations. The optional vector mirror has no foreign key, so its rows are
-    /// removed explicitly before the cascade takes the BLOB rows with the nodes.
-    /// </summary>
-    /// <remarks>
-    /// The mirror holds the embedding itself, so whether it is deleted from is a property of the
-    /// database, not of whether this process loaded an accelerator: a plain mirror an earlier build
-    /// filled is deleted from whatever the flag says, and a legacy vec0 mirror this runtime cannot open
-    /// is skipped rather than failing the delete it rides on.
-    /// </remarks>
+    /// <summary>Deletes generations and cascades to their durable graph rows.</summary>
     private static async Task<int> DeleteGenerationsAsync(
         DbConnection connection,
         DbTransaction transaction,
@@ -1097,30 +1053,6 @@ internal sealed partial class TapestryStore(
         Action<DbCommand> bind,
         CancellationToken cancellationToken)
     {
-        if (await SagaVectorMirror.ClassifyAsync(
-                connection,
-                transaction,
-                TapestryStorageKeys.VectorTable,
-                cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable)
-        {
-            await using DbCommand vecCommand = connection.CreateCommand();
-
-            vecCommand.Transaction = transaction;
-
-            vecCommand.CommandText =
-                $"""
-                DELETE FROM "tapestry_node_embeddings_vec"
-                WHERE "NodeId" IN (
-                    SELECT "NodeId" FROM "tapestry_nodes"
-                    WHERE "GenerationId" IN (
-                        SELECT "GenerationId" FROM "tapestry_generations" WHERE {predicate}))
-                """;
-
-            bind(vecCommand);
-
-            _ = await vecCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;

@@ -77,8 +77,8 @@ public sealed partial class BackupRestoreStagedDrainTests
         await EraseOnTheHostAsync(harness);
 
         MemoryErasureRestoreHarness.ArchivedInstallation archive = await harness.CreateArchiveAtAsync(
-            "current-protected-dag",
-            GrimoireSchemaVersionChains.Default,
+            "core-thirty-four-protected-dag",
+            CoreSchemaVersionThirtyFourFixture.ChainSet(),
             async connection =>
             {
                 await using SqliteCommand command = connection.CreateCommand();
@@ -138,7 +138,7 @@ public sealed partial class BackupRestoreStagedDrainTests
 
         Assert.Equal(3L, await ScalarAsync(restored, "SELECT COUNT(*) FROM tapestry_node_embeddings"));
 
-        Assert.Equal(3L, await ScalarAsync(restored, "SELECT COUNT(*) FROM tapestry_node_embeddings_vec"));
+        Assert.Equal(0L, await ScalarAsync(restored, "SELECT COUNT(*) FROM sqlite_schema WHERE name='tapestry_node_embeddings_vec'"));
 
         Assert.Equal(0L, await ScalarAsync(restored, "SELECT COUNT(*) FROM tapestry_leaf_hashes"));
 

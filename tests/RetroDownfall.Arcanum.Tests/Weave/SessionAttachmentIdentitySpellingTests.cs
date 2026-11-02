@@ -132,7 +132,7 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
             TestEncryptedBlobStore.Create());
 
         _index = new SessionAttachmentIndexRepository(
-            _db, new WeaveIndexAvailability(), new TestOptionsMonitor<ArcanumSettings>(_settings));
+            _db, new TestOptionsMonitor<ArcanumSettings>(_settings));
 
         return Task.CompletedTask;
     }
@@ -208,7 +208,7 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
             Legacy(sessionId),
             await ScalarStringAsync("SELECT RetrievalScope FROM session_attachment_chunks LIMIT 1"));
 
-        TapestryStore tapestry = new(_db!, new WeaveIndexAvailability());
+        TapestryStore tapestry = new(_db!);
 
         TapestryScope scope = TapestryScope.ForSessionAttachment(sessionId);
 
@@ -472,7 +472,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
 
         SagaMemoryStore memories = new(
             _db!,
-            new WeaveIndexAvailability(),
             new TestOptionsMonitor<ArcanumSettings>(_settings),
             MemoryErasureTestKeys.Isolated());
 

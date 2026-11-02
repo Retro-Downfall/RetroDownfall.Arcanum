@@ -518,16 +518,6 @@ public sealed partial class DataRetentionServiceTests
 
         SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
 
-        bool entryVector = await TrySeedVectorMirrorAsync(
-            "entry_embeddings_vec",
-            "EntryId",
-            Canonical(entryId));
-
-        bool attachmentVector = await TrySeedVectorMirrorAsync(
-            "session_attachment_embeddings_vec",
-            "ChunkId",
-            attachment.ChunkId);
-
         await ExecuteAsync(
             """
             INSERT INTO attachment_memory_consultations
@@ -552,9 +542,7 @@ public sealed partial class DataRetentionServiceTests
             ("@sessionId", sessionId.ToString().ToUpperInvariant()),
             ("@at", OldTimestamp));
 
-        long expectedDerived = 7
-            + (entryVector ? 1 : 0)
-            + (attachmentVector ? 1 : 0);
+        long expectedDerived = 7;
 
         DataRetentionService service = CreateBoundaryService(
             new ArcanumSettings(),
@@ -695,53 +683,6 @@ public sealed partial class DataRetentionServiceTests
             ("@policy", (int)LongRunningOperationRecoveryPolicy.AbandonSafely),
             ("@sessionId", sessionId.ToString()),
             ("@at", OldTimestamp));
-
-    private async Task<bool> TrySeedVectorMirrorAsync(
-        string table,
-        string idColumn,
-        string id)
-    {
-        if (!await TableExistsInTestAsync(table))
-        {
-            return false;
-        }
-
-        string? createSql = await ReadScalarStringAsync(
-            "SELECT sql FROM sqlite_master WHERE name = @name",
-            ("@name", table));
-
-        const string dimensionMarker = "FLOAT[";
-
-        int marker = createSql?.IndexOf(
-            dimensionMarker,
-            StringComparison.OrdinalIgnoreCase) ?? -1;
-
-        if (marker < 0)
-        {
-            return false;
-        }
-
-        int start = marker + dimensionMarker.Length;
-
-        int end = createSql!.IndexOf(']', start);
-
-        if (end <= start
-            || !int.TryParse(
-                createSql[start..end],
-                NumberStyles.None,
-                CultureInfo.InvariantCulture,
-                out int dimensions))
-        {
-            return false;
-        }
-
-        await ExecuteAsync(
-            $"INSERT INTO \"{table}\" (\"{idColumn}\", \"Embedding\") VALUES (@id, @embedding)",
-            ("@id", id),
-            ("@embedding", new byte[dimensions * sizeof(float)]));
-
-        return true;
-    }
 
     private async Task<string?> ReadScalarStringAsync(
         string sql,

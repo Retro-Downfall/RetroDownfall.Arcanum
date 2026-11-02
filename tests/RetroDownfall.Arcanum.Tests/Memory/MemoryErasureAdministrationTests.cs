@@ -56,11 +56,9 @@ public sealed class MemoryErasureAdministrationTests
 
         string first = await harness.InsertAsync("The ferry leaves at the second bell.");
 
-        string second = await harness.InsertAsync("The lighthouse lamp is trimmed at dusk.");
-
         MemoryErasureResultDto walOnly;
 
-        MemoryErasureResultDto withVector;
+        Guid historicalMutation = Guid.NewGuid();
 
         await using (await harness.HoldReaderAsync())
         {
@@ -70,13 +68,27 @@ public sealed class MemoryErasureAdministrationTests
 
             Assert.Equal(MemoryErasureWalCheckpointAttempt.Busy, walOnly.Local.WalCheckpointAttempt);
 
-            await harness.Harness.CreateLegacyVectorMirrorAsync();
+            // Historical receipts retain their original scrub debt after mirror retirement.
+            // Seed the old evidence shape directly: new erases no longer emit this reason.
+            MemoryErasureReceiptRow? receipt = await MemoryErasureEvidence.ReadReceiptAsync(
+                harness.Connection, null, walOnly.MutationId, Token);
 
-            withVector = await harness.EraseAsync(second);
+            Assert.NotNull(receipt);
 
-            Assert.Equal<MemoryErasureScrubPendingReason>(
-                [MemoryErasureScrubPendingReason.WalCheckpointPending, MemoryErasureScrubPendingReason.VectorIndexScrubUnverified],
-                withVector.Local.PendingReasons);
+            await using SqliteTransaction transaction = harness.Connection.BeginTransaction();
+
+            await MemoryErasureEvidence.InsertReceiptAsync(
+                harness.Connection,
+                transaction,
+                receipt with
+                {
+                    MutationId = historicalMutation,
+                    ScrubPendingReasonMask = WalCheckpointPendingBit | VectorIndexScrubUnverifiedBit,
+                },
+                [new byte[32]],
+                Token);
+
+            await transaction.CommitAsync(Token);
         }
 
         MemoryErasureAdministration admin = harness.Administration();
@@ -87,7 +99,7 @@ public sealed class MemoryErasureAdministrationTests
 
         Assert.Equal((2, 0), await harness.ScrubStateAsync(walOnly.MutationId));
 
-        Assert.Equal((1, VectorIndexScrubUnverifiedBit), await harness.ScrubStateAsync(withVector.MutationId));
+        Assert.Equal((1, VectorIndexScrubUnverifiedBit), await harness.ScrubStateAsync(historicalMutation));
 
         Assert.Equal(1, (await admin.GetStatusAsync(Token)).Value.PendingScrubReceipts);
     }
@@ -585,7 +597,7 @@ public sealed class MemoryErasureAdministrationTests
 
         internal SagaMemoryErasureService Erase { get; }
 
-        private SqliteConnection Connection => (SqliteConnection)Harness.Connection;
+        internal SqliteConnection Connection => (SqliteConnection)Harness.Connection;
 
         internal static async Task<ErasureHarness> CreateAsync(IOsCredentialStore? credentials = null)
         {

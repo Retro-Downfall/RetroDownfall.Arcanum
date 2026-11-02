@@ -47,12 +47,6 @@ internal sealed class RetentionSchemaCensus : IDisposable
 
             _scalars.Clear();
 
-            if (SagaVectorMirror.IsMirrorName(table))
-            {
-                return await SagaVectorMirror.ClassifyAsync(connection, current.Transaction, table, cancellationToken)
-                    .ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable;
-            }
-
             current.CommandText = "SELECT 1 FROM sqlite_master WHERE name = @table AND type IN ('table', 'view') LIMIT 1";
 
             _ = current.Parameters.AddWithValue("@table", table);
@@ -70,7 +64,7 @@ internal sealed class RetentionSchemaCensus : IDisposable
 
             command.CommandText =
                 """
-                SELECT version.schema_version, catalog.name, catalog.sql
+                SELECT version.schema_version, catalog.name
                 FROM pragma_schema_version AS version
                 LEFT JOIN main.sqlite_master AS catalog ON catalog.type IN ('table', 'view')
                 """;
@@ -87,10 +81,7 @@ internal sealed class RetentionSchemaCensus : IDisposable
 
                 string name = reader.GetString(1);
 
-                bool legacy = !reader.IsDBNull(2)
-                    && reader.GetString(2).Trim().StartsWith("CREATE VIRTUAL TABLE", StringComparison.OrdinalIgnoreCase);
-
-                tables[name] = !SagaVectorMirror.IsMirrorName(name) || !legacy;
+                tables[name] = true;
             }
 
             if (_version != version) _scalars.Clear();

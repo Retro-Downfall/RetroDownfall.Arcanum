@@ -141,7 +141,7 @@ public sealed class SessionAttachmentMimeNormalizationSqlTests(GrimoireFixture f
 
         _attachments = new SessionAttachmentStore(_db, Options.Create(_settings), _root, TestEncryptedBlobStore.Create());
 
-        _index = new SessionAttachmentIndexRepository(_db, new WeaveIndexAvailability(), new TestOptionsMonitor<ArcanumSettings>(_settings));
+        _index = new SessionAttachmentIndexRepository(_db, new TestOptionsMonitor<ArcanumSettings>(_settings));
 
         return Task.CompletedTask;
     }
@@ -178,7 +178,7 @@ public sealed class SessionAttachmentMimeNormalizationSqlTests(GrimoireFixture f
 
         await SeedPublishedChunksAsync(attachment, 8, UnitVector(0));
 
-        TapestryStore tapestry = new(_db!, new WeaveIndexAvailability());
+        TapestryStore tapestry = new(_db!);
 
         TapestryCorpusIdentity identity = await tapestry.GetCorpusIdentityAsync(
             TapestryScope.ForSessionAttachment(sessionId), 100, CancellationToken.None);
@@ -313,7 +313,6 @@ public sealed class SessionAttachmentMimeNormalizationSqlTests(GrimoireFixture f
             new TestOptionsMonitor<ArcanumSettings>(_settings),
             new DivinationService(
                 _db!,
-                new WeaveIndexAvailability(),
                 NullLogger<DivinationService>.Instance,
                 new TestOptionsMonitor<ArcanumSettings>(_settings)),
             _index!,

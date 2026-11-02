@@ -24,14 +24,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// <summary>
 /// Raw-SQL persistence for Saga memories, reusing the scoped <see cref="ArcanumDbContext"/>'s
 /// connection. None of <c>saga_memories</c>, <c>saga_memory_embeddings</c>,
-/// <c>saga_memory_embeddings_vec</c>, or <c>saga_extraction_watermarks</c> is part of the compiled EF
+/// or <c>saga_extraction_watermarks</c> is part of the compiled EF
 /// model (they are declared in <c>Data/Schema/Tables/</c> and installed with the rest of the schema),
 /// so all access goes through <see cref="DbCommand"/> rather than LINQ, mirroring
 /// <see cref="UnseenServantWatermarkStore"/> and <see cref="SanctumBreachRepository"/>.
 /// </summary>
 internal sealed partial class SagaMemoryStore(
     ArcanumDbContext db,
-    WeaveIndexAvailability availability,
     IOptionsMonitor<ArcanumSettings> options,
     IMemoryErasureKeyProvider erasureKeys,
     ICovenantLabeledArtifactTransactionGuard? labeledArtifactGuard = null,
@@ -103,7 +102,7 @@ internal sealed partial class SagaMemoryStore(
         if (embedding.Length != expectedDimensions)
         {
             throw new InvalidOperationException(
-                $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions. Rejecting insert to avoid corrupting the vec0 index.""");
+                $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions. Rejecting insert to preserve the configured embedding width.""");
         }
 
         // Opened before the erasure guard's first phase, which must see the connection outside any
@@ -122,7 +121,7 @@ internal sealed partial class SagaMemoryStore(
                     // SqliteBusyRetry retries after a SQLITE_BUSY failure, the prior transaction has already
                     // been rolled back/disposed by the `await using` blocks below, so the retry starts a
                     // brand-new transaction rather than reusing a stale one or leaving a partial insert split
-                    // across saga_memories/saga_memory_embeddings/saga_memory_embeddings_vec.
+                    // across saga_memories and saga_memory_embeddings.
                     await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
                     // Derived here, from the owning Session's canonical binding, rather than accepted from
@@ -310,16 +309,6 @@ internal sealed partial class SagaMemoryStore(
                     AddParameter(embeddingCmd, "@dim", embedding.Length);
 
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-                    // Written only while the accelerator is live, and classified from the catalog either
-                    // way, so a legacy virtual mirror this runtime cannot open is never touched.
-                    _ = await SagaVectorMirror.UpsertAsync(
-                        connection,
-                        transaction,
-                        id,
-                        embedding,
-                        availability.IsVecAvailable,
-                        cancellationToken).ConfigureAwait(false);
 
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -884,11 +873,6 @@ internal sealed partial class SagaMemoryStore(
 
                 _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-                // Whatever the accelerator flag says: a mirror an earlier build filled still holds this
-                // memory's embedding, and a delete that skipped it would leave that content behind.
-                _ = await SagaVectorMirror.DeleteAsync(connection, transaction, id, cancellationToken)
-                    .ConfigureAwait(false);
-
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 return true;
@@ -963,10 +947,6 @@ internal sealed partial class SagaMemoryStore(
                 watermarkCmd.CommandText = """DELETE FROM "saga_extraction_watermarks" """;
 
                 _ = await watermarkCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-                // Whatever the accelerator flag says, for the same reason DeleteAsync's mirror delete is.
-                _ = await SagaVectorMirror.DeleteAllAsync(connection, transaction, cancellationToken)
-                    .ConfigureAwait(false);
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             },

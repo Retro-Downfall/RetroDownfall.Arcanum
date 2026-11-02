@@ -788,12 +788,12 @@ public sealed class SagaMemoryReviewServiceTests
     }
 
     [SkippableFact]
-    public async Task Bulk_retire_removes_the_mirror_row_while_the_accelerator_flag_is_off()
+    public async Task Bulk_retire_removes_the_durable_embedding()
     {
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
             .ConfigureAwait(false);
 
-        Result<MemoryReviewBulkResultDto> applied = await ApplyOverAFilledMirrorAsync(
+        Result<MemoryReviewBulkResultDto> applied = await ApplyOverAnEmbeddedMemoryAsync(
             harness,
             Guid.Parse("BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"),
             MemoryReviewAction.Retire,
@@ -803,16 +803,16 @@ public sealed class SagaMemoryReviewServiceTests
 
         Assert.NotNull(Assert.Single(applied.Value.Items).ResultingVersionId);
 
-        Assert.Equal(0, await harness.CountAsync("saga_memory_embeddings_vec", "1 = 1").ConfigureAwait(false));
+        Assert.Equal(0, await harness.CountAsync("saga_memory_embeddings", "1 = 1").ConfigureAwait(false));
     }
 
     [SkippableFact]
-    public async Task Bulk_correct_removes_the_stale_mirror_vector_while_the_accelerator_flag_is_off()
+    public async Task Bulk_correct_replaces_the_durable_embedding()
     {
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
             .ConfigureAwait(false);
 
-        Result<MemoryReviewBulkResultDto> applied = await ApplyOverAFilledMirrorAsync(
+        Result<MemoryReviewBulkResultDto> applied = await ApplyOverAnEmbeddedMemoryAsync(
             harness,
             Guid.Parse("CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"),
             MemoryReviewAction.Correct,
@@ -822,9 +822,7 @@ public sealed class SagaMemoryReviewServiceTests
 
         Assert.NotNull(Assert.Single(applied.Value.Items).ResultingVersionId);
 
-        // The corrected vector cannot be mirrored without the accelerator, so the old one must not stay
-        // behind describing text the memory no longer holds.
-        Assert.Equal(0, await harness.CountAsync("saga_memory_embeddings_vec", "1 = 1").ConfigureAwait(false));
+        Assert.Equal(1, await harness.CountAsync("saga_memory_embeddings", "1 = 1").ConfigureAwait(false));
     }
 
     [SkippableFact]
@@ -1408,18 +1406,15 @@ public sealed class SagaMemoryReviewServiceTests
     }
 
     /// <summary>
-    /// Fills the plain vector mirror through the harness store with its accelerator flag on, then
-    /// drives one bulk decision through a review service whose own flag is off.
+    /// Drives one bulk decision over a memory with a durable embedding.
     /// </summary>
-    private static async Task<Result<MemoryReviewBulkResultDto>> ApplyOverAFilledMirrorAsync(
+    private static async Task<Result<MemoryReviewBulkResultDto>> ApplyOverAnEmbeddedMemoryAsync(
         SagaStoreHarness harness,
         Guid requestId,
         MemoryReviewAction action,
         string? replacementContent)
     {
-        await harness.CreatePlainVectorMirrorAsync().ConfigureAwait(false);
 
-        harness.VectorAccelerator.SetAvailable(true);
 
         await InsertAsync(
             harness,
@@ -1428,7 +1423,7 @@ public sealed class SagaMemoryReviewServiceTests
             DateTimeOffset.Parse("2026-09-28T12:00:00Z", System.Globalization.CultureInfo.InvariantCulture))
             .ConfigureAwait(false);
 
-        Assert.Equal(1, await harness.CountAsync("saga_memory_embeddings_vec", "1 = 1").ConfigureAwait(false));
+        Assert.Equal(1, await harness.CountAsync("saga_memory_embeddings", "1 = 1").ConfigureAwait(false));
 
         SagaMemoryReviewService service = CreateService(harness);
 
@@ -1482,7 +1477,6 @@ public sealed class SagaMemoryReviewServiceTests
             context,
             weave ?? FakeWeaveService.Available,
             codec,
-            new WeaveIndexAvailability(),
             Settings(campaignScopedMemory),
             MemoryErasureTestKeys.Isolated(),
             new OperatorAuthorityContextIssuer(new FakeCovenantAuthorityProvider()),
