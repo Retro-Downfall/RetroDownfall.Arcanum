@@ -158,7 +158,7 @@ public sealed class MemoryDelegationMutationTests
 
         await using var provider = services.BuildServiceProvider();
 
-        var store = ActivatorUtilities.CreateInstance<SagaMemoryStore>(provider, h.Source.Saga.Context, h.Source.Saga.VectorAccelerator, h.Source.Saga.Options, MemoryErasureTestKeys.Isolated());
+        var store = ActivatorUtilities.CreateInstance<SagaMemoryStore>(provider, h.Source.Saga.Context, h.Source.Saga.Options, MemoryErasureTestKeys.Isolated());
 
         var lexicon = ActivatorUtilities.CreateInstance<LexiconService>(provider, h.Source.Saga.Context, NullLogger<LexiconService>.Instance, h.Source.Saga.Options, MemoryErasureTestKeys.Isolated());
 

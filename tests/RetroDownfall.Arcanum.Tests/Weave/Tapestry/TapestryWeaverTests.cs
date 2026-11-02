@@ -55,7 +55,7 @@ public sealed partial class TapestryWeaverTests : IAsyncLifetime
 
         _db = _fixture.CreateContext(_dbPath);
 
-        _store = new TapestryStore(_db, new WeaveIndexAvailability());
+        _store = new TapestryStore(_db);
 
         _weave = new FakeWeaveService();
 

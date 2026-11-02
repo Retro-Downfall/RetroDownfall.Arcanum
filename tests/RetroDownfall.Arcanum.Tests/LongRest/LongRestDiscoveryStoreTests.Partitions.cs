@@ -11,19 +11,14 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 public sealed class LongRestDiscoveryPartitionTests
 {
     [SkippableTheory]
-    [InlineData(false, false, false)]
-    [InlineData(true, false, false)]
-    [InlineData(false, true, false)]
-    [InlineData(true, true, false)]
-    [InlineData(false, false, true)]
-    [InlineData(true, false, true)]
-    [InlineData(false, true, true)]
-    [InlineData(true, true, true)]
-    public async Task Exact_scope_and_protection_filter_before_candidate_ranking(bool campaignBound, bool protectedPartition, bool accelerated)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Exact_scope_and_protection_filter_before_candidate_ranking(bool campaignBound, bool protectedPartition)
     {
         await using LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
 
-        h.Saga.VectorAccelerator.SetAvailable(accelerated);
 
         Guid campaign = Guid.NewGuid();
 

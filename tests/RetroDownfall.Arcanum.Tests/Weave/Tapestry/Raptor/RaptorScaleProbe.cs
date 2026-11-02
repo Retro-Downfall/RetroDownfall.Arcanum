@@ -702,6 +702,8 @@ public sealed partial class RaptorScaleProbe(ITestOutputHelper output)
 
         private readonly System.Diagnostics.Process _process = System.Diagnostics.Process.GetCurrentProcess();
 
+        private readonly WorkingSetSampler _workingSet;
+
         private readonly Timer _timer;
 
         private readonly int _seconds;
@@ -720,9 +722,14 @@ public sealed partial class RaptorScaleProbe(ITestOutputHelper output)
         {
             _seconds = seconds;
 
-            _process.Refresh();
+            _workingSet = new(() =>
+            {
+                _process.Refresh();
 
-            StartWorkingSet = _process.WorkingSet64;
+                return _process.WorkingSet64;
+            });
+
+            StartWorkingSet = _workingSet.Sample();
 
             _peak = StartWorkingSet;
 
@@ -730,9 +737,7 @@ public sealed partial class RaptorScaleProbe(ITestOutputHelper output)
 
             _timer = new Timer(_ =>
             {
-                _process.Refresh();
-
-                long current = _process.WorkingSet64;
+                long current = _workingSet.Sample();
 
                 long previous;
 
@@ -783,6 +788,20 @@ public sealed partial class RaptorScaleProbe(ITestOutputHelper output)
             _process.Dispose();
 
             _source.Dispose();
+        }
+    }
+
+    private sealed class WorkingSetSampler(Func<long> sample)
+    {
+        private readonly object _gate = new();
+
+        internal long Sample()
+        {
+            // Timer callbacks may overlap; Refresh invalidates the cache read by WorkingSet64.
+            lock (_gate)
+            {
+                return sample();
+            }
         }
     }
 }

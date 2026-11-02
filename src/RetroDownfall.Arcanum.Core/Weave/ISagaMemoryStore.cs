@@ -4,25 +4,16 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 
 /// <summary>
 /// RAG Phase 4 — raw-SQL persistence for Saga memories (<c>saga_memories</c> +
-/// <c>saga_memory_embeddings</c> [+ the <c>saga_memory_embeddings_vec</c> mirror where one exists] +
+/// <c>saga_memory_embeddings</c> +
 /// <c>saga_extraction_watermarks</c>; see <c>Infrastructure/Data/Schema/Tables/</c>). Shared by
 /// <c>SagaExtractionService</c> (writes), the <c>/api/saga</c> endpoints (reads/deletes), and the
 /// <c>read_saga</c> MCP tool (reads), so all three surfaces stay consistent without duplicating SQL.
 /// </summary>
-/// <remarks>
-/// One rule governs the vector mirror on every write, and it is read from the database rather than
-/// from whether this process loaded a sqlite-vec accelerator. A plain-table mirror has its rows for
-/// a memory deleted whatever the accelerator flag says, because a mirror an earlier build filled still
-/// holds that memory's embedding; a row is written only while the accelerator is live. A legacy
-/// <c>vec0</c> virtual mirror, which this runtime cannot open, is never touched. No schema file
-/// installs the mirror, so where none exists there is nothing to write or remove.
-/// </remarks>
 public interface ISagaMemoryStore
 {
     /// <summary>
     /// Inserts a new memory: a row in <c>saga_memories</c>, its BLOB embedding in
-    /// <c>saga_memory_embeddings</c>, and, only while the accelerator is live, a mirrored row in a
-    /// plain <c>saga_memory_embeddings_vec</c>.
+    /// <c>saga_memory_embeddings</c>, committed together.
     /// </summary>
     /// <remarks>
     /// <para>Returns <see cref="SagaMemoryWriteOutcome.Suppressed"/>, writing nothing, when an operator
@@ -200,7 +191,7 @@ public interface ISagaMemoryStore
 
     /// <summary>
     /// Looks up memories by id (as returned by <c>IDivinationService.SearchAsync</c> against
-    /// <c>saga_memory_embeddings_vec</c>), for joining Divination hits against their content/metadata.
+    /// <c>saga_memory_embeddings</c>), for joining Divination hits against their content/metadata.
     /// Missing ids are simply absent from the result — never an error.
     /// </summary>
     Task<IReadOnlyDictionary<string, SagaMemoryDto>> GetByIdsAsync(
@@ -217,12 +208,11 @@ public interface ISagaMemoryStore
     /// </remarks>
     Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken);
 
-    /// <summary>Deletes a single memory (and its embedding, from the BLOB table and from a plain mirror whatever the accelerator flag says). Returns <c>false</c> when no such memory exists.</summary>
+    /// <summary>Deletes a single memory and its durable embedding. Returns <c>false</c> when no such memory exists.</summary>
     Task<bool> DeleteAsync(string id, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Retires a memory: its embedding is removed from <c>saga_memory_embeddings</c> and from a plain
-    /// <c>saga_memory_embeddings_vec</c> whatever the accelerator flag says, so no retrieval path can
+    /// Retires a memory: its embedding is removed from <c>saga_memory_embeddings</c>, so no retrieval path can
     /// reach it, while the <c>saga_memories</c> row itself survives for inspection and for reversal.
     /// </summary>
     /// <remarks>
@@ -238,8 +228,7 @@ public interface ISagaMemoryStore
 
     /// <summary>
     /// Reinstates a retired memory: its embedding is restored to <c>saga_memory_embeddings</c> from
-    /// <paramref name="embedding"/>, and mirrored into a plain <c>saga_memory_embeddings_vec</c> only
-    /// while the accelerator is live (otherwise any mirror row the memory still has is removed), and the
+    /// <paramref name="embedding"/>, and the
     /// retirement suppression over its content-and-scope is released so a later extraction pass may
     /// write it again.
     /// </summary>
@@ -252,8 +241,7 @@ public interface ISagaMemoryStore
 
     /// <summary>
     /// Replaces one memory's text in place: <c>saga_memories.Content</c>, its BLOB embedding in
-    /// <c>saga_memory_embeddings</c>, and its row in a plain <c>saga_memory_embeddings_vec</c> — rewritten
-    /// while the accelerator is live, and otherwise removed, because the old vector describes text the
+    /// <c>saga_memory_embeddings</c>, rewritten together because the old vector describes text the
     /// memory no longer holds.
     /// </summary>
     /// <remarks>

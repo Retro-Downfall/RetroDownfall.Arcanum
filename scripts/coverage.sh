@@ -72,6 +72,7 @@ dotnet test "$TEST_PROJECT" \
   --collect:"XPlat Code Coverage" \
   --settings "$RUNSETTINGS" \
   --filter "Category!=Perf&Category!=HostedProducerAnalysis" \
+  --logger "trx;LogFileName=arcanum-runtime.trx" \
   --results-directory "$OUT_DIR" </dev/null
 
 COBERTURA="$(find "$OUT_DIR" -name 'coverage.cobertura.xml' | head -n 1)"

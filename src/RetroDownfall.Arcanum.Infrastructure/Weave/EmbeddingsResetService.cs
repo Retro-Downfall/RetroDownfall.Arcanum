@@ -54,13 +54,11 @@ public sealed class EmbeddingsResetService(
     private static readonly IReadOnlyList<string> EntryTables =
     [
         "entry_embeddings",
-        "entry_embeddings_vec",
     ];
 
     private static readonly IReadOnlyList<string> WorkspaceFileTables =
     [
         "workspace_file_embeddings",
-        "workspace_file_embeddings_vec",
         "workspace_file_chunks",
     ];
 
@@ -78,14 +76,12 @@ public sealed class EmbeddingsResetService(
     private static readonly IReadOnlyList<string> SagaTables =
     [
         "saga_memory_embeddings",
-        "saga_memory_embeddings_vec",
         "saga_memories",
         "saga_extraction_watermarks",
     ];
 
     private static readonly IReadOnlyList<string> SessionAttachmentTables =
     [
-        "session_attachment_embeddings_vec",
         "session_attachment_embeddings",
         "session_attachment_chunks",
         "session_attachment_index_state",
@@ -97,7 +93,6 @@ public sealed class EmbeddingsResetService(
     /// </summary>
     private static readonly IReadOnlyList<string> TapestryTables =
     [
-        "tapestry_node_embeddings_vec",
         "tapestry_generations",
         "tapestry_edges",
         "tapestry_node_embeddings",
@@ -497,11 +492,6 @@ public sealed class EmbeddingsResetService(
                 {
                     foreach (string table in TapestryTables)
                     {
-                        if (table.EndsWith("_vec", StringComparison.Ordinal))
-                        {
-                            continue;
-                        }
-
                         await using DbCommand count = connection.CreateCommand();
 
                         count.Transaction = transaction;
@@ -541,18 +531,6 @@ public sealed class EmbeddingsResetService(
         string table,
         CancellationToken cancellationToken)
     {
-        // Every vector mirror follows the rule every Saga write follows, read from the catalog rather
-        // than the process flag: a plain mirror an earlier build filled is emptied whatever the flag
-        // says, because its rows hold the embeddings of the content this reset removes, and a legacy
-        // vec0 mirror this runtime cannot open is skipped rather than failing the reset. A mirror that
-        // is not there counts zero rows.
-        if (table.EndsWith("_vec", StringComparison.Ordinal))
-        {
-            return checked((int)await SagaVectorMirror
-                .DeleteAllAsync(connection, transaction, table, cancellationToken)
-                .ConfigureAwait(false));
-        }
-
         await using DbCommand cmd = connection.CreateCommand();
 
         cmd.Transaction = transaction;

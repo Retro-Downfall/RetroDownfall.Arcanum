@@ -739,7 +739,6 @@ public sealed partial class DataRetentionServiceTests
     private ISagaMemoryStore CreateSagaMemoryStore() =>
         new SagaMemoryStore(
             _db!,
-            new WeaveIndexAvailability(),
             new TestOptionsMonitor<ArcanumSettings>(
                 new ArcanumSettings
                 {

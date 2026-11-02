@@ -35224,19 +35224,43 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         const string censusName = "RetroDownfall.Arcanum.Infrastructure.Data.Schema.InstallationTurnQuotaBackfill";
 
-        // The closed strategy table owns the ordinary slot. Core33's separate quiescent
-        // slot resolves through the unique authored implementation of its internal interface.
-        Assert.Equal(HostedGrimoireProducerInventory.SchemaBackfillStrategies.Append(censusName).Order(StringComparer.Ordinal), configured);
+        // The ordinary and quiescent slots have separate closed strategy tables.
+        Assert.Equal(HostedGrimoireProducerInventory.SchemaBackfillStrategies
+            .Concat(HostedGrimoireProducerInventory.QuiescentSchemaBackfillStrategies).Order(StringComparer.Ordinal), configured);
 
         INamedTypeSymbol quiescent = infrastructure.GetTypeByMetadataName("RetroDownfall.Arcanum.Infrastructure.Data.Schema.IGrimoireQuiescentBackfill")!;
 
         INamedTypeSymbol restartable = infrastructure.GetTypeByMetadataName("RetroDownfall.Arcanum.Infrastructure.Data.Schema.IGrimoireRestartableReadOnlyBackfill")!;
 
-        INamedTypeSymbol census = Assert.Single(infrastructure.SyntaxTrees
+        INamedTypeSymbol[] quiescentTypes = [.. infrastructure.SyntaxTrees
             .SelectMany(tree => tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
                 .Select(type => infrastructure.GetSemanticModel(tree).GetDeclaredSymbol(type)))
-            .OfType<INamedTypeSymbol>(),
-            type => type.AllInterfaces.Contains(quiescent, SymbolEqualityComparer.Default));
+            .OfType<INamedTypeSymbol>()
+            .Where(type => type.AllInterfaces.Contains(quiescent, SymbolEqualityComparer.Default))];
+
+        Assert.Equal(HostedGrimoireProducerInventory.QuiescentSchemaBackfillStrategies.Order(StringComparer.Ordinal),
+            quiescentTypes.Select(static type => type.ToDisplayString()).Order(StringComparer.Ordinal));
+
+        INamedTypeSymbol census = Assert.Single(quiescentTypes,
+            type => type.AllInterfaces.Contains(restartable, SymbolEqualityComparer.Default));
+
+        Assert.All(quiescentTypes, type => Assert.DoesNotContain(type.ToDisplayString(), HostedGrimoireProducerInventory.SchemaBackfillStrategies));
+
+        INamedTypeSymbol retirement = Assert.Single(quiescentTypes, static type => type.Name == "LegacyVectorMirrorRetirementBackfill");
+
+        IMethodSymbol retirementOrdinary = Assert.Single(retirement.GetMembers("AdvanceBatchAsync").OfType<IMethodSymbol>());
+
+        MethodDeclarationSyntax retirementRefusal = Assert.IsType<MethodDeclarationSyntax>(Assert.Single(retirementOrdinary.DeclaringSyntaxReferences).GetSyntax());
+
+        ThrowExpressionSyntax retirementThrow = Assert.IsType<ThrowExpressionSyntax>(retirementRefusal.ExpressionBody!.Expression);
+
+        IObjectCreationOperation retirementException = Assert.IsAssignableFrom<IObjectCreationOperation>(infrastructure.GetSemanticModel(retirementRefusal.SyntaxTree).GetOperation(retirementThrow.Expression));
+
+        Assert.Equal("System.InvalidOperationException", retirementException.Type!.ToDisplayString());
+
+        Assert.Null(retirementException.Initializer);
+
+        Assert.True(Assert.Single(retirementException.Arguments).Value.ConstantValue.HasValue);
 
         Assert.Equal(censusName, census.ToDisplayString());
 

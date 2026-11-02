@@ -88,31 +88,16 @@ public sealed class CovenantProtectedArtifactErasureContentTests
         await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Connection);
     }
 
-    /// <summary>
-    /// The vector mirror holds the embedding itself, so an erasure that stopped at the BLOB table
-    /// would leave the same content reachable through the acceleration path.
-    /// </summary>
-    /// <remarks>
-    /// The mirror is created here before the write, because no schema file installs it — it exists
-    /// only where the accelerator built it — and the store then fills it through its own production
-    /// write path rather than through anything this test inserts. That is the same arrangement the
-    /// retention suites use to exercise the pruner's mirror deletes on a build that ships no
-    /// accelerator.
-    /// </remarks>
     [SkippableFact]
-    public async Task The_saga_vector_mirror_is_erased_with_the_memory_whose_embedding_it_holds()
+    public async Task The_durable_embedding_is_erased_with_the_memory_it_describes()
     {
         await using ErasureHarness harness = ErasureHarness.Create();
 
-        await harness.CreateVectorMirrorAsync("saga_memory_embeddings_vec", "MemoryId");
-
-        harness.VectorAccelerator.SetAvailable(true, "Test mirror present.");
-
         Guid memoryId = await harness.ExtractOneSagaMemoryAsync("The operator prefers dark mode.");
 
-        // The production writer filled the mirror, not this test. An assertion that the erasure
+        // The production writer persisted the embedding, so this proves erasure removes actual content. An assertion that the erasure
         // emptied a table nothing had put a row in would pass on a build where the write never ran.
-        Assert.Equal(1, await harness.CountAsync("SELECT COUNT(*) FROM saga_memory_embeddings_vec;"));
+        Assert.Equal(1, await harness.CountAsync("SELECT COUNT(*) FROM saga_memory_embeddings;"));
 
         await harness.LabelAsync(SensitiveArtifactKind.Saga, memoryId, sessionId: null, "The operator prefers dark mode.");
 
@@ -124,33 +109,9 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
         Assert.Equal(1UL, progress.ErasedCount);
 
-        Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM saga_memory_embeddings_vec;"));
+        Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM saga_memory_embeddings;"));
 
         await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Connection);
-    }
-
-    /// <summary>
-    /// The mirror's absence is the ordinary case on a build with no accelerator, and it has to be a
-    /// skipped statement rather than a failed transaction.
-    /// </summary>
-    [SkippableFact]
-    public async Task A_missing_vector_mirror_leaves_the_erasure_unblocked()
-    {
-        await using ErasureHarness harness = ErasureHarness.Create();
-
-        Guid memoryId = await harness.ExtractOneSagaMemoryAsync("The operator prefers dark mode.");
-
-        Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM sqlite_master WHERE name = 'saga_memory_embeddings_vec';"));
-
-        await harness.LabelAsync(SensitiveArtifactKind.Saga, memoryId, sessionId: null, "The operator prefers dark mode.");
-
-        CovenantArtifactErasureProgress progress = await harness.EraseAsync(SensitiveArtifactKind.Saga, memoryId);
-
-        Assert.Equal(CovenantErasureBlocker.None, progress.Blocker);
-
-        Assert.Equal(1UL, progress.ErasedCount);
-
-        Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM saga_memories;"));
     }
 
     [SkippableFact]
@@ -252,8 +213,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
         internal ArtifactSensitivityLedger Ledger { get; }
 
-        internal WeaveIndexAvailability VectorAccelerator { get; } = new();
-
         internal DbConnection Connection => _db.Database.GetDbConnection();
 
         internal static ErasureHarness Create()
@@ -341,8 +300,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
             _ = services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(
                 new TestOptionsMonitor<ArcanumSettings>(settings));
-
-            _ = services.AddSingleton(VectorAccelerator);
 
             _ = services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
                 new RecordingScopedOrdinaryConnectionFactory());
@@ -519,16 +476,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
             return erased.Value;
         }
-
-        /// <summary>
-        /// Creates one vector mirror the way an accelerator would, so a production write can fill it on
-        /// a build that ships none.
-        /// </summary>
-        internal async Task CreateVectorMirrorAsync(string table, string keyColumn) =>
-            await ExecuteAsync(
-                $"""
-                 CREATE TABLE "{table}" ("{keyColumn}" TEXT PRIMARY KEY, "Embedding" BLOB NOT NULL);
-                 """);
 
         internal async Task ExecuteAsync(string sql)
         {

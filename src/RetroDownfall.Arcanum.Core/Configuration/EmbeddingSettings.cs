@@ -34,8 +34,8 @@ public sealed record EmbeddingSettings
     public string? Model { get; set; }
 
     /// <summary>
-    /// Expected embedding vector dimension. Must match the configured model's output. Used for the
-    /// vec0 acceleration table schema. Default <c>768</c>; clamped 64–4,096 at runtime. Changing this
+    /// Expected embedding vector dimension. Must match the configured model's output and the
+    /// durable vectors used by managed retrieval. Default <c>768</c>; clamped 64–4,096 at runtime. Changing this
     /// after data exists requires an operator-triggered re-index (see
     /// <c>docs/Arcanum.DESIGN.md</c> §21).
     /// </summary>

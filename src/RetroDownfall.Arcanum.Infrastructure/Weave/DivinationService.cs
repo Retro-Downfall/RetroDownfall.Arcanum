@@ -15,26 +15,14 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
-// RAG Phase 1 — Divination: semantic search over The Weave. Scoped service reusing the scoped
-// ArcanumDbContext's connection via raw DbCommand, the same pattern GrimoireRepository.SearchArchivesAsync
-// and UnseenServantWatermarkStore already use for tables outside the compiled EF model (entry_embeddings /
-// entry_embeddings_vec are raw-SQL-only, like UnseenServantWatermarks and SanctumBreaches).
-//
-// Table resolution (see IDivinationService remarks): callers pass the vec0 virtual table name (e.g.
-// "entry_embeddings_vec"). When WeaveIndexAvailability.IsVecAvailable is true, this queries that table
-// directly with vec0 KNN. When false (Phase 1's default — see WeaveIndexAvailability), the vec0 table
-// name is never even touched: the companion BLOB table name is derived by stripping the "_vec" suffix
-// (-> "entry_embeddings") and the search runs as a managed, brute-force cosine scan in C# via
-// EmbeddingBlobCodec. Column names are shared between both tables by convention (the BLOB table and
-// its Data/Schema/Accelerators/ companion declare identical column names) so the same
-// primaryKeyColumn/embeddingColumn pair works either way.
+// Divination searches the named durable BLOB table through the scoped Grimoire connection.
+// Table and column identifiers are code-owned constants, never user input.
 //
 // Managed-path mechanics: every matching row is scored, results are tracked in a streaming top-K
 // heap (no full scored list + OrderBy), and scoped searches join the scope table in SQL instead of an
 // unbounded IN (...) of every chunk id.
 internal sealed class DivinationService(
     ArcanumDbContext db,
-    WeaveIndexAvailability availability,
     ILogger<DivinationService> logger,
     IOptionsMonitor<ArcanumSettings> options,
     TimeProvider? timeProvider = null) : IDivinationService
@@ -42,8 +30,6 @@ internal sealed class DivinationService(
     private bool RankingEnabled => options.CurrentValue.Features.LongRest;
 
     private DateTimeOffset RankingInstant => (timeProvider ?? TimeProvider.System).GetUtcNow();
-
-    private const string VecTableSuffix = "_vec";
 
     private static readonly IReadOnlyDictionary<string, string> EmptyMetadata =
         new Dictionary<string, string>(0);
@@ -68,31 +54,18 @@ internal sealed class DivinationService(
 
             float[] queryVector = queryEmbedding.Vector.ToArray();
 
-            string blobTableName = DeriveBlobTableName(tableName);
+            string blobTableName = tableName;
 
             if (IsSaga(blobTableName))
             {
                 // Eligibility is part of candidate selection, before the heap ranks and takes K.
-                // A vector accelerator cannot express this exact-head predicate, so Saga always uses
-                // the managed source-of-truth path regardless of the optional accelerator flag.
                 return await SagaRankingEvidenceReader.InSnapshotAsync(connection,
                     () => SearchManagedSagaAsync(connection, primaryKeyColumn, embeddingColumn,
                         queryVector, maxResults, similarityThreshold, cancellationToken), cancellationToken, enabled: RankingEnabled)
                     .ConfigureAwait(false);
             }
 
-            return availability.IsVecAvailable
-                ? Result<DivinationResult[]>.Success(
-                    await SearchVecAsync(
-                        connection,
-                        tableName,
-                        primaryKeyColumn,
-                        embeddingColumn,
-                        queryVector,
-                        maxResults,
-                        similarityThreshold,
-                        cancellationToken).ConfigureAwait(false))
-                : await SearchManagedAsync(
+            return await SearchManagedAsync(
                     connection,
                     blobTableName,
                     primaryKeyColumn,
@@ -140,7 +113,7 @@ internal sealed class DivinationService(
 
             float[] queryVector = queryEmbedding.Vector.ToArray();
 
-            string blobTableName = DeriveBlobTableName(tableName);
+            string blobTableName = tableName;
 
             if (IsSaga(blobTableName))
             {
@@ -151,10 +124,7 @@ internal sealed class DivinationService(
                     .ConfigureAwait(false);
             }
 
-            // The vec0 KNN path (used when IsVecAvailable) has no per-row partition key in its current
-            // schema, so a scoped search always ranks via the managed brute-force path below instead —
-            // but SQL-joined to the scope table so only in-scope rows are read (no unbounded IN of
-            // every matching chunk id).
+            // Scope filtering happens in SQL before scoring and top-K selection.
             return await SearchManagedScopedAsync(
                 connection,
                 blobTableName,
@@ -204,11 +174,7 @@ internal sealed class DivinationService(
                 await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            // Unconditionally the managed path, and not because vec0 happens to be absent today. The
-            // vec0 table has no per-row ownership column, so an accelerated scoped search could only
-            // rank first and filter afterwards - a different candidate set, reached by whether an
-            // optional native asset shipped. Routing both cases here is what makes the answer one answer.
-            string blobTableName = DeriveBlobTableName(tableName);
+            string blobTableName = tableName;
 
             if (IsSaga(blobTableName))
             {
@@ -414,58 +380,6 @@ internal sealed class DivinationService(
 
     private static bool IsSaga(string blobTableName) =>
         string.Equals(blobTableName, "saga_memory_embeddings", StringComparison.Ordinal);
-
-    private static async Task<DivinationResult[]> SearchVecAsync(
-        DbConnection connection,
-        string tableName,
-        string primaryKeyColumn,
-        string embeddingColumn,
-        float[] queryVector,
-        int maxResults,
-        float similarityThreshold,
-        CancellationToken cancellationToken)
-    {
-        await using DbCommand cmd = connection.CreateCommand();
-
-        // tableName/primaryKeyColumn/embeddingColumn are internal constants owned by the calling
-        // feature's retrieval code (e.g. "entry_embeddings_vec", "EntryId", "Embedding") — never user
-        // input — the same trust model the Data/Schema/ object files themselves rely on. The query
-        // vector is a bound blob parameter.
-        cmd.CommandText =
-            $"""
-            SELECT "{primaryKeyColumn}", distance
-            FROM "{tableName}"
-            WHERE "{embeddingColumn}" MATCH @queryVector
-            ORDER BY distance
-            LIMIT @maxResults
-            """;
-
-        AddParameter(cmd, "@queryVector", EmbeddingBlobCodec.Encode(queryVector));
-
-        AddParameter(cmd, "@maxResults", maxResults);
-
-        List<DivinationResult> results = [];
-
-        await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            string id = reader.GetString(0);
-
-            double distance = reader.GetDouble(1);
-
-            // Guaranteed by the explicit `distance_metric=cosine` on the vec0 column declaration in
-            // Data/Schema/Accelerators/ — no version-specific distance-formula guessing.
-            float similarity = (float)(1.0 - distance);
-
-            if (similarity >= similarityThreshold)
-            {
-                results.Add(new DivinationResult(id, similarity, EmptyMetadata));
-            }
-        }
-
-        return [.. results];
-    }
 
     private async Task<Result<DivinationResult[]>> SearchManagedAsync(
         DbConnection connection,
@@ -709,9 +623,4 @@ internal sealed class DivinationService(
 
         cmd.Parameters.Add(parameter);
     }
-
-    private static string DeriveBlobTableName(string vecTableName) =>
-        vecTableName.EndsWith(VecTableSuffix, StringComparison.Ordinal)
-            ? vecTableName[..^VecTableSuffix.Length]
-            : vecTableName;
 }

@@ -867,11 +867,6 @@ public static class GrimoireDatabaseBootstrapper
     /// <see cref="GrimoireSchemaInstallResult"/> is handed to the publisher rather than a success
     /// flag.
     ///
-    /// <para><see cref="WeaveIndexAvailability"/> is set to managed-only unconditionally. The
-    /// templated <c>vec0</c> accelerator tier it used to reflect no longer exists: the hermetic
-    /// SQLCipher runtime ships without extension loading, so managed cosine over the durable BLOB
-    /// tables is the only Divination search path and advertising anything else would be a lie
-    /// (§21.2).</para>
     /// </remarks>
     private static async Task InstallSchemaAsync(
         SqliteConnection installConnection,
@@ -886,15 +881,8 @@ public static class GrimoireDatabaseBootstrapper
     {
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
-        // Settings resolution runs first and owns its own failure. It used to share a try block with
-        // an unrelated GetRequiredService<WeaveIndexAvailability>(), which AddArcanumGrimoireForCli
-        // never registered: the throw happened before the dimension assignment, the catch swallowed
-        // it, and every CLI bootstrap silently installed with the DEFAULT embedding dimension instead
-        // of the configured one. Keep the two resolutions separate, and keep the optional one
-        // nullable, so an absent registration can never again decide the embedding width.
+        // Resolve embedding width independently of optional runtime status services.
         int dimensions = GrimoireEmbeddingDimensionResolver.Resolve(scope.ServiceProvider);
-
-        WeaveIndexAvailability? availability = scope.ServiceProvider.GetService<WeaveIndexAvailability>();
 
         GrimoireSchemaInstaller installer = scope.ServiceProvider.GetRequiredService<GrimoireSchemaInstaller>();
 
@@ -942,9 +930,18 @@ public static class GrimoireDatabaseBootstrapper
                 installConnection, heldInstallationLock, grimoireDirectory,
                 scope.ServiceProvider.GetRequiredService<IGrimoireDbReadiness>());
 
-            result = await GrimoireSchemaReadinessDrain.DrainAsync(installConnection, installer,
-                new GrimoireSchemaBackfillRunner(installer, TimeProvider.System), dimensions, context,
-                execution, result, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                result = await GrimoireSchemaReadinessDrain.DrainAsync(installConnection, installer,
+                    new GrimoireSchemaBackfillRunner(installer, TimeProvider.System), dimensions, context,
+                    execution, result, cancellationToken).ConfigureAwait(false);
+            }
+            catch (LegacyVectorMirrorRetirementRefusedException refused)
+            {
+                Log.Fatal(refused, "Legacy vector mirror retirement was refused. {Message}", refused.Message);
+
+                throw new GrimoireDatabaseUnavailableException(refused.Message, refused);
+            }
         }
 
         // The provisional pre-schema classification belongs to this process only after the
@@ -993,7 +990,7 @@ public static class GrimoireDatabaseBootstrapper
         // commit and before readiness. Publishing earlier would leave the process asserting a
         // generation a rolled-back transaction never recorded (§10.12).
         //
-        // Both are optional resolutions, like the Weave availability flag above: a narrow container
+        // Both are optional resolutions: a narrow container
         // that installs the schema without composing the authority boundary is a legitimate caller,
         // and a GetRequiredService here would turn that into a startup failure.
         CovenantRuntimeGenerationProvider? runtime =
@@ -1020,8 +1017,6 @@ public static class GrimoireDatabaseBootstrapper
                 masterApiKey,
                 cancellationToken).ConfigureAwait(false);
         }
-
-        availability?.SetAvailable(false);
     }
 
     private sealed record DeferredHostProcessToolsDecision(

@@ -547,7 +547,6 @@ public sealed class SagaAnnalsWriteThroughTests : IAsyncLifetime
     private ISagaMemoryStore CreateStore(FeatureSettings features) =>
         new SagaMemoryStore(
             _db!,
-            new WeaveIndexAvailability(),
             new TestOptionsMonitor<ArcanumSettings>(
                 new ArcanumSettings
                 {

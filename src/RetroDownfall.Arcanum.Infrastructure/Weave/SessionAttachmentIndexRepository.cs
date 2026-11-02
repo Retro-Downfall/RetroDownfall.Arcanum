@@ -117,12 +117,8 @@ internal interface ISessionAttachmentIndexWriter
 
 internal sealed class SessionAttachmentIndexRepository(
     ArcanumDbContext db,
-    WeaveIndexAvailability availability,
     IOptionsMonitor<ArcanumSettings> options) : ISessionAttachmentIndexWriter
 {
-    /// <summary>The accelerator's mirror of the chunk embeddings, which no schema file installs.</summary>
-    private const string VectorMirrorTable = "session_attachment_embeddings_vec";
-
     public async Task<SessionAttachmentIndexRequest[]> ReconcileAndFindPendingAsync(
         int expectedDimensions,
         int maxAttachments,
@@ -184,25 +180,6 @@ internal sealed class SessionAttachmentIndexRepository(
                 "DELETE FROM session_attachment_chunks WHERE AttachmentId NOT IN (SELECT Id FROM SessionAttachments)";
 
             _ = await orphanChunks.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-
-        // The mirror holds the embedding itself, so whether it is swept is a property of the database,
-        // not of whether this process loaded an accelerator: a plain mirror an earlier build filled is
-        // swept whatever the flag says, and a legacy vec0 mirror this runtime cannot open is skipped.
-        if (await SagaVectorMirror.ClassifyAsync(
-                connection,
-                transaction,
-                VectorMirrorTable,
-                cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable)
-        {
-            await using DbCommand orphanVec = connection.CreateCommand();
-
-            orphanVec.Transaction = transaction;
-
-            orphanVec.CommandText =
-                "DELETE FROM session_attachment_embeddings_vec WHERE ChunkId NOT IN (SELECT ChunkId FROM session_attachment_chunks)";
-
-            _ = await orphanVec.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
         List<SessionAttachmentIndexRequest> requests = [];
@@ -1014,9 +991,6 @@ internal sealed class SessionAttachmentIndexRepository(
             }
         }
 
-        await DeleteVecRowsAsync(connection, transaction, chunkIds, cancellationToken)
-            .ConfigureAwait(false);
-
         await using DbCommand delete = connection.CreateCommand();
 
         delete.Transaction = transaction;
@@ -1057,42 +1031,6 @@ internal sealed class SessionAttachmentIndexRepository(
             """;
 
         AddParameter(command, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
-
-        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task DeleteVecRowsAsync(
-        DbConnection connection,
-        DbTransaction transaction,
-        IReadOnlyList<string> chunkIds,
-        CancellationToken cancellationToken)
-    {
-        if (chunkIds.Count == 0)
-        {
-            return;
-        }
-
-        // Read from the catalog rather than the process flag, for the reason the orphan sweep above
-        // gives: a plain mirror is deleted from whatever the flag says, and a legacy vec0 mirror this
-        // runtime cannot open is skipped rather than failing the delete it rides on.
-        if (await SagaVectorMirror.ClassifyAsync(
-                connection,
-                transaction,
-                VectorMirrorTable,
-                cancellationToken).ConfigureAwait(false) is not SagaVectorMirrorKind.PlainTable)
-        {
-            return;
-        }
-
-        await using DbCommand command = connection.CreateCommand();
-
-        command.Transaction = transaction;
-
-        command.CommandText = BuildInCommand(
-            "DELETE FROM session_attachment_embeddings_vec WHERE ChunkId IN (",
-            chunkIds,
-            command,
-            ")");
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -1192,31 +1130,6 @@ internal sealed class SessionAttachmentIndexRepository(
             AddParameter(blob, "@dim", vector.Length);
 
             _ = await blob.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-
-        if (!availability.IsVecAvailable)
-        {
-            return;
-        }
-
-        await using DbCommand vec = connection.CreateCommand();
-
-        vec.Transaction = transaction;
-
-        vec.CommandText =
-            "INSERT INTO session_attachment_embeddings_vec (ChunkId, Embedding) VALUES (@id, @embedding)";
-
-        AddParameter(vec, "@id", chunkId);
-
-        AddParameter(vec, "@embedding", encoded);
-
-        try
-        {
-            _ = await vec.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (SqliteException ex) when (ex.SqliteErrorCode == 1)
-        {
-            availability.SetAvailable(false);
         }
     }
 

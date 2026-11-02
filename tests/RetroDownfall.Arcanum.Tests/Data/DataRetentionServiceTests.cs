@@ -263,7 +263,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     [SkippableFact]
 
-    public async Task ApplyAsync_DeleteSession_TouchesTheDerivedVectorTableABoundedNumberOfTimes()
+    public async Task ApplyAsync_DeleteSession_RemovesEveryBlobEmbeddingAcrossABatch()
     {
         RequireSqlCipher();
 
@@ -273,37 +273,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         Guid sessionId = await ReadEntrySessionIdAsync(entryIds[0]);
 
-        int vectorStatements = 0;
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
-        SqliteConnection connection =
-            (SqliteConnection)_db!.Database.GetDbConnection();
-
-        connection.CreateFunction(
-            "count_vector_statement",
-            () =>
-            {
-                _ = Interlocked.Increment(ref vectorStatements);
-
-                return "no-such-entry";
-            });
-
-        // Stands in for the sqlite-vec shadow table. It yields exactly one row per statement that
-        // touches it, so the counter measures SQL statements rather than rows, and the INSTEAD OF
-        // trigger keeps the production DELETE working against a view.
-        await ExecuteAsync(
-            """
-            CREATE VIEW entry_embeddings_vec AS
-            SELECT count_vector_statement() AS EntryId;
-            """);
-
-        await ExecuteAsync(
-            """
-            CREATE TRIGGER entry_embeddings_vec_instead_of_delete
-            INSTEAD OF DELETE ON entry_embeddings_vec
-            BEGIN
-                SELECT 1;
-            END;
-            """);
+        using SqliteStatementTrace trace = new(connection);
 
         IDataRetentionService service = CreateService();
 
@@ -325,11 +297,13 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.True(applied.Value.Reconciled);
 
         Assert.Equal(0, await CountAllAsync("entry_embeddings"));
+        int embeddingStatements = trace.Statements.Count(static statement =>
+            statement.Contains("entry_embeddings", StringComparison.OrdinalIgnoreCase));
 
         Assert.True(
-            vectorStatements < entryCount,
-            "Deleting a session must not issue derived-index work per entry, but it touched "
-                + $"entry_embeddings_vec {vectorStatements} times for {entryCount} entries.");
+            embeddingStatements < entryCount,
+            $"Deleting a session touched entry_embeddings {embeddingStatements} times for {entryCount} entries.");
+
     }
 
     [SkippableFact]
@@ -2835,16 +2809,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         Assert.Equal(0, await CountAllAsync("UnseenServantWatermarks"));
 
-        if (await TableExistsInTestAsync("entry_embeddings_vec"))
-        {
-            Assert.Equal(0, await CountAllAsync("entry_embeddings_vec"));
-        }
-
-        if (await TableExistsInTestAsync("workspace_file_embeddings_vec"))
-        {
-            Assert.Equal(0, await CountAllAsync("workspace_file_embeddings_vec"));
-        }
-
         Assert.False(File.Exists(auditPath));
 
         Assert.True(File.Exists(operationalLogPath));
@@ -2982,11 +2946,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountAllAsync("tapestry_generations"));
 
         Assert.Equal(0, await CountAllAsync("tapestry_node_embeddings"));
-
-        if (await TableExistsInTestAsync("tapestry_node_embeddings_vec"))
-        {
-            Assert.Equal(0, await CountAllAsync("tapestry_node_embeddings_vec"));
-        }
     }
 
     [SkippableFact]

@@ -30,22 +30,22 @@ public sealed partial class DataRetentionServiceTests
 
         using RetentionSchemaCensus census = new();
 
-        Assert.False(await census.ExistsAsync(connection, "rv237_probe_vec", CancellationToken.None));
+        Assert.False(await census.ExistsAsync(connection, "rv237_catalog_probe", CancellationToken.None));
 
         string create = shape switch
         {
-            "view" => "CREATE VIEW rv237_probe_vec AS SELECT 1 AS Id",
-            "virtual" => "CREATE VIRTUAL TABLE rv237_probe_vec USING fts5(Content)",
-            _ => "CREATE TABLE rv237_probe_vec (Id TEXT)",
+            "view" => "CREATE VIEW rv237_catalog_probe AS SELECT 1 AS Id",
+            "virtual" => "CREATE VIRTUAL TABLE rv237_catalog_probe USING fts5(Content)",
+            _ => "CREATE TABLE rv237_catalog_probe (Id TEXT)",
         };
 
         await ExecuteCensusSqlAsync(other, create);
 
-        Assert.Equal(shape != "virtual", await census.ExistsAsync(connection, "rv237_probe_vec", CancellationToken.None));
+        Assert.True(await census.ExistsAsync(connection, "rv237_catalog_probe", CancellationToken.None));
 
-        await ExecuteCensusSqlAsync(other, shape == "view" ? "DROP VIEW rv237_probe_vec" : "DROP TABLE rv237_probe_vec");
+        await ExecuteCensusSqlAsync(other, shape == "view" ? "DROP VIEW rv237_catalog_probe" : "DROP TABLE rv237_catalog_probe");
 
-        Assert.False(await census.ExistsAsync(connection, "rv237_probe_vec", CancellationToken.None));
+        Assert.False(await census.ExistsAsync(connection, "rv237_catalog_probe", CancellationToken.None));
     }
 
     [SkippableFact]
@@ -111,36 +111,6 @@ public sealed partial class DataRetentionServiceTests
         }
 
         Assert.False(await census.ExistsAsync(connection, "rv237_probe", CancellationToken.None));
-    }
-
-    [SkippableFact]
-    public async Task SchemaCensus_never_opens_an_unavailable_legacy_vector_module()
-    {
-        RequireSqlCipher();
-
-        await _db!.Database.OpenConnectionAsync();
-
-        SqliteConnection connection = (SqliteConnection)_db.Database.GetDbConnection();
-
-        await ExecuteCensusSqlAsync(connection,
-            """
-            CREATE TABLE rv237_probe_vec (Id TEXT);
-            DROP TABLE rv237_probe_vec;
-            PRAGMA writable_schema = ON;
-            INSERT INTO sqlite_schema(type, name, tbl_name, rootpage, sql)
-            VALUES ('table', 'rv237_probe_vec', 'rv237_probe_vec', 0,
-                    'CREATE VIRTUAL TABLE rv237_probe_vec USING vec0(Id TEXT PRIMARY KEY, Embedding FLOAT[768])');
-            PRAGMA writable_schema = RESET;
-            """);
-
-        using RetentionSchemaCensus census = new();
-
-        Assert.False(await census.ExistsAsync(connection, "rv237_probe_vec", CancellationToken.None));
-
-        SqliteException error = await Assert.ThrowsAsync<SqliteException>(() =>
-            ExecuteCensusSqlAsync(connection, "SELECT COUNT(*) FROM rv237_probe_vec"));
-
-        Assert.Contains("no such module: vec0", error.Message, StringComparison.Ordinal);
     }
 
     [SkippableFact]

@@ -10,6 +10,82 @@ namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry.Raptor;
 public sealed partial class RaptorScaleProbe
 {
     [Fact]
+    public void Resource_sampler_serializes_overlapping_callbacks()
+    {
+        using ManualResetEventSlim firstEntered = new();
+
+        using ManualResetEventSlim secondStarted = new();
+
+        using ManualResetEventSlim release = new();
+
+        int entries = 0;
+
+        int secondAttempting = 0;
+
+        long firstResult = 0;
+
+        long secondResult = 0;
+
+        WorkingSetSampler sampler = new(() =>
+        {
+            int entry = Interlocked.Increment(ref entries);
+
+            firstEntered.Set();
+
+            release.Wait();
+
+            return entry;
+        });
+
+        Thread first = new(() => firstResult = sampler.Sample()) { IsBackground = true };
+
+        Thread second = new(() =>
+        {
+            secondStarted.Set();
+
+            Volatile.Write(ref secondAttempting, 1);
+
+            secondResult = sampler.Sample();
+        })
+        { IsBackground = true };
+
+        try
+        {
+            first.Start();
+
+            Assert.True(firstEntered.Wait(TimeSpan.FromSeconds(10)), "First sample did not enter.");
+
+            second.Start();
+
+            Assert.True(secondStarted.Wait(TimeSpan.FromSeconds(10)), "Competing sampler thread did not start.");
+
+            Assert.True(SpinWait.SpinUntil(
+                () => Volatile.Read(ref secondAttempting) == 1
+                    && (second.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0,
+                TimeSpan.FromSeconds(10)), "Competing sampler thread did not reach a blocking operation.");
+
+            Assert.Equal(1, Volatile.Read(ref entries));
+        }
+        finally
+        {
+            release.Set();
+
+            Assert.True(first.Join(TimeSpan.FromSeconds(10)), "First sampler thread did not finish.");
+
+            if ((second.ThreadState & System.Threading.ThreadState.Unstarted) == 0)
+            {
+                Assert.True(second.Join(TimeSpan.FromSeconds(10)), "Competing sampler thread did not finish.");
+            }
+        }
+
+        Assert.Equal(1, firstResult);
+
+        Assert.Equal(2, secondResult);
+
+        Assert.Equal(2, entries);
+    }
+
+    [Fact]
     public void Legacy_approximate_recall_stops_before_work_when_its_budget_is_canceled()
     {
         RaptorPoint[] points = Corpus(100);

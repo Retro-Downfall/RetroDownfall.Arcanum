@@ -40,11 +40,11 @@ public sealed partial class TapestryRevisionSchemaTests
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
 
-        GrimoireSchemaInstallResult installed = await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
+        GrimoireSchemaInstallResult installed = await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(connection, 64, CancellationToken.None);
 
         Assert.True(installed.Core.IsHealthy);
 
-        Assert.Equal(34, installed.Core.SchemaVersion);
+        Assert.Equal(35, installed.Core.SchemaVersion);
 
         Assert.Null(await GrimoireSchemaEvolutionInstallerTests.ReadJournalAsync(connection));
 

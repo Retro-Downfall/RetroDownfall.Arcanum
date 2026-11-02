@@ -356,7 +356,6 @@ internal sealed partial class BackupRestoreService
         BackupRestoreErasureScrubStatus scrub = !receipt.Touched
             ? BackupRestoreErasureScrubStatus.NotApplicable
             : receipt.FullTextVerified
-                && receipt.VectorMirrorsVerified
                 && receipt.CheckpointTruncated
                 && erasure.ExtractedDatabaseDeleted
                 && committedClean

@@ -241,9 +241,6 @@ public sealed record TapestrySummaryReuseCandidate(
 /// </summary>
 public static class TapestryStorageKeys
 {
-    /// <summary>The vec0 acceleration table. Divination strips the suffix for the managed fallback.</summary>
-    public const string VectorTable = "tapestry_node_embeddings_vec";
-
     /// <summary>The node metadata table joined for scoped searches.</summary>
     public const string NodeTable = "tapestry_nodes";
 

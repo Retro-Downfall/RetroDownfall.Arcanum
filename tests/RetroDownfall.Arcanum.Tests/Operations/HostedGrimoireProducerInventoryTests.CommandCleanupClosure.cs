@@ -48,10 +48,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         };
 
         // Keep the new optional scalar lane real in this source fixture. Its full census
-        // and mirror dependency compile alongside the original command ownership source.
+        // compiles alongside the original command ownership source.
         SyntaxTree census = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src/RetroDownfall.Arcanum.Infrastructure/Data/RetentionSchemaCensus.cs")), path: "src/RetroDownfall.Arcanum.Infrastructure/Data/RetentionSchemaCensus.cs");
-
-        SyntaxTree mirror = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src/RetroDownfall.Arcanum.Infrastructure/Data/SagaVectorMirror.cs")), path: "src/RetroDownfall.Arcanum.Infrastructure/Data/SagaVectorMirror.cs");
 
         string censusArgument = useCensus ? ", census" : "";
 
@@ -62,7 +60,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             + "await using System.Data.Common.DbCommand command = connection.CreateCommand(); command.CommandText = \"campaign_rollup_source_membership\"; "
             + "await RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CampaignRollupSourceStorage.ResolveMembershipAsync(command, token" + censusArgument + "); await Task.CompletedTask;";
 
-        CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(body, "internal static class NativeCommandInput { internal static extern Microsoft.Data.Sqlite.SqliteConnection Take(); internal static Microsoft.Data.Sqlite.SqliteConnection EffectfulTake() { System.IO.File.Delete(\"command-input\"); return Take(); } }"), "RetroDownfall.Arcanum.Api").AddSyntaxTrees(actual, census, mirror, globals);
+        CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(body, "internal static class NativeCommandInput { internal static extern Microsoft.Data.Sqlite.SqliteConnection Take(); internal static Microsoft.Data.Sqlite.SqliteConnection EffectfulTake() { System.IO.File.Delete(\"command-input\"); return Take(); } }"), "RetroDownfall.Arcanum.Api").AddSyntaxTrees(actual, census, globals);
 
         Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
 

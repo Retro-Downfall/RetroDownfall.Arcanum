@@ -28,6 +28,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Secrets.Security;
@@ -364,7 +366,7 @@ public sealed partial class BackupRestoreServiceTests : IDisposable
     /// have vectors, which is the state a semantic search then answers from.</para>
     /// </remarks>
     [Fact]
-    public async Task A_restore_under_a_different_embedding_width_takes_the_vector_mirror_with_it()
+    public async Task A_restore_under_a_different_embedding_width_retires_the_legacy_mirror()
     {
         Fixture fixture = await CreateFixtureAsync(mirroredEmbeddings: true);
 
@@ -391,7 +393,7 @@ public sealed partial class BackupRestoreServiceTests : IDisposable
 
         Assert.Equal(
             "0",
-            await ScalarAsync(connection, "SELECT COUNT(*) FROM entry_embeddings_vec;"));
+            await ScalarAsync(connection, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'entry_embeddings_vec';"));
     }
 
     /// <summary>
@@ -3801,7 +3803,7 @@ public sealed partial class BackupRestoreServiceTests : IDisposable
 
             await File.WriteAllTextAsync(attachment, "attachment bytes");
 
-            await BuildDatabaseAsync();
+            await BuildDatabaseAsync(mirroredEmbeddings);
 
             if (refusableSessionTrio)
             {
@@ -3987,7 +3989,7 @@ public sealed partial class BackupRestoreServiceTests : IDisposable
             return archive;
         }
 
-        private async Task BuildDatabaseAsync()
+        private async Task BuildDatabaseAsync(bool legacyMirrors)
         {
             GrimoireKdfSidecar sidecar = GrimoireKdfSidecar.Create(
                 GrimoireKeyDerivation.KdfVersion2);
@@ -4015,7 +4017,9 @@ public sealed partial class BackupRestoreServiceTests : IDisposable
                 }.ToString(),
                 CancellationToken.None);
 
-            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
+            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection,
+                legacyMirrors ? CoreSchemaVersionThirtyFourFixture.ChainSet() : GrimoireSchemaVersionChains.Default,
+                1536, CancellationToken.None);
 
             await using SqliteCommand seed = connection.CreateCommand();
 
@@ -4151,15 +4155,8 @@ public sealed partial class BackupRestoreServiceTests : IDisposable
         /// A derived vector at a width this installation is not configured for, and its mirror row.
         /// </summary>
         /// <remarks>
-        /// The mirror is an ordinary table here rather than a <c>vec0</c> virtual one, because the
-        /// accelerator is not loadable in this suite — the same stand-in the retention suites use. What
-        /// is under test is which tables a restore reconciles, and that is decided by name and key
-        /// column rather than by whether the accelerator is present: production guards every mirror
-        /// statement with an existence check for exactly that reason.
-        ///
-        /// <para>Seeded into the installation the archive is taken from, so the width mismatch arrives
-        /// through a real archive: the database snapshot is a page copy of the whole encrypted file, so
-        /// a table joins a backup by existing.</para>
+        /// Seeded under the published Core34 schema so the real restore must retire the legacy
+        /// mirror during its Core35 transition before dropping mismatched durable vectors.
         /// </remarks>
         private async Task SeedMirroredEmbeddingAsync()
         {

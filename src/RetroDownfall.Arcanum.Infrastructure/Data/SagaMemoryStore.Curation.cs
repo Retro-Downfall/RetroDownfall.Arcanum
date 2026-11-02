@@ -91,7 +91,7 @@ internal sealed partial class SagaMemoryStore
                 // transaction has already been rolled back/disposed by the `await using` below, so the
                 // retry starts a brand-new transaction rather than reusing a stale one or leaving a
                 // retirement split across saga_memories, saga_memory_embeddings,
-                // saga_memory_embeddings_vec, saga_retirement_suppressions, and the Annals.
+                // saga_retirement_suppressions and the Annals.
                 await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand readCmd = connection.CreateCommand();
@@ -179,11 +179,6 @@ internal sealed partial class SagaMemoryStore
 
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
-
-                // Whatever the accelerator flag says: retirement promises no retrieval path can reach
-                // the memory, and a mirror an earlier build filled is one.
-                _ = await SagaVectorMirror.DeleteAsync(connection, transaction, id, cancellationToken)
-                    .ConfigureAwait(false);
 
                 byte[] suppressionKey = await SagaSuppressionKeyStore
                     .ReadOrCreateAsync(connection, transaction, retiredAt, cancellationToken).ConfigureAwait(false);
@@ -300,7 +295,7 @@ internal sealed partial class SagaMemoryStore
         if (embedding.Length != expectedDimensions)
         {
             throw new InvalidOperationException(
-                $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions. Rejecting reinstate to avoid corrupting the vec0 index.""");
+                $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions. Rejecting reinstate to preserve the configured embedding width.""");
         }
 
         return await SqliteBusyRetry.ExecuteAsync(
@@ -406,17 +401,6 @@ internal sealed partial class SagaMemoryStore
 
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
-
-                // Written only while the accelerator is live. Without it, any row an earlier build left
-                // for this memory goes instead: it was computed for a memory that has since been retired,
-                // and nothing this process runs can vouch for it.
-                _ = await SagaVectorMirror.UpsertAsync(
-                    connection,
-                    transaction,
-                    id,
-                    embedding,
-                    availability.IsVecAvailable,
-                    cancellationToken).ConfigureAwait(false);
 
                 // The digest is recomputed from the installation's key rather than remembered from the
                 // retirement that created it: nothing here names which retirement a memory's suppression
@@ -526,7 +510,7 @@ internal sealed partial class SagaMemoryStore
         if (embedding.Length != expectedDimensions)
         {
             throw new InvalidOperationException(
-                $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions. Rejecting correct to avoid corrupting the vec0 index.""");
+                $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions. Rejecting correct to preserve the configured embedding width.""");
         }
 
         bool releasePermitted = MemoryErasureFingerprintRelease.OperatorMayRelease(releaseAuthority);
@@ -656,17 +640,9 @@ internal sealed partial class SagaMemoryStore
                 {
                     embeddingCmd.Transaction = transaction;
 
-                    // An upsert rather than an update, because the row this replaces can be absent. A
-                    // memory in the EmbeddingMissing state -- a saga_memories row whose
-                    // saga_memory_embeddings row is gone, which is what a Grimoire restored from a
-                    // backup taken under a different configured embedding width holds -- is still
-                    // correctable, and an UPDATE matched nothing there and reported Applied anyway. The
-                    // memory kept saying EmbeddingMissing to the operator who had just been told the
-                    // correction landed, while the vec mirror below, an INSERT OR REPLACE, created its
-                    // row regardless and left the two tables disagreeing about the same memory.
-                    // MemoryId is this table's PRIMARY KEY, so OR REPLACE is a true upsert on it:
-                    // publishing the corrected content's embedding is what the verb promised either
-                    // way, and healing the missing row is how it keeps that promise.
+                    // An upsert heals an absent embedding row after a restore drops vectors of
+                    // another configured width. An UPDATE alone would report Applied while leaving
+                    // the corrected memory unsearchable. MemoryId is the table's primary key.
                     embeddingCmd.CommandText =
                         """
                         INSERT OR REPLACE INTO "saga_memory_embeddings" ("MemoryId", "Embedding", "Dim")
@@ -681,16 +657,6 @@ internal sealed partial class SagaMemoryStore
 
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
-
-                // Written only while the accelerator is live. Without it, the old vector goes instead:
-                // it describes text this memory no longer holds.
-                _ = await SagaVectorMirror.UpsertAsync(
-                    connection,
-                    transaction,
-                    id,
-                    embedding,
-                    availability.IsVecAvailable,
-                    cancellationToken).ConfigureAwait(false);
 
                 // The same ungated pair RetireAsync and ReinstateAsync write, and for the same reason:
                 // the record that the operator corrected this memory is evidence rather than retrieval.

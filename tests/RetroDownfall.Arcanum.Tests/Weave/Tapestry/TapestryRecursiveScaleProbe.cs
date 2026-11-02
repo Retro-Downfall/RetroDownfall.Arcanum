@@ -55,7 +55,7 @@ public sealed partial class TapestryRecursiveScaleProbe(GrimoireFixture fixture,
 
         _db = fixture.CreateContext(_path);
 
-        _store = new(_db, new WeaveIndexAvailability());
+        _store = new(_db);
 
         return Task.CompletedTask;
     }

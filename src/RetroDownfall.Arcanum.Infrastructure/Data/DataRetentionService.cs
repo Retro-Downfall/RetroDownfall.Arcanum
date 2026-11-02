@@ -233,10 +233,9 @@ internal sealed partial class DataRetentionService(
             RetentionDataClass.AttachmentEmbeddings,
             [
                 "session_attachment_embeddings",
-                "session_attachment_embeddings_vec",
                 "session_attachment_index_state",
             ],
-            "Derived attachment embedding blobs, vector mirrors, and index state.",
+            "Derived attachment embedding blobs and index state.",
             retention,
             cancellationToken).ConfigureAwait(false);
 
@@ -294,7 +293,6 @@ internal sealed partial class DataRetentionService(
             [
                 "saga_memories",
                 "saga_memory_embeddings",
-                "saga_memory_embeddings_vec",
                 "saga_memory_attachment_provenance",
                 "saga_extraction_watermarks",
                 "saga_retirement_suppressions",
@@ -357,16 +355,16 @@ internal sealed partial class DataRetentionService(
         await AddCompositeDatabaseStatusAsync(
             items,
             RetentionDataClass.WorkspaceEmbeddings,
-            ["workspace_file_embeddings", "workspace_file_embeddings_vec"],
-            "Derived workspace embedding blobs and vector mirrors.",
+            ["workspace_file_embeddings"],
+            "Derived workspace embedding blobs.",
             retention,
             cancellationToken).ConfigureAwait(false);
 
         await AddCompositeDatabaseStatusAsync(
             items,
             RetentionDataClass.SessionEntryEmbeddings,
-            ["entry_embeddings", "entry_embeddings_vec"],
-            "Derived session-entry embedding blobs and vector mirrors.",
+            ["entry_embeddings"],
+            "Derived session-entry embedding blobs.",
             retention,
             cancellationToken).ConfigureAwait(false);
 
@@ -379,9 +377,8 @@ internal sealed partial class DataRetentionService(
                 "tapestry_scope_revisions",
                 "tapestry_nodes",
                 "tapestry_node_embeddings",
-                "tapestry_node_embeddings_vec",
             ],
-            "Derived Tapestry generations, model-written summary nodes, embedding blobs, and vector mirrors.",
+            "Derived Tapestry generations, model-written summary nodes, and embedding blobs.",
             retention,
             cancellationToken).ConfigureAwait(false);
 
@@ -2736,7 +2733,6 @@ internal sealed partial class DataRetentionService(
                 0,
                 0,
                 snapshot.AttachmentEmbeddingCount
-                    + snapshot.AttachmentVectorEmbeddingCount
                     + snapshot.AttachmentIndexStateCount),
             new(
                 RetentionDataClass.SagaMemories,
@@ -2745,12 +2741,6 @@ internal sealed partial class DataRetentionService(
                 0,
                 snapshot.SagaExtractionWatermarkCount + snapshot.LongRestDiscoveryCount + snapshot.SagaCommittedUseCount),
             new(RetentionDataClass.Annals, 0, 0, 0, snapshot.MemoryEvaluationCount),
-            new(
-                RetentionDataClass.SessionEntryEmbeddings,
-                0,
-                0,
-                0,
-                snapshot.EntryVectorEmbeddingCount),
             new(
                 RetentionDataClass.CampaignSummaries,
                 0,
@@ -2895,7 +2885,6 @@ internal sealed partial class DataRetentionService(
                 0,
                 0,
                 attachment.EmbeddingCount
-                    + attachment.VectorEmbeddingCount
                     + attachment.IndexStateCount),
             new(RetentionDataClass.Tapestry, 0, 0, 0, attachment.TapestryRows),
         ];
@@ -3221,7 +3210,6 @@ internal sealed partial class DataRetentionService(
                         + " WHERE \"CampaignId\" = @campaignId AND ScopeKindCode = @campaignKind",
                     campaignAndKind),
 
-                new("saga_memory_embeddings_vec", OwnedMemories, campaignAndKind),
                 new("saga_memory_embeddings", OwnedMemories, campaignAndKind),
                 new("saga_memory_attachment_provenance", OwnedMemories, campaignAndKind),
 
@@ -3316,11 +3304,10 @@ internal sealed partial class DataRetentionService(
         scope switch
         {
             MemoryResetScope.Entry =>
-                [Whole("entry_embeddings_vec"), Whole("entry_embeddings")],
+                [Whole("entry_embeddings")],
 
             MemoryResetScope.Attachments =>
                 [
-                    Whole("session_attachment_embeddings_vec"),
                     Whole("session_attachment_embeddings"),
                     Whole("session_attachment_chunks"),
                     Whole("session_attachment_index_state"),
@@ -3328,7 +3315,6 @@ internal sealed partial class DataRetentionService(
 
             MemoryResetScope.Workspace =>
                 [
-                    Whole("workspace_file_embeddings_vec"),
                     Whole("workspace_file_embeddings"),
                     Whole("workspace_file_chunks"),
                 ],
@@ -3337,7 +3323,7 @@ internal sealed partial class DataRetentionService(
                 [
                     new("annal_review_markers", "SubjectStoreCode = 1", []),
                     .. AnnalsResetSelections(AnnalSubjectStore.Saga),
-                    Whole("saga_memory_embeddings_vec"),
+
                     Whole("saga_memory_embeddings"),
                     Whole("saga_memory_attachment_provenance"),
                     Whole("saga_extraction_watermarks"),
@@ -3775,12 +3761,6 @@ internal sealed partial class DataRetentionService(
             normalizedEntryIds,
             CancellationToken.None).ConfigureAwait(false) == 0;
 
-        reconciled &= await CountIdSetAsync(
-            "entry_embeddings_vec",
-            "lower(replace(EntryId, '-', ''))",
-            normalizedEntryIds,
-            CancellationToken.None).ConfigureAwait(false) == 0;
-
         foreach (AttachmentPlanSnapshot attachment in snapshot.Attachments)
         {
             reconciled &= await CountTableAsync(
@@ -3795,12 +3775,6 @@ internal sealed partial class DataRetentionService(
 
         reconciled &= await CountIdSetAsync(
             "session_attachment_embeddings",
-            "ChunkId",
-            snapshotChunkIds,
-            CancellationToken.None).ConfigureAwait(false) == 0;
-
-        reconciled &= await CountIdSetAsync(
-            "session_attachment_embeddings_vec",
             "ChunkId",
             snapshotChunkIds,
             CancellationToken.None).ConfigureAwait(false) == 0;
@@ -4039,12 +4013,6 @@ internal sealed partial class DataRetentionService(
 
         reconciled &= await CountIdSetAsync(
             "session_attachment_embeddings",
-            "ChunkId",
-            snapshot.ChunkIds,
-            CancellationToken.None).ConfigureAwait(false) == 0;
-
-        reconciled &= await CountIdSetAsync(
-            "session_attachment_embeddings_vec",
             "ChunkId",
             snapshot.ChunkIds,
             CancellationToken.None).ConfigureAwait(false) == 0;
@@ -4321,10 +4289,6 @@ internal sealed partial class DataRetentionService(
             sessionId,
             cancellationToken).ConfigureAwait(false);
 
-        long entryVectorEmbeddings = await CountJoinedEntryVectorEmbeddingsAsync(
-            sessionId,
-            cancellationToken).ConfigureAwait(false);
-
         // Counted from the entries rather than from the index: Entries_ai mirrors one search row per
         // entry, and Entries_fts.SessionId is UNINDEXED, so asking the index this question walks the
         // whole content index once per snapshot.
@@ -4362,20 +4326,18 @@ internal sealed partial class DataRetentionService(
             [.. entryRowIds],
             [.. attachments],
             entryEmbeddings,
-            entryVectorEmbeddings,
             entryFts,
             consultations,
             sagaWatermarks,
             attachments.Sum(static attachment => attachment.ChunkCount),
             attachments.Sum(static attachment => attachment.EmbeddingCount),
-            attachments.Sum(static attachment => attachment.VectorEmbeddingCount),
             attachments.Sum(static attachment => attachment.IndexStateCount),
             campaignContinuity,
             summaries,
             longRestDiscovery,
             await MemoryEvaluationErasurePlan.ReadSessionClosureAsync(connection, null, sessionId, cancellationToken).ConfigureAwait(false),
             await CountTableAsync("saga_committed_uses", "AssistantEntryId IN (SELECT AssistantEntryId FROM assistant_entry_finalizations WHERE SessionId = @id)", cancellationToken, ("@id", sessionId.ToString("D").ToUpperInvariant())).ConfigureAwait(false),
-            await TapestryStore.ReadRetentionGraphRowsAsync(connection, null, sessionId, true, cancellationToken, _pruneSchemaCensus.Value).ConfigureAwait(false));
+            await TapestryStore.ReadRetentionGraphRowsAsync(connection, null, sessionId, true, cancellationToken).ConfigureAwait(false));
     }
 
     private async Task<AttachmentPlanSnapshot?> ReadAttachmentSnapshotAsync(
@@ -4452,10 +4414,6 @@ internal sealed partial class DataRetentionService(
             snapshot.Id,
             cancellationToken).ConfigureAwait(false);
 
-        long vectorEmbeddings = await CountAttachmentVectorEmbeddingsAsync(
-            snapshot.Id,
-            cancellationToken).ConfigureAwait(false);
-
         (bool fileExists, long fileBytes) = ProbeOwnedFile(
             _attachmentsRoot,
             snapshot.RelativePath);
@@ -4473,9 +4431,8 @@ internal sealed partial class DataRetentionService(
             ChunkIds = [.. chunkIds],
             ChunkCount = chunkIds.Count,
             EmbeddingCount = embeddings,
-            VectorEmbeddingCount = vectorEmbeddings,
             IndexStateCount = state,
-            TapestryRows = snapshot.SessionId is Guid owner ? await TapestryStore.ReadRetentionGraphRowsAsync(connection, null, owner, false, cancellationToken, _pruneSchemaCensus.Value).ConfigureAwait(false) : 0,
+            TapestryRows = snapshot.SessionId is Guid owner ? await TapestryStore.ReadRetentionGraphRowsAsync(connection, null, owner, false, cancellationToken).ConfigureAwait(false) : 0,
         };
     }
 
@@ -4569,7 +4526,7 @@ internal sealed partial class DataRetentionService(
             attachmentSnapshots.Add(attachment);
         }
 
-        (long entryEmbeddings, long entryVectorEmbeddings, long entryFts, long consultations,
+        (long entryEmbeddings, long entryFts, long consultations,
             long sagaWatermarks, long committedUses) = await ReadSessionDerivedCountsInTransactionAsync(
                 connection, transaction, sessionId, cancellationToken).ConfigureAwait(false);
 
@@ -4589,13 +4546,11 @@ internal sealed partial class DataRetentionService(
             [.. entryRowIds],
             [.. attachmentSnapshots],
             entryEmbeddings,
-            entryVectorEmbeddings,
             entryFts,
             consultations,
             sagaWatermarks,
             attachmentSnapshots.Sum(static attachment => attachment.ChunkCount),
             attachmentSnapshots.Sum(static attachment => attachment.EmbeddingCount),
-            attachmentSnapshots.Sum(static attachment => attachment.VectorEmbeddingCount),
             attachmentSnapshots.Sum(static attachment => attachment.IndexStateCount),
             campaignContinuity,
             summaries,
@@ -4678,14 +4633,6 @@ internal sealed partial class DataRetentionService(
             cancellationToken,
             ("@id", attachmentId.ToString("N"))).ConfigureAwait(false);
 
-        long vectorEmbeddings = await CountInTransactionAsync(
-            connection,
-            transaction,
-            "session_attachment_embeddings_vec",
-            "ChunkId IN (SELECT ChunkId FROM session_attachment_chunks WHERE lower(replace(AttachmentId, '-', '')) = @id)",
-            cancellationToken,
-            ("@id", attachmentId.ToString("N"))).ConfigureAwait(false);
-
         long indexState = await CountInTransactionAsync(
             connection,
             transaction,
@@ -4708,7 +4655,6 @@ internal sealed partial class DataRetentionService(
             [.. chunkIds],
             chunkIds.Count,
             embeddings,
-            vectorEmbeddings,
             indexState,
             sessionId is Guid owner ? await TapestryStore.ReadRetentionGraphRowsAsync(connection, transaction, owner, false, cancellationToken).ConfigureAwait(false) : 0);
     }
@@ -4846,13 +4792,11 @@ internal sealed partial class DataRetentionService(
         long bytes = snapshot.Attachments.Sum(static item => item.ByteLength);
 
         long derived = snapshot.EntryEmbeddingCount
-            + snapshot.EntryVectorEmbeddingCount
             + snapshot.EntryFtsCount
             + snapshot.AttachmentMemoryConsultationCount
             + snapshot.SagaExtractionWatermarkCount
             + snapshot.AttachmentChunkCount
             + snapshot.AttachmentEmbeddingCount
-            + snapshot.AttachmentVectorEmbeddingCount
             + snapshot.AttachmentIndexStateCount
             + snapshot.CampaignContinuity.Rows
             + snapshot.Summaries.Rows
@@ -4899,7 +4843,6 @@ internal sealed partial class DataRetentionService(
     {
         long derived = snapshot.ChunkCount
             + snapshot.EmbeddingCount
-            + snapshot.VectorEmbeddingCount
             + snapshot.IndexStateCount
             + snapshot.TapestryRows;
 
@@ -4944,7 +4887,6 @@ internal sealed partial class DataRetentionService(
         && actual.ChunkIds.SequenceEqual(expected.ChunkIds, StringComparer.Ordinal)
         && actual.ChunkCount == expected.ChunkCount
         && actual.EmbeddingCount == expected.EmbeddingCount
-        && actual.VectorEmbeddingCount == expected.VectorEmbeddingCount
         && actual.IndexStateCount == expected.IndexStateCount
         && actual.TapestryRows == expected.TapestryRows;
 
@@ -5189,9 +5131,9 @@ internal sealed partial class DataRetentionService(
     /// This is a closed read-only phase: no guard callbacks, writes, transaction boundaries or
     /// savepoints occur between its catalog and counts. Its metadata never leaves the method, so a
     /// subsequent invocation after DDL or rollback must classify again. Ordinary views remain absent
-    /// for transaction counts; mirrors preserve the plain-view/legacy-virtual distinction.
+    /// for transaction counts.
     /// </remarks>
-    private static async Task<(long Embeddings, long Vectors, long Entries, long Consultations, long Watermarks, long Uses)>
+    private static async Task<(long Embeddings, long Entries, long Consultations, long Watermarks, long Uses)>
         ReadSessionDerivedCountsInTransactionAsync(
             DbConnection connection,
             DbTransaction transaction,
@@ -5205,7 +5147,6 @@ internal sealed partial class DataRetentionService(
         (string Table, string Predicate)[] selections =
         [
             ("entry_embeddings", entries),
-            ("entry_embeddings_vec", entries),
             // Entries_ai mirrors one FTS row per entry; the FTS SessionId column is unindexed.
             ("Entries", owner),
             ("attachment_memory_consultations", owner),
@@ -5228,7 +5169,7 @@ internal sealed partial class DataRetentionService(
                 Add(catalog, names[index], selections[index].Table);
             }
 
-            catalog.CommandText = $"SELECT name, type, sql FROM sqlite_master WHERE name IN ({string.Join(",", names)})";
+            catalog.CommandText = $"SELECT name, type FROM sqlite_master WHERE name IN ({string.Join(",", names)})";
 
             await using DbDataReader reader = await catalog.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
@@ -5238,12 +5179,7 @@ internal sealed partial class DataRetentionService(
 
                 string kind = reader.GetString(1);
 
-                bool mirror = SagaVectorMirror.IsMirrorName(table);
-
-                if (kind != "table" && !(mirror && kind == "view")) continue;
-
-                if (mirror && !reader.IsDBNull(2)
-                    && reader.GetString(2).Trim().StartsWith("CREATE VIRTUAL TABLE", StringComparison.OrdinalIgnoreCase)) continue;
+                if (kind != "table") continue;
 
                 _ = available.Add(table);
             }
@@ -5265,7 +5201,7 @@ internal sealed partial class DataRetentionService(
 
         _ = await values.ReadAsync(cancellationToken).ConfigureAwait(false);
 
-        return (values.GetInt64(0), values.GetInt64(1), values.GetInt64(2), values.GetInt64(3), values.GetInt64(4), values.GetInt64(5));
+        return (values.GetInt64(0), values.GetInt64(1), values.GetInt64(2), values.GetInt64(3), values.GetInt64(4));
     }
 
     private static async Task<long> CountInTransactionAsync(
@@ -5276,36 +5212,21 @@ internal sealed partial class DataRetentionService(
         CancellationToken cancellationToken,
         params (string Name, object Value)[] parameters)
     {
-        if (SagaVectorMirror.IsMirrorName(table))
+        await using DbCommand tableCommand = connection.CreateCommand();
+
+        tableCommand.Transaction = transaction;
+
+        tableCommand.CommandText =
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = @table";
+
+        Add(tableCommand, "@table", table);
+
+        object? tableResult = await tableCommand.ExecuteScalarAsync(
+            cancellationToken).ConfigureAwait(false);
+
+        if (Convert.ToInt64(tableResult, CultureInfo.InvariantCulture) == 0)
         {
-            // Classified rather than probed, for the reason TableExistsAsync gives.
-            if (!await IsPlainVectorMirrorAsync(
-                    connection,
-                    transaction,
-                    table,
-                    cancellationToken).ConfigureAwait(false))
-            {
-                return 0;
-            }
-        }
-        else
-        {
-            await using DbCommand tableCommand = connection.CreateCommand();
-
-            tableCommand.Transaction = transaction;
-
-            tableCommand.CommandText =
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = @table";
-
-            Add(tableCommand, "@table", table);
-
-            object? tableResult = await tableCommand.ExecuteScalarAsync(
-                cancellationToken).ConfigureAwait(false);
-
-            if (Convert.ToInt64(tableResult, CultureInfo.InvariantCulture) == 0)
-            {
-                return 0;
-            }
+            return 0;
         }
 
         await using DbCommand command = connection.CreateCommand();
@@ -5822,11 +5743,7 @@ internal sealed partial class DataRetentionService(
             return deleted;
         }
 
-        // Batched, and the sqlite_master probe is hoisted: this runs inside the open mutation
-        // transaction, so a statement per entry holds the write lock for the whole sweep.
-        bool vectorTableExists = await TableExistsAsync(
-            "entry_embeddings_vec",
-            cancellationToken).ConfigureAwait(false);
+        // Batched inside the open mutation transaction to avoid one statement per entry.
 
         string[] normalizedEntryIds =
             [.. entryIds.Select(static entryId => entryId.ToString("N"))];
@@ -5835,16 +5752,6 @@ internal sealed partial class DataRetentionService(
             "lower(replace(EntryId, '-', ''))",
             normalizedEntryIds))
         {
-            if (vectorTableExists)
-            {
-                deleted += await ExecuteAsync(
-                    connection,
-                    transaction,
-                    $"DELETE FROM entry_embeddings_vec WHERE {batch.Predicate}",
-                    cancellationToken,
-                    batch.Parameters).ConfigureAwait(false);
-            }
-
             deleted += await ExecuteAsync(
                 connection,
                 transaction,
@@ -5865,24 +5772,6 @@ internal sealed partial class DataRetentionService(
         long deleted = attachment.SessionId is Guid owner
             ? await TapestryStore.DeleteRetentionGraphsAsync(connection, transaction, owner, false, cancellationToken).ConfigureAwait(false)
             : 0;
-
-        if (await TableExistsAsync(
-                "session_attachment_embeddings_vec",
-                cancellationToken).ConfigureAwait(false))
-        {
-            deleted += await ExecuteAsync(
-                connection,
-                transaction,
-                """
-                DELETE FROM session_attachment_embeddings_vec
-                WHERE ChunkId IN (
-                    SELECT ChunkId
-                    FROM session_attachment_chunks
-                    WHERE lower(replace(AttachmentId, '-', '')) = @id)
-                """,
-                cancellationToken,
-                ("@id", attachment.Id.ToString("N"))).ConfigureAwait(false);
-        }
 
         deleted += await ExecuteAsync(
             connection,
@@ -6769,39 +6658,6 @@ internal sealed partial class DataRetentionService(
         return Convert.ToInt64(result, CultureInfo.InvariantCulture);
     }
 
-    private async Task<long> CountJoinedEntryVectorEmbeddingsAsync(
-        Guid sessionId,
-        CancellationToken cancellationToken)
-    {
-        if (!await TableExistsAsync(
-                "entry_embeddings_vec",
-                cancellationToken).ConfigureAwait(false))
-        {
-            return 0;
-        }
-
-        DbConnection connection = await OpenConnectionAsync(
-            cancellationToken).ConfigureAwait(false);
-
-        await using DbCommand command = connection.CreateCommand();
-
-        command.CommandText =
-            """
-            SELECT COUNT(*)
-            FROM entry_embeddings_vec embedding
-            JOIN Entries entry
-              ON lower(replace(entry.Id, '-', '')) = lower(replace(embedding.EntryId, '-', ''))
-            WHERE lower(replace(entry.SessionId, '-', '')) = @sessionId
-            """;
-
-        Add(command, "@sessionId", sessionId.ToString("N"));
-
-        object? result = await command.ExecuteScalarAsync(
-            cancellationToken).ConfigureAwait(false);
-
-        return Convert.ToInt64(result, CultureInfo.InvariantCulture);
-    }
-
     private async Task<long> CountAttachmentEmbeddingsAsync(
         Guid attachmentId,
         CancellationToken cancellationToken)
@@ -6835,63 +6691,9 @@ internal sealed partial class DataRetentionService(
         return Convert.ToInt64(result, CultureInfo.InvariantCulture);
     }
 
-    private async Task<long> CountAttachmentVectorEmbeddingsAsync(
-        Guid attachmentId,
-        CancellationToken cancellationToken)
-    {
-        if (!await TableExistsAsync(
-                "session_attachment_embeddings_vec",
-                cancellationToken).ConfigureAwait(false))
-        {
-            return 0;
-        }
-
-        DbConnection connection = await OpenConnectionAsync(
-            cancellationToken).ConfigureAwait(false);
-
-        await using DbCommand command = connection.CreateCommand();
-
-        command.CommandText =
-            """
-            SELECT COUNT(*)
-            FROM session_attachment_embeddings_vec embedding
-            JOIN session_attachment_chunks chunk
-              ON chunk.ChunkId = embedding.ChunkId
-            WHERE lower(replace(chunk.AttachmentId, '-', '')) = @id
-            """;
-
-        Add(command, "@id", attachmentId.ToString("N"));
-
-        object? result = await command.ExecuteScalarAsync(
-            cancellationToken).ConfigureAwait(false);
-
-        return Convert.ToInt64(result, CultureInfo.InvariantCulture);
-    }
-
-    /// <summary>
-    /// Whether a vector mirror is a plain table, the only kind this runtime can count or delete from.
-    /// </summary>
-    private static async Task<bool> IsPlainVectorMirrorAsync(
-        DbConnection connection,
-        DbTransaction? transaction,
-        string table,
-        CancellationToken cancellationToken) =>
-        await SagaVectorMirror.ClassifyAsync(
-            connection,
-            transaction,
-            table,
-            cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable;
-
     /// <summary>
     /// Whether a table is there to be counted or deleted from.
     /// </summary>
-    /// <remarks>
-    /// A vector mirror is classified from its definition rather than probed for existence, because a
-    /// legacy <c>vec0</c> virtual table also has a row in <c>sqlite_master</c> and this runtime has no
-    /// module to open it with: a count or delete over it fails with "no such module". So a mirror is
-    /// present here only when it is a plain table, and a legacy one is skipped as though it held
-    /// nothing, which is how the Covenant purge and the staged restore treat it.
-    /// </remarks>
     private async Task<bool> TableExistsAsync(
         string table,
         CancellationToken cancellationToken)
@@ -6902,15 +6704,6 @@ internal sealed partial class DataRetentionService(
         if (_pruneSchemaCensus.Value is { } census && connection is SqliteConnection sqlite)
         {
             return await census.ExistsAsync(sqlite, table, cancellationToken).ConfigureAwait(false);
-        }
-
-        if (SagaVectorMirror.IsMirrorName(table))
-        {
-            return await IsPlainVectorMirrorAsync(
-                connection,
-                transaction: null,
-                table,
-                cancellationToken).ConfigureAwait(false);
         }
 
         await using DbCommand command = connection.CreateCommand();
@@ -8482,11 +8275,10 @@ internal sealed partial class DataRetentionService(
         scope switch
         {
             MemoryResetScope.Entry =>
-                ["entry_embeddings_vec", "entry_embeddings"],
+                ["entry_embeddings"],
 
             MemoryResetScope.Attachments =>
                 [
-                    "session_attachment_embeddings_vec",
                     "session_attachment_embeddings",
                     "session_attachment_chunks",
                     "session_attachment_index_state",
@@ -8494,14 +8286,12 @@ internal sealed partial class DataRetentionService(
 
             MemoryResetScope.Workspace =>
                 [
-                    "workspace_file_embeddings_vec",
                     "workspace_file_embeddings",
                     "workspace_file_chunks",
                 ],
 
             MemoryResetScope.Saga =>
                 [
-                    "saga_memory_embeddings_vec",
                     "saga_memory_embeddings",
                     "saga_memory_attachment_provenance",
                     "saga_extraction_watermarks",
@@ -8819,13 +8609,11 @@ internal sealed partial class DataRetentionService(
         long[] EntryRowIds,
         AttachmentPlanSnapshot[] Attachments,
         long EntryEmbeddingCount,
-        long EntryVectorEmbeddingCount,
         long EntryFtsCount,
         long AttachmentMemoryConsultationCount,
         long SagaExtractionWatermarkCount,
         long AttachmentChunkCount,
         long AttachmentEmbeddingCount,
-        long AttachmentVectorEmbeddingCount,
         long AttachmentIndexStateCount,
         CampaignSummaryClosureSnapshot CampaignContinuity,
         SessionSummaryClosureSnapshot Summaries,
@@ -8848,7 +8636,6 @@ internal sealed partial class DataRetentionService(
         string[] ChunkIds,
         long ChunkCount,
         long EmbeddingCount,
-        long VectorEmbeddingCount,
         long IndexStateCount,
         long TapestryRows = 0);
 

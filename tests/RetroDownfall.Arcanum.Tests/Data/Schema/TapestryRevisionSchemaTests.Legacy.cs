@@ -49,7 +49,7 @@ public sealed partial class TapestryRevisionSchemaTests
 
         await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection);
 
-        TapestryStore store = new(db, new WeaveIndexAvailability());
+        TapestryStore store = new(db);
 
         TapestryScope scope = new(TapestryScopeKind.Workspace, "/scope");
 

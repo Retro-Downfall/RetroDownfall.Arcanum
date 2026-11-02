@@ -39,10 +39,6 @@ internal sealed record BackupRestoreErasureMatches(
 /// Covenant entry's index did too.
 /// </param>
 /// <param name="CheckpointTruncated">Whether the staged write-ahead log was truncated after the commit.</param>
-/// <param name="VectorMirrorsVerified">
-/// Whether every vector mirror a purge reached was absent or a plain table. A legacy virtual-table mirror
-/// is skipped and stays unreachable residue, which a live erase records as a scrub that never verifies.
-/// </param>
 internal sealed record BackupRestoreErasureApplicationReceipt(
     long SagaMemoriesRemoved,
     long LexiconEntriesRemoved,
@@ -52,8 +48,7 @@ internal sealed record BackupRestoreErasureApplicationReceipt(
     long ReceiptsJoined,
     long ArchiveRowsDropped,
     bool FullTextVerified,
-    bool CheckpointTruncated,
-    bool VectorMirrorsVerified = true)
+    bool CheckpointTruncated)
 {
     /// <summary>A staged generation that had nothing to reconcile, because the archive carried no Grimoire.</summary>
     internal static BackupRestoreErasureApplicationReceipt None { get; } = new(0, 0, 0, 0, 0, 0, 0, true, true);
@@ -260,8 +255,7 @@ internal static class BackupRestoreErasureEvidenceApplier
                 rows.Receipts.Count,
                 dropped,
                 fullText && covenant.Value.FullTextVerified,
-                CheckpointTruncated: false,
-                VectorMirrorsVerified: saga.Value.VectorMirrorsVerified && lexicon.Value.VectorMirrorsVerified);
+                CheckpointTruncated: false);
         }
         // A catalog the drain left drifted, an identity the archive cannot name, or a plan statement its
         // schema refuses: none of them is a purge that can be proven, so each refuses, naming its type.
@@ -561,8 +555,6 @@ internal static class BackupRestoreErasureEvidenceApplier
 
         long pairs = 0;
 
-        bool vectorMirrorsVerified = true;
-
         List<string> keys = [];
 
         Dictionary<string, long> matched = new(StringComparer.Ordinal);
@@ -623,11 +615,9 @@ internal static class BackupRestoreErasureEvidenceApplier
                 rowIds.AddRange(await ReadLexiconRowIdsAsync(staged, transaction, artifactKey, cancellationToken).ConfigureAwait(false));
             }
 
-            CovenantArtifactPlanTally deleted = await CovenantArtifactPlanRunner
+            _ = await CovenantArtifactPlanRunner
                 .RunAsync(staged, transaction, kind, artifactKey, CovenantArtifactPlanMode.Delete, cancellationToken)
                 .ConfigureAwait(false);
-
-            vectorMirrorsVerified &= deleted.VectorMirror is not SagaVectorMirrorKind.LegacyVirtualTable;
 
             if (!labelled)
             {
@@ -665,7 +655,7 @@ internal static class BackupRestoreErasureEvidenceApplier
 
         await RecountSessionsAsync(staged, transaction, sessions, timeProvider, cancellationToken).ConfigureAwait(false);
 
-        return new Purge(kind, removed, pairs, keys, sagaRows, rowIds, vectorMirrorsVerified);
+        return new Purge(kind, removed, pairs, keys, sagaRows, rowIds);
     }
 
     /// <summary>
@@ -1117,8 +1107,7 @@ internal static class BackupRestoreErasureEvidenceApplier
         long RetirementPairs,
         IReadOnlyList<string> Keys,
         IReadOnlyList<SagaRow> SagaRows,
-        IReadOnlyList<long> RowIds,
-        bool VectorMirrorsVerified);
+        IReadOnlyList<long> RowIds);
 
     /// <summary>What the Covenant purge removed, and each entry its absence proof needs.</summary>
     private sealed record CovenantPurge(

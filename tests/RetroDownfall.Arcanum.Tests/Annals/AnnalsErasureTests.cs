@@ -218,7 +218,6 @@ public sealed class AnnalsErasureTests : IAsyncLifetime
     private ISagaMemoryStore CreateSagaStore(bool annals) =>
         new SagaMemoryStore(
             _db!,
-            new WeaveIndexAvailability(),
             new TestOptionsMonitor<ArcanumSettings>(
                 new ArcanumSettings
                 {

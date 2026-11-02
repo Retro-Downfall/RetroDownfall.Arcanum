@@ -18,7 +18,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// <summary>
 /// Session Divination support: imprints not-yet-embedded Grimoire entries into The Weave in the background.
 /// "Weaving" is the act of turning an entry's content into a vector (via <see cref="IWeaveService"/>)
-/// and persisting it to <c>entry_embeddings</c> (and, when available, <c>entry_embeddings_vec</c>) so
+/// and persisting it to the durable <c>entry_embeddings</c> BLOB table so
 /// Divination (see <c>SessionDivinationEndpoints</c>) can later retrieve it.
 ///
 /// Idles unless <c>Arcanum:Features:SessionSearch</c> is enabled; the polling cadence is a code-owned
@@ -27,14 +27,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// Idempotency: each tick's <c>LEFT JOIN ... WHERE ee."EntryId" IS NULL</c> query naturally skips
 /// already-embedded entries, so ticks are safe to run repeatedly and a partially-processed batch (e.g.
 /// after a shutdown mid-tick) is simply picked up again on the next tick. Re-embedding after a model or
-/// dimension change requires manually truncating <c>entry_embeddings</c> (and
-/// <c>entry_embeddings_vec</c>, when present) — see <c>docs/Arcanum.DESIGN.md</c> §21.
+/// dimension change requires resetting <c>entry_embeddings</c> — see <c>docs/Arcanum.DESIGN.md</c> §21.
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: IHostedService embedding queue scheduler; covered via EntryWeavingServiceTests exercising the tick logic directly.
 internal sealed class EntryWeavingService(
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
     IWeaveService weaveService,
-    WeaveIndexAvailability weaveIndexAvailability,
     IServiceScopeFactory scopeFactory,
     IGrimoireConnectionAdmissionGate admissionGate,
     ILogger<EntryWeavingService> logger) : BackgroundService
@@ -445,8 +443,6 @@ internal sealed class EntryWeavingService(
 
                 byte[] encoded = EmbeddingBlobCodec.Encode(vector);
 
-                // One transaction for the embedding and its mirror row, so a mirror row an earlier build
-                // wrote never outlives the embedding that replaced it.
                 await using DbTransaction transaction = await connection
                     .BeginTransactionAsync(cancellationToken)
                     .ConfigureAwait(false);
@@ -471,39 +467,6 @@ internal sealed class EntryWeavingService(
                     AddParameter(cmd, "@dim", vector.Length);
 
                     _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
-
-                if (weaveIndexAvailability.IsVecAvailable)
-                {
-                    await using DbCommand vecCmd = connection.CreateCommand();
-
-                    vecCmd.Transaction = transaction;
-
-                    vecCmd.CommandText =
-                        """
-                        INSERT OR REPLACE INTO "entry_embeddings_vec" ("EntryId", "Embedding")
-                        VALUES (@entryId, @embedding)
-                        """;
-
-                    AddParameter(vecCmd, "@entryId", entryId);
-
-                    AddParameter(vecCmd, "@embedding", encoded);
-
-                    _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    // The mirror cannot be rewritten without the accelerator, so a row an earlier build
-                    // wrote would keep describing an embedding this entry no longer has. It goes through
-                    // the shared helper, which classifies the mirror first: a plain one loses the row,
-                    // and a legacy virtual one this runtime cannot open is left alone.
-                    _ = await SagaVectorMirror.DeleteAsync(
-                        connection,
-                        transaction,
-                        "entry_embeddings_vec",
-                        "EntryId",
-                        entryId,
-                        cancellationToken).ConfigureAwait(false);
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);

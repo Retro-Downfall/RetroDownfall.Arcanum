@@ -281,29 +281,21 @@ public sealed partial class DataRetentionServiceTests
 
     [SkippableFact]
 
-    public async Task ApplyAsync_PruneEntry_WhenVectorReappears_FailsReconciliation()
+    public async Task ApplyAsync_PruneEntry_WhenBlobEmbeddingReappears_FailsReconciliation()
     {
         RequireSqlCipher();
 
         (_, Guid entryId) = await SeedSessionAsync(pinned: false);
 
-        await ExecuteAsync(
-            """
-            CREATE TABLE IF NOT EXISTS entry_embeddings_vec
-                (EntryId TEXT PRIMARY KEY, Embedding BLOB NOT NULL)
-            """);
-
-        await ExecuteAsync(
-            "INSERT INTO entry_embeddings_vec (EntryId, Embedding) VALUES (@id, X'0000803F')",
-            ("@id", entryId.ToString()));
+        await SeedEntryEmbeddingAsync(entryId);
 
         await ExecuteAsync(
             """
-            CREATE TRIGGER retain_entry_vector
-            AFTER DELETE ON entry_embeddings_vec
+            CREATE TRIGGER retain_entry_embedding
+            AFTER DELETE ON entry_embeddings
             BEGIN
-                INSERT INTO entry_embeddings_vec (EntryId, Embedding)
-                VALUES (OLD.EntryId, OLD.Embedding);
+                INSERT INTO entry_embeddings (EntryId, Embedding, Dim)
+                VALUES (OLD.EntryId, OLD.Embedding, OLD.Dim);
             END;
             """);
 
@@ -326,7 +318,7 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.Error.Code);
 
-        Assert.Equal(1, await CountAllAsync("entry_embeddings_vec"));
+        Assert.Equal(1, await CountAllAsync("entry_embeddings"));
     }
 
     [SkippableFact]

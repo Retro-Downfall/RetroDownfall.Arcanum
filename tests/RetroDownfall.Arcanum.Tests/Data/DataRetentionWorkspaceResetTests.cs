@@ -157,16 +157,14 @@ public sealed partial class DataRetentionServiceTests
                 && item.Rows == 1
                 && item.DerivedRecords == 1);
 
-        long expectedWorkspaceEmbeddings =
-            await TableExistsInTestAsync("workspace_file_embeddings_vec") ? 2 : 1;
+        const long expectedWorkspaceEmbeddings = 1;
 
         Assert.Contains(
             plan.Items,
             item => item.DataClass == RetentionDataClass.WorkspaceEmbeddings
                 && item.DerivedRecords == expectedWorkspaceEmbeddings);
 
-        long expectedTapestryRecords =
-            await TableExistsInTestAsync("tapestry_node_embeddings_vec") ? 4 : 3;
+        const long expectedTapestryRecords = 3;
 
         Assert.Contains(
             plan.Items,
@@ -300,98 +298,6 @@ public sealed partial class DataRetentionServiceTests
             graph.GlobalGenerationId));
 
         Assert.Equal(1, await CountAllAsync("Sessions"));
-
-        if (await TableExistsInTestAsync("workspace_file_embeddings_vec"))
-        {
-
-            Assert.Equal(0, await CountAsync(
-                "workspace_file_embeddings_vec",
-                "ChunkId",
-                graph.TargetChunkId));
-
-            Assert.Equal(1, await CountAsync(
-                "workspace_file_embeddings_vec",
-                "ChunkId",
-                graph.NestedChunkId));
-
-            Assert.Equal(1, await CountAsync(
-                "workspace_file_embeddings_vec",
-                "ChunkId",
-                graph.SiblingChunkId));
-
-        }
-
-        if (await TableExistsInTestAsync("tapestry_node_embeddings_vec"))
-        {
-
-            Assert.Equal(0, await CountAsync(
-                "tapestry_node_embeddings_vec",
-                "NodeId",
-                graph.TargetNodeId));
-
-            Assert.Equal(1, await CountAsync(
-                "tapestry_node_embeddings_vec",
-                "NodeId",
-                graph.GlobalNodeId));
-
-            Assert.Equal(1, await CountAsync(
-                "tapestry_node_embeddings_vec",
-                "NodeId",
-                graph.NestedNodeId));
-
-            Assert.Equal(1, await CountAsync(
-                "tapestry_node_embeddings_vec",
-                "NodeId",
-                graph.SiblingNodeId));
-
-        }
-
-    }
-
-    /// <summary>
-    /// A workspace reset empties its workspace's rows from a plain vector mirror and skips a legacy
-    /// virtual one, which this runtime has no module to open.
-    /// </summary>
-    /// <remarks>
-    /// The mirrors exist before the graph is seeded, because the seeds write a mirror row wherever one
-    /// exists. The legacy mirror is stood in for by an FTS5 virtual table that can be deleted from, so
-    /// the target node's row still being there is what shows no statement reached it.
-    /// </remarks>
-    [SkippableFact]
-    public async Task ApplyAsync_ResetWorkspace_SkipsALegacyVirtualVectorMirrorAndEmptiesThePlainOne()
-    {
-        RequireSqlCipher();
-
-        await RecreateVectorTableAsync("workspace_file_embeddings_vec", "ChunkId");
-
-        await RecreateLegacyVectorTableAsync("tapestry_node_embeddings_vec", "NodeId");
-
-        WorkspaceResetGraph graph = await SeedWorkspaceResetGraphAsync();
-
-        Assert.Equal(4, await CountAllAsync("tapestry_node_embeddings_vec"));
-
-        IDataRetentionService service = CreateService();
-
-        DataRetentionRequest request = WorkspaceResetRequest(graph);
-
-        DataRetentionPlan plan = await service.PlanAsync(request);
-
-        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
-            new DataRetentionApplyRequest(request, plan.PlanId));
-
-        Assert.True(result.IsSuccess, result.Error.Message);
-
-        Assert.True(result.Value.Reconciled);
-
-        Assert.Equal(0, await CountAsync("tapestry_node_embeddings", "NodeId", graph.TargetNodeId));
-
-        Assert.Equal(0, await CountAsync("workspace_file_embeddings_vec", "ChunkId", graph.TargetChunkId));
-
-        Assert.Equal(1, await CountAsync("workspace_file_embeddings_vec", "ChunkId", graph.NestedChunkId));
-
-        Assert.Equal(1, await CountAsync("workspace_file_embeddings_vec", "ChunkId", graph.SiblingChunkId));
-
-        Assert.Equal(4, await CountAllAsync("tapestry_node_embeddings_vec"));
     }
 
     [SkippableFact]
@@ -659,20 +565,6 @@ public sealed partial class DataRetentionServiceTests
             """,
             ("@id", chunkId),
             ("@embedding", new byte[] { 0, 0, 128, 63 }));
-
-        if (await TableExistsInTestAsync("workspace_file_embeddings_vec"))
-        {
-
-            await ExecuteAsync(
-                """
-                INSERT INTO workspace_file_embeddings_vec (ChunkId, Embedding)
-                VALUES (@id, @embedding)
-                """,
-                ("@id", chunkId),
-                ("@embedding", new byte[768 * sizeof(float)]));
-
-        }
-
     }
 
     private async Task<(string GenerationId, string NodeId)> SeedWorkspaceTapestryAsync(
@@ -721,19 +613,6 @@ public sealed partial class DataRetentionServiceTests
             """,
             ("@nodeId", nodeId),
             ("@embedding", new byte[] { 0, 0, 128, 63 }));
-
-        if (await TableExistsInTestAsync("tapestry_node_embeddings_vec"))
-        {
-
-            await ExecuteAsync(
-                """
-                INSERT INTO tapestry_node_embeddings_vec (NodeId, Embedding)
-                VALUES (@nodeId, @embedding)
-                """,
-                ("@nodeId", nodeId),
-                ("@embedding", new byte[768 * sizeof(float)]));
-
-        }
 
         await ExecuteAsync("UPDATE tapestry_generations SET Status='Complete' WHERE GenerationId=@id", ("@id", generationId));
 

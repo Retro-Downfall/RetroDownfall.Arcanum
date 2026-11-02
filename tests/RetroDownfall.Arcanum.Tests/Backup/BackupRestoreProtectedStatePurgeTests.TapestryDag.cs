@@ -5,7 +5,7 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 public sealed partial class BackupRestoreProtectedStatePurgeTests
 {
     [Fact]
-    public async Task Staged_purge_removes_every_affected_shared_leaf_generation_and_its_plain_mirror_before_activation()
+    public async Task Staged_purge_removes_every_affected_shared_leaf_generation_before_activation()
     {
         await SeedAuthorityAsync(CovenantHostToolsState.Clean);
 
@@ -18,7 +18,6 @@ public sealed partial class BackupRestoreProtectedStatePurgeTests
             CancellationToken.None);
 
         await _staged.ExecuteAsync($"""
-            CREATE TABLE tapestry_node_embeddings_vec(NodeId TEXT PRIMARY KEY,Embedding BLOB NOT NULL);
             INSERT INTO tapestry_scope_revisions(ScopeKind,ScopeId,CorpusRevision,InvalidationRevision) VALUES('Session','{SessionId}',10,9);
             INSERT INTO tapestry_leaf_hashes(SourceKind,SourceId,ContentSha256,IsBlank) VALUES('Entry','{EntryArtifactId}','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',0);
             UPDATE tapestry_generations SET Status='Building' WHERE GenerationId='building-generation';
@@ -35,8 +34,6 @@ public sealed partial class BackupRestoreProtectedStatePurgeTests
                 INSERT INTO tapestry_node_embeddings(NodeId,Embedding,Dim) VALUES('{generation}-other',X'0000803F',1),('{generation}-leaf',X'0000803F',1);
                 """, CancellationToken.None);
         }
-
-        await _staged.ExecuteAsync("INSERT INTO tapestry_node_embeddings_vec SELECT NodeId,Embedding FROM tapestry_node_embeddings;", CancellationToken.None);
 
         await _staged.InstallCoreObjectsAsync(
             ["tapestry_nodes_guard_delete", "tapestry_edges_guard_delete", "tapestry_node_embeddings_guard_delete"],
@@ -57,8 +54,6 @@ public sealed partial class BackupRestoreProtectedStatePurgeTests
         Assert.Equal(2, await CountAsync("tapestry_nodes"));
 
         Assert.Equal(2, await CountAsync("tapestry_node_embeddings"));
-
-        Assert.Equal(2, await CountAsync("tapestry_node_embeddings_vec"));
 
         Assert.Equal(1, await CountAsync("tapestry_generations WHERE GenerationId='attachment-generation'"));
 

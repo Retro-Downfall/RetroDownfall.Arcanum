@@ -410,9 +410,8 @@ internal sealed class GrimoireSchemaInstaller(
                     // Optional mirrors are outside the canonical catalog. Classify in this same
                     // transaction; never open an absent or unsupported legacy virtual mirror.
                     if (statement.RequiredPlainVectorMirror is string mirror
-                        && await SagaVectorMirror.ClassifyAsync(
-                            connection, transaction, mirror, cancellationToken).ConfigureAwait(false)
-                            is not SagaVectorMirrorKind.PlainTable)
+                        && !await GrimoireLegacyVectorMirrors.IsPlainAsync(
+                            connection, transaction, mirror, cancellationToken).ConfigureAwait(false))
                     {
                         continue;
                     }

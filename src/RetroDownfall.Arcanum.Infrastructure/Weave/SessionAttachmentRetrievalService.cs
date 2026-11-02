@@ -47,7 +47,7 @@ internal sealed class SessionAttachmentRetrievalService(
                 embeddings.SimilarityThreshold);
 
             Result<DivinationResult[]> search = await divination.SearchScopedAsync(
-                "session_attachment_embeddings_vec",
+                "session_attachment_embeddings",
                 "ChunkId",
                 "Embedding",
                 "session_attachment_chunks",

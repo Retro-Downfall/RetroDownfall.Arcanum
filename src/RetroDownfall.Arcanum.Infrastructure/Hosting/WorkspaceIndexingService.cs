@@ -41,7 +41,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 internal sealed partial class WorkspaceIndexingService(
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
     IWeaveService weaveService,
-    WeaveIndexAvailability weaveIndexAvailability,
     IServiceScopeFactory scopeFactory,
     IWorkspaceFileWatcherFactory watcherFactory,
     IGrimoireConnectionAdmissionGate workAdmission,
@@ -1113,17 +1112,6 @@ internal sealed partial class WorkspaceIndexingService(
             {
                 DbConnection connection = await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
 
-                if (await IsPlainVectorMirrorAsync(connection, cancellationToken).ConfigureAwait(false))
-                {
-                    await using DbCommand vecCmd = connection.CreateCommand();
-
-                    vecCmd.CommandText = """DELETE FROM "workspace_file_embeddings_vec" WHERE "ChunkId" = @chunkId""";
-
-                    AddParameter(vecCmd, "@chunkId", chunkId);
-
-                    _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
-
                 await using DbCommand embeddingCmd = connection.CreateCommand();
 
                 embeddingCmd.CommandText = """DELETE FROM "workspace_file_embeddings" WHERE "ChunkId" = @chunkId""";
@@ -1230,26 +1218,6 @@ internal sealed partial class WorkspaceIndexingService(
             {
                 DbConnection connection = await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
 
-                if (await IsPlainVectorMirrorAsync(connection, cancellationToken).ConfigureAwait(false))
-                {
-                    await using DbCommand deleteVecCmd = connection.CreateCommand();
-
-                    deleteVecCmd.CommandText =
-                        """
-                        DELETE FROM "workspace_file_embeddings_vec"
-                        WHERE "ChunkId" IN (
-                            SELECT "ChunkId" FROM "workspace_file_chunks"
-                            WHERE "WorkspacePath" = @workspacePath
-                                AND ("RelativePath" = @relativePath
-                                    OR ("RelativePath" >= @descendantFloor AND "RelativePath" < @descendantCeiling))
-                        )
-                        """;
-
-                    AddScope(deleteVecCmd);
-
-                    _ = await deleteVecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
-
                 await using DbCommand deleteBlobCmd = connection.CreateCommand();
 
                 deleteBlobCmd.CommandText =
@@ -1319,7 +1287,7 @@ internal sealed partial class WorkspaceIndexingService(
             {
                 DbConnection connection = await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
 
-                // One transaction over the chunk row, its embedding, and the optional vec0 mirror — the
+                // One transaction over the chunk row and its durable embedding — the
                 // shape TapestryStore.AppendNodesAsync already uses, for the same two reasons. A torn
                 // write can never leave a chunk row without its embedding: LoadExistingChunkIdsAsync
                 // reads only workspace_file_chunks, so such a row would count as already indexed forever
@@ -1389,47 +1357,10 @@ internal sealed partial class WorkspaceIndexingService(
 
                 _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-                if (weaveIndexAvailability.IsVecAvailable)
-                {
-                    await using DbCommand vecCmd = connection.CreateCommand();
-
-                    vecCmd.Transaction = transaction;
-
-                    vecCmd.CommandText =
-                        """
-                        INSERT OR REPLACE INTO "workspace_file_embeddings_vec" ("ChunkId", "Embedding")
-                        VALUES (@chunkId, @embedding)
-                        """;
-
-                    AddParameter(vecCmd, "@chunkId", chunkId);
-
-                    AddParameter(vecCmd, "@embedding", encoded);
-
-                    _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
-
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             },
             cancellationToken);
     }
-
-    /// <summary>
-    /// Whether the workspace vector mirror is a plain table this runtime can delete from.
-    /// </summary>
-    /// <remarks>
-    /// The mirror holds the embedding itself, so whether it is deleted from is a property of the
-    /// database, not of whether this process loaded an accelerator: a plain mirror an earlier build
-    /// filled is deleted from whatever the flag says, and a legacy vec0 mirror this runtime cannot open
-    /// is skipped rather than failing the delete it rides on. Writing a vector still waits for the flag.
-    /// </remarks>
-    private static async Task<bool> IsPlainVectorMirrorAsync(
-        DbConnection connection,
-        CancellationToken cancellationToken) =>
-        await SagaVectorMirror.ClassifyAsync(
-            connection,
-            transaction: null,
-            "workspace_file_embeddings_vec",
-            cancellationToken).ConfigureAwait(false) is SagaVectorMirrorKind.PlainTable;
 
     private static async Task<DbConnection> OpenConnectionAsync(ArcanumDbContext db, CancellationToken cancellationToken)
     {

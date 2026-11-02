@@ -97,7 +97,7 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
 
         _attachments = new SessionAttachmentStore(_db, Options.Create(_settings), _attachmentsRoot, TestEncryptedBlobStore.Create());
 
-        _index = new SessionAttachmentIndexRepository(_db, new WeaveIndexAvailability(), new TestOptionsMonitor<ArcanumSettings>(_settings));
+        _index = new SessionAttachmentIndexRepository(_db, new TestOptionsMonitor<ArcanumSettings>(_settings));
 
         return Task.CompletedTask;
     }
@@ -669,7 +669,6 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
                 new TestOptionsMonitor<ArcanumSettings>(_settings),
                 new DivinationService(
                     _db!,
-                    new WeaveIndexAvailability(),
                     NullLogger<DivinationService>.Instance,
                     new TestOptionsMonitor<ArcanumSettings>(_settings)),
                 _index!,

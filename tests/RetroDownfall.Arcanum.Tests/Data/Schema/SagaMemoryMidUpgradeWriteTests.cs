@@ -684,7 +684,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
     internal static SagaMemoryStore CreateStore(ArcanumDbContext db, IMemoryErasureKeyProvider? erasureKeys = null) =>
         new(
             db,
-            new WeaveIndexAvailability(),
             new TestOptionsMonitor<ArcanumSettings>(
                 new ArcanumSettings
                 {

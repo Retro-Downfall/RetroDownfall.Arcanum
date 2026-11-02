@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Core.Weave.Tapestry;
 
 /// <summary>
 /// Raw-SQL persistence for The Tapestry (DESIGN §21.11). None of <c>tapestry_generations</c>,
-/// <c>tapestry_nodes</c>, <c>tapestry_node_embeddings</c>, or <c>tapestry_node_embeddings_vec</c> is
+/// <c>tapestry_nodes</c> or <c>tapestry_node_embeddings</c> is
 /// part of the compiled EF model — they are declared in <c>Infrastructure/Data/Schema/Tables/</c>, mirroring
 /// <c>ISagaMemoryStore</c>.
 ///

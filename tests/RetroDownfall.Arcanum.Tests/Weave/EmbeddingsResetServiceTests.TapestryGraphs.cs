@@ -11,13 +11,11 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 public sealed partial class EmbeddingsResetServiceTests
 {
     [Theory]
-    [InlineData(EmbeddingsResetScope.Tapestry, false)]
-    [InlineData(EmbeddingsResetScope.Tapestry, true)]
-    [InlineData(EmbeddingsResetScope.All, false)]
-    [InlineData(EmbeddingsResetScope.All, true)]
-    public async Task Reset_removes_real_shared_leaf_graphs_with_exact_pre_cascade_counts(EmbeddingsResetScope scope, bool mirror)
+    [InlineData(EmbeddingsResetScope.Tapestry)]
+    [InlineData(EmbeddingsResetScope.All)]
+    public async Task Reset_removes_real_shared_leaf_graphs_with_exact_pre_cascade_counts(EmbeddingsResetScope scope)
     {
-        await SeedResetGraphsAsync(mirror);
+        await SeedResetGraphsAsync();
 
         EmbeddingsResetResult result = await _resetService!.ResetAsync(scope, CancellationToken.None);
 
@@ -27,15 +25,9 @@ public sealed partial class EmbeddingsResetServiceTests
             ("tapestry_nodes", 6),
             ("tapestry_edges", 4),
             ("tapestry_node_embeddings", 6),
-            ("tapestry_node_embeddings_vec", mirror ? 6 : 0),
         })
         {
             Assert.Equal(expected, result.DeletedRowCounts[table]);
-
-            if (table.EndsWith("_vec", StringComparison.Ordinal) && !mirror)
-            {
-                continue;
-            }
 
             Assert.Equal(0, await ResetScalarAsync("SELECT COUNT(*) FROM " + table));
         }
@@ -53,9 +45,9 @@ public sealed partial class EmbeddingsResetServiceTests
     }
 
     [Fact]
-    public async Task Failed_graph_reset_rolls_back_mirror_and_preserves_build_backoff()
+    public async Task Failed_graph_reset_rolls_back_embeddings_and_preserves_build_backoff()
     {
-        await SeedResetGraphsAsync(mirror: true);
+        await SeedResetGraphsAsync();
 
         await ResetExecuteAsync("CREATE TRIGGER reject_graph_reset BEFORE DELETE ON tapestry_generations BEGIN SELECT RAISE(ABORT,'injected reset failure'); END;");
 
@@ -73,7 +65,7 @@ public sealed partial class EmbeddingsResetServiceTests
 
         Assert.Equal(2, await ResetScalarAsync("SELECT COUNT(*) FROM tapestry_generations"));
 
-        Assert.Equal(6, await ResetScalarAsync("SELECT COUNT(*) FROM tapestry_node_embeddings_vec"));
+        Assert.Equal(6, await ResetScalarAsync("SELECT COUNT(*) FROM tapestry_node_embeddings"));
 
         Assert.Equal(4, await ResetScalarAsync("SELECT COUNT(*) FROM tapestry_edges"));
 
@@ -83,7 +75,7 @@ public sealed partial class EmbeddingsResetServiceTests
     [Fact]
     public async Task Canceled_graph_reset_preserves_every_graph_and_source_row()
     {
-        await SeedResetGraphsAsync(mirror: true);
+        await SeedResetGraphsAsync();
 
         using CancellationTokenSource cancellation = new();
 
@@ -95,34 +87,12 @@ public sealed partial class EmbeddingsResetServiceTests
 
         Assert.Equal(4, await ResetScalarAsync("SELECT COUNT(*) FROM tapestry_edges"));
 
-        Assert.Equal(6, await ResetScalarAsync("SELECT COUNT(*) FROM tapestry_node_embeddings_vec"));
+        Assert.Equal(6, await ResetScalarAsync("SELECT COUNT(*) FROM tapestry_node_embeddings"));
 
         Assert.Equal(1, await ResetScalarAsync("SELECT COUNT(*) FROM workspace_file_chunks WHERE ChunkId='reset-source'"));
     }
 
-    [Fact]
-    public async Task Graph_reset_never_opens_unsupported_virtual_mirror_or_claims_its_residue_was_erased()
-    {
-        await SeedResetGraphsAsync(mirror: false);
-
-        // FTS5 exposes the same catalog classification as an unavailable vec0 table. A retained
-        // canary proves reset never sends a deletion to that unsupported virtual-table surface.
-        await ResetExecuteAsync("CREATE VIRTUAL TABLE tapestry_node_embeddings_vec USING fts5(NodeId,Embedding); INSERT INTO tapestry_node_embeddings_vec VALUES('inaccessible-residue','private-vector-residue');");
-
-        EmbeddingsResetResult result = await _resetService!.ResetAsync(EmbeddingsResetScope.Tapestry, CancellationToken.None);
-
-        Assert.Equal(0, result.DeletedRowCounts["tapestry_node_embeddings_vec"]);
-
-        Assert.Equal(4, result.DeletedRowCounts["tapestry_edges"]);
-
-        Assert.Equal(0, await ResetScalarAsync("SELECT COUNT(*) FROM tapestry_generations"));
-
-        Assert.Equal(0, await ResetScalarAsync("SELECT COUNT(*) FROM tapestry_edges"));
-
-        Assert.Equal(1, await ResetScalarAsync("SELECT COUNT(*) FROM tapestry_node_embeddings_vec WHERE NodeId='inaccessible-residue'"));
-    }
-
-    private async Task SeedResetGraphsAsync(bool mirror)
+    private async Task SeedResetGraphsAsync()
     {
         await ResetExecuteAsync("""
             INSERT INTO workspace_file_chunks(ChunkId,WorkspacePath,RelativePath,ChunkIndex,Content,CharOffset,CharLength,FileLastWriteTime,IndexedAt)
@@ -130,11 +100,6 @@ public sealed partial class EmbeddingsResetServiceTests
             INSERT INTO tapestry_leaf_hashes(SourceKind,SourceId,ContentSha256,IsBlank) VALUES('WorkspaceFileChunk','reset-source','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',0);
             UPDATE tapestry_scope_revisions SET CorpusRevision=7,InvalidationRevision=5 WHERE ScopeKind='Workspace' AND ScopeId='/reset-graph';
             """);
-
-        if (mirror)
-        {
-            await ResetExecuteAsync("CREATE TABLE tapestry_node_embeddings_vec(NodeId TEXT PRIMARY KEY,Embedding BLOB NOT NULL);");
-        }
 
         foreach (string status in new[] { "Complete", "Building" })
         {
@@ -154,10 +119,6 @@ public sealed partial class EmbeddingsResetServiceTests
                 UPDATE tapestry_generations SET Status='{status}' WHERE GenerationId='{id}';
                 """);
 
-            if (mirror)
-            {
-                await ResetExecuteAsync($"INSERT INTO tapestry_node_embeddings_vec SELECT NodeId,Embedding FROM tapestry_node_embeddings WHERE NodeId LIKE '{id}-%';");
-            }
         }
     }
 

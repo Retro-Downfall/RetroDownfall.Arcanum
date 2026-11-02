@@ -22,8 +22,6 @@ public sealed partial class DataRetentionServiceTests
         await ExecuteAsync("INSERT INTO tapestry_leaf_hashes(SourceKind,SourceId,ContentSha256,IsBlank) VALUES('Entry',@entry,@hash,0),('Entry',@other,@hash,0),('SessionAttachmentChunk',@chunk,@hash,0)",
             ("@entry", Canonical(entry)), ("@other", Canonical(otherEntry)), ("@chunk", attachment.ChunkId), ("@hash", new string('a', 64)));
 
-        await ExecuteAsync("CREATE TABLE IF NOT EXISTS tapestry_node_embeddings_vec(NodeId TEXT PRIMARY KEY, Embedding BLOB NOT NULL)");
-
         foreach (string kind in new[] { "Session", "SessionAttachment" })
         {
             await SeedRetentionGraphAsync(session, kind, "Complete");
@@ -61,11 +59,9 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(remaining * 3, await CountAllAsync("tapestry_node_embeddings"));
 
-        Assert.Equal(remaining * 3, await CountAllAsync("tapestry_node_embeddings_vec"));
-
         Assert.Equal(rollback ? 3 : deleteSession ? 1 : 2, await CountAllAsync("tapestry_leaf_hashes"));
 
-        Assert.Equal(deleteSession ? 48 : 24, plan.Items.Where(item => item.DataClass == RetentionDataClass.Tapestry).Sum(item => item.DerivedRecords));
+        Assert.Equal(deleteSession ? 36 : 18, plan.Items.Where(item => item.DataClass == RetentionDataClass.Tapestry).Sum(item => item.DerivedRecords));
     }
 
     private async Task SeedRetentionGraphAsync(Guid session, string kind, string status)
@@ -81,7 +77,6 @@ public sealed partial class DataRetentionServiceTests
                   ('{id}c','{id}','{kind}','{session:N}',0,'Leaf','{id}#root','source',NULL,'hash',1,'2026-01-01T00:00:00.0000000Z');
             INSERT INTO tapestry_edges(GenerationId,ParentNodeId,ChildNodeId,MembershipReason) VALUES('{id}','{id}p','{id}c','Legacy'),('{id}','{id}q','{id}c','Legacy');
             INSERT INTO tapestry_node_embeddings(NodeId,Embedding,Dim) VALUES('{id}p',X'0000803F',1),('{id}q',X'0000803F',1),('{id}c',X'0000803F',1);
-            INSERT INTO tapestry_node_embeddings_vec(NodeId,Embedding) VALUES('{id}p',X'0000803F'),('{id}q',X'0000803F'),('{id}c',X'0000803F');
             UPDATE tapestry_nodes SET SourceKind='{(kind == "Session" ? "Entry" : "SessionAttachmentChunk")}',SourceId=(
                 SELECT {(kind == "Session" ? "Id" : "ChunkId")} FROM {(kind == "Session" ? "Entries" : "session_attachment_chunks")}
                 WHERE lower(replace(SessionId,'-',''))='{session:N}' LIMIT 1) WHERE NodeId='{id}c';
@@ -93,8 +88,6 @@ public sealed partial class DataRetentionServiceTests
     public async Task FactoryReset_DeletesRevisionBookkeepingAfterEverySourceDeletion()
     {
         (Guid session, _) = await SeedSessionAsync(pinned: false);
-
-        await ExecuteAsync("CREATE TABLE tapestry_node_embeddings_vec(NodeId TEXT PRIMARY KEY,Embedding BLOB NOT NULL)");
 
         await SeedRetentionGraphAsync(session, "Session", "Complete");
 
@@ -110,7 +103,7 @@ public sealed partial class DataRetentionServiceTests
 
         long exactGraphRows = 0;
 
-        foreach (string table in new[] { "tapestry_generations", "tapestry_nodes", "tapestry_edges", "tapestry_node_embeddings", "tapestry_node_embeddings_vec", "tapestry_scope_revisions" })
+        foreach (string table in new[] { "tapestry_generations", "tapestry_nodes", "tapestry_edges", "tapestry_node_embeddings", "tapestry_scope_revisions" })
         {
             exactGraphRows += await CountAllAsync(table);
         }
@@ -127,7 +120,7 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(0, await CountAllAsync("tapestry_scope_revisions"));
 
-        foreach (string table in new[] { "tapestry_generations", "tapestry_nodes", "tapestry_edges", "tapestry_node_embeddings", "tapestry_node_embeddings_vec" })
+        foreach (string table in new[] { "tapestry_generations", "tapestry_nodes", "tapestry_edges", "tapestry_node_embeddings" })
         {
             Assert.Equal(0, await CountAllAsync(table));
         }

@@ -5674,7 +5674,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     private SagaMemoryStore CreateStore() =>
         new(
             _db!,
-            new WeaveIndexAvailability(),
             new TestOptionsMonitor<ArcanumSettings>(
                 new ArcanumSettings
                 {

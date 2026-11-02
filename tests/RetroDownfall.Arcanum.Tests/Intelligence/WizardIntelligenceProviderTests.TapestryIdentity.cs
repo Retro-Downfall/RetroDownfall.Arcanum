@@ -36,7 +36,7 @@ public sealed partial class WizardIntelligenceProviderTests
             _ = await command.ExecuteNonQueryAsync();
         }
 
-        TapestryStore store = new(db, new WeaveIndexAvailability());
+        TapestryStore store = new(db);
 
         TapestryScope scope = new(TapestryScopeKind.Workspace, "/graph");
 

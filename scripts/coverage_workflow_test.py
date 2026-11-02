@@ -66,6 +66,17 @@ class CoverageWorkflowTests(unittest.TestCase):
             "                print('    Example.Tests.ServeFixture')\n"
             "                print('    Example.Tests.BuildFixture')\n"
             "        sys.exit(0)\n"
+            "    if covered:\n"
+            "        dest = pathlib.Path(args[args.index('--results-directory') + 1])\n"
+            "        dest.mkdir(parents=True, exist_ok=True)\n"
+            "        if '--logger' in args:\n"
+            "            logger = args[args.index('--logger') + 1]\n"
+            "            if logger.startswith('trx;LogFileName='):\n"
+            "                (dest / logger.split('=', 1)[1]).write_text('<TestRun/>')\n"
+            "        if int(os.environ.get('COVERAGE_EXIT', '0')):\n"
+            "            nested = dest / 'f6363f78-9f3d-4c71-9f1c-7c4adf9b130d'\n"
+            "            nested.mkdir()\n"
+            "            (nested / 'Sequence_e89d1b0071da44519827d10223ae60f3.xml').write_text('<TestSequence/>')\n"
             "    code = int(os.environ.get('COVERAGE_EXIT' if covered else 'ANALYSIS_EXIT', '0'))\n"
             "    if code: sys.exit(code)\n"
             "    if covered and not os.environ.get('NO_REPORT'):\n"
@@ -246,6 +257,45 @@ class CoverageWorkflowTests(unittest.TestCase):
         result, calls = self.run_gate(COVERAGE_EXIT="13")
         self.assertEqual(13, result.returncode)
         self.assertEqual(1, len(calls))
+
+    def test_runtime_failure_keeps_trx_and_blame_sequence_and_propagates_exit(self):
+        result, calls = self.run_gate("--threshold", "--ci-runtime-only", COVERAGE_EXIT="13")
+
+        self.assertEqual(13, result.returncode)
+        self.assertEqual(1, len(calls))
+        self.assertIn("--logger", calls[0])
+        self.assertEqual("trx;LogFileName=arcanum-runtime.trx", calls[0][calls[0].index("--logger") + 1])
+
+        results = self.root / ".tmp" / "coverage"
+        self.assertEqual("<TestRun/>", (results / "arcanum-runtime.trx").read_text())
+        self.assertEqual(
+            "<TestSequence/>",
+            (results / "f6363f78-9f3d-4c71-9f1c-7c4adf9b130d" / "Sequence_e89d1b0071da44519827d10223ae60f3.xml").read_text(),
+        )
+
+    def test_ci_coverage_artifact_includes_nested_blame_and_runtime_trx_on_failure(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        body = workflow.split("  build-test:\n", 1)[1].split("\n  hosted-producer-primary-analysis:", 1)[0]
+        upload = body.split("      - name: Upload coverage report\n", 1)[1]
+
+        self.assertIn("        if: always()\n", upload)
+
+        path_block = upload.split("          path: |\n", 1)[1].split("          if-no-files-found:", 1)[0]
+        patterns = [line.strip() for line in path_block.splitlines() if line.strip()]
+        representative = [
+            ".tmp/coverage/f6363f78-9f3d-4c71-9f1c-7c4adf9b130d/Sequence_e89d1b0071da44519827d10223ae60f3.xml",
+            ".tmp/coverage/arcanum-runtime.trx",
+            ".tmp/coverage/f6363f78-9f3d-4c71-9f1c-7c4adf9b130d/nested-runtime.trx",
+        ]
+
+        for relative in representative:
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("diagnostic witness")
+
+        included = {path.relative_to(self.root).as_posix() for pattern in patterns for path in self.root.glob(pattern)}
+
+        self.assertTrue(set(representative).issubset(included), set(representative) - included)
 
     def test_empty_analysis_selection_fails_delivery(self):
         result, calls = self.run_gate(EMPTY_ANALYSIS="1")

@@ -49,8 +49,6 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
 
     private SagaMemoryStore? _store;
 
-    private WeaveIndexAvailability? _availability;
-
     public SagaCampaignScopedRetrievalTests(GrimoireFixture fixture) => _fixture = fixture;
 
     public Task InitializeAsync()
@@ -59,11 +57,8 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
 
         _db = _fixture.CreateContext(_dbPath);
 
-        _availability = new WeaveIndexAvailability();
-
         _store = new SagaMemoryStore(
             _db,
-            _availability,
             new TestOptionsMonitor<ArcanumSettings>(
                 new ArcanumSettings
                 {
@@ -175,32 +170,21 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
         Assert.DoesNotContain(corpus.UnresolvedId, await SearchAsync(campaignId: null));
     }
 
-    /// <summary>
-    /// The filter must not depend on whether a native vector accelerator is present.
-    /// </summary>
-    /// <remarks>
-    /// A predicate applied on only one of the two search paths would change what a turn recalls based on
-    /// whether an optional asset shipped, which is the failure this criterion exists to catch. Running
-    /// the same corpus and the same query under both availability states and demanding an identical,
-    /// correctly scoped answer is what pins it: routing the scoped search through the unfiltered vec arm
-    /// fails here even though every other test in this file still passes.
-    /// </remarks>
+    /// <summary>Repeated managed retrieval preserves the exact Campaign-filtered answer.</summary>
     [Fact]
-    public async Task A_campaign_scoped_search_answers_identically_whether_or_not_vec_is_available()
+    public async Task A_campaign_scoped_search_has_a_stable_managed_answer()
     {
         SeededCorpus corpus = await SeedCorpusAsync();
 
-        _availability!.SetAvailable(false);
 
         string[] managed = await SearchAsync(CampaignA);
 
-        _availability.SetAvailable(true);
 
-        string[] accelerated = await SearchAsync(CampaignA);
+        string[] repeated = await SearchAsync(CampaignA);
 
-        Assert.Equal(managed, accelerated);
+        Assert.Equal(managed, repeated);
 
-        Assert.Equal(Ordered(corpus.GlobalId, corpus.CampaignAId), accelerated);
+        Assert.Equal(Ordered(corpus.GlobalId, corpus.CampaignAId), repeated);
     }
 
     /// <summary>
@@ -656,12 +640,11 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
     {
         DivinationService divination = new(
             _db!,
-            _availability!,
             NullLogger<DivinationService>.Instance,
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
         Result<DivinationResult[]> search = await divination.SearchCampaignScopedAsync(
-            "saga_memory_embeddings_vec",
+            "saga_memory_embeddings",
             "MemoryId",
             "Embedding",
             SagaStorageKeys.CampaignScope(campaignId),

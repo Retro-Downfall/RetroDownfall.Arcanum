@@ -5,8 +5,7 @@ namespace RetroDownfall.Arcanum.Core.Primitives;
 
 /// <summary>
 /// Shared little-endian <c>float32[]</c> &lt;-&gt; <c>BLOB</c> conversion for The Weave's
-/// durable storage tables (for example <c>entry_embeddings.Embedding</c>), for binding a query
-/// vector to a sqlite-vec <c>MATCH</c> parameter, and for OpenAI-compatible <c>base64</c>
+/// durable storage tables (for example <c>entry_embeddings.Embedding</c>) and for OpenAI-compatible <c>base64</c>
 /// <c>encoding_format</c> on <c>POST /v1/embeddings</c> (§8.24). All realistic Arcanum deployment
 /// targets (x64, Arm64) are little-endian, so no explicit byte-swapping is performed — see
 /// <c>docs/Arcanum.DESIGN.md</c> §21.
@@ -91,13 +90,13 @@ public static class EmbeddingBlobCodec
     /// <summary>
     /// Cosine similarity in <c>[-1, 1]</c> (imprinted embeddings are typically near-unit vectors, so
     /// results cluster in <c>[0, 1]</c> in practice). Returns <c>0</c> for mismatched or zero-length
-    /// vectors rather than throwing — the managed fallback path treats that as "no signal", not a
+    /// vectors rather than throwing — the managed search path treats that as "no signal", not a
     /// search failure.
     ///
     /// SIMD-vectorized via <see cref="Vector{T}"/> (hardware width chosen by the JIT at startup —
     /// SSE/AVX on x64, NEON on Arm64 — with no platform-specific code and no extra NuGet dependency,
-    /// keeping this Native AOT friendly). This is the hot path for the managed brute-force fallback in
-    /// <c>DivinationService.SearchManagedAsync</c> when sqlite-vec is unavailable — see
+    /// keeping this Native AOT friendly). This is the hot path for the managed brute-force scan in
+    /// <c>DivinationService.SearchManagedAsync</c> — see
     /// <c>docs/Arcanum.DESIGN.md</c> §16.
     /// Each lane's dot/norm products are summed horizontally in <c>float</c> via <see cref="Vector.Dot"/>,
     /// then accumulated across lanes in <c>double</c> to bound precision loss on long vectors; the scalar

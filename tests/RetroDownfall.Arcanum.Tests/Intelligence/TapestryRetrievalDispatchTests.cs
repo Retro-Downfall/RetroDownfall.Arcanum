@@ -254,7 +254,7 @@ public sealed partial class TapestryRetrievalDispatchTests
 
             await h.SqlAsync("INSERT INTO workspace_file_chunks(ChunkId,WorkspacePath,RelativePath,ChunkIndex,Content,CharOffset,CharLength,FileLastWriteTime,IndexedAt) VALUES('task10-source','/task10','a.cs',0,'private-old-source',0,18,'2026-01-01T00:00:00.0000000Z','2026-01-01T00:00:00.0000000Z')");
 
-            h._store = new(h._db, new WeaveIndexAvailability());
+            h._store = new(h._db);
 
             string identity = new EmbeddingProvenance("provider", "embed").Identity;
 

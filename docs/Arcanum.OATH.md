@@ -1051,9 +1051,9 @@ The schema coordinator and owning backfills use this machinery whenever a declar
 
 ### 20.2 Campaign-scoped retrieval (#76, XL)
 
-Stop memory extracted inside one Campaign from being retrieved inside another. This stays one vertical delivery issue because Saga, Lexicon, vector, FTS5, fallback, cursor, restore, reset, and retention paths must share one Campaign-scope invariant.
+Stop memory extracted inside one Campaign from being retrieved inside another. This stays one vertical delivery issue because Saga, Lexicon, managed vector search, FTS5, cursor, restore, reset, and retention paths must share one Campaign-scope invariant.
 
-**Saga.** Denormalize the owning `CampaignId` onto the memory row at write time rather than joining through `Sessions` on every query, backfilled idempotently and indexed. Both search paths must honor it — the vec0 KNN path and the managed cosine BLOB fallback — since a filter applied in only one path silently changes results based on whether a native asset is present. The persisted scope kind is authoritative: an explicit installation scope can be globally eligible, while null identifiers or unresolved legacy ownership alone never grant that scope.
+**Saga.** Denormalize the owning `CampaignId` onto the memory row at write time rather than joining through `Sessions` on every query, backfilled idempotently and indexed. Managed cosine search over the durable BLOB embeddings is the only vector search path; its candidate query must honor that ownership before ranking. The hermetic database runtime disallows dynamic extension loading. The persisted scope kind is authoritative: an explicit installation scope can be globally eligible, while null identifiers or unresolved legacy ownership alone never grant that scope.
 
 **Lexicon.** Add an optional Campaign scope, replacing the unique index on `NameNormalized` with a unique index on scope plus normalized name. Existing rows migrate to global scope. `MatchEntitiesAsync` resolves Campaign scope first, then global, with Campaign shadowing global; both tiers still run exact hits before FTS hits.
 

@@ -1658,12 +1658,6 @@ internal sealed partial class DataRetentionService
                 cancellationToken,
                 ("@id", id.ToString("N"))).ConfigureAwait(false);
 
-            embeddings += await CountTableAsync(
-                "entry_embeddings_vec",
-                "lower(replace(EntryId, '-', '')) = @id",
-                cancellationToken,
-                ("@id", id.ToString("N"))).ConfigureAwait(false);
-
             // Counted from the entry rather than from the index: Entries_ai mirrors one search row
             // per entry, and the only predicate Entries_fts could answer by identity is an UNINDEXED
             // column, which walks the whole content index once per planned candidate.
@@ -2059,12 +2053,6 @@ internal sealed partial class DataRetentionService
                 cancellationToken,
                 ("@id", entryId.Replace("-", string.Empty, StringComparison.Ordinal).ToLowerInvariant())).ConfigureAwait(false);
 
-            derived += await CountTableAsync(
-                "entry_embeddings_vec",
-                "lower(replace(EntryId, '-', '')) = @id",
-                cancellationToken,
-                ("@id", entryId.Replace("-", string.Empty, StringComparison.Ordinal).ToLowerInvariant())).ConfigureAwait(false);
-
             items.Add(
                 new DataRetentionPlanItem(
                     RetentionDataClass.SessionEntryEmbeddings,
@@ -2101,25 +2089,12 @@ internal sealed partial class DataRetentionService
 
         await using DbCommand command = connection.CreateCommand();
 
-        bool vectorTableExists = await TableExistsAsync(
-            "workspace_file_embeddings_vec",
-            cancellationToken).ConfigureAwait(false);
-
-        string vectorCount = vectorTableExists
-            ? """
-              + (SELECT COUNT(*)
-                 FROM workspace_file_embeddings_vec vector
-                 WHERE vector.ChunkId = chunk.ChunkId)
-              """
-            : string.Empty;
-
         command.CommandText =
-            $"""
+            """
             SELECT chunk.ChunkId,
                    (SELECT COUNT(*)
                     FROM workspace_file_embeddings embedding
                     WHERE embedding.ChunkId = chunk.ChunkId)
-                   {vectorCount}
             FROM workspace_file_chunks chunk
             WHERE julianday(chunk.IndexedAt) <= julianday(@cutoff)
             ORDER BY chunk.IndexedAt, chunk.ChunkId
@@ -2222,12 +2197,6 @@ internal sealed partial class DataRetentionService
 
             long derived = await CountTableAsync(
                 "saga_memory_embeddings",
-                "MemoryId = @id",
-                cancellationToken,
-                ("@id", id)).ConfigureAwait(false);
-
-            derived += await CountTableAsync(
-                "saga_memory_embeddings_vec",
                 "MemoryId = @id",
                 cancellationToken,
                 ("@id", id)).ConfigureAwait(false);
@@ -5639,12 +5608,6 @@ internal sealed partial class DataRetentionService
                 cancellationToken,
                 ("@id", id)).ConfigureAwait(false);
 
-            rows += await CountTableAsync(
-                "entry_embeddings_vec",
-                "lower(replace(EntryId, '-', '')) = @id",
-                cancellationToken,
-                ("@id", id)).ConfigureAwait(false);
-
             return rows > 0;
         }
 
@@ -6012,10 +5975,6 @@ internal sealed partial class DataRetentionService
             return CandidateDeleteResult.Empty;
         }
 
-        bool vectorTableExists = await TableExistsAsync(
-            "entry_embeddings_vec",
-            cancellationToken).ConfigureAwait(false);
-
         bool embeddingTableExists = await TableExistsAsync(
             "entry_embeddings",
             cancellationToken).ConfigureAwait(false);
@@ -6111,16 +6070,6 @@ internal sealed partial class DataRetentionService
 
                 return CandidateDeleteResult.Preserved(ClosedPruneLabelCause(
                     summaryUnlabeled.IsFailure ? summaryUnlabeled.Error : campaignUnlabeled.Error));
-            }
-
-            if (vectorTableExists)
-            {
-                derived += await ExecuteAsync(
-                    connection,
-                    transaction,
-                    "DELETE FROM entry_embeddings_vec WHERE lower(replace(EntryId, '-', '')) = @id",
-                    cancellationToken,
-                    ("@id", entryId.ToString("N"))).ConfigureAwait(false);
             }
 
             if (embeddingTableExists)
@@ -6238,12 +6187,6 @@ internal sealed partial class DataRetentionService
             ("@id", entryId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
-            "entry_embeddings_vec",
-            "lower(replace(EntryId, '-', '')) = @id",
-            cancellationToken,
-            ("@id", entryId.ToString("N"))).ConfigureAwait(false) == 0;
-
-        reconciled &= await CountTableAsync(
             "Entries_fts",
             EntryFtsProbePredicate,
             cancellationToken,
@@ -6266,10 +6209,6 @@ internal sealed partial class DataRetentionService
         string normalizedEntryId = Guid.TryParse(entryId, out Guid parsedEntryId)
             ? parsedEntryId.ToString("N")
             : entryId.Replace("-", string.Empty, StringComparison.Ordinal).ToLowerInvariant();
-
-        bool vectorTableExists = await TableExistsAsync(
-            "entry_embeddings_vec",
-            cancellationToken).ConfigureAwait(false);
 
         bool embeddingTableExists = await TableExistsAsync(
             "entry_embeddings",
@@ -6375,16 +6314,6 @@ internal sealed partial class DataRetentionService
                 return CandidateDeleteResult.Empty;
             }
 
-            if (vectorTableExists)
-            {
-                deleted += await ExecuteAsync(
-                    connection,
-                    transaction,
-                    "DELETE FROM entry_embeddings_vec WHERE lower(replace(EntryId, '-', '')) = @id",
-                    cancellationToken,
-                    ("@id", normalizedEntryId)).ConfigureAwait(false);
-            }
-
             deleted += await ExecuteAsync(
                 connection,
                 transaction,
@@ -6428,15 +6357,6 @@ internal sealed partial class DataRetentionService
             cancellationToken,
             ("@id", normalizedEntryId)).ConfigureAwait(false) == 0;
 
-        if (vectorTableExists)
-        {
-            reconciled &= await CountTableAsync(
-                "entry_embeddings_vec",
-                "lower(replace(EntryId, '-', '')) = @id",
-                cancellationToken,
-                ("@id", normalizedEntryId)).ConfigureAwait(false) == 0;
-        }
-
         return new CandidateDeleteResult(0, 0, 0, deleted, reconciled);
     }
 
@@ -6445,10 +6365,6 @@ internal sealed partial class DataRetentionService
         DateTimeOffset effectiveCutoff,
         CancellationToken cancellationToken)
     {
-        bool vectorTableExists = await TableExistsAsync(
-            "workspace_file_embeddings_vec",
-            cancellationToken).ConfigureAwait(false);
-
         bool embeddingTableExists = await TableExistsAsync(
             "workspace_file_embeddings",
             cancellationToken).ConfigureAwait(false);
@@ -6485,16 +6401,6 @@ internal sealed partial class DataRetentionService
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return CandidateDeleteResult.Empty;
-            }
-
-            if (vectorTableExists)
-            {
-                derived += await ExecuteAsync(
-                    connection,
-                    transaction,
-                    "DELETE FROM workspace_file_embeddings_vec WHERE ChunkId = @id",
-                    cancellationToken,
-                    ("@id", chunkId)).ConfigureAwait(false);
             }
 
             if (embeddingTableExists)
@@ -6547,15 +6453,6 @@ internal sealed partial class DataRetentionService
             cancellationToken,
             ("@id", chunkId)).ConfigureAwait(false) == 0;
 
-        if (vectorTableExists)
-        {
-            reconciled &= await CountTableAsync(
-                "workspace_file_embeddings_vec",
-                "ChunkId = @id",
-                cancellationToken,
-                ("@id", chunkId)).ConfigureAwait(false) == 0;
-        }
-
         return new CandidateDeleteResult(rows, 0, 0, derived, reconciled);
     }
 
@@ -6597,10 +6494,6 @@ internal sealed partial class DataRetentionService
         int provenance;
 
         int rows;
-
-        bool vectorTableExists = await TableExistsAsync(
-            "saga_memory_embeddings_vec",
-            cancellationToken).ConfigureAwait(false);
 
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
@@ -6650,16 +6543,6 @@ internal sealed partial class DataRetentionService
                 AnnalSubjectStore.Saga,
                 memoryId,
                 cancellationToken).ConfigureAwait(false);
-
-            if (vectorTableExists)
-            {
-                derived += await ExecuteAsync(
-                    connection,
-                    transaction,
-                    "DELETE FROM saga_memory_embeddings_vec WHERE MemoryId = @id",
-                    cancellationToken,
-                    ("@id", memoryId)).ConfigureAwait(false);
-            }
 
             derived += await ExecuteAsync(
                 connection,
@@ -6730,15 +6613,6 @@ internal sealed partial class DataRetentionService
             "SubjectStoreCode = 1 AND SubjectId = @id",
             cancellationToken,
             ("@id", memoryId)).ConfigureAwait(false) == 0;
-
-        if (vectorTableExists)
-        {
-            reconciled &= await CountTableAsync(
-                "saga_memory_embeddings_vec",
-                "MemoryId = @id",
-                cancellationToken,
-                ("@id", memoryId)).ConfigureAwait(false) == 0;
-        }
 
         return new CandidateDeleteResult(
             rows,

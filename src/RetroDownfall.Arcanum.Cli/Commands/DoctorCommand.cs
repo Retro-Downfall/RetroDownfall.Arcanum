@@ -1213,7 +1213,7 @@ public sealed class DoctorCommand(
 
         string model = string.IsNullOrWhiteSpace(embeddings.Model) ? "(none)" : embeddings.Model.Trim();
 
-        // Doctor runs outside the API host process — report configured posture + managed beta default.
+        // Doctor reports configured readiness outside the API host process.
         string mode = !enabled
             ? "disabled"
             : (string.IsNullOrWhiteSpace(embeddings.Provider) || string.IsNullOrWhiteSpace(embeddings.Model)
@@ -1221,9 +1221,9 @@ public sealed class DoctorCommand(
                 : "managed");
 
         string guidance = mode == "managed"
-            ? "When the API host is running without sqlite-vec, Divination uses managed SIMD fallback "
+            ? "Divination uses complete streamed managed SIMD search "
               + "and streams the complete candidate set through bounded top-K memory. "
-              + "Confirm live mode via GET /api/meta embeddingsVectorMode."
+              + "Confirm live readiness via GET /api/meta embeddingsVectorMode."
             : mode == "disabled"
                 ? "Set Arcanum:Features:Embeddings=true and configure Arcanum:Integrations:Embeddings:Provider and Arcanum:Integrations:Embeddings:Model to enable The Weave."
                 : "Configure Arcanum:Integrations:Embeddings:Provider and Arcanum:Integrations:Embeddings:Model.";
@@ -1232,7 +1232,7 @@ public sealed class DoctorCommand(
             ("Enabled", enabled ? "yes" : "no"),
             ("Provider", provider),
             ("Model", model),
-            ("Vector mode (configured default)", mode),
+            ("Vector search (configured)", mode),
             ("Managed row budget", "none (complete streamed scan)"),
             ("Guidance", guidance));
 

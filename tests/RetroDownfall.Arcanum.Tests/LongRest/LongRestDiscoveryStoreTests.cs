@@ -57,14 +57,11 @@ public sealed class LongRestDiscoveryStoreTests
         Assert.DoesNotContain(groups.SelectMany(group => group.Evidence), candidate => candidate.Target.MemoryId == "a-vector" && candidate.Lane == LongRestDiscoveryLane.Lexical);
     }
 
-    [SkippableTheory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Lexical_uses_token_matches_and_scoped_scores_with_deterministic_ties(bool accelerated)
+    [SkippableFact]
+    public async Task Lexical_uses_token_matches_and_scoped_scores_with_deterministic_ties()
     {
         await using LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
 
-        h.Saga.VectorAccelerator.SetAvailable(accelerated);
 
         await h.SeedAsync("anchor", "opal OR quartz");
 
@@ -131,14 +128,11 @@ public sealed class LongRestDiscoveryStoreTests
         Assert.Equal(["z-eligible"], groups.SelectMany(group => group.Evidence).Select(candidate => candidate.Target.MemoryId));
     }
 
-    [SkippableTheory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Vector_candidates_require_equal_width_before_top_k(bool accelerated)
+    [SkippableFact]
+    public async Task Vector_candidates_require_equal_width_before_top_k()
     {
         await using LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
 
-        h.Saga.VectorAccelerator.SetAvailable(accelerated);
 
         await h.SeedAsync("anchor", "opal");
 

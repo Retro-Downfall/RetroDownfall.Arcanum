@@ -87,7 +87,7 @@ internal sealed partial class ArcanumInternalToolServer
             Result<DivinationResult[]> searchResult = memoryScope.IsEnforced
                 ? await divinationService
                     .SearchCampaignScopedAsync(
-                        SagaStorageKeys.VectorTable,
+                        SagaStorageKeys.EmbeddingTable,
                         SagaStorageKeys.EmbeddingKeyColumn,
                         SagaStorageKeys.EmbeddingColumn,
                         memoryScope.ToSagaScope(),
@@ -98,7 +98,7 @@ internal sealed partial class ArcanumInternalToolServer
                     .ConfigureAwait(false)
                 : await divinationService
                     .SearchAsync(
-                        SagaStorageKeys.VectorTable,
+                        SagaStorageKeys.EmbeddingTable,
                         SagaStorageKeys.EmbeddingKeyColumn,
                         SagaStorageKeys.EmbeddingColumn,
                         embedResult.Value,

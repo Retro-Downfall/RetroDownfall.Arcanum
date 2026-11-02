@@ -67,13 +67,11 @@ public sealed partial class TapestryGraphStoreTests
 
         Assert.True((await _store.PublishGenerationAsync(new(id, before, Recipe, TapestryTerminalReason.SingleRoot, DateTimeOffset.UtcNow), CancellationToken.None)).IsSuccess);
 
-        await ExecuteAsync("CREATE TABLE tapestry_node_embeddings_vec(NodeId TEXT PRIMARY KEY,Embedding BLOB NOT NULL); INSERT INTO tapestry_node_embeddings_vec SELECT NodeId,Embedding FROM tapestry_node_embeddings; DELETE FROM workspace_file_chunks;");
+        await ExecuteAsync("DELETE FROM workspace_file_chunks;");
 
         Assert.Equal(0, await _store.PruneRemovedScopesAsync(false, true, true, CancellationToken.None));
 
         Assert.Equal(6L, await ScalarAsync("SELECT COUNT(*) FROM tapestry_edges"));
-
-        Assert.Equal(6L, await ScalarAsync("SELECT COUNT(*) FROM tapestry_node_embeddings_vec"));
 
         Assert.Equal(1, await _store.PruneRemovedScopesAsync(true, true, true, CancellationToken.None));
 
@@ -82,8 +80,6 @@ public sealed partial class TapestryGraphStoreTests
         Assert.Equal(0L, await ScalarAsync("SELECT COUNT(*) FROM tapestry_edges"));
 
         Assert.Equal(0L, await ScalarAsync("SELECT COUNT(*) FROM tapestry_node_embeddings"));
-
-        Assert.Equal(0L, await ScalarAsync("SELECT COUNT(*) FROM tapestry_node_embeddings_vec"));
 
         Assert.Equal(1L, await ScalarAsync("SELECT COUNT(*) FROM tapestry_scope_revisions WHERE ScopeKind='Workspace' AND ScopeId='/graph' AND InvalidationRevision > 0"));
     }

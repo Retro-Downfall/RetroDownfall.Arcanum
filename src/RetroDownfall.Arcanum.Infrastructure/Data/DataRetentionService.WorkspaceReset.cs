@@ -140,26 +140,6 @@ internal sealed partial class DataRetentionService
                     "Workspace data changed after preview; request a new dry-run before retrying.");
             }
 
-            if (await WorkspaceResetTableExistsAsync(
-                    connection,
-                    transaction,
-                    "tapestry_node_embeddings_vec",
-                    cancellationToken).ConfigureAwait(false))
-            {
-                derivedDeleted += await ExecuteAsync(
-                    connection,
-                    transaction,
-                    """
-                    DELETE FROM tapestry_node_embeddings_vec
-                    WHERE NodeId IN (
-                        SELECT NodeId
-                        FROM tapestry_nodes
-                        WHERE ScopeKind = 'Workspace' AND ScopeId = @root)
-                    """,
-                    cancellationToken,
-                    ("@root", workspaceRoot)).ConfigureAwait(false);
-            }
-
             // Published graph children are immutable. Count the admitted snapshot before the owner
             // cascade removes them; deleting children first would bypass the generation contract.
             derivedDeleted += current.Inventory.TapestryNodeRows + current.Inventory.TapestryEmbeddingRows + current.Inventory.TapestryEdgeRows;
@@ -170,26 +150,6 @@ internal sealed partial class DataRetentionService
                 "DELETE FROM tapestry_generations WHERE ScopeKind = 'Workspace' AND ScopeId = @root",
                 cancellationToken,
                 ("@root", workspaceRoot)).ConfigureAwait(false);
-
-            if (await WorkspaceResetTableExistsAsync(
-                    connection,
-                    transaction,
-                    "workspace_file_embeddings_vec",
-                    cancellationToken).ConfigureAwait(false))
-            {
-                derivedDeleted += await ExecuteAsync(
-                    connection,
-                    transaction,
-                    """
-                    DELETE FROM workspace_file_embeddings_vec
-                    WHERE ChunkId IN (
-                        SELECT ChunkId
-                        FROM workspace_file_chunks
-                        WHERE WorkspacePath = @root)
-                    """,
-                    cancellationToken,
-                    ("@root", workspaceRoot)).ConfigureAwait(false);
-            }
 
             derivedDeleted += await ExecuteAsync(
                 connection,
@@ -337,8 +297,7 @@ internal sealed partial class DataRetentionService
                     snapshot.WorkspaceChunkRows));
         }
 
-        long workspaceEmbeddingRows = snapshot.WorkspaceEmbeddingRows
-            + snapshot.WorkspaceVectorRows;
+        long workspaceEmbeddingRows = snapshot.WorkspaceEmbeddingRows;
 
         if (workspaceEmbeddingRows > 0)
         {
@@ -354,8 +313,7 @@ internal sealed partial class DataRetentionService
         long tapestryRows = snapshot.TapestryGenerationRows
             + snapshot.TapestryNodeRows
             + snapshot.TapestryEmbeddingRows
-            + snapshot.TapestryEdgeRows
-            + snapshot.TapestryVectorRows;
+            + snapshot.TapestryEdgeRows;
 
         if (tapestryRows > 0)
         {
@@ -411,26 +369,6 @@ internal sealed partial class DataRetentionService
             workspaceRoot,
             cancellationToken).ConfigureAwait(false);
 
-        bool hasWorkspaceVectors = await WorkspaceResetTableExistsAsync(
-            connection,
-            transaction,
-            "workspace_file_embeddings_vec",
-            cancellationToken).ConfigureAwait(false);
-
-        long workspaceVectors = hasWorkspaceVectors
-            ? await WorkspaceResetCountAsync(
-                connection,
-                transaction,
-                """
-                SELECT COUNT(*)
-                FROM workspace_file_embeddings_vec embedding
-                JOIN workspace_file_chunks chunk ON chunk.ChunkId = embedding.ChunkId
-                WHERE chunk.WorkspacePath = @root
-                """,
-                workspaceRoot,
-                cancellationToken).ConfigureAwait(false)
-            : 0;
-
         long tapestryGenerations = await WorkspaceResetCountAsync(
             connection,
             transaction,
@@ -476,26 +414,6 @@ internal sealed partial class DataRetentionService
             workspaceRoot,
             cancellationToken).ConfigureAwait(false);
 
-        bool hasTapestryVectors = await WorkspaceResetTableExistsAsync(
-            connection,
-            transaction,
-            "tapestry_node_embeddings_vec",
-            cancellationToken).ConfigureAwait(false);
-
-        long tapestryVectors = hasTapestryVectors
-            ? await WorkspaceResetCountAsync(
-                connection,
-                transaction,
-                """
-                SELECT COUNT(*)
-                FROM tapestry_node_embeddings_vec embedding
-                JOIN tapestry_nodes node ON node.NodeId = embedding.NodeId
-                WHERE node.ScopeKind = 'Workspace' AND node.ScopeId = @root
-                """,
-                workspaceRoot,
-                cancellationToken).ConfigureAwait(false)
-            : 0;
-
         long crossScopeGenerationRows = await WorkspaceResetCountAsync(
             connection,
             transaction,
@@ -512,9 +430,9 @@ internal sealed partial class DataRetentionService
             cancellationToken).ConfigureAwait(false);
 
         return new WorkspaceResetInventory(
-            workspaceContexts, workspaceChunks, workspaceEmbeddings, workspaceVectors,
+            workspaceContexts, workspaceChunks, workspaceEmbeddings,
             tapestryGenerations, tapestryNodes, tapestryEmbeddings, tapestryEdges,
-            tapestryVectors, crossScopeGenerationRows, hasWorkspaceVectors, hasTapestryVectors);
+            crossScopeGenerationRows);
     }
 
     private static async Task<WorkspaceResetSnapshot> ReadWorkspaceResetSnapshotAsync(
@@ -562,24 +480,6 @@ internal sealed partial class DataRetentionService
             workspaceRoot,
             cancellationToken).ConfigureAwait(false);
 
-        if (inventory.HasWorkspaceVectors)
-        {
-            await AppendWorkspaceResetFingerprintAsync(
-                resourceFingerprint,
-                connection,
-                transaction,
-                "workspace-vector:",
-                """
-                SELECT embedding.ChunkId
-                FROM workspace_file_embeddings_vec embedding
-                JOIN workspace_file_chunks chunk ON chunk.ChunkId = embedding.ChunkId
-                WHERE chunk.WorkspacePath = @root
-                ORDER BY embedding.ChunkId
-                """,
-                workspaceRoot,
-                cancellationToken).ConfigureAwait(false);
-        }
-
         await AppendWorkspaceResetFingerprintAsync(
             resourceFingerprint,
             connection,
@@ -623,24 +523,6 @@ internal sealed partial class DataRetentionService
             workspaceRoot,
             cancellationToken).ConfigureAwait(false);
 
-        if (inventory.HasTapestryVectors)
-        {
-            await AppendWorkspaceResetFingerprintAsync(
-                resourceFingerprint,
-                connection,
-                transaction,
-                "tapestry-vector:",
-                """
-                SELECT embedding.NodeId
-                FROM tapestry_node_embeddings_vec embedding
-                JOIN tapestry_nodes node ON node.NodeId = embedding.NodeId
-                WHERE node.ScopeKind = 'Workspace' AND node.ScopeId = @root
-                ORDER BY embedding.NodeId
-                """,
-                workspaceRoot,
-                cancellationToken).ConfigureAwait(false);
-        }
-
         await AppendWorkspaceResetFingerprintAsync(
             resourceFingerprint,
             connection,
@@ -679,38 +561,6 @@ internal sealed partial class DataRetentionService
         return Convert.ToInt64(result, CultureInfo.InvariantCulture);
     }
 
-    private static async Task<bool> WorkspaceResetTableExistsAsync(
-        DbConnection connection,
-        DbTransaction? transaction,
-        string table,
-        CancellationToken cancellationToken)
-    {
-        // A vector mirror is classified rather than probed, because a legacy virtual one also passes
-        // the probe below and cannot be counted or deleted from here.
-        if (SagaVectorMirror.IsMirrorName(table))
-        {
-            return await IsPlainVectorMirrorAsync(
-                connection,
-                transaction,
-                table,
-                cancellationToken).ConfigureAwait(false);
-        }
-
-        await using DbCommand command = connection.CreateCommand();
-
-        command.Transaction = transaction;
-
-        command.CommandText =
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = @table AND type = 'table')";
-
-        Add(command, "@table", table);
-
-        object? result = await command.ExecuteScalarAsync(
-            cancellationToken).ConfigureAwait(false);
-
-        return Convert.ToInt64(result, CultureInfo.InvariantCulture) != 0;
-    }
-
     private static async Task AppendWorkspaceResetFingerprintAsync(
         IncrementalHash fingerprint,
         DbConnection connection,
@@ -745,24 +595,18 @@ internal sealed partial class DataRetentionService
         long WorkspaceContextRows,
         long WorkspaceChunkRows,
         long WorkspaceEmbeddingRows,
-        long WorkspaceVectorRows,
         long TapestryGenerationRows,
         long TapestryNodeRows,
         long TapestryEmbeddingRows,
         long TapestryEdgeRows,
-        long TapestryVectorRows,
-        long CrossScopeGenerationRows,
-        bool HasWorkspaceVectors,
-        bool HasTapestryVectors)
+        long CrossScopeGenerationRows)
     {
         internal long TotalOwnedRows => WorkspaceContextRows
             + WorkspaceChunkRows
             + WorkspaceEmbeddingRows
-            + WorkspaceVectorRows
             + TapestryGenerationRows
             + TapestryNodeRows
             + TapestryEmbeddingRows
-            + TapestryEdgeRows
-            + TapestryVectorRows;
+            + TapestryEdgeRows;
     }
 }

@@ -17,17 +17,15 @@ public sealed class SagaRankingRecallTests
 {
     private static readonly DateTimeOffset Now = new(2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
 
-    [SkippableTheory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Dormancy_is_applied_before_top_k_and_is_shared_with_hydration_and_inspection(bool accelerator)
+    [SkippableFact]
+    public async Task Dormancy_is_applied_before_top_k_and_is_shared_with_hydration_and_inspection()
     {
         await using SagaStoreHarness h = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
         h.Options.CurrentValue.Features.LongRest = true;
-        h.VectorAccelerator.SetAvailable(accelerator);
+
         await Insert(h, "old", Now.AddDays(-500), 1f, 0f);
         await Insert(h, "fresh", Now.AddDays(-1), 0.8f, 0.6f);
-        var result = await Service(h).SearchAsync("saga_memory_embeddings_vec", "MemoryId", "Embedding", new(Vector(1, 0)), 1, 0.5f, CancellationToken.None);
+        var result = await Service(h).SearchAsync("saga_memory_embeddings", "MemoryId", "Embedding", new(Vector(1, 0)), 1, 0.5f, CancellationToken.None);
         Assert.True(result.IsSuccess, result.Error.Message);
         Assert.Equal("fresh", Assert.Single(result.Value).Id);
         Assert.Equal(0.8f, result.Value[0].Similarity, 5);
@@ -95,25 +93,18 @@ public sealed class SagaRankingRecallTests
     }
 
     [SkippableTheory]
-    [InlineData(false, false, "unscoped")]
-    [InlineData(false, true, "unscoped")]
-    [InlineData(true, false, "unscoped")]
-    [InlineData(true, true, "unscoped")]
-    [InlineData(false, false, "scoped")]
-    [InlineData(false, true, "scoped")]
-    [InlineData(true, false, "scoped")]
-    [InlineData(true, true, "scoped")]
-    [InlineData(false, false, "campaign")]
-    [InlineData(false, true, "campaign")]
-    [InlineData(true, false, "campaign")]
-    [InlineData(true, true, "campaign")]
-    public async Task Canonical_retirement_is_filtered_before_top_k_in_every_Saga_path(bool enabled, bool accelerator, string path)
+    [InlineData(false, "unscoped")]
+    [InlineData(true, "unscoped")]
+    [InlineData(false, "scoped")]
+    [InlineData(true, "scoped")]
+    [InlineData(false, "campaign")]
+    [InlineData(true, "campaign")]
+    public async Task Canonical_retirement_is_filtered_before_top_k_in_every_Saga_path(bool enabled, string path)
     {
         await using SagaStoreHarness h = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
 
         h.Options.CurrentValue.Features.LongRest = enabled;
 
-        h.VectorAccelerator.SetAvailable(accelerator);
 
         await Insert(h, "retired-best-match", Now.AddDays(-1), 1, 0);
 
@@ -137,14 +128,14 @@ public sealed class SagaRankingRecallTests
 
         var result = path switch
         {
-            "scoped" => await Service(h).SearchScopedAsync("saga_memory_embeddings_vec", "MemoryId", "Embedding",
+            "scoped" => await Service(h).SearchScopedAsync("saga_memory_embeddings", "MemoryId", "Embedding",
                 "saga_memories", "Id", "Source", "extraction", new(Vector(1, 0)), 1, 0.5f, CancellationToken.None),
 
-            "campaign" => await Service(h).SearchCampaignScopedAsync("saga_memory_embeddings_vec", "MemoryId", "Embedding",
+            "campaign" => await Service(h).SearchCampaignScopedAsync("saga_memory_embeddings", "MemoryId", "Embedding",
                 new("saga_memories", "Id", "ScopeKindCode", "CampaignId", 1, 2, Guid.NewGuid()),
                 new(Vector(1, 0)), 1, 0.5f, CancellationToken.None),
 
-            _ => await Service(h).SearchAsync("saga_memory_embeddings_vec", "MemoryId", "Embedding", new(Vector(1, 0)), 1, 0.5f, CancellationToken.None),
+            _ => await Service(h).SearchAsync("saga_memory_embeddings", "MemoryId", "Embedding", new(Vector(1, 0)), 1, 0.5f, CancellationToken.None),
         };
 
         Assert.True(result.IsSuccess, result.Error.Message);
@@ -239,10 +230,10 @@ public sealed class SagaRankingRecallTests
         h.Store.InsertAsync(id,id,at,null,null,"extraction",Vector(x,y),CancellationToken.None);
 
     private static DivinationService Service(SagaStoreHarness h) =>
-        new(h.Context,h.VectorAccelerator,NullLogger<DivinationService>.Instance,h.Options,new FixedTime());
+        new(h.Context,NullLogger<DivinationService>.Instance,h.Options,new FixedTime());
 
     private static async Task<DivinationResult[]> Search(SagaStoreHarness h) =>
-        (await Service(h).SearchAsync("saga_memory_embeddings_vec","MemoryId","Embedding",new(Vector(1,0)),1,0.5f,CancellationToken.None)).Value;
+        (await Service(h).SearchAsync("saga_memory_embeddings","MemoryId","Embedding",new(Vector(1,0)),1,0.5f,CancellationToken.None)).Value;
 
     private static float[] Vector(float x,float y)
     {
