@@ -44,13 +44,14 @@ internal enum GrimoireSchemaTransactionTier
 /// ordinal file-name order without a dependency sort.
 ///
 /// <list type="bullet">
-/// <item><see cref="Tables"/> — real tables plus their co-located indexes.</item>
+/// <item><see cref="Tables"/> — real tables plus their historical co-located indexes.</item>
 /// <item><see cref="FullTextSearch"/> — FTS5 virtual tables, after the content tables they mirror
 /// and before the triggers that write to them.</item>
 /// <item><see cref="Triggers"/> — the only objects that reference both a table and an FTS5 virtual
 /// table, so they come last.</item>
 /// <item><see cref="Views"/> — read-only views, installed last. Inventory views are diagnostic only;
 /// Campaign source membership is an indexed logical projection over legacy and shared provenance.</item>
+/// <item><see cref="Indexes"/> — standalone indexes, after every table they can reference.</item>
 /// </list>
 ///
 /// The retired <c>Accelerators</c> category is gone: it existed for dynamically loaded <c>vec0</c>
@@ -67,6 +68,9 @@ internal enum GrimoireSchemaCategory
     Triggers = 2,
 
     Views = 3,
+
+    // Append categories so historical catalog ordering and enum values remain stable.
+    Indexes = 4,
 }
 
 /// <summary>

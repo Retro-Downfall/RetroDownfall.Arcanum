@@ -39,7 +39,7 @@ public sealed class LegacyVectorMirrorRetirementTests
 
         Assert.True(result.Core.IsHealthy);
 
-        Assert.Equal(35, await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
+        Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
 
         foreach ((string table, string key) in Embeddings)
         {
@@ -180,7 +180,7 @@ public sealed class LegacyVectorMirrorRetirementTests
     }
 
     [Fact]
-    public async Task Failed_version_publication_rolls_back_all_mirror_retirements_and_the_exact_journal()
+    public async Task Core35_head_failed_version_publication_rolls_back_all_mirror_retirements_and_the_exact_journal()
     {
         using EvolutionScratchDatabase scratch = EvolutionScratchDatabase.Create();
 
@@ -190,7 +190,7 @@ public sealed class LegacyVectorMirrorRetirementTests
 
         await SeedPlainMirrorsAsync(connection);
 
-        GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create();
+        GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create(CoreSchemaVersionThirtyFiveFixture.ChainSet());
 
         await installer.InstallAsync(connection, 1536, GrimoireSchemaTestInstaller.CreateContext(), CancellationToken.None);
 
@@ -222,9 +222,86 @@ public sealed class LegacyVectorMirrorRetirementTests
         Assert.True((await new GrimoireSchemaBackfillRunner(installer, TimeProvider.System).AdvanceAsync(connection, installer.Chains.ForTier(GrimoireSchemaTransactionTier.Core), journal, GrimoireSchemaTestInstaller.CreateContext(), 1, CancellationToken.None, execution)).StepComplete);
     }
 
+    [Fact]
+    public async Task Core36_publication_failure_preserves_committed_retirement_checkpoint_and_retries_only_the_index_step()
+    {
+        using EvolutionScratchDatabase scratch = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await scratch.OpenAsync(CancellationToken.None);
+
+        await InstallCore34Async(connection);
+
+        await SeedDurableEmbeddingsAsync(connection);
+
+        await SeedPlainMirrorsAsync(connection);
+
+        GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create();
+
+        await installer.InstallAsync(connection, 1536, GrimoireSchemaTestInstaller.CreateContext(), CancellationToken.None);
+
+        GrimoireSchemaTransitionJournalRow journal = (await GrimoireSchemaTransitionJournal.ReadAsync(
+            connection, null, GrimoireSchemaTransactionTier.Core, CancellationToken.None))!;
+
+        string root = Path.GetDirectoryName(new SqliteConnectionStringBuilder(scratch.ConnectionString).DataSource)!;
+
+        using ArcanumMaintenanceLock held = ArcanumMaintenanceLock.AcquireDetailed(root).BorrowAcquiredLock();
+
+        using GrimoireSchemaQuiescentExecution execution = GrimoireSchemaQuiescentExecution.ForStartup(connection, held, root, new GrimoireDbReadiness());
+
+        Assert.True((await new GrimoireSchemaBackfillRunner(installer, TimeProvider.System).AdvanceAsync(
+            connection, installer.Chains.ForTier(GrimoireSchemaTransactionTier.Core), journal,
+            GrimoireSchemaTestInstaller.CreateContext(), 1, CancellationToken.None, execution)).StepComplete);
+
+        GrimoireSchemaTransitionJournalRow checkpoint = (await GrimoireSchemaTransitionJournal.ReadAsync(
+            connection, null, GrimoireSchemaTransactionTier.Core, CancellationToken.None))!;
+
+        Assert.Equal(35, checkpoint.CompletedThroughVersion);
+
+        Assert.Null(checkpoint.BackfillName);
+
+        Assert.Null(checkpoint.BackfillCursor);
+
+        await ExecuteAsync(connection, "CREATE TEMP TRIGGER refuse_publication BEFORE DELETE ON grimoire_schema_transitions BEGIN SELECT RAISE(ABORT,'refused'); END;");
+
+        await Assert.ThrowsAsync<SqliteException>(() => installer.InstallAsync(
+            connection, 1536, GrimoireSchemaTestInstaller.CreateContext(), CancellationToken.None));
+
+        Assert.Equal(34, await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
+
+        Assert.Equal(CoreSchemaVersionThirtyFourFixture.PublishedFingerprint,
+            await ScalarAsync(connection, "SELECT SourceDefinitionFingerprint FROM grimoire_feature_schemas WHERE FamilyCode=0 AND TransactionTierCode=0"));
+
+        Assert.Equal(checkpoint, await GrimoireSchemaTransitionJournal.ReadAsync(
+            connection, null, GrimoireSchemaTransactionTier.Core, CancellationToken.None));
+
+        Assert.Equal(0L, await ScalarAsync(connection,
+            "SELECT COUNT(*) FROM sqlite_schema WHERE name='idx_session_attachment_chunks_retrieval_scope'"));
+
+        foreach ((string table, string key) in Embeddings)
+        {
+            Assert.Equal(0L, await ScalarAsync(connection, $"SELECT COUNT(*) FROM sqlite_schema WHERE name='{table}_vec'"));
+
+            Assert.Equal("0000803F0000000000000000", await ScalarAsync(connection,
+                $"SELECT hex(Embedding) FROM {table} WHERE {key}='11111111-1111-4111-8111-111111111111'"));
+        }
+
+        await ExecuteAsync(connection, "DROP TRIGGER refuse_publication;");
+
+        Assert.True((await installer.InstallAsync(connection, 1536,
+            GrimoireSchemaTestInstaller.CreateContext(), CancellationToken.None)).Core.IsHealthy);
+
+        Assert.Equal(36, await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
+
+        Assert.Null(await GrimoireSchemaTransitionJournal.ReadAsync(
+            connection, null, GrimoireSchemaTransactionTier.Core, CancellationToken.None));
+
+        Assert.Equal(1L, await ScalarAsync(connection,
+            "SELECT COUNT(*) FROM sqlite_schema WHERE name='idx_session_attachment_chunks_retrieval_scope'"));
+    }
+
     private static async Task InstallCore34Async(SqliteConnection connection)
     {
-        Assert.Equal(CoreSchemaVersionThirtyFourFixture.PublishedFingerprint, GrimoireSchemaCatalog.CoreSchemaFingerprint);
+        Assert.Equal(CoreSchemaVersionThirtyFourFixture.PublishedFingerprint, CoreSchemaVersionThirtyFiveFixture.Fingerprint);
 
         _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionThirtyFourFixture.ChainSet(), 1536, CancellationToken.None);
     }

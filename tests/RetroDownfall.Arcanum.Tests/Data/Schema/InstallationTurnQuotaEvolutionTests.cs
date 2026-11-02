@@ -338,7 +338,7 @@ public sealed class InstallationTurnQuotaEvolutionTests
 
         Assert.True(installed.Core.IsHealthy);
 
-        Assert.Equal(35, await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
+        Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
 
         Assert.Equal(GrimoireSchemaCatalog.CoreSchemaFingerprint, installed.Core.SourceDefinitionFingerprint);
 

@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -448,16 +449,13 @@ internal sealed class DivinationService(
 
         int noSignal = 0;
 
-        await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        await using SqliteDataReader reader = (SqliteDataReader)await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             string id = reader.GetString(0);
 
-            // Scored straight off the BLOB. Decoding into a fresh float[] would double the per-row
-            // allocation of a scan that reads every in-scope row on every retrieval, for a copy nothing
-            // outlives this iteration.
-            switch (TryScoreRow(reader[1], queryVector, queryNormSquared, out float similarity))
+            switch (TryScoreRow(reader, 1, queryVector, queryNormSquared, out float similarity))
             {
                 case RowScore.DimensionMismatch:
 
@@ -558,19 +556,27 @@ internal sealed class DivinationService(
     }
 
     internal static RowScore TryScoreRow(
-        object? embeddingColumn,
+        SqliteDataReader reader,
+        int embeddingOrdinal,
         float[] queryVector,
         double queryNormSquared,
         out float similarity)
     {
         similarity = 0f;
 
-        // SQL NULL arrives as DBNull and is not a blob, so it is unreadable here rather than an exception per
-        // row; a null reference would otherwise view as an empty vector and be counted as another width.
-        if (embeddingColumn is not byte[] blob)
+        SQLitePCL.sqlite3_stmt statement = reader.Handle!;
+
+        // Check the storage class before requesting a BLOB: SQLite otherwise coerces text/numbers
+        // into bytes. NULL and non-BLOB values remain unreadable, rather than another vector width.
+        if (SQLitePCL.raw.sqlite3_column_type(statement, embeddingOrdinal) != SQLitePCL.raw.SQLITE_BLOB)
         {
             return RowScore.Unreadable;
         }
+
+        // The native bytes belong to this reader's current row. Finish scoring synchronously here,
+        // before another read/step/reset/dispose can invalidate them; no span escapes this method.
+        // Reading through the object indexer instead would allocate a full managed byte[] per row.
+        ReadOnlySpan<byte> blob = SQLitePCL.raw.sqlite3_column_blob(statement, embeddingOrdinal);
 
         ReadOnlySpan<float> candidate;
 

@@ -15,7 +15,8 @@ internal static class CoreSchemaVersionThirtyFourFixture
 
         return new GrimoireSchemaVersionChainSet(
         [
-            new(core.HeadManifest with { Version = 34, SourceDefinitionFingerprint = PublishedFingerprint }, core.HeadObjects, core.Steps.Where(static step => step.ToVersion <= 34).ToArray()),
+            new(GrimoireSchemaManifestBuilder.Build(GrimoireSchemaFamily.Core, GrimoireSchemaTransactionTier.Core, 34, PublishedFingerprint, CoreSchemaVersionThirtyFiveFixture.Objects),
+                CoreSchemaVersionThirtyFiveFixture.Objects, core.Steps.Where(static step => step.ToVersion <= 34).ToArray()),
             current.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
             current.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
         ]);

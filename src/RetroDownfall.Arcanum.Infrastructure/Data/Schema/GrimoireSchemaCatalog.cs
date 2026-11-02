@@ -17,8 +17,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// <item>One file per table, FTS5 virtual table, trigger, and view, named after the object. The
 /// declared name and the file name must match, so a rename cannot leave a stale object installed
 /// under its old name.</item>
-/// <item>Indexes are co-located in their owning table's file rather than getting files of their own,
-/// so a table and everything that constrains it read as one definition.</item>
+/// <item>Historical indexes remain co-located with their tables; new independently evolved indexes
+/// may use one resource each under <c>Indexes/</c>, installed after their owning tables.</item>
 /// <item>Every statement is <c>CREATE ... IF NOT EXISTS</c>, so an install against an already
 /// installed database is a no-op instead of an error.</item>
 /// <item>The folder path selects family, transaction tier, and category. Core objects sit directly
@@ -572,6 +572,8 @@ internal static class GrimoireSchemaCatalog
             "Triggers" => GrimoireSchemaCategory.Triggers,
 
             "Views" => GrimoireSchemaCategory.Views,
+
+            "Indexes" => GrimoireSchemaCategory.Indexes,
 
             _ => throw new InvalidOperationException(
                 $"Embedded Grimoire schema resource '{relativePath}.sql' is in unknown category folder '{folder}'."),
