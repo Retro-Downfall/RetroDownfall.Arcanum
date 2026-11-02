@@ -90,8 +90,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
     // A row is the maximum measured under one, two and three root workers, plus max(8, ceil(maximum * 0.05)),
     // rounded up to a multiple of eight. Selection roots omit the digest after the tilde. Hard/model/effect limits are unchanged.
-    // Reviewed issue171 production source 7334634e12301895cf3d9a37c8edbb7f12bd9b7f with the closed quiescent strategy checker.
-    // Frozen source/checker receipt SHA-256: 66c98b2960317d2be749dfd3f2e6c88701791f9ede3fc2da97400bfbff7de00a.
+    // Reviewed issue171 production source 24976ffebbb8e75cb9d55ddfd68fc42724213eec with the closed quiescent strategy checker.
+    // Frozen source/checker receipt SHA-256: 3f3057fa90b814b776441b46c742b4c4eae16b149fd0341be837e4272426f0f8.
     // All three arrangements produced identical complete manifests and zero diagnostics: 7,234 primary sites / 69 roots,
     // and 1,663 additional sites / 30 roots. The largest primary maximum is 6,822 (ceiling 7,168), below the unchanged
     // 7,372 ceiling bound of the 8,192-state cap. RunApprenticeAsync measured 3,148 / 1,574 / 3,148; its maximum is retained.
@@ -129,7 +129,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("EntryWeavingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.EntryWeavingService.ExecuteAsync", 776), // measured 736, 736, 736 under one, two and three workers; reviewed canonical BLOB entry weaving and persistence closure
         new("FileEncryptionKeyBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.FileEncryptionKeyBootstrapHostedService.StartAsync", 296), // measured 278
         new("FileEncryptionKeyBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.FileEncryptionKeyBootstrapHostedService.StopAsync", 16), // measured 1
-        new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StartAsync", 6328), // measured 6024, 6024, 6024 under one, two and three workers; reviewed ordinary and quiescent schema backfill closure, including Core35 mirror retirement
+        new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StartAsync", 6328), // measured 6026, 6026, 6026 under one, two and three workers; reviewed startup schema, Core35 retirement and typed refusal closure
         new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StopAsync", 208), // measured 192, 192, 192 under one, two and three workers; reviewed physical-connection shutdown and connection-state callback closure
         new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.TakeGeneratedMasterApiKey", 16), // measured 1
         new("GrimoireSchemaTransitionHostedService", "RetroDownfall.Arcanum.Infrastructure.Covenant.GrimoireSchemaTransitionHostedService.ExecuteAsync", 936), // measured 888, 888, 888 under one, two and three workers; reviewed ordinary and quiescent schema backfill closure, including Core35 mirror retirement
@@ -138,7 +138,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         // The unchanged margin rule gives 5,456 + 273 = 5,729 -> 5,736 and 3,744 + 188 = 3,932 -> 3,936.
         new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance.ProcessAdmittedAsync", 5736), // measured 5456, 5456, 5456 under one, two and three workers; reviewed Long Rest store closure after exact cleanup-token projection; lower maximum lowers the ratchet
         new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.LongRestSweepHostedService.ExecuteAsync", 3936), // measured 3744, 3744, 3744 under one, two and three workers; reviewed Long Rest admission, ledger and store-cleanup closure
-        new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync", 5816), // measured 5532, 5532, 5532 under one, two and three workers; reviewed startup recovery, canonical retention and ledger closure
+        new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync", 5816), // measured 5532, 5532, 2766 under one, two and three workers; reviewed startup recovery, canonical retention and ledger closure
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync", 16), // measured 3
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0", 2448), // measured 2330, 2330, 2330 under one, two and three workers; reviewed startup recovery, canonical retention and ledger closure
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StopAsync", 16), // measured 5
