@@ -159,6 +159,8 @@ jobs:
           path: |
             .tmp/coverage/report/
             .tmp/coverage/**/coverage.cobertura.xml
+            .tmp/coverage/**/Sequence_*.xml
+            .tmp/coverage/**/*.trx
             .tmp/coverage/analysis/
           if-no-files-found: warn
           retention-days: 14
