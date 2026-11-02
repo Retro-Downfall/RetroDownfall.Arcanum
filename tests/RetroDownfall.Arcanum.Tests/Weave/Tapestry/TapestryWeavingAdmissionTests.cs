@@ -428,7 +428,11 @@ public sealed class TapestryWeavingAdmissionTests
 
             Assert.Equal(TapestryWeaveStatus.Woven, Assert.Single(await sweep).Status);
 
-            Assert.True((await drain.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
+            Result drained = await drain.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.True(drained.IsSuccess, drained.IsFailure
+                ? $"{drained.Error.Code}: {drained.Error.Message}; events: {string.Join(" -> ", harness.Events)}"
+                : string.Empty);
 
             Assert.Equal(1, harness.Persistence.Begins);
 
@@ -449,6 +453,65 @@ public sealed class TapestryWeavingAdmissionTests
             checkpoint.Release.TrySetResult();
 
             await sweep;
+        }
+    }
+
+    [Fact]
+    public async Task HeldGenerationTimesOutOnlyWhenTheAdmissionClockAdvances()
+    {
+        await using TapestryAdmissionHarness harness = new();
+
+        TapestryAdmissionHarness.Checkpoint checkpoint = new();
+
+        harness.OnStep = (step, token) => step == "summarize"
+            ? checkpoint.PauseAsync(token)
+            : Task.CompletedTask;
+
+        Task<IReadOnlyList<TapestryWeaveOutcome>> sweep = harness.SweepAsync();
+
+        try
+        {
+            await checkpoint.WaitAsync();
+
+            IGrimoireClosingOwner closing = harness.Inner.BeginOrResumeExclusive(Owner()).Value;
+
+            Task<Result> drain = harness.Inner.DrainRequestAndWorkAsync(closing, CancellationToken.None).AsTask();
+
+            // The real gate must arm its unchanged deadline on the harness's admission clock.
+            // Checking the armed timer is synchronous: no sleep or worker scheduling is evidence.
+            Assert.Equal(1, harness.AdmissionClock.ActiveTimers);
+
+            harness.AdmissionClock.Advance(TimeSpan.FromSeconds(4));
+
+            Assert.Equal(1, harness.AdmissionClock.ActiveTimers);
+
+            Assert.False(drain.IsCompleted);
+
+            harness.AdmissionClock.Advance(TimeSpan.FromSeconds(1));
+
+            Result timedOut = await drain.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.True(timedOut.IsFailure);
+
+            Assert.Equal(ErrorCodes.Grimoire.WorkDrainTimeout, timedOut.Error.Code);
+
+            Assert.False(sweep.IsCompleted);
+
+            Assert.DoesNotContain("group-dispose", harness.Events);
+
+            checkpoint.Release.TrySetResult();
+
+            Assert.Equal(TapestryWeaveStatus.Woven, Assert.Single(await sweep.WaitAsync(TimeSpan.FromSeconds(10))).Status);
+
+            Assert.True((await harness.Inner.DrainRequestAndWorkAsync(closing, CancellationToken.None)).IsSuccess);
+
+            Assert.Equal(0, harness.AdmissionClock.ActiveTimers);
+        }
+        finally
+        {
+            checkpoint.Release.TrySetResult();
+
+            await sweep.WaitAsync(TimeSpan.FromSeconds(10));
         }
     }
 
@@ -488,7 +551,11 @@ public sealed class TapestryWeavingAdmissionTests
 
             Assert.Equal(TapestryWeaveStatus.Woven, Assert.Single(await sweep).Status);
 
-            Assert.True((await drain.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
+            Result drained = await drain.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.True(drained.IsSuccess, drained.IsFailure
+                ? $"{drained.Error.Code}: {drained.Error.Message}; events: {string.Join(" -> ", harness.Events)}"
+                : string.Empty);
 
             Assert.Equal(phases, harness.Events.Where(phases.Contains));
 
@@ -569,7 +636,11 @@ public sealed class TapestryWeavingAdmissionTests
                 Assert.Equal(TapestryWeaveStatus.Failed, Assert.Single(await sweep).Status);
             }
 
-            Assert.True((await drain.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
+            Result drained = await drain.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.True(drained.IsSuccess, drained.IsFailure
+                ? $"{drained.Error.Code}: {drained.Error.Message}; events: {string.Join(" -> ", harness.Events)}"
+                : string.Empty);
 
             Assert.Empty(harness.Persistence.Generations);
         }
