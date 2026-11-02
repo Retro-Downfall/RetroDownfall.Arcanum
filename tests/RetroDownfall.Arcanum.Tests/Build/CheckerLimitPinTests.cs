@@ -1261,6 +1261,8 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
     private static readonly (string Finding, string Reason)[] ReviewedRuntimeObservers =
     [
         ("System.AppContext.SetSwitch in " + P + "Cli.Program.Main", "Turns off an ASP.NET Core metadata switch with a constant, in the entry point before any host exists."),
+        ("System.AppContext.SetSwitch in " + P + "Infrastructure.Security.DataProtectionKeyPaths.PersistKeysToOwnerOnlyKeyRing",
+            "Selects synchronous Data Protection key-ring refresh before providers are constructed, keeping refresh I/O on an active caller covered by reset's caller drain. Registers no callback."),
         ("System.Console.CancelKeyPress subscription in " + P + "Cli.CommandCenter.CommandCenterHost.StartUpAsync", "The command center's interrupt handler: it cancels a token."),
         ("System.Console.CancelKeyPress subscription in " + P + "Cli.Commands.AskCommand.Ask", "The ask command's interrupt handler: it cancels a token."),
         ("System.Console.CancelKeyPress subscription in " + P + "Cli.Commands.WatchCommands.WithCancellationAsync", "The watch commands' interrupt handler: it cancels a token."),

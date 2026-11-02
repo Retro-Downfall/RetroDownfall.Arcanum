@@ -571,6 +571,29 @@ public sealed class EnvironmentIsolationContractTests
             + "measure the host lifecycle, not full-suite resource contention.");
     }
 
+    /// <summary>
+    /// Semantic guardrail controls run the real finite-deadline regex detectors. Their expected
+    /// classifications require the match budget to be available to the fixture's own work.
+    /// </summary>
+    [Fact]
+    public void Guardrails_semantic_classification_test_class_is_serialized()
+    {
+        Type guardrailsTests =
+            typeof(RetroDownfall.Arcanum.Tests.Intelligence.Guardrails.GuardrailsPipelineTests);
+
+        string? collection = AttributeName<CollectionAttribute>(guardrailsTests);
+
+        Assert.True(
+            collection is not null
+                && CollectionParallelism.Value.TryGetValue(
+                    collection,
+                    out bool disablesParallelization)
+                && disablesParallelization,
+            $"{guardrailsTests.FullName} exercises real finite-deadline PII detectors and must run "
+            + "in a DisableParallelization collection so semantic classification is evaluated "
+            + "without unrelated parallel fixture work consuming the match budget.");
+    }
+
     [Fact]
     public void Collections_that_mutate_the_process_environment_disable_parallelization()
     {

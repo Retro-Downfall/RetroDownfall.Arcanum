@@ -11,10 +11,12 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Tests.Collections;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence.Guardrails;
 
+[Collection(GuardrailsCollection.Name)]
 public sealed class GuardrailsPipelineTests
 {
     [Fact]
@@ -198,16 +200,43 @@ public sealed class GuardrailsPipelineTests
     [Fact]
     public async Task FilterInputAsync_DetectsSsn()
     {
-        GuardrailsPipeline pipeline = CreatePipeline(
-            ArcanumRuntimeDefaults.Guardrails with { Enabled = true, DetectPii = true });
+        FakeGuardrailAuditLogger audit = new();
+
+        TestCapturingLogger<GuardrailsPipeline> logger = new();
+
+        ArcanumSettings settings = new()
+        {
+            Features = new() { Guardrails = true },
+            Security = new() { Guardrails = new() { DetectPii = true } },
+        };
+
+        GuardrailsPipeline pipeline = new(new TestOptionsMonitor<ArcanumSettings>(settings), audit, logger);
 
         Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
             [new CoreChatMessage("user", "My SSN is 123-45-6789.")],
             CancellationToken.None);
 
-        Assert.True(result.IsFailure);
+        string[] detectorCategories = ["pii-email", "pii-ssn", "pii-credit-card", "pii-phone"];
 
-        Assert.Equal(ErrorCodes.Guardrails.PiiDetected, result.Error.Code);
+        string[] timeoutCategories = logger.Entries
+            .SelectMany(static entry => entry.Properties ?? [])
+            .Where(static property => property.Key == "Pattern")
+            .Select(property => property.Value is string category && detectorCategories.Contains(category, StringComparer.Ordinal)
+                ? category
+                : "unrecognized-category")
+            .ToArray();
+
+        // Report only code-owned errors and categories; omit input, matches, regexes and exceptions.
+        string diagnostics = $"Error={result.Error.Code}; Message={result.Error.Message}; "
+            + $"AuditCategories=[{string.Join(", ", audit.Records.Select(static record => record.ViolationType))}]; "
+            + $"TimeoutCategories=[{string.Join(", ", timeoutCategories)}]; LoggerEntries={logger.Entries.Count}.";
+
+        Assert.True(result.IsFailure, diagnostics);
+
+        Assert.True(result.Error.Code == ErrorCodes.Guardrails.PiiDetected,
+            $"Expected {ErrorCodes.Guardrails.PiiDetected}. {diagnostics}");
+
+        Assert.Contains(audit.Records, static record => record.ViolationType == "pii-ssn");
     }
 
     [Fact]

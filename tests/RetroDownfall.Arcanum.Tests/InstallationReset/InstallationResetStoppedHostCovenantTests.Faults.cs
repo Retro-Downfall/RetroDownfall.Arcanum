@@ -311,7 +311,15 @@ public sealed partial class InstallationResetStoppedHostCovenantTests
 
         CliTestResult finished = await RunAsync(covenantFeature, GlobalArguments(apply: true));
 
-        described = $"clean resume: exit {finished.ExitCode}\nstdout: {finished.Output}\nstderr: {finished.Error}\nrecord: {await DescribeTheRecordAsync()}";
+        string immediatelyAfterResume = DescribeResetDirectory();
+
+        string finalRecord = await DescribeTheRecordAsync();
+
+        string afterRecordInspection = DescribeResetDirectory();
+
+        described = $"clean resume: exit {finished.ExitCode}\nstdout: {finished.Output}\nstderr: {finished.Error}\nrecord: {finalRecord}"
+            + $"\ndirectory immediately after resume: {immediatelyAfterResume}"
+            + $"\ndirectory after record inspection: {afterRecordInspection}";
 
         Assert.True(finished.ExitCode == (int)CliExitCode.Success, described);
 
@@ -322,6 +330,45 @@ public sealed partial class InstallationResetStoppedHostCovenantTests
         Assert.False(Directory.Exists(ArcanumPaths.GrimoireDirectory), described);
 
         Assert.False(Directory.Exists(ArcanumPaths.SecretStoreDirectory), described);
+    }
+
+    private static string DescribeResetDirectory()
+    {
+        string root = ArcanumPaths.GrimoireDirectory;
+
+        try
+        {
+            if (!Directory.Exists(root))
+            {
+                return "absent";
+            }
+
+            DirectoryInfo directory = new(root);
+
+            EnumerationOptions options = new()
+            {
+                RecurseSubdirectories = true,
+                AttributesToSkip = FileAttributes.ReparsePoint,
+                IgnoreInaccessible = true,
+            };
+
+            string[] entries = Directory.EnumerateFileSystemEntries(root, "*", options)
+                .Order(StringComparer.Ordinal)
+                .Take(128)
+                .Select(path => Path.GetRelativePath(root, path).Replace('\\', '/')
+                    + (Directory.Exists(path) ? "/" : string.Empty)
+                    + " [created " + File.GetCreationTimeUtc(path).ToString("O")
+                    + ", modified " + File.GetLastWriteTimeUtc(path).ToString("O") + "]")
+                .ToArray();
+
+            return "present [created " + directory.CreationTimeUtc.ToString("O")
+                + ", modified " + directory.LastWriteTimeUtc.ToString("O") + "]; entries: "
+                + (entries.Length == 0 ? "empty" : string.Join(" | ", entries));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return "unavailable (" + exception.GetType().Name + ")";
+        }
     }
 
     private async Task<InstallationResetActivePayloadV3> ReadTheKeptRecordAsync(string described)
