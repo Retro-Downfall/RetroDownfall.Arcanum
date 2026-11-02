@@ -823,6 +823,9 @@ public sealed class SagaMemoryReviewServiceTests
         Assert.NotNull(Assert.Single(applied.Value.Items).ResultingVersionId);
 
         Assert.Equal(1, await harness.CountAsync("saga_memory_embeddings", "1 = 1").ConfigureAwait(false));
+
+        // FakeWeaveService returns 64 zero floats; the corrected row must contain those exact bytes.
+        Assert.Equal(new byte[64 * sizeof(float)], await harness.EmbeddingBytesAsync("m-1").ConfigureAwait(false));
     }
 
     [SkippableFact]

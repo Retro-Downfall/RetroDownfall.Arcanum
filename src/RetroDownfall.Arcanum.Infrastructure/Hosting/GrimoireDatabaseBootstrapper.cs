@@ -930,9 +930,18 @@ public static class GrimoireDatabaseBootstrapper
                 installConnection, heldInstallationLock, grimoireDirectory,
                 scope.ServiceProvider.GetRequiredService<IGrimoireDbReadiness>());
 
-            result = await GrimoireSchemaReadinessDrain.DrainAsync(installConnection, installer,
-                new GrimoireSchemaBackfillRunner(installer, TimeProvider.System), dimensions, context,
-                execution, result, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                result = await GrimoireSchemaReadinessDrain.DrainAsync(installConnection, installer,
+                    new GrimoireSchemaBackfillRunner(installer, TimeProvider.System), dimensions, context,
+                    execution, result, cancellationToken).ConfigureAwait(false);
+            }
+            catch (LegacyVectorMirrorRetirementRefusedException refused)
+            {
+                Log.Fatal(refused, "Legacy vector mirror retirement was refused. {Message}", refused.Message);
+
+                throw new GrimoireDatabaseUnavailableException(refused.Message, refused);
+            }
         }
 
         // The provisional pre-schema classification belongs to this process only after the

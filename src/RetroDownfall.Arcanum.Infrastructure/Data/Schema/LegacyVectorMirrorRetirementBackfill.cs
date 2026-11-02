@@ -137,6 +137,12 @@ internal sealed class LegacyVectorMirrorRetirementBackfill : IGrimoireQuiescentB
         return true;
     }
 
-    private static InvalidOperationException Unsupported(string table) => new(
-        $"Legacy vector mirror {table} cannot be retired safely. Preserve this database and rebuild it offline without unsupported vector mirror objects before retrying admission or restore.");
+    private static LegacyVectorMirrorRetirementRefusedException Unsupported(string table) => new(table);
+}
+
+/// <summary>A closed mirror-shape refusal whose recovery guidance is safe to show to the operator.</summary>
+internal sealed class LegacyVectorMirrorRetirementRefusedException(string table)
+    : InvalidOperationException(
+        $"Legacy vector mirror {table} cannot be retired safely. Preserve this database and rebuild it offline without unsupported vector mirror objects before retrying admission or restore.")
+{
 }

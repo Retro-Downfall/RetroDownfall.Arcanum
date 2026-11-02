@@ -84,7 +84,7 @@ public sealed class LegacyVectorMirrorRetirementTests
             _ => "CREATE TABLE tapestry_node_embeddings_vec(Unrelated TEXT);",
         });
 
-        await Assert.ThrowsAnyAsync<InvalidOperationException>(() => GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(connection, 1536, CancellationToken.None));
+        await Assert.ThrowsAsync<LegacyVectorMirrorRetirementRefusedException>(() => GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(connection, 1536, CancellationToken.None));
 
         Assert.Equal(34, await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
 
