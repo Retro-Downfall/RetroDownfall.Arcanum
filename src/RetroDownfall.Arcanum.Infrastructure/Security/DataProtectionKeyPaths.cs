@@ -50,6 +50,10 @@ internal static class DataProtectionKeyPaths
     {
         ArgumentNullException.ThrowIfNull(builder);
 
+        // The framework snapshots this policy when constructing a provider. Keep refresh I/O on
+        // an active caller so reset's caller drain also drains the key ring before deleting it.
+        AppContext.SetSwitch("Microsoft.AspNetCore.DataProtection.KeyManagement.DisableAsyncKeyRingUpdate", true);
+
         builder.Services.AddSingleton<IConfigureOptions<KeyManagementOptions>>(static services =>
         {
             ILoggerFactory loggerFactory = services.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;

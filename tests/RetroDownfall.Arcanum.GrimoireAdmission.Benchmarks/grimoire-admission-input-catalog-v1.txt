@@ -1195,6 +1195,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/IGrimoireRestartableReadO
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/IGrimoireSchemaBackfill.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/IGrimoireSchemaDataInitializer.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/IdentitySpellingBackfill.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Indexes/idx_session_attachment_chunks_retrieval_scope.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/InstallationTurnQuotaBackfill.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/LegacyVectorMirrorRetirementBackfill.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/LongRestFtsSyntheticManifest.cs
@@ -1651,6 +1652,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V34/010_sessi
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V34/020_session_attachment_chunks_tapestry_revision_replace_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V34/030_session_attachment_chunks_tapestry_revision_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V34/040_session_attachment_chunks_tapestry_revision_delete.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V36/010_idx_session_attachment_chunks_retrieval_scope.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/010_saga_memories_retired_at.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/020_saga_memories_pinned_at.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/030_saga_retirement_suppressions.sql

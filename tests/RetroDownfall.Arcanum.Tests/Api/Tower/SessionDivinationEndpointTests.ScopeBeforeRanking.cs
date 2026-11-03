@@ -10,11 +10,14 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 public sealed partial class SessionDivinationEndpointTests
 {
     [SkippableTheory]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    [InlineData(true, true)]
+    [InlineData(true, false, " ACTIVE ")]
+    [InlineData(false, true, " ACTIVE ")]
+    [InlineData(true, true, " ACTIVE ")]
+    [InlineData(false, true, null)]
+    [InlineData(true, true, null)]
+    [InlineData(false, true, "archived")]
     public async Task Scope_and_status_apply_before_ranking_even_beyond_five_hundred_stronger_entries(
-        bool differentCampaign, bool archivedDistractors)
+        bool differentCampaign, bool archivedDistractors, string? requestedStatus)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -24,18 +27,22 @@ public sealed partial class SessionDivinationEndpointTests
 
         Guid otherCampaign = differentCampaign ? await SeedCampaignAsync(factory) : campaign;
 
+        string targetStatus = requestedStatus == "archived" ? "archived" : "active";
+
+        string excludedStatus = targetStatus == "active" ? "archived" : "active";
+
         (Guid target, Guid targetEntry, _) = await SeedEmbeddedEntryAsync(
-            factory, "Eligible target", [0.8f, 0.6f, 0f], campaign, "active");
+            factory, "Eligible target", [0.8f, 0.6f, 0f], campaign, targetStatus);
 
         (Guid excluded, _, _) = await SeedEmbeddedEntryAsync(factory, "Stronger excluded entry", [1f, 0f, 0f],
-            otherCampaign, archivedDistractors ? "archived" : "active");
+            otherCampaign, archivedDistractors ? excludedStatus : targetStatus);
 
         await AddStrongerEntriesAsync(factory, excluded, 600);
 
         using HttpClient client = factory.CreateAuthenticatedClient();
 
         using HttpResponseMessage response = await PostDivineAsync(client,
-            new SemanticSearchRequest("target", CampaignId: differentCampaign ? campaign : null, Status: " ACTIVE ", Limit: 1));
+            new SemanticSearchRequest("target", CampaignId: differentCampaign ? campaign : null, Status: requestedStatus, Limit: 1));
 
         SemanticSearchResult result = await ReadResultAsync(response);
 

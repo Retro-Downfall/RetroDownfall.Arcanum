@@ -46,6 +46,19 @@ internal static class GrimoireSchemaManifestBuilder
             ParseResource(definition, entries, indexesByTable, indexNames);
         }
 
+        // Standalone indexes belong to an ordinary table in the same transaction tier. Without
+        // this check an orphan resource would be fingerprinted but absent from the inspected manifest.
+        foreach (GrimoireSchemaObject definition in definitions.Where(static item => item.Category == GrimoireSchemaCategory.Indexes))
+        {
+            string owner = indexesByTable.Single(pair => pair.Value.Any(index => index.Name == definition.Name)).Key;
+
+            if (!entries.Any(entry => entry.Name == owner && entry.Type == GrimoireSchemaObjectType.Table))
+            {
+                throw new InvalidOperationException(
+                    $"Standalone index '{definition.ResourcePath}.sql' has no owning table '{owner}' in its transaction tier.");
+            }
+        }
+
         List<GrimoireSchemaManifestEntry> resolved = [];
 
         foreach (GrimoireSchemaManifestEntry entry in entries)
@@ -91,7 +104,19 @@ internal static class GrimoireSchemaManifestBuilder
         Dictionary<string, List<GrimoireExpectedIndex>> indexesByTable,
         HashSet<string> indexNames)
     {
-        foreach (string statement in SplitStatements(definition.Sql))
+        IReadOnlyList<string> statements = SplitStatements(definition.Sql)
+            .Where(static statement => GrimoireSqlNormalizer.Normalize(statement).Length > 0).ToArray();
+
+        if (definition.Category == GrimoireSchemaCategory.Indexes
+            && (statements.Count != 1
+                || (!StartsWithKeywords(GrimoireSqlNormalizer.Normalize(statements[0]), "CREATE", "INDEX")
+                    && !StartsWithKeywords(GrimoireSqlNormalizer.Normalize(statements[0]), "CREATE", "UNIQUE", "INDEX"))))
+        {
+            throw new InvalidOperationException(
+                $"Standalone index '{definition.ResourcePath}.sql' must declare exactly one CREATE INDEX statement.");
+        }
+
+        foreach (string statement in statements)
         {
             string normalized = GrimoireSqlNormalizer.Normalize(statement);
 

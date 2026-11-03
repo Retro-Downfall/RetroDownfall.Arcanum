@@ -252,7 +252,9 @@ public sealed class GrimoireSchemaCatalogTests
         foreach (GrimoireSchemaObject definition in GrimoireSchemaCatalog.AllObjects)
         {
 
-            int declarations = CountOccurrences(definition.Sql, "CREATE TABLE")
+            int declarations = definition.Category.ToString() == "Indexes"
+                ? CountOccurrences(definition.Sql, "CREATE INDEX") + CountOccurrences(definition.Sql, "CREATE UNIQUE INDEX")
+                : CountOccurrences(definition.Sql, "CREATE TABLE")
                 + CountOccurrences(definition.Sql, "CREATE VIRTUAL TABLE")
                 + CountOccurrences(definition.Sql, "CREATE TRIGGER")
                 + CountOccurrences(definition.Sql, "CREATE VIEW");
@@ -261,7 +263,7 @@ public sealed class GrimoireSchemaCatalogTests
             // table counts once. Co-located CREATE INDEX statements are deliberately not counted.
             Assert.True(
                 declarations == 1,
-                $"'{definition.ResourcePath}' declares {declarations} objects; the convention is exactly one (indexes co-locate with their owning table).");
+                $"'{definition.ResourcePath}' declares {declarations} objects; the convention is exactly one declared object.");
 
         }
 

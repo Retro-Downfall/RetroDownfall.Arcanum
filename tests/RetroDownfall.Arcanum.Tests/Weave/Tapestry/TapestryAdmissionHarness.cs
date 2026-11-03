@@ -27,7 +27,9 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
 
     internal Func<string, CancellationToken, Task> OnStep { get; set; } = static (_, _) => Task.CompletedTask;
 
-    internal GrimoireConnectionAdmissionGate Inner { get; } = new(TimeProvider.System);
+    internal ManualTimerTimeProvider AdmissionClock { get; } = new();
+
+    internal GrimoireConnectionAdmissionGate Inner { get; }
 
     internal RecordingGrimoireWorkAdmissionGate Gate { get; }
 
@@ -43,6 +45,9 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
 
     internal TapestryAdmissionHarness(TimeProvider? clock = null)
     {
+        // Test-controlled admission deadlines are independent of the hosted-service cadence clock.
+        Inner = new GrimoireConnectionAdmissionGate(AdmissionClock);
+
         Gate = new RecordingGrimoireWorkAdmissionGate(Inner)
         {
             BeforeEffectGroupDisposalAsync = () => new ValueTask(StepAsync("group-dispose", CancellationToken.None)),

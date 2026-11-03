@@ -44,7 +44,7 @@ public sealed partial class TapestryRevisionSchemaTests
 
         Assert.True(installed.Core.IsHealthy);
 
-        Assert.Equal(35, installed.Core.SchemaVersion);
+        Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, installed.Core.SchemaVersion);
 
         Assert.Null(await GrimoireSchemaEvolutionInstallerTests.ReadJournalAsync(connection));
 

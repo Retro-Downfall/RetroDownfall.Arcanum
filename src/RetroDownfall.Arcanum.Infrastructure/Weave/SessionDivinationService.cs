@@ -157,7 +157,7 @@ internal sealed class SessionDivinationService(
 
                 examined++;
 
-                switch (DivinationService.TryScoreRow(reader[2], query, norm, out float similarity))
+                switch (DivinationService.TryScoreRow(reader, 2, query, norm, out float similarity))
                 {
                     case DivinationService.RowScore.DimensionMismatch:
 

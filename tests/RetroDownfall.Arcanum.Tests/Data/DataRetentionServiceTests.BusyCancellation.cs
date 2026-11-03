@@ -15,6 +15,8 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class DataRetentionServiceTests
 {
+    private static readonly TimeSpan RetentionContentionWatchdog = TimeSpan.FromSeconds(15);
+
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
@@ -265,6 +267,8 @@ public sealed partial class DataRetentionServiceTests
 
         int originalBusy = await ReadRetentionBusyTimeoutForTestAsync(connection);
 
+        List<int> attemptProviderTimeouts = [];
+
         SqliteTransaction? held = null;
 
         TaskCompletionSource began = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -277,7 +281,12 @@ public sealed partial class DataRetentionServiceTests
 
             SQLitePCL.raw.sqlite3_trace(connection.Handle, (object? _, string sql) =>
             {
-                if (sql.TrimStart().StartsWith("BEGIN IMMEDIATE", StringComparison.OrdinalIgnoreCase)) began.TrySetResult();
+                if (sql.TrimStart().StartsWith("BEGIN IMMEDIATE", StringComparison.OrdinalIgnoreCase))
+                {
+                    attemptProviderTimeouts.Add(connection.DefaultTimeout);
+
+                    began.TrySetResult();
+                }
             }, null);
 
             return Task.CompletedTask;
@@ -287,9 +296,13 @@ public sealed partial class DataRetentionServiceTests
 
         DataRetentionPlan plan = await service.PlanAsync(request);
 
+        Stopwatch elapsed = Stopwatch.StartNew();
+
         Task<Result<DataRetentionApplyResult>> pending = Task.Run(() => service.ApplyAsync(new(request, plan.PlanId)));
 
         bool concludedWhileHeld = false;
+
+        bool writerHeldAtConclusion = false;
 
         Result<DataRetentionApplyResult>? result = null;
 
@@ -299,7 +312,14 @@ public sealed partial class DataRetentionServiceTests
         {
             await began.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-            concludedWhileHeld = await Task.WhenAny(pending, Task.Delay(TimeSpan.FromMilliseconds(7500))) == pending;
+            concludedWhileHeld = await Task.WhenAny(pending, Task.Delay(RetentionContentionWatchdog)) == pending;
+
+            if (concludedWhileHeld)
+            {
+                result = await pending;
+
+                writerHeldAtConclusion = held is not null && SQLitePCL.raw.sqlite3_get_autocommit(writer.Handle) == 0;
+            }
         }
         finally
         {
@@ -317,7 +337,19 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Null(failure);
 
-        Assert.True(concludedWhileHeld, $"Acquisition outlived its five-second budget plus bounded attempt/cleanup allowance; resultSuccess={result?.IsSuccess}.");
+        elapsed.Stop();
+
+        Assert.NotEmpty(attemptProviderTimeouts);
+
+        Assert.All(attemptProviderTimeouts, static seconds => Assert.Equal(1, seconds));
+
+        Assert.Equal(originalTimeout, connection.DefaultTimeout);
+
+        Assert.Equal(originalBusy, await ReadRetentionBusyTimeoutForTestAsync(connection));
+
+        Assert.True(concludedWhileHeld, DescribeRetentionContentionWait(elapsed, attemptProviderTimeouts, result, writerHeldAtConclusion));
+
+        Assert.True(writerHeldAtConclusion);
 
         Assert.True(result!.IsFailure);
 
@@ -326,10 +358,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Contains("busy", result.Error.Message, StringComparison.OrdinalIgnoreCase);
 
         Assert.DoesNotContain("requires operator review", result.Error.Message, StringComparison.OrdinalIgnoreCase);
-
-        Assert.Equal(originalTimeout, connection.DefaultTimeout);
-
-        Assert.Equal(originalBusy, await ReadRetentionBusyTimeoutForTestAsync(connection));
 
         Assert.Equal(1, await CountAllAsync("Sessions"));
 
@@ -911,6 +939,14 @@ public sealed partial class DataRetentionServiceTests
 
         SqliteConnection writer = (SqliteConnection)other.Database.GetDbConnection();
 
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        int originalProvider = connection.DefaultTimeout;
+
+        int originalNative = await ReadRetentionBusyTimeoutForTestAsync(connection);
+
+        List<int> attemptProviderTimeouts = [];
+
         SqliteTransaction? held = null;
 
         int gates = 0;
@@ -935,7 +971,15 @@ public sealed partial class DataRetentionServiceTests
 
             held = writer.BeginTransaction(deferred: false);
 
-            entered.TrySetResult();
+            SQLitePCL.raw.sqlite3_trace(connection.Handle, (object? _, string sql) =>
+            {
+                if (sql.TrimStart().StartsWith("BEGIN IMMEDIATE", StringComparison.OrdinalIgnoreCase))
+                {
+                    attemptProviderTimeouts.Add(connection.DefaultTimeout);
+
+                    entered.TrySetResult();
+                }
+            }, null);
         }, operationStore: store);
 
         DataRetentionRequest request = new(DataRetentionOperation.Prune);
@@ -944,9 +988,13 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(2, plan.CandidateIds.Length);
 
+        Stopwatch elapsed = Stopwatch.StartNew();
+
         Task<Result<DataRetentionApplyResult>> pending = Task.Run(() => service.ApplyAsync(new(request, plan.PlanId)));
 
         bool concludedWhileHeld = false;
+
+        bool writerHeldAtConclusion = false;
 
         Result<DataRetentionApplyResult>? result = null;
 
@@ -954,7 +1002,14 @@ public sealed partial class DataRetentionServiceTests
         {
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
-            concludedWhileHeld = await Task.WhenAny(pending, Task.Delay(TimeSpan.FromSeconds(8))) == pending;
+            concludedWhileHeld = await Task.WhenAny(pending, Task.Delay(RetentionContentionWatchdog)) == pending;
+
+            if (concludedWhileHeld)
+            {
+                result = await pending;
+
+                writerHeldAtConclusion = held is not null && SQLitePCL.raw.sqlite3_get_autocommit(writer.Handle) == 0;
+            }
         }
         finally
         {
@@ -966,9 +1021,23 @@ public sealed partial class DataRetentionServiceTests
             }
 
             result = await pending;
+
+            SQLitePCL.raw.sqlite3_trace(connection.Handle, (SQLitePCL.strdelegate_trace)null!, null);
         }
 
-        Assert.True(concludedWhileHeld);
+        elapsed.Stop();
+
+        Assert.NotEmpty(attemptProviderTimeouts);
+
+        Assert.All(attemptProviderTimeouts, static seconds => Assert.Equal(1, seconds));
+
+        Assert.Equal(originalProvider, connection.DefaultTimeout);
+
+        Assert.Equal(originalNative, await ReadRetentionBusyTimeoutForTestAsync(connection));
+
+        Assert.True(concludedWhileHeld, DescribeRetentionContentionWait(elapsed, attemptProviderTimeouts, result, writerHeldAtConclusion));
+
+        Assert.True(writerHeldAtConclusion);
 
         Assert.True(result.IsFailure);
 
@@ -1014,6 +1083,12 @@ public sealed partial class DataRetentionServiceTests
         SqliteConnection writer = (SqliteConnection)other.Database.GetDbConnection();
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        int originalProvider = connection.DefaultTimeout;
+
+        int originalNative = await ReadRetentionBusyTimeoutForTestAsync(connection);
+
+        List<int> attemptProviderTimeouts = [];
 
         SqliteTransaction? held = null;
 
@@ -1065,6 +1140,8 @@ public sealed partial class DataRetentionServiceTests
                 {
                     if (sql.TrimStart().StartsWith("BEGIN IMMEDIATE", StringComparison.OrdinalIgnoreCase))
                     {
+                        attemptProviderTimeouts.Add(connection.DefaultTimeout);
+
                         acquisitionEntered = true;
 
                         entered.TrySetResult();
@@ -1102,9 +1179,13 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(1_001, plan.CandidateIds.Length);
 
+        Stopwatch elapsed = Stopwatch.StartNew();
+
         Task<Result<DataRetentionApplyResult>> pending = Task.Run(() => service.ApplyAsync(new(request, plan.PlanId)));
 
         bool concludedWithinGuard = false;
+
+        bool writerHeldAtConclusion = false;
 
         Result<DataRetentionApplyResult>? result = null;
 
@@ -1112,7 +1193,14 @@ public sealed partial class DataRetentionServiceTests
         {
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
-            concludedWithinGuard = await Task.WhenAny(pending, Task.Delay(TimeSpan.FromSeconds(8))) == pending;
+            concludedWithinGuard = await Task.WhenAny(pending, Task.Delay(RetentionContentionWatchdog)) == pending;
+
+            if (concludedWithinGuard)
+            {
+                result = await pending;
+
+                writerHeldAtConclusion = held is not null && SQLitePCL.raw.sqlite3_get_autocommit(writer.Handle) == 0;
+            }
         }
         finally
         {
@@ -1128,7 +1216,19 @@ public sealed partial class DataRetentionServiceTests
             SQLitePCL.raw.sqlite3_trace(connection.Handle, (SQLitePCL.strdelegate_trace)null!, null);
         }
 
-        Assert.True(concludedWithinGuard);
+        elapsed.Stop();
+
+        Assert.NotEmpty(attemptProviderTimeouts);
+
+        Assert.All(attemptProviderTimeouts, static seconds => Assert.Equal(1, seconds));
+
+        Assert.Equal(originalProvider, connection.DefaultTimeout);
+
+        Assert.Equal(originalNative, await ReadRetentionBusyTimeoutForTestAsync(connection));
+
+        Assert.True(concludedWithinGuard, DescribeRetentionContentionWait(elapsed, attemptProviderTimeouts, result, writerHeldAtConclusion));
+
+        Assert.Equal(proof != "cas-loser", writerHeldAtConclusion);
 
         Assert.True(result.IsFailure);
 
@@ -1298,6 +1398,59 @@ public sealed partial class DataRetentionServiceTests
             }
         }
     }
+
+    [SkippableTheory]
+    [InlineData(0, 0)]
+    [InlineData(4, 17)]
+    public async Task Retention_short_attempt_uses_one_second_provider_and_zero_native_until_restore(int provider, int native)
+    {
+        RequireSqlCipher();
+
+        await _db!.Database.OpenConnectionAsync();
+
+        SqliteConnection connection = (SqliteConnection)_db.Database.GetDbConnection();
+
+        int originalProvider = connection.DefaultTimeout;
+
+        int originalNative = await ReadRetentionBusyTimeoutForTestAsync(connection);
+
+        try
+        {
+            connection.DefaultTimeout = provider;
+
+            Assert.Equal(SQLitePCL.raw.SQLITE_OK, SQLitePCL.raw.sqlite3_busy_timeout(connection.Handle, native));
+
+            (int ProviderSeconds, int NativeMilliseconds) saved = SqliteBusyRetry.BeginShortAttempt(connection, CancellationToken.None);
+
+            Assert.Equal((provider, native), saved);
+
+            Assert.Equal(1, connection.DefaultTimeout);
+
+            Assert.Equal(0, await ReadRetentionBusyTimeoutForTestAsync(connection));
+
+            Assert.True(SqliteBusyRetry.TryRestoreShortAttempt(connection, saved));
+
+            Assert.Equal(provider, connection.DefaultTimeout);
+
+            Assert.Equal(native, await ReadRetentionBusyTimeoutForTestAsync(connection));
+        }
+        finally
+        {
+            connection.DefaultTimeout = originalProvider;
+
+            _ = SQLitePCL.raw.sqlite3_busy_timeout(connection.Handle, originalNative);
+        }
+    }
+
+    private static string DescribeRetentionContentionWait(
+        Stopwatch elapsed,
+        IReadOnlyCollection<int> attemptProviderTimeouts,
+        Result<DataRetentionApplyResult>? result,
+        bool writerHeldAtConclusion) =>
+        $"Held-writer refusal exceeded the test liveness watchdog ({RetentionContentionWatchdog}); "
+        + $"elapsed={elapsed.Elapsed}; attempts={attemptProviderTimeouts.Count}; "
+        + $"providerSlices=[{string.Join(",", attemptProviderTimeouts)}]; writerHeldAtConclusion={writerHeldAtConclusion}; "
+        + (result is null ? "result=none" : result.IsSuccess ? "result=success" : $"result={result.Error.Code}: {result.Error.Message}");
 
     private sealed class BusyAttemptLogSink : Serilog.Core.ILogEventSink
     {

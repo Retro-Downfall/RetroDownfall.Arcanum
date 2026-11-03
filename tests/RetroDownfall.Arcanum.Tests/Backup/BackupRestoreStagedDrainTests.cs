@@ -226,7 +226,7 @@ public sealed partial class BackupRestoreStagedDrainTests
 
         await using SqliteConnection restored = await harness.OpenLiveDatabaseAsync(archive.GrimoireSecret);
 
-        Assert.Equal(35, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
+        Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await GrimoireCoreSchemaVersion.ReadAsync(restored, Token));
 
         Assert.Equal(0L, await ScalarAsync(restored, "SELECT COUNT(*) FROM grimoire_schema_transitions"));
 

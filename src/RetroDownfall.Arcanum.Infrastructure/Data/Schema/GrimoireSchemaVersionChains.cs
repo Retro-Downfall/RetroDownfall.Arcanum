@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 35 and declares thirty-four steps, Covenant canonical is at version 7 and declares six,
+/// Core is at version 36 and declares thirty-five steps, Covenant canonical is at version 7 and declares six,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -149,8 +149,10 @@ internal static class GrimoireSchemaVersionChains
     /// <para>Version 35 retires the five obsolete vector mirrors under a quiescent admission barrier.
     /// It preserves durable BLOB embeddings and refuses virtual or unexpected mirror shapes that
     /// cannot be safely removed without their original implementation.</para>
+    /// <para>Version 36 adds a standalone covering index for current attachment retrieval scope,
+    /// keeping the candidate selection a scope seek before managed cosine scoring.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 35;
+    internal const int CoreSchemaVersion = 36;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -363,6 +365,9 @@ internal static class GrimoireSchemaVersionChains
 
             // Frozen complete Core34 catalog; retiring optional mirrors changes no canonical object.
             [(GrimoireSchemaTransactionTier.Core, 35)] = "1243F9B7B5256B4C07A71E030C145D20804297950101E93A5E411510D872E148",
+
+            // Frozen Core35 catalog before the standalone attachment retrieval index.
+            [(GrimoireSchemaTransactionTier.Core, 36)] = "1243F9B7B5256B4C07A71E030C145D20804297950101E93A5E411510D872E148",
 
             // Read out of the Covenant canonical head tree immediately before covenant_versions.sql
             // admitted receipt-free AgentApproved retirements. CovenantCanonicalSchemaVersionTwoFixture
