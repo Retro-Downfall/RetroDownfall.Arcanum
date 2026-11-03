@@ -256,7 +256,7 @@ public sealed partial class LongRestMaintenanceTests
     [
         "annal_review_events", "annal_review_decision_receipts", "annal_review_markers",
         "annal_dependencies", "annal_heads", "annal_versions", "annal_claims",
-        "saga_memory_embeddings", "saga_memory_attachment_provenance", "saga_memories",
+        "saga_memory_embeddings", "saga_memory_embeddings_quantized", "saga_memory_attachment_provenance", "saga_memories",
     ];
 
     private static async Task<MaintenanceFixture> CreatePaidLifecycleFixtureAsync(bool protectedSources)
@@ -302,6 +302,14 @@ public sealed partial class LongRestMaintenanceTests
 
             Assert.Equal(0L, await f.H.ScalarAsync("SELECT sum(InvalidCount) FROM long_rest_provider_effects;"));
 
+            Assert.Equal(2L, await f.H.ScalarAsync("SELECT count(*) FROM saga_memory_embeddings_quantized;"));
+
+            Assert.Equal(0L, await f.H.ScalarAsync("""
+                SELECT count(*) FROM saga_memory_embeddings embedding
+                LEFT JOIN saga_memory_embeddings_quantized compact ON compact.MemoryId = embedding.MemoryId
+                WHERE compact.MemoryId IS NULL;
+                """));
+
             return f;
         }
         catch
@@ -333,7 +341,7 @@ public sealed partial class LongRestMaintenanceTests
     private static string SagaLifecyclePredicate(string table) => table switch
     {
         "saga_memories" => "Id <> $unrelated",
-        "saga_memory_embeddings" or "saga_memory_attachment_provenance" => "MemoryId <> $unrelated",
+        "saga_memory_embeddings" or "saga_memory_embeddings_quantized" or "saga_memory_attachment_provenance" => "MemoryId <> $unrelated",
         "annal_claims" => "SubjectStoreCode = 1 AND SubjectId <> $unrelated",
         "annal_heads" or "annal_versions" => "ClaimId IN (SELECT ClaimId FROM annal_claims WHERE SubjectStoreCode = 1 AND SubjectId <> $unrelated)",
         "annal_review_events" => "VersionId IN (SELECT VersionId FROM annal_versions WHERE ClaimId IN (SELECT ClaimId FROM annal_claims WHERE SubjectStoreCode = 1 AND SubjectId <> $unrelated))",

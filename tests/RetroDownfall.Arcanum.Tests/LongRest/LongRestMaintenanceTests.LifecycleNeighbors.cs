@@ -82,6 +82,8 @@ public sealed partial class LongRestMaintenanceTests
 
         expected += await CountLifecycleAsync(f, "saga_memory_embeddings", "MemoryId = $id", ("$id", f.Source));
 
+        expected += await CountLifecycleAsync(f, "saga_memory_embeddings_quantized", "MemoryId = $id", ("$id", f.Source));
+
         expected += await CountLifecycleAsync(f, "saga_memory_attachment_provenance", "MemoryId = $id", ("$id", f.Source));
 
         expected += await CountLifecycleAsync(f, "annal_claims", "SubjectStoreCode = 1 AND SubjectId = $id", ("$id", f.Source));
@@ -111,6 +113,8 @@ public sealed partial class LongRestMaintenanceTests
         await AssertPaidLifecycleAbsentAsync(f);
 
         Assert.Equal(0L, await CountLifecycleAsync(f, "saga_memories", "Id = $id", ("$id", f.Source)));
+
+        Assert.Equal(0L, await CountLifecycleAsync(f, "saga_memory_embeddings_quantized", "MemoryId = $id", ("$id", f.Source)));
 
         Assert.Equal(before, await ReadLifecycleHistoryAsync(f, unrelated));
 

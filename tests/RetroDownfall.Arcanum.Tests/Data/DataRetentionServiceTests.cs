@@ -297,8 +297,13 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         Assert.True(applied.Value.Reconciled);
 
         Assert.Equal(0, await CountAllAsync("entry_embeddings"));
-        int embeddingStatements = trace.Statements.Count(static statement =>
+        // Native FK actions echo their parent statement in SQLite's legacy trace callback. Distinct
+        // expanded SQL still catches a command per Entry identity while ignoring those internal echoes.
+        int embeddingStatements = trace.Statements.Distinct(StringComparer.Ordinal).Count(static statement =>
             statement.Contains("entry_embeddings", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Single(trace.Statements.Distinct(StringComparer.Ordinal), static statement =>
+            statement.StartsWith("DELETE FROM entry_embeddings WHERE", StringComparison.OrdinalIgnoreCase));
 
         Assert.True(
             embeddingStatements < entryCount,

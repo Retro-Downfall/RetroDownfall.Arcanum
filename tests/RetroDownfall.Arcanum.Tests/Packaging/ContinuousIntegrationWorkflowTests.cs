@@ -449,6 +449,74 @@ public sealed class ContinuousIntegrationWorkflowTests
     [Theory]
     [InlineData("windows-suite", "win-x64")]
     [InlineData("windows-arm64-suite", "win-arm64")]
+    public void Both_windows_lanes_execute_quantized_search_contracts_without_skips(string jobId, string rid)
+    {
+        WorkflowJob lane = Assert.Single(ContinuousIntegrationJobs(FindRepositoryRoot()), job => job.Id == jobId);
+
+        string[] steps = lane.Body.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split("      - name:", StringSplitOptions.None);
+
+        string execution = Assert.Single(steps, static step => step.Contains("Test quantized search", StringComparison.Ordinal));
+
+        string[] requiredClasses =
+        [
+            "RetroDownfall.Arcanum.Tests.Primitives.QuantizedEmbeddingCodecTests",
+            "RetroDownfall.Arcanum.Tests.Data.SagaQuantizedTransactionTests",
+            "RetroDownfall.Arcanum.Tests.Weave.QuantizedDivinationTests",
+            "RetroDownfall.Arcanum.Tests.Weave.QuantizedEmbeddingLifecycleTests",
+            "RetroDownfall.Arcanum.Tests.Weave.DivinationAllocationTests",
+            "RetroDownfall.Arcanum.Tests.Weave.SessionAttachmentRetrievalQueryPlanTests",
+            "RetroDownfall.Arcanum.Tests.Api.Tower.SessionDivinationEndpointTests",
+            "RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests",
+        ];
+
+        Assert.Contains("-c Release --no-build --no-restore", execution, StringComparison.Ordinal);
+
+        Assert.Contains("--logger \"trx;LogFileName=quantized-search-" + rid + ".trx\"", execution, StringComparison.Ordinal);
+
+        Assert.Contains("--results-directory .tmp/windows-quantized-search-" + rid, execution, StringComparison.Ordinal);
+
+        Assert.Contains("$results.Count -eq 0", execution, StringComparison.Ordinal);
+
+        Assert.Contains("$_.outcome -ne 'Passed'", execution, StringComparison.Ordinal);
+
+        Assert.Contains("$_.testId -in $ids", execution, StringComparison.Ordinal);
+
+        Assert.Contains("$_.TestMethod.className -eq $class", execution, StringComparison.Ordinal);
+
+        Assert.Contains("$ids.Count -eq 0", execution, StringComparison.Ordinal);
+
+        Assert.Contains("Windows_ci_lane_uses_the_expected_native_runtime_identifier", execution, StringComparison.Ordinal);
+
+        IReadOnlyList<TestMethodIdentity> methods = ArcanumTestMethods();
+
+        foreach (string requiredClass in requiredClasses)
+        {
+            Assert.Contains("'" + requiredClass + "'", execution, StringComparison.Ordinal);
+
+            Assert.Contains("FullyQualifiedName~" + requiredClass, execution, StringComparison.Ordinal);
+
+            Assert.Contains(methods, method => method.FullName.StartsWith(requiredClass + ".", StringComparison.Ordinal));
+        }
+
+        Assert.DoesNotContain("continue-on-error:", execution, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("        if:", execution, StringComparison.Ordinal);
+
+        string artifact = Assert.Single(steps, step => step.Contains("name: windows-quantized-search-" + rid, StringComparison.Ordinal));
+
+        Assert.Contains("if: always()", artifact, StringComparison.Ordinal);
+
+        Assert.Contains("path: .tmp/windows-quantized-search-" + rid + "/", artifact, StringComparison.Ordinal);
+
+        Assert.Contains("if-no-files-found: error", artifact, StringComparison.Ordinal);
+
+        Assert.True(Array.IndexOf(steps, artifact) > Array.IndexOf(steps, execution));
+    }
+
+    [Theory]
+    [InlineData("windows-suite", "win-x64")]
+    [InlineData("windows-arm64-suite", "win-arm64")]
     public void Both_windows_lanes_execute_the_long_rest_contracts_with_retained_trx(string jobId, string rid)
     {
         WorkflowJob lane = Assert.Single(ContinuousIntegrationJobs(FindRepositoryRoot()), job => job.Id == jobId);

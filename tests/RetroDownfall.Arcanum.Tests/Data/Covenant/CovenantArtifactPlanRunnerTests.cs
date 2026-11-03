@@ -76,6 +76,7 @@ public sealed class CovenantArtifactPlanRunnerTests
             new("long_rest_receipts", 0), new("long_rest_suppressions", 0), new("long_rest_receipt_inputs", 0),
             new("annal_review_decision_receipts", 0), new("annal_review_events", 1), new("annal_dependencies", 0),
             new("annal_heads", 1), new("saga_committed_uses", 0), new("annal_versions", 1), new("annal_claims", 1),
+            new("saga_memory_embeddings_quantized", 1),
             new("saga_memory_embeddings", 1),
             new("saga_memory_attachment_provenance", 0), new("saga_memories", 1),
         ];
@@ -330,6 +331,7 @@ public sealed class CovenantArtifactPlanRunnerTests
             new("long_rest_receipts", 0), new("long_rest_suppressions", 0), new("long_rest_receipt_inputs", 0),
             new("annal_review_decision_receipts", 0), new("annal_review_events", 0), new("annal_dependencies", 0),
             new("annal_heads", 1), new("saga_committed_uses", 0), new("annal_versions", 1), new("annal_claims", 1),
+            new("saga_memory_embeddings_quantized", 0),
             new("saga_memory_embeddings", 1),
             new("saga_memory_attachment_provenance", 0), new("saga_memories", 1),
         ];

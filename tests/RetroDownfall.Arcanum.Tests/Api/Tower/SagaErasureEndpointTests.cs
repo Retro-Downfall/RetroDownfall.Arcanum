@@ -1380,6 +1380,8 @@ public sealed class SagaErasureEndpointTests
 
         string[] ids = [target];
 
+        Assert.Equal(1, await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_embeddings_quantized WHERE MemoryId IN ({0})", ids));
+
         Assert.Equal(1, await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_embeddings WHERE MemoryId IN ({0})", ids));
 
         Assert.Equal(1, await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_attachment_provenance WHERE MemoryId IN ({0})", ids));
@@ -1397,6 +1399,8 @@ public sealed class SagaErasureEndpointTests
         Assert.Equal(before, erased.Preflight.Plan.RowsToRemove);
 
         Assert.Equal(before, erased.Result.Local.RemovedRowCount);
+
+        Assert.Equal(0, await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_embeddings_quantized WHERE MemoryId IN ({0})", ids));
 
         Assert.Equal(0, await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_embeddings WHERE MemoryId IN ({0})", ids));
 
@@ -1982,6 +1986,7 @@ public sealed class SagaErasureEndpointTests
             "SELECT count(*) FROM annal_heads WHERE ClaimId IN (" + claims + ")",
             "SELECT count(*) FROM annal_versions WHERE ClaimId IN (" + claims + ")",
             "SELECT count(*) FROM annal_claims WHERE SubjectStoreCode = 1 AND SubjectId IN ({0})",
+            "SELECT count(*) FROM saga_memory_embeddings_quantized WHERE MemoryId IN ({0})",
             "SELECT count(*) FROM saga_memory_embeddings WHERE MemoryId IN ({0})",
             "SELECT count(*) FROM saga_memory_attachment_provenance WHERE MemoryId IN ({0})",
             "SELECT count(*) FROM saga_memories WHERE Id IN ({0})",

@@ -800,6 +800,8 @@ public sealed partial class EmbeddingsResetServiceTests : IAsyncLifetime
 
         Assert.True(result.DeletedRowCounts.ContainsKey("saga_memory_embeddings"));
 
+        Assert.Equal(1, result.DeletedRowCounts["saga_memory_embeddings_quantized"]);
+
         Assert.True(result.DeletedRowCounts.ContainsKey("saga_extraction_watermarks"));
     }
 
@@ -827,6 +829,8 @@ public sealed partial class EmbeddingsResetServiceTests : IAsyncLifetime
         Assert.True(result.DeletedRowCounts.ContainsKey("saga_memories"));
 
         Assert.True(result.DeletedRowCounts.ContainsKey("saga_memory_embeddings"));
+
+        Assert.Equal(1, result.DeletedRowCounts["saga_memory_embeddings_quantized"]);
 
         Assert.True(result.DeletedRowCounts.ContainsKey("entry_embeddings"));
 
@@ -908,6 +912,7 @@ public sealed partial class EmbeddingsResetServiceTests : IAsyncLifetime
                 "tapestry_edges",
                 "tapestry_generations",
                 "tapestry_node_embeddings",
+                "tapestry_node_embeddings_quantized",
                 "tapestry_nodes",
             ],
             result.DeletedRowCounts.Keys.Order(StringComparer.Ordinal));

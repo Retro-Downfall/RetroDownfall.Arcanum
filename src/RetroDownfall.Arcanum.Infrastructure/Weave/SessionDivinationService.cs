@@ -135,6 +135,9 @@ internal sealed class SessionDivinationService(
 
         float[] query = queryEmbedding.Vector.ToArray();
 
+        using QuantizedDivinationScan? compact = await QuantizedDivinationScan.TryCreateAsync(command,
+            new("entry_embeddings", "EntryId", "Embedding", "v"), query, cancellationToken).ConfigureAwait(false);
+
         double norm = EmbeddingBlobCodec.NormSquared(query);
 
         PriorityQueue<RankedHit, RankedHit> top = new(WeakestFirst.Instance);
@@ -157,7 +160,21 @@ internal sealed class SessionDivinationService(
 
                 examined++;
 
-                switch (DivinationService.TryScoreRow(reader, 2, query, norm, out float similarity))
+                if (compact is not null && compact.TryUpperBound(reader, 2, out float upper)
+                    && (upper < threshold || (top.Count == take && top.TryPeek(out _, out RankedHit boundary) && upper < boundary.Similarity)))
+                {
+                    // Every valid compact bound certifies a comparable vector. Retain the original
+                    // mismatch diagnostic even when all comparable rows are rejected by the bound.
+                    scored++;
+
+                    continue;
+                }
+
+                DivinationService.RowScore row = compact is null
+                    ? DivinationService.TryScoreRow(reader, 2, query, norm, out float similarity)
+                    : compact.Score(reader, query, norm, out similarity);
+
+                switch (row)
                 {
                     case DivinationService.RowScore.DimensionMismatch:
 

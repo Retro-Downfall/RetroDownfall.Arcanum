@@ -40,6 +40,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
     private static readonly string[] DestinationObjects =
     [
+        "grimoire_feature_schemas",
         "Sessions",
         "Entries",
         "SessionAttachments",
@@ -60,6 +61,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         // production writer that puts a lowercase identity into "Entries"."Id", so the destination is
         // the one place a purge of such a row can be exercised without a test choosing the spelling.
         "entry_embeddings",
+        "entry_embeddings_quantized",
         "artifact_sensitivity",
         "session_sensitivity_state",
         "assistant_entry_erasure_receipts",
@@ -107,6 +109,8 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         _destination = await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
 
         await _destination.InstallCoreObjectsAsync(DestinationObjects, CancellationToken.None);
+
+        await _destination.RecordCoreSchemaVersionAsync(37, CancellationToken.None);
 
         await _destination.ExecuteAsync(
             "INSERT INTO installation_turn_quota_state VALUES (1, 0, 0, 0);", CancellationToken.None);

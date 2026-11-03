@@ -75,7 +75,7 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
 
     [Theory]
     [InlineData(0)]
-    [InlineData(18)]
+    [InlineData(19)]
     public void ZeroAndUndefinedWorkKindsAreRejected(byte value)
     {
         GrimoireConnectionAdmissionGate gate = CreateGate();

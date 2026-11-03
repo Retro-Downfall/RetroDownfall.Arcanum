@@ -33,7 +33,8 @@ internal sealed class RetentionSchemaCensus : IDisposable
     internal async Task<bool> ExistsAsync(
         SqliteConnection connection,
         string table,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool tableOnly = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -47,7 +48,9 @@ internal sealed class RetentionSchemaCensus : IDisposable
 
             _scalars.Clear();
 
-            current.CommandText = "SELECT 1 FROM sqlite_master WHERE name = @table AND type IN ('table', 'view') LIMIT 1";
+            current.CommandText = tableOnly
+                ? "SELECT 1 FROM sqlite_master WHERE name = @table AND type = 'table' LIMIT 1"
+                : "SELECT 1 FROM sqlite_master WHERE name = @table AND type IN ('table', 'view') LIMIT 1";
 
             _ = current.Parameters.AddWithValue("@table", table);
 
@@ -64,7 +67,7 @@ internal sealed class RetentionSchemaCensus : IDisposable
 
             command.CommandText =
                 """
-                SELECT version.schema_version, catalog.name
+                SELECT version.schema_version, catalog.name, catalog.type
                 FROM pragma_schema_version AS version
                 LEFT JOIN main.sqlite_master AS catalog ON catalog.type IN ('table', 'view')
                 """;
@@ -81,7 +84,7 @@ internal sealed class RetentionSchemaCensus : IDisposable
 
                 string name = reader.GetString(1);
 
-                tables[name] = true;
+                tables[name] = reader.GetString(2) == "table";
             }
 
             if (_version != version) _scalars.Clear();
@@ -91,7 +94,7 @@ internal sealed class RetentionSchemaCensus : IDisposable
             _tables = tables;
         }
 
-        return _tables.TryGetValue(table, out bool exists) && exists;
+        return _tables.TryGetValue(table, out bool isTable) && (!tableOnly || isTable);
     }
 
     /// <summary>Reads a code-owned, parameterless catalog-only scalar under the same freshness rule.</summary>

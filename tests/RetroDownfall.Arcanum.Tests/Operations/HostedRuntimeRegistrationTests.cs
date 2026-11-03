@@ -23,6 +23,7 @@ public sealed class HostedRuntimeRegistrationTests
         "GrimoireSchemaTransitionHostedService",
         "EntryWeavingService",
         "SessionAttachmentIndexingService",
+        "QuantizedEmbeddingBackfillService",
         "WorkspaceIndexingService",
         "SagaExtractionService",
         "TapestryWeavingService",
@@ -38,6 +39,26 @@ public sealed class HostedRuntimeRegistrationTests
         "UnseenServantService",
         "BatchProcessingService",
     ];
+
+    [Fact]
+    public void Quantized_embedding_backfill_is_ordinary_admitted_hosted_work()
+    {
+        HostedProducerServiceEntry service = Assert.Single(
+            HostedGrimoireProducerInventory.Catalog,
+            static entry => entry.ServiceType == "QuantizedEmbeddingBackfillService");
+
+        HostedProducerOperationEntry operation = Assert.Single(service.Operations);
+
+        Assert.Equal("ExecuteAsync", operation.Member);
+
+        Assert.Equal("src/RetroDownfall.Arcanum.Infrastructure/Hosting/QuantizedEmbeddingBackfillService.cs", operation.SourcePath);
+
+        Assert.Equal(HostedProducerAuthorityKind.OrdinaryHostedWork, operation.Authority);
+
+        Assert.Equal("QuantizedEmbeddingBackfill", operation.WorkKind?.ToString());
+
+        Assert.Null(operation.Proof);
+    }
 
     [Fact]
     public void Runtime_descriptors_match_the_source_inventory_vocabulary()

@@ -1357,6 +1357,9 @@ internal sealed partial class WorkspaceIndexingService(
 
                 _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
+                await QuantizedEmbeddingStore.UpsertAsync(connection, transaction, "workspace_file_embeddings",
+                    chunkId, vector, cancellationToken).ConfigureAwait(false);
+
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             },
             cancellationToken);

@@ -142,7 +142,7 @@ public sealed class SessionAttachmentRetrievalQueryPlanTests
 
         GrimoireSchemaVersionChainSet chains = new(
         [
-            new(core.HeadManifest, core.HeadObjects, [.. core.Steps.Where(item => item.ToVersion < 36), failing]),
+            new(core.HeadManifest, core.HeadObjects, [.. core.Steps.Select(item => item.ToVersion == 36 ? failing : item)]),
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
         ]);
@@ -226,7 +226,7 @@ public sealed class SessionAttachmentRetrievalQueryPlanTests
 
     private static async Task AssertIndexAsync(SqliteConnection connection)
     {
-        Assert.Equal(36, await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
+        Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
 
         await using SqliteCommand command = connection.CreateCommand();
 

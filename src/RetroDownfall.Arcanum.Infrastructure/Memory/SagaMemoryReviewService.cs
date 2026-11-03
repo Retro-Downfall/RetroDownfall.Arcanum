@@ -910,6 +910,9 @@ internal sealed class SagaMemoryReviewService(
             ("@embedding", blob),
             ("@dimensions", embedding.Length)).ConfigureAwait(false);
 
+        await QuantizedEmbeddingStore.UpsertAsync(connection, transaction, "saga_memory_embeddings",
+            target.SubjectId, embedding, cancellationToken).ConfigureAwait(false);
+
         return await AnnalsClaimWriter.AppendCorrectionAsync(
             connection,
             transaction,
@@ -967,6 +970,13 @@ internal sealed class SagaMemoryReviewService(
             "UPDATE saga_memories SET RetiredAtUtc = @retiredAt WHERE Id = @id",
             ("@retiredAt", UtcInstantText.Format(changedAt)),
             ("@id", target.SubjectId)).ConfigureAwait(false);
+
+        if (await QuantizedEmbeddingStore.IsAvailableAsync(connection, transaction, "saga_memory_embeddings", cancellationToken).ConfigureAwait(false))
+        {
+            await ExecuteAsync(connection, transaction, cancellationToken,
+                "DELETE FROM saga_memory_embeddings_quantized WHERE MemoryId = @id",
+                ("@id", target.SubjectId)).ConfigureAwait(false);
+        }
 
         await ExecuteAsync(
             connection,

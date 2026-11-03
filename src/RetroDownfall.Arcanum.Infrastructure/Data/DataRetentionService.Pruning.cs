@@ -41,6 +41,7 @@ using RetroDownfall.Arcanum.Core.Annals;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -1652,7 +1653,7 @@ internal sealed partial class DataRetentionService
                 continue;
             }
 
-            long embeddings = await CountTableAsync(
+            long embeddings = await CountEmbeddingCopiesAsync(
                 "entry_embeddings",
                 "lower(replace(EntryId, '-', '')) = @id",
                 cancellationToken,
@@ -2047,7 +2048,7 @@ internal sealed partial class DataRetentionService
 
             candidates.Add(EntryEmbeddingCandidatePrefix + entryId);
 
-            long derived = await CountTableAsync(
+            long derived = await CountEmbeddingCopiesAsync(
                 "entry_embeddings",
                 "lower(replace(EntryId, '-', '')) = @id",
                 cancellationToken,
@@ -2087,14 +2088,20 @@ internal sealed partial class DataRetentionService
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
+        string compactCount = await QuantizedEmbeddingStore.IsAvailableAsync(connection, null,
+            "workspace_file_embeddings", cancellationToken).ConfigureAwait(false)
+            ? "(SELECT COUNT(*) FROM workspace_file_embeddings_quantized compact WHERE compact.ChunkId = chunk.ChunkId)"
+            : "0";
+
         await using DbCommand command = connection.CreateCommand();
 
         command.CommandText =
-            """
+            $"""
             SELECT chunk.ChunkId,
                    (SELECT COUNT(*)
                     FROM workspace_file_embeddings embedding
                     WHERE embedding.ChunkId = chunk.ChunkId)
+                   + {compactCount}
             FROM workspace_file_chunks chunk
             WHERE julianday(chunk.IndexedAt) <= julianday(@cutoff)
             ORDER BY chunk.IndexedAt, chunk.ChunkId
@@ -2195,7 +2202,7 @@ internal sealed partial class DataRetentionService
                 continue;
             }
 
-            long derived = await CountTableAsync(
+            long derived = await CountEmbeddingCopiesAsync(
                 "saga_memory_embeddings",
                 "MemoryId = @id",
                 cancellationToken,
@@ -5602,7 +5609,7 @@ internal sealed partial class DataRetentionService
                 .Replace("-", string.Empty, StringComparison.Ordinal)
                 .ToLowerInvariant();
 
-            long rows = await CountTableAsync(
+            long rows = await CountEmbeddingCopiesAsync(
                 "entry_embeddings",
                 "lower(replace(EntryId, '-', '')) = @id",
                 cancellationToken,
@@ -6074,10 +6081,10 @@ internal sealed partial class DataRetentionService
 
             if (embeddingTableExists)
             {
-                derived += await ExecuteAsync(
+                derived += await DeleteEmbeddingCopiesAsync(
                     connection,
                     transaction,
-                    "DELETE FROM entry_embeddings WHERE lower(replace(EntryId, '-', '')) = @id",
+                    "entry_embeddings", "lower(replace(EntryId, '-', '')) = @id",
                     cancellationToken,
                     ("@id", entryId.ToString("N"))).ConfigureAwait(false);
             }
@@ -6180,7 +6187,7 @@ internal sealed partial class DataRetentionService
             cancellationToken,
             ("@id", entryId.ToString("N"))).ConfigureAwait(false) == 0;
 
-        reconciled &= await CountTableAsync(
+        reconciled &= await CountEmbeddingCopiesAsync(
             "entry_embeddings",
             "lower(replace(EntryId, '-', '')) = @id",
             cancellationToken,
@@ -6314,10 +6321,10 @@ internal sealed partial class DataRetentionService
                 return CandidateDeleteResult.Empty;
             }
 
-            deleted += await ExecuteAsync(
+            deleted += await DeleteEmbeddingCopiesAsync(
                 connection,
                 transaction,
-                "DELETE FROM entry_embeddings WHERE lower(replace(EntryId, '-', '')) = @id",
+                "entry_embeddings", "lower(replace(EntryId, '-', '')) = @id",
                 cancellationToken,
                 ("@id", normalizedEntryId)).ConfigureAwait(false);
 
@@ -6351,7 +6358,7 @@ internal sealed partial class DataRetentionService
             throw;
         }
 
-        bool reconciled = await CountTableAsync(
+        bool reconciled = await CountEmbeddingCopiesAsync(
             "entry_embeddings",
             "lower(replace(EntryId, '-', '')) = @id",
             cancellationToken,
@@ -6405,10 +6412,10 @@ internal sealed partial class DataRetentionService
 
             if (embeddingTableExists)
             {
-                derived += await ExecuteAsync(
+                derived += await DeleteEmbeddingCopiesAsync(
                     connection,
                     transaction,
-                    "DELETE FROM workspace_file_embeddings WHERE ChunkId = @id",
+                    "workspace_file_embeddings", "ChunkId = @id",
                     cancellationToken,
                     ("@id", chunkId)).ConfigureAwait(false);
             }
@@ -6447,7 +6454,7 @@ internal sealed partial class DataRetentionService
             cancellationToken,
             ("@id", chunkId)).ConfigureAwait(false) == 0;
 
-        reconciled &= await CountTableAsync(
+        reconciled &= await CountEmbeddingCopiesAsync(
             "workspace_file_embeddings",
             "ChunkId = @id",
             cancellationToken,
@@ -6544,10 +6551,10 @@ internal sealed partial class DataRetentionService
                 memoryId,
                 cancellationToken).ConfigureAwait(false);
 
-            derived += await ExecuteAsync(
+            derived += await DeleteEmbeddingCopiesAsync(
                 connection,
                 transaction,
-                "DELETE FROM saga_memory_embeddings WHERE MemoryId = @id",
+                "saga_memory_embeddings", "MemoryId = @id",
                 cancellationToken,
                 ("@id", memoryId)).ConfigureAwait(false);
 
@@ -6596,7 +6603,7 @@ internal sealed partial class DataRetentionService
             cancellationToken,
             ("@id", memoryId)).ConfigureAwait(false) == 0;
 
-        reconciled &= await CountTableAsync(
+        reconciled &= await CountEmbeddingCopiesAsync(
             "saga_memory_embeddings",
             "MemoryId = @id",
             cancellationToken,

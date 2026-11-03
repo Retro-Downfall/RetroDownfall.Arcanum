@@ -438,6 +438,7 @@ R	src/RetroDownfall.Arcanum.Core/Primitives/ErrorCodes.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/JsonSchemaDefinition.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/JsonSchemaHelper.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/ListPageResult.cs
+R	src/RetroDownfall.Arcanum.Core/Primitives/QuantizedEmbeddingCodec.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/Result.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/SqliteStorageFailure.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/StrictUtf8.cs
@@ -907,6 +908,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Diagnostics
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryActivation.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Pruning.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.QuantizedEmbeddings.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.WorkspaceReset.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionSweepHostedService.cs
@@ -1262,6 +1264,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/data_retention_pru
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/disclosure_subject_aggregates.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/disclosure_subject_state.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/entry_embeddings.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/entry_embeddings_quantized.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/external_disclosure_receipts.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/external_disclosure_state.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/grimoire_feature_schemas.sql
@@ -1307,10 +1310,12 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/saga_extraction_wa
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/saga_memories.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/saga_memory_attachment_provenance.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/saga_memory_embeddings.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/saga_memory_embeddings_quantized.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/saga_retirement_suppressions.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/saga_suppression_key.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/session_attachment_chunks.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/session_attachment_embeddings.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/session_attachment_embeddings_quantized.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/session_attachment_index_state.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/session_campaign_binding_resolution_receipts.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/session_campaign_bindings.sql
@@ -1326,10 +1331,12 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/tapestry_edges.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/tapestry_generations.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/tapestry_leaf_hashes.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/tapestry_node_embeddings.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/tapestry_node_embeddings_quantized.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/tapestry_nodes.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/tapestry_scope_revisions.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/workspace_file_chunks.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/workspace_file_embeddings.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/workspace_file_embeddings_quantized.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V10/010_batch_accounting_recovery_claims.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V11/010_lexicon_entries_retired_at_utc.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V11/020_lexicon_entries_pinned_at_utc.sql
@@ -1653,6 +1660,16 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V34/020_sessi
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V34/030_session_attachment_chunks_tapestry_revision_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V34/040_session_attachment_chunks_tapestry_revision_delete.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V36/010_idx_session_attachment_chunks_retrieval_scope.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V37/010_entry_embeddings_quantized.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V37/020_workspace_file_embeddings_quantized.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V37/030_session_attachment_embeddings_quantized.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V37/040_saga_memory_embeddings_quantized.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V37/050_tapestry_node_embeddings_quantized.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V37/110_entry_embeddings_quantized_invalidate.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V37/120_workspace_file_embeddings_quantized_invalidate.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V37/130_session_attachment_embeddings_quantized_invalidate.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V37/140_saga_memory_embeddings_quantized_invalidate.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V37/150_tapestry_node_embeddings_quantized_invalidate.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/010_saga_memories_retired_at.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/020_saga_memories_pinned_at.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/030_saga_retirement_suppressions.sql
@@ -1846,6 +1863,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/disclosure_subje
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/disclosure_subject_state_guard_delete.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/entry_embeddings_EntryId_guard_identity_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/entry_embeddings_EntryId_guard_identity_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/entry_embeddings_quantized_invalidate.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/external_disclosure_receipts_guard_delete.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/external_disclosure_receipts_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/external_disclosure_state_guard_delete.sql
@@ -1940,6 +1958,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/saga_memories_Ca
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/saga_memories_CampaignId_guard_identity_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/saga_memory_attachment_provenance_AttachmentId_guard_identity_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/saga_memory_attachment_provenance_AttachmentId_guard_identity_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/saga_memory_embeddings_quantized_invalidate.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/saga_retirement_suppressions_CampaignId_guard_identity_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/saga_retirement_suppressions_CampaignId_guard_identity_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/session_attachment_chunks_AttachmentId_guard_identity_insert.sql
@@ -1951,6 +1970,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/session_attachme
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/session_attachment_chunks_tapestry_revision_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/session_attachment_chunks_tapestry_revision_replace_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/session_attachment_chunks_tapestry_revision_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/session_attachment_embeddings_quantized_invalidate.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/session_attachment_index_state_AttachmentId_guard_identity_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/session_attachment_index_state_AttachmentId_guard_identity_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/session_campaign_binding_resolution_receipts_guard_delete.sql
@@ -1983,6 +2003,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/tapestry_generat
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/tapestry_node_embeddings_guard_delete.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/tapestry_node_embeddings_guard_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/tapestry_node_embeddings_guard_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/tapestry_node_embeddings_quantized_invalidate.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/tapestry_nodes_guard_delete.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/tapestry_nodes_guard_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/tapestry_nodes_guard_update.sql
@@ -1995,6 +2016,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/workspace_file_c
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/workspace_file_chunks_tapestry_revision_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/workspace_file_chunks_tapestry_revision_replace_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/workspace_file_chunks_tapestry_revision_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/workspace_file_embeddings_quantized_invalidate.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/UtcInstantCanonicalizationBackfill.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/UtcInstantColumnInventory.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Views/campaign_rollup_source_membership.sql
@@ -2118,6 +2140,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Hosting/MacOsDaemonManager.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Hosting/MissingMasterApiKeyException.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Hosting/PidFileOwnership.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Hosting/PidFileService.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Hosting/QuantizedEmbeddingBackfillService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Hosting/SagaExtractionService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Hosting/ScryingPool.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Hosting/SendingChronicleFrames.cs
@@ -2518,6 +2541,8 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/WordprocessingXml
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/DivinationService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/EmbeddingsResetService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/LongRestHierarchyBuilder.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Weave/QuantizedDivinationScan.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Weave/QuantizedEmbeddingStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SagaCurationService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentDocumentExtractionHost.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentDocumentExtractors.cs

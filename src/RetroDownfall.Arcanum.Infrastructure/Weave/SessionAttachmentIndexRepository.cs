@@ -1130,6 +1130,9 @@ internal sealed class SessionAttachmentIndexRepository(
             AddParameter(blob, "@dim", vector.Length);
 
             _ = await blob.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            await QuantizedEmbeddingStore.UpsertAsync(connection, transaction, "session_attachment_embeddings",
+                chunkId, vector, cancellationToken).ConfigureAwait(false);
         }
     }
 

@@ -107,6 +107,7 @@ public sealed class HostedProducerAnalysisCollectionTests
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Production_universe_satisfies_AuthoredEnumerablesAbsentByUse",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Production_universe_satisfies_DbProviderTypesClosedByUse",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Production_universe_satisfies_SqliteSealedByUse",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Quantized_backfill_database_access_stays_under_ordinary_work_without_provider_calls",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.RestoreSafetyBackupHasExactStoppedHostOrOwner",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ReviewedCapsuleManifestExactlyMatchesProductionDiscovery",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.SchemaBackfillStrategyTableMatchesEveryConfiguredConcreteImplementation",

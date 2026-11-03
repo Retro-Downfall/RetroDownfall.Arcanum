@@ -820,6 +820,9 @@ internal sealed partial class TapestryStore(
         AddParameter(embeddingCommand, "@dim", write.Embedding.Length);
 
         _ = await embeddingCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        await QuantizedEmbeddingStore.UpsertAsync(connection, transaction, "tapestry_node_embeddings",
+            node.NodeId, write.Embedding, cancellationToken).ConfigureAwait(false);
     }
 
     public Task SetParentAsync(
@@ -1007,8 +1010,13 @@ internal sealed partial class TapestryStore(
     private const string RetentionScopePredicate = "ScopeKind IN ('Session','SessionAttachment') AND (@entries=1 OR ScopeKind='SessionAttachment') AND lower(replace(ScopeId,'-',''))=@sessionKey";
 
     internal static async Task<long> ReadRetentionGraphRowsAsync(DbConnection connection, DbTransaction? transaction,
-        Guid sessionId, bool includeEntries, CancellationToken cancellationToken)
+        Guid sessionId, bool includeEntries, CancellationToken cancellationToken, RetentionSchemaCensus? schemaCensus = null)
     {
+        string compactCount = await QuantizedEmbeddingStore.IsAvailableAsync(connection, transaction,
+            "tapestry_node_embeddings", cancellationToken, schemaCensus).ConfigureAwait(false)
+            ? "+ (SELECT COUNT(*) FROM tapestry_node_embeddings_quantized WHERE NodeId IN (SELECT NodeId FROM nodes))"
+            : "";
+
         await using DbCommand count = connection.CreateCommand();
 
         count.Transaction = transaction;
@@ -1019,6 +1027,7 @@ internal sealed partial class TapestryStore(
             SELECT (SELECT COUNT(*) FROM generations) + (SELECT COUNT(*) FROM nodes)
                  + (SELECT COUNT(*) FROM tapestry_edges WHERE GenerationId IN (SELECT GenerationId FROM generations))
                  + (SELECT COUNT(*) FROM tapestry_node_embeddings WHERE NodeId IN (SELECT NodeId FROM nodes))
+                 {compactCount}
             """;
 
         AddParameter(count, "@entries", includeEntries ? 1 : 0);

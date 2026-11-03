@@ -119,6 +119,7 @@ public static class MemoryErasureTableCodes
         "memory_evaluation_sources",
         "memory_evaluations",
         "saga_committed_uses",
+        "saga_memory_embeddings_quantized",
     ];
 
     /// <summary>The code of one registered table.</summary>
