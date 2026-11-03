@@ -1750,6 +1750,7 @@ internal static partial class HostedGrimoireProducerInventory
         Ordinary("Covenant", "GrimoireSchemaTransitionHostedService", GrimoireWorkKind.GrimoireSchemaTransition),
         Ordinary("Hosting", "EntryWeavingService", GrimoireWorkKind.EntryWeaving),
         Ordinary("Weave", "SessionAttachmentIndexingService", GrimoireWorkKind.SessionAttachmentIndexing),
+        Ordinary("Hosting", "QuantizedEmbeddingBackfillService", GrimoireWorkKind.QuantizedEmbeddingBackfill),
         new("WorkspaceIndexingService",
         [
             Operation("Hosting", "WorkspaceIndexingService", "ExecuteAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.WorkspaceIndexing, sourceFile: "WorkspaceIndexingService.Watchers.cs"),
@@ -54487,6 +54488,7 @@ internal static partial class HostedGrimoireProducerInventory
             string type = TypeKey(method.ContainingType);
 
             return IsExactSqliteBusyTimeout(method)
+                || IsExactBorrowedSqliteColumnRead(method)
                 || type == "Microsoft.Data.Sqlite.SqliteCommand"
                     && method.Name.StartsWith("Execute", StringComparison.Ordinal)
                 || type == "Microsoft.Data.Sqlite.SqliteConnection"
@@ -54534,7 +54536,8 @@ internal static partial class HostedGrimoireProducerInventory
 
         private static bool IsDatabaseOperation(
             IPropertySymbol property,
-            bool mutation) => !mutation
+            bool mutation) => IsExactBorrowedSqliteStatementHandle(property, mutation)
+                || !mutation
                 && property.IsIndexer
                 && TypeKey(property.ContainingType) == "Microsoft.Data.Sqlite.SqliteDataReader"
                 && AssemblyIdentityMatches(

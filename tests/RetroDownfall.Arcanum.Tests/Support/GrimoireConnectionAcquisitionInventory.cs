@@ -2145,6 +2145,13 @@ internal static class GrimoireConnectionAcquisitionScanner
             new(ExactNonServingProofKind.PreReadinessHeldLock, "GrimoireDatabaseBootstrapper.CanOpenDatabaseAsync(3)", 0)),
 
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/QuantizedEmbeddingBackfillService.cs", "QuantizedEmbeddingBackfillService", "RunTickAsync(1)", AcquisitionConstructKind.MarkedRouteInvocation, "AcquireScopedAsync", 3, "connections.AcquireScopedAsync(connection,CovenantSqliteConnectionMode.ReadWrite,token)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/EntryWeavingService.cs", "EntryWeavingService", "FetchUnembeddedEntriesAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 2, "OpenConnectionAsync(db,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,

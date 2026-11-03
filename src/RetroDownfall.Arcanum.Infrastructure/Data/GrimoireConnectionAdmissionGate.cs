@@ -346,6 +346,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             GrimoireWorkKind.ProviderHealthProbe => true,
             GrimoireWorkKind.McpServerBootstrap => true,
             GrimoireWorkKind.LongRestSweep => true,
+            GrimoireWorkKind.QuantizedEmbeddingBackfill => true,
             _ => false,
         };
 

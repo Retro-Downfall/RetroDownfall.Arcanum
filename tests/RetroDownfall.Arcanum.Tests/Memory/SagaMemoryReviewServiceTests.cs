@@ -787,11 +787,20 @@ public sealed class SagaMemoryReviewServiceTests
         }
     }
 
-    [SkippableFact]
-    public async Task Bulk_retire_removes_the_durable_embedding()
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Bulk_retire_removes_the_durable_embedding(bool foreignKeys)
     {
         await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true)
             .ConfigureAwait(false);
+
+        await using (var command = harness.Connection.CreateCommand())
+        {
+            command.CommandText = foreignKeys ? "PRAGMA foreign_keys=ON" : "PRAGMA foreign_keys=OFF";
+
+            await command.ExecuteNonQueryAsync();
+        }
 
         Result<MemoryReviewBulkResultDto> applied = await ApplyOverAnEmbeddedMemoryAsync(
             harness,
@@ -804,6 +813,8 @@ public sealed class SagaMemoryReviewServiceTests
         Assert.NotNull(Assert.Single(applied.Value.Items).ResultingVersionId);
 
         Assert.Equal(0, await harness.CountAsync("saga_memory_embeddings", "1 = 1").ConfigureAwait(false));
+
+        Assert.Equal(0, await harness.CountAsync("saga_memory_embeddings_quantized", "1 = 1").ConfigureAwait(false));
     }
 
     [SkippableFact]
@@ -1417,8 +1428,6 @@ public sealed class SagaMemoryReviewServiceTests
         MemoryReviewAction action,
         string? replacementContent)
     {
-
-
         await InsertAsync(
             harness,
             "m-1",
@@ -1427,6 +1436,8 @@ public sealed class SagaMemoryReviewServiceTests
             .ConfigureAwait(false);
 
         Assert.Equal(1, await harness.CountAsync("saga_memory_embeddings", "1 = 1").ConfigureAwait(false));
+
+        Assert.Equal(1, await harness.CountAsync("saga_memory_embeddings_quantized", "1 = 1").ConfigureAwait(false));
 
         SagaMemoryReviewService service = CreateService(harness);
 

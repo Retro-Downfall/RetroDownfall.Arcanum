@@ -29,6 +29,7 @@ public sealed partial class BackupRestoreProtectedStatePurgeTests : IAsyncLifeti
 {
     private static readonly string[] CoreObjects =
     [
+        "grimoire_feature_schemas",
         "covenant_authority_state",
         "campaign_path_identities",
         "Campaigns",
@@ -153,6 +154,14 @@ public sealed partial class BackupRestoreProtectedStatePurgeTests : IAsyncLifeti
         _staged = await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
 
         await _staged.InstallCoreObjectsAsync(CoreObjects, CancellationToken.None);
+
+        // This staged archive predates compact companions. Version-gated erasure targets must have
+        // the same committed Core fact that an actual admitted archive carries.
+        await _staged.RecordCoreSchemaVersionAsync(36, CancellationToken.None);
+
+        // Core36 owns the complete memory-evaluation evidence closure even in cases that seed no
+        // evaluation. Staged Covenant erasure must prove those tables empty rather than omit them.
+        await MemoryEvaluationLifecycleTests.InstallEvidenceSchemaAsync(_staged.Connection);
 
         await _staged.InstallCanonicalAsync(CancellationToken.None);
 

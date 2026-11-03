@@ -287,6 +287,8 @@ internal enum GrimoireWorkKind : byte
     McpServerBootstrap = 16,
 
     LongRestSweep = 17,
+
+    QuantizedEmbeddingBackfill = 18,
 }
 
 /// <summary>

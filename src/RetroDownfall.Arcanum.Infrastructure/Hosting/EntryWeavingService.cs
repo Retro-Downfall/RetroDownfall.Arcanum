@@ -467,6 +467,9 @@ internal sealed class EntryWeavingService(
                     AddParameter(cmd, "@dim", vector.Length);
 
                     _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                    await QuantizedEmbeddingStore.UpsertAsync(connection, transaction, "entry_embeddings",
+                        entryId, vector, cancellationToken).ConfigureAwait(false);
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);

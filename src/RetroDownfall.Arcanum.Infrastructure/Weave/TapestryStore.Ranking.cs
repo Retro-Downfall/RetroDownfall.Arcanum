@@ -1,5 +1,7 @@
 using System.Data.Common;
 
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -211,7 +213,24 @@ internal sealed partial class TapestryStore
 
                     AddParameter(command, "@page", LeafPageSize);
 
-                    await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                    string compactSql = $"""
+                    SELECT n.NodeId,quantized.Representation
+                    FROM tapestry_nodes n JOIN tapestry_node_embeddings e ON e.NodeId=n.NodeId
+                    LEFT JOIN "tapestry_node_embeddings_quantized" quantized ON quantized.NodeId=e.NodeId
+                    WHERE n.GenerationId=@generation {selected} {continuation}
+                    ORDER BY n.NodeId COLLATE BINARY LIMIT @page
+                    """;
+
+                    // A small selected frontier must stay proportional to its own ids; probing the
+                    // entire embedding corpus to decide whether to accelerate it would add unrelated
+                    // generation work to every graph traversal step.
+                    using QuantizedDivinationScan? compact = allNodes || nodeIds!.Count >= QuantizedDivinationScan.EngagementRows
+                        ? await QuantizedDivinationScan.TryCreateAsync(
+                            command, new("tapestry_node_embeddings", "NodeId", "Embedding", "e"), queryVector,
+                            cancellationToken, compactSql).ConfigureAwait(false)
+                        : null;
+
+                    await using SqliteDataReader reader = (SqliteDataReader)await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
                     while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                     {
@@ -221,15 +240,27 @@ internal sealed partial class TapestryStore
 
                         count++;
 
-                        if (reader.IsDBNull(1)
-                            || !graph.Vertices.TryGetValue(after, out TapestryRetrievalVertex? vertex))
+                        if (!graph.Vertices.TryGetValue(after, out TapestryRetrievalVertex? vertex))
                         {
                             continue;
                         }
 
-                        byte[] blob = (byte[])reader.GetValue(1);
+                        // The similarity bound can exclude only strict losers. Equal similarities
+                        // still need exact scoring for source-event time and ordinal-id tie breaks.
+                        if (compact is not null && compact.TryUpperBound(reader, 1, out float upper)
+                            && best.Count == limit && best.TryPeek(out _, out TapestryRankedNode? boundary)
+                            && upper < boundary.Similarity)
+                        {
+                            scored++;
 
-                        if (!EmbeddingBlobCodec.TryCosineSimilarity(queryVector, norm, EmbeddingBlobCodec.AsVector(blob), out float similarity))
+                            continue;
+                        }
+
+                        DivinationService.RowScore row = compact is null
+                            ? DivinationService.TryScoreRow(reader, 1, queryVector, norm, out float similarity)
+                            : compact.Score(reader, queryVector, norm, out similarity);
+
+                        if (row != DivinationService.RowScore.Scored)
                         {
                             continue;
                         }

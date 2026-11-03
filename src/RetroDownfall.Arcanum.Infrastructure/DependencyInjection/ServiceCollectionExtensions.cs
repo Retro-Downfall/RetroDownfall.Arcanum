@@ -1345,6 +1345,8 @@ public static class ServiceCollectionExtensions
         // process able to repair it.
         services.AddInstallationResetRecoveryAwareHostedService<GrimoireSchemaTransitionHostedService>();
 
+        services.AddInstallationResetRecoveryAwareHostedService<QuantizedEmbeddingBackfillService>();
+
         // RAG Phase 2/3 — Entry Weaving and Workspace Indexing both idle (no-op) until
         // Arcanum:Features:SessionSearch / CodebaseRetrieval are enabled, so registering them
         // unconditionally is safe on the hot path. Registered after

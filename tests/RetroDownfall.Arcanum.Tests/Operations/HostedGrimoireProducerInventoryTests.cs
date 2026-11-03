@@ -25353,6 +25353,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("GrimoireDatabaseHostedService")]
     [InlineData("LongRestSweepHostedService")]
     [InlineData("McpServerBootstrapHostedService")]
+    [InlineData("QuantizedEmbeddingBackfillService")]
     [InlineData("SagaExtractionService")]
     [InlineData("SessionAttachmentIndexingService")]
     [InlineData("UnseenServantService")]

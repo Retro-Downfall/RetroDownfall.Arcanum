@@ -726,6 +726,7 @@ public sealed class MemoryErasureDigestGrammarTests
             "memory_evaluation_sources",
             "memory_evaluations",
             "saga_committed_uses",
+            "saga_memory_embeddings_quantized",
         ];
 
         Assert.Equal(expected, MemoryErasureTableCodes.Tables);

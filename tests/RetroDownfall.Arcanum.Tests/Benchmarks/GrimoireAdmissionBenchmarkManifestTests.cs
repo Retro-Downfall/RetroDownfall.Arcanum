@@ -154,7 +154,7 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
 
         Assert.EndsWith("GrimoireConnectionAdmissionEpoch.cs", optional.Path, StringComparison.Ordinal);
 
-        Assert.Equal(938, catalog.Count(static entry => entry.Path.EndsWith(".sql", StringComparison.Ordinal)));
+        Assert.Equal(958, catalog.Count(static entry => entry.Path.EndsWith(".sql", StringComparison.Ordinal)));
 
         using JsonDocument manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(
             root,

@@ -310,6 +310,9 @@ internal sealed partial class SagaMemoryStore(
 
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
+                    await QuantizedEmbeddingStore.UpsertAsync(connection, transaction, "saga_memory_embeddings",
+                        id, embedding, cancellationToken).ConfigureAwait(false);
+
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                     return SagaMemoryWriteOutcome.Written;
@@ -871,6 +874,15 @@ internal sealed partial class SagaMemoryStore(
 
                 AddParameter(embeddingCmd, "@id", id);
 
+                if (await QuantizedEmbeddingStore.IsAvailableAsync(connection, transaction, "saga_memory_embeddings", cancellationToken).ConfigureAwait(false))
+                {
+                    embeddingCmd.CommandText = "DELETE FROM saga_memory_embeddings_quantized WHERE MemoryId = @id";
+
+                    _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                    embeddingCmd.CommandText = "DELETE FROM saga_memory_embeddings WHERE MemoryId = @id";
+                }
+
                 _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -937,6 +949,15 @@ internal sealed partial class SagaMemoryStore(
                 embeddingCmd.Transaction = transaction;
 
                 embeddingCmd.CommandText = """DELETE FROM "saga_memory_embeddings" """;
+
+                if (await QuantizedEmbeddingStore.IsAvailableAsync(connection, transaction, "saga_memory_embeddings", cancellationToken).ConfigureAwait(false))
+                {
+                    embeddingCmd.CommandText = "DELETE FROM saga_memory_embeddings_quantized";
+
+                    _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                    embeddingCmd.CommandText = "DELETE FROM saga_memory_embeddings";
+                }
 
                 _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 

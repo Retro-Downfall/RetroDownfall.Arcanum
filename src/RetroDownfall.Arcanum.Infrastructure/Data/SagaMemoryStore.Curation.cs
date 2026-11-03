@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -176,6 +177,15 @@ internal sealed partial class SagaMemoryStore
                     embeddingCmd.CommandText = """DELETE FROM "saga_memory_embeddings" WHERE "MemoryId" = @id""";
 
                     AddParameter(embeddingCmd, "@id", id);
+
+                    if (await QuantizedEmbeddingStore.IsAvailableAsync(connection, transaction, "saga_memory_embeddings", cancellationToken).ConfigureAwait(false))
+                    {
+                        embeddingCmd.CommandText = "DELETE FROM saga_memory_embeddings_quantized WHERE MemoryId = @id";
+
+                        _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                        embeddingCmd.CommandText = "DELETE FROM saga_memory_embeddings WHERE MemoryId = @id";
+                    }
 
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
@@ -400,6 +410,9 @@ internal sealed partial class SagaMemoryStore
                     AddParameter(embeddingCmd, "@dim", embedding.Length);
 
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                    await QuantizedEmbeddingStore.UpsertAsync(connection, transaction, "saga_memory_embeddings",
+                        id, embedding, cancellationToken).ConfigureAwait(false);
                 }
 
                 // The digest is recomputed from the installation's key rather than remembered from the
@@ -656,6 +669,9 @@ internal sealed partial class SagaMemoryStore
                     AddParameter(embeddingCmd, "@dim", embedding.Length);
 
                     _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                    await QuantizedEmbeddingStore.UpsertAsync(connection, transaction, "saga_memory_embeddings",
+                        id, embedding, cancellationToken).ConfigureAwait(false);
                 }
 
                 // The same ungated pair RetireAsync and ReinstateAsync write, and for the same reason:

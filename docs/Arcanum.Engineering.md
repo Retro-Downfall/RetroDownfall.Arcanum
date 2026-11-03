@@ -883,11 +883,15 @@ covenant-benchmark-run
 prompt-cache-fixture
 windows-long-rest-win-x64
 windows-long-rest-win-arm64
+windows-quantized-search-win-x64
+windows-quantized-search-win-arm64
 ```
 
 `arcanum-coverage-report` carries the Cobertura XML plus the rendered HTML report for the run. Each `hosted-producer-*-analysis` bundle is the evidence of one source-analysis partition (its source-SHA-bound selection receipt and TRX), and `hosted-producer-analysis-authority` is the reconciled summary that proves the five partitions together cover the whole universe. `covenant-benchmark-run` carries the measured Covenant benchmark run the gate was evaluated against, so a later comparison can be made against the numbers a specific commit actually produced rather than against a recollection of them; because a recorded baseline is only comparable on the host that recorded it, that artifact is what makes a same-lane comparison possible at all. `prompt-cache-fixture` carries the credential-free Native AOT prompt-cache fixture report and verdict for production construction, SDK wire semantics and invalidation checks; it does not establish live provider cache benefit. `windows-long-rest-win-x64` and `windows-long-rest-win-arm64` carry each Windows lane's native Long Rest TRX and the SDK info it asserted. `DocumentationStructureTests` asserts that this list and the workflow's upload steps are the same set in both directions, so an artifact that stops being produced fails the suite instead of quietly disappearing from a release's evidence, and an artifact added to the workflow has to be written down here before it counts.
 
-The macOS AOT IL gate publishes nothing on purpose and is evidenced by its exit status. The macOS workspace-check lane's artifacts are `covenant-benchmark-run` and `prompt-cache-fixture`, and the Windows lanes' only artifacts are their `windows-long-rest-<rid>` bundles, so the rest of a Windows suite is evidenced by the run conclusion itself. In particular `verify-aot-il-warnings.sh` gives each publish leg a fresh `mktemp` artifact root so incremental outputs cannot stand in for a new analysis, ignores caller ripgrep configuration for every scan, and deletes those roots and its publish logs on the way out. There is therefore no AOT artifact to cite — treat the gate's exit status as the record.
+The `windows-quantized-search-win-x64` and `windows-quantized-search-win-arm64` bundles carry the native RID's focused exact-search, codec, transaction, lifecycle, allocation and query-plan TRX plus the asserted SDK information. Each lane requires every named fixture to execute with zero failures or skips.
+
+The macOS AOT IL gate publishes nothing on purpose and is evidenced by its exit status. The macOS workspace-check lane's artifacts are `covenant-benchmark-run` and `prompt-cache-fixture`, and the Windows lanes upload their `windows-long-rest-<rid>` and `windows-quantized-search-<rid>` bundles, so the rest of a Windows suite is evidenced by the run conclusion itself. In particular `verify-aot-il-warnings.sh` gives each publish leg a fresh `mktemp` artifact root so incremental outputs cannot stand in for a new analysis, ignores caller ripgrep configuration for every scan, and deletes those roots and its publish logs on the way out. There is therefore no AOT artifact to cite — treat the gate's exit status as the record.
 
 ---
 

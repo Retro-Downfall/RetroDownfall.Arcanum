@@ -770,6 +770,54 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Test quantized search
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force '.tmp/windows-quantized-search-win-x64' | Out-Null
+          Copy-Item -LiteralPath '.tmp/windows-long-rest-win-x64/sdk-info.txt' -Destination '.tmp/windows-quantized-search-win-x64/sdk-info.txt'
+          dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj `
+            -c Release --no-build --no-restore --blame-hang-timeout 15m --blame-hang-dump-type none `
+            --filter "(FullyQualifiedName~RetroDownfall.Arcanum.Tests.Primitives.QuantizedEmbeddingCodecTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Data.SagaQuantizedTransactionTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Weave.QuantizedDivinationTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Weave.QuantizedEmbeddingLifecycleTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Weave.DivinationAllocationTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Weave.SessionAttachmentRetrievalQueryPlanTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Api.Tower.SessionDivinationEndpointTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests)&Category!=Perf&Category!=HostedProducerAnalysis" `
+            --logger "trx;LogFileName=quantized-search-win-x64.trx" --results-directory .tmp/windows-quantized-search-win-x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Every focused fixture must execute on the native RID, with zero failures or skips.
+          [xml]$trx = Get-Content -LiteralPath '.tmp/windows-quantized-search-win-x64/quantized-search-win-x64.trx' -Raw
+          $results = @($trx.SelectNodes("//*[local-name()='UnitTestResult']"))
+          if ($results.Count -eq 0 -or @($results | Where-Object { $_.outcome -ne 'Passed' }).Count -ne 0) {
+            throw 'Quantized search qualification requires executed results with zero failures or skips.'
+          }
+          $definitions = @($trx.SelectNodes("//*[local-name()='UnitTest']"))
+          $requiredClasses = @(
+            'RetroDownfall.Arcanum.Tests.Primitives.QuantizedEmbeddingCodecTests',
+            'RetroDownfall.Arcanum.Tests.Data.SagaQuantizedTransactionTests',
+            'RetroDownfall.Arcanum.Tests.Weave.QuantizedDivinationTests',
+            'RetroDownfall.Arcanum.Tests.Weave.QuantizedEmbeddingLifecycleTests',
+            'RetroDownfall.Arcanum.Tests.Weave.DivinationAllocationTests',
+            'RetroDownfall.Arcanum.Tests.Weave.SessionAttachmentRetrievalQueryPlanTests',
+            'RetroDownfall.Arcanum.Tests.Api.Tower.SessionDivinationEndpointTests',
+            'RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests'
+          )
+          foreach ($class in $requiredClasses) {
+            $ids = @($definitions | Where-Object { $_.TestMethod.className -eq $class } | ForEach-Object { $_.id })
+            if ($ids.Count -eq 0 -or @($results | Where-Object { $_.testId -in $ids }).Count -eq 0) {
+              throw "Missing executed quantized search contract class: $class"
+            }
+          }
+          $ids = @($definitions | Where-Object { $_.TestMethod.className -eq 'RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests' -and $_.TestMethod.name -eq 'Windows_ci_lane_uses_the_expected_native_runtime_identifier' } | ForEach-Object { $_.id })
+          if ($ids.Count -eq 0 -or @($results | Where-Object { $_.testId -in $ids }).Count -eq 0) {
+            throw 'Missing executed native process identity contract.'
+          }
+
+      - name: Upload quantized search native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-quantized-search-win-x64
+          path: .tmp/windows-quantized-search-win-x64/
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Test Compendium
         shell: pwsh
         run: |
@@ -1009,6 +1057,54 @@ jobs:
         with:
           name: windows-long-rest-win-arm64
           path: .tmp/windows-long-rest-win-arm64/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Test quantized search
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force '.tmp/windows-quantized-search-win-arm64' | Out-Null
+          Copy-Item -LiteralPath '.tmp/windows-long-rest-win-arm64/sdk-info.txt' -Destination '.tmp/windows-quantized-search-win-arm64/sdk-info.txt'
+          dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj `
+            -c Release --no-build --no-restore --blame-hang-timeout 15m --blame-hang-dump-type none `
+            --filter "(FullyQualifiedName~RetroDownfall.Arcanum.Tests.Primitives.QuantizedEmbeddingCodecTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Data.SagaQuantizedTransactionTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Weave.QuantizedDivinationTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Weave.QuantizedEmbeddingLifecycleTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Weave.DivinationAllocationTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Weave.SessionAttachmentRetrievalQueryPlanTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Api.Tower.SessionDivinationEndpointTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests)&Category!=Perf&Category!=HostedProducerAnalysis" `
+            --logger "trx;LogFileName=quantized-search-win-arm64.trx" --results-directory .tmp/windows-quantized-search-win-arm64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Every focused fixture must execute on the native RID, with zero failures or skips.
+          [xml]$trx = Get-Content -LiteralPath '.tmp/windows-quantized-search-win-arm64/quantized-search-win-arm64.trx' -Raw
+          $results = @($trx.SelectNodes("//*[local-name()='UnitTestResult']"))
+          if ($results.Count -eq 0 -or @($results | Where-Object { $_.outcome -ne 'Passed' }).Count -ne 0) {
+            throw 'Quantized search qualification requires executed results with zero failures or skips.'
+          }
+          $definitions = @($trx.SelectNodes("//*[local-name()='UnitTest']"))
+          $requiredClasses = @(
+            'RetroDownfall.Arcanum.Tests.Primitives.QuantizedEmbeddingCodecTests',
+            'RetroDownfall.Arcanum.Tests.Data.SagaQuantizedTransactionTests',
+            'RetroDownfall.Arcanum.Tests.Weave.QuantizedDivinationTests',
+            'RetroDownfall.Arcanum.Tests.Weave.QuantizedEmbeddingLifecycleTests',
+            'RetroDownfall.Arcanum.Tests.Weave.DivinationAllocationTests',
+            'RetroDownfall.Arcanum.Tests.Weave.SessionAttachmentRetrievalQueryPlanTests',
+            'RetroDownfall.Arcanum.Tests.Api.Tower.SessionDivinationEndpointTests',
+            'RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests'
+          )
+          foreach ($class in $requiredClasses) {
+            $ids = @($definitions | Where-Object { $_.TestMethod.className -eq $class } | ForEach-Object { $_.id })
+            if ($ids.Count -eq 0 -or @($results | Where-Object { $_.testId -in $ids }).Count -eq 0) {
+              throw "Missing executed quantized search contract class: $class"
+            }
+          }
+          $ids = @($definitions | Where-Object { $_.TestMethod.className -eq 'RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests' -and $_.TestMethod.name -eq 'Windows_ci_lane_uses_the_expected_native_runtime_identifier' } | ForEach-Object { $_.id })
+          if ($ids.Count -eq 0 -or @($results | Where-Object { $_.testId -in $ids }).Count -eq 0) {
+            throw 'Missing executed native process identity contract.'
+          }
+
+      - name: Upload quantized search native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-quantized-search-win-arm64
+          path: .tmp/windows-quantized-search-win-arm64/
           if-no-files-found: error
           retention-days: 14
 

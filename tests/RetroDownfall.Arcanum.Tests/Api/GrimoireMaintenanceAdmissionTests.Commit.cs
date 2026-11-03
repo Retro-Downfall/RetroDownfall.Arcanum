@@ -1218,6 +1218,7 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         command.CommandText = """
             SELECT (SELECT COUNT(*) FROM Entries_fts) + (SELECT COUNT(*) FROM session_attachment_index_state)
                 + (SELECT COUNT(*) FROM session_attachment_chunks) + (SELECT COUNT(*) FROM session_attachment_embeddings)
+                + (SELECT COUNT(*) FROM session_attachment_embeddings_quantized)
                 + (SELECT COUNT(*) FROM tapestry_scope_revisions)
                 + (SELECT COUNT(*) FROM memory_search_documents) + (SELECT COUNT(*) FROM memory_search_fts);
             """;
@@ -1225,13 +1226,13 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         long derived = (long)(await command.ExecuteScalarAsync(token))!;
 
         // Planning sees Entry FTS, active indexing state, Session revision, and the Entry's Core28
-        // projection/FTS pair. Indexing adds chunk, BLOB embedding, attachment revision and its
-        // Core28 projection/FTS pair; the named native counts above prove both additions.
+        // projection/FTS pair. Indexing adds chunk, BLOB embedding, compact companion, attachment
+        // revision and its Core28 projection/FTS pair; the native counts above prove both additions.
         Assert.Equal(5L, plan.DerivedRecords);
 
-        Assert.Equal(10L, derived);
+        Assert.Equal(11L, derived);
 
-        Assert.Equal(plan.DerivedRecords + 5, derived);
+        Assert.Equal(plan.DerivedRecords + 6, derived);
 
         command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE name = 'session_attachment_embeddings_vec';";
 
@@ -1284,7 +1285,7 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         foreach (string table in new[] { "covenant_entries", "covenant_versions", "covenant_heads", "artifact_sensitivity",
             "managed_file_write_intents", "Sessions", "Entries", "SessionAttachments", "session_attachment_chunks",
-            "session_attachment_index_state", "session_attachment_embeddings", "Entries_fts", "tapestry_scope_revisions", "BillableOperations", "InferenceRuns" })
+            "session_attachment_index_state", "session_attachment_embeddings", "session_attachment_embeddings_quantized", "Entries_fts", "tapestry_scope_revisions", "BillableOperations", "InferenceRuns" })
         {
             command.CommandText = $"SELECT COUNT(*) FROM {table};";
 
@@ -1307,7 +1308,7 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Assert.Equal(plan.Rows + 1, result.RowsDeleted);
 
-        Assert.Equal(plan.DerivedRecords + 5, result.DerivedRecordsDeleted);
+        Assert.Equal(plan.DerivedRecords + 6, result.DerivedRecordsDeleted);
 
         Assert.Equal(plan.Files + 1, result.FilesDeleted);
 

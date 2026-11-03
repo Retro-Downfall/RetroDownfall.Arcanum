@@ -19,7 +19,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 // Divination searches the named durable BLOB table through the scoped Grimoire connection.
 // Table and column identifiers are code-owned constants, never user input.
 //
-// Managed-path mechanics: every matching row is scored, results are tracked in a streaming top-K
+// Managed-path mechanics: every matching row is considered, exact results use a streaming top-K
 // heap (no full scored list + OrderBy), and scoped searches join the scope table in SQL instead of an
 // unbounded IN (...) of every chunk id.
 internal sealed class DivinationService(
@@ -285,7 +285,7 @@ internal sealed class DivinationService(
             queryVector,
             maxResults,
             similarityThreshold,
-            cancellationToken, ranking).ConfigureAwait(false);
+            cancellationToken, ranking, new(blobTableName, primaryKeyColumn, embeddingColumn, "e")).ConfigureAwait(false);
     }
 
     private async Task<Result<DivinationResult[]>> SearchManagedScopedAsync(
@@ -348,7 +348,7 @@ internal sealed class DivinationService(
             queryVector,
             maxResults,
             similarityThreshold,
-            cancellationToken, ranking).ConfigureAwait(false);
+            cancellationToken, ranking, new(blobTableName, primaryKeyColumn, embeddingColumn, "e")).ConfigureAwait(false);
     }
 
     private async Task<Result<DivinationResult[]>> SearchManagedSagaAsync(
@@ -376,7 +376,8 @@ internal sealed class DivinationService(
             WHERE m."RetiredAtUtc" IS NULL AND {LongRestRecallSql.Eligible("m", longRest)}
             """;
 
-        return await ScoreManagedRowsAsync(cmd, queryVector, maxResults, similarityThreshold, cancellationToken, ranking).ConfigureAwait(false);
+        return await ScoreManagedRowsAsync(cmd, queryVector, maxResults, similarityThreshold, cancellationToken, ranking,
+            new("saga_memory_embeddings", primaryKeyColumn, embeddingColumn, "e")).ConfigureAwait(false);
     }
 
     private static bool IsSaga(string blobTableName) =>
@@ -405,11 +406,11 @@ internal sealed class DivinationService(
             queryVector,
             maxResults,
             similarityThreshold,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken, source: new(blobTableName, primaryKeyColumn, embeddingColumn, "")).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Scores every row from an already-configured command with a streaming top-K heap and never
+    /// Considers every row from an already-configured command with a streaming exact top-K heap and never
     /// materializes a full scored list for <c>OrderBy</c>/<c>Take</c>.
     /// </summary>
     /// <remarks>
@@ -429,8 +430,11 @@ internal sealed class DivinationService(
         int maxResults,
         float similarityThreshold,
         CancellationToken cancellationToken,
-        SagaRankingReader? ranking = null)
+        SagaRankingReader? ranking = null,
+        QuantizedDivinationSource source = default)
     {
+        using QuantizedDivinationScan? compact = await QuantizedDivinationScan.TryCreateAsync(cmd, source, queryVector, cancellationToken).ConfigureAwait(false);
+
         int take = Math.Max(0, maxResults);
 
         // The query vector is invariant across the whole scan, so its norm is computed once here rather
@@ -455,7 +459,33 @@ internal sealed class DivinationService(
         {
             string id = reader.GetString(0);
 
-            switch (TryScoreRow(reader, 1, queryVector, queryNormSquared, out float similarity))
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (compact is not null && compact.TryUpperBound(reader, 1, out float upper))
+            {
+                // The current K-th exact score is a lower bound on the final K-th score. Strict
+                // inequality preserves all ties. Saga's additions are monotone, usefulness is at
+                // most +0.04, recency is nonpositive and origin is at most +0.09. Apply those maxima
+                // in policy order without constructing ranking snapshots/components for every
+                // compact row. Exact survivors still receive the ordinary policy evaluation below.
+                float rankedUpper = ranking?.Enabled == true
+                    ? (upper + SagaRankingPolicy.MaximumUsefulnessModifier) + SagaRankingPolicy.OperatorOriginModifier
+                    : upper;
+
+                if (upper < similarityThreshold || (topK.Count == take && topK.TryPeek(out _, out RankedHit boundary)
+                    && rankedUpper < (boundary.Score ?? boundary.Similarity)))
+                {
+                    scored++;
+
+                    continue;
+                }
+            }
+
+            RowScore row = compact is null
+                ? TryScoreRow(reader, 1, queryVector, queryNormSquared, out float similarity)
+                : compact.Score(reader, queryVector, queryNormSquared, out similarity);
+
+            switch (row)
             {
                 case RowScore.DimensionMismatch:
 
@@ -502,6 +532,12 @@ internal sealed class DivinationService(
 
                 topK.Enqueue(id, hit);
             }
+        }
+
+        if (compact is not null)
+        {
+            logger.LogDebug("Quantized Divination read {CompactBytes} compact bytes and re-scored {RowsRescored} authoritative rows ({AuthoritativeBytes} bytes).",
+                compact.CompactBytes, compact.RowsRescored, compact.AuthoritativeBytes);
         }
 
         int skipped = mismatched + unreadable + noSignal;
@@ -560,11 +596,16 @@ internal sealed class DivinationService(
         int embeddingOrdinal,
         float[] queryVector,
         double queryNormSquared,
+        out float similarity) => TryScoreStatement(reader.Handle!, embeddingOrdinal, queryVector, queryNormSquared, out similarity);
+
+    internal static RowScore TryScoreStatement(
+        SQLitePCL.sqlite3_stmt statement,
+        int embeddingOrdinal,
+        float[] queryVector,
+        double queryNormSquared,
         out float similarity)
     {
         similarity = 0f;
-
-        SQLitePCL.sqlite3_stmt statement = reader.Handle!;
 
         // Check the storage class before requesting a BLOB: SQLite otherwise coerces text/numbers
         // into bytes. NULL and non-BLOB values remain unreadable, rather than another vector width.

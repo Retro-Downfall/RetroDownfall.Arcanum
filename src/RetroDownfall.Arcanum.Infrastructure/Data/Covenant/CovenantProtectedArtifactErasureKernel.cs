@@ -90,6 +90,7 @@ internal static class CovenantArtifactPurgePlans
         [SensitiveArtifactKind.AssistantEntry] = new(
             SensitiveArtifactKind.AssistantEntry,
             [
+                new CovenantArtifactPurgeTarget("entry_embeddings_quantized", "EntryId", RequiredFromCoreVersion: 37),
                 new CovenantArtifactPurgeTarget("entry_embeddings", "EntryId"),
             ],
             new CovenantArtifactPurgeTarget("\"Entries\"", "\"Id\""),
@@ -122,6 +123,7 @@ internal static class CovenantArtifactPurgePlans
             SensitiveArtifactKind.Saga,
             [
                 .. AnnalsTargets(AnnalSubjectStore.Saga),
+                new CovenantArtifactPurgeTarget("saga_memory_embeddings_quantized", "MemoryId", RequiredFromCoreVersion: 37),
                 new CovenantArtifactPurgeTarget("saga_memory_embeddings", "MemoryId"),
                 new CovenantArtifactPurgeTarget("saga_memory_attachment_provenance", "MemoryId"),
             ],
@@ -141,7 +143,7 @@ internal static class CovenantArtifactPurgePlans
 
         [SensitiveArtifactKind.Embedding] = new(
             SensitiveArtifactKind.Embedding,
-            [],
+            [new CovenantArtifactPurgeTarget("entry_embeddings_quantized", "EntryId", RequiredFromCoreVersion: 37)],
             new CovenantArtifactPurgeTarget("entry_embeddings", "EntryId"),
             CurrentPointerTable: null,
             RedactionSql: null),

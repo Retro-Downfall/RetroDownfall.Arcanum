@@ -235,7 +235,7 @@ public sealed class LegacyVectorMirrorRetirementTests
 
         await SeedPlainMirrorsAsync(connection);
 
-        GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create();
+        GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create(CoreSchemaVersionThirtySixFixture.ChainSet());
 
         await installer.InstallAsync(connection, 1536, GrimoireSchemaTestInstaller.CreateContext(), CancellationToken.None);
 

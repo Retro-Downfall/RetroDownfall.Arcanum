@@ -9,6 +9,7 @@ using System.Text;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -151,12 +152,12 @@ internal sealed partial class DataRetentionService
                 cancellationToken,
                 ("@root", workspaceRoot)).ConfigureAwait(false);
 
-            derivedDeleted += await ExecuteAsync(
+            derivedDeleted += await DeleteEmbeddingCopiesAsync(
                 connection,
                 transaction,
+                "workspace_file_embeddings",
                 """
-                DELETE FROM workspace_file_embeddings
-                WHERE ChunkId IN (
+                ChunkId IN (
                     SELECT ChunkId
                     FROM workspace_file_chunks
                     WHERE WorkspacePath = @root)
@@ -343,6 +344,20 @@ internal sealed partial class DataRetentionService
         string workspaceRoot,
         CancellationToken cancellationToken)
     {
+        bool compact = await QuantizedEmbeddingStore.IsAvailableAsync(connection, transaction,
+            "workspace_file_embeddings", cancellationToken).ConfigureAwait(false);
+
+        bool compactGraph = await QuantizedEmbeddingStore.IsAvailableAsync(connection, transaction,
+            "tapestry_node_embeddings", cancellationToken).ConfigureAwait(false);
+
+        string workspaceCompactCount = compact
+            ? "COALESCE(SUM((SELECT COUNT(*) FROM workspace_file_embeddings_quantized compact WHERE compact.ChunkId=embedding.ChunkId)), 0)"
+            : "0";
+
+        string tapestryCompactCount = compactGraph
+            ? "COALESCE(SUM((SELECT COUNT(*) FROM tapestry_node_embeddings_quantized compact WHERE compact.NodeId=embedding.NodeId)), 0)"
+            : "0";
+
         long workspaceContexts = await WorkspaceResetCountAsync(
             connection,
             transaction,
@@ -360,8 +375,8 @@ internal sealed partial class DataRetentionService
         long workspaceEmbeddings = await WorkspaceResetCountAsync(
             connection,
             transaction,
-            """
-            SELECT COUNT(*)
+            $"""
+            SELECT COUNT(*) + {workspaceCompactCount}
             FROM workspace_file_embeddings embedding
             JOIN workspace_file_chunks chunk ON chunk.ChunkId = embedding.ChunkId
             WHERE chunk.WorkspacePath = @root
@@ -394,8 +409,8 @@ internal sealed partial class DataRetentionService
         long tapestryEmbeddings = await WorkspaceResetCountAsync(
             connection,
             transaction,
-            """
-            SELECT COUNT(*)
+            $"""
+            SELECT COUNT(*) + {tapestryCompactCount}
             FROM tapestry_node_embeddings embedding
             JOIN tapestry_nodes node ON node.NodeId = embedding.NodeId
             WHERE node.ScopeKind = 'Workspace' AND node.ScopeId = @root

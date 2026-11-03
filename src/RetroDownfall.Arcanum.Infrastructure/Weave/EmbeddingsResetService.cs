@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -53,11 +54,13 @@ public sealed class EmbeddingsResetService(
 
     private static readonly IReadOnlyList<string> EntryTables =
     [
+        "entry_embeddings_quantized",
         "entry_embeddings",
     ];
 
     private static readonly IReadOnlyList<string> WorkspaceFileTables =
     [
+        "workspace_file_embeddings_quantized",
         "workspace_file_embeddings",
         "workspace_file_chunks",
     ];
@@ -75,6 +78,7 @@ public sealed class EmbeddingsResetService(
     /// </remarks>
     private static readonly IReadOnlyList<string> SagaTables =
     [
+        "saga_memory_embeddings_quantized",
         "saga_memory_embeddings",
         "saga_memories",
         "saga_extraction_watermarks",
@@ -82,6 +86,7 @@ public sealed class EmbeddingsResetService(
 
     private static readonly IReadOnlyList<string> SessionAttachmentTables =
     [
+        "session_attachment_embeddings_quantized",
         "session_attachment_embeddings",
         "session_attachment_chunks",
         "session_attachment_index_state",
@@ -95,6 +100,7 @@ public sealed class EmbeddingsResetService(
     [
         "tapestry_generations",
         "tapestry_edges",
+        "tapestry_node_embeddings_quantized",
         "tapestry_node_embeddings",
         "tapestry_nodes",
     ];
@@ -444,6 +450,11 @@ public sealed class EmbeddingsResetService(
 
                 await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
+                if (await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false) < 37)
+                {
+                    targets.RemoveAll(static table => table.EndsWith("_quantized", StringComparison.Ordinal));
+                }
+
                 // Asked here, in the transaction that deletes, for each kind it truncates. The walk above
                 // read the label table in an earlier read and dispatched the purger, and the statements
                 // below examine no identity at all, so a label committed between the two would be removed
@@ -490,7 +501,7 @@ public sealed class EmbeddingsResetService(
 
                 if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Tapestry)
                 {
-                    foreach (string table in TapestryTables)
+                    foreach (string table in TapestryTables.Where(targets.Contains))
                     {
                         await using DbCommand count = connection.CreateCommand();
 

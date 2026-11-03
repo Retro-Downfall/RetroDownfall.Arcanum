@@ -41,7 +41,7 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 public sealed class CovenantResetBootstrapBarrierTests
 {
     /// <summary>
-    /// These five startup-order participants must be registered after the reconciliation pass because
+    /// These startup-order participants must be registered after the reconciliation pass because
     /// hosted services start sequentially in registration order. This is intentionally not the
     /// exhaustive hosted-producer catalog.
     /// </summary>
@@ -50,6 +50,7 @@ public sealed class CovenantResetBootstrapBarrierTests
         nameof(SessionAttachmentPendingGcHostedService),
         nameof(EntryWeavingService),
         nameof(SessionAttachmentIndexingService),
+        nameof(QuantizedEmbeddingBackfillService),
         nameof(WorkspaceIndexingService),
         nameof(DataRetentionSweepHostedService),
     ];

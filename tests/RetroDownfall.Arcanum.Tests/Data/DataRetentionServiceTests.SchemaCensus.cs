@@ -43,6 +43,8 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.True(await census.ExistsAsync(connection, "rv237_catalog_probe", CancellationToken.None));
 
+        Assert.Equal(shape != "view", await census.ExistsAsync(connection, "rv237_catalog_probe", CancellationToken.None, tableOnly: true));
+
         await ExecuteCensusSqlAsync(other, shape == "view" ? "DROP VIEW rv237_catalog_probe" : "DROP TABLE rv237_catalog_probe");
 
         Assert.False(await census.ExistsAsync(connection, "rv237_catalog_probe", CancellationToken.None));

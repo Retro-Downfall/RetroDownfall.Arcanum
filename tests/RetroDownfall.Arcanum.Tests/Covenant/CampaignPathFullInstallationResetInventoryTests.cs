@@ -674,11 +674,22 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
                 await harness.UpdateIdentityDigestAsync(root.CampaignId, Digest(0xD3));
                 break;
             case "marker":
-                await File.WriteAllBytesAsync(
-                    harness.MarkerPath(root),
-                    [0x01, 0x02, 0x03],
-                    CancellationToken.None);
+            {
+                // Corrupt the marker through replacement, the marker contract's mutation model.
+                // A retained reader may deny in-place writes while permitting the name to move.
+                using FileStream heldMarker = new(
+                    harness.MarkerPath(root), FileMode.Open, FileAccess.Read,
+                    OperatingSystem.IsWindows() ? FileShare.Delete : FileShare.None);
+
+                await harness.ReplaceMarkerBytesAsync(root, [0x01, 0x02, 0x03]);
+
+                Assert.Equal(CampaignPathMarkerPolicy.ExactMarkerByteCount, heldMarker.Length);
+
+                Assert.Equal(new byte[] { 0x01, 0x02, 0x03 },
+                    await File.ReadAllBytesAsync(harness.MarkerPath(root), CancellationToken.None));
+
                 break;
+            }
             default:
                 (ulong volumeId, ulong fileId) = harness.CreateUnregisteredRootTuple();
                 await harness.ReplaceMarkerAsync(
@@ -941,10 +952,25 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
 
             Assert.True(encoded.IsSuccess, Describe(encoded));
 
-            await File.WriteAllBytesAsync(
-                MarkerPath(root),
-                encoded.Value,
-                CancellationToken.None);
+            await ReplaceMarkerBytesAsync(root, encoded.Value);
+        }
+
+        internal async Task ReplaceMarkerBytesAsync(RegisteredRoot root, byte[] bytes)
+        {
+            string marker = MarkerPath(root);
+
+            string replacement = marker + $".{Guid.NewGuid():N}.replacement";
+
+            try
+            {
+                await File.WriteAllBytesAsync(replacement, bytes, CancellationToken.None);
+
+                File.Move(replacement, marker, overwrite: true);
+            }
+            finally
+            {
+                File.Delete(replacement);
+            }
         }
 
         internal (ulong VolumeId, ulong FileId) CreateUnregisteredRootTuple()
@@ -1068,6 +1094,8 @@ public sealed class CampaignPathFullInstallationResetInventoryTests
                 temporary.PhysicalIdentityDigest,
                 encoded.Value,
                 CancellationToken.None)).IsSuccess);
+
+            Assert.Throws<ObjectDisposedException>(() => temporary.Length);
 
             await using SqliteCommand command = Connection.CreateCommand();
 
