@@ -439,7 +439,8 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
             || heldInstallationLock.IsFailure)
         {
             throw new InvalidOperationException(
-                "The restartable test profile's external installation identity could not be prepared.");
+                "The restartable test profile's external installation identity could not be prepared. "
+                + $"Database identity: {databaseIdentity.Error.Code}; profile namespace: {profileNamespace.Error.Code}; installation lock: {heldInstallationLock.Error.Code}.");
         }
 
         Result<Guid> seeded = new BackupRestoreJournalInstallationIdentityProvider(
@@ -453,7 +454,8 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
         if (seeded.IsFailure)
         {
             throw new InvalidOperationException(
-                "The restartable test profile's external installation identity could not be prepared.");
+                "The restartable test profile's external installation identity could not be prepared. "
+                + $"External identity seed: {seeded.Error.Code}.");
         }
     }
 
