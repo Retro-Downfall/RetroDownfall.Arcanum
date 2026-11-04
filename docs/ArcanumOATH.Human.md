@@ -456,3 +456,7 @@ OATH does permit authority to become narrower. It also permits an authenticated 
 The idea to carry forward is simple:
 
 > Every memory travels with its papers. Search may make it easier to find. A model may make it shorter or more useful. Only authenticated authority can make a new claim more powerful.
+
+## Planned Guild collaboration
+
+The [proposed Guild design](Arcanum.DESIGN.md#23-the-guild--sealed-delegation-proposed) keeps delegated memory access within the original source and Campaign permissions, then narrows it through each job's private Signet. Peer messages and shared notes do not grant memory access or turn an agent into the operator. Protected excerpts keep their provenance, and the design does not grant child agents fresh Covenant recall. This is a future implementation contract; it does not change current memory behavior.
