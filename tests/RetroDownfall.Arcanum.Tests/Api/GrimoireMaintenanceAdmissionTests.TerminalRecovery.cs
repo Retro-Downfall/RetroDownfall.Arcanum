@@ -483,6 +483,13 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
             Assert.True(disposedByTimeoutCleanup);
 
+            Assert.True(startup.HostStopped,
+                "Timeout cleanup returned while the created recovery host was still running.");
+
+            await profile.DisposeAsync();
+
+            Assert.False(Directory.Exists(profile.TempHome));
+
             return;
         }
 

@@ -12,7 +12,8 @@ public sealed partial class TapestryRecursiveScaleProbe
 
         using CancellationTokenSource caller = new();
 
-        using ConsumerBudget budget = new(30, 4L * 1024 * 1024 * 1024, caller.Token);
+        using ConsumerBudget budget = new(30, 4L * 1024 * 1024 * 1024, caller.Token,
+            new ControlledResourceReader(() => 128, () => { }), true);
 
         _embedding.BeforeBatch = token =>
         {
@@ -35,7 +36,8 @@ public sealed partial class TapestryRecursiveScaleProbe
     {
         await SeedAsync(24, CancellationToken.None);
 
-        using ConsumerBudget budget = new(0.02, 4L * 1024 * 1024 * 1024, CancellationToken.None);
+        using ConsumerBudget budget = new(0.02, 4L * 1024 * 1024 * 1024, CancellationToken.None,
+            new ControlledResourceReader(() => 128, () => { }), true);
 
         _embedding.BeforeBatch = token => Assert.True(token.WaitHandle.WaitOne(TimeSpan.FromSeconds(5)), "The phase token must expire while the provider boundary is held.");
 
@@ -57,7 +59,8 @@ public sealed partial class TapestryRecursiveScaleProbe
 
         long ceiling = (long)gibibytes * 1024 * 1024 * 1024;
 
-        using ConsumerBudget budget = new(30, ceiling, CancellationToken.None);
+        using ConsumerBudget budget = new(30, ceiling, CancellationToken.None,
+            new ControlledResourceReader(() => 128, () => { }), false);
 
         budget.ObserveResources(ceiling, 0);
 

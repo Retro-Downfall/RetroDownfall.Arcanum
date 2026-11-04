@@ -479,7 +479,9 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
                             provider.GetRequiredService<CovenantDisclosureWriter>()));
                 }
 
-                services.AddSingleton<IHostedService>(new RecoveryFinalHostedServiceSentinel(startupObservation));
+                services.AddSingleton<IHostedService>(provider => new RecoveryFinalHostedServiceSentinel(
+                    startupObservation,
+                    provider.GetRequiredService<IHostApplicationLifetime>()));
             }
         };
     }
@@ -951,6 +953,8 @@ internal sealed class RecoveryHostStartupObservation
 
     private long _initialOpenGeneration = -1;
 
+    private CancellationToken _applicationStopped;
+
     private readonly TaskCompletionSource _finalHostedServiceStarted =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1003,6 +1007,10 @@ internal sealed class RecoveryHostStartupObservation
     internal int DisclosureWriterReopenCalls => Volatile.Read(ref _disclosureWriterReopenCalls);
 
     internal Task FinalHostedServiceStarted => _finalHostedServiceStarted.Task;
+
+    internal bool HostStopped => _applicationStopped.IsCancellationRequested;
+
+    internal Task CleanupCompletion { get; private set; } = Task.CompletedTask;
 
     internal Task<GrimoireMaintenanceAdmissionHarness> HarnessCreated => _harnessCreated.Task;
 
@@ -1064,7 +1072,12 @@ internal sealed class RecoveryHostStartupObservation
         return workers;
     }
 
-    internal void MarkFinalHostedServiceStarted() => _finalHostedServiceStarted.TrySetResult();
+    internal void MarkFinalHostedServiceStarted(IHostApplicationLifetime lifetime)
+    {
+        _applicationStopped = lifetime.ApplicationStopped;
+
+        _ = _finalHostedServiceStarted.TrySetResult();
+    }
 
     internal void ObserveHarness(GrimoireMaintenanceAdmissionHarness harness) =>
         _harnessCreated.TrySetResult(harness);
@@ -1136,50 +1149,58 @@ internal sealed class RecoveryHostStartupObservation
 
     internal static async Task DisposeAndObserveStartupAsync(
         Task<GrimoireMaintenanceAdmissionHarness> starting,
-        RecoveryHostStartupObservation observation)
+        RecoveryHostStartupObservation observation,
+        TimeSpan? cleanupWaitTimeout = null)
     {
-        using CancellationTokenSource cleanup = new(TimeSpan.FromSeconds(10));
+        Task cleanup = CompleteStartupAndDisposeAsync(starting, observation);
 
-        Task ownerBoundary = await Task.WhenAny(observation.HarnessCreated, starting)
-            .WaitAsync(cleanup.Token);
+        observation.CleanupCompletion = cleanup;
 
-        GrimoireMaintenanceAdmissionHarness? owned = null;
-
-        if (ReferenceEquals(ownerBoundary, observation.HarnessCreated))
-        {
-            owned = await observation.HarnessCreated.WaitAsync(cleanup.Token);
-        }
-        else if (starting.IsCompletedSuccessfully)
-        {
-            owned = await starting;
-        }
-
-        Exception? disposalFailure = null;
-
-        if (owned is not null)
-        {
-            try
-            {
-                await owned.DisposeAsync().AsTask().WaitAsync(cleanup.Token);
-            }
-            catch (Exception ex)
-            {
-                disposalFailure = ex;
-            }
-        }
+        using CancellationTokenSource wait = new(cleanupWaitTimeout ?? TimeSpan.FromSeconds(10));
 
         try
         {
-            _ = await starting.WaitAsync(cleanup.Token);
+            await cleanup.WaitAsync(wait.Token);
         }
-        catch (Exception) when (!cleanup.IsCancellationRequested)
+        catch (OperationCanceledException) when (wait.IsCancellationRequested)
         {
-            // The owned host was disposed and its terminal startup result was observed.
+            // The bounded caller wait may expire, but the cleanup task still owns startup and
+            // eventual disposal. Observe a late cleanup fault even after the caller has unwound.
+            _ = cleanup.ContinueWith(
+                static failed => TestDiagnostics.Report(
+                    $"Recovery host cleanup failed after its wait expired ({failed.Exception!.GetBaseException().GetType().Name})."),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+
+            throw;
+        }
+    }
+
+    private static async Task CompleteStartupAndDisposeAsync(
+        Task<GrimoireMaintenanceAdmissionHarness> starting,
+        RecoveryHostStartupObservation observation)
+    {
+        GrimoireMaintenanceAdmissionHarness? owned = null;
+
+        try
+        {
+            owned = await starting.ConfigureAwait(false);
+        }
+        catch (Exception) when (starting.IsFaulted || starting.IsCanceled)
+        {
+            // The startup fault is expected by the caller. Observe its terminal result before
+            // disposing the captured owner: CreateHost publishes its host only after startup.
         }
 
-        if (disposalFailure is not null)
+        if (observation.HarnessCreated.IsCompletedSuccessfully)
         {
-            ExceptionDispatchInfo.Capture(disposalFailure).Throw();
+            owned = await observation.HarnessCreated.ConfigureAwait(false);
+        }
+
+        if (owned is not null)
+        {
+            await owned.DisposeAsync().ConfigureAwait(false);
         }
     }
 }
@@ -1290,11 +1311,13 @@ internal sealed class ObservingCovenantClosedRecoveryHandoff(
     }
 }
 
-internal sealed class RecoveryFinalHostedServiceSentinel(RecoveryHostStartupObservation observation) : IHostedService
+internal sealed class RecoveryFinalHostedServiceSentinel(
+    RecoveryHostStartupObservation observation,
+    IHostApplicationLifetime lifetime) : IHostedService
 {
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        observation.MarkFinalHostedServiceStarted();
+        observation.MarkFinalHostedServiceStarted(lifetime);
 
         return Task.CompletedTask;
     }

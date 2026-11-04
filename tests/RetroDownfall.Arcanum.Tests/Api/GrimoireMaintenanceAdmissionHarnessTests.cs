@@ -24,6 +24,8 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 using Microsoft.Extensions.Logging;
 
+using Microsoft.Extensions.Hosting;
+
 using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -65,6 +67,61 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Trait("Category", "Integration")]
 public sealed class GrimoireMaintenanceAdmissionHarnessTests
 {
+    [SkippableFact]
+    public async Task Recovery_cleanup_wait_expiry_retains_ownership_until_late_startup_completion()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using RestartableArcanumProfileFixture profile = new();
+
+        await using GrimoireMaintenanceAdmissionHarness harness = await GrimoireMaintenanceAdmissionHarness.StartAsync(profile);
+
+        IHostApplicationLifetime lifetime = harness.Factory.Services.GetRequiredService<IHostApplicationLifetime>();
+
+        TaskCompletionSource stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using CancellationTokenRegistration stopObservation = lifetime.ApplicationStopped.Register(
+            () => stopped.TrySetResult());
+
+        RecoveryHostStartupObservation observation = new();
+
+        observation.ObserveHarness(harness);
+
+        TaskCompletionSource<GrimoireMaintenanceAdmissionHarness> starting = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                RecoveryHostStartupObservation.DisposeAndObserveStartupAsync(
+                    starting.Task,
+                    observation,
+                    cleanupWaitTimeout: TimeSpan.Zero));
+
+            Assert.False(harness.IsDisposed);
+
+            Assert.False(lifetime.ApplicationStopped.IsCancellationRequested);
+
+            starting.SetResult(harness);
+
+            await stopped.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            await observation.CleanupCompletion.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(harness.IsDisposed);
+
+            await profile.DisposeAsync();
+
+            Assert.False(Directory.Exists(profile.TempHome));
+        }
+        finally
+        {
+            starting.TrySetResult(harness);
+
+            await observation.CleanupCompletion.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
     [SkippableFact]
     public async Task Production_attachment_index_writer_is_the_same_scoped_repository_for_processor_and_reconciliation()
     {

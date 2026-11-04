@@ -19,7 +19,10 @@ public sealed partial class TapestryRecursiveScaleProbe
     {
         using StringWriter receipt = new(CultureInfo.InvariantCulture);
 
-        await RunRecursiveAsync(256, new(30, 120, 30, 180, 4L * 1024 * 1024 * 1024), receipt);
+        // This lineage/receipt test shares a testhost; opted-in scale probes measure the actual fresh process.
+        await RunRecursiveAsync(256, new(30, 120, 30, 180, 4L * 1024 * 1024 * 1024), receipt,
+            static (seconds, ceiling, caller) => new ConsumerBudget(seconds, ceiling, caller,
+                new ControlledResourceReader(() => 128, () => { }), true));
 
         string[] lines = receipt.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries);
 

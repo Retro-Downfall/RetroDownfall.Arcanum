@@ -173,7 +173,9 @@ public sealed partial class TapestryRecursiveScaleProbe
     [Fact]
     public void Resource_reader_samples_the_actual_current_process()
     {
-        using ConsumerBudget budget = new(30, 6L * 1024 * 1024 * 1024, CancellationToken.None);
+        const long ceiling = 6L * 1024 * 1024 * 1024;
+
+        using ConsumerBudget budget = new(30, ceiling, CancellationToken.None, new ProcessResourceReader(), false);
 
         Assert.True(budget.StartWorkingSet > 0);
 
@@ -181,7 +183,13 @@ public sealed partial class TapestryRecursiveScaleProbe
 
         Assert.True(budget.PeakWorkingSet >= budget.StartWorkingSet);
 
-        Assert.False(budget.Token.IsCancellationRequested);
+        budget.ObserveResources(budget.PeakWorkingSet, 0);
+
+        bool exceeded = budget.PeakWorkingSet > ceiling;
+
+        Assert.Equal(exceeded, budget.Token.IsCancellationRequested);
+
+        Assert.Equal(exceeded ? "memory" : "none", budget.Reason);
     }
 
     [Theory]
