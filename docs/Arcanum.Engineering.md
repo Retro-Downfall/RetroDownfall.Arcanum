@@ -869,9 +869,13 @@ Reliable-editing-loop focused filters and platform notes are in [DESIGN §13.6](
 
 ---
 
+CI uses a conservative documentation-only path for pull requests that change only regular, nonexecutable root README/agent guidance or direct Markdown files under `docs/`. `scripts/ci_scope.py` validates the exact checked-out PR merge and both event parents before selecting it. Every other path, invalid comparison, and manual dispatch requires full qualification. The existing build check runs documentation/source contracts and both desktop suites; formatting/lint remains required. Native and producer-worker skips on this path mean those checks are inapplicable to a documentation-only change, not that new native evidence exists. The source-analysis authority requires successful classification, successful documentation validation, and all five workers skipped before accepting that branch. See DESIGN §13.1 for the exact boundary.
+
+Both Windows lanes retain full native test coverage for full qualification. Their warning-free shipping verifier retains its exact apphost for the AppContainer broker smoke, eliminating a separate broker publish. Native diagnostic audits remain separate because they deliberately enable the dependency diagnostics that the ordinary shipping profile suppresses.
+
 ### Release-qualification evidence
 
-A release is qualified by the artifacts a CI run leaves behind, not by a reviewer's recollection that the run was green. This is the complete set of artifacts `.github/workflows/ci.yml` uploads, and it is the checklist a release qualification is read against:
+A release is qualified by the artifacts a CI run leaves behind, not by a reviewer's recollection that the run was green. This is the complete set of artifacts `.github/workflows/ci.yml` uploads during full qualification, and it is the checklist a release qualification is read against. Documentation-only qualification does not produce this complete evidence and cannot stand in for it:
 
 ```text
 arcanum-coverage-report

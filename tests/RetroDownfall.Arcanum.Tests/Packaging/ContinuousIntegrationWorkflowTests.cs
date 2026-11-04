@@ -52,7 +52,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
             Assert.Equal("macos-26", lane.RunsOn);
 
-            Assert.False(lane.IsConditional);
+            Assert.True(IsFullQualificationOnly(lane));
 
             Assert.Contains(ResolvedSdkInput, lane.Body, StringComparison.Ordinal);
 
@@ -369,26 +369,31 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         Assert.Contains("FullyQualifiedName=RetroDownfall.Compendium.Ux.Tests.Compendium.ConfigurationStoreSmokeTests.WriteAsync_hardens_the_destination_that_arrived_with_loose_permissions", lane.Body, StringComparison.Ordinal);
 
-        // WindowsAppContainerBrokerTests re-executes a published apphost (the xunit host cannot be the
-        // broker) and skips when ARCANUM_PUBLISHED_EXECUTABLE is unset, so a lane that selects the class
-        // without publishing one reports a green skip. The variable is exported before the suite starts.
+        // The broker re-executes the already-qualified retained apphost, never a second publish.
         string rid = jobId == "windows-arm64-suite" ? "win-arm64" : "win-x64";
 
-        int publish = lane.Body.IndexOf("dotnet publish src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj", StringComparison.Ordinal);
+        string[] steps = lane.Body.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split("      - name:", StringSplitOptions.None);
 
-        int export = lane.Body.IndexOf("ARCANUM_PUBLISHED_EXECUTABLE=", StringComparison.Ordinal);
+        string shipping = Assert.Single(steps, step => step.Contains(
+            "./scripts/verify-shipping-publish.sh --rid " + rid, StringComparison.Ordinal));
 
-        int suite = lane.Body.IndexOf("dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj", StringComparison.Ordinal);
+        string suite = Assert.Single(steps, static step => step.StartsWith(" Test Arcanum\n", StringComparison.Ordinal));
 
-        Assert.True(publish >= 0, $"{jobId} selects the AppContainer broker smoke without publishing the apphost it re-executes.");
+        Assert.DoesNotContain("dotnet publish src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj", lane.Body, StringComparison.Ordinal);
 
-        Assert.True(
-            PublishCommandNamesRuntimeIdentifier(lane.Body, publish, rid),
-            $"{jobId} publishes the apphost without `-r {rid}` on the publish command itself, so the broker smoke would re-execute the wrong architecture.");
+        Assert.Contains("--retain-publish-dir", shipping, StringComparison.Ordinal);
 
-        Assert.True(export > publish, $"{jobId} must export ARCANUM_PUBLISHED_EXECUTABLE after publishing the apphost.");
+        Assert.Contains("shell: bash", shipping, StringComparison.Ordinal);
 
-        Assert.True(suite > export, $"{jobId} must export ARCANUM_PUBLISHED_EXECUTABLE before the Arcanum suite starts.");
+        Assert.DoesNotContain("continue-on-error:", shipping, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("if:", shipping, StringComparison.Ordinal);
+
+        Assert.Contains("ARCANUM_PUBLISHED_EXECUTABLE=", shipping, StringComparison.Ordinal);
+
+        Assert.True(Array.IndexOf(steps, shipping) < Array.IndexOf(steps, suite));
+
     }
 
     [Theory]
@@ -440,6 +445,38 @@ public sealed class ContinuousIntegrationWorkflowTests
             entry.Groups["operator"].Value == "~" && entry.Groups["name"].Value == "AiReflection");
 
         Assert.Contains("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", execution, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("NativeSqlCipher.NativeSqlCipherWindowsImportTableTests.A_dll_importing_the_visual_cpp_runtime_has_its_prerequisite_in_the_install_instructions")]
+    [InlineData("Intelligence.DciRegressionSuiteTests.The_oath_records_the_invocation_that_runs_the_dci_suite")]
+    [InlineData("Intelligence.ToolRiskClassifierTests.Design_ward_inventory_matches_every_known_tool_and_names_no_ward_decision")]
+    public void Documentation_qualification_keeps_contracts_outside_documentation_named_classes(string methodName)
+    {
+        WorkflowJob lane = Assert.Single(ContinuousIntegrationJobs(FindRepositoryRoot()), static job => job.Id == "build-test");
+
+        string execution = Assert.Single(
+            lane.Body.Replace("\r\n", "\n", StringComparison.Ordinal).Split("      - name:", StringSplitOptions.None),
+            static step => step.StartsWith(" Test documentation contracts\n", StringComparison.Ordinal));
+
+        string fullName = "RetroDownfall.Arcanum.Tests." + methodName;
+
+        (string FullName, string[] Categories) method = Assert.Single(
+            ArcanumTestMethodCategories(), candidate => candidate.FullName == fullName);
+
+        string filter = Assert.Single(Regex.Matches(execution, "--filter \"(?<filter>[^\"]+)\""))
+            .Groups["filter"].Value;
+
+        FilterExpressionWrapper expression = new(filter);
+
+        Assert.Null(expression.ParseError);
+
+        Assert.True(expression.Evaluate(property => property switch
+        {
+            "FullyQualifiedName" => method.FullName,
+            "Category" => method.Categories,
+            _ => null,
+        }), $"Documentation qualification omits {fullName}.");
     }
 
     /// <summary>
@@ -1125,11 +1162,11 @@ public sealed class ContinuousIntegrationWorkflowTests
     }
 
     [Fact]
-    public void Unconditional_macos_aot_lane_builds_and_executes_the_dedicated_admission_smoke()
+    public void Full_qualification_macos_aot_lane_builds_and_executes_the_dedicated_admission_smoke()
     {
         WorkflowJob[] matching = ContinuousIntegrationJobs(FindRepositoryRoot())
             .Where(static job => job.RunsOn.StartsWith("macos", StringComparison.Ordinal))
-            .Where(static job => !job.IsConditional)
+            .Where(static job => !job.IsConditional || IsFullQualificationOnly(job))
             .Where(static job => job.Body.Contains(
                 "Build the Grimoire admission benchmark host",
                 StringComparison.Ordinal))
@@ -1224,7 +1261,8 @@ public sealed class ContinuousIntegrationWorkflowTests
 
                 string rid = RuntimeIdentifierFor(job.RunsOn);
 
-                if (HasVerifiedNativeSqlCipherAsset(repositoryRoot, rid) || job.IsConditional)
+                if (HasVerifiedNativeSqlCipherAsset(repositoryRoot, rid)
+                    || job.IsConditional && !IsFullQualificationOnly(job))
                 {
                     continue;
                 }
@@ -1991,16 +2029,15 @@ public sealed class ContinuousIntegrationWorkflowTests
             gate.Body,
             StringComparison.Ordinal);
 
-        // A conditional job is a gate that can be turned off by editing a condition rather than by
-        // deleting a step, and a job-level condition here would also exempt this job from the
-        // native-SQLCipher runner check above. The step-level condition asserted immediately above
-        // must not count as one: JobsIn discards every line that is not at job-level indentation
-        // before it reads a key, so these two assertions together pin that a step-level `if:` leaves
-        // IsConditional false.
-        Assert.False(
-            gate.IsConditional,
-            "The Covenant benchmark lane is conditional, so it can report success without running.");
+        // Documentation-only qualification does not execute native benchmarks. The exact scope
+        // condition is the only reviewed exception; arbitrary job conditions still fail this pin.
+        Assert.True(
+            IsFullQualificationOnly(gate),
+            "The Covenant benchmark lane must run for every full-qualification change.");
     }
+
+    private static bool IsFullQualificationOnly(WorkflowJob job) =>
+        job.IsConditional && Regex.IsMatch(job.Body, @"(?m)^    if: needs\.scope\.outputs\.full == 'true'\r?$");
 
     private static IReadOnlyList<string> WorkflowFiles(string repositoryRoot)
     {
