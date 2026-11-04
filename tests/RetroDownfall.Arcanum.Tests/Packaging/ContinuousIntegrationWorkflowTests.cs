@@ -7,6 +7,7 @@ using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.VisualStudio.TestPlatform.Common.Filtering;
 
 using Xunit;
 
@@ -357,6 +358,7 @@ public sealed class ContinuousIntegrationWorkflowTests
         ];
 
         string expected = string.Join('|', classes.Select(static name => "FullyQualifiedName~RetroDownfall.Arcanum.Tests." + name)
+            .Prepend("FullyQualifiedName~AiReflection")
             .Concat(methods.Select(static name => "FullyQualifiedName=RetroDownfall.Arcanum.Tests." + name)));
 
         Assert.Contains("--filter \"Category!=Perf&Category!=HostedProducerAnalysis&(" + expected + ")\"", command, StringComparison.Ordinal);
@@ -387,6 +389,57 @@ public sealed class ContinuousIntegrationWorkflowTests
         Assert.True(export > publish, $"{jobId} must export ARCANUM_PUBLISHED_EXECUTABLE after publishing the apphost.");
 
         Assert.True(suite > export, $"{jobId} must export ARCANUM_PUBLISHED_EXECUTABLE before the Arcanum suite starts.");
+    }
+
+    [Theory]
+    [InlineData("windows-suite")]
+    [InlineData("windows-arm64-suite")]
+    public void Windows_runtime_lanes_execute_the_complete_ai_reflection_guard(string jobId)
+    {
+        WorkflowJob lane = Assert.Single(ContinuousIntegrationJobs(FindRepositoryRoot()), job => job.Id == jobId);
+
+        string execution = Assert.Single(
+            lane.Body.Replace("\r\n", "\n", StringComparison.Ordinal).Split("      - name:", StringSplitOptions.None),
+            static step => step.StartsWith(" Test Arcanum\n", StringComparison.Ordinal));
+
+        Assert.DoesNotContain("if:", execution, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("continue-on-error:", execution, StringComparison.Ordinal);
+
+        Assert.Contains("shell: pwsh", execution, StringComparison.Ordinal);
+
+        Assert.Contains("run: |", execution, StringComparison.Ordinal);
+
+        string command = Assert.Single(
+            execution.Replace("`\n", " ", StringComparison.Ordinal).Split('\n'),
+            static line => line.TrimStart().StartsWith("dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj ", StringComparison.Ordinal));
+
+        Match filterArgument = Assert.Single(Regex.Matches(command, "--filter \"(?<filter>[^\"]+)\""));
+
+        string filter = filterArgument.Groups["filter"].Value;
+
+        FilterExpressionWrapper expression = new(filter);
+
+        Assert.Null(expression.ParseError);
+
+        (string FullName, string[] Categories)[] guard = [.. ArcanumTestMethodCategories()
+            .Where(static method => method.FullName.StartsWith("RetroDownfall.Arcanum.Tests.Build.AiReflection", StringComparison.Ordinal))];
+
+        Assert.NotEmpty(guard);
+
+        Assert.All(guard, method => Assert.True(
+            expression.Evaluate(property => property switch
+            {
+                "FullyQualifiedName" => method.FullName,
+                "Category" => method.Categories,
+                _ => null,
+            }),
+            $"{jobId}'s Test Arcanum command does not select {method.FullName}."));
+
+        Assert.Contains(TestFilterEntry.Matches(filter), static entry =>
+            entry.Groups["operator"].Value == "~" && entry.Groups["name"].Value == "AiReflection");
+
+        Assert.Contains("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", execution, StringComparison.Ordinal);
     }
 
     /// <summary>
