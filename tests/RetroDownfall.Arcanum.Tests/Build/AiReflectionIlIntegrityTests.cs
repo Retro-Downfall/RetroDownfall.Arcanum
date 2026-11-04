@@ -8,6 +8,33 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 
 public sealed class AiReflectionIlIntegrityTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void An_empty_body_on_an_ordinary_managed_method_fails_closed(bool fatHeader)
+    {
+        ProbeImage probe = CreateProbe("empty_body_" + fatHeader);
+
+        int bodyOffset = probe.IlFileOffset - 1;
+
+        Assert.Equal(2, probe.Image[bodyOffset] & 3);
+
+        if (fatHeader)
+        {
+            // Replace the tiny header with a valid twelve-byte fat header declaring no IL.
+            probe.Image.AsSpan(bodyOffset, 12).Clear();
+
+            BinaryPrimitives.WriteUInt16LittleEndian(probe.Image.AsSpan(bodyOffset, 2), 0x3003);
+        }
+        else
+        {
+            // A tiny header stores CodeSize in its upper six bits.
+            probe.Image[bodyOffset] = 0x02;
+        }
+
+        AssertInvalidIl(probe, 0);
+    }
+
     [Fact]
     public void A_missing_body_on_an_ordinary_managed_method_fails_closed()
     {

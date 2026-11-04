@@ -79,6 +79,11 @@ internal static class AiReflectionBoundaryScanner
 
                 BlobReader il = pe.GetMethodBody(method.RelativeVirtualAddress).GetILReader();
 
+                if (il.RemainingBytes == 0)
+                {
+                    throw new BadImageFormatException("Managed method has an empty IL body.");
+                }
+
                 while (il.RemainingBytes > 0)
                 {
                     offset = il.Offset;
