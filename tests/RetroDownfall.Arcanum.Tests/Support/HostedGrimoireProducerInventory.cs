@@ -1106,9 +1106,9 @@ internal static partial class HostedGrimoireProducerInventory
     private static bool HasExactSpecialTypeIdentity(ITypeSymbol type) =>
         !ReviewedSpecialTypeNames.Contains(TypeKey(type)) || type.OriginalDefinition.SpecialType != SpecialType.None;
 
-    // Reviewed against the pinned Microsoft.Extensions.AI 10.8.1 source at
-    // dotnet/extensions e9be58acf7ef5e001b6685c8d505e5963c2a9ffe. These accessors
-    // store or return values without enumerating them or invoking supplied code.
+    // Re-reviewed against the pinned Microsoft.Extensions.AI 10.9.0 source at
+    // dotnet/extensions b10f9c0a081b5dbb7755b8f5592e1d3c3f550a3a. These accessors
+    // remain unchanged and do not enumerate supplied collections or invoke supplied code.
     // Virtual AITool/AIFunctionDeclaration metadata and the Text concatenation
     // getters are deliberately absent. Every entry also requires its exact loaded
     // package/framework assembly identity and non-virtual accessor below.
@@ -29332,7 +29332,7 @@ internal static partial class HostedGrimoireProducerInventory
                     or "System.Collections.Generic.IComparer`1"
                     or "System.Collections.Generic.IEqualityComparer`1";
 
-        // Pinned M.E.AI 10.8.1 EmbeddingGenerationOptions.Dimensions is a nonvirtual nullable-int
+        // Pinned M.E.AI 10.9.0 EmbeddingGenerationOptions.Dimensions is a nonvirtual nullable-int
         // storage getter; its nonvirtual setter validates null or values >= 1 before storing. Keep it
         // separate from the storage-only inventory so no other validating setter is implied.
         private static bool IsReviewedExactMeAiDimensionsProperty(
