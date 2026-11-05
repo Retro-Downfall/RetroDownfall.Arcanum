@@ -6,6 +6,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -34,6 +35,12 @@ internal sealed class McpBridgeTool : AIFunction
 
     private readonly TimeSpan? _requestTimeout;
 
+    private readonly GuildToolInvocationContext? _guildContext;
+
+    private readonly GuildToolGrant? _guildTool;
+
+    private readonly bool _guildClientChanged;
+
     internal long ToolOutputCapBytes => _toolOutputCapBytes;
 
     public McpBridgeTool(
@@ -45,7 +52,10 @@ internal sealed class McpBridgeTool : AIFunction
         IMcpClient? fallbackClient = null,
         ILogger? fallbackLogger = null,
         TrustedStructuredToolResultKind? trustedStructuredResultKind = null,
-        TimeSpan? requestTimeout = null)
+        TimeSpan? requestTimeout = null,
+        GuildToolInvocationContext? guildContext = null,
+        GuildToolGrant? guildTool = null,
+        bool guildClientChanged = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(client);
@@ -58,6 +68,18 @@ internal sealed class McpBridgeTool : AIFunction
         _fallbackLogger = fallbackLogger;
         _trustedStructuredResultKind = trustedStructuredResultKind;
         _requestTimeout = requestTimeout;
+
+        if ((guildContext is null) != (guildTool is null)
+            || (guildTool is not null && !string.Equals(guildTool.Name, name, StringComparison.Ordinal)))
+        {
+            throw new ArgumentException("A Guild MCP binding requires its exact host context and tool identity.");
+        }
+
+        _guildContext = guildContext;
+
+        _guildTool = guildTool;
+
+        _guildClientChanged = guildClientChanged;
     }
 
     public override string Name => _name;
@@ -68,6 +90,22 @@ internal sealed class McpBridgeTool : AIFunction
 
     protected override async ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
     {
+        if (_guildClientChanged)
+        {
+            return GuildToolInvocationContext.Format(GuildToolInvocationContext.Unavailable);
+        }
+
+        if (_guildContext is { } guild && _guildTool is { } identity)
+        {
+            return GuildToolInvocationContext.Format(
+                await guild.RefuseDispatchAsync(identity, cancellationToken).ConfigureAwait(false));
+        }
+
+        if (GuildToolInvocationAmbient.Current is not null)
+        {
+            return GuildToolInvocationContext.Format(GuildToolInvocationContext.Unavailable);
+        }
+
         try
         {
             return await CallAndFormatAsync(
@@ -171,7 +209,10 @@ internal sealed class McpBridgeTool : AIFunction
             _fallbackClient,
             _fallbackLogger,
             kind,
-            _requestTimeout);
+            _requestTimeout,
+            _guildContext,
+            _guildTool,
+            _guildClientChanged);
 
     internal McpBridgeTool WithClient(IMcpClient client) =>
         new(
@@ -183,7 +224,10 @@ internal sealed class McpBridgeTool : AIFunction
             _fallbackClient,
             _fallbackLogger,
             _trustedStructuredResultKind,
-            _requestTimeout);
+            _requestTimeout,
+            _guildContext,
+            _guildTool,
+            _guildClientChanged || (_guildContext is not null && !ReferenceEquals(client, _client)));
 
     internal McpBridgeTool WithRequestTimeout(TimeSpan requestTimeout) =>
         new(
@@ -195,7 +239,21 @@ internal sealed class McpBridgeTool : AIFunction
             _fallbackClient,
             _fallbackLogger,
             _trustedStructuredResultKind,
-            requestTimeout);
+            requestTimeout,
+            _guildContext,
+            _guildTool,
+            _guildClientChanged);
+
+    internal McpBridgeTool WithGuildAuthority(GuildToolInvocationContext context, GuildToolGrant tool) =>
+        new(_name, _description, _inputSchema, _client, _toolOutputCapBytes, _fallbackClient, _fallbackLogger,
+            _trustedStructuredResultKind, _requestTimeout, context, tool, _guildClientChanged);
+
+    internal bool TryGetGuildBinding(GuildToolInvocationContext context, out GuildToolGrant? tool)
+    {
+        tool = !_guildClientChanged && ReferenceEquals(_guildContext, context) ? _guildTool : null;
+
+        return tool is not null;
+    }
 
     private static bool RunsUntilCallerCancellation(string toolName) =>
         string.Equals(toolName, "ask_human", StringComparison.Ordinal)

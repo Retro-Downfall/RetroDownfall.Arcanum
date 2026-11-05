@@ -105,6 +105,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         OutcomeDatasetSnapshot before = await CaptureOutcomeDatasetAsync(first, timeout.Token);
 
+        Guid beforeGuildAuthorityEpoch = await ReadGuildAuthorityEpochAsync(first, timeout.Token);
+
         long firstOpenGeneration = first.Admission.CurrentGeneration;
 
         DataRetentionPlan plan = await first.PlanAsync(entryPoint);
@@ -452,6 +454,7 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                     before,
                     operation,
                     installationId,
+                    beforeGuildAuthorityEpoch,
                     timeout.Token,
                     entryPoint);
 
@@ -527,6 +530,7 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         OutcomeDatasetSnapshot before,
         LongRunningOperation operation,
         Guid installationId,
+        Guid previousGuildAuthorityEpoch,
         CancellationToken cancellationToken,
         GrimoireTransitionEntryPoint entryPoint)
     {
@@ -559,6 +563,9 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                     decoded.Value,
                     installationId,
                     cancellationToken);
+
+                Assert.Equal(previousGuildAuthorityEpoch,
+                    await ReadGuildAuthorityEpochAsync(fresh.Value.Connection, cancellationToken));
             }
             else
             {
@@ -572,7 +579,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                     installationId,
                     cancellationToken);
 
-                await AssertFactoryCatalogAsync(fresh.Value.Connection, decoded.Value, cancellationToken);
+                await AssertFactoryCatalogAsync(fresh.Value.Connection, decoded.Value,
+                    FactoryGuildEpochExpectation.FreshAfterBootstrap, previousGuildAuthorityEpoch, cancellationToken);
             }
         }
 

@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
@@ -207,6 +208,11 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
     protected override async ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
     {
+        if (GuildToolInvocationContext.TryRefuseNative(Name, cancellationToken, out ValueTask<object?> refusal))
+        {
+            return await refusal.ConfigureAwait(false);
+        }
+
         if (!HostProcessToolPolicy.AreAllowed(ArcanumEnvironment.ResolveEdition(_configuredEdition)))
         {
             return HostProcessToolPolicy.DeniedMessage;

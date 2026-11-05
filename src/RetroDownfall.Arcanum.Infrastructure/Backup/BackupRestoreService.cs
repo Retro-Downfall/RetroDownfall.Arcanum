@@ -2010,6 +2010,9 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             if (sanitized.IsSuccess)
                 sanitized = await BackupRestoreMemoryEvaluationSanitation.SanitizeStagedAsync(connection, cancellationToken).ConfigureAwait(false);
 
+            if (sanitized.IsSuccess)
+                sanitized = await BackupRestoreGuildSignetSanitation.SanitizeStagedAsync(connection, cancellationToken).ConfigureAwait(false);
+
             if (sanitized.IsFailure)
             {
                 return StageResult.Failed(Issue(sanitized.Error));

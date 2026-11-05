@@ -1241,7 +1241,9 @@ public sealed class CovenantErasureEndpointTests
             // single-use capability from it, or mints nothing at all.
             JsonRpcRequest bound = SessionAttachmentAmbientSend.ApplyAmbientBinding(_connectionKey, request);
 
-            await _transport.WriteRequestAsync(bound).ConfigureAwait(false);
+            // This request already owns its reservation; write its bound wire exactly once.
+            await _transport.WriteRawLineForTestsAsync(JsonSerializer.Serialize(bound,
+                McpJsonSerializerContext.Default.JsonRpcRequest) + "\n").ConfigureAwait(false);
 
             McpInboundEnvelope envelope = await _transport.InboundReader.ReadAsync().ConfigureAwait(false);
 

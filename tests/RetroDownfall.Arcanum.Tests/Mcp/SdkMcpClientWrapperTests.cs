@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Tests.Support;
+using RetroDownfall.Arcanum.Tests.Guild;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
@@ -38,6 +40,46 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         await _workspace.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Guild_sdk_catalog_omits_unadapted_remote_tools_without_contacting_the_peer()
+    {
+        using CancellationTokenSource lifetime = new();
+
+        PagingToolsListServer server = new(10, 1);
+
+        await using SdkMcpClientWrapper client = await CreatePagingClientAsync(server, 65536, lifetime.Token);
+
+        using IDisposable scope = GuildToolInvocationAmbient.Begin(GuildToolBoundaryTests.CreateContext());
+
+        Assert.Empty(await client.GetToolsAsync());
+
+        Assert.Equal(0, server.PagesServed);
+
+        lifetime.Cancel();
+    }
+
+    [Fact]
+    public async Task Guild_sdk_direct_call_refuses_before_opaque_remote_peer_dispatch()
+    {
+        using CancellationTokenSource lifetime = new();
+
+        PagingToolsListServer server = new(10, 1);
+
+        await using SdkMcpClientWrapper client = await CreatePagingClientAsync(server, 65536, lifetime.Token);
+
+        using IDisposable scope = GuildToolInvocationAmbient.Begin(GuildToolBoundaryTests.CreateContext());
+
+        CallToolResult result = await client.CallToolAsync("opaque_effect", new Dictionary<string, object?>());
+
+        Assert.True(result.IsError);
+
+        Assert.Contains(ErrorCodes.Guild.ToolBoundaryUnavailable, McpToolResultFormatter.FormatContentText(result));
+
+        Assert.Equal(0, server.CallsServed);
+
+        lifetime.Cancel();
     }
 
     [Fact]
@@ -403,6 +445,10 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
 
         private int _pagesServed;
 
+        private int _callsServed;
+
+        public int CallsServed => Volatile.Read(ref _callsServed);
+
         public int PagesServed => Volatile.Read(ref _pagesServed);
 
         public async Task RunAsync(
@@ -438,6 +484,18 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
                         "{\"jsonrpc\":\"2.0\",\"id\":" + id
                         + ",\"result\":{\"protocolVersion\":\"" + protocolVersion
                         + "\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"paging-fake\",\"version\":\"1.0.0\"}}}\n",
+                        cancellationToken);
+
+                    continue;
+                }
+
+                if (string.Equals(method, "tools/call", StringComparison.Ordinal))
+                {
+                    Interlocked.Increment(ref _callsServed);
+
+                    await toClient.WriteAsync(
+                        "{\"jsonrpc\":\"2.0\",\"id\":" + id
+                        + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"opaque effect dispatched\"}]}}\n",
                         cancellationToken);
 
                     continue;

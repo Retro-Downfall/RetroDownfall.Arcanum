@@ -443,8 +443,20 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
             beforeGuildState = await GuildStateAsync(first);
 
-            Assert.Equal(GuildTableNames.Select(name => $"table:{name}:0")
-                .Append("cursor:0:0:0").Order(StringComparer.Ordinal).ToArray(), beforeGuildState);
+            const string epochPrefix = "authority-epoch:";
+
+            string epochState = Assert.Single(beforeGuildState, state => state.StartsWith(epochPrefix, StringComparison.Ordinal));
+
+            string epochText = epochState[epochPrefix.Length..];
+
+            Assert.True(Guid.TryParseExact(epochText, "D", out Guid epoch));
+
+            Assert.NotEqual(Guid.Empty, epoch);
+
+            Assert.Equal(epoch.ToString("D").ToUpperInvariant(), epochText);
+
+            Assert.Equal(GuildTableNames.Select(name => $"table:{name}:{(name == "guild_signet_authority_state" ? 1 : 0)}")
+                .Append("cursor:0:0:0").Append(epochState).Order(StringComparer.Ordinal).ToArray(), beforeGuildState);
 
             beforeRows = await ParticipantRowsAsync(first);
 
@@ -510,7 +522,8 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
         ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
 
         // Table names come only from the compiled schema manifest. Cover every Guild-owned
-        // domain/cache/evidence table, while permitting the cleanup pass's housekeeping timestamp.
+        // domain/cache/evidence table and preserve the exact bootstrap epoch across ordinary restart,
+        // while permitting the cleanup pass's housekeeping timestamp.
         string counts = string.Join(" UNION ALL ", GuildTableNames.Select(name =>
             $"SELECT 'table:{name}:' || COUNT(*) AS Value FROM \"{name}\""));
 
@@ -521,6 +534,7 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
         command.CommandText = counts + """
              UNION ALL SELECT 'cursor:' || AppliedCampaignSequence || ':' || AppliedSessionSequence || ':' || FullSweepRequired AS Value
              FROM capability_cleanup_state WHERE CapabilityFamilyCode=2
+             UNION ALL SELECT 'authority-epoch:' || Epoch AS Value FROM guild_signet_authority_state WHERE StateKey=1
              ORDER BY Value
             """;
 

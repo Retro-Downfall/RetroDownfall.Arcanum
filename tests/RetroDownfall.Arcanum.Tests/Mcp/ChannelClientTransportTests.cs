@@ -18,9 +18,13 @@ using RetroDownfall.Arcanum.Tests.Covenant;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
-public sealed class ChannelClientTransportTests
+public sealed class ChannelClientTransportTests : IDisposable
 {
     private const int MaxLineBytes = 512;
+
+    private readonly string _connectionKey = Guid.NewGuid().ToString("N");
+
+    public void Dispose() => GuildToolInvocationBinding.UnbindConnection(_connectionKey);
 
     [Fact]
     public async Task SendMessageAsync_rejects_request_whose_line_with_delimiter_exceeds_cap()
@@ -70,7 +74,7 @@ public sealed class ChannelClientTransportTests
 
         (Channel<string> toServer, Channel<string> fromServer) = CreateChannels();
 
-        ChannelClientTransport client = new(toServer.Writer, fromServer.Reader, MaxLineBytes, "covenant-send");
+        ChannelClientTransport client = new(toServer.Writer, fromServer.Reader, MaxLineBytes, _connectionKey);
 
         await using ITransport transport = await client.ConnectAsync();
 
@@ -80,15 +84,15 @@ public sealed class ChannelClientTransportTests
 
         JsonRpcRequest retry = CovenantRequest();
 
-        SessionAttachmentAmbientSend.BindSdkToolsCall("covenant-send", retry);
+        SessionAttachmentAmbientSend.BindSdkToolsCall(_connectionKey, retry);
 
-        var grant = registry.TryTake("covenant-send", "7");
+        var grant = registry.TryTake(_connectionKey, "7");
 
         Assert.True(grant.IsSuccess, grant.Error.Message);
 
         await grant.Value.Capability.DisposeAsync();
 
-        Assert.True(registry.Remove("covenant-send", "7", grant.Value.Nonce));
+        Assert.True(registry.Remove(_connectionKey, "7", grant.Value.Nonce));
     }
 
     [Theory]
@@ -103,24 +107,24 @@ public sealed class ChannelClientTransportTests
 
         (Channel<string> toServer, Channel<string> fromServer) = CreateChannels();
 
-        ChannelClientTransport client = new(toServer.Writer, fromServer.Reader, MaxLineBytes, "covenant-send");
+        ChannelClientTransport client = new(toServer.Writer, fromServer.Reader, MaxLineBytes, _connectionKey);
 
         await using ITransport transport = await client.ConnectAsync();
 
         await transport.SendMessageAsync(CovenantRequest());
 
-        await FailSendAsync(transport, toServer, failure);
+        await FailSendAsync(transport, toServer, failure, duplicate: true);
 
-        var grant = registry.TryTake("covenant-send", "7");
+        var grant = registry.TryTake(_connectionKey, "7");
 
         Assert.True(grant.IsSuccess, grant.Error.Message);
 
         await grant.Value.Capability.DisposeAsync();
 
-        Assert.True(registry.Remove("covenant-send", "7", grant.Value.Nonce));
+        Assert.True(registry.Remove(_connectionKey, "7", grant.Value.Nonce));
     }
 
-    private static async Task FailSendAsync(ITransport transport, Channel<string> toServer, string failure)
+    private static async Task FailSendAsync(ITransport transport, Channel<string> toServer, string failure, bool duplicate = false)
     {
         JsonRpcRequest request = CovenantRequest();
 
@@ -130,20 +134,41 @@ public sealed class ChannelClientTransportTests
         {
             toServer.Writer.Complete();
 
-            await Assert.ThrowsAsync<ChannelClosedException>(() => transport.SendMessageAsync(request));
+            if (duplicate)
+            {
+                await Assert.ThrowsAsync<InvalidOperationException>(() => transport.SendMessageAsync(request));
+            }
+            else
+            {
+                await Assert.ThrowsAsync<ChannelClosedException>(() => transport.SendMessageAsync(request));
+            }
         }
         else if (failure == "oversized")
         {
             request.Params!["pad"] = new string('p', MaxLineBytes);
 
-            await Assert.ThrowsAsync<McpLineSizeExceededException>(() => transport.SendMessageAsync(request));
+            if (duplicate)
+            {
+                await Assert.ThrowsAsync<InvalidOperationException>(() => transport.SendMessageAsync(request));
+            }
+            else
+            {
+                await Assert.ThrowsAsync<McpLineSizeExceededException>(() => transport.SendMessageAsync(request));
+            }
         }
         else
         {
             cancellation.Cancel();
 
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(
-                () => transport.SendMessageAsync(request, cancellation.Token));
+            if (duplicate)
+            {
+                await Assert.ThrowsAsync<InvalidOperationException>(() => transport.SendMessageAsync(request, cancellation.Token));
+            }
+            else
+            {
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                    () => transport.SendMessageAsync(request, cancellation.Token));
+            }
         }
     }
 
@@ -172,12 +197,13 @@ public sealed class ChannelClientTransportTests
     private static (Channel<string> ToServer, Channel<string> FromServer) CreateChannels() =>
         (Channel.CreateUnbounded<string>(), Channel.CreateUnbounded<string>());
 
-    private static async Task<ITransport> ConnectAsync(Channel<string> toServer, Channel<string> fromServer)
+    private async Task<ITransport> ConnectAsync(Channel<string> toServer, Channel<string> fromServer)
     {
         ChannelClientTransport clientTransport = new(
             toServer.Writer,
             fromServer.Reader,
-            MaxLineBytes);
+            MaxLineBytes,
+            _connectionKey);
 
         return await clientTransport.ConnectAsync();
     }

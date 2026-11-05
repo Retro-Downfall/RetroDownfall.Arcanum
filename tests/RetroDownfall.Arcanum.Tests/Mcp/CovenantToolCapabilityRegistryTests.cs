@@ -16,10 +16,12 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 /// window that creates: a duplicate id must never overwrite a live registration, and a late cleanup
 /// carrying an earlier request's nonce must never remove the registration that replaced it.
 /// </remarks>
-public sealed class CovenantToolCapabilityRegistryTests
+public sealed class CovenantToolCapabilityRegistryTests : IDisposable
 {
 
-    private const string Connection = "connection-a";
+    private readonly string Connection = Guid.NewGuid().ToString("N");
+
+    public void Dispose() => GuildToolInvocationBinding.UnbindConnection(Connection);
 
     [Fact]
     public async Task A_registered_capability_is_taken_exactly_once()
@@ -197,13 +199,13 @@ public sealed class CovenantToolCapabilityRegistryTests
 
         ArcanumJsonRpcRequest first = ToolsCall("7", CovenantToolNames.ProposeCovenant);
 
-        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(Connection, first, out CovenantToolCapabilityNonce? nonce);
+        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(Connection, first, out CovenantToolCapabilityNonce? nonce, out GuildToolRequestBindingNonce? requestNonce);
 
         Assert.Equal(1, registry.CountForTests);
 
         // Mirrors InProcessMcpTransport.WriteRequestAsync's catch block: the frame never reached the
         // wire, so no handler could ever have called TryTake for this id.
-        SessionAttachmentAmbientSend.UnbindFailedToolsCall(Connection, first, nonce);
+        SessionAttachmentAmbientSend.UnbindFailedToolsCall(Connection, first, nonce, requestNonce);
 
         Assert.Equal(0, registry.CountForTests);
 
@@ -227,7 +229,7 @@ public sealed class CovenantToolCapabilityRegistryTests
 
         ArcanumJsonRpcRequest request = ToolsCall("7", CovenantToolNames.ProposeCovenant);
 
-        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(Connection, request, out CovenantToolCapabilityNonce? nonce);
+        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(Connection, request, out CovenantToolCapabilityNonce? nonce, out GuildToolRequestBindingNonce? requestNonce);
 
         Result<CovenantToolCapabilityGrant> taken = registry.TryTake(Connection, "7");
 
@@ -235,7 +237,7 @@ public sealed class CovenantToolCapabilityRegistryTests
 
         // The send actually succeeded (a handler already took the capability); an unbind reaching
         // here late must not pull the id out from under the handler that is still draining it.
-        SessionAttachmentAmbientSend.UnbindFailedToolsCall(Connection, request, nonce);
+        SessionAttachmentAmbientSend.UnbindFailedToolsCall(Connection, request, nonce, requestNonce);
 
         Assert.Equal(CovenantToolCapabilityState.Taken, taken.Value.Capability.State);
 

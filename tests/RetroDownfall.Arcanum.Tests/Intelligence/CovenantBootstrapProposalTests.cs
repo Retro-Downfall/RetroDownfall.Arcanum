@@ -1028,7 +1028,9 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
 
             SawRegisteredCapability = _registry.CountForTests == 1;
 
-            await _transport.WriteRequestAsync(bound).ConfigureAwait(false);
+            // This request already owns its reservation; write its bound wire exactly once.
+            await _transport.WriteRawLineForTestsAsync(JsonSerializer.Serialize(bound,
+                McpJsonSerializerContext.Default.JsonRpcRequest) + "\n").ConfigureAwait(false);
 
             McpInboundEnvelope envelope = await _transport.InboundReader.ReadAsync().ConfigureAwait(false);
 

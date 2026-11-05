@@ -684,7 +684,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 
             await searchOpened.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-            await session.WriteRequestWithFixedIdAsync(requestId, "tools/call", callParams);
+            await session.WriteUnboundRequestWithFixedIdAsync(requestId, "tools/call", callParams);
 
             JsonRpcResponse rejected = await session.ReadNextResponseAsync()
                 .WaitAsync(TimeSpan.FromSeconds(10));
@@ -2379,7 +2379,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         // Give the first call time to register in _inFlightToolCalls before the duplicate arrives.
         await Task.Delay(300);
 
-        await session.WriteRequestWithFixedIdAsync(sharedId, "tools/call", callParams);
+        await session.WriteUnboundRequestWithFixedIdAsync(sharedId, "tools/call", callParams);
 
         // Duplicate is rejected immediately (JSON-RPC error); the first call is still sleeping.
         JsonRpcResponse duplicate = await session.ReadNextResponseAsync()
@@ -2482,7 +2482,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 
         await Task.Delay(300);
 
-        await session.WriteRequestWithFixedIdAsync(sharedId, "tools/call", callParams);
+        await session.WriteUnboundRequestWithFixedIdAsync(sharedId, "tools/call", callParams);
 
         JsonRpcResponse duplicate = await session.ReadNextResponseAsync()
             .WaitAsync(TimeSpan.FromSeconds(5));
@@ -5748,6 +5748,20 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
             };
 
             return transport.WriteRequestAsync(request);
+        }
+
+        // Deliberately bypass sender reservations to exercise a malicious duplicate wire frame.
+        public Task WriteUnboundRequestWithFixedIdAsync(int id, string method, JsonElement? parameters)
+        {
+            JsonRpcRequest request = new()
+            {
+                Method = method,
+                Params = parameters,
+                Id = JsonSerializer.SerializeToElement(id, McpJsonSerializerContext.Default.Int32),
+            };
+
+            return transport.WriteRawLineForTestsAsync(JsonSerializer.Serialize(request,
+                McpJsonSerializerContext.Default.JsonRpcRequest) + "\n");
         }
 
         public Task<JsonRpcResponse> ReadNextResponseAsync() => ReadResponseAsync();

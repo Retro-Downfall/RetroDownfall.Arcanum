@@ -18,8 +18,13 @@ internal static class SessionAttachmentAmbientSend
     /// <summary>
     /// SDK transport path: bind by <see cref="JsonRpcRequest.Id"/> or inject an opaque token into params.
     /// </summary>
-    public static CovenantToolCapabilityNonce? BindSdkToolsCall(string connectionKey, JsonRpcMessage message)
+    public static CovenantToolCapabilityNonce? BindSdkToolsCall(string connectionKey, JsonRpcMessage message) =>
+        BindSdkToolsCall(connectionKey, message, out _);
+
+    public static CovenantToolCapabilityNonce? BindSdkToolsCall(string connectionKey, JsonRpcMessage message,
+        out GuildToolRequestBindingNonce? guildNonce)
     {
+        guildNonce = null;
 
         if (message is not JsonRpcRequest { Method: "tools/call" } request)
         {
@@ -27,7 +32,7 @@ internal static class SessionAttachmentAmbientSend
         }
 
         string requestId = request.Id.ToString();
-        CovenantToolCapabilityNonce? nonce = BindRequestContexts(connectionKey, requestId, ReadSdkToolName(request.Params));
+        CovenantToolCapabilityNonce? nonce = BindRequestContexts(connectionKey, requestId, ReadSdkToolName(request.Params), out guildNonce);
 
         if (SessionAttachmentToolAmbient.CurrentSessionId is not Guid sessionId)
         {
@@ -51,7 +56,8 @@ internal static class SessionAttachmentAmbientSend
     public static void UnbindFailedSdkToolsCall(
         string connectionKey,
         JsonRpcMessage message,
-        CovenantToolCapabilityNonce? nonce)
+        CovenantToolCapabilityNonce? nonce,
+        GuildToolRequestBindingNonce? guildNonce = null)
     {
 
         if (message is not JsonRpcRequest { Method: "tools/call" } request)
@@ -61,7 +67,7 @@ internal static class SessionAttachmentAmbientSend
         }
 
         string requestId = request.Id.ToString();
-        UnbindRequestContexts(connectionKey, requestId, nonce);
+        UnbindRequestContexts(connectionKey, requestId, nonce, guildNonce);
     }
 
     public static void MarkSdkToolsCallDispatched(
@@ -90,12 +96,20 @@ internal static class SessionAttachmentAmbientSend
     public static ArcanumJsonRpcRequest ApplyAmbientBinding(
         string connectionKey,
         ArcanumJsonRpcRequest request,
-        out CovenantToolCapabilityNonce? nonce)
-    {
+        out CovenantToolCapabilityNonce? nonce) =>
+        ApplyAmbientBinding(connectionKey, request, out nonce, out _);
 
+    public static ArcanumJsonRpcRequest ApplyAmbientBinding(
+        string connectionKey,
+        ArcanumJsonRpcRequest request,
+        out CovenantToolCapabilityNonce? nonce,
+        out GuildToolRequestBindingNonce? guildNonce)
+    {
         ArgumentNullException.ThrowIfNull(request);
 
         nonce = null;
+
+        guildNonce = null;
 
         if (!string.Equals(request.Method, "tools/call", StringComparison.Ordinal))
         {
@@ -103,7 +117,7 @@ internal static class SessionAttachmentAmbientSend
         }
 
         string requestId = NormalizeArcanumRequestId(request.Id);
-        nonce = BindRequestContexts(connectionKey, requestId, ReadArcanumToolName(request.Params));
+        nonce = BindRequestContexts(connectionKey, requestId, ReadArcanumToolName(request.Params), out guildNonce);
 
         if (SessionAttachmentToolAmbient.CurrentSessionId is not Guid sessionId)
         {
@@ -126,7 +140,8 @@ internal static class SessionAttachmentAmbientSend
     public static void UnbindFailedToolsCall(
         string connectionKey,
         ArcanumJsonRpcRequest request,
-        CovenantToolCapabilityNonce? nonce)
+        CovenantToolCapabilityNonce? nonce,
+        GuildToolRequestBindingNonce? guildNonce = null)
     {
 
         if (!string.Equals(
@@ -139,7 +154,7 @@ internal static class SessionAttachmentAmbientSend
         }
 
         string requestId = NormalizeArcanumRequestId(request.Id);
-        UnbindRequestContexts(connectionKey, requestId, nonce);
+        UnbindRequestContexts(connectionKey, requestId, nonce, guildNonce);
     }
 
     public static void MarkToolsCallDispatched(
@@ -162,8 +177,17 @@ internal static class SessionAttachmentAmbientSend
     private static CovenantToolCapabilityNonce? BindRequestContexts(
         string connectionKey,
         string requestId,
-        string? toolName)
+        string? toolName,
+        out GuildToolRequestBindingNonce? guildNonce)
     {
+        guildNonce = null;
+
+        if (!string.IsNullOrEmpty(requestId) || GuildToolInvocationAmbient.Current is not null)
+        {
+            guildNonce = GuildToolInvocationBinding.BindRequest(connectionKey, requestId, toolName,
+                GuildToolInvocationAmbient.Current);
+        }
+
         if (string.IsNullOrEmpty(requestId))
         {
             return null;
@@ -291,13 +315,19 @@ internal static class SessionAttachmentAmbientSend
     private static void UnbindRequestContexts(
         string connectionKey,
         string requestId,
-        CovenantToolCapabilityNonce? nonce)
+        CovenantToolCapabilityNonce? nonce,
+        GuildToolRequestBindingNonce? guildNonce)
     {
         // A refused duplicate owns no registration. Only the nonce returned by this send's
         // successful bind may release a capability; an older request may still be awaiting its handler.
         if (nonce is { } registeredNonce && CovenantToolStagingAmbient.Current is { } staging)
         {
             _ = staging.Registry.ReleaseUnsent(connectionKey, requestId, registeredNonce);
+        }
+
+        if (guildNonce is not null)
+        {
+            GuildToolInvocationBinding.UnbindFailedRequest(connectionKey, requestId, guildNonce);
         }
 
         SessionAttachmentToolAmbient.UnbindRequest(

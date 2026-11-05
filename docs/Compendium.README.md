@@ -482,7 +482,7 @@ Compendium edits the same source-generated, AOT-analyzed configuration contract 
 
 ## Proposed Guild configuration
 
-The dormant `GuildGrant`/`GuildRequestedGrant` data contracts now exist in Core with strict generated JSON shapes. They are not configuration registrations: no Guild feature property or peer settings are added by the Core foundation. The storage slice adds the supported retention rules below; Guild activation and peer settings remain proposed. Configuration-specific validation and activation remain with the slices below.
+The dormant `GuildGrant`/`GuildRequestedGrant` data contracts now exist in Core with strict generated JSON shapes. They are not configuration registrations: no Guild feature property or peer settings are added by the Core foundation. The storage slice adds the supported retention rules below. The Signet foundation stores authority epochs and digest-only credentials internally; it adds no configuration keys, root-grant defaults or Sanctum bypass. Guild activation and peer settings remain proposed. Configuration-specific validation and activation remain with the slices below.
 
 **Planned, not accepted by the current configuration binder.** The following is the resolved configuration contract for [DESIGN §23](Arcanum.DESIGN.md#23-the-guild--sealed-delegation-proposed), introduced by the owning Guild slices. Adding these keys to a current installation before those slices land is invalid; this documentation change does not enable a feature or modify runtime defaults.
 

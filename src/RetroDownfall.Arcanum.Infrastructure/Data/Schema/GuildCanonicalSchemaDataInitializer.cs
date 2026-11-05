@@ -10,6 +10,22 @@ internal sealed class GuildCanonicalSchemaDataInitializer : IGrimoireSchemaDataI
     public async Task InitializeAsync(SqliteConnection connection, SqliteTransaction transaction,
         GrimoireSchemaInitializationContext context, CancellationToken cancellationToken)
     {
+        await using (SqliteCommand epoch = connection.CreateCommand())
+        {
+            epoch.Transaction = transaction;
+
+            epoch.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='guild_signet_authority_state'";
+
+            if (Equals(1L, await epoch.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)))
+            {
+                epoch.CommandText = "INSERT INTO guild_signet_authority_state(StateKey,Epoch) VALUES(1,$epoch) ON CONFLICT(StateKey) DO NOTHING";
+
+                epoch.Parameters.AddWithValue("$epoch", Guid.NewGuid().ToString("D").ToUpperInvariant());
+
+                _ = await epoch.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+
         await GuildStorageIntegrity.ValidateAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
 
         await using SqliteCommand command = connection.CreateCommand();

@@ -23,10 +23,12 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 /// <c>Covenant.IneligibleTurn</c>. These tests are about which calls now get a capability and,
 /// more importantly, which still do not.
 /// </remarks>
-public sealed class CovenantToolStagingMintTests
+public sealed class CovenantToolStagingMintTests : IDisposable
 {
 
-    private const string ConnectionKey = "connection-1";
+    private readonly string ConnectionKey = Guid.NewGuid().ToString("N");
+
+    public void Dispose() => GuildToolInvocationBinding.UnbindConnection(ConnectionKey);
 
     [Fact]
     public void A_proposal_on_a_staging_turn_receives_its_capability()
@@ -163,9 +165,9 @@ public sealed class CovenantToolStagingMintTests
             ConnectionKey,
             ToolsCall("7", CovenantToolNames.ProposeCovenant));
 
-        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(
+        Assert.Throws<InvalidOperationException>(() => SessionAttachmentAmbientSend.ApplyAmbientBinding(
             ConnectionKey,
-            ToolsCall("7", CovenantToolNames.ProposeCovenant));
+            ToolsCall("7", CovenantToolNames.ProposeCovenant)));
 
         Assert.Equal(1, registry.CountForTests);
 

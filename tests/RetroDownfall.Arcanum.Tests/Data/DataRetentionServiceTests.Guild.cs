@@ -1,3 +1,8 @@
+using Microsoft.Data.Sqlite;
+using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Guild;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Operations;
@@ -76,7 +81,7 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Contains(plan.Items, item => item.DataClass == RetentionDataClass.GuildContent && item.Rows == 1);
 
-        Assert.Contains(plan.Items, item => item.DataClass == RetentionDataClass.GuildEvidence && item.DerivedRecords == 3);
+        Assert.Contains(plan.Items, item => item.DataClass == RetentionDataClass.GuildEvidence && item.DerivedRecords == 4);
 
         var recovered = await ReconcileFactoryResetV0Async(service, "guild-factory-reset-recovery");
 
@@ -93,6 +98,109 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(0, await CampaignScalarCountAsync("SELECT COUNT(*) FROM guild_declared_source_claims;"));
 
         Assert.Equal(0, await CampaignScalarCountAsync("SELECT COUNT(*) FROM guild_declared_roots;"));
+
+        Assert.Equal(0, await CampaignScalarCountAsync("SELECT COUNT(*) FROM guild_signet_authority_state;"));
+    }
+
+    [SkippableFact]
+    public async Task Populated_Signet_factory_reset_removes_lineage_and_receipts_and_reopens_with_fresh_authority()
+    {
+        RequireSqlCipher();
+
+        await using GuildSignetAuthorityTests.Fixture authority = await GuildSignetAuthorityTests.Fixture.CreateAsync();
+
+        GuildExecutionHandle root = await authority.RootAsync();
+
+        GuildExecutionHandle child = await authority.ChildAsync(root);
+
+        Guid revokeKey = Guid.NewGuid();
+
+        var revoked = await authority.Authority.RevokeAsync(authority.Operator,
+            new(revokeKey, new string('A', 64)), child.SignetId,
+            new(revokeKey, 1, GuildCancellationReason.OperatorRequested), CancellationToken.None);
+
+        Assert.True(revoked.IsSuccess, revoked.Error.Message);
+
+        Assert.True((await authority.Authority.VerifyToolAsync(root,
+            GuildSignetAuthorityTests.Fixture.Tool, true, CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(2L, await authority.ScalarAsync("SELECT count(*) FROM guild_signets;"));
+
+        Assert.Equal(1L, await authority.ScalarAsync("SELECT count(*) FROM guild_signet_revocations;"));
+
+        string beforeEpoch = Assert.IsType<string>(await authority.ScalarAsync("SELECT Epoch FROM guild_signet_authority_state;"));
+
+        GuildRecoveryContext recovery = new(root.CommissionId, Guid.NewGuid(), 1);
+
+        authority.Policy.Recoveries.Add(recovery);
+
+        ArcanumDbContext originalContext = _db!;
+
+        await using (SqliteConnection connection = await authority.OpenAsync())
+        await using (ArcanumDbContext resetContext = GrimoireFixture.CreateContext(connection))
+        {
+            // Reuse the actual reset coordinator against the authority fixture's file, retaining
+            // the same live Signet service and private credentials across reset and bootstrap.
+            _db = resetContext;
+
+            try
+            {
+                Assert.Equal(1, await CampaignScalarCountAsync("PRAGMA foreign_keys;"));
+
+                var service = CreateService();
+
+                DataRetentionPlan plan = await service.PlanAsync(new(DataRetentionOperation.FactoryReset));
+
+                Assert.Empty(plan.Blockers);
+
+                Assert.Empty(plan.Conflicts);
+
+                Assert.Contains(plan.Items, item => item.DataClass == RetentionDataClass.GuildEvidence
+                    && item.DerivedRecords == 4); // Two Signets, one revocation receipt and the authority epoch.
+
+                var reset = await ReconcileFactoryResetV0Async(service, "populated-signet-reset");
+
+                Assert.Equal(1, reset.Summary.Completed);
+
+                Assert.Equal(0, reset.Summary.RequiresAttention);
+
+                Assert.Equal(LongRunningOperationState.Completed, reset.Operation.State);
+
+                Assert.Equal(0L, await authority.ScalarAsync("SELECT count(*) FROM guild_signet_revocations;"));
+
+                Assert.Equal(0L, await authority.ScalarAsync("SELECT count(*) FROM guild_signets;"));
+
+                Assert.Equal(0L, await authority.ScalarAsync("SELECT count(*) FROM guild_signet_authority_state;"));
+            }
+            finally
+            {
+                _db = originalContext;
+            }
+        }
+
+        await using (SqliteConnection reopened = await authority.OpenAsync())
+        {
+            var installed = await GrimoireSchemaTestInstaller.InstallAsync(reopened, 768, CancellationToken.None);
+
+            Assert.True(installed.Core.IsHealthy);
+
+            Assert.True(installed.GuildCanonical.IsHealthy);
+        }
+
+        string afterEpoch = Assert.IsType<string>(await authority.ScalarAsync("SELECT Epoch FROM guild_signet_authority_state;"));
+
+        Assert.NotEqual(beforeEpoch, afterEpoch);
+
+        Assert.NotEqual(Guid.Empty, Guid.Parse(afterEpoch));
+
+        Assert.Equal(0L, await authority.ScalarAsync("SELECT count(*) FROM guild_signets;"));
+
+        Assert.Equal(0L, await authority.ScalarAsync("SELECT count(*) FROM guild_signet_revocations;"));
+
+        Assert.True((await authority.Authority.VerifyToolAsync(root,
+            GuildSignetAuthorityTests.Fixture.Tool, true, CancellationToken.None)).IsFailure);
+
+        Assert.True((await authority.Authority.RebindAsync(recovery, CancellationToken.None)).IsFailure);
     }
 
     [SkippableFact]
@@ -106,7 +214,7 @@ public sealed partial class DataRetentionServiceTests
         {
             DataRetentionStatusItem item = Assert.Single(status.Items, candidate => candidate.DataClass == dataClass);
 
-            Assert.Equal(0, item.Rows);
+            Assert.Equal(dataClass == RetentionDataClass.GuildEvidence ? 1 : 0, item.Rows);
 
             Assert.False(item.PolicyEnabled);
         }

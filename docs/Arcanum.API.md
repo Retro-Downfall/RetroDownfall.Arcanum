@@ -1599,7 +1599,7 @@ The POST reads through `ApiRequestJson` with explicit source-generated type meta
 
 **Core implementation status.** The named data records and closed enums below are implemented in dormant `Core/Guild/` and registered on `GuildJsonContext`. The shared `ErrorCodes.Guild` catalog is also present. This adds no HTTP registration or error/status mapping; `ArcanumJsonContext`, MCP schemas and route activation remain with their emitting slices. Deserializing these records never authenticates a caller. Host-only authority, claim and mutation-permit handles have no JSON path.
 
-The storage foundation implements internal Roster discovery and protected persistence. It exposes no `/api/guild` route. Its implemented retention classes are part of the existing data-lifecycle contract in §8.20.
+The storage foundation implements internal Roster discovery and protected persistence. The Signet foundation adds host-only mint/attenuate/verify/revoke/rebind operations and fail-closed tool boundaries, with no bearer serialization or public authentication path. Both remain without a `/api/guild` route; the public Signet revoke and Commission endpoints below are still proposed. Its implemented retention classes are part of the existing data-lifecycle contract in §8.20.
 
 ### Guild wire conventions
 

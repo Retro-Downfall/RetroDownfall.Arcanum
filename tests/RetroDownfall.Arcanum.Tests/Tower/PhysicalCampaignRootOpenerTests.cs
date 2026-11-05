@@ -1,3 +1,4 @@
+using Microsoft.Win32.SafeHandles;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -33,6 +34,68 @@ public sealed class PhysicalCampaignRootOpenerTests : IDisposable
 
         Assert.NotNull(first);
         Assert.Equal(first, second);
+    }
+
+    [Fact]
+    public void An_opened_directory_derives_its_held_identity_after_the_path_is_replaced()
+    {
+        string directory = Directory.CreateDirectory(Path.Combine(_root, "opened-root")).FullName;
+
+        CovenantDigest? expected = _opener.IdentifyExact(directory);
+
+        Assert.NotNull(expected);
+
+        Assert.True(FileHandleIdentityInterop.TryOpenDirectoryMetadata(directory, out SafeFileHandle handle, out _));
+
+        using (handle)
+        {
+            Assert.Equal(expected, _opener.IdentifyOpenedDirectory(handle));
+
+            Directory.Move(directory, directory + "-moved");
+
+            Directory.CreateDirectory(directory);
+
+            Assert.NotEqual(expected, _opener.IdentifyExact(directory));
+
+            Assert.Equal(expected, _opener.IdentifyOpenedDirectory(handle));
+
+            Assert.False(handle.IsClosed);
+        }
+    }
+
+    [Fact]
+    public void A_regular_file_invalid_or_disposed_handle_cannot_derive_a_directory_identity()
+    {
+        string file = Path.Combine(_root, "regular-file.txt");
+
+        File.WriteAllText(file, "content");
+
+        using FileStream stream = File.OpenRead(file);
+
+        Assert.Null(_opener.IdentifyOpenedDirectory(stream.SafeFileHandle));
+
+        Assert.True(FileHandleIdentityInterop.TryOpenDirectoryMetadata(_root, out SafeFileHandle disposed, out _));
+
+        disposed.Dispose();
+
+        Assert.Null(_opener.IdentifyOpenedDirectory(disposed));
+
+        using SafeFileHandle invalid = new(new IntPtr(-1), ownsHandle: false);
+
+        Assert.Null(_opener.IdentifyOpenedDirectory(invalid));
+    }
+
+    [Fact]
+    public void An_opened_directory_without_the_installation_identity_key_derives_no_identity()
+    {
+        Assert.True(FileHandleIdentityInterop.TryOpenDirectoryMetadata(_root, out SafeFileHandle handle, out _));
+
+        using (handle)
+        {
+            Assert.Null(new PhysicalCampaignRootOpener(new StubKeySource(null)).IdentifyOpenedDirectory(handle));
+
+            Assert.False(handle.IsClosed);
+        }
     }
 
     [Fact]

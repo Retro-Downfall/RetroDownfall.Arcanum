@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
@@ -32,6 +33,11 @@ public sealed class ArcanumSystemInfoTool : AIFunction
 
     protected override ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
     {
+        if (GuildToolInvocationContext.TryRefuseNative(Name, cancellationToken, out ValueTask<object?> refusal))
+        {
+            return refusal;
+        }
+
         _ = arguments;
 
         _ = cancellationToken;

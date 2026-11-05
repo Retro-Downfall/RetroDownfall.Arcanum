@@ -4,6 +4,8 @@ The [dormant Guild Core foundation](Arcanum.DESIGN.md#232-components-and-core-co
 
 The [Guild storage foundation](Arcanum.DESIGN.md#2315-persistence-sensitivity-retention-and-installation-lifecycle) adds family/tier admission, the explicit Core 38 sensitivity transition, immutable protected content, Roster discovery and shared owner cleanup. It uses admitted direct SQLite and generated storage JSON. Guild content/record retention defaults disabled; evidence has no timer. Extend the existing family coordinator when adding a Guild table, and preserve its all-table cursor boundary. Executable Guild and public operator routes remain separate delivery slices.
 
+The [Signet authority foundation](Arcanum.DESIGN.md#234-signets-immutable-grants-and-live-authority) advances Guild alone to schema version 2. Tests cover exact credential and lineage binding, ancestor revocation, final-admission ordering, concurrent recovery/revocation at the same revision, restore inactivity, populated factory reset and reopen, unavailable schema, workspace replacement, and retained/direct/native/MCP tool refusals. Durable fixtures prove the credential digest and the absence of raw or presented credentials. Keep the service dormant until the coordinator provides authenticated admission/recovery participants and all effect adapters are qualified. Extend the Guild cleanup participant and restore staging/committed-recovery proofs together; a restored digest never proves current authority.
+
 > **Agent orientation document.** This is the shortest useful context for an AI coding agent or an
 > operator working *on* Arcanum rather than *with* it. For installing and running Arcanum, start at
 > the [`README.md`](../README.md).

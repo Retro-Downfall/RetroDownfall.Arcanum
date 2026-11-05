@@ -214,6 +214,14 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        if (GuildToolInvocationAmbient.Current is not null)
+        {
+            // Arbitrary MCP catalogs are not evidence of a host resource/effect adapter.
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return [];
+        }
+
         if (!_initialized || _sdkClient is null)
         {
             throw new InvalidOperationException("SdkMcpClientWrapper must be initialized before calling GetToolsAsync.");
@@ -302,6 +310,17 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (GuildToolInvocationAmbient.Current is not null)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return new CallToolResult
+            {
+                IsError = true,
+                Content = [new TextContentBlock { Text = GuildToolInvocationContext.Format(GuildToolInvocationContext.Unavailable) }],
+            };
+        }
 
         if (!_initialized || _sdkClient is null)
         {

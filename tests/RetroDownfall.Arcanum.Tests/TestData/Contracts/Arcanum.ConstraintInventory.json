@@ -9867,16 +9867,19 @@
       "subsystem": "Guild persistence",
       "sourceLocations": [
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.cs#MaximumContentBytes",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetGrantJson.cs#MaximumBytes",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.SourceClaims.cs#ObserveDeclaredSourceAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildRosterRefreshStore.cs#FindWithinAsync"
       ],
       "coveredSymbols": [
         "GuildStore.MaximumContentBytes",
+        "GuildSignetGrantJson.MaximumBytes",
         "GuildStore.ObserveDeclaredSourceAsync",
         "GuildRosterRefreshStore.FindWithinAsync"
       ],
       "symbolValues": {
         "GuildStore.MaximumContentBytes": "65,536 encoded bytes per content body or variable metadata record",
+        "GuildSignetGrantJson.MaximumBytes": "65,536 encoded bytes per content body or variable metadata record",
         "GuildStore.ObserveDeclaredSourceAsync": "65,536 encoded bytes per content body or variable metadata record",
         "GuildRosterRefreshStore.FindWithinAsync": "65,536 encoded bytes per content body or variable metadata record"
       },
@@ -9891,6 +9894,7 @@
       "replacementOrContinuation": "Use a smaller body or an authorized artifact reference; retained oversized state requires repair and is never silently truncated.",
       "tests": [
         "GuildStoreTests",
+        "GuildSignetAuthorityTests.Stored_oversize_grant_is_refused_before_its_json_is_materialized",
         "GuildDeclaredSourceStateTests",
         "GuildRosterRefreshStoreTests"
       ]

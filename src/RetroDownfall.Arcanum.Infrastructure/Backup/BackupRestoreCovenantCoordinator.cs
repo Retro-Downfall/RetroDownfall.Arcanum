@@ -538,6 +538,9 @@ internal sealed partial class BackupRestoreCovenantCoordinator
                 if (sanitized.IsSuccess)
                     sanitized = await BackupRestoreMemoryEvaluationSanitation.VerifyCommittedAsync(committedDatabase, cancellationToken).ConfigureAwait(false);
 
+                if (sanitized.IsSuccess)
+                    sanitized = await BackupRestoreGuildSignetSanitation.VerifyCommittedAsync(committedDatabase, cancellationToken).ConfigureAwait(false);
+
                 if (sanitized.IsFailure)
                 {
                     return sanitized;

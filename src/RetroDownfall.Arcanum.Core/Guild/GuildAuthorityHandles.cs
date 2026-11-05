@@ -69,8 +69,8 @@ public enum GuildAuthorityAction
 }
 
 /// <summary>
-/// Reserved trusted-composition handle. No implementation in this dormant slice authenticates a
-/// principal, issues a Signet or turns a serialized record into this context.
+/// Trusted-composition handle. Authentication supplies the principal; a serialized record or a
+/// caller-selected id can never construct this context or authenticate an admission.
 /// </summary>
 [JsonConverter(typeof(GuildHostHandleJsonConverter<GuildCallerContext>))]
 public sealed class GuildCallerContext
@@ -187,10 +187,21 @@ public sealed class GuildExecutionHandle
     public Guid? IssuerSignetId { get; }
 }
 
-/// <summary>Reserved proof of an exact action/resource check; not itself a live verifier.</summary>
+/// <summary>Resolved evidence of an exact check. Effects still require their live, root-gated admission callback.</summary>
 [JsonConverter(typeof(GuildHostHandleJsonConverter<GuildVerifiedAuthority>))]
 public sealed class GuildVerifiedAuthority
 {
+    internal GuildVerifiedAuthority(GuildExecutionHandle execution, GuildAuthorityAction action, Guid resourceId,
+        long authorityGeneration, GuildGrant effectiveGrant, GuildToolGrant? tool = null)
+        : this(execution, action, resourceId, authorityGeneration)
+    {
+        ArgumentNullException.ThrowIfNull(effectiveGrant);
+
+        EffectiveGrant = effectiveGrant;
+
+        Tool = tool;
+    }
+
     internal GuildVerifiedAuthority(GuildExecutionHandle execution, GuildAuthorityAction action, Guid resourceId, long authorityGeneration)
     {
         ArgumentNullException.ThrowIfNull(execution);
@@ -236,6 +247,11 @@ public sealed class GuildVerifiedAuthority
     public Guid ResourceId { get; }
 
     public long AuthorityGeneration { get; }
+
+    /// <summary>Resolved restrictions at this check. The value never admits a later effect.</summary>
+    public GuildGrant? EffectiveGrant { get; }
+
+    public GuildToolGrant? Tool { get; }
 }
 
 /// <summary>Coordinator-only recovery binding; never permission to replay an uncertain effect.</summary>

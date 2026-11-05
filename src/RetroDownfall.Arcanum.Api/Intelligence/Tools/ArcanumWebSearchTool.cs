@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
@@ -81,6 +82,11 @@ public sealed class ArcanumWebSearchTool : AIFunction
         AIFunctionArguments arguments,
         CancellationToken cancellationToken)
     {
+        if (GuildToolInvocationContext.TryRefuseNative(Name, cancellationToken, out ValueTask<object?> refusal))
+        {
+            return await refusal.ConfigureAwait(false);
+        }
+
         WebBrowsingSettings settings = _settings.Value.ResolveWebBrowsing();
         int maxQueryChars =
             ArcanumSettingClamps.WebBrowsingMaxQueryChars(

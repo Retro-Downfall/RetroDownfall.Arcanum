@@ -1018,7 +1018,14 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         }
     }
 
-    private sealed record FactoryDrainEvidence(long Rows, long DerivedRecords, string[] Files, long AuditBytes);
+    private sealed record FactoryDrainEvidence(long Rows, long DerivedRecords, string[] Files, long AuditBytes, Guid GuildAuthorityEpoch);
+
+    private enum FactoryGuildEpochExpectation
+    {
+        RemovedBeforeBootstrap,
+
+        FreshAfterBootstrap,
+    }
 
     private sealed record PostReopenIndexingBatchEvidence(
         OrdinaryMutationCounters Mutations,
@@ -1220,19 +1227,23 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                 + (SELECT COUNT(*) FROM session_attachment_chunks) + (SELECT COUNT(*) FROM session_attachment_embeddings)
                 + (SELECT COUNT(*) FROM session_attachment_embeddings_quantized)
                 + (SELECT COUNT(*) FROM tapestry_scope_revisions)
-                + (SELECT COUNT(*) FROM memory_search_documents) + (SELECT COUNT(*) FROM memory_search_fts);
+                + (SELECT COUNT(*) FROM memory_search_documents) + (SELECT COUNT(*) FROM memory_search_fts)
+                + (SELECT COUNT(*) FROM guild_signet_authority_state);
             """;
 
         long derived = (long)(await command.ExecuteScalarAsync(token))!;
 
-        // Planning sees Entry FTS, active indexing state, Session revision, and the Entry's Core28
-        // projection/FTS pair. Indexing adds chunk, BLOB embedding, compact companion, attachment
-        // revision and its Core28 projection/FTS pair; the native counts above prove both additions.
-        Assert.Equal(5L, plan.DerivedRecords);
+        // Planning sees Entry FTS, active indexing state, Session revision, the Entry's Core28
+        // projection/FTS pair and the installation-owned Guild authority epoch. Indexing adds chunk,
+        // BLOB embedding, compact companion, attachment revision and its Core28 projection/FTS pair;
+        // the native counts above prove the same six indexing additions independently of the epoch.
+        Assert.Equal(6L, plan.DerivedRecords);
 
-        Assert.Equal(11L, derived);
+        Assert.Equal(12L, derived);
 
         Assert.Equal(plan.DerivedRecords + 6, derived);
+
+        Guid guildAuthorityEpoch = await ReadGuildAuthorityEpochAsync(connection, token);
 
         command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE name = 'session_attachment_embeddings_vec';";
 
@@ -1258,11 +1269,12 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Assert.Equal("stop", audit.FinishReason);
 
-        return new(rows, derived, files, auditBytes);
+        return new(rows, derived, files, auditBytes, guildAuthorityEpoch);
     }
 
     private static async Task AssertFactoryCatalogAsync(SqliteConnection connection,
-        DataRetentionFactoryTransitionLaunchV2 launch, CancellationToken cancellationToken)
+        DataRetentionFactoryTransitionLaunchV2 launch, FactoryGuildEpochExpectation epochExpectation,
+        Guid previousGuildAuthorityEpoch, CancellationToken cancellationToken)
     {
         await using SqliteCommand command = connection.CreateCommand();
 
@@ -1285,13 +1297,72 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         foreach (string table in new[] { "covenant_entries", "covenant_versions", "covenant_heads", "artifact_sensitivity",
             "managed_file_write_intents", "Sessions", "Entries", "SessionAttachments", "session_attachment_chunks",
-            "session_attachment_index_state", "session_attachment_embeddings", "session_attachment_embeddings_quantized", "Entries_fts", "tapestry_scope_revisions", "BillableOperations", "InferenceRuns" })
+            "session_attachment_index_state", "session_attachment_embeddings", "session_attachment_embeddings_quantized", "Entries_fts", "tapestry_scope_revisions", "BillableOperations", "InferenceRuns",
+            "guild_signets", "guild_signet_revocations" })
         {
             command.CommandText = $"SELECT COUNT(*) FROM {table};";
 
             Assert.True(Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken)) == 0,
                 $"Factory erasure must leave {table} empty.");
         }
+
+        Assert.NotEqual(Guid.Empty, previousGuildAuthorityEpoch);
+
+        if (epochExpectation == FactoryGuildEpochExpectation.RemovedBeforeBootstrap)
+        {
+            // In-process erasure removes authority and does not run the host bootstrap initializer.
+            command.CommandText = "SELECT COUNT(*) FROM guild_signet_authority_state;";
+
+            Assert.Equal(0L, (long)(await command.ExecuteScalarAsync(cancellationToken))!);
+        }
+        else
+        {
+            Assert.Equal(FactoryGuildEpochExpectation.FreshAfterBootstrap, epochExpectation);
+
+            // The recovered host completes bootstrap before readiness. Its new epoch must not
+            // revive any identity from the installation generation the factory erasure removed.
+            Assert.NotEqual(previousGuildAuthorityEpoch,
+                await ReadGuildAuthorityEpochAsync(connection, cancellationToken));
+        }
+    }
+
+    private static async Task<Guid> ReadGuildAuthorityEpochAsync(GrimoireMaintenanceAdmissionHarness harness,
+        CancellationToken cancellationToken)
+    {
+        var fresh = await harness.Factory.Services.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()
+            .OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, cancellationToken);
+
+        Assert.True(fresh.IsSuccess, fresh.Error.Message);
+
+        await using (fresh.Value)
+        {
+            return await ReadGuildAuthorityEpochAsync(fresh.Value.Connection, cancellationToken);
+        }
+    }
+
+    private static async Task<Guid> ReadGuildAuthorityEpochAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT StateKey,Epoch FROM guild_signet_authority_state ORDER BY StateKey;";
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        Assert.True(await reader.ReadAsync(cancellationToken));
+
+        Assert.Equal(1L, reader.GetInt64(0));
+
+        string text = reader.GetString(1);
+
+        Assert.True(Guid.TryParseExact(text, "D", out Guid epoch));
+
+        Assert.NotEqual(Guid.Empty, epoch);
+
+        Assert.Equal(epoch.ToString("D").ToUpperInvariant(), text);
+
+        Assert.False(await reader.ReadAsync(cancellationToken));
+
+        return epoch;
     }
 
     private static async Task AssertCommittedFactoryResetAsync(GrimoireMaintenanceAdmissionHarness harness,
@@ -1455,7 +1526,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
             Assert.Equal(losingGeneration + 1, harness.Admission.Tickets.Last().Generation);
 
-            await AssertFactoryCatalogAsync(fresh.Value.Connection, decoded.Value, cancellationToken);
+            await AssertFactoryCatalogAsync(fresh.Value.Connection, decoded.Value,
+                FactoryGuildEpochExpectation.RemovedBeforeBootstrap, drained.GuildAuthorityEpoch, cancellationToken);
         }
 
         var audit = await inspection.ServiceProvider.GetRequiredService<IInferenceAuditLogger>()

@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Tests.Support;
+using RetroDownfall.Arcanum.Tests.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence.Tools;
 
@@ -46,6 +48,30 @@ public sealed class ArcanumBrowseWebToolTests
         </html>
 
         """;
+
+    [Fact]
+    public async Task Guild_direct_native_web_entry_refuses_before_outbound_dispatch()
+    {
+        int calls = 0;
+
+        ArcanumBrowseWebTool tool = CreateTool((_, _) =>
+        {
+            calls++;
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(SampleHtml) });
+        });
+
+        using IDisposable scope = GuildToolInvocationAmbient.Begin(GuildToolBoundaryTests.CreateContext());
+
+        object? output = await tool.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>
+        {
+            ["url"] = "https://example.com/page",
+        }));
+
+        Assert.Contains(ErrorCodes.Guild.ToolBoundaryUnavailable, output?.ToString());
+
+        Assert.Equal(0, calls);
+    }
 
     [Fact]
     public async Task InvokeAsync_ExtractsTitleContentAndLinks()

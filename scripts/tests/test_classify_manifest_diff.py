@@ -467,6 +467,58 @@ class ClassifyManifestDiffTests(unittest.TestCase):
 
                 self.assertEqual("d", unchanged[("+", added)].label)
 
+    def test_guild_restore_reach_explains_only_the_exact_availability_sites_with_a_new_call(self) -> None:
+        caller = "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreGuildSignetSanitation.cs"
+
+        marker = "await GuildStorageAvailability.CheckAsync(connection, transaction, ct)"
+
+        cases = (
+            ("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StartAsync"),
+            ("RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService", "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService.RestoreAsync"),
+        )
+
+        for root, operation in cases:
+            with self.subTest(root=root):
+                added = site(
+                    "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStorageAvailability.cs",
+                    member="CheckAsync",
+                    callee="System.Data.Common.DbCommand.ExecuteScalarAsync",
+                    root=root,
+                    operation=operation,
+                )
+
+                other_operation = added._replace(authority_operation_id=operation + ".Other")
+
+                other_member = added._replace(member="CheckCovenantAsync")
+
+                other_callee = added._replace(callee="System.Data.Common.DbCommand.ExecuteNonQueryAsync")
+
+                gained = FakeSources(base={}, head={caller: marker})
+
+                kept = FakeSources(base={caller: marker}, head={caller: marker})
+
+                result = classify(
+                    manifest(), manifest(added, other_operation, other_member, other_callee),
+                    edited={caller}, parity=manifest(), sources=gained,
+                )
+
+                self.assertEqual("r", result[("+", added)].label)
+
+                for other in (other_operation, other_member, other_callee):
+                    self.assertEqual("d", result[("+", other)].label)
+
+                unchanged = classify(manifest(), manifest(added), edited={caller}, parity=manifest(), sources=kept)
+
+                no_parity = classify(manifest(), manifest(added), edited={caller}, sources=gained)
+
+                unedited_caller = classify(manifest(), manifest(added), parity=manifest(), sources=gained)
+
+                self.assertEqual("d", unchanged[("+", added)].label)
+
+                self.assertEqual("d", no_parity[("+", added)].label)
+
+                self.assertEqual("d", unedited_caller[("+", added)].label)
+
     def test_a_removed_row_the_base_source_still_yields_is_the_sources_and_one_it_does_not_is_the_checkers(self) -> None:
         by_source = site("src/Unedited.cs", member="BySource")
 

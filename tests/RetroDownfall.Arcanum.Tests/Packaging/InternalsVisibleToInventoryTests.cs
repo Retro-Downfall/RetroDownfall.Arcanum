@@ -19,9 +19,11 @@ public sealed class InternalsVisibleToInventoryTests
     [Theory]
 
     // API composition alone issues and renews authenticated Long Rest live capabilities.
+    // Infrastructure's dormant Signet authority constructs host-only Guild capabilities and uses
+    // Core's grant intersection after admitted storage and live policy checks.
     [InlineData(
         "src/RetroDownfall.Arcanum.Core/RetroDownfall.Arcanum.Core.csproj",
-        "RetroDownfall.Arcanum.Api,RetroDownfall.Arcanum.Covenant.Benchmarks,RetroDownfall.Arcanum.Tests")]
+        "RetroDownfall.Arcanum.Api,RetroDownfall.Arcanum.Covenant.Benchmarks,RetroDownfall.Arcanum.Infrastructure,RetroDownfall.Arcanum.Tests")]
 
     // The prompt-cache benchmark seeds its controlled public-fixture availability from the
     // production CovenantRuntimeGenerationState.Initial projection.

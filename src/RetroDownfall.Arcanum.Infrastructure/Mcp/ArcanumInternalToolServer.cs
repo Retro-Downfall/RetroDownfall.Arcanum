@@ -7,6 +7,8 @@ using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
@@ -468,6 +470,22 @@ internal sealed partial class ArcanumInternalToolServer
                     // Best-effort drain; any handler still running past the grace period will have
                     // its response write fail harmlessly once _toClient is completed below.
                 }
+            }
+
+            if (pending.All(static task => task.IsCompleted))
+            {
+                GuildToolInvocationBinding.UnbindConnection(_ambientConnectionKey);
+            }
+            else
+            {
+                _ = Task.WhenAll(pending).ContinueWith(
+                    completed =>
+                    {
+                        _ = completed.Exception;
+
+                        GuildToolInvocationBinding.UnbindConnection(_ambientConnectionKey);
+                    },
+                    CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             }
 
             await _commandOutputArtifacts.DisposeAsync()
@@ -1093,59 +1111,6 @@ internal sealed partial class ArcanumInternalToolServer
         JsonElement rpcId,
         CancellationToken cancellationToken)
     {
-        if (request.Params is not { } paramsElement)
-        {
-            return BuildToolsCallResponse(rpcId, ToolError("tools/call requires params with 'name' and 'arguments'."));
-        }
-
-        McpToolsCallParams? call;
-
-        try
-        {
-            call = JsonSerializer.Deserialize(paramsElement, _json.McpToolsCallParams);
-        }
-        catch (JsonException ex)
-        {
-            _logger?.LogError(ex, "tools/call params deserialization failed.");
-
-            return BuildToolsCallResponse(rpcId, ToolError("tools/call params were not valid JSON."));
-        }
-
-        if (call is null || string.IsNullOrWhiteSpace(call.Name))
-        {
-            return BuildToolsCallResponse(rpcId, ToolError("tools/call params missing required 'name'."));
-        }
-
-        if ((call.Name is "scribe_lexicon" or "delete_lexicon") && !_settings.EnableLexiconSystem)
-        {
-            return BuildToolsCallResponse(rpcId, ToolError("The Lexicon system is disabled in configuration."));
-        }
-
-        if (call.Name == "search_archives" && !_settings.EnableArchiveSearch)
-        {
-            return BuildToolsCallResponse(rpcId, ToolError("Archive search is disabled in configuration."));
-        }
-
-        if (call.Name == "read_saga" && !_sagaEnabled)
-        {
-            return BuildToolsCallResponse(rpcId, ToolError("Saga is disabled in configuration."));
-        }
-
-        if (call.Name is "attach_session_file" or "refresh_session_file" && !_attachmentsToolEnabled)
-        {
-            return BuildToolsCallResponse(rpcId, ToolError("Session attachment model tool is disabled in configuration."));
-        }
-
-        if (call.Name == "cast_sending" && !_conclaveEnabled)
-        {
-            return BuildToolsCallResponse(rpcId, ToolError("The Conclave is disabled; cross-Apprentice delegation is not available."));
-        }
-
-        if (call.Name is "dispatch_sending" or "continue_sending" && !_a2aClientEnabled)
-        {
-            return BuildToolsCallResponse(rpcId, ToolError($"A2A is disabled; {call.Name} is not available."));
-        }
-
         string requestKey = NormalizeRequestId(rpcId);
 
         using CancellationTokenSource toolScope = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1172,26 +1137,10 @@ internal sealed partial class ArcanumInternalToolServer
             };
         }
 
-        if (_earlyCancelTombstones.TryResolve(_ambientConnectionKey, requestKey, out _))
-        {
-            // notifications/cancelled for this id reached HandleCancelledNotification before this
-            // call's own task reached the TryAdd above — the race the tombstone exists to close.
-            // Consuming it here (rather than leaving it for the TTL sweep) means a retry that reuses
-            // this id after the tombstone expires is never affected by it.
-            _earlyCancelTombstones.Unbind(_ambientConnectionKey, requestKey);
+        GuildToolInvocationBinding.Reservation? requestReservation = GuildToolInvocationBinding.CaptureRequest(
+            _ambientConnectionKey, requestKey);
 
-            // Bound before the id leaves _inFlightToolCalls below, not after: the two calls are not
-            // atomic with each other, and a cancel notification landing in the gap must always find the
-            // id in at least one of the two stores. Binding first means it is briefly in both (harmless
-            // — HandleCancelledNotification checks _inFlightToolCalls first) rather than briefly in
-            // neither (which would tombstone this id's completion and poison its next reuse, the exact
-            // defect this store exists to close).
-            _recentlyCompletedToolCalls.Bind(_ambientConnectionKey, requestKey, true);
-
-            _inFlightToolCalls.TryRemove(requestKey, out _);
-
-            return BuildToolsCallResponse(rpcId, ToolError("Tool call was cancelled."));
-        }
+        GuildToolInvocationContext? previousGuildAmbient = GuildToolInvocationAmbient.Current;
 
         Guid? previousAmbient = SessionAttachmentToolAmbient.CurrentSessionId;
         ApplyPatchInvocationContext? previousPatchAmbient =
@@ -1205,6 +1154,91 @@ internal sealed partial class ArcanumInternalToolServer
         CovenantToolCapabilityGrant? takenCovenantCapability = null;
         try
         {
+            if (_earlyCancelTombstones.TryResolve(_ambientConnectionKey, requestKey, out _))
+            {
+                // This request won TryAdd. Its owner finally drains every host binding, marks
+                // completion before freeing the id, and preserves duplicate non-owners.
+                _earlyCancelTombstones.Unbind(_ambientConnectionKey, requestKey);
+
+                return BuildToolsCallResponse(rpcId, ToolError("Tool call was cancelled."));
+            }
+
+            if (request.Params is not { } paramsElement)
+            {
+                return BuildToolsCallResponse(rpcId, ToolError("tools/call requires params with 'name' and 'arguments'."));
+            }
+
+            McpToolsCallParams? call;
+
+            try
+            {
+                call = JsonSerializer.Deserialize(paramsElement, _json.McpToolsCallParams);
+            }
+            catch (JsonException ex)
+            {
+                _logger?.LogError(ex, "tools/call params deserialization failed.");
+
+                return BuildToolsCallResponse(rpcId, ToolError("tools/call params were not valid JSON."));
+            }
+
+            if (call is null || string.IsNullOrWhiteSpace(call.Name))
+            {
+                return BuildToolsCallResponse(rpcId, ToolError("tools/call params missing required 'name'."));
+            }
+
+            GuildToolInvocationContext? boundGuildContext = requestReservation?.Context;
+
+            bool guildIdentityMatches = requestReservation is not null
+                && string.Equals(requestReservation.Name, call.Name, StringComparison.Ordinal);
+
+            GuildToolInvocationAmbient.Current = requestReservation is null ? previousGuildAmbient : boundGuildContext;
+
+            McpToolsCallResultWire CurrentPolicyError(string message) => ToolError(
+                GuildToolInvocationAmbient.Current is null
+                    ? message
+                    : GuildToolInvocationContext.Format(new(ErrorCodes.Guild.ToolNotGranted,
+                        "The tool is unavailable under the current host policy.")));
+
+            if ((call.Name is "scribe_lexicon" or "delete_lexicon") && !_settings.EnableLexiconSystem)
+            {
+                return BuildToolsCallResponse(rpcId, CurrentPolicyError("The Lexicon system is disabled in configuration."));
+            }
+
+            if (call.Name == "search_archives" && !_settings.EnableArchiveSearch)
+            {
+                return BuildToolsCallResponse(rpcId, CurrentPolicyError("Archive search is disabled in configuration."));
+            }
+
+            if (call.Name == "read_saga" && !_sagaEnabled)
+            {
+                return BuildToolsCallResponse(rpcId, CurrentPolicyError("Saga is disabled in configuration."));
+            }
+
+            if (call.Name is "attach_session_file" or "refresh_session_file" && !_attachmentsToolEnabled)
+            {
+                return BuildToolsCallResponse(rpcId, CurrentPolicyError("Session attachment model tool is disabled in configuration."));
+            }
+
+            if (call.Name == "cast_sending" && !_conclaveEnabled)
+            {
+                return BuildToolsCallResponse(rpcId, CurrentPolicyError("The Conclave is disabled; cross-Apprentice delegation is not available."));
+            }
+
+            if (call.Name is "dispatch_sending" or "continue_sending" && !_a2aClientEnabled)
+            {
+                return BuildToolsCallResponse(rpcId, CurrentPolicyError($"A2A is disabled; {call.Name} is not available."));
+            }
+
+            if (GuildToolInvocationAmbient.Current is { } guildContext)
+            {
+                Error denial = boundGuildContext is not null && !guildIdentityMatches
+                    ? new(ErrorCodes.Guild.AuthorityMismatch, "The private Guild request binding does not match this call.")
+                    : await guildContext.RefuseDispatchAsync(
+                        new(GuildToolSourceKind.InternalMcp, "arcanum", call.Name), toolScope.Token).ConfigureAwait(false);
+
+                return BuildToolsCallResponse(rpcId, ToolError(GuildToolInvocationContext.Format(denial)));
+            }
+
             JsonElement toolArguments = call.Arguments;
 
             Guid? resolvedSession = ResolveAmbientSessionForToolsCall(requestKey, ref toolArguments);
@@ -1270,6 +1304,8 @@ internal sealed partial class ArcanumInternalToolServer
         }
         finally
         {
+            GuildToolInvocationAmbient.Current = previousGuildAmbient;
+
             SessionAttachmentToolAmbient.CurrentSessionId = previousAmbient;
             ApplyPatchInvocationAmbient.Current = previousPatchAmbient;
             PersistedToolInvocationAmbient.Current =
@@ -1306,6 +1342,11 @@ internal sealed partial class ArcanumInternalToolServer
             _recentlyCompletedToolCalls.Bind(_ambientConnectionKey, requestKey, true);
 
             _inFlightToolCalls.TryRemove(requestKey, out _);
+
+            if (requestReservation is not null)
+            {
+                GuildToolInvocationBinding.CompleteRequest(_ambientConnectionKey, requestKey, requestReservation.Nonce);
+            }
         }
     }
 

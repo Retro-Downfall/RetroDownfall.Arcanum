@@ -24,7 +24,7 @@ internal sealed partial class DataRetentionService
             retention, cancellationToken).ConfigureAwait(false);
 
         await AddCompositeDatabaseStatusAsync(items, RetentionDataClass.GuildEvidence,
-            ["guild_content_erasure_receipts", "guild_owner_cleanup", "guild_roster_refreshes", "guild_roster_cursors", "guild_declared_source_claims", "guild_declared_roots"],
+            ["guild_signets", "guild_signet_revocations", "guild_signet_authority_state", "guild_content_erasure_receipts", "guild_owner_cleanup", "guild_roster_refreshes", "guild_roster_cursors", "guild_declared_source_claims", "guild_declared_roots"],
             "Content-free Guild erasure and owner cleanup evidence; never aged out on a timer.",
             retention, cancellationToken).ConfigureAwait(false);
     }

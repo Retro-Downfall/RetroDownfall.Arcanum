@@ -5,11 +5,35 @@ using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Tests.Support;
+using RetroDownfall.Arcanum.Tests.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class ArcanumDelegateTaskToolTests
 {
+    [Fact]
+    public async Task Guild_direct_native_delegation_refuses_before_starting_a_subagent()
+    {
+        CapturingSubagentRunner runner = new(new SubagentRunResult(true, "effect", Guid.NewGuid(),
+            new DelegatedManaUsage(1, 0m, 1, Exhausted: false), null));
+
+        ArcanumDelegateTaskTool tool = new(runner, inheritedModel: null);
+
+        using IDisposable scope = GuildToolInvocationAmbient.Begin(GuildToolBoundaryTests.CreateContext());
+
+        object? output = await tool.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>
+        {
+            ["prompt"] = "delegate effect",
+            ["max_tokens"] = 10,
+        }));
+
+        Assert.Contains(ErrorCodes.Guild.ToolBoundaryUnavailable, output?.ToString());
+
+        Assert.Null(runner.Request);
+    }
+
     [Fact]
 
     public async Task InvokeAsync_IntersectsDelegatedAttachmentIdsWithMaterializedParentAllowlist()

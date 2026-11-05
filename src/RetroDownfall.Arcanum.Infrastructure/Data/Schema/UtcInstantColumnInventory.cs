@@ -18,6 +18,7 @@ internal static class UtcInstantColumnInventory
         new("guild_content", ["CreatedAtUtc"]),
         new("guild_content_erasure_receipts", ["ErasedAtUtc"]),
         new("guild_owner_cleanup", ["CreatedAtUtc", "UpdatedAtUtc"]),
+        new("guild_signets", ["IssuedAtUtc"]),
     ];
 
     // The version-9 sweep runs before version-11 columns exist. Its positional cursor also depends

@@ -91,6 +91,8 @@ public sealed class ToolExecutionPipeline(
 
     public sealed class TurnContext
     {
+        internal GuildToolInvocationContext? GuildTools { get; init; }
+
         public Campaign? Campaign { get; init; }
 
         public string? CampaignId { get; init; }
@@ -359,7 +361,8 @@ public sealed class ToolExecutionPipeline(
         bool isApplyPatch = isRegisteredTool && string.Equals(
                 toolName,
                 ToolRiskClassifier.ApplyPatchToolName,
-                StringComparison.OrdinalIgnoreCase);
+                StringComparison.OrdinalIgnoreCase)
+            && (turnContext.GuildTools ?? GuildToolInvocationAmbient.Current) is null;
 
         if (isApplyPatch
             && (turnContext.PersistedSessionId is not { } persistedSessionId
@@ -1354,6 +1357,26 @@ public sealed class ToolExecutionPipeline(
                 cancellationToken,
                 liveWardEmit)
             .ConfigureAwait(false);
+
+        if ((turnContext.GuildTools ?? GuildToolInvocationAmbient.Current) is { } guildContext)
+        {
+            AIFunction? function = ResolveRegisteredFunction(chatOptions, fcc.Name);
+
+            // A caller cannot promote a name-only/native special lane into a Guild capability.
+            // This dormant slice has no resource adapters, so every actual effect remains unavailable.
+            string denial = GuildToolInvocationContext.Format(GuildToolInvocationContext.Unavailable);
+
+            if (function is not null)
+            {
+                using IDisposable guildScope = GuildToolInvocationAmbient.Begin(guildContext);
+
+                // Only host-bound wrappers may perform exact live checks. An unbound function is
+                // refused here rather than invoked merely because its display name was registered.
+                denial = await guildContext.RefuseFunctionAsync(function, cancellationToken).ConfigureAwait(false);
+            }
+
+            return new WardedToolExecutionResult(denial, BufferedWardEventsOrEmpty(wardEvents), Denied: true);
+        }
 
         if (string.Equals(toolName, CovenantToolNames.RetireCovenant, StringComparison.Ordinal))
         {

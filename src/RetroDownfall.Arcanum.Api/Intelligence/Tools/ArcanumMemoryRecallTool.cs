@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
@@ -104,6 +105,11 @@ internal sealed class ArcanumMemoryRecallTool : AIFunction
 
     protected override async ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
     {
+        if (GuildToolInvocationContext.TryRefuseNative(Name, cancellationToken, out ValueTask<object?> refusal))
+        {
+            return await refusal.ConfigureAwait(false);
+        }
+
         if (!IsLiveEligible()
             || !TryReadRequest(arguments, out MemoryRecallRequest? request)
             || MemoryRecallPager.Validate(request).IsFailure)

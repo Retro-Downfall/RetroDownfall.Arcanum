@@ -653,6 +653,27 @@ RESTORE_SECRET_REASON = (
 
 
 REACHED_THROUGH = (
+    Reach(
+        "GrimoireDatabaseHostedService",
+        "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StartAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStorageAvailability.cs",
+        "CheckAsync",
+        "System.Data.Common.DbCommand.ExecuteScalarAsync",
+        "+",
+        "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreGuildSignetSanitation.cs",
+        "await GuildStorageAvailability.CheckAsync(connection, transaction, ct)",
+        "startup completes legacy committed restore verification and authenticated restore recovery before readiness; "
+        "the new Guild Signet sanitation proof checks Guild storage availability on that committed connection",
+    ),
+    _restore_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStorageAvailability.cs",
+        "CheckAsync",
+        "System.Data.Common.DbCommand.ExecuteScalarAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreGuildSignetSanitation.cs",
+        "await GuildStorageAvailability.CheckAsync(connection, transaction, ct)",
+        "restore sanitizes imported Signets before adoption and verifies execution inactivity on the committed generation; "
+        "both new Guild sanitation paths check Guild storage availability on their existing restore connection",
+    ),
     _restore_reach(
         "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantQuotaGuard.cs",
         "InsertReservationAsync",

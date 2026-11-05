@@ -30,6 +30,9 @@ internal sealed partial class DataRetentionService
 {
     private static readonly FactoryTablePlan[] FactoryPlanTables =
     [
+        new("guild_signet_revocations", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_signets", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_signet_authority_state", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_agent_card_skills", RetentionDataClass.GuildRecords, FactoryRecordKind.Derived),
         new("guild_agent_card_revisions", RetentionDataClass.GuildRecords, FactoryRecordKind.Derived),
         new("guild_agent_cards", RetentionDataClass.GuildRecords, FactoryRecordKind.Physical),
@@ -136,6 +139,9 @@ internal sealed partial class DataRetentionService
 
     private static readonly FactoryTablePlan[] FactoryDeletionTables =
     [
+        new("guild_signet_revocations", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_signets", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_signet_authority_state", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_agent_card_skills", RetentionDataClass.GuildRecords, FactoryRecordKind.Derived),
         new("guild_agent_card_revisions", RetentionDataClass.GuildRecords, FactoryRecordKind.Derived),
         new("guild_agent_cards", RetentionDataClass.GuildRecords, FactoryRecordKind.Physical),

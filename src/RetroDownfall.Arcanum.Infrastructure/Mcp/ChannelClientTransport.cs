@@ -101,7 +101,7 @@ internal sealed class ChannelClientTransport(
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
 
-            CovenantToolCapabilityNonce? nonce = SessionAttachmentAmbientSend.BindSdkToolsCall(_ambientConnectionKey, message);
+            CovenantToolCapabilityNonce? nonce = SessionAttachmentAmbientSend.BindSdkToolsCall(_ambientConnectionKey, message, out var guildNonce);
 
             try
             {
@@ -135,7 +135,8 @@ internal sealed class ChannelClientTransport(
                 SessionAttachmentAmbientSend.UnbindFailedSdkToolsCall(
                     _ambientConnectionKey,
                     message,
-                    nonce);
+                    nonce,
+                    guildNonce);
                 throw;
             }
         }

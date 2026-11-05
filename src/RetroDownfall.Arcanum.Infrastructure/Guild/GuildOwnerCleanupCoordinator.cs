@@ -11,6 +11,13 @@ internal sealed record GuildCleanupOwner(int Kind, Guid Id, long? EventSequence)
 /// <summary>Every Guild table participates in one family completion transaction.</summary>
 internal interface IGuildOwnerCleanupParticipant
 {
+    ValueTask<Result> PrepareSealAsync(GuildCleanupOwner owner, SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return ValueTask.FromResult(Result.Success());
+    }
+
     ValueTask<Result> SealAsync(GuildCleanupOwner owner, SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken);
 
     ValueTask<Result> ReconcileAsync(GuildCleanupOwner owner, CancellationToken cancellationToken);
@@ -88,6 +95,16 @@ internal sealed class GuildOwnerCleanupCoordinator(
             foreach (GuildCleanupOwner owner in owners)
             {
                 lifetime.Token.ThrowIfCancellationRequested();
+
+                foreach (IGuildOwnerCleanupParticipant participant in participants)
+                {
+                    Result prepared = await participant.PrepareSealAsync(owner, connection, lifetime.Token).ConfigureAwait(false);
+
+                    if (prepared.IsFailure)
+                    {
+                        return prepared.Error;
+                    }
+                }
 
                 Result sealedOwner = await SealAsync(connection, owner, lifetime.Token).ConfigureAwait(false);
 
@@ -183,6 +200,9 @@ internal sealed class GuildOwnerCleanupCoordinator(
                 UNION SELECT 1,CampaignId FROM guild_content_erasure_receipts WHERE CampaignId IS NOT NULL
                 UNION SELECT 2,SessionId FROM guild_content_erasure_receipts WHERE SessionId IS NOT NULL
                 UNION SELECT 1,WorkspaceId FROM guild_declared_roots WHERE WorkspaceId IS NOT NULL
+                UNION SELECT 1,CampaignId FROM guild_signets WHERE CampaignId IS NOT NULL AND (Revoked=0 OR CancellationRequested=0)
+                UNION SELECT 2,SessionId FROM guild_signets WHERE SessionId IS NOT NULL AND (Revoked=0 OR CancellationRequested=0)
+                UNION SELECT 1,WorkspaceId FROM guild_signets WHERE WorkspaceId IS NOT NULL AND (Revoked=0 OR CancellationRequested=0)
             ) orphan
             WHERE ((Kind=1 AND NOT EXISTS(SELECT 1 FROM Campaigns owner WHERE owner.Id=orphan.Id COLLATE NOCASE))
                 OR (Kind=2 AND NOT EXISTS(SELECT 1 FROM Sessions owner WHERE owner.Id=orphan.Id COLLATE NOCASE)))

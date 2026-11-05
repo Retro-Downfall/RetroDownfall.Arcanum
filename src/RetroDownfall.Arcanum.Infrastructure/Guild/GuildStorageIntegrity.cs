@@ -44,6 +44,52 @@ internal static class GuildStorageIntegrity
         {
             throw new GuildStorageIntegrityException();
         }
+
+        // Frozen pre-Signet catalogs are still admitted by historical upgrade fixtures. At the
+        // current head the manifest inspector independently requires every Signet object.
+        command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='guild_signets'";
+
+        if (!Equals(1L, await command.ExecuteScalarAsync(ct).ConfigureAwait(false)))
+        {
+            return;
+        }
+
+        command.CommandText = "SELECT CASE WHEN typeof(Epoch)='text' AND length(CAST(Epoch AS BLOB))=36 THEN Epoch ELSE '' END FROM guild_signet_authority_state WHERE StateKey=1";
+
+        object? epoch = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+
+        if (epoch is not string text || !Guid.TryParseExact(text, "D", out Guid parsed) || parsed == Guid.Empty
+            || text != parsed.ToString("D").ToUpperInvariant())
+        {
+            throw new GuildStorageIntegrityException();
+        }
+
+        command.CommandText = """
+            WITH RECURSIVE lineage(LeafId,SignetId,IssuerSignetId) AS (
+                SELECT SignetId,SignetId,IssuerSignetId FROM guild_signets
+                UNION
+                SELECT l.LeafId,p.SignetId,p.IssuerSignetId FROM lineage l
+                JOIN guild_signets p ON p.SignetId=l.IssuerSignetId
+            )
+            SELECT EXISTS(SELECT 1 FROM guild_signets child WHERE
+                (child.IssuerSignetId IS NOT NULL AND NOT EXISTS(
+                    SELECT 1 FROM guild_signets parent WHERE parent.SignetId=child.IssuerSignetId
+                    AND parent.RootCommissionId=child.RootCommissionId
+                    AND parent.CampaignId IS child.CampaignId
+                    AND parent.WorkspaceId IS child.WorkspaceId
+                    AND parent.InstallationGeneration=child.InstallationGeneration
+                    AND parent.AuthorityEpoch=child.AuthorityEpoch))
+                OR NOT EXISTS(SELECT 1 FROM lineage l JOIN guild_signets root ON root.SignetId=l.SignetId
+                    WHERE l.LeafId=child.SignetId AND l.IssuerSignetId IS NULL
+                    AND root.CommissionId=child.RootCommissionId)
+                OR (child.RestoredInert=0 AND NOT EXISTS(SELECT 1 FROM guild_signet_authority_state state
+                    WHERE state.StateKey=1 AND state.Epoch=child.AuthorityEpoch)))
+            """;
+
+        if (!Equals(0L, await command.ExecuteScalarAsync(ct).ConfigureAwait(false)))
+        {
+            throw new GuildStorageIntegrityException();
+        }
     }
 }
 

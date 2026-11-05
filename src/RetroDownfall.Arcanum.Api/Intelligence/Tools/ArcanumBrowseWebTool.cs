@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
@@ -144,6 +145,11 @@ public sealed class ArcanumBrowseWebTool : AIFunction
 
     protected override async ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
     {
+        if (GuildToolInvocationContext.TryRefuseNative(Name, cancellationToken, out ValueTask<object?> refusal))
+        {
+            return await refusal.ConfigureAwait(false);
+        }
+
         if (!TryGetStringArgument(arguments, "url", out string? url) || string.IsNullOrWhiteSpace(url))
         {
             return WebToolResultSerializer.Serialize(

@@ -2473,6 +2473,8 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<IGuildOwnerCleanupParticipant, GuildRosterCleanupParticipant>();
 
+        services.AddScoped<IGuildOwnerCleanupParticipant, GuildSignetCleanupParticipant>();
+
         services.AddScoped(static sp => new GuildOwnerCleanupCoordinator(
             sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
             sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),

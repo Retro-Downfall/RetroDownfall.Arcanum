@@ -1089,6 +1089,16 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
 
+        // The dormant Signet participant still opens the live admitted Grimoire. Its caller holds
+        // installation/root authority; ExecuteAsync owns and asynchronously disposes the returned
+        // ordinary lease and its transaction on success, refusal, cancellation and failure.
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetStore.cs", "GuildSignetStore", "ExecuteAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(write?GrimoireOrdinaryFreshConnectionKind.ReadWrite:GrimoireOrdinaryFreshConnectionKind.ReadOnly,ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOwnerCleanupCoordinator.cs", "GuildOwnerCleanupCoordinator", "RunBatchAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite,lifetime.Token)"),
             GrimoirePathAuthority.LiveGrimoire,

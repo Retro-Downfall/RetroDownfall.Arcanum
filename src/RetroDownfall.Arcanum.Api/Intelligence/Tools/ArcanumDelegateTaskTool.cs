@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
@@ -102,6 +103,11 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
         AIFunctionArguments arguments,
         CancellationToken cancellationToken)
     {
+        if (GuildToolInvocationContext.TryRefuseNative(Name, cancellationToken, out ValueTask<object?> refusal))
+        {
+            return await refusal.ConfigureAwait(false);
+        }
+
         if (!TryReadString(arguments, "prompt", out string prompt)
             || prompt.Length > MaxPromptCharacters)
         {

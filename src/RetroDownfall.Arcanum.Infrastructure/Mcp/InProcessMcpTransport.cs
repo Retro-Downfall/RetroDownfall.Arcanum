@@ -312,7 +312,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        JsonRpcRequest toSend = SessionAttachmentAmbientSend.ApplyAmbientBinding(_ambientConnectionKey, request, out var nonce);
+        JsonRpcRequest toSend = SessionAttachmentAmbientSend.ApplyAmbientBinding(_ambientConnectionKey, request, out var nonce, out var guildNonce);
 
         bool lockTaken = false;
 
@@ -337,7 +337,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             SessionAttachmentAmbientSend.UnbindFailedToolsCall(
                 _ambientConnectionKey,
                 request,
-                nonce);
+                nonce,
+                guildNonce);
             throw;
         }
         finally

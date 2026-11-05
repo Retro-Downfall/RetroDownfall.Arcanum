@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Win32.SafeHandles;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Tower;
@@ -158,6 +159,39 @@ internal sealed partial class PhysicalCampaignRootOpener(ICampaignRootIdentityKe
             ? null
             : candidates[0].PhysicalIdentityDigest;
 
+    }
+
+    /// <summary>Derives identity only from a currently open directory; ownership of the handle stays with the caller.</summary>
+    internal CovenantDigest? IdentifyOpenedDirectory(SafeFileHandle directory)
+    {
+        if (directory is null || directory.IsInvalid || directory.IsClosed)
+        {
+            return null;
+        }
+
+        bool retained = false;
+
+        try
+        {
+            // Unix metadata reads use the descriptor value. Retain the SafeHandle so concurrent
+            // disposal cannot close and recycle that descriptor while identity is being measured.
+            directory.DangerousAddRef(ref retained);
+
+            return FileHandleIdentityInterop.TryGetHandleMetadata(directory, out FileHandleMetadata metadata)
+                && metadata.Kind == FileSystemObjectKind.Directory
+                ? DeriveIdentityDigest(metadata.Identity) : null;
+        }
+        catch (ObjectDisposedException)
+        {
+            return null;
+        }
+        finally
+        {
+            if (retained)
+            {
+                directory.DangerousRelease();
+            }
+        }
     }
 
     /// <summary>

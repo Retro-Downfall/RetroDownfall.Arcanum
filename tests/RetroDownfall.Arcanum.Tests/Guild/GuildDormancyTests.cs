@@ -14,7 +14,7 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 public sealed class GuildDormancyTests
 {
     [Fact]
-    public void Only_the_Roster_port_is_implemented_and_no_execution_port_or_Roster_context_is_activated()
+    public void Roster_and_authority_participants_remain_unregistered_and_execution_is_dormant()
     {
         var assemblies = new[]
         {
@@ -28,14 +28,15 @@ public sealed class GuildDormancyTests
             .Where(type => type.Namespace == typeof(IGuildPort).Namespace && type.IsInterface)
             .ToArray();
 
-        Assert.Equal(9, ports.Length);
+        Assert.Equal(10, ports.Length);
 
         var concreteTypes = assemblies.SelectMany(assembly => assembly.GetTypes())
             .Where(type => !type.IsAbstract && !type.IsInterface);
 
         var implementations = concreteTypes.Where(type => ports.Any(port => port.IsAssignableFrom(type))).ToArray();
 
-        Assert.Equal(typeof(GuildRoster), Assert.Single(implementations));
+        Assert.Equal(new[] { typeof(GuildRoster), typeof(SignetAuthority) }.OrderBy(type => type.FullName),
+            implementations.OrderBy(type => type.FullName));
 
         ServiceCollection services = new();
 

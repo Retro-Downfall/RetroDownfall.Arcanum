@@ -156,7 +156,7 @@ internal static class GrimoireSchemaVersionChains
     /// </remarks>
     internal const int CoreSchemaVersion = 38;
 
-    internal const int GuildCanonicalSchemaVersion = 1;
+    internal const int GuildCanonicalSchemaVersion = 2;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -196,6 +196,8 @@ internal static class GrimoireSchemaVersionChains
     private static readonly IReadOnlyDictionary<(GrimoireSchemaTransactionTier Tier, int ToVersion), string> SourcePins =
         new Dictionary<(GrimoireSchemaTransactionTier, int), string>
         {
+            [(GrimoireSchemaTransactionTier.GuildCanonical, 2)] = "A2D7615924865817A560C42D3B65016159D4084B6DB5AAAD4617C6A8DAFAE7B4",
+
             // Read out of the Core head tree immediately before saga_memories.sql and
             // lexicon_entries.sql were edited for version 2. Nothing can recompute it: the tree that
             // produced it no longer exists. A test reconstructs that tree from those files' frozen
