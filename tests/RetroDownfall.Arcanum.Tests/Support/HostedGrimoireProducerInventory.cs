@@ -34223,7 +34223,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || maximumMember.Syntax is not MethodDeclarationSyntax { ExpressionBody: null, Body.Statements: var maximumStatements }
                 || maximumStatements.Count != 11) return false;
 
-            int[] maxima = [16, 11, 8, 7, 7, 7, 6, 5, 4, 3];
+            int[] maxima = [17, 11, 8, 7, 7, 7, 6, 5, 4, 3];
 
             int[] typeCounts = [1, 1, 1, 1, 1, 1, 2, 1, 11, 13];
 

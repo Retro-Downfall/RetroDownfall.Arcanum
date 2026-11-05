@@ -878,6 +878,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         AssertExtractedManifestTailIngress("parameter", "Level", "box", mutation);
     }
 
+    [Theory]
+    [InlineData("exact")]
+    [InlineData("maximum-16")]
+    [InlineData("maximum-18")]
+    public void ExtractedManifestTailRequiresReviewedMaximumProfile(string mutation)
+    {
+        AssertExtractedManifestTailIngress("parameter", "Level", "production", mutation);
+    }
+
     // R111 temporary dual-property candidate; positive interpretation requires Root-approved P1-P4 proof.
     [Theory]
     [InlineData("Level")]
@@ -2909,6 +2918,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             "byte-captured" => (codeStart, codeStart + "\n\n        Func<byte> captured = () => code; _ = captured;"),
             "concrete-type" => ("if (AllowsZeroThroughOne<TEnum>())", "if (AllowsZeroThroughOne<ContentSensitivity>())"),
             "ref-alias" => ("return Unsafe.As<TEnum, byte>(ref value);", "ref byte alias = ref Unsafe.As<TEnum, byte>(ref value); return alias;"),
+            "maximum-16" => ("return 17;", "return 16;"),
+            "maximum-18" => ("return 17;", "return 18;"),
             _ => ("", ""),
         };
 
@@ -3692,7 +3703,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         output.WriteLine($"R101_PROBE={receiver}|{propertyName}|{shape}|{mutation}|GetCodeTrue={automatic}|GetCodeFalse={declared}|prerequisites=passed");
 
-        if (generated && shape == "production") Assert.Equal(1, automatic);
+        if (generated && shape == "production" && mutation == "exact") Assert.Equal(1, automatic);
         else Assert.True(automatic > 1, "Unproved generated shape or adverse tail use must preserve the original receiving sources.");
     }
 
