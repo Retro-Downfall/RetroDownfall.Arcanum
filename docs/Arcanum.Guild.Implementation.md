@@ -19,7 +19,7 @@ This plan implements issue #310 from the resolved DESIGN §23 and proposed API a
 - [x] Declare the nine shared asynchronous ports and their named admission/result/dispatch/request contracts. Require trusted context separately from caller intent; keep transaction/transport/runtime implementation outside Core.
 - [x] Register the complete serializable graph and concrete collections on GuildJsonContext; round-trip every named data contract and reject trusted handles/raw capabilities.
 - [x] Update DESIGN, API, Command Reference and Compendium status, reconcile #144/#310 ownership, and retain the proposed status of future behavior.
-Delivery requires independent review, regression tests for findings, solution/tests/coverage/AOT and CI qualification, followed by merging and pushing the qualified candidate to main. Exact candidate results are recorded with the pull request; this document is not runtime activation evidence.
+Delivery requires independent review, regression tests for findings, the user-directed build, test and Native AOT qualification, followed by merging and pushing the qualified candidate to main. Exact candidate results are recorded with the pull request; this document is not runtime activation evidence.
 
 ## Review focus
 

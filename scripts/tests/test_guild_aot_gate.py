@@ -49,6 +49,46 @@ if mode != "missing_apphost":
 '''
 
 
+# Exercise the gate's real scan patterns without requiring ripgrep on the test host.
+# Match rg's exit contract: 0 for matches, 1 for no match, 2 for scanner failure.
+RG_STUB = r'''#!/usr/bin/env python3
+from pathlib import Path
+import re
+import sys
+
+try:
+    args = sys.argv[1:]
+    options = set()
+    while args and args[0].startswith("-"):
+        option = args.pop(0)
+        if option not in ("--no-config", "-n", "-i", "-q", "-F", "-x"):
+            raise ValueError("unsupported test scanner option: " + option)
+        options.add(option)
+    if len(args) != 2:
+        raise ValueError("test scanner requires one pattern and one file")
+    pattern, filename = args
+    if "-F" not in options:
+        regex = re.compile(pattern.replace("[:space:]", r"\s"), re.IGNORECASE if "-i" in options else 0)
+    matched = False
+    for number, line in enumerate(Path(filename).read_text().splitlines(), 1):
+        if "-F" in options:
+            needle = pattern.casefold() if "-i" in options else pattern
+            haystack = line.casefold() if "-i" in options else line
+            found = needle == haystack if "-x" in options else needle in haystack
+        else:
+            found = regex.fullmatch(line) if "-x" in options else regex.search(line)
+        if found:
+            matched = True
+            if "-q" in options:
+                break
+            print((str(number) + ":" if "-n" in options else "") + line)
+    sys.exit(0 if matched else 1)
+except (OSError, ValueError, re.error) as error:
+    print("test scanner failed: " + str(error), file=sys.stderr)
+    sys.exit(2)
+'''
+
+
 class GuildAotGateTests(unittest.TestCase):
     def setUp(self):
         self.workspace = tempfile.TemporaryDirectory(prefix="guild-aot-gate-tests-")
@@ -58,6 +98,7 @@ class GuildAotGateTests(unittest.TestCase):
         self.bin.mkdir()
         self.calls = self.work / "calls.jsonl"
         self.write_stub("dotnet", DOTNET_STUB)
+        self.write_stub("rg", RG_STUB)
         self.write_stub("uname", '#!/usr/bin/env bash\nprintf "%s\\n" "$GUILD_STUB_OS"\n')
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                         TMPDIR=str(self.work), GUILD_STUB_CALLS=str(self.calls),
