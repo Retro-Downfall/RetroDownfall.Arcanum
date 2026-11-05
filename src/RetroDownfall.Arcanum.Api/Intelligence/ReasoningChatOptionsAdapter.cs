@@ -107,7 +107,7 @@ internal static class ReasoningChatOptionsAdapter
         {
             null => null,
             ReasoningEffortLevel.None => ReasoningEffort.None,
-            // MEAI 10.8.1 has no Minimal value. The concrete OpenAI option is applied separately.
+            // MEAI 10.9.0 has no Minimal value. The concrete OpenAI option is applied separately.
             ReasoningEffortLevel.Minimal => null,
             ReasoningEffortLevel.Low => ReasoningEffort.Low,
             ReasoningEffortLevel.Medium => ReasoningEffort.Medium,

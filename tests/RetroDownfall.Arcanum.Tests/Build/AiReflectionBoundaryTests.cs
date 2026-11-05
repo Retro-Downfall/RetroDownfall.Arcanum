@@ -45,7 +45,7 @@ public sealed class AiReflectionBoundaryTests
         {
             string version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion;
 
-            Assert.Equal("10.8.1", version.Split('+')[0]);
+            Assert.Equal("10.9.0", version.Split('+')[0]);
         }
 
         string[] actual = types.SelectMany(static type => type.GetMethods(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly))
@@ -57,7 +57,9 @@ public sealed class AiReflectionBoundaryTests
             .Order(StringComparer.Ordinal)
             .ToArray();
 
-        // Keep this literal list independent of the scanner, so a package surface change requires review even when no fixture calls it.
+        // Reviewed against 10.9.0 (dotnet/extensions b10f9c0): the 15 forbidden overloads and three
+        // explicit-schema helpers are unchanged. Keep this independent of the scanner so even
+        // an uncalled overload requires a new source/metadata review when the package changes.
         string[] expected =
         [
             "AIFunctionFactory.Create`0(System.Delegate,Microsoft.Extensions.AI.AIFunctionFactoryOptions)",
