@@ -1208,8 +1208,9 @@ jobs:
     # Both executable smokes open the Grimoire, so this host RID needs its verified native
     # SQLCipher asset just like build-test.
     runs-on: macos-26
-    # About 59 minutes measured on the hosted runner; the limit is about twice that.
-    timeout-minutes: 120
+    # Budget for two separate CLI AOT publishes, the regex smoke and the provider-contract
+    # harness. A diagnostic phase measured about 65 minutes; 180 leaves headroom for both profiles.
+    timeout-minutes: 180
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
