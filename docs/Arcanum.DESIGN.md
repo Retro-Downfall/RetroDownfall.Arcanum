@@ -1345,9 +1345,10 @@ TDD first reproduced both new package-version failures against 10.8.1, then the 
 | --- | --- | --- |
 | Release solution build | Passed, zero warnings/errors | Passed, zero warnings/errors |
 | Focused tests | 83 reflection/package tests passed | 230 reflection/package/provider/structured-output tests passed |
-| Complete solution test projects | Not run; focused baseline above | Arcanum final run pending; Compendium 202 passed; Forge 816 passed, 2 Windows-only skips |
+| Complete solution test projects | Not run; focused baseline above | Arcanum 43,349 passed, 147 skipped; Compendium 202 passed; Forge 816 passed, 2 Windows-only skips; zero failures |
 | `osx-arm64` AOT diagnostic warning audit and native regex smoke | Not run separately | Passed; no first-party warning exceptions added |
 | `osx-arm64` warning-free shipping publish and exact-apphost provider-contract smoke | Passed | Passed |
+| Retained `osx-arm64` apphost broker isolation and PDF-worker host-launch checks | Not run separately | All six passed, no skips |
 | Strict `osx-arm64` native SQLCipher gate | Passed | Passed |
 | Both tracked benchmark lockfiles | Existing baseline | Regenerated through restore; both pass locked restore for `osx-arm64` |
 | Native `win-x64` AOT, shipping provider contract, and strict SQLCipher gates | Missing current native Windows evidence | Missing current native Windows evidence |
@@ -1355,6 +1356,8 @@ TDD first reproduced both new package-version failures against 10.8.1, then the 
 | `osx-arm64` apphost bytes / complete publish file bytes | 151,445,832 / 684,264,810 | 151,445,832 / 684,264,810 (both deltas zero) |
 | `win-x64` apphost bytes / complete publish file bytes | Not measured on native Windows | Not measured on native Windows |
 | `win-arm64` apphost bytes / complete publish file bytes | Not measured on native Windows | Not measured on native Windows |
+
+The complete Arcanum result combines the runtime complement (36,437 passed, 147 skipped, including performance-category cases) with all five hosted-producer source-analysis partitions (6,912 passed). The repository aggregate reconciles every expected analysis case exactly once. Local parallel analysis reused the matching Release references through `BuildProjectReferences=false`; contemporaneous default and reuse evaluations supplied identical compiler properties, ordered inputs, source/generator/reference bytes and canonical-project metadata. Full generator execution and semantic proofs ran in both the production and fixture checks. Skips have explicit platform, fixture-premise or opt-in conditions, recorded individually in the delivery evidence. All seven published-apphost cases skipped by the ordinary runtime run were covered separately against the retained candidate: the first-session provider-contract gate plus the six broker/PDF-worker checks.
 
 Both macOS measurements used .NET SDK **10.0.403**, runtime and ILCompiler **10.0.14**, the repository's SHA-512-verified portable Native AOT pack **10.0.14**, Apple Clang **21.0.0 (clang-2100.4.1.1)**, and Apple linker **27106.1** on macOS **27.3**, `osx-arm64`. The identical command was `verify-shipping-publish.sh --rid osx-arm64 --retain-publish-dir <fresh-leaf>`, using the default Release shipping profile. The complete-byte total sums all 15 retained regular files, including portable PDBs, all dSYM contents, native libraries and licenses; apphost size is reported separately. Each run built fresh isolated artifacts. Equal file lengths do not mean equal hashes or establish a performance improvement. Diagnostic-audit outputs use a different profile and are excluded from this size comparison.
 
