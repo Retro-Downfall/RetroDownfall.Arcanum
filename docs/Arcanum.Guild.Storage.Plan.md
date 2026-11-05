@@ -36,7 +36,7 @@
 - [x] **Roster discovery:** Implement strict parser, direct no-follow global/workspace discovery, exact-byte source identity, immutable refresh, duplicate/rebind policy, selectors, derived ownership, fixed-peer remote refresh and admitted pagination. Write failing malformed/file-race/conflict/pinning/invalid-refresh/cursor tests, then implement.
 - [x] **Retention and owner cleanup:** Append classes and disabled timer defaults; inventory/measure/prune/reset. Build one coordinator with zero cursors and all-table final transaction, purge outside its write transaction, final label/owner checks, bounded orphan sweep and resumable replay. Test labelled/unlabelled/blocked outcomes, both owner types, multi-table failure and crash recovery on SQLCipher.
 - [x] **Integration and documentation:** Register storage/cleanup without enabling executable Guild; update DESIGN and relevant API/CLI/configuration/engineering/human references to distinguish delivered from proposed behavior. Update generated JSON, AOT/direct SQL, ownership and bounded-materialization inventories.
-- **Review and delivery gate:** Run focused tests, solution/client suites, coverage, Native AOT and native asset gates; independent code review and fix findings. Qualify the exact candidate through CI, merge to main only when all required checks pass, push, verify remote refs and issue state.
+- **Review and delivery gate:** Use targeted local qualification for the changed storage, discovery, retention, recovery and source-inventory paths, plus the solution build, client suites and affected Native AOT smoke. Complete independent review and correct findings. Merge the qualified candidate to main, push and verify remote refs and issue state. The agreed delivery boundary excludes another full coverage pass or hosted Actions matrix; the final push skips CI to avoid additional runner cost.
 
 ## Evidence
 
@@ -44,4 +44,7 @@
 
 - Focused implementation and regression suite: 465 passed, 0 failed, 0 skipped.
 - Broad schema, documentation, generated API and architecture contracts: 1,241 passed, 0 failed, 0 skipped.
-- Native Guild graph/storage-payload/parser smoke, strict native SQLCipher verification, Release solution build and first-party AOT IL gate passed. Complete runtime coverage, client suites, shipping smoke and CI remain delivery gates.
+- Targeted runtime qualification: 5,074 passed, 0 failed, 1 Windows-only skip. Affected-path follow-ups: 2,307 passed after the worker correction and 1,294 passed after the retention-command correction, each with 0 failures and 0 skips. Compendium: 202 passed; Forge: 816 passed, 2 Windows-only skips.
+- Final Release solution build and native Guild graph/storage-payload/parser smoke passed after the worker lifetime and retention-command corrections. Strict native SQLCipher verification passed with unchanged assets. Earlier candidate qualification also passed the first-party AOT IL gate and shipping apphost smoke; those broader checks were not repeated under the targeted delivery boundary.
+- Worker admission/disposal regressions failed before the fix; 20 affected runtime, recovery and inventory checks passed afterward. The scoped Guild production proof passed against its 147 persisted capsule rows with updates disabled.
+- Full coverage and hosted Actions qualification were stopped when the qualification boundary changed. Their cancelled runs are not passing evidence.

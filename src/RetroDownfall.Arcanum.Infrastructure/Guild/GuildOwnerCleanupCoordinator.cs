@@ -169,9 +169,11 @@ internal sealed class GuildOwnerCleanupCoordinator(
 
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
-        command.Parameters.Clear();
+        await using SqliteCommand orphans = connection.CreateCommand();
 
-        command.CommandText = """
+        orphans.Transaction = transaction;
+
+        orphans.CommandText = """
             INSERT INTO guild_owner_cleanup(OwnerKindCode,OwnerId,EventSequence,PhaseCode,CreatedAtUtc,UpdatedAtUtc)
             SELECT orphan.Kind,orphan.Id,NULL,0,$now,$now FROM (
                 SELECT 1 Kind,CampaignId Id FROM guild_content WHERE CampaignId IS NOT NULL
@@ -189,21 +191,23 @@ internal sealed class GuildOwnerCleanupCoordinator(
             ON CONFLICT(OwnerKindCode,OwnerId) DO NOTHING;
             """;
 
-        command.Parameters.AddWithValue("$now", UtcInstantText.Format(clock.GetUtcNow()));
+        orphans.Parameters.AddWithValue("$now", UtcInstantText.Format(clock.GetUtcNow()));
 
-        command.Parameters.AddWithValue("$limit", maxOrphans);
+        orphans.Parameters.AddWithValue("$limit", maxOrphans);
 
-        int found = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        int found = await orphans.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
-        command.Parameters.Clear();
+        await using SqliteCommand sweep = connection.CreateCommand();
 
-        command.CommandText = "UPDATE capability_cleanup_state SET FullSweepRequired=$more,UpdatedAtUtc=$now WHERE CapabilityFamilyCode=2;";
+        sweep.Transaction = transaction;
 
-        command.Parameters.AddWithValue("$more", found == maxOrphans ? 1 : 0);
+        sweep.CommandText = "UPDATE capability_cleanup_state SET FullSweepRequired=$more,UpdatedAtUtc=$now WHERE CapabilityFamilyCode=2;";
 
-        command.Parameters.AddWithValue("$now", UtcInstantText.Format(clock.GetUtcNow()));
+        sweep.Parameters.AddWithValue("$more", found == maxOrphans ? 1 : 0);
 
-        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        sweep.Parameters.AddWithValue("$now", UtcInstantText.Format(clock.GetUtcNow()));
+
+        await sweep.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
         await transaction.CommitAsync(ct).ConfigureAwait(false);
 
@@ -381,30 +385,28 @@ internal sealed class GuildOwnerCleanupCoordinator(
 
         if (owner.EventSequence is { } sequence)
         {
-            command.Parameters.Clear();
+            await using SqliteCommand evidence = OwnerCommand(connection, transaction, owner);
 
-            command.CommandText = "SELECT COUNT(*) FROM owner_deletion_events WHERE Sequence=$sequence AND OwnerKindCode=$kind AND OwnerId=$owner COLLATE NOCASE;";
+            evidence.CommandText = "SELECT COUNT(*) FROM owner_deletion_events WHERE Sequence=$sequence AND OwnerKindCode=$kind AND OwnerId=$owner COLLATE NOCASE;";
 
-            command.Parameters.AddWithValue("$sequence", sequence);
+            evidence.Parameters.AddWithValue("$sequence", sequence);
 
-            command.Parameters.AddWithValue("$kind", owner.Kind);
-
-            command.Parameters.AddWithValue("$owner", owner.Id.ToString("D").ToUpperInvariant());
-
-            if (await command.ExecuteScalarAsync(ct).ConfigureAwait(false) is not 1L)
+            if (await evidence.ExecuteScalarAsync(ct).ConfigureAwait(false) is not 1L)
             {
                 return Deferred();
             }
 
-            command.Parameters.Clear();
+            await using SqliteCommand cursor = connection.CreateCommand();
 
-            command.CommandText = $"UPDATE capability_cleanup_state SET {(owner.Kind == 1 ? "AppliedCampaignSequence" : "AppliedSessionSequence")}=MAX({(owner.Kind == 1 ? "AppliedCampaignSequence" : "AppliedSessionSequence")},$sequence),UpdatedAtUtc=$now WHERE CapabilityFamilyCode=2;";
+            cursor.Transaction = transaction;
 
-            command.Parameters.AddWithValue("$sequence", sequence);
+            cursor.CommandText = $"UPDATE capability_cleanup_state SET {(owner.Kind == 1 ? "AppliedCampaignSequence" : "AppliedSessionSequence")}=MAX({(owner.Kind == 1 ? "AppliedCampaignSequence" : "AppliedSessionSequence")},$sequence),UpdatedAtUtc=$now WHERE CapabilityFamilyCode=2;";
 
-            command.Parameters.AddWithValue("$now", UtcInstantText.Format(clock.GetUtcNow()));
+            cursor.Parameters.AddWithValue("$sequence", sequence);
 
-            if (await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1)
+            cursor.Parameters.AddWithValue("$now", UtcInstantText.Format(clock.GetUtcNow()));
+
+            if (await cursor.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1)
             {
                 return Deferred();
             }

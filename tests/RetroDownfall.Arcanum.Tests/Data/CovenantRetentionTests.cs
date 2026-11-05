@@ -178,7 +178,13 @@ public sealed partial class CovenantRetentionTests : IAsyncLifetime
 
         Assert.Equal(31, (int)RetentionDataClass.CampaignSummaries);
 
-        Assert.Equal(32, Enum.GetValues<RetentionDataClass>().Length);
+        Assert.Equal(32, (int)RetentionDataClass.GuildContent);
+
+        Assert.Equal(33, (int)RetentionDataClass.GuildRecords);
+
+        Assert.Equal(34, (int)RetentionDataClass.GuildEvidence);
+
+        Assert.Equal(35, Enum.GetValues<RetentionDataClass>().Length);
 
         Assert.Equal(0, (int)MemoryResetScope.Entry);
 

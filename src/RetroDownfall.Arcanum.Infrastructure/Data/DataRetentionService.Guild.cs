@@ -183,15 +183,17 @@ internal sealed partial class DataRetentionService
             }
         }
 
-        command.Parameters.Clear();
+        await using SqliteCommand deletion = connection.CreateCommand();
 
-        Add(command, "@id", id.ToString("D").ToUpperInvariant());
+        deletion.Transaction = (SqliteTransaction)transaction;
 
-        command.CommandText = card
+        Add(deletion, "@id", id.ToString("D").ToUpperInvariant());
+
+        deletion.CommandText = card
             ? "DELETE FROM guild_agent_card_skills WHERE CardId = @id; DELETE FROM guild_agent_card_revisions WHERE CardId = @id; DELETE FROM guild_agent_cards WHERE CardId = @id;"
             : "DELETE FROM guild_agent_card_skills WHERE (CardId, Revision) IN (SELECT CardId, Revision FROM guild_agent_card_revisions WHERE ContentId = @id); DELETE FROM guild_agent_card_revisions WHERE ContentId = @id; DELETE FROM guild_content WHERE ContentId = @id;";
 
-        long removed = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        long removed = await deletion.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
