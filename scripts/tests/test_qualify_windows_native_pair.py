@@ -9,6 +9,8 @@ import xml.etree.ElementTree as ET
 from contextlib import redirect_stdout
 import io
 import shutil
+import os
+import sys
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "qualify_windows_native_pair.py"
@@ -81,6 +83,58 @@ class WindowsManifestOrderTests(unittest.TestCase):
         self.assertEqual(["LICENSE.txt", "RetroDownfall.Arcanum.Cli.exe", "e_sqlcipher.dll", "libonigwrap.dll", "symbols.pdb"], actual)
 
 
+class GitBashResolverTests(unittest.TestCase):
+    def test_system32_bash_before_git_cannot_be_selected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            wsl = root / "System32" / "bash.exe"
+            wsl.parent.mkdir()
+            wsl.write_bytes(b"WSL launcher")
+            installation = root / "Git"
+            shell = installation / "bin" / "bash.exe"
+            shell.parent.mkdir(parents=True)
+            shell.write_bytes(b"Git MSYS shell")
+            cygpath = installation / "usr" / "bin" / "cygpath.exe"
+            cygpath.parent.mkdir(parents=True)
+            cygpath.write_bytes(b"MSYS path converter")
+            for layout in ("cmd", "bin", "mingw64/bin", "usr/bin"):
+                with self.subTest(layout=layout):
+                    git = installation / layout / "git.exe"
+                    git.parent.mkdir(parents=True, exist_ok=True)
+                    git.write_bytes(b"installed Git")
+                    with patch.object(pair.shutil, "which", side_effect=lambda name, **kwargs: str(git if name == "git" else wsl)):
+                        self.assertEqual(shell, pair.resolve_git_bash({"PATH": str(wsl.parent) + os.pathsep + str(git.parent)}))
+
+    def test_missing_git_shell_never_falls_back_to_path_bash(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            git = Path(temporary) / "Git/cmd/git.exe"
+            git.parent.mkdir(parents=True)
+            git.write_bytes(b"Git")
+            with patch.object(pair.shutil, "which", return_value=str(git)):
+                with self.assertRaisesRegex((ValueError, RuntimeError), "Git Bash"):
+                    pair.resolve_git_bash()
+
+    @unittest.skipUnless(os.name == "nt", "Real Git Bash execution requires Windows")
+    def test_real_git_bash_nested_preflight_on_windows(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "evidence"
+            output.mkdir()
+            subject = pair.Pair(root, "a" * 40, "b" * 40, "win-x64", "10.0.403", output)
+            subject.prepare_git_bash()
+            self.assertTrue(Path(subject.shell_identity["nestedBash"]).is_file())
+            self.assertTrue(Path(subject.shell_identity["cygpath"]).is_file())
+
+    def test_process_runner_preserves_the_prepared_child_environment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            environment = os.environ.copy()
+            environment["PATH"] = "git-prefix" + os.pathsep + environment.get("PATH", "")
+            output = pair.default_runner([sys.executable, "-c", "import os; print(os.environ['PATH'])"],
+                                         root, root / "child.log", 30, environment)
+            self.assertEqual(environment["PATH"], output.strip())
+
+
 class ActualSdkPublishingContextTests(unittest.TestCase):
     def test_fresh_restore_imports_the_real_native_setup_target_in_the_publishing_context(self):
         if shutil.which("dotnet") is None:
@@ -119,7 +173,7 @@ class ToolchainTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.output = self.root / "evidence"
         self.output.mkdir()
         self.tools = {name: self.root / name for name in ("link.exe", "lib.exe", "ilc.exe")}
@@ -141,7 +195,7 @@ class ToolchainTests(unittest.TestCase):
         self.versions = [{"path": str(path), "fileVersion": "10.0.14", "productVersion": "10.0.14"} for path in self.tools.values()]
         self.commands = []
 
-    def runner(self, argv, cwd, log, timeout):
+    def runner(self, argv, cwd, log, timeout, environment=None):
         self.commands.append(argv)
         value = self.raw if argv[0] == "dotnet" else self.versions
         text = json.dumps(value)
@@ -188,7 +242,7 @@ class PairTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.repo = self.root / "repo"
         self.repo.mkdir()
         self.git("init", "-q")
@@ -206,6 +260,17 @@ class PairTests(unittest.TestCase):
         self.fail_gate = None
         self.wrong_rid = False
         self.converted_paths = {}
+        self.child_environments = []
+        self.git_root = self.root / "Git"
+        self.git_bash = self.git_root / "bin/bash.exe"
+        self.git_exe = self.git_root / "cmd/git.exe"
+        self.cygpath = self.git_root / "usr/bin/cygpath.exe"
+        for path in (self.git_bash, self.git_exe, self.cygpath):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"fixture tool")
+        resolver = patch.object(pair.shutil, "which", return_value=str(self.git_exe))
+        resolver.start()
+        self.addCleanup(resolver.stop)
 
     def git(self, *args):
         return subprocess.check_output(["git", "-C", str(self.repo), *args], stderr=subprocess.PIPE).decode().strip()
@@ -215,15 +280,20 @@ class PairTests(unittest.TestCase):
         self.git("commit", "-qm", "qualification fixture")
         return self.git("rev-parse", "HEAD")
 
-    def fake_run(self, argv, cwd, log, timeout):
+    def fake_run(self, argv, cwd, log, timeout, environment=None):
         self.commands.append(argv)
+        self.child_environments.append(environment or {})
         if argv[0] == "git":
             output = subprocess.check_output(argv, cwd=cwd, stderr=subprocess.STDOUT).decode()
         elif argv[:2] == ["dotnet", "--version"]:
             output = "10.0.403\n"
         elif argv[:2] == ["dotnet", "--info"]:
             output = " RID: " + ("win-arm64" if self.wrong_rid else "win-x64") + "\n"
-        elif argv[0] == "bash":
+        elif argv[0] == "bash" or Path(argv[0]).name == "bash.exe":
+            if argv[1] == "--noprofile":
+                output = "MINGW64_NT-10.0\n" + str(self.git_bash) + "\n" + str(self.cygpath) + "\n/pair-output\n"
+                log.write_text(output)
+                return output
             if argv[1] == "-c":
                 converted = "/pair-fixture/" + str(len(self.converted_paths))
                 self.converted_paths[converted] = argv[-1]
@@ -298,8 +368,8 @@ class PairTests(unittest.TestCase):
         checkouts = [command[-1] for command in self.commands if command[:3] == ["git", "checkout", "--detach"]]
         self.assertEqual([self.baseline, self.candidate, self.candidate], checkouts)
         self.assertEqual(2, len([c for c in self.commands if "--retain-publish-dir" in c]))
-        self.assertEqual(1, len([c for c in self.commands if c[:2] == ["bash", "scripts/verify-aot-il-warnings.sh"]]))
-        self.assertEqual(1, len([c for c in self.commands if c[:2] == ["bash", "scripts/verify-native-sqlcipher.sh"] and "--strict" in c]))
+        self.assertEqual(1, len([c for c in self.commands if c[:2] == [str(self.git_bash), "scripts/verify-aot-il-warnings.sh"]]))
+        self.assertEqual(1, len([c for c in self.commands if c[:2] == [str(self.git_bash), "scripts/verify-native-sqlcipher.sh"] and "--strict" in c]))
         self.assertTrue(json.loads((self.out / "summary.json").read_text())["success"])
         self.assertEqual(5, result["candidate"]["focusedTests"]["passed"])
         tests = [c for c in self.commands if c[:2] == ["dotnet", "test"]]
@@ -316,9 +386,34 @@ class PairTests(unittest.TestCase):
 
     def test_each_shipping_gate_receives_a_git_bash_absolute_retention_path(self):
         self.execute()
-        conversions = [command for command in self.commands if command[:2] == ["bash", "-c"]]
+        conversions = [command for command in self.commands if command[:2] == [str(self.git_bash), "-c"]]
         self.assertEqual(2, len(conversions))
         self.assertTrue(all(command[2] == 'cygpath -u "$1"' for command in conversions))
+
+    def test_all_shells_are_absolute_and_nested_tools_precede_system32_before_checkout(self):
+        self.execute()
+        shells = [(command, environment) for command, environment in zip(self.commands, self.child_environments)
+                  if command[0] == "bash" or Path(command[0]).name == "bash.exe"]
+        self.assertGreaterEqual(len(shells), 7)
+        for command, environment in shells:
+            self.assertEqual(str(self.git_bash), command[0])
+            self.assertEqual([str(self.git_root / "bin"), str(self.git_root / "usr/bin")], environment["PATH"].split(os.pathsep)[:2])
+            self.assertTrue(environment["PATH"].endswith(os.environ.get("PATH", "")))
+        preflight = next(index for index, command in enumerate(self.commands) if command[1] == "--noprofile")
+        checkout = next(index for index, command in enumerate(self.commands) if command[:3] == ["git", "checkout", "--detach"])
+        self.assertLess(preflight, checkout)
+
+    def test_non_msys_preflight_refuses_before_any_checkout(self):
+        original = self.fake_run
+
+        def wrong_shell(argv, cwd, log, timeout, environment=None):
+            if len(argv) > 1 and argv[1] == "--noprofile":
+                return "Linux\n/bin/bash\n/usr/bin/cygpath\n/pair-output\n"
+            return original(argv, cwd, log, timeout, environment)
+
+        with self.assertRaisesRegex(RuntimeError, "MSYS"):
+            self.execute(runner=wrong_shell)
+        self.assertFalse(any(command[:3] == ["git", "checkout", "--detach"] for command in self.commands))
 
     def test_any_toolchain_drift_fails_before_success_and_restores_candidate(self):
         for snapshots in ([{"id": 1}, {"id": 2}], [{"id": 1}, {"id": 1}, {"id": 2}]):
@@ -372,8 +467,8 @@ class PairTests(unittest.TestCase):
     def test_post_publish_source_mutation_cannot_report_success(self):
         original = self.fake_run
 
-        def mutate(argv, cwd, log, timeout):
-            result = original(argv, cwd, log, timeout)
+        def mutate(argv, cwd, log, timeout, environment=None):
+            result = original(argv, cwd, log, timeout, environment)
             if "--retain-publish-dir" in argv:
                 (self.repo / pair.PROFILE_OWNERS[0]).write_text("unrelated mutation to preserve")
             return result

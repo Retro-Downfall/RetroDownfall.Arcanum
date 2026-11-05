@@ -18,6 +18,7 @@ import stat
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+import shutil
 
 PROJECT = "src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj"
 PROFILE_OWNERS = (
@@ -84,6 +85,29 @@ def restore_arguments(rid):
     return publishing_properties(rid)
 
 
+def resolve_git_bash(environment=None):
+    found = shutil.which("git", path=(environment or os.environ).get("PATH"))
+    if not found:
+        raise RuntimeError("Git Bash requires an installed git.exe")
+    git = Path(found).resolve()
+    if git.name.casefold() != "git.exe" or not git.is_file():
+        raise RuntimeError("Git Bash must be resolved from an installed git.exe")
+    parent = git.parent
+    if parent.name.casefold() == "cmd":
+        root = parent.parent
+    elif parent.name.casefold() == "bin":
+        root = parent.parent
+        if root.name.casefold() in ("usr", "mingw32", "mingw64", "clangarm64"):
+            root = root.parent
+    else:
+        raise RuntimeError("Unsupported Git Bash installation layout: " + str(git))
+    shell = root / "bin" / "bash.exe"
+    converter = root / "usr" / "bin" / "cygpath.exe"
+    if not shell.is_absolute() or not shell.is_file() or not converter.is_file():
+        raise RuntimeError("Git Bash and its MSYS tools are missing from the Git installation")
+    return shell
+
+
 def inventory(directory, rid):
     if rid not in ("win-x64", "win-arm64") or not directory.is_dir():
         raise ValueError("Missing publish directory or unsupported RID")
@@ -109,10 +133,10 @@ def inventory(directory, rid):
             "symbolPolicy": "All regular publish files included, including any symbols and licenses."}
 
 
-def default_runner(argv, cwd, log, timeout):
+def default_runner(argv, cwd, log, timeout, environment=None):
     with log.open("wb") as output:
         process = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL,
-                                   stdout=output, stderr=subprocess.STDOUT)
+                                   stdout=output, stderr=subprocess.STDOUT, env=environment)
         try:
             code = process.wait(timeout=timeout)
         except BaseException:
@@ -137,15 +161,44 @@ class Pair:
         self.runner = runner or default_runner
         self.platform = platform_name or platform.system()
         self.sequence = 0
+        self.environment = os.environ.copy()
+        self.bash = None
+        self.shell_identity = None
 
     def command(self, argv, label, timeout=7200):
         self.sequence += 1
         stem = self.output / (f"{self.sequence:03d}-" + label)
-        write_json(stem.with_suffix(".command.json"), {"argv": argv, "cwd": str(self.repo)})
+        write_json(stem.with_suffix(".command.json"), {"argv": argv, "cwd": str(self.repo), "path": self.environment.get("PATH", "")})
         log = stem.with_suffix(".log")
         log.touch()
         print("==> " + label, flush=True)
-        return self.runner(argv, self.repo, log, timeout)
+        return self.runner(argv, self.repo, log, timeout, self.environment)
+
+    def prepare_git_bash(self):
+        shell = resolve_git_bash(self.environment)
+        root = shell.parent.parent
+        prefixes = [str(root / "bin"), str(root / "usr" / "bin")]
+        self.environment["PATH"] = os.pathsep.join([*prefixes, self.environment.get("PATH", "")])
+        self.bash = str(shell)
+        # Exercise the same nested bare-bash lookup used by the unchanged shipping wrapper.
+        nested = 'set -e; uname -s; cygpath -am "$(command -v bash)"; cygpath -am "$(command -v cygpath)"; cygpath -u "$1"'
+        outer = 'exec bash --noprofile --norc -c "$1" arcanum-native-pair-nested "$2"'
+        lines = self.command([self.bash, "--noprofile", "--norc", "-c", outer,
+                              "arcanum-native-pair-preflight", nested, str(self.output)], "git-bash-preflight", 120).splitlines()
+        if len(lines) != 4 or not re.match(r"^(MINGW(?:32|64)|MSYS|UCRT64|CLANG(?:32|64|ARM64))_NT-", lines[0]):
+            raise RuntimeError("Git Bash preflight did not execute a real Windows MSYS shell")
+        resolved = []
+        for raw in lines[1:3]:
+            path = Path(raw)
+            if path.suffix.casefold() != ".exe":
+                path = Path(str(path) + ".exe")
+            if not path.is_absolute() or not path.is_file() or not within(path, root):
+                raise RuntimeError("Git Bash nested shell/tools escaped the selected Git installation")
+            resolved.append(str(path))
+        if not lines[3].startswith("/"):
+            raise RuntimeError("Git Bash cygpath preflight did not convert the absolute output directory")
+        self.shell_identity = {"bash": str(shell), **file_record(shell), "uname": lines[0],
+                               "nestedBash": resolved[0], "cygpath": resolved[1], "pathPrefix": prefixes}
 
     def git(self, *args):
         return self.command(["git", *args], "git-" + args[0], 120).strip()
@@ -181,6 +234,7 @@ class Pair:
         info = self.command(["dotnet", "--info"], "sdk-info", 120)
         if re.findall(r"^\s*RID:\s*(\S+)\s*$", info, re.M) != [self.rid]:
             raise ValueError("SDK host RID must match the native qualification RID")
+        self.prepare_git_bash()
 
     def capture_toolchain(self, label):
         # ResolveFrameworkReferences populates actual compiler/runtime packs. SetupOSSpecificProps
@@ -252,17 +306,17 @@ class Pair:
         self.command(["dotnet", "restore", PROJECT, *restore_arguments(self.rid),
                       "--disable-parallel"], label + "-restore", 900)
         if label == "candidate":
-            self.command(["bash", "scripts/verify-aot-il-warnings.sh", self.rid], "candidate-aot-audit")
-            self.command(["bash", "scripts/verify-native-sqlcipher.sh", "--rid", self.rid, "--strict"],
+            self.command([self.bash, "scripts/verify-aot-il-warnings.sh", self.rid], "candidate-aot-audit")
+            self.command([self.bash, "scripts/verify-native-sqlcipher.sh", "--rid", self.rid, "--strict"],
                          "candidate-native-sqlcipher", 300)
         before = self.capture_toolchain(label + "-before")
         if expected_toolchain is not None and before != expected_toolchain:
             raise RuntimeError("Baseline/candidate toolchain drift")
-        publish = self.command(["bash", "-c", 'cygpath -u "$1"', "arcanum-native-pair-path",
+        publish = self.command([self.bash, "-c", 'cygpath -u "$1"', "arcanum-native-pair-path",
                                 str(stage / "publish")], label + "-publish-path", 120).strip()
         if not publish.startswith("/") or "\n" in publish or "\r" in publish:
             raise RuntimeError("Could not resolve a Git Bash absolute publish path")
-        self.command(["bash", "scripts/verify-shipping-publish.sh", "--rid", self.rid,
+        self.command([self.bash, "scripts/verify-shipping-publish.sh", "--rid", self.rid,
                       "--retain-publish-dir", publish], label + "-shipping")
         after = self.capture_toolchain(label + "-after")
         if before != after:
@@ -293,6 +347,7 @@ class Pair:
         try:
             self.validate()
             validated = True
+            report["gitBash"] = self.shell_identity
             report["baseline"] = self.revision("baseline", self.baseline, None)
             report["candidate"] = self.revision("candidate", self.candidate, report["baseline"]["toolchain"])
             report["deltaBytes"] = {key: report["candidate"][key] - report["baseline"][key]
