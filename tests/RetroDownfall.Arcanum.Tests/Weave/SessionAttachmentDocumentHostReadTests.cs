@@ -349,7 +349,7 @@ public sealed class SessionAttachmentDocumentHostReadTests
     {
         ManualTimerTimeProvider clock = new();
 
-        using ManualResetEventSlim release = new(false);
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -358,23 +358,21 @@ public sealed class SessionAttachmentDocumentHostReadTests
         int invocations = 0;
 
         SessionAttachmentDocumentExtractionHost host = new(
-            (_, output, _) =>
+            async (_, output, _) =>
             {
                 if (Interlocked.Increment(ref invocations) == 1)
                 {
                     entered.TrySetResult();
 
-                    // An uncooperative parser: it ignores cancellation and outlives its own budget.
-                    release.Wait();
+                    // Ignore cancellation without pinning the pool worker needed by the host and test continuations.
+                    await release.Task;
 
                     ended.TrySetResult();
 
-                    return ValueTask.CompletedTask;
+                    return;
                 }
 
                 output.TryAppend("healthy");
-
-                return ValueTask.CompletedTask;
             },
             TimeSpan.FromMilliseconds(100), timeProvider: clock);
 
@@ -428,7 +426,7 @@ public sealed class SessionAttachmentDocumentHostReadTests
         }
         finally
         {
-            release.Set();
+            release.TrySetResult();
         }
 
         await ended.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -446,23 +444,23 @@ public sealed class SessionAttachmentDocumentHostReadTests
 
         byte[] poison = "ARCCOMP1\npoison"u8.ToArray();
 
-        using ManualResetEventSlim release = new(false);
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         SessionAttachmentDocumentExtractionHost host = new(
-            (bytes, output, cancellationToken) =>
+            async (bytes, output, cancellationToken) =>
             {
                 if (bytes.Span.SequenceEqual(poison))
                 {
                     entered.TrySetResult();
 
-                    release.Wait(TimeSpan.FromSeconds(30));
+                    await release.Task;
 
-                    return ValueTask.CompletedTask;
+                    return;
                 }
 
-                return new ComprehensionTextContainerExtractor().ExtractAsync(bytes, output, cancellationToken);
+                await new ComprehensionTextContainerExtractor().ExtractAsync(bytes, output, cancellationToken);
             },
             TimeSpan.FromMilliseconds(200),
             slotWait: TimeSpan.FromSeconds(20), timeProvider: clock);
@@ -513,7 +511,7 @@ public sealed class SessionAttachmentDocumentHostReadTests
         }
         finally
         {
-            release.Set();
+            release.TrySetResult();
         }
 
         using SessionAttachmentDocumentSnapshot recovered = await EventuallyHeldAsync(host);
