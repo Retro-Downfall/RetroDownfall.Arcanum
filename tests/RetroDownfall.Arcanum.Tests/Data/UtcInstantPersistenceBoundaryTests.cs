@@ -695,6 +695,10 @@ public sealed class UtcInstantPersistenceBoundaryTests
     {
         string[] expectedOwners =
         [
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GuildCanonicalSchemaDataInitializer.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOwnerCleanupCoordinator.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.SourceClaims.cs",
             // The inspection continuation fallback formats a DTO instant, not a new database write.
             "src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/A2A/A2AExternalSpendLedger.cs",

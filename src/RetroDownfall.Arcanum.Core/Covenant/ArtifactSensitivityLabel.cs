@@ -196,7 +196,7 @@ public sealed class ArtifactSensitivityLabel
     }
 
     private static SensitiveArtifactKind RequireArtifactKind(SensitiveArtifactKind value) =>
-        value is >= SensitiveArtifactKind.AssistantEntry and <= SensitiveArtifactKind.LongRestDiscovery
+        value is >= SensitiveArtifactKind.AssistantEntry and <= SensitiveArtifactKind.GuildContent
             ? value
             : throw new ArgumentOutOfRangeException(nameof(value));
 }

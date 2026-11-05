@@ -11,6 +11,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// </remarks>
 internal static class UtcInstantColumnInventory
 {
+    internal static IReadOnlyList<UtcInstantTable> GuildCanonical { get; } =
+    [
+        new("guild_agent_cards", ["CreatedAtUtc", "UpdatedAtUtc"]),
+        new("guild_agent_card_revisions", ["CreatedAtUtc"]),
+        new("guild_content", ["CreatedAtUtc"]),
+        new("guild_content_erasure_receipts", ["ErasedAtUtc"]),
+        new("guild_owner_cleanup", ["CreatedAtUtc", "UpdatedAtUtc"]),
+    ];
+
     // The version-9 sweep runs before version-11 columns exist. Its positional cursor also depends
     // on this exact table order, so later inventories must extend a separate head projection.
     internal static IReadOnlyList<UtcInstantTable> CoreVersionNine { get; } =

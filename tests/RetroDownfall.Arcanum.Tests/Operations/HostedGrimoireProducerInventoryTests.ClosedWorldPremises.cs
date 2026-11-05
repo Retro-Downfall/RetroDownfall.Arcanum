@@ -962,20 +962,108 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.True(ledger.Holds(HostedProducerPremises.SqliteSealedByUse));
     }
 
-    [Fact]
+    [Theory]
+    [InlineData("PidFileService")]
+    [InlineData("GuildMaintenanceHostedService")]
+    [InlineData("Issue145AffectedPrimary")]
+    [InlineData("Issue145SchemaAdditional")]
     [Trait("Category", "HostedProducerProductionAnalysis")]
-    public void The_production_entry_runs_only_the_named_roots_under_the_production_premise()
+    public void The_production_entry_runs_only_the_named_roots_under_the_production_premise(string serviceType)
     {
+        if (serviceType is "Issue145AffectedPrimary" or "Issue145SchemaAdditional")
+        {
+            VerifyIssue145AffectedProductionRoots(serviceType == "Issue145SchemaAdditional");
+
+            return;
+        }
+
         HostedProducerDiscovery<HostedProducerSite> scoped = HostedGrimoireProducerInventory.DiscoverProductionSites(
-            HostedProducerProductionPartition.Primary, ["PidFileService"]);
+            HostedProducerProductionPartition.Primary, [serviceType]);
 
         Assert.NotEmpty(scoped.Items);
 
-        Assert.All(scoped.Items, static site => Assert.Equal("PidFileService", site.RootType));
+        Assert.All(scoped.Items, site => Assert.Equal(serviceType, site.RootType));
 
-        Assert.DoesNotContain(scoped.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_PREMISE_VIOLATED");
+        Assert.True(scoped.Diagnostics.Count == 0,
+            HostedGrimoireProducerInventory.RenderDiagnosticReport(scoped.Diagnostics));
 
-        Assert.Empty(scoped.Diagnostics);
+        if (serviceType == "GuildMaintenanceHostedService")
+        {
+            const string operationId = "RetroDownfall.Arcanum.Infrastructure.Guild.GuildMaintenanceHostedService.ExecuteAsync";
+
+            HostedProducerAnalysisMetrics metrics = Assert.IsType<HostedProducerAnalysisMetrics>(scoped.AnalysisMetrics);
+
+            HostedProducerRootTraversalMetric traversal = Assert.Single(metrics.RootTraversals);
+
+            Assert.Equal(serviceType, traversal.RootType);
+
+            Assert.Equal(operationId, traversal.RootOperation);
+
+            Assert.True(traversal.AnalyzedStates > 0);
+
+            Assert.All(scoped.Items, site => Assert.Equal(operationId, site.AuthorityOperationId));
+
+            HostedProducerSite[] acquisitions = [.. scoped.Items.Where(
+                static site => site.Callee == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease")];
+
+            Assert.Equal(2, acquisitions.Length);
+
+            Assert.All(acquisitions, static site => Assert.Equal(GrimoireWorkKind.GuildMaintenance, site.AdmittedWorkKind));
+
+            Assert.Contains(acquisitions, static site => site.EnclosingType == "RetroDownfall.Arcanum.Infrastructure.Guild.GuildMaintenanceHostedService");
+
+            Assert.Contains(acquisitions, static site => site.EnclosingType == "RetroDownfall.Arcanum.Infrastructure.Guild.GuildOwnerCleanupCoordinator");
+
+            Assert.Contains(scoped.Items, static site => site.Kind == HostedProducerSiteKind.DatabaseAccess);
+
+            Assert.Contains(scoped.Items, static site => site.Callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal));
+
+            // Retain every other reviewed partition and use the existing explicit manifest update
+            // switch only for this scoped root. Without that switch, any missing/stale Guild row fails.
+            HostedProducerCapsuleManifest reviewed = HostedGrimoireProducerInventory.ParseCapsuleManifest(
+                global::System.IO.File.ReadAllLines(HostedGrimoireProducerInventory.CapsuleManifestPath));
+
+            Assert.Empty(reviewed.Diagnostics);
+
+            string expected = HostedGrimoireProducerInventory.RenderCapsuleManifest(
+                reviewed.Sites.Where(site => site.RootType != serviceType).Concat(scoped.Items));
+
+            HostedProducerCapsuleManifestUpdate update = HostedGrimoireProducerInventory.ReadOrUpdateCapsuleManifest(
+                HostedGrimoireProducerInventory.CapsuleManifestPath, expected, scoped.Diagnostics,
+                global::System.Environment.GetEnvironmentVariable("ARCANUM_UPDATE_HOSTED_PRODUCER_CAPSULES") == "1",
+                output.WriteLine);
+
+            Assert.True(string.Equals(expected, update.Reviewed, StringComparison.Ordinal), update.Report);
+
+            HostedProducerCapsuleManifest persisted = HostedGrimoireProducerInventory.ParseCapsuleManifest(
+                update.Reviewed.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+
+            Assert.Empty(persisted.Diagnostics);
+
+            HostedProducerSite[] guildSites = [.. persisted.Sites.Where(site => site.RootType == serviceType)];
+
+            Assert.NotEmpty(guildSites);
+
+            ProductionRootSelection selected = HostedGrimoireProducerInventory.SelectProductionRoots([operationId],
+                HostedGrimoireProducerInventory.DiscoverApplicationHostedServices(HostedGrimoireProducerInventory.ProductionCompilations),
+                HostedGrimoireProducerInventory.Catalog, HostedGrimoireProducerInventory.NonHostedCatalog);
+
+            HostedProducerServiceEntry declaration = Assert.Single(selected.Catalog);
+
+            HostedProducerOperationEntry operation = Assert.Single(declaration.Operations);
+
+            Assert.Equal(HostedProducerAuthorityKind.OrdinaryHostedWork, operation.Authority);
+
+            Assert.Equal(GrimoireWorkKind.GuildMaintenance, operation.WorkKind);
+
+            HostedProducerInventoryValidation validation = HostedGrimoireProducerInventory.Validate(
+                [declaration with { Operations = [operation with { Sites = guildSites }] }],
+                selected.NonHostedCatalog, selected.Registrations, scoped);
+
+            Assert.True(validation.IsValid, HostedGrimoireProducerInventory.RenderDiagnosticReport(validation.Diagnostics));
+
+            return;
+        }
 
         HostedProducerDiscovery<HostedProducerSite> additional = HostedGrimoireProducerInventory.DiscoverProductionSites(
             HostedProducerProductionPartition.Additional, ["RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreStagingIndex.Add"]);
@@ -985,6 +1073,133 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.All(additional.Items, static site => Assert.Equal("RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreStagingIndex", site.RootType));
 
         Assert.DoesNotContain(additional.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_PREMISE_VIOLATED");
+    }
+
+    private void VerifyIssue145AffectedProductionRoots(bool schemaAdditional)
+    {
+        string[] selectors = schemaAdditional
+            ?
+            [
+                "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog.get_AllObjects",
+                "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog.get_CoreObjects",
+                "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog.get_CovenantCanonicalObjects",
+                "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog.get_CovenantAcceleratorObjects",
+                "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog.get_TransitionStatements",
+                "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog.get_CanonicalSchemaFingerprint",
+                "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog.get_CoreSchemaFingerprint",
+                "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog.get_CovenantCanonicalSchemaFingerprint",
+                "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog.get_CovenantAcceleratorSchemaFingerprint",
+                "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaManifests.get_Core",
+                "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaManifests.get_CovenantCanonical",
+                "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaManifests.get_CovenantAccelerator",
+            ]
+            :
+            [
+                "DataRetentionSweepHostedService",
+                "GrimoireDatabaseHostedService",
+                "GrimoireSchemaTransitionHostedService",
+                "LongRunningOperationStartupHostedService",
+                "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService.RestoreAsync",
+                "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery.RecoverBeforeBootstrapAsync",
+                "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFreshUnderMaintenanceLockAsync",
+                "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFullUnderMaintenanceLockAsync",
+                "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyUnderMaintenanceLockAsync",
+            ];
+
+        // Whole affected hosted services retain their normal lifecycle and lease-handoff roots.
+        // Pin the expanded declarations so a future catalog change cannot silently broaden this proof.
+        string[] expectedOperations = schemaAdditional
+            ? selectors
+            :
+            [
+                "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionSweepHostedService.ExecuteAsync",
+                "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StartAsync",
+                "RetroDownfall.Arcanum.Infrastructure.Covenant.GrimoireSchemaTransitionHostedService.ExecuteAsync",
+                "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync",
+                "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~DF80A1ADE60651303A7C44345454EA715F10027DA9199F28FDB9F91C886443A3",
+                "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService.RestoreAsync",
+                "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery.RecoverBeforeBootstrapAsync",
+                "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFreshUnderMaintenanceLockAsync",
+                "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFullUnderMaintenanceLockAsync",
+                "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyUnderMaintenanceLockAsync",
+                "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StopAsync",
+                "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StopAsync",
+            ];
+
+        HostedProducerProductionPartition partition = schemaAdditional
+            ? HostedProducerProductionPartition.Additional
+            : HostedProducerProductionPartition.Primary;
+
+        ProductionRootSelection selected = HostedGrimoireProducerInventory.SelectProductionRoots(selectors,
+            schemaAdditional ? new([], []) : HostedGrimoireProducerInventory.DiscoverApplicationHostedServices(HostedGrimoireProducerInventory.ProductionCompilations),
+            schemaAdditional ? [] : HostedGrimoireProducerInventory.Catalog,
+            schemaAdditional ? HostedGrimoireProducerInventory.AdditionalProductionRoots : HostedGrimoireProducerInventory.NonHostedCatalog);
+
+        HashSet<string> operations = new(selected.Catalog.SelectMany(static service => service.Operations)
+            .Select(static operation => operation.OperationId)
+            .Concat(selected.NonHostedCatalog.Select(static chain => chain.ChainId)), StringComparer.Ordinal);
+
+        Assert.Equal(expectedOperations.Order(StringComparer.Ordinal), operations.Order(StringComparer.Ordinal));
+
+        HostedProducerDiscovery<HostedProducerSite> scoped = HostedGrimoireProducerInventory.DiscoverProductionSites(partition, selectors);
+
+        Assert.True(scoped.Diagnostics.Count == 0, HostedGrimoireProducerInventory.RenderDiagnosticReport(scoped.Diagnostics));
+
+        HostedProducerAnalysisMetrics metrics = Assert.IsType<HostedProducerAnalysisMetrics>(scoped.AnalysisMetrics);
+
+        foreach (string operationId in operations)
+        {
+            HostedProducerRootTraversalMetric traversal = Assert.Single(metrics.RootTraversals,
+                traversal => traversal.RootOperation == operationId);
+
+            Assert.True(traversal.AnalyzedStates > 0, operationId);
+        }
+
+        Assert.All(scoped.Items, site => Assert.Contains(site.AuthorityOperationId, operations));
+
+        HostedProducerCapsuleManifest reviewed = HostedGrimoireProducerInventory.ParseCapsuleManifest(
+            global::System.IO.File.ReadAllLines(HostedGrimoireProducerInventory.CapsuleManifestPath));
+
+        Assert.Empty(reviewed.Diagnostics);
+
+        // Replace exactly the selected authority operations, retaining every other partition and root.
+        string unaffected = HostedGrimoireProducerInventory.RenderCapsuleManifest(
+            reviewed.Sites.Where(site => !operations.Contains(site.AuthorityOperationId)));
+
+        string expected = HostedGrimoireProducerInventory.RenderCapsuleManifest(
+            reviewed.Sites.Where(site => !operations.Contains(site.AuthorityOperationId)).Concat(scoped.Items));
+
+        HostedProducerCapsuleManifestUpdate update = HostedGrimoireProducerInventory.ReadOrUpdateCapsuleManifest(
+            HostedGrimoireProducerInventory.CapsuleManifestPath, expected, scoped.Diagnostics,
+            global::System.Environment.GetEnvironmentVariable("ARCANUM_UPDATE_HOSTED_PRODUCER_CAPSULES") == "1", output.WriteLine);
+
+        Assert.True(string.Equals(expected, update.Reviewed, StringComparison.Ordinal), update.Report);
+
+        HostedProducerCapsuleManifest persisted = HostedGrimoireProducerInventory.ParseCapsuleManifest(
+            update.Reviewed.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+
+        Assert.Empty(persisted.Diagnostics);
+
+        Assert.Equal(unaffected, HostedGrimoireProducerInventory.RenderCapsuleManifest(
+            persisted.Sites.Where(site => !operations.Contains(site.AuthorityOperationId))));
+
+        HostedProducerServiceEntry[] services = [.. selected.Catalog.Select(service => service with
+        {
+            Operations = [.. service.Operations.Select(operation => operation with
+            {
+                Sites = [.. persisted.Sites.Where(site => site.RootType == service.ServiceType && site.AuthorityOperationId == operation.OperationId)],
+            })],
+        })];
+
+        NonHostedProducerChainEntry[] chains = [.. selected.NonHostedCatalog.Select(chain => chain with
+        {
+            Sites = [.. persisted.Sites.Where(site => site.RootType == chain.EnclosingType && site.AuthorityOperationId == chain.ChainId)],
+        })];
+
+        HostedProducerInventoryValidation validation = HostedGrimoireProducerInventory.Validate(
+            services, chains, selected.Registrations, scoped);
+
+        Assert.True(validation.IsValid, HostedGrimoireProducerInventory.RenderDiagnosticReport(validation.Diagnostics));
     }
 
     [Theory]

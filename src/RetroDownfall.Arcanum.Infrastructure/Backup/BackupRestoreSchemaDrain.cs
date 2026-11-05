@@ -56,6 +56,7 @@ internal static class BackupRestoreSchemaDrain
         GrimoireSchemaTransactionTier.Core,
         GrimoireSchemaTransactionTier.CovenantCanonical,
         GrimoireSchemaTransactionTier.CovenantAccelerator,
+        GrimoireSchemaTransactionTier.GuildCanonical,
     ];
 
     /// <summary>
@@ -207,6 +208,7 @@ internal static class BackupRestoreSchemaDrain
         tier switch
         {
             GrimoireSchemaTransactionTier.CovenantCanonical => GrimoireSchemaTransactionTier.Core,
+            GrimoireSchemaTransactionTier.GuildCanonical => GrimoireSchemaTransactionTier.Core,
             GrimoireSchemaTransactionTier.CovenantAccelerator => GrimoireSchemaTransactionTier.CovenantCanonical,
             _ => null,
         };
@@ -254,6 +256,7 @@ internal static class BackupRestoreSchemaDrain
         {
             GrimoireSchemaTransactionTier.Core => tiers.Core.Health,
             GrimoireSchemaTransactionTier.CovenantCanonical => tiers.CovenantCanonical.Health,
+            GrimoireSchemaTransactionTier.GuildCanonical => tiers.GuildCanonical.Health,
             GrimoireSchemaTransactionTier.CovenantAccelerator => tiers.CovenantAccelerator.Health,
             _ => throw new ArgumentOutOfRangeException(nameof(tier)),
         };

@@ -33,7 +33,8 @@ public sealed partial class GrimoireDatabaseBootstrapperTests
 
         GrimoireSchemaVersionChainSet chains = new([upgraded,
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
-            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator)]);
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical)]);
 
         IServiceScopeFactory scopes = CreateScopeFactory(_credentialStore, readiness: readiness, chains: chains);
 

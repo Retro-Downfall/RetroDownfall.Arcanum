@@ -6,7 +6,7 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 
 /// <summary>
-/// The three-tier installation contract: Core, Covenant canonical, and Covenant accelerator each
+/// The four-tier installation contract: Core, Covenant canonical, Covenant accelerator, and Guild each
 /// commit in their own transaction, each record their own metadata row, and each fail without taking
 /// the tiers beside them down.
 /// </summary>
@@ -57,7 +57,7 @@ public sealed class CovenantSchemaInstallerTests
     /// exist to make representable.
     /// </remarks>
     [Fact]
-    public async Task Fresh_install_commits_core_canonical_and_accelerator_in_three_transactions()
+    public async Task Fresh_install_commits_all_four_tiers_in_independent_transactions()
     {
 
         await using SqliteConnection connection = await OpenAsync();
@@ -73,7 +73,9 @@ public sealed class CovenantSchemaInstallerTests
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, result.CovenantAccelerator.Health);
 
-        Assert.Equal(3L, await CountMetadataRowsAsync(connection));
+        Assert.Equal(GrimoireSchemaTierHealth.Healthy, result.GuildCanonical.Health);
+
+        Assert.Equal(4L, await CountMetadataRowsAsync(connection));
 
         Assert.Equal(1L, await CountMetadataRowsAsync(connection, GrimoireSchemaTransactionTier.Core));
 
@@ -84,6 +86,10 @@ public sealed class CovenantSchemaInstallerTests
         Assert.Equal(
             1L,
             await CountMetadataRowsAsync(connection, GrimoireSchemaTransactionTier.CovenantAccelerator));
+
+        Assert.Equal(1L, await CountMetadataRowsAsync(connection, GrimoireSchemaTransactionTier.GuildCanonical));
+
+        Assert.True(await ObjectExistsAsync(connection, "guild_content"), "missing Guild content table");
 
         Assert.True(await ObjectExistsAsync(connection, "Sessions"), "missing core table Sessions");
 
@@ -131,11 +137,17 @@ public sealed class CovenantSchemaInstallerTests
             first.CovenantAccelerator.InstalledCatalogFingerprint,
             second.CovenantAccelerator.InstalledCatalogFingerprint);
 
+        Assert.Equal(first.GuildCanonical.InstalledCatalogFingerprint, second.GuildCanonical.InstalledCatalogFingerprint);
+
+        Assert.NotNull(first.GuildCanonical.InstalledCatalogFingerprint);
+
+        Assert.NotNull(second.GuildCanonical.InstalledCatalogFingerprint);
+
         // A non-null fingerprint on both runs is what makes the equality above meaningful; two nulls
         // would compare equal and prove nothing.
         Assert.NotNull(second.CovenantCanonical.InstalledCatalogFingerprint);
 
-        Assert.Equal(3L, await CountMetadataRowsAsync(connection));
+        Assert.Equal(4L, await CountMetadataRowsAsync(connection));
 
     }
 
@@ -598,7 +610,7 @@ public sealed class CovenantSchemaInstallerTests
         GrimoireSchemaTestInstaller.OpenAsync("Data Source=:memory:", CancellationToken.None);
 
     /// <summary>
-    /// Installs all three tiers with one stock initializer swapped for a failing one, leaving the
+    /// Installs all four tiers with one stock initializer swapped for a failing one, leaving the
     /// other two tiers seeding exactly as they do in the host.
     /// </summary>
     private static Task<GrimoireSchemaInstallResult> InstallWithFailingTierAsync(
@@ -613,6 +625,7 @@ public sealed class CovenantSchemaInstallerTests
             new CoreGrimoireSchemaDataInitializer(),
             new CovenantCanonicalSchemaDataInitializer(),
             new CovenantAcceleratorSchemaDataInitializer(),
+                new GuildCanonicalSchemaDataInitializer(),
         })
         {
 

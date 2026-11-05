@@ -173,6 +173,8 @@ public sealed class SettingDescriptorParityTests
             "sagaMemories",
             "lexiconEntries",
             "campaignSummaries",
+            "guildContent",
+            "guildRecords",
             "workspaceIndexes",
             "sessionEntryEmbeddings",
             "auditLogs",

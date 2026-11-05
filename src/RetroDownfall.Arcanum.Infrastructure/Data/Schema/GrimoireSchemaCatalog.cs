@@ -175,6 +175,13 @@ internal static class GrimoireSchemaCatalog
     /// </summary>
     public static string CovenantAcceleratorSchemaFingerprint => LoadedAcceleratorFingerprint.Value;
 
+    public static IReadOnlyList<GrimoireSchemaObject> GuildCanonicalObjects => LoadedGuildObjects.Value;
+
+    public static string GuildCanonicalSchemaFingerprint => ComputeSourceFingerprint(GuildCanonicalObjects);
+
+    private static readonly Lazy<IReadOnlyList<GrimoireSchemaObject>> LoadedGuildObjects =
+        new(() => FilterTier(GrimoireSchemaTransactionTier.GuildCanonical), LazyThreadSafetyMode.ExecutionAndPublication);
+
     /// <summary>
     /// Substitutes the install-time template values into an object definition and refuses to return
     /// a statement that still carries an unresolved placeholder — a typo in a token name must fail
@@ -548,6 +555,9 @@ internal static class GrimoireSchemaCatalog
         string relativePath) =>
         (family, tier) switch
         {
+
+            ("Guild", "Canonical") =>
+                (GrimoireSchemaFamily.Guild, GrimoireSchemaTransactionTier.GuildCanonical),
 
             ("Covenant", "Canonical") =>
                 (GrimoireSchemaFamily.Covenant, GrimoireSchemaTransactionTier.CovenantCanonical),

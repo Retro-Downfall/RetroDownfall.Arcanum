@@ -55,6 +55,7 @@ using RetroDownfall.Arcanum.Infrastructure.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Coordination;
 using RetroDownfall.Arcanum.Infrastructure.Daemons;
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -278,6 +279,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGrimoireSchemaDataInitializer, CovenantCanonicalSchemaDataInitializer>();
 
         services.AddSingleton<IGrimoireSchemaDataInitializer, CovenantAcceleratorSchemaDataInitializer>();
+
+        services.AddSingleton<IGrimoireSchemaDataInitializer, GuildCanonicalSchemaDataInitializer>();
 
         services.AddSingleton<GrimoireSchemaDataInitializers>();
 
@@ -1177,6 +1180,8 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IGrimoireSchemaDataInitializer, CovenantAcceleratorSchemaDataInitializer>();
 
+        services.AddSingleton<IGrimoireSchemaDataInitializer, GuildCanonicalSchemaDataInitializer>();
+
         services.AddSingleton<GrimoireSchemaDataInitializers>();
 
         services.AddSingleton(static _ => GrimoireSchemaTierOwnershipRegistry.CreateDefault());
@@ -1337,6 +1342,8 @@ public static class ServiceCollectionExtensions
         // composition is short-lived, and a sweep that started with a command and died with it would
         // drain a backlog only for whoever happened to run one.
         services.AddInstallationResetRecoveryAwareHostedService<CovenantMaintenanceHostedService>();
+
+        services.AddInstallationResetRecoveryAwareHostedService<GuildMaintenanceHostedService>();
 
         // Journal-gated rather than availability-gated, which is the opposite of the sweep above and
         // deliberately so. A tier with a version run in flight is not healthy by design, so a driver
@@ -2445,6 +2452,34 @@ public static class ServiceCollectionExtensions
             static sp => sp.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>());
 
         services.AddScoped<CovenantSensitivePurgeAuthorityScope>();
+
+        services.AddScoped(static sp => new GuildStore(
+            sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
+            sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+            sp.GetRequiredService<TimeProvider>()));
+
+        services.TryAddSingleton<IDnsResolver, SystemDnsResolver>();
+
+        services.AddSingleton<GuildDeclaredAgentSourceReader>();
+
+        services.AddSingleton<GuildRemoteCardReader>();
+
+        services.AddSingleton<GuildRosterRefreshCoordinator>();
+
+        services.AddScoped(static sp => new GuildRosterRefreshStore(
+            sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
+            sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+            sp.GetRequiredService<GuildRosterRefreshCoordinator>()));
+
+        services.AddScoped<IGuildOwnerCleanupParticipant, GuildRosterCleanupParticipant>();
+
+        services.AddScoped(static sp => new GuildOwnerCleanupCoordinator(
+            sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
+            sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+            sp.GetRequiredService<ICovenantSensitiveArtifactPurger>(),
+            sp.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>(),
+            sp.GetServices<IGuildOwnerCleanupParticipant>().ToArray(),
+            sp.GetRequiredService<TimeProvider>()));
 
         services.AddScoped<ICovenantSensitiveArtifactPurger>(
             static sp => new CovenantSensitiveRetentionPurgeCoordinator(

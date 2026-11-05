@@ -57,5 +57,6 @@ internal static class CovenantCanonicalSchemaVersionOneFixture
                 Objects,
                 []),
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+        GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
         ]);
 }

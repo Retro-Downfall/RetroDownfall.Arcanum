@@ -30,6 +30,8 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -401,6 +403,8 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         string[] beforeBlobs;
 
+        string[] beforeGuildState;
+
         await using (GrimoireMaintenanceAdmissionHarness first = await GrimoireMaintenanceAdmissionHarness.StartAsync(profile))
         {
             sessionId = first.SessionId;
@@ -435,6 +439,13 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
                 Assert.Equal(SessionAttachmentIndexStatus.Indexed, (await index.GetStateAsync(first.IndexingAttachmentB.Id, CancellationToken.None)).Status);
             }
 
+            await first.Admission.WaitUntilEffectCompletedAsync(GrimoireWorkKind.GuildMaintenance);
+
+            beforeGuildState = await GuildStateAsync(first);
+
+            Assert.Equal(GuildTableNames.Select(name => $"table:{name}:0")
+                .Append("cursor:0:0:0").Order(StringComparer.Ordinal).ToArray(), beforeGuildState);
+
             beforeRows = await ParticipantRowsAsync(first);
 
             beforeBlobs = Directory.GetFiles(ArcanumPaths.AttachmentsDirectory, "*", SearchOption.AllDirectories).Order().ToArray();
@@ -442,9 +453,10 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         await using GrimoireMaintenanceAdmissionHarness recovered = await GrimoireMaintenanceAdmissionHarness.StartRecoveryAsync(profile);
 
-        // Host startup only schedules the probe; await its actual observation before inspecting
-        // the recovered participants and effects.
-        await recovered.Admission.WaitUntilProviderHealthProbeEffectAsync();
+        // Startup schedules both workers; await their completed real effects before inspecting state.
+        await recovered.Admission.WaitUntilEffectCompletedAsync(GrimoireWorkKind.ProviderHealthProbe);
+
+        await recovered.Admission.WaitUntilEffectCompletedAsync(GrimoireWorkKind.GuildMaintenance);
 
         Assert.Equal(sessionId, recovered.SessionId);
 
@@ -458,22 +470,19 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         Assert.Equal(beforeBlobs, Directory.GetFiles(ArcanumPaths.AttachmentsDirectory, "*", SearchOption.AllDirectories).Order().ToArray());
 
-        // Ordinary startup performs the real health probe. It is not participant seeding.
-        // Retained-closed recovery scenarios must instead require no ordinary effects at all.
-        //
-        // The probe is a hosted background service: it yields once, then takes a work lease and begins
-        // its effect group on a pool continuation, and starting the host does not wait for that. The
-        // wait is only for the first effect to exist; the assertion below still demands exactly one,
-        // of the probe's kind.
-        using (CancellationTokenSource probeDeadline = new(TimeSpan.FromSeconds(10)))
-        {
-            while (recovered.Admission.Effects.Count == 0)
-            {
-                await Task.Delay(TimeSpan.FromMilliseconds(10), probeDeadline.Token);
-            }
-        }
+        Assert.Equal(beforeGuildState, await GuildStateAsync(recovered));
 
-        Assert.Equal(GrimoireWorkKind.ProviderHealthProbe, Assert.Single(recovered.Admission.Effects).Kind);
+        // Both legitimate startup effects are required exactly once. Retained-closed recovery
+        // tests keep these same workers installed and still require no ordinary effects at all.
+        Assert.Equal(new[] { GrimoireWorkKind.ProviderHealthProbe, GrimoireWorkKind.GuildMaintenance }.Order().ToArray(),
+            recovered.Admission.Effects.Select(effect => effect.Kind).Order().ToArray());
+
+        Assert.All(recovered.Admission.Effects, effect =>
+        {
+            Assert.Equal(1, effect.Disposals);
+
+            Assert.Equal(1, effect.TerminalCount);
+        });
 
         Assert.Equal(0, recovered.Chat.Calls);
 
@@ -486,6 +495,45 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => GrimoireMaintenanceAdmissionHarness.StartAsync(profile));
 
         AssertQuietHost(recovered);
+    }
+
+    private static IEnumerable<string> GuildTableNames => GrimoireSchemaManifests.GuildCanonical.Entries
+        .Where(entry => entry.Type == GrimoireSchemaObjectType.Table)
+        .Select(entry => entry.Name);
+
+    private static async Task<string[]> GuildStateAsync(GrimoireMaintenanceAdmissionHarness harness)
+    {
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+
+        await using AsyncServiceScope scope = harness.Factory.Services.CreateAsyncScope();
+
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        // Table names come only from the compiled schema manifest. Cover every Guild-owned
+        // domain/cache/evidence table, while permitting the cleanup pass's housekeeping timestamp.
+        string counts = string.Join(" UNION ALL ", GuildTableNames.Select(name =>
+            $"SELECT 'table:{name}:' || COUNT(*) AS Value FROM \"{name}\""));
+
+        await db.Database.OpenConnectionAsync(timeout.Token);
+
+        await using DbCommand command = db.Database.GetDbConnection().CreateCommand();
+
+        command.CommandText = counts + """
+             UNION ALL SELECT 'cursor:' || AppliedCampaignSequence || ':' || AppliedSessionSequence || ':' || FullSweepRequired AS Value
+             FROM capability_cleanup_state WHERE CapabilityFamilyCode=2
+             ORDER BY Value
+            """;
+
+        await using DbDataReader reader = await command.ExecuteReaderAsync(timeout.Token);
+
+        List<string> state = [];
+
+        while (await reader.ReadAsync(timeout.Token))
+        {
+            state.Add(reader.GetString(0));
+        }
+
+        return state.ToArray();
     }
 
     private static async Task<string[]> ParticipantRowsAsync(GrimoireMaintenanceAdmissionHarness harness)

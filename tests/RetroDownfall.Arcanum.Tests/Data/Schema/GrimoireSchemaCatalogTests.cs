@@ -54,7 +54,7 @@ public sealed class GrimoireSchemaCatalogTests
     }
 
     [Fact]
-    public void Catalog_exposes_core_covenant_canonical_and_covenant_accelerator_in_order()
+    public void Catalog_exposes_core_covenant_and_guild_tiers_in_order()
     {
 
         Assert.All(
@@ -73,13 +73,23 @@ public sealed class GrimoireSchemaCatalogTests
                 GrimoireSchemaTransactionTier.CovenantAccelerator,
                 item.TransactionTier));
 
-        // The three catalogs partition AllObjects: an object belongs to exactly one install
+        Assert.All(
+            GrimoireSchemaCatalog.GuildCanonicalObjects,
+            static item =>
+            {
+                Assert.Equal(GrimoireSchemaTransactionTier.GuildCanonical, item.TransactionTier);
+
+                Assert.Equal(GrimoireSchemaFamily.Guild, item.Family);
+            });
+
+        // The four catalogs partition AllObjects: an object belongs to exactly one install
         // transaction, so a resource that reached none of them would silently never install.
         Assert.Equal(
             GrimoireSchemaCatalog.AllObjects.Count,
             GrimoireSchemaCatalog.CoreObjects.Count
                 + GrimoireSchemaCatalog.CovenantCanonicalObjects.Count
-                + GrimoireSchemaCatalog.CovenantAcceleratorObjects.Count);
+                + GrimoireSchemaCatalog.CovenantAcceleratorObjects.Count
+                + GrimoireSchemaCatalog.GuildCanonicalObjects.Count);
 
         List<int> tiers =
         [
@@ -225,7 +235,7 @@ public sealed class GrimoireSchemaCatalogTests
 
         Assert.Equal(64, GrimoireSchemaCatalog.CoreSchemaFingerprint.Length);
 
-        // Three tiers, three identities. A shared value would let one tier's recorded row satisfy
+        // Four tiers, four identities. A shared value would let one tier's recorded row satisfy
         // another's gate.
         Assert.NotEqual(
             GrimoireSchemaCatalog.CoreSchemaFingerprint,
@@ -242,6 +252,18 @@ public sealed class GrimoireSchemaCatalogTests
         Assert.Equal(
             GrimoireSchemaCatalog.CovenantAcceleratorSchemaFingerprint,
             GrimoireSchemaManifests.CovenantAccelerator.SourceDefinitionFingerprint);
+
+        Assert.Equal(
+            GrimoireSchemaCatalog.GuildCanonicalSchemaFingerprint,
+            GrimoireSchemaManifests.GuildCanonical.SourceDefinitionFingerprint);
+
+        Assert.Equal(4, new[]
+        {
+            GrimoireSchemaCatalog.CoreSchemaFingerprint,
+            GrimoireSchemaCatalog.CovenantCanonicalSchemaFingerprint,
+            GrimoireSchemaCatalog.CovenantAcceleratorSchemaFingerprint,
+            GrimoireSchemaCatalog.GuildCanonicalSchemaFingerprint
+        }.Distinct(StringComparer.Ordinal).Count());
 
     }
 

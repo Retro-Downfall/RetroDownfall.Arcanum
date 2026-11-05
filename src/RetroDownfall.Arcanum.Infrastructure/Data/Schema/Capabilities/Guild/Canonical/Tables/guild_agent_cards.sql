@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS guild_agent_cards (
+    IssuedSequence INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    CardId TEXT NOT NULL UNIQUE CHECK((CardId=upper(CardId) AND length(CardId)=36 AND substr(CardId,9,1)='-' AND substr(CardId,14,1)='-' AND substr(CardId,19,1)='-' AND substr(CardId,24,1)='-' AND length(replace(CardId,'-',''))=32 AND replace(CardId,'-','') NOT GLOB '*[^0-9A-F]*' AND CardId<>'00000000-0000-0000-0000-000000000000')),
+    AgentId TEXT NOT NULL UNIQUE CHECK((AgentId=upper(AgentId) AND length(AgentId)=36 AND substr(AgentId,9,1)='-' AND substr(AgentId,14,1)='-' AND substr(AgentId,19,1)='-' AND substr(AgentId,24,1)='-' AND length(replace(AgentId,'-',''))=32 AND replace(AgentId,'-','') NOT GLOB '*[^0-9A-F]*' AND AgentId<>'00000000-0000-0000-0000-000000000000')),
+    ExplicitAgentId TEXT NULL UNIQUE CHECK((ExplicitAgentId IS NULL OR (ExplicitAgentId=upper(ExplicitAgentId) AND length(ExplicitAgentId)=36 AND substr(ExplicitAgentId,9,1)='-' AND substr(ExplicitAgentId,14,1)='-' AND substr(ExplicitAgentId,19,1)='-' AND substr(ExplicitAgentId,24,1)='-' AND length(replace(ExplicitAgentId,'-',''))=32 AND replace(ExplicitAgentId,'-','') NOT GLOB '*[^0-9A-F]*' AND ExplicitAgentId<>'00000000-0000-0000-0000-000000000000'))),
+    SourceKindCode INTEGER NOT NULL CHECK(SourceKindCode BETWEEN 0 AND 3),
+    SourceIdentity TEXT NOT NULL UNIQUE CHECK(length(CAST(SourceIdentity AS BLOB)) BETWEEN 1 AND 65536),
+    WorkspaceId TEXT NULL CHECK((WorkspaceId IS NULL OR (WorkspaceId=upper(WorkspaceId) AND length(WorkspaceId)=36 AND substr(WorkspaceId,9,1)='-' AND substr(WorkspaceId,14,1)='-' AND substr(WorkspaceId,19,1)='-' AND substr(WorkspaceId,24,1)='-' AND length(replace(WorkspaceId,'-',''))=32 AND replace(WorkspaceId,'-','') NOT GLOB '*[^0-9A-F]*' AND WorkspaceId<>'00000000-0000-0000-0000-000000000000'))),
+    PeerId TEXT NULL CHECK(PeerId IS NULL OR (length(CAST(PeerId AS BLOB)) BETWEEN 1 AND 65536)),
+    SessionId TEXT NULL CHECK((SessionId IS NULL OR (SessionId=upper(SessionId) AND length(SessionId)=36 AND substr(SessionId,9,1)='-' AND substr(SessionId,14,1)='-' AND substr(SessionId,19,1)='-' AND substr(SessionId,24,1)='-' AND length(replace(SessionId,'-',''))=32 AND replace(SessionId,'-','') NOT GLOB '*[^0-9A-F]*' AND SessionId<>'00000000-0000-0000-0000-000000000000'))),
+    CampaignId TEXT NULL CHECK((CampaignId IS NULL OR (CampaignId=upper(CampaignId) AND length(CampaignId)=36 AND substr(CampaignId,9,1)='-' AND substr(CampaignId,14,1)='-' AND substr(CampaignId,19,1)='-' AND substr(CampaignId,24,1)='-' AND length(replace(CampaignId,'-',''))=32 AND replace(CampaignId,'-','') NOT GLOB '*[^0-9A-F]*' AND CampaignId<>'00000000-0000-0000-0000-000000000000'))),
+    CurrentRevision INTEGER NOT NULL CHECK(CurrentRevision > 0),
+    ContentId TEXT NULL CHECK((ContentId IS NULL OR (ContentId=upper(ContentId) AND length(ContentId)=36 AND substr(ContentId,9,1)='-' AND substr(ContentId,14,1)='-' AND substr(ContentId,19,1)='-' AND substr(ContentId,24,1)='-' AND length(replace(ContentId,'-',''))=32 AND replace(ContentId,'-','') NOT GLOB '*[^0-9A-F]*' AND ContentId<>'00000000-0000-0000-0000-000000000000'))),
+    Available INTEGER NOT NULL CHECK(Available IN(0,1)),
+    ReasonCode TEXT NULL CHECK(ReasonCode IS NULL OR (length(CAST(ReasonCode AS BLOB)) BETWEEN 1 AND 65536)),
+    CreatedAtUtc TEXT NOT NULL,
+    UpdatedAtUtc TEXT NOT NULL,
+    CHECK(SourceKindCode<>2 OR SessionId IS NOT NULL),
+    CHECK(SourceKindCode=2 OR (SessionId IS NULL AND CampaignId IS NULL))
+);

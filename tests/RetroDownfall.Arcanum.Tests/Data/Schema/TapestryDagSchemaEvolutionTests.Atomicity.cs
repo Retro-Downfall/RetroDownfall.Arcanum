@@ -54,6 +54,7 @@ public sealed partial class TapestryDagSchemaEvolutionTests
                 new GrimoireSchemaVersionChain(core.HeadManifest, core.HeadObjects, [.. core.Steps.Where(item => item.ToVersion < 26), interrupted]),
                 GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
                 GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+        GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
             ]);
 
             if (cancel)

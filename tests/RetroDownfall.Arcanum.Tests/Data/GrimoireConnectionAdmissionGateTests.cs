@@ -2,6 +2,11 @@ using System.Data.Common;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -48,6 +53,9 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
         GrimoireWorkKind.ProviderHealthProbe,
         GrimoireWorkKind.McpServerBootstrap,
         GrimoireWorkKind.LongRestSweep,
+        GrimoireWorkKind.QuantizedEmbeddingBackfill,
+        GrimoireWorkKind.GuildMaintenance,
+        GrimoireWorkKind.GuildStorage,
     };
 
     [Fact]
@@ -75,7 +83,8 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
 
     [Theory]
     [InlineData(0)]
-    [InlineData(19)]
+    [InlineData(21)]
+    [InlineData(byte.MaxValue)]
     public void ZeroAndUndefinedWorkKindsAreRejected(byte value)
     {
         GrimoireConnectionAdmissionGate gate = CreateGate();
@@ -3019,6 +3028,121 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
     /// property of the host rather than of the gate. Two of these failed that way in a full-suite
     /// run and passed in isolation.
     /// </remarks>
+    [Fact]
+    public async Task Guild_worker_refuses_scope_creation_when_work_admission_is_closing()
+    {
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        GuildMaintenanceScopes scopes = new(holdDisposal: false);
+
+        using ServiceProvider services = GuildWorkerServices(gate, scopes);
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(201));
+
+        var outcome = await services.GetRequiredService<GuildMaintenanceHostedService>().RunOnceAsync(CancellationToken.None);
+
+        Assert.True(outcome.IsFailure);
+
+        Assert.Equal(ErrorCodes.Guild.Unavailable, outcome.Error.Code);
+
+        Assert.Equal(0, scopes.Created);
+    }
+
+    [Fact]
+    public async Task Guild_worker_keeps_work_admission_until_async_scope_disposal_finishes()
+    {
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        GuildMaintenanceScopes scopes = new(holdDisposal: true);
+
+        using ServiceProvider services = GuildWorkerServices(gate, scopes);
+
+        Task pass = services.GetRequiredService<GuildMaintenanceHostedService>().RunOnceAsync(CancellationToken.None);
+
+        await scopes.DisposalStarted.Task.WaitAsync(BoundedWait);
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(202));
+
+        Task<Result> drain = gate.DrainRequestAndWorkAsync(closing, CancellationToken.None).AsTask();
+
+        try
+        {
+            Assert.Equal(1, scopes.Created);
+
+            Assert.False(drain.IsCompleted);
+        }
+        finally
+        {
+            scopes.AllowDisposal.TrySetResult();
+
+            await Assert.ThrowsAsync<GuildScopeTestException>(() => pass);
+        }
+
+        Assert.True((await drain.WaitAsync(BoundedWait)).IsSuccess);
+
+        Assert.Equal(1, scopes.Disposed);
+    }
+
+    private static ServiceProvider GuildWorkerServices(IGrimoireConnectionAdmissionGate gate, IServiceScopeFactory scopes)
+    {
+        ServiceCollection services = [];
+
+        services.AddSingleton(gate);
+
+        services.AddSingleton<IGrimoireDbReadiness>(new GrimoireDbReadiness());
+
+        services.AddSingleton(TimeProvider.System);
+
+        services.AddSingleton<ILogger<GuildMaintenanceHostedService>>(NullLogger<GuildMaintenanceHostedService>.Instance);
+
+        services.AddSingleton(provider => ActivatorUtilities.CreateInstance<GuildMaintenanceHostedService>(provider, scopes));
+
+        return services.BuildServiceProvider();
+    }
+
+    private sealed class GuildScopeTestException : Exception;
+
+    private sealed class GuildMaintenanceScopes(bool holdDisposal) : IServiceScopeFactory
+    {
+        internal bool HoldDisposal { get; } = holdDisposal;
+
+        internal int Created { get; private set; }
+
+        internal int Disposed { get; private set; }
+
+        internal TaskCompletionSource DisposalStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowDisposal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IServiceScope CreateScope()
+        {
+            Created++;
+
+            return new Scope(this);
+        }
+
+        private sealed class Scope(GuildMaintenanceScopes owner) : IServiceScope, IAsyncDisposable, IServiceProvider
+        {
+            public IServiceProvider ServiceProvider => this;
+
+            public object? GetService(Type serviceType) => throw new GuildScopeTestException();
+
+            public void Dispose() => throw new InvalidOperationException("The Guild worker must await scope disposal.");
+
+            public async ValueTask DisposeAsync()
+            {
+                owner.DisposalStarted.TrySetResult();
+
+                if (owner.HoldDisposal)
+                {
+                    await owner.AllowDisposal.Task;
+                }
+
+                owner.Disposed++;
+            }
+        }
+    }
+
     private static GrimoireConnectionAdmissionGate CreateGate(TimeProvider? timeProvider = null) =>
         new(
             timeProvider ?? new ManualTimeProvider(),

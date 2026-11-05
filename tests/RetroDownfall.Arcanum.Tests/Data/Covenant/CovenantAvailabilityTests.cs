@@ -535,7 +535,8 @@ public sealed class CovenantAvailabilityTests
                     GrimoireSchemaTierHealth.Unavailable),
                 FailedTier(
                     GrimoireSchemaTransactionTier.CovenantAccelerator,
-                    GrimoireSchemaTierHealth.DependencyUnavailable)),
+                    GrimoireSchemaTierHealth.DependencyUnavailable),
+                new GrimoireSchemaTierInstallResult(GrimoireSchemaTransactionTier.GuildCanonical, 1, GrimoireSchemaTierHealth.Healthy, "test-guild", null, null)),
             CovenantHealthTransition.Bootstrap);
 
         Assert.Equal(CovenantCapabilityState.Unavailable, canonical.Canonical);
@@ -562,7 +563,8 @@ public sealed class CovenantAvailabilityTests
                     installed: CanonicalFingerprint),
                 FailedTier(
                     GrimoireSchemaTransactionTier.CovenantAccelerator,
-                    GrimoireSchemaTierHealth.Unavailable)),
+                    GrimoireSchemaTierHealth.Unavailable),
+                new GrimoireSchemaTierInstallResult(GrimoireSchemaTransactionTier.GuildCanonical, 1, GrimoireSchemaTierHealth.Healthy, "test-guild", null, null)),
             CovenantHealthTransition.Bootstrap);
 
         Assert.Equal(CovenantCapabilityState.Healthy, accelerator.Canonical);
@@ -673,7 +675,8 @@ public sealed class CovenantAvailabilityTests
         new(
             HealthyTier(GrimoireSchemaTransactionTier.Core, CanonicalFingerprint),
             HealthyTier(GrimoireSchemaTransactionTier.CovenantCanonical, CanonicalFingerprint),
-            HealthyTier(GrimoireSchemaTransactionTier.CovenantAccelerator, AcceleratorFingerprint));
+            HealthyTier(GrimoireSchemaTransactionTier.CovenantAccelerator, AcceleratorFingerprint),
+            HealthyTier(GrimoireSchemaTransactionTier.GuildCanonical, AcceleratorFingerprint));
 
     private static GrimoireSchemaTierInstallResult HealthyTier(
         GrimoireSchemaTransactionTier tier,

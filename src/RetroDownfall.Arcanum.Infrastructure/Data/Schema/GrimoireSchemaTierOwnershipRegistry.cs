@@ -60,6 +60,7 @@ internal sealed class GrimoireSchemaTierOwnershipRegistry
             GrimoireSchemaManifests.Core,
             GrimoireSchemaManifests.CovenantCanonical,
             GrimoireSchemaManifests.CovenantAccelerator,
+            GrimoireSchemaManifests.GuildCanonical,
         ]);
 
     /// <summary>
@@ -143,6 +144,13 @@ internal static class GrimoireSchemaManifests
                 GrimoireSchemaCatalog.CovenantAcceleratorObjects),
             LazyThreadSafetyMode.ExecutionAndPublication);
 
+    private static readonly Lazy<GrimoireSchemaManifest> LoadedGuild = new(() => GrimoireSchemaManifestBuilder.Build(
+        GrimoireSchemaFamily.Guild, GrimoireSchemaTransactionTier.GuildCanonical,
+        GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion, GrimoireSchemaCatalog.GuildCanonicalSchemaFingerprint,
+        GrimoireSchemaCatalog.GuildCanonicalObjects), LazyThreadSafetyMode.ExecutionAndPublication);
+
+    public static GrimoireSchemaManifest GuildCanonical => LoadedGuild.Value;
+
     public static GrimoireSchemaManifest Core => LoadedCore.Value;
 
     public static GrimoireSchemaManifest CovenantCanonical => LoadedCanonical.Value;
@@ -154,6 +162,8 @@ internal static class GrimoireSchemaManifests
         {
 
             GrimoireSchemaTransactionTier.Core => Core,
+
+            GrimoireSchemaTransactionTier.GuildCanonical => GuildCanonical,
 
             GrimoireSchemaTransactionTier.CovenantCanonical => CovenantCanonical,
 

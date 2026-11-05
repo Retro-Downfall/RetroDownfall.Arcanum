@@ -1581,7 +1581,7 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
     private readonly ConcurrentQueue<GrimoireEffectObservation> _effects = new();
 
-    private readonly TaskCompletionSource _providerHealthEffectStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly ConcurrentDictionary<GrimoireWorkKind, TaskCompletionSource<GrimoireEffectObservation>> _firstEffects = new();
 
     private readonly ConcurrentQueue<GrimoireTicketObservation> _tickets = new();
 
@@ -1600,7 +1600,17 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
     internal IReadOnlyList<GrimoireEffectObservation> Effects => _effects.ToArray();
 
     internal Task WaitUntilProviderHealthProbeEffectAsync() =>
-        _providerHealthEffectStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        FirstEffect(GrimoireWorkKind.ProviderHealthProbe).Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+    internal async Task WaitUntilEffectCompletedAsync(GrimoireWorkKind kind)
+    {
+        GrimoireEffectObservation effect = await FirstEffect(kind).Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await effect.WaitUntilDisposedAsync();
+    }
+
+    private TaskCompletionSource<GrimoireEffectObservation> FirstEffect(GrimoireWorkKind kind) =>
+        _firstEffects.GetOrAdd(kind, static _ => new(TaskCreationOptions.RunContinuationsAsynchronously));
 
     internal IReadOnlyList<GrimoireTicketObservation> Tickets => _tickets.ToArray();
 
@@ -1655,7 +1665,7 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
         _workAttempts.Enqueue(observation);
 
-        lease = actual is null ? null : new ObservedWork(actual, observation, _effects, _providerHealthEffectStarted);
+        lease = actual is null ? null : new ObservedWork(actual, observation, _effects, _firstEffects);
 
         observation.Lease = lease;
 
@@ -1915,7 +1925,7 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
         IGrimoireWorkLease actual,
         GrimoireLeaseObservation<GrimoireWorkKind> observation,
         ConcurrentQueue<GrimoireEffectObservation> effects,
-        TaskCompletionSource providerHealthEffectStarted) : IGrimoireWorkLease
+        ConcurrentDictionary<GrimoireWorkKind, TaskCompletionSource<GrimoireEffectObservation>> firstEffects) : IGrimoireWorkLease
     {
         public GrimoireWorkKind Kind => actual.Kind;
 
@@ -1937,10 +1947,8 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
                 effects.Enqueue(effectObservation);
 
-                if (actual.Kind == GrimoireWorkKind.ProviderHealthProbe)
-                {
-                    providerHealthEffectStarted.TrySetResult();
-                }
+                firstEffects.GetOrAdd(actual.Kind, static _ => new(TaskCreationOptions.RunContinuationsAsynchronously))
+                    .TrySetResult(effectObservation);
 
                 effectGroup = new ObservedEffect(effect, effectObservation);
             }
@@ -1975,15 +1983,21 @@ internal sealed class GrimoireEffectObservation(GrimoireWorkKind kind)
 
     private int _terminal;
 
+    private readonly TaskCompletionSource _disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     internal int Disposals => Volatile.Read(ref _disposals);
 
     internal int TerminalCount => Volatile.Read(ref _terminal);
+
+    internal Task WaitUntilDisposedAsync() => _disposed.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
     internal void Disposed()
     {
         Interlocked.Increment(ref _disposals);
 
         Interlocked.Exchange(ref _terminal, 1);
+
+        _disposed.TrySetResult();
     }
 }
 

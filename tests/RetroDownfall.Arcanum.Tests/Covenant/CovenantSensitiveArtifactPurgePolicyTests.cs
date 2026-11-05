@@ -11,6 +11,26 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// </summary>
 public sealed class CovenantSensitiveArtifactPurgePolicyTests
 {
+    [Fact]
+    public void Guild_content_purge_requires_atomic_content_projection_and_label_erasure()
+    {
+        Result<CovenantSensitiveArtifactPurgeRule> result = CovenantSensitiveArtifactPurgePolicy.Resolve((SensitiveArtifactKind)17);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(17, result.Value.Code);
+
+        Assert.Equal(CovenantArtifactPurgeExecutor.DatabaseTransaction, result.Value.Executor);
+
+        Assert.True(result.Value.DeletesDerivedProjections);
+
+        Assert.True(result.Value.RemovesLabelWithContent);
+
+        Assert.True(result.Value.RepairsSessionSensitivityState);
+
+        Assert.True(result.Value.PreservesReplayDenialEvidence);
+    }
+
     [Theory]
     [InlineData(14, false)]
     [InlineData(15, true)]
@@ -84,6 +104,7 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
     [InlineData(SensitiveArtifactKind.CampaignRollup, 14)]
     [InlineData(SensitiveArtifactKind.CampaignContribution, 15)]
     [InlineData(SensitiveArtifactKind.LongRestDiscovery, 16)]
+    [InlineData(SensitiveArtifactKind.GuildContent, 17)]
     public void Purge_registry_has_one_literal_rule_for_every_artifact_kind(
         SensitiveArtifactKind kind,
         byte code)
@@ -137,7 +158,7 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
     [Fact]
     public void Purge_registry_is_exhaustive_over_all_kinds_and_rejects_anything_else()
     {
-        Assert.Equal(16, CovenantSensitiveArtifactPurgePolicy.All.Count);
+        Assert.Equal(17, CovenantSensitiveArtifactPurgePolicy.All.Count);
 
         Assert.Equal(
             Enum.GetValues<SensitiveArtifactKind>().OrderBy(static kind => (byte)kind),
@@ -145,10 +166,10 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
 
         Assert.False(CovenantSensitiveArtifactPurgePolicy.IsCovered((SensitiveArtifactKind)0));
 
-        Assert.False(CovenantSensitiveArtifactPurgePolicy.IsCovered((SensitiveArtifactKind)17));
+        Assert.False(CovenantSensitiveArtifactPurgePolicy.IsCovered((SensitiveArtifactKind)18));
 
         Result<CovenantSensitiveArtifactPurgeRule> unknown =
-            CovenantSensitiveArtifactPurgePolicy.Resolve((SensitiveArtifactKind)17);
+            CovenantSensitiveArtifactPurgePolicy.Resolve((SensitiveArtifactKind)18);
 
         Assert.True(unknown.IsFailure);
 
@@ -174,7 +195,7 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
     }
 
     [Fact]
-    public void Only_the_assistant_entry_replaces_its_deleted_content_with_a_receipt()
+    public void Assistant_entries_and_Guild_content_replace_deleted_content_with_receipts()
     {
         IReadOnlyList<SensitiveArtifactKind> receipted =
         [
@@ -183,11 +204,11 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
                 .Select(static rule => rule.Kind),
         ];
 
-        Assert.Equal([SensitiveArtifactKind.AssistantEntry], receipted);
+        Assert.Equal([SensitiveArtifactKind.AssistantEntry, SensitiveArtifactKind.GuildContent], receipted);
     }
 
     [Fact]
-    public void Current_pointer_repair_covers_session_and_campaign_summary_singletons()
+    public void Current_pointer_repair_covers_session_campaign_and_Guild_content()
     {
         IReadOnlyList<SensitiveArtifactKind> pointerRepairing =
         [
@@ -197,11 +218,11 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
         ];
 
         Assert.Equal(
-            [SensitiveArtifactKind.Summary, SensitiveArtifactKind.SessionTitle, SensitiveArtifactKind.CampaignRollup, SensitiveArtifactKind.CampaignContribution],
+            [SensitiveArtifactKind.Summary, SensitiveArtifactKind.SessionTitle, SensitiveArtifactKind.CampaignRollup, SensitiveArtifactKind.CampaignContribution, SensitiveArtifactKind.GuildContent],
             pointerRepairing.OrderBy(static kind => (byte)kind));
 
         Assert.All(
-            CovenantSensitiveArtifactPurgePolicy.All.Where(static rule => rule.RepairsCurrentPointer && rule.Kind != SensitiveArtifactKind.CampaignRollup),
+            CovenantSensitiveArtifactPurgePolicy.All.Where(static rule => rule.RepairsCurrentPointer && rule.Kind is not SensitiveArtifactKind.CampaignRollup and not SensitiveArtifactKind.GuildContent),
             static rule => Assert.True(rule.RepairsSessionSensitivityState));
     }
 
@@ -220,7 +241,7 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
             guarded.OrderBy(static kind => (byte)kind));
 
         Assert.All(
-            CovenantSensitiveArtifactPurgePolicy.All.Where(static rule => rule.PreservesReplayDenialEvidence),
+            CovenantSensitiveArtifactPurgePolicy.All.Where(static rule => rule.PreservesReplayDenialEvidence && rule.Kind != SensitiveArtifactKind.GuildContent),
             static rule => Assert.True(rule.PreservesFinalizationAndClaimEvidence));
     }
 

@@ -2,6 +2,8 @@
 
 The [dormant Guild Core foundation](Arcanum.DESIGN.md#232-components-and-core-contract-boundary) supplies the shared sealed-delegation contracts, pure grant rules and generated JSON graph. It adds no executable Guild path or configuration activation. Qualification includes `scripts/verify-guild-aot.sh --rid <native-shipping-rid>` because ordinary publication can trim unused contracts; this smoke roots every named DTO/enum and collection and runs with JSON reflection disabled.
 
+The [Guild storage foundation](Arcanum.DESIGN.md#2315-persistence-sensitivity-retention-and-installation-lifecycle) adds family/tier admission, the explicit Core 38 sensitivity transition, immutable protected content, Roster discovery and shared owner cleanup. It uses admitted direct SQLite and generated storage JSON. Guild content/record retention defaults disabled; evidence has no timer. Extend the existing family coordinator when adding a Guild table, and preserve its all-table cursor boundary. Executable Guild and public operator routes remain separate delivery slices.
+
 > **Agent orientation document.** This is the shortest useful context for an AI coding agent or an
 > operator working *on* Arcanum rather than *with* it. For installing and running Arcanum, start at
 > the [`README.md`](../README.md).

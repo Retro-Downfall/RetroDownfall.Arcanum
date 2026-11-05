@@ -224,6 +224,14 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
                 updated.CampaignSummaries = replacement;
                 break;
 
+            case RetentionDataClass.GuildContent:
+                updated.GuildContent = replacement;
+                break;
+
+            case RetentionDataClass.GuildRecords:
+                updated.GuildRecords = replacement;
+                break;
+
             case RetentionDataClass.WorkspaceChunks:
             case RetentionDataClass.WorkspaceEmbeddings:
                 updated.WorkspaceIndexes = replacement;
@@ -312,6 +320,10 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
             LexiconEntries = NormalizeRule(source.LexiconEntries),
 
             CampaignSummaries = NormalizeRule(source.CampaignSummaries),
+
+            GuildContent = NormalizeRule(source.GuildContent),
+
+            GuildRecords = NormalizeRule(source.GuildRecords),
 
             WorkspaceIndexes = NormalizeRule(source.WorkspaceIndexes),
 

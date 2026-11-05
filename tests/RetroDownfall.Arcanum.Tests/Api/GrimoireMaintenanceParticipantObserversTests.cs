@@ -499,7 +499,13 @@ public sealed class GrimoireMaintenanceParticipantObserversTests
 
         Assert.Equal(0, Assert.Single(observer.Effects).TerminalCount);
 
+        Task effectCompleted = observer.WaitUntilEffectCompletedAsync(GrimoireWorkKind.SessionAttachmentIndexing);
+
+        Assert.False(effectCompleted.IsCompleted);
+
         await effect!.DisposeAsync();
+
+        await effectCompleted;
 
         Assert.True((await drain.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
 

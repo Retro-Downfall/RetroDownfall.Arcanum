@@ -20,11 +20,13 @@ public sealed class WorkspaceResetScopeIndexSchemaTests
         Assert.DoesNotContain(CoreSchemaVersionThirtyFixture.Objects,
             static item => item.Sql.Contains(IndexName, StringComparison.Ordinal));
 
-        Assert.Equal(37, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        Assert.Equal(38, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
         Assert.Equal(7, GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion);
 
         Assert.Equal(1, GrimoireSchemaVersionChains.CovenantAcceleratorSchemaVersion);
+
+        Assert.Equal(1, GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion);
     }
 
     [Fact]
@@ -102,6 +104,7 @@ public sealed class WorkspaceResetScopeIndexSchemaTests
                 new(core.HeadManifest, core.HeadObjects, [.. core.Steps.Select(item => item.ToVersion == 31 ? interrupted : item)]),
                 GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
                 GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+        GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
             ]);
 
             await Assert.ThrowsAsync<SqliteException>(() => GrimoireSchemaTestInstaller.InstallAsync(connection, chains, 64, CancellationToken.None));

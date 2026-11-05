@@ -27,11 +27,12 @@ public sealed class InternalsVisibleToInventoryTests
     // production CovenantRuntimeGenerationState.Initial projection.
     // SqliteReaderSmoke initializes the exact internal native runtime before its Native AOT
     // reader regression cases; it cannot replace that bootstrap with an unverified SQLite provider.
+    // GuildAotSmoke exercises the exact persisted Card JSON graph and strict declared-source parser.
     [InlineData(
         "src/RetroDownfall.Arcanum.Infrastructure/RetroDownfall.Arcanum.Infrastructure.csproj",
         "RetroDownfall.Arcanum.Api,RetroDownfall.Arcanum.Api.DevHost,RetroDownfall.Arcanum.Cli,"
         + "RetroDownfall.Arcanum.Covenant.Benchmarks,RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks,"
-        + "RetroDownfall.Arcanum.PromptCache.Benchmarks,RetroDownfall.Arcanum.RegexAotSmoke,"
+        + "RetroDownfall.Arcanum.GuildAotSmoke,RetroDownfall.Arcanum.PromptCache.Benchmarks,RetroDownfall.Arcanum.RegexAotSmoke,"
         + "RetroDownfall.Arcanum.SqliteReaderSmoke,RetroDownfall.Arcanum.Tests")]
 
     [InlineData(

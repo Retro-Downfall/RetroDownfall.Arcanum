@@ -89,6 +89,7 @@ public sealed class CampaignClosureIndexSchemaTests
             new GrimoireSchemaVersionChain(core.HeadManifest, core.HeadObjects, [.. core.Steps.Where(item => item.ToVersion < 24), interrupted]),
             CoreSchemaVersionTwentyFourFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
             CoreSchemaVersionTwentyFourFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+            CoreSchemaVersionTwentyFourFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
         ]);
 
         if (cancel)

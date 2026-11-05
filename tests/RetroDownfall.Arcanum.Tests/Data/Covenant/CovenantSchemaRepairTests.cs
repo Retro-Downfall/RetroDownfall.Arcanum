@@ -921,6 +921,7 @@ public sealed partial class CovenantSchemaRepairTests
                         new CoreGrimoireSchemaDataInitializer(),
                         new CovenantCanonicalSchemaDataInitializer(),
                         new CovenantAcceleratorSchemaDataInitializer(),
+                new GuildCanonicalSchemaDataInitializer(),
                     ]),
                     GrimoireSchemaVersionChains.Default,
                     TimeProvider.System),

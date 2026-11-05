@@ -11,6 +11,8 @@ internal enum GrimoireSchemaFamily
     Core = 0,
 
     Covenant = 1,
+
+    Guild = 2,
 }
 
 /// <summary>
@@ -36,6 +38,8 @@ internal enum GrimoireSchemaTransactionTier
     CovenantCanonical = 1,
 
     CovenantAccelerator = 2,
+
+    GuildCanonical = 3,
 }
 
 /// <summary>

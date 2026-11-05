@@ -219,7 +219,8 @@ public sealed class CovenantFeatureConfigurationPublisherTests
             new GrimoireSchemaInstallResult(
                 HealthyTier(GrimoireSchemaTransactionTier.Core, "core-installed"),
                 HealthyTier(GrimoireSchemaTransactionTier.CovenantCanonical, "canonical-installed"),
-                HealthyTier(GrimoireSchemaTransactionTier.CovenantAccelerator, "accelerator-installed")),
+                HealthyTier(GrimoireSchemaTransactionTier.CovenantAccelerator, "accelerator-installed"),
+                new GrimoireSchemaTierInstallResult(GrimoireSchemaTransactionTier.GuildCanonical, 1, GrimoireSchemaTierHealth.Healthy, "test-guild", null, null)),
             CovenantHealthTransition.Bootstrap);
 
         TestOptionsMonitor monitor = new(Settings(covenant: true));

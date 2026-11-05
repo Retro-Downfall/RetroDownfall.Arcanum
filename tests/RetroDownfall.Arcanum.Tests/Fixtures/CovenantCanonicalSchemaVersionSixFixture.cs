@@ -231,5 +231,6 @@ internal static class CovenantCanonicalSchemaVersionSixFixture
                 [.. GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical).Steps
                     .Where(static step => step.ToVersion <= 6)]),
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+        GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
         ]);
 }

@@ -256,7 +256,7 @@ public static class CovenantPolicyV1Manifest
     {
         if (typeof(TEnum) == typeof(SensitiveArtifactKind))
         {
-            return 16;
+            return 17;
         }
 
         if (typeof(TEnum) == typeof(CovenantPromptAttribution))

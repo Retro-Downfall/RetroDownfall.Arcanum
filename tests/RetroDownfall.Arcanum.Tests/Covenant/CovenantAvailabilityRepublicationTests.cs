@@ -1327,7 +1327,8 @@ public sealed partial class CovenantAvailabilityRepublicationTests
                     GrimoireSchemaTierHealth.Unavailable,
                     Source,
                     current.AcceleratorInstalledFingerprint,
-                    "covenant.accelerator_degraded_for_test")),
+                    "covenant.accelerator_degraded_for_test"),
+                new GrimoireSchemaTierInstallResult(GrimoireSchemaTransactionTier.GuildCanonical, 1, GrimoireSchemaTierHealth.Healthy, "test-guild", null, null)),
             CovenantHealthTransition.SchemaRepair);
 
         Assert.Equal(CovenantCapabilityState.Degraded, availability.Current.Accelerator);

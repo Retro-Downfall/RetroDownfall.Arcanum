@@ -140,6 +140,7 @@ public sealed partial class NativeMemorySearchSchemaTests
                 new(core.HeadManifest, core.HeadObjects, [.. core.Steps.Select(item => item.ToVersion == 32 ? interrupted : item)]),
                 GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
                 GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+        GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
             ]);
 
             await Assert.ThrowsAsync<SqliteException>(() => GrimoireSchemaTestInstaller.InstallAsync(connection, chains, 64, CancellationToken.None));

@@ -19,6 +19,7 @@ internal static class CoreSchemaVersionThirtyFourFixture
                 CoreSchemaVersionThirtyFiveFixture.Objects, core.Steps.Where(static step => step.ToVersion <= 34).ToArray()),
             current.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
             current.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+            current.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
         ]);
     }
 }

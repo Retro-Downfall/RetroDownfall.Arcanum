@@ -9807,6 +9807,177 @@
       ],
       "id": "boundary.guild-remote-state-diagnostic",
       "subsystem": "Guild transport observations"
+    },
+    {
+      "id": "setting.retention-guild-content-days",
+      "subsystem": "Retention",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Core/Configuration/RetentionSettings.cs#ArcanumSettings.retention.guildContent.days"
+      ],
+      "coveredSymbols": [
+        "ArcanumSettings.retention.guildContent.days"
+      ],
+      "symbolValues": {
+        "ArcanumSettings.retention.guildContent.days": "default 365"
+      },
+      "currentValue": "default 365",
+      "owner": "operator",
+      "enforcementPoint": "ArcanumSettings.retention.guildContent.days",
+      "userVisibleBehavior": "Work stops or data becomes eligible only under an explicit authored policy.",
+      "originalRationale": "The operator intentionally owns spend, pricing, retention age, or schedule policy.",
+      "threatOrFailureModel": "Ignoring an explicit policy would violate the operator's cost or data-lifecycle decision.",
+      "classification": "Explicit operator policy",
+      "action": "retain",
+      "replacementOrContinuation": "Report the configured value, measured state, checkpoint status, and exact command/configuration action.",
+      "tests": [
+        "GuildRetentionClassTests",
+        "GuildRetentionPolicyTests",
+        "DataRetentionServiceTests.Guild_content_prune_preserves_current_card_content_and_erasure_evidence"
+      ]
+    },
+    {
+      "id": "setting.retention-guild-records-days",
+      "subsystem": "Retention",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Core/Configuration/RetentionSettings.cs#ArcanumSettings.retention.guildRecords.days"
+      ],
+      "coveredSymbols": [
+        "ArcanumSettings.retention.guildRecords.days"
+      ],
+      "symbolValues": {
+        "ArcanumSettings.retention.guildRecords.days": "default 365"
+      },
+      "currentValue": "default 365",
+      "owner": "operator",
+      "enforcementPoint": "ArcanumSettings.retention.guildRecords.days",
+      "userVisibleBehavior": "Work stops or data becomes eligible only under an explicit authored policy.",
+      "originalRationale": "The operator intentionally owns spend, pricing, retention age, or schedule policy.",
+      "threatOrFailureModel": "Ignoring an explicit policy would violate the operator's cost or data-lifecycle decision.",
+      "classification": "Explicit operator policy",
+      "action": "retain",
+      "replacementOrContinuation": "Report the configured value, measured state, checkpoint status, and exact command/configuration action.",
+      "tests": [
+        "GuildRetentionClassTests",
+        "GuildRetentionPolicyTests",
+        "DataRetentionServiceTests.Guild_content_prune_preserves_current_card_content_and_erasure_evidence"
+      ]
+    },
+    {
+      "id": "boundary.guild-content-metadata-bytes",
+      "subsystem": "Guild persistence",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.cs#MaximumContentBytes",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.SourceClaims.cs#ObserveDeclaredSourceAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildRosterRefreshStore.cs#FindWithinAsync"
+      ],
+      "coveredSymbols": [
+        "GuildStore.MaximumContentBytes",
+        "GuildStore.ObserveDeclaredSourceAsync",
+        "GuildRosterRefreshStore.FindWithinAsync"
+      ],
+      "symbolValues": {
+        "GuildStore.MaximumContentBytes": "65,536 encoded bytes per content body or variable metadata record",
+        "GuildStore.ObserveDeclaredSourceAsync": "65,536 encoded bytes per content body or variable metadata record",
+        "GuildRosterRefreshStore.FindWithinAsync": "65,536 encoded bytes per content body or variable metadata record"
+      },
+      "currentValue": "65,536 encoded bytes per content body or variable metadata record",
+      "owner": "host",
+      "enforcementPoint": "Guild storage admission and scalar length checks before replay materialization",
+      "userVisibleBehavior": "Oversized inputs refuse without truncation; malformed retained buffers refuse before allocation.",
+      "originalRationale": "Bound an individual durable representation and its replay allocation without limiting total records or work.",
+      "threatOrFailureModel": "Untrusted authored metadata or malformed stored buffers could force an unbounded allocation.",
+      "classification": "Required physical resource protection",
+      "action": "retain",
+      "replacementOrContinuation": "Use a smaller body or an authorized artifact reference; retained oversized state requires repair and is never silently truncated.",
+      "tests": [
+        "GuildStoreTests",
+        "GuildDeclaredSourceStateTests",
+        "GuildRosterRefreshStoreTests"
+      ]
+    },
+    {
+      "id": "boundary.guild-page-materialization",
+      "subsystem": "Guild discovery",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.cs#ListAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildDeclaredAgentSourceReader.cs#ReadPageAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOwnerCleanupCoordinator.cs#RunBatchAsync"
+      ],
+      "coveredSymbols": [
+        "GuildStore.ListAsync",
+        "GuildDeclaredAgentSourceReader.ReadPageAsync",
+        "GuildOwnerCleanupCoordinator.RunBatchAsync"
+      ],
+      "symbolValues": {
+        "GuildStore.ListAsync": "Up to 100 records and a 1 MiB materialization budget per page",
+        "GuildDeclaredAgentSourceReader.ReadPageAsync": "Up to 100 direct files per page; each file uses the effective Spell byte limit; at most one more directory entry name than the page size is retained",
+        "GuildOwnerCleanupCoordinator.RunBatchAsync": "Caller-supplied event and orphan batch sizes; hosted cleanup requests 64 events and 64 orphans per turn, with protected content paged by the shared purger target limit"
+      },
+      "currentValue": "Card lists: up to 100 records and 1 MiB per page. Declared sources: up to 100 files, each bounded by the effective Spell byte limit. Hosted cleanup: 64 events and 64 orphans per turn.",
+      "owner": "host",
+      "enforcementPoint": "Admitted keyset pages, bounded retained directory names and owner cleanup turns",
+      "userVisibleBehavior": "Every page advances or completes; remaining agents and owner work remain reachable through continuation.",
+      "originalRationale": "Bound response memory and writer occupancy while keeping total corpus and lifetime work unrestricted.",
+      "threatOrFailureModel": "A large installation must not require one allocation or writer transaction proportional to every agent or owner.",
+      "classification": "Required physical resource protection",
+      "action": "retain",
+      "replacementOrContinuation": "Follow the returned continuation or let the next maintenance turn resume; there is no total-agent or scan-work ceiling.",
+      "tests": [
+        "GuildStoreTests.Byte_bounded_pages_make_progress_without_limiting_total_records",
+        "GuildRosterTests",
+        "GuildDeclaredAgentSourceTests",
+        "DataRetentionServiceTests"
+      ]
+    },
+    {
+      "id": "boundary.guild-remote-card-response",
+      "subsystem": "Guild remote discovery",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildRemoteCardReader.cs#MaximumCardBytes"
+      ],
+      "coveredSymbols": [
+        "GuildRemoteCardReader.MaximumCardBytes"
+      ],
+      "symbolValues": {
+        "GuildRemoteCardReader.MaximumCardBytes": "1,048,576 bytes per remote Card response before normalization"
+      },
+      "currentValue": "1,048,576 bytes per remote Card response before normalization",
+      "owner": "host",
+      "enforcementPoint": "Remote Content-Length check and bounded streaming response buffer",
+      "userVisibleBehavior": "An oversized remote discovery response refuses; normalized Card admission still applies its smaller content bound.",
+      "originalRationale": "Bound one untrusted network response before generated JSON decoding.",
+      "threatOrFailureModel": "A peer can advertise or stream an arbitrarily large response independent of the normalized Card representation.",
+      "classification": "Required physical resource protection",
+      "action": "retain",
+      "replacementOrContinuation": "Correct the configured peer response and refresh again; the bound does not restrict Commission work or the number of peers.",
+      "tests": [
+        "GuildRemoteCardReaderTests"
+      ]
+    },
+    {
+      "id": "boundary.guild-remote-discovery-deadline",
+      "subsystem": "Guild remote discovery",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildRemoteCardReader.cs#ReadAsync"
+      ],
+      "coveredSymbols": [
+        "GuildRemoteCardReader.ReadAsync"
+      ],
+      "symbolValues": {
+        "GuildRemoteCardReader.ReadAsync": "30 seconds per metadata discovery request and connection attempt"
+      },
+      "currentValue": "30 seconds per metadata discovery request and connection attempt",
+      "owner": "host",
+      "enforcementPoint": "Linked discovery cancellation and outbound socket connect timeout",
+      "userVisibleBehavior": "A stalled discovery attempt fails while preserving the last inspectable revision; it does not report remote work completion.",
+      "originalRationale": "Release resources held by a bounded metadata probe of an unresponsive peer.",
+      "threatOrFailureModel": "An unresponsive endpoint can otherwise occupy the discovery request and installation refresh coordinator indefinitely.",
+      "classification": "Required physical resource protection",
+      "action": "retain",
+      "replacementOrContinuation": "Repair or retry the configured peer; this transport deadline sets no execution expiry, retry count or total-discovery ceiling.",
+      "tests": [
+        "GuildRemoteCardReaderTests"
+      ]
     }
   ]
 }

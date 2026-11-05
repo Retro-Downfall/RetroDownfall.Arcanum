@@ -16,6 +16,8 @@
 
     <ProjectReference Include="../../src/RetroDownfall.Arcanum.Core/RetroDownfall.Arcanum.Core.csproj" />
 
+    <ProjectReference Include="../../src/RetroDownfall.Arcanum.Infrastructure/RetroDownfall.Arcanum.Infrastructure.csproj" />
+
   </ItemGroup>
 
 </Project>

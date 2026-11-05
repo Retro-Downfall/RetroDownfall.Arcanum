@@ -200,6 +200,7 @@ public sealed partial class GrimoireSchemaTransitionCoordinatorTests
                         ]),
                     chains.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
                     chains.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+                    chains.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
                 ]);
             }
 

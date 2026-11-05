@@ -111,6 +111,15 @@ public enum RetentionDataClass
 
     /// <summary>Bounded Campaign continuity summaries and their contribution metadata.</summary>
     CampaignSummaries = 31,
+
+    /// <summary>Immutable Guild payload revisions, subject to live-reference eligibility.</summary>
+    GuildContent = 32,
+
+    /// <summary>Terminal Guild domain records that carry no required replay evidence.</summary>
+    GuildRecords = 33,
+
+    /// <summary>Content-free Guild receipts and denial lineage; never aged out on a timer.</summary>
+    GuildEvidence = 34,
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<DataRetentionOperation>))]
@@ -409,6 +418,10 @@ public static class DataRetentionSettingsCatalog
 
             "campaign-summaries" => settings.CampaignSummaries,
 
+            "guild-content" => settings.GuildContent,
+
+            "guild-records" => settings.GuildRecords,
+
             "workspace-indexes" => settings.WorkspaceIndexes,
 
             "session-entry-embeddings" => settings.SessionEntryEmbeddings,
@@ -456,6 +469,12 @@ public static class DataRetentionSettingsCatalog
             RetentionDataClass.LexiconEntries => "lexicon-entries",
 
             RetentionDataClass.CampaignSummaries => "campaign-summaries",
+
+            RetentionDataClass.GuildContent => "guild-content",
+
+            RetentionDataClass.GuildRecords => "guild-records",
+
+            RetentionDataClass.GuildEvidence => null,
 
             RetentionDataClass.WorkspaceChunks
                 or RetentionDataClass.WorkspaceEmbeddings => "workspace-indexes",
@@ -530,6 +549,8 @@ public static class DataRetentionSettingsCatalog
                 RetentionDataClass.MemoryErasureEvidence => "Erasure evidence has no time-based retention rule and cannot be given one. It is inventoried by 'data status' and removed only by a release, an operator re-creation of the erased item, 'memory erasure reset-key', a restore's destination-authoritative join, or a full installation reset.",
 
                 RetentionDataClass.Annals => "The Annals have no time-based retention rule. An Annals claim follows its subject's lifecycle.",
+
+                RetentionDataClass.GuildEvidence => "Guild evidence has no time-based retention rule. It remains while replay, authority, accounting or reconciliation references require it.",
 
                 _ => "The retention data class has no configurable rule.",
             };
