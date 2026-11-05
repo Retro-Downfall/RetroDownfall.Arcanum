@@ -391,6 +391,7 @@ public sealed class QuantizedEmbeddingLifecycleTests(ITestOutputHelper output)
             new(core.HeadManifest, core.HeadObjects, [.. core.Steps.Where(item => item.ToVersion < 37), failing]),
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+        GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
         ]);
 
         await Assert.ThrowsAsync<SqliteException>(() => GrimoireSchemaTestInstaller.InstallAsync(connection, chains, 64, CancellationToken.None));

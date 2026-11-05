@@ -132,6 +132,7 @@ public sealed partial class BackupRestoreStagedDrainTests
                 CoreSchemaVersionElevenFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core),
                 CovenantCanonicalSchemaVersionFourFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
                 GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+        GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
             ]),
             SeedArchivedMemoryAsync);
 
@@ -897,6 +898,7 @@ public sealed partial class BackupRestoreStagedDrainTests
                 replaced,
                 GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
                 GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+        GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
             ]));
     }
 

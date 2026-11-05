@@ -1,3 +1,7 @@
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Services;
@@ -10,7 +14,7 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 public sealed class GuildDormancyTests
 {
     [Fact]
-    public void No_shipping_layer_supplies_a_runtime_implementation_of_a_Guild_port()
+    public void Only_the_Roster_port_is_implemented_and_no_execution_port_or_Roster_context_is_activated()
     {
         var assemblies = new[]
         {
@@ -29,7 +33,16 @@ public sealed class GuildDormancyTests
         var concreteTypes = assemblies.SelectMany(assembly => assembly.GetTypes())
             .Where(type => !type.IsAbstract && !type.IsInterface);
 
-        Assert.DoesNotContain(concreteTypes, type => ports.Any(port => port.IsAssignableFrom(type)));
+        var implementations = concreteTypes.Where(type => ports.Any(port => port.IsAssignableFrom(type))).ToArray();
+
+        Assert.Equal(typeof(GuildRoster), Assert.Single(implementations));
+
+        ServiceCollection services = new();
+
+        services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
+
+        Assert.DoesNotContain(services, descriptor => ports.Contains(descriptor.ServiceType)
+            || descriptor.ServiceType == typeof(GuildRosterContext));
     }
 
     [Fact]

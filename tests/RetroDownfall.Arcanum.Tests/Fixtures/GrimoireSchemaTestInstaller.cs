@@ -100,6 +100,7 @@ internal static class GrimoireSchemaTestInstaller
                 new CoreGrimoireSchemaDataInitializer(),
                 new CovenantCanonicalSchemaDataInitializer(),
                 new CovenantAcceleratorSchemaDataInitializer(),
+                new GuildCanonicalSchemaDataInitializer(),
             ]),
             chains,
             TimeProvider.System,

@@ -547,7 +547,7 @@ Version and receipt ceilings reserve capacity for head-changing retirement. A fu
 
 ## 9. Persistence implementation
 
-### 9.1 Three transaction tiers
+### 9.1 Independent transaction tiers
 
 Schema family and transaction tier are independent dimensions:
 
@@ -556,6 +556,8 @@ Schema family and transaction tier are independent dimensions:
 | **Core** | Startup-blocking and atomic | Session Campaign bindings, Campaign registry and authority state, finalization guards, sensitivity labels, turn claims, capacity, deletion journals, disclosure state, managed-file evidence, and feature metadata. |
 | **Covenant canonical** | Failure-isolated; Covenant canonical paths become unavailable while ordinary Arcanum remains operable | Entries, state/generation, versions, heads, provenance, mutation and turn receipts, aggregates, key epochs, search outbox, rebuild state, and canonical recovery metadata. |
 | **Covenant accelerator** | Search degrades while canonical prompt authority remains available | FTS5 virtual table, shadow tables, and accelerator projection state. |
+
+Guild adds a fourth transaction tier for its protected content, Card revisions and cleanup evidence. It depends on healthy Core independently of Covenant canonical health; protected Guild operations still require their relevant Covenant services.
 
 Each tier installs in its own transaction from a closed, ordered declarative catalog. A metadata row records schema version, source-definition fingerprint, installed-catalog fingerprint, and health, and its version means the tier is completely at that version and was validated there. Unknown objects, missing objects, altered DDL, unexpected indexes, or a newer version fail that tier closed. FTS-generated shadow tables are part of the closed manifest.
 
@@ -1241,4 +1243,4 @@ OATH should be updated when a change alters its cross-store authority, lineage, 
 
 The dormant Core grant algebra now represents the additional memory restrictions and rejects unsupported store/operation/scope combinations. It has no memory-reader integration or fresh-recall authority; live source enforcement remains planned.
 
-The proposed [Guild architecture](Arcanum.DESIGN.md#23-the-guild--sealed-delegation-proposed), especially [memory and provenance](Arcanum.DESIGN.md#2314-memory-scope-and-prompt-provenance) and [protected persistence](Arcanum.DESIGN.md#2315-persistence-sensitivity-retention-and-installation-lifecycle), adds restrictions to existing source authority; it grants no fresh child Covenant recall. Host-stamped Operator/Parent/Peer/Child relationships are provenance, while content remains untrusted. Selected protected excerpts retain labels and source checks. Shared Guild payloads require their own registered sensitive-artifact kind and an explicit Core schema transition; owner cleanup uses the existing purge kernel and respects Blocked outcomes. These are planned contracts under #143; current OATH behavior above remains authoritative until the owning slices land.
+The proposed [Guild architecture](Arcanum.DESIGN.md#23-the-guild--sealed-delegation-proposed), especially [memory and provenance](Arcanum.DESIGN.md#2314-memory-scope-and-prompt-provenance) and [protected persistence](Arcanum.DESIGN.md#2315-persistence-sensitivity-retention-and-installation-lifecycle), adds restrictions to existing source authority; it grants no fresh child Covenant recall. Host-stamped Operator/Parent/Peer/Child relationships are provenance, while content remains untrusted. Selected protected excerpts retain labels and source checks. Shared Guild payloads now use `SensitiveArtifactKind.GuildContent` (17), introduced by the declared Core 37→38 transition. Owner cleanup uses the existing purge kernel and respects Blocked outcomes, retaining its cursor and evidence when protected erasure cannot complete. Delegated memory access and live Signet enforcement remain planned under #143; the existing OATH authority rules continue to govern protected content.

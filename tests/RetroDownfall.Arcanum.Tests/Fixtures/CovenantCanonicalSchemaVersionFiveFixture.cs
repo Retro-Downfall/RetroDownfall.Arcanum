@@ -334,6 +334,7 @@ internal static class CovenantCanonicalSchemaVersionFiveFixture
                         .Where(static step => step.ToVersion <= 5),
                 ]),
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+        GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
         ]);
 
     private static GrimoireSchemaObject Frozen(GrimoireSchemaObject definition, string text) =>

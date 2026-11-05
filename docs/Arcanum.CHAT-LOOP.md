@@ -155,6 +155,6 @@ Export and reveal remain outside turn assembly. Export streams the authenticated
 
 ## Planned Guild execution integration
 
-The dormant Core contracts now describe these calls and receipts, but no host service or execution-loop integration is registered. The current loop remains unchanged.
+The Core contracts describe these calls and receipts. The storage foundation registers persistence and owner-cleanup services, while Guild execution-loop integration remains unregistered. The current inference loop remains unchanged.
 
 [DESIGN §23](Arcanum.DESIGN.md#23-the-guild--sealed-delegation-proposed) owns the proposed Guild cutover, not the current loop described above. When its default-off feature is eventually enabled, the common coordinator atomically admits a Commission, LRO, attenuated Signet, grant allocation and dispatch intent before the existing local engine or A2A adapter starts work. Every later provider/tool round rechecks live authority. Result and parent-application receipts make delivery replay safe without rerunning paid work; uncertain dispatches reconcile. [The exact tool cutover](Arcanum.DESIGN.md#2316-public-surfaces-and-the-model-facing-tool-map) is a hard rename with no executable aliases. Earlier spellings remain the current runtime contract until [Guild tool and shared-memory cutover](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/issues/154) lands.

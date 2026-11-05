@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Memory;
@@ -74,6 +75,16 @@ internal static class CovenantArtifactPlanRunner
         if (mode is not (CovenantArtifactPlanMode.Count or CovenantArtifactPlanMode.Delete))
         {
             throw new ArgumentOutOfRangeException(nameof(mode), mode, "A plan runs in Count or Delete mode.");
+        }
+
+        if (kind == SensitiveArtifactKind.GuildContent && mode == CovenantArtifactPlanMode.Delete)
+        {
+            if (transaction is null)
+            {
+                throw new InvalidOperationException("Guild content erasure requires the caller's transaction.");
+            }
+
+            await GuildContentLifecycle.PreparePurgeAsync(connection, transaction, artifactKey, cancellationToken).ConfigureAwait(false);
         }
 
         CovenantArtifactPurgePlan plan = CovenantArtifactPurgePlans.Resolve(kind);

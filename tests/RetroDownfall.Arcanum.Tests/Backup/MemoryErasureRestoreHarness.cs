@@ -75,6 +75,7 @@ internal sealed class MemoryErasureRestoreHarness : IAsyncDisposable
             CoreSchemaVersionElevenFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core),
             CovenantCanonicalSchemaVersionFiveFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+        GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
         ]);
 
     /// <summary>

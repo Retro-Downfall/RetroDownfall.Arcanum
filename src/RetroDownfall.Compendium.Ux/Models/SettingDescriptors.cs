@@ -188,6 +188,10 @@ public static class SettingDescriptors
 
         ..RetentionRule("campaignSummaries", "Campaign summaries", "Memory and indexes"),
 
+        ..RetentionRule("guildContent", "Guild content", "Guild"),
+
+        ..RetentionRule("guildRecords", "Guild records", "Guild"),
+
         ..RetentionRule("workspaceIndexes", "workspace indexes", "Memory and indexes"),
 
         ..RetentionRule("sessionEntryEmbeddings", "session-entry embeddings", "Memory and indexes"),

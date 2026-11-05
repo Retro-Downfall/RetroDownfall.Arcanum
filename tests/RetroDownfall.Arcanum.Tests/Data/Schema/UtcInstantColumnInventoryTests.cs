@@ -30,6 +30,8 @@ public sealed partial class UtcInstantColumnInventoryTests
             GrimoireSchemaCatalog.CovenantCanonicalObjects,
             UtcInstantColumnInventory.CovenantCanonical);
 
+        AssertInventory(GrimoireSchemaCatalog.GuildCanonicalObjects, UtcInstantColumnInventory.GuildCanonical);
+
         Assert.Equal(135, UtcInstantColumnInventory.Core.Sum(static table => table.Columns.Count));
 
         Assert.Equal(
@@ -44,15 +46,19 @@ public sealed partial class UtcInstantColumnInventoryTests
     [Theory]
     [InlineData(0, "grimoire_utc_instant_columns")]
     [InlineData(1, "covenant_utc_instant_columns")]
+    [InlineData(3, "guild_utc_instant_columns")]
     public void The_zero_hot_path_diagnostic_view_publishes_the_same_closed_inventory(
         int tierCode,
         string viewName)
     {
         GrimoireSchemaTransactionTier tier = (GrimoireSchemaTransactionTier)tierCode;
 
-        IReadOnlyList<UtcInstantTable> inventory = tier == GrimoireSchemaTransactionTier.Core
-            ? UtcInstantColumnInventory.Core
-            : UtcInstantColumnInventory.CovenantCanonical;
+        IReadOnlyList<UtcInstantTable> inventory = tier switch
+        {
+            GrimoireSchemaTransactionTier.Core => UtcInstantColumnInventory.Core,
+            GrimoireSchemaTransactionTier.GuildCanonical => UtcInstantColumnInventory.GuildCanonical,
+            _ => UtcInstantColumnInventory.CovenantCanonical,
+        };
 
         GrimoireSchemaObject view = GrimoireSchemaCatalog.AllObjects.Single(
             definition => definition.TransactionTier == tier && definition.Name == viewName);

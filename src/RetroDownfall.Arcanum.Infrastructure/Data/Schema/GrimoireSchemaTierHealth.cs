@@ -85,4 +85,5 @@ internal sealed record GrimoireSchemaTierInstallResult(
 internal sealed record GrimoireSchemaInstallResult(
     GrimoireSchemaTierInstallResult Core,
     GrimoireSchemaTierInstallResult CovenantCanonical,
-    GrimoireSchemaTierInstallResult CovenantAccelerator);
+    GrimoireSchemaTierInstallResult CovenantAccelerator,
+    GrimoireSchemaTierInstallResult GuildCanonical);

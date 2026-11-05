@@ -12,6 +12,20 @@ public sealed class ArtifactSensitivityLabelTests
 
     private static readonly DateTimeOffset CreatedAt = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
 
+    [Fact]
+    public void Guild_content_can_carry_a_typed_label_with_its_own_policy_code()
+    {
+        ArtifactSensitivityLabel label = CreateLabel(null, null, null, artifactKind: (SensitiveArtifactKind)17);
+
+        Assert.Equal(17U, CovenantPolicyV1Manifest.GetCode(label.ArtifactKind));
+
+        Assert.Equal((SensitiveArtifactKind)17, label.ArtifactKind);
+
+        Assert.Equal(ArtifactId, label.ArtifactId);
+
+        Assert.Equal(SessionId, label.SessionId);
+    }
+
     [Theory]
     [InlineData(SensitiveArtifactKind.CampaignRollup)]
     [InlineData(SensitiveArtifactKind.CampaignContribution)]

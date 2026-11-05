@@ -38,5 +38,6 @@ internal static class CovenantCanonicalSchemaVersionThreeFixture
                         .Where(static step => step.ToVersion <= 3),
                 ]),
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+        GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
         ]);
 }

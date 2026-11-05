@@ -30,6 +30,16 @@ internal sealed partial class DataRetentionService
 {
     private static readonly FactoryTablePlan[] FactoryPlanTables =
     [
+        new("guild_agent_card_skills", RetentionDataClass.GuildRecords, FactoryRecordKind.Derived),
+        new("guild_agent_card_revisions", RetentionDataClass.GuildRecords, FactoryRecordKind.Derived),
+        new("guild_agent_cards", RetentionDataClass.GuildRecords, FactoryRecordKind.Physical),
+        new("guild_content", RetentionDataClass.GuildContent, FactoryRecordKind.Physical),
+        new("guild_content_erasure_receipts", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_owner_cleanup", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_roster_refreshes", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_roster_cursors", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_declared_source_claims", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_declared_roots", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("saga_committed_uses", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
         new("memory_evaluation_reports", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("memory_evaluation_sources", RetentionDataClass.Annals, FactoryRecordKind.Derived),
@@ -126,6 +136,16 @@ internal sealed partial class DataRetentionService
 
     private static readonly FactoryTablePlan[] FactoryDeletionTables =
     [
+        new("guild_agent_card_skills", RetentionDataClass.GuildRecords, FactoryRecordKind.Derived),
+        new("guild_agent_card_revisions", RetentionDataClass.GuildRecords, FactoryRecordKind.Derived),
+        new("guild_agent_cards", RetentionDataClass.GuildRecords, FactoryRecordKind.Physical),
+        new("guild_content", RetentionDataClass.GuildContent, FactoryRecordKind.Physical),
+        new("guild_content_erasure_receipts", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_owner_cleanup", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_roster_refreshes", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_roster_cursors", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_declared_source_claims", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_declared_roots", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("saga_committed_uses", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
         new("memory_evaluation_reports", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("memory_evaluation_sources", RetentionDataClass.Annals, FactoryRecordKind.Derived),
@@ -405,6 +425,14 @@ internal sealed partial class DataRetentionService
                     derivedDeleted += await CountInTransactionAsync(
                         connection, transaction, table.Table, table.Predicate, cancellationToken).ConfigureAwait(false);
                 }
+            }
+
+            Result guildUnlabeled = await labeledArtifactGuard.EnsureNoneLabeledAsync(
+                SensitiveArtifactKind.GuildContent, connection, transaction, cancellationToken).ConfigureAwait(false);
+
+            if (guildUnlabeled.IsFailure)
+            {
+                throw new RetentionCovenantLabelException(guildUnlabeled.Error);
             }
 
             foreach (FactoryTablePlan table in FactoryDeletionTables)

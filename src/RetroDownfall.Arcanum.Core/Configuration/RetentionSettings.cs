@@ -53,6 +53,12 @@ public sealed record RetentionSettings
     public RetentionRuleSettings CampaignSummaries { get; set; } =
         new() { Enabled = false, Days = 365 };
 
+    public RetentionRuleSettings GuildContent { get; set; } =
+        new() { Enabled = false, Days = 365 };
+
+    public RetentionRuleSettings GuildRecords { get; set; } =
+        new() { Enabled = false, Days = 365 };
+
     public RetentionRuleSettings WorkspaceIndexes { get; set; } =
         new() { Enabled = true, Days = 30 };
 

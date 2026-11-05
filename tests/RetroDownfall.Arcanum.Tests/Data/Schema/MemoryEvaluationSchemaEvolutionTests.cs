@@ -91,7 +91,8 @@ public sealed class MemoryEvaluationSchemaEvolutionTests
             var chain = new GrimoireSchemaVersionChainSet([new(core.HeadManifest, core.HeadObjects,
                 [.. core.Steps.Where(value => value.ToVersion < 19), interrupted, .. core.Steps.Where(value => value.ToVersion > 19)]),
                 GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
-                GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator)]);
+                GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+                GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical)]);
 
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => GrimoireSchemaTestInstaller.InstallAsync(connection, chain, 64, cancellation.Token));
         }

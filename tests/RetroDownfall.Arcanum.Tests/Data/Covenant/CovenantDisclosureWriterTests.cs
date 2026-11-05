@@ -717,7 +717,8 @@ public sealed partial class CovenantDisclosureWriterTests
                 HealthyTier(
                     GrimoireSchemaTransactionTier.CovenantAccelerator,
                     SourceFingerprint,
-                    AcceleratorFingerprint)),
+                    AcceleratorFingerprint),
+                new GrimoireSchemaTierInstallResult(GrimoireSchemaTransactionTier.GuildCanonical, 1, GrimoireSchemaTierHealth.Healthy, "test-guild", null, null)),
             CovenantHealthTransition.Bootstrap);
 
         _ = availability.PublishCanonicalState(

@@ -1,0 +1,2 @@
+CREATE INDEX IF NOT EXISTS IX_guild_declared_source_claims_Root
+ON guild_declared_source_claims(RootKey,LastSeenScanId,SourceIdentity);

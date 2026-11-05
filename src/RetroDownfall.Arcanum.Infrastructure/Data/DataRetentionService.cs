@@ -385,6 +385,8 @@ internal sealed partial class DataRetentionService(
             retention,
             cancellationToken).ConfigureAwait(false);
 
+        await AddGuildStatusesAsync(items, retention, cancellationToken).ConfigureAwait(false);
+
         AddLogStatuses(items, retention);
 
         await AddCompositeDatabaseStatusAsync(

@@ -154,7 +154,9 @@ internal static class GrimoireSchemaVersionChains
     /// <para>Version 37 adds disposable int8 embedding companions and authoritative-update invalidation.
     /// Existing rows remain searchable while ordinary background work fills missing companions.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 37;
+    internal const int CoreSchemaVersion = 38;
+
+    internal const int GuildCanonicalSchemaVersion = 1;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -371,6 +373,8 @@ internal static class GrimoireSchemaVersionChains
             // Frozen Core35 catalog before the standalone attachment retrieval index.
             [(GrimoireSchemaTransactionTier.Core, 36)] = "1243F9B7B5256B4C07A71E030C145D20804297950101E93A5E411510D872E148",
 
+            [(GrimoireSchemaTransactionTier.Core, 38)] = "72BC0F63C58D1B0E0A2E2A6A2FA2C2491506F5983289019CDD5D24AED7A1D634",
+
             // Frozen Core36 catalog before the quantized embedding companions.
             [(GrimoireSchemaTransactionTier.Core, 37)] = "8CFAF4E4E58C6664E1509F0414CD4406984F2D6AA0BC61E36CF1ECF1DB567EF6",
 
@@ -472,6 +476,7 @@ internal static class GrimoireSchemaVersionChains
             BuildChain(GrimoireSchemaManifests.Core, GrimoireSchemaCatalog.CoreObjects),
             BuildChain(GrimoireSchemaManifests.CovenantCanonical, GrimoireSchemaCatalog.CovenantCanonicalObjects),
             BuildChain(GrimoireSchemaManifests.CovenantAccelerator, GrimoireSchemaCatalog.CovenantAcceleratorObjects),
+            BuildChain(GrimoireSchemaManifests.GuildCanonical, GrimoireSchemaCatalog.GuildCanonicalObjects),
         ]);
 
     private static GrimoireSchemaVersionChain BuildChain(

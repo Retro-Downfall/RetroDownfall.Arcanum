@@ -459,6 +459,6 @@ The idea to carry forward is simple:
 
 ## Planned Guild collaboration
 
-The shared Core data and grant contracts now exist as a dormant foundation. They do not activate Guild, expand memory access or change current recall behavior.
+The shared Core data and grant contracts now have a storage foundation: Cards and Guild payloads keep immutable revisions, ownership and sensitivity evidence, and cleanup uses the existing protected-erasure boundary. This does not activate Guild execution, expand memory access or change current recall behavior.
 
 The [proposed Guild design](Arcanum.DESIGN.md#23-the-guild--sealed-delegation-proposed) keeps delegated memory access within the original source and Campaign permissions, then narrows it through each job's private Signet. Peer messages and shared notes do not grant memory access or turn an agent into the operator. Protected excerpts keep their provenance, and the design does not grant child agents fresh Covenant recall. This is a future implementation contract; it does not change current memory behavior.

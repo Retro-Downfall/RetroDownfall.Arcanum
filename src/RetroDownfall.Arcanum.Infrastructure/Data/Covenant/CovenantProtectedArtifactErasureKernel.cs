@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -31,7 +32,8 @@ internal sealed record CovenantArtifactPurgeTarget(
     string? AdditionalPredicate = null,
     string? RowIdentity = null,
     bool LongRestNode = false,
-    bool CampaignManifestNode = false)
+    bool CampaignManifestNode = false,
+    bool GuildContentProjection = false)
 {
     /// <summary>This target's delete, keyed by an already-normalised parameter.</summary>
     internal string DeleteBy(string parameter) => $"DELETE FROM {Table} WHERE {Predicate(parameter)};";
@@ -51,7 +53,7 @@ internal sealed record CovenantArtifactPurgeTarget(
 
     private string Predicate(string parameter)
     {
-        string keyed = CampaignManifestNode ? CampaignRollupSourceStorage.PurgePredicate(Table, parameter) : LongRestNode ? LongRestLifecycle.Predicate(Table, parameter) : AnnalStore is { } store
+        string keyed = GuildContentProjection ? GuildContentLifecycle.Predicate(Table, parameter) : CampaignManifestNode ? CampaignRollupSourceStorage.PurgePredicate(Table, parameter) : LongRestNode ? LongRestLifecycle.Predicate(Table, parameter) : AnnalStore is { } store
             ? AnnalsErasurePlan.ForSubjectQuery(
                 store,
                 $"SELECT SubjectId FROM annal_claims WHERE {CovenantIdentitySql.Keyed("SubjectId", parameter)}",
@@ -173,6 +175,16 @@ internal static class CovenantArtifactPurgePlans
             SensitiveArtifactKind.LongRestDiscovery,
             LongRestLifecycle.Projections,
             LongRestLifecycle.Artifact,
+            CurrentPointerTable: null,
+            RedactionSql: null),
+
+        [SensitiveArtifactKind.GuildContent] = new(
+            SensitiveArtifactKind.GuildContent,
+            [
+                new("guild_agent_card_skills", "CardId", RowIdentity: "CardId || ':' || Revision || ':' || Ordinal", GuildContentProjection: true),
+                new("guild_agent_card_revisions", "ContentId", GuildContentProjection: true),
+            ],
+            new("guild_content", "ContentId", GuildContentProjection: true),
             CurrentPointerTable: null,
             RedactionSql: null),
 
@@ -386,6 +398,18 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
                 }
             }
 
+            if (item.Kind == SensitiveArtifactKind.GuildContent)
+            {
+                Result<ArtifactSensitivityLabel?> current = await ArtifactSensitivityLedger.ReadLabelWithinAsync(
+                    connection, transaction, item.Kind, item.ArtifactId, cancellationToken).ConfigureAwait(false);
+
+                if (current.IsFailure || current.Value is null
+                    || (await GuildContentLifecycle.ValidateArtifactAsync(connection, transaction, current.Value, cancellationToken).ConfigureAwait(false)).IsFailure)
+                {
+                    return Blocked(CovenantErasureBlocker.IntegrityFailure);
+                }
+            }
+
             CovenantOperationScope[] dependentOwners = await CampaignSummaryLifecycle.ReadDependencyOwnersAsync(
                 connection, transaction, item.Kind, item.ArtifactId, item.SessionId, cancellationToken).ConfigureAwait(false);
 
@@ -421,6 +445,10 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
                     1,
                     rule.Value.AppendsErasureReceipt ? 1UL : 0UL,
                     CovenantErasureBlocker.None));
+        }
+        catch (InvalidDataException) when (item.Kind == SensitiveArtifactKind.GuildContent)
+        {
+            return Blocked(CovenantErasureBlocker.IntegrityFailure);
         }
         catch (SqliteException exception)
         {
@@ -546,7 +574,7 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
             item,
             cancellationToken).ConfigureAwait(false);
 
-        if (rule.AppendsErasureReceipt)
+        if (rule.AppendsErasureReceipt && item.Kind != SensitiveArtifactKind.GuildContent)
         {
             await AppendErasureReceiptAsync(connection, transaction, item, operationId, cancellationToken)
                 .ConfigureAwait(false);

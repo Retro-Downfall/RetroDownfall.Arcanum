@@ -289,6 +289,10 @@ internal enum GrimoireWorkKind : byte
     LongRestSweep = 17,
 
     QuantizedEmbeddingBackfill = 18,
+
+    GuildMaintenance = 19,
+
+    GuildStorage = 20,
 }
 
 /// <summary>

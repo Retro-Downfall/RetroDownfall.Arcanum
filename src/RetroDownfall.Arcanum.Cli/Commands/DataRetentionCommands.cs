@@ -450,6 +450,10 @@ internal sealed class DataRetentionCommands(
 
         WriteRule("campaign-summaries", settings.CampaignSummaries);
 
+        WriteRule("guild-content", settings.GuildContent);
+
+        WriteRule("guild-records", settings.GuildRecords);
+
         WriteRule("workspace-indexes", settings.WorkspaceIndexes);
 
         WriteRule("session-entry-embeddings", settings.SessionEntryEmbeddings);

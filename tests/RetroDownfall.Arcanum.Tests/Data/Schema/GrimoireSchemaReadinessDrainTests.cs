@@ -41,7 +41,8 @@ public sealed class GrimoireSchemaReadinessDrainTests
             new(core.HeadManifest with { Version = 4 }, core.HeadObjects,
                 [Step(1, predecessor), Step(2, blocking), Step(3, optional)]),
             original.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
-            original.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator)]);
+            original.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+            original.ForTier(GrimoireSchemaTransactionTier.GuildCanonical)]);
 
         GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create(chains);
 
@@ -122,7 +123,8 @@ public sealed class GrimoireSchemaReadinessDrainTests
         GrimoireSchemaVersionChainSet chains = new([
             new(core.HeadManifest with { Version = 3 }, core.HeadObjects, [first, last]),
             original.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
-            original.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator)]);
+            original.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+            original.ForTier(GrimoireSchemaTransactionTier.GuildCanonical)]);
 
         GrimoireSchemaRefusedException refused = await Assert.ThrowsAsync<GrimoireSchemaRefusedException>(() =>
             GrimoireSchemaTestInstaller.InstallAsync(connection, chains, 1536, CancellationToken.None));

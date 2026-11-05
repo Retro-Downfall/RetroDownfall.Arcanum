@@ -57,6 +57,9 @@
 
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.SqliteReaderSmoke" />
 
+    <!-- Exercise the generated persisted Card payload and strict source parser in Native AOT. -->
+    <InternalsVisibleTo Include="RetroDownfall.Arcanum.GuildAotSmoke" />
+
     <!-- The dedicated benchmark hosts compose the same internal services a live host does.
          Measuring a public facade instead would measure a facade, and rebuilding either composition
          against copies would make its gate a test of the copies. -->

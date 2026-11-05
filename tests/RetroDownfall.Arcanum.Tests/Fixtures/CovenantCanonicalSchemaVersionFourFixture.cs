@@ -38,6 +38,7 @@ internal static class CovenantCanonicalSchemaVersionFourFixture
                         .Where(static step => step.ToVersion <= 4),
                 ]),
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+        GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
         ]);
 
     private static string WithoutReviewInventoryRows(string sql) =>

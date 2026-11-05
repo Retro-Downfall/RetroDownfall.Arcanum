@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Serialization;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 
 return GuildAotSmoke.Run();
 
@@ -299,6 +300,17 @@ internal static class GuildAotSmoke
         Exercise(GuildWorkspaceLeaseState.Held, GuildJsonContext.Default.GuildWorkspaceLeaseState);
 
         ExerciseLiteralsAndBoundaries();
+
+        RoundTrip(new GuildStoredAgentCardPayload(SampleGuildAgentCard(), "Bounded guidance: λ", ["read_file"]),
+            GuildStorageJsonContext.Default.GuildStoredAgentCardPayload);
+
+        var parsed = GuildDeclaredAgentParser.Parse("---\nname: Auditor\ndescription: Reviews source\nskills: [review]\n---\nKeep evidence.");
+
+        Require(parsed.IsSuccess && parsed.Value.Name == "Auditor" && parsed.Value.Skills.SequenceEqual(["review"])
+            && parsed.Value.Guidance == "Keep evidence.", "The declared Card parser failed under Native AOT.");
+
+        Require(GuildDeclaredAgentParser.Parse("---\nname: Auditor\ndescription: Reviews source\nunknown: value\n---\n").IsFailure,
+            "The declared Card parser accepted an unknown key under Native AOT.");
 
         Console.WriteLine("Guild Native AOT graph smoke passed.");
 

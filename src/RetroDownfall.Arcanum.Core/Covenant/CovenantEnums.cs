@@ -201,7 +201,9 @@ public enum SensitiveArtifactKind : byte
     CampaignRollup = 14,
     CampaignContribution = 15,
 
-    LongRestDiscovery = 16
+    LongRestDiscovery = 16,
+
+    GuildContent = 17
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantEgressDestination>))]

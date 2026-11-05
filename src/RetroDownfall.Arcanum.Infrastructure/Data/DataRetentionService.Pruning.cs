@@ -445,6 +445,8 @@ internal sealed partial class DataRetentionService
             retention, limit, selectedOwnerClosures, coveredCampaignRows, items, candidates, cancellationToken)
             .ConfigureAwait(false);
 
+        await AddGuildCandidatesAsync(retention, limit, items, candidates, cancellationToken).ConfigureAwait(false);
+
         AddLogCandidates(
             retention,
             limit,
@@ -557,6 +559,10 @@ internal sealed partial class DataRetentionService
 
             CampaignSummaries = retention.CampaignSummaries with { },
 
+            GuildContent = retention.GuildContent with { },
+
+            GuildRecords = retention.GuildRecords with { },
+
             WorkspaceIndexes = retention.WorkspaceIndexes with { },
 
             SessionEntryEmbeddings = retention.SessionEntryEmbeddings with { },
@@ -603,6 +609,10 @@ internal sealed partial class DataRetentionService
         AppendRuleAuthority(authority, "lexicon", retention.LexiconEntries);
 
         AppendRuleAuthority(authority, "campaign-summaries", retention.CampaignSummaries);
+
+        AppendRuleAuthority(authority, "guild-content", retention.GuildContent);
+
+        AppendRuleAuthority(authority, "guild-records", retention.GuildRecords);
 
         AppendRuleAuthority(authority, "workspace", retention.WorkspaceIndexes);
 
@@ -3343,6 +3353,16 @@ internal sealed partial class DataRetentionService
             return Boundary(retention.CampaignSummaries, generatedAt);
         }
 
+        if (candidate.StartsWith(GuildContentCandidatePrefix, StringComparison.Ordinal))
+        {
+            return Boundary(retention.GuildContent, generatedAt);
+        }
+
+        if (candidate.StartsWith(GuildRecordCandidatePrefix, StringComparison.Ordinal))
+        {
+            return Boundary(retention.GuildRecords, generatedAt);
+        }
+
         if (candidate.StartsWith(AuditLogCandidatePrefix, StringComparison.Ordinal))
         {
             return Boundary(retention.AuditLogs, generatedAt);
@@ -4762,7 +4782,7 @@ internal sealed partial class DataRetentionService
             BatchCandidatePrefix, FileCandidatePrefix, "session:", EntryCandidatePrefix,
             AttachmentCandidatePrefix, EntryEmbeddingCandidatePrefix, WorkspaceCandidatePrefix,
             SagaCandidatePrefix, LexiconCandidatePrefix, CampaignRollupCandidatePrefix,
-            CampaignContributionCandidatePrefix, AuditLogCandidatePrefix, GuardrailLogCandidatePrefix,
+            CampaignContributionCandidatePrefix, GuildContentCandidatePrefix, GuildRecordCandidatePrefix, AuditLogCandidatePrefix, GuardrailLogCandidatePrefix,
             IdempotencyClaimCandidatePrefix, IdempotencyKeyCandidatePrefix, AccountingCandidatePrefix,
             AccountingAdjustmentCandidatePrefix, BudgetAlertCandidatePrefix, OperationCandidatePrefix,
             SanctumCandidatePrefix, DaemonCandidatePrefix,
@@ -4796,6 +4816,8 @@ internal sealed partial class DataRetentionService
             EntryEmbeddingCandidatePrefix,
             CampaignRollupCandidatePrefix,
             CampaignContributionCandidatePrefix,
+            GuildContentCandidatePrefix,
+            GuildRecordCandidatePrefix,
             IdempotencyClaimCandidatePrefix,
             AccountingCandidatePrefix,
             AccountingAdjustmentCandidatePrefix,
@@ -4989,6 +5011,16 @@ internal sealed partial class DataRetentionService
                 candidate[LexiconCandidatePrefix.Length..],
                 effectiveCutoff,
                 cancellationToken).ConfigureAwait(false);
+        }
+
+        if (TryReadGuidCandidate(candidate, GuildContentCandidatePrefix, out Guid guildContentId))
+        {
+            return await DeleteGuildCandidateAsync(guildContentId, false, effectiveCutoff, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (TryReadGuidCandidate(candidate, GuildRecordCandidatePrefix, out Guid guildCardId))
+        {
+            return await DeleteGuildCandidateAsync(guildCardId, true, effectiveCutoff, cancellationToken).ConfigureAwait(false);
         }
 
         if (TryReadGuidCandidate(candidate, CampaignRollupCandidatePrefix, out Guid rollupId))
@@ -5317,6 +5349,20 @@ internal sealed partial class DataRetentionService
                 ("@id", candidate[LexiconCandidatePrefix.Length..])).ConfigureAwait(false);
         }
 
+        if (TryReadGuidCandidate(candidate, GuildContentCandidatePrefix, out Guid guildContentId))
+        {
+            return await IsDatabaseCandidateOldEnoughAsync(retention.GuildContent, effectiveCutoff,
+                "guild_content", "ContentId = @id AND CreatedAtUtc <= @cutoff", cancellationToken,
+                ("@id", guildContentId.ToString("D").ToUpperInvariant())).ConfigureAwait(false);
+        }
+
+        if (TryReadGuidCandidate(candidate, GuildRecordCandidatePrefix, out Guid guildCardId))
+        {
+            return await IsDatabaseCandidateOldEnoughAsync(retention.GuildRecords, effectiveCutoff,
+                "guild_agent_cards", "CardId = @id AND UpdatedAtUtc <= @cutoff", cancellationToken,
+                ("@id", guildCardId.ToString("D").ToUpperInvariant())).ConfigureAwait(false);
+        }
+
         if (TryReadGuidCandidate(candidate, CampaignRollupCandidatePrefix, out Guid rollupId))
         {
             return await IsDatabaseCandidateOldEnoughAsync(retention.CampaignSummaries, effectiveCutoff,
@@ -5643,6 +5689,18 @@ internal sealed partial class DataRetentionService
                 "Id = @id",
                 cancellationToken,
                 ("@id", candidate[LexiconCandidatePrefix.Length..])).ConfigureAwait(false) > 0;
+        }
+
+        if (TryReadGuidCandidate(candidate, GuildContentCandidatePrefix, out Guid guildContentId))
+        {
+            return await CountTableAsync("guild_content", "ContentId = @id", cancellationToken,
+                ("@id", guildContentId.ToString("D").ToUpperInvariant())).ConfigureAwait(false) > 0;
+        }
+
+        if (TryReadGuidCandidate(candidate, GuildRecordCandidatePrefix, out Guid guildCardId))
+        {
+            return await CountTableAsync("guild_agent_cards", "CardId = @id", cancellationToken,
+                ("@id", guildCardId.ToString("D").ToUpperInvariant())).ConfigureAwait(false) > 0;
         }
 
         if (TryReadGuidCandidate(candidate, CampaignRollupCandidatePrefix, out Guid rollupId))

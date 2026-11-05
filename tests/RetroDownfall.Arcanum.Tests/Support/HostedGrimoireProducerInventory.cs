@@ -1747,6 +1747,7 @@ internal static partial class HostedGrimoireProducerInventory
         ]),
         Lifecycle("Hosting", "SessionAttachmentPendingGcHostedService", HostedProducerAuthorityKind.PreReadinessStartup, "pending-file and row reconciliation awaited by Generic Host", HostedProducerAuthorityKind.EffectFree, "completed task only"),
         Ordinary("Covenant", "CovenantMaintenanceHostedService", GrimoireWorkKind.CovenantMaintenance),
+        Ordinary("Guild", "GuildMaintenanceHostedService", GrimoireWorkKind.GuildMaintenance),
         Ordinary("Covenant", "GrimoireSchemaTransitionHostedService", GrimoireWorkKind.GrimoireSchemaTransition),
         Ordinary("Hosting", "EntryWeavingService", GrimoireWorkKind.EntryWeaving),
         Ordinary("Weave", "SessionAttachmentIndexingService", GrimoireWorkKind.SessionAttachmentIndexing),

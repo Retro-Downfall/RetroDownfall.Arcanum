@@ -510,6 +510,10 @@ public sealed partial class DataRetentionCommandTests
 
         Assert.Contains("campaign-summaries: disabled, 365 days", settingsResult.Output, StringComparison.Ordinal);
 
+        Assert.Contains("guild-content: disabled, 365 days", settingsResult.Output, StringComparison.Ordinal);
+
+        Assert.Contains("guild-records: disabled, 365 days", settingsResult.Output, StringComparison.Ordinal);
+
         Assert.DoesNotContain("{", settingsResult.Output, StringComparison.Ordinal);
 
         Assert.Contains("Prune plan", planResult.Output, StringComparison.Ordinal);

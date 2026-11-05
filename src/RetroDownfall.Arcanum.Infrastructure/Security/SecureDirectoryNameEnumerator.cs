@@ -46,6 +46,55 @@ internal static partial class SecureDirectoryNameEnumerator
         return true;
     }
 
+    /// <summary>Scans one admitted directory with bounded name retention and ordinal keyset continuation.</summary>
+    internal static bool TryEnumeratePage(SafeFileHandle directory, string? afterName, int pageSize,
+        string suffix, CancellationToken cancellationToken, out string[] names, out bool hasMore)
+    {
+        names = [];
+
+        hasMore = false;
+
+        if (directory is null || directory.IsInvalid || directory.IsClosed || pageSize is < 1 or > 100)
+        {
+            return false;
+        }
+
+        SortedSet<string> retained = new(StringComparer.Ordinal);
+
+        void Observe(string name)
+        {
+            if (!name.EndsWith(suffix, StringComparison.Ordinal)
+                || afterName is not null && StringComparer.Ordinal.Compare(name, afterName) <= 0)
+            {
+                return;
+            }
+
+            retained.Add(name);
+
+            if (retained.Count > pageSize + 1)
+            {
+                retained.Remove(retained.Max!);
+            }
+        }
+
+        List<string>? scanned = OperatingSystem.IsWindows()
+            ? EnumerateWindows(directory, cancellationToken, Observe)
+            : OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()
+                ? EnumerateUnix(directory, cancellationToken, Observe)
+                : null;
+
+        if (scanned is null)
+        {
+            return false;
+        }
+
+        hasMore = retained.Count > pageSize;
+
+        names = [.. retained.Take(pageSize)];
+
+        return true;
+    }
+
     /// <summary>
     /// Where a <c>readdir</c> entry keeps its name, and on macOS its name length, for the given platform.
     /// </summary>
@@ -75,7 +124,8 @@ internal static partial class SecureDirectoryNameEnumerator
 
     private static List<string>? EnumerateUnix(
         SafeFileHandle directory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<string>? observe = null)
     {
         if (!TryGetUnixDirentLayout(
                 OperatingSystem.IsMacOS(),
@@ -150,7 +200,14 @@ internal static partial class SecureDirectoryNameEnumerator
 
                     if (name is not "." and not "..")
                     {
-                        names.Add(name);
+                        if (observe is null)
+                        {
+                            names.Add(name);
+                        }
+                        else
+                        {
+                            observe(name);
+                        }
                     }
                 }
             }
@@ -195,7 +252,8 @@ internal static partial class SecureDirectoryNameEnumerator
 
     private static unsafe List<string>? EnumerateWindows(
         SafeFileHandle directory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<string>? observe = null)
     {
         byte[] buffer = new byte[WindowsBufferBytes];
         List<string> names = [];
@@ -252,7 +310,14 @@ internal static partial class SecureDirectoryNameEnumerator
                         entry.Slice(104, checked((int)nameBytes)));
                     if (name is not "." and not "..")
                     {
-                        names.Add(name);
+                        if (observe is null)
+                        {
+                            names.Add(name);
+                        }
+                        else
+                        {
+                            observe(name);
+                        }
                     }
 
                     if (next == 0)

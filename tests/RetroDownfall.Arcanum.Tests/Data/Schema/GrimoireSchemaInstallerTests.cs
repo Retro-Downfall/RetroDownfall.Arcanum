@@ -506,6 +506,7 @@ public sealed class GrimoireSchemaInstallerTests
                 new ThrowingCoreDataInitializer(),
                 new CovenantCanonicalSchemaDataInitializer(),
                 new CovenantAcceleratorSchemaDataInitializer(),
+                new GuildCanonicalSchemaDataInitializer(),
             ]),
             GrimoireSchemaVersionChains.Default,
             TimeProvider.System);
@@ -712,6 +713,7 @@ public sealed class GrimoireSchemaInstallerTests
                 new CoreGrimoireSchemaDataInitializer(),
                 new CovenantCanonicalSchemaDataInitializer(),
                 new ProbeShadowInitializer(shadow),
+                new GuildCanonicalSchemaDataInitializer(),
             ]),
             GrimoireSchemaVersionChains.Default,
             TimeProvider.System,

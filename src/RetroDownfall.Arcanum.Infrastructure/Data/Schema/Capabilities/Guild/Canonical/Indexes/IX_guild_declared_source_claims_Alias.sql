@@ -1,0 +1,2 @@
+CREATE INDEX IF NOT EXISTS IX_guild_declared_source_claims_Alias
+ON guild_declared_source_claims(ExplicitAgentId,SourceIdentity);
