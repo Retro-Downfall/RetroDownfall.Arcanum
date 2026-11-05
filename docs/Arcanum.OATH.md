@@ -1239,4 +1239,6 @@ OATH should be updated when a change alters its cross-store authority, lineage, 
 
 ## Planned Guild authority boundary
 
+The dormant Core grant algebra now represents the additional memory restrictions and rejects unsupported store/operation/scope combinations. It has no memory-reader integration or fresh-recall authority; live source enforcement remains planned.
+
 The proposed [Guild architecture](Arcanum.DESIGN.md#23-the-guild--sealed-delegation-proposed), especially [memory and provenance](Arcanum.DESIGN.md#2314-memory-scope-and-prompt-provenance) and [protected persistence](Arcanum.DESIGN.md#2315-persistence-sensitivity-retention-and-installation-lifecycle), adds restrictions to existing source authority; it grants no fresh child Covenant recall. Host-stamped Operator/Parent/Peer/Child relationships are provenance, while content remains untrusted. Selected protected excerpts retain labels and source checks. Shared Guild payloads require their own registered sensitive-artifact kind and an explicit Core schema transition; owner cleanup uses the existing purge kernel and respects Blocked outcomes. These are planned contracts under #143; current OATH behavior above remains authoritative until the owning slices land.

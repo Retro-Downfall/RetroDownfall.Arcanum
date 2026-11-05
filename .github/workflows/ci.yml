@@ -771,6 +771,10 @@ jobs:
           rg --version
           ./scripts/verify-aot-il-warnings.sh win-x64
 
+      - name: Verify Guild Native AOT graph (win-x64)
+        shell: bash
+        run: ./scripts/verify-guild-aot.sh --rid win-x64
+
       # The broker smoke re-executes this exact retained, warning-free shipping apphost after
       # its provider-contract smoke succeeds. A fresh parent gives the verifier a nonexistent leaf.
       - name: Verify warning-free win-x64 shipping executable and provider-contract smoke
@@ -1051,6 +1055,10 @@ jobs:
           rg --version
           ./scripts/verify-aot-il-warnings.sh win-arm64
 
+      - name: Verify Guild Native AOT graph (win-arm64)
+        shell: bash
+        run: ./scripts/verify-guild-aot.sh --rid win-arm64
+
       # The broker smoke re-executes this exact retained, warning-free shipping apphost after
       # its provider-contract smoke succeeds. A fresh parent gives the verifier a nonexistent leaf.
       - name: Verify warning-free win-arm64 shipping executable and provider-contract smoke
@@ -1247,6 +1255,9 @@ jobs:
 
       - name: Verify warning-free shipping executable and provider-contract smoke
         run: ./scripts/verify-shipping-publish.sh --rid osx-arm64
+
+      - name: Verify Guild Native AOT graph (osx-arm64)
+        run: ./scripts/verify-guild-aot.sh --rid osx-arm64
 
   static-analysis:
     # These tools ship in the repository, so their own regression tests and checks must run here.

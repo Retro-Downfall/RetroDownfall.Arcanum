@@ -478,6 +478,8 @@ Compendium edits the same source-generated, AOT-analyzed configuration contract 
 
 ## Proposed Guild configuration
 
+The dormant `GuildGrant`/`GuildRequestedGrant` data contracts now exist in Core with strict generated JSON shapes. They are not configuration registrations: no Guild feature property, peer settings, retention class or binder behavior is added by the foundation. Configuration-specific validation and activation remain with the slices below.
+
 **Planned, not accepted by the current configuration binder.** The following is the resolved configuration contract for [DESIGN §23](Arcanum.DESIGN.md#23-the-guild--sealed-delegation-proposed), introduced by the owning Guild slices. Adding these keys to a current installation before those slices land is invalid; this documentation change does not enable a feature or modify runtime defaults.
 
 The following planned definitions are an implementation specification, separate from the accepted setting inventory above. Each definition retains its intended type, default and validation contract; none is a supported setting until its owning implementation lands.

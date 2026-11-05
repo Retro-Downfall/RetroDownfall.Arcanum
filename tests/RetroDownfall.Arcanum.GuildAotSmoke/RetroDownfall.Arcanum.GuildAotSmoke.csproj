@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+
+    <OutputType>Exe</OutputType>
+
+    <PublishAot>true</PublishAot>
+
+    <IsAotCompatible>true</IsAotCompatible>
+
+    <IsTrimmable>true</IsTrimmable>
+
+  </PropertyGroup>
+
+  <ItemGroup>
+
+    <ProjectReference Include="../../src/RetroDownfall.Arcanum.Core/RetroDownfall.Arcanum.Core.csproj" />
+
+  </ItemGroup>
+
+</Project>
