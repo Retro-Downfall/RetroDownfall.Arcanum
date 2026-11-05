@@ -51,7 +51,11 @@ public sealed class LongRestDiscoveryPolicyTests
 
         Assert.Equal(7u, CovenantPolicyV1Manifest.GetCode((CovenantMaintenanceStep)7));
 
-        Assert.Throws<ArgumentOutOfRangeException>(() => CovenantPolicyV1Manifest.GetCode((SensitiveArtifactKind)17));
+        Assert.Equal(17u, CovenantPolicyV1Manifest.GetCode(SensitiveArtifactKind.GuildContent));
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => CovenantPolicyV1Manifest.GetCode((SensitiveArtifactKind)18));
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => CovenantPolicyV1Manifest.GetCode((SensitiveArtifactKind)byte.MaxValue));
 
         Assert.Throws<ArgumentOutOfRangeException>(() => CovenantPolicyV1Manifest.GetCode((CovenantMaintenanceStep)8));
     }

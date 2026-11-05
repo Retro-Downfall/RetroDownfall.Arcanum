@@ -20,6 +20,7 @@ public sealed class HostedRuntimeRegistrationTests
         "LongRunningOperationStartupHostedService",
         "SessionAttachmentPendingGcHostedService",
         "CovenantMaintenanceHostedService",
+        "GuildMaintenanceHostedService",
         "GrimoireSchemaTransitionHostedService",
         "EntryWeavingService",
         "SessionAttachmentIndexingService",
@@ -56,6 +57,26 @@ public sealed class HostedRuntimeRegistrationTests
         Assert.Equal(HostedProducerAuthorityKind.OrdinaryHostedWork, operation.Authority);
 
         Assert.Equal("QuantizedEmbeddingBackfill", operation.WorkKind?.ToString());
+
+        Assert.Null(operation.Proof);
+    }
+
+    [Fact]
+    public void Guild_owner_cleanup_is_ordinary_admitted_hosted_work()
+    {
+        HostedProducerServiceEntry service = Assert.Single(
+            HostedGrimoireProducerInventory.Catalog,
+            static entry => entry.ServiceType == "GuildMaintenanceHostedService");
+
+        HostedProducerOperationEntry operation = Assert.Single(service.Operations);
+
+        Assert.Equal("ExecuteAsync", operation.Member);
+
+        Assert.Equal("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildMaintenanceHostedService.cs", operation.SourcePath);
+
+        Assert.Equal(HostedProducerAuthorityKind.OrdinaryHostedWork, operation.Authority);
+
+        Assert.Equal("GuildMaintenance", operation.WorkKind?.ToString());
 
         Assert.Null(operation.Proof);
     }

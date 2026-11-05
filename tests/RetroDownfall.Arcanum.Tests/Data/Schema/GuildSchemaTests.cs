@@ -194,10 +194,17 @@ public sealed class GuildSchemaTests
         Assert.True((await GuildStorageAvailability.CheckAsync(restored, null, CancellationToken.None)).IsSuccess);
     }
 
-    [Fact]
-    public async Task Cancellation_in_Guild_initializer_rolls_back_optional_install_without_damage()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Cancellation_in_Guild_initializer_rolls_back_optional_install_without_damage(bool previouslyInstalled)
     {
         await using SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync("Data Source=:memory:", CancellationToken.None);
+
+        if (previouslyInstalled)
+        {
+            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, 768, CancellationToken.None);
+        }
 
         using CancellationTokenSource cancellation = new();
 
@@ -213,11 +220,18 @@ public sealed class GuildSchemaTests
 
         command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE name='guild_content'";
 
-        Assert.Equal(0L, await command.ExecuteScalarAsync());
+        Assert.Equal(previouslyInstalled ? 1L : 0L, await command.ExecuteScalarAsync());
 
         command.CommandText = "SELECT COUNT(*) FROM grimoire_feature_schemas WHERE FamilyCode=2";
 
-        Assert.Equal(0L, await command.ExecuteScalarAsync());
+        Assert.Equal(previouslyInstalled ? 1L : 0L, await command.ExecuteScalarAsync());
+
+        if (previouslyInstalled)
+        {
+            command.CommandText = "SELECT HealthCode FROM grimoire_feature_schemas WHERE FamilyCode=2 AND TransactionTierCode=3";
+
+            Assert.Equal(0L, await command.ExecuteScalarAsync());
+        }
 
         GrimoireSchemaInstallResult retried = await GrimoireSchemaTestInstaller.InstallAsync(connection, 768, CancellationToken.None);
 
@@ -282,6 +296,99 @@ public sealed class GuildSchemaTests
         Assert.True(admitted.GuildCanonical.IsHealthy);
 
         Assert.True((await GuildStorageAvailability.CheckAsync(fresh, null, CancellationToken.None)).IsSuccess);
+    }
+
+    [Fact]
+    public async Task Caller_cancellation_after_definite_integrity_failure_cannot_skip_durable_unavailability_publication()
+    {
+        using EvolutionScratchDatabase database = EvolutionScratchDatabase.Create();
+
+        string pins;
+
+        await using (SqliteConnection connection = await database.OpenAsync(CancellationToken.None))
+        {
+            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, 768, CancellationToken.None);
+
+            await using SqliteCommand command = connection.CreateCommand();
+
+            command.CommandText = """
+                SELECT SchemaVersion || '|' || SourceDefinitionFingerprint || '|' || InstalledCatalogFingerprint || '|' || InstalledAtUtc
+                FROM grimoire_feature_schemas WHERE FamilyCode=2 AND TransactionTierCode=3;
+                """;
+
+            pins = (string)(await command.ExecuteScalarAsync())!;
+
+            command.CommandText = """
+                INSERT INTO guild_agent_cards(CardId,AgentId,SourceKindCode,SourceIdentity,CurrentRevision,ContentId,Available,CreatedAtUtc,UpdatedAtUtc)
+                VALUES('11111111-1111-1111-1111-111111111111','22222222-2222-2222-2222-222222222222',0,'cancelled-integrity-publication',1,
+                    '33333333-3333-3333-3333-333333333333',1,'2026-01-01T00:00:00.0000000Z','2026-01-01T00:00:00.0000000Z');
+                """;
+
+            await command.ExecuteNonQueryAsync();
+
+            using CancellationTokenSource cancellation = new();
+
+            var initializer = new CancelAfterDefiniteGuildIntegrityFailure(cancellation);
+
+            GrimoireSchemaInstaller installer = new(new GrimoireSchemaManifestInspector(GrimoireSchemaTierOwnershipRegistry.CreateDefault()),
+                new GrimoireSchemaDataInitializers([new CoreGrimoireSchemaDataInitializer(), new CovenantCanonicalSchemaDataInitializer(),
+                    new CovenantAcceleratorSchemaDataInitializer(), initializer]), GrimoireSchemaVersionChains.Default, TimeProvider.System);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => installer.InstallAsync(connection, 768,
+                GrimoireSchemaTestInstaller.CreateContext(), cancellation.Token));
+
+            Assert.True(initializer.DefiniteFailureObserved);
+        }
+
+        await using SqliteConnection fresh = await database.OpenAsync(CancellationToken.None);
+
+        await using SqliteCommand verified = fresh.CreateCommand();
+
+        verified.CommandText = "SELECT HealthCode FROM grimoire_feature_schemas WHERE FamilyCode=2 AND TransactionTierCode=3";
+
+        Assert.Equal((long)GrimoireSchemaTierHealth.Unavailable, await verified.ExecuteScalarAsync());
+
+        verified.CommandText = "SELECT HealthDetailCode FROM grimoire_feature_schemas WHERE FamilyCode=2 AND TransactionTierCode=3";
+
+        Assert.Equal("Guild.StorageIntegrity", await verified.ExecuteScalarAsync());
+
+        verified.CommandText = """
+            SELECT SchemaVersion || '|' || SourceDefinitionFingerprint || '|' || InstalledCatalogFingerprint || '|' || InstalledAtUtc
+            FROM grimoire_feature_schemas WHERE FamilyCode=2 AND TransactionTierCode=3;
+            """;
+
+        Assert.Equal(pins, await verified.ExecuteScalarAsync());
+
+        verified.CommandText = "SELECT COUNT(*) FROM guild_agent_cards WHERE SourceIdentity='cancelled-integrity-publication'";
+
+        Assert.Equal(1L, await verified.ExecuteScalarAsync());
+
+        Assert.True((await GuildStorageAvailability.CheckAsync(fresh, null, CancellationToken.None)).IsFailure);
+    }
+
+    private sealed class CancelAfterDefiniteGuildIntegrityFailure(CancellationTokenSource cancellation) : IGrimoireSchemaDataInitializer
+    {
+        public GrimoireSchemaTransactionTier TransactionTier => GrimoireSchemaTransactionTier.GuildCanonical;
+
+        internal bool DefiniteFailureObserved { get; private set; }
+
+        public async Task InitializeAsync(SqliteConnection connection, SqliteTransaction transaction,
+            GrimoireSchemaInitializationContext context, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await new GuildCanonicalSchemaDataInitializer().InitializeAsync(connection, transaction, context,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (GuildStorageIntegrityException)
+            {
+                DefiniteFailureObserved = true;
+
+                cancellation.Cancel();
+
+                throw;
+            }
+        }
     }
 
     private sealed class CancelGuildInitializer(CancellationTokenSource cancellation) : IGrimoireSchemaDataInitializer

@@ -548,6 +548,8 @@ internal sealed partial class GuildStore(IGrimoireOrdinaryConnectionFactory conn
             return content.Error;
         }
 
+        DateTimeOffset cardWrittenAt = time.GetUtcNow();
+
         await using SqliteCommand command = Command(connection, transaction, exists ? """
             UPDATE guild_agent_cards SET CurrentRevision=$revision,ContentId=$content,Available=$available,ReasonCode=$reason,UpdatedAtUtc=$now WHERE CardId=$card
             """ : """
@@ -581,35 +583,49 @@ internal sealed partial class GuildStore(IGrimoireOrdinaryConnectionFactory conn
 
         Add(command, "$reason", card.Source.ReasonCode);
 
-        Add(command, "$now", UtcInstantText.Format(time.GetUtcNow()));
+        Add(command, "$now", UtcInstantText.Format(cardWrittenAt));
 
         _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
-        command.CommandText = "INSERT INTO guild_agent_card_revisions(CardId,Revision,ContentId,SourceDigest,CreatedAtUtc) VALUES($card,$revision,$content,$digest,$now)";
+        await using SqliteCommand revisionCommand = Command(connection, transaction,
+            "INSERT INTO guild_agent_card_revisions(CardId,Revision,ContentId,SourceDigest,CreatedAtUtc) VALUES($card,$revision,$content,$digest,$now)");
 
-        Add(command, "$digest", write.SourceDigest);
+        Add(revisionCommand, "$card", Format(cardId));
 
-        _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        Add(revisionCommand, "$revision", revision);
 
-        command.CommandText = "INSERT INTO guild_agent_card_skills(CardId,Revision,SkillId,Ordinal) VALUES($card,$revision,$skill,$ordinal)";
+        Add(revisionCommand, "$content", Format(contentId));
+
+        Add(revisionCommand, "$digest", write.SourceDigest);
+
+        Add(revisionCommand, "$now", UtcInstantText.Format(cardWrittenAt));
+
+        _ = await revisionCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+        await using SqliteCommand skillCommand = Command(connection, transaction,
+            "INSERT INTO guild_agent_card_skills(CardId,Revision,SkillId,Ordinal) VALUES($card,$revision,$skill,$ordinal)");
+
+        Add(skillCommand, "$card", Format(cardId));
+
+        Add(skillCommand, "$revision", revision);
 
         for (int i = 0; i < card.Skills.Length; i++)
         {
-            if (command.Parameters.Contains("$skill"))
+            if (skillCommand.Parameters.Contains("$skill"))
             {
-                command.Parameters.RemoveAt("$skill");
+                skillCommand.Parameters.RemoveAt("$skill");
             }
 
-            if (command.Parameters.Contains("$ordinal"))
+            if (skillCommand.Parameters.Contains("$ordinal"))
             {
-                command.Parameters.RemoveAt("$ordinal");
+                skillCommand.Parameters.RemoveAt("$ordinal");
             }
 
-            Add(command, "$skill", card.Skills[i].Id);
+            Add(skillCommand, "$skill", card.Skills[i].Id);
 
-            Add(command, "$ordinal", i);
+            Add(skillCommand, "$ordinal", i);
 
-            _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            _ = await skillCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
 
         return new GuildStoredCard(payload, content.Value, write.SourceIdentity, write.SessionId, write.CampaignId);

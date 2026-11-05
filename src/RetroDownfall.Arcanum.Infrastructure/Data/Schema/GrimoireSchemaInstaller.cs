@@ -181,7 +181,8 @@ internal sealed class GrimoireSchemaInstaller(
         {
             // The failed optional transaction has already rolled back. Publish only its health on
             // Core's existing metadata row; version and both immutable schema identities stay intact.
-            // A publication failure escapes and prevents startup from advertising readiness.
+            // A definite integrity failure must survive caller cancellation. Publication failure
+            // escapes and prevents startup from advertising readiness.
             await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
             await using SqliteCommand command = connection.CreateCommand();
@@ -192,12 +193,14 @@ internal sealed class GrimoireSchemaInstaller(
 
             command.Parameters.AddWithValue("$health", (int)GrimoireSchemaTierHealth.Unavailable);
 
-            if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            if (await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false) != 1)
             {
                 throw new InvalidOperationException("Guild integrity failure could not publish its unavailable state.");
             }
 
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+
+            cancellationToken.ThrowIfCancellationRequested();
 
             return Failed(manifest, GrimoireSchemaTierHealth.Unavailable, "Guild.StorageIntegrity");
         }

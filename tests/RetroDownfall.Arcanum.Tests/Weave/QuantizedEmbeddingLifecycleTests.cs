@@ -381,6 +381,8 @@ public sealed class QuantizedEmbeddingLifecycleTests(ITestOutputHelper output)
 
         Assert.True(core.TryGetStep(36, out GrimoireSchemaVersionStep step));
 
+        Assert.Equal(37, step.ToVersion);
+
         GrimoireSchemaVersionStep failing = step with
         {
             Statements = [.. step.Statements, new GrimoireSchemaTransitionStatement("InjectedFailure", 900, "InjectedFailure", "INSERT INTO MissingQuantizedTable VALUES(1);")],
@@ -388,10 +390,10 @@ public sealed class QuantizedEmbeddingLifecycleTests(ITestOutputHelper output)
 
         GrimoireSchemaVersionChainSet chains = new(
         [
-            new(core.HeadManifest, core.HeadObjects, [.. core.Steps.Where(item => item.ToVersion < 37), failing]),
+            new(core.HeadManifest, core.HeadObjects, [.. core.Steps.Select(item => item.ToVersion == 37 ? failing : item)]),
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
             GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
-        GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
         ]);
 
         await Assert.ThrowsAsync<SqliteException>(() => GrimoireSchemaTestInstaller.InstallAsync(connection, chains, 64, CancellationToken.None));
@@ -406,7 +408,8 @@ public sealed class QuantizedEmbeddingLifecycleTests(ITestOutputHelper output)
 
         await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(connection, 64, CancellationToken.None);
 
-        Assert.Equal(37, await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
+        Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion,
+            await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
 
         Assert.Equal(5L, await command.ExecuteScalarAsync());
     }

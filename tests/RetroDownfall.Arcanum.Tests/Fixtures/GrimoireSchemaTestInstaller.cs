@@ -196,6 +196,8 @@ internal static class GrimoireSchemaTestInstaller
 
         services.AddSingleton<IGrimoireSchemaDataInitializer, CovenantAcceleratorSchemaDataInitializer>();
 
+        services.AddSingleton<IGrimoireSchemaDataInitializer, GuildCanonicalSchemaDataInitializer>();
+
         services.AddSingleton<GrimoireSchemaDataInitializers>();
 
         services.AddSingleton(static _ => GrimoireSchemaTierOwnershipRegistry.CreateDefault());

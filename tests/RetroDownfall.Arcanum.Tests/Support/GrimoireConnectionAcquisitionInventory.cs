@@ -1062,6 +1062,41 @@ internal static class GrimoireConnectionAcquisitionScanner
         BindProofEvidence(
         [
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Guild.cs", "DataRetentionService", "AddGuildCandidatesAsync(5)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Guild.cs", "DataRetentionService", "DeleteGuildCandidateAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.cs", "GuildStore", "ExecuteAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(write?GrimoireOrdinaryFreshConnectionKind.ReadWrite:GrimoireOrdinaryFreshConnectionKind.ReadOnly,linked.Token)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildRosterRefreshStore.cs", "GuildRosterRefreshStore", "ExecuteAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(write?GrimoireOrdinaryFreshConnectionKind.ReadWrite:GrimoireOrdinaryFreshConnectionKind.ReadOnly,linked.Token)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOwnerCleanupCoordinator.cs", "GuildOwnerCleanupCoordinator", "RunBatchAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite,lifetime.Token)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetReservationService.cs", "BudgetReservationService", "MarkPossiblyDispatchedAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,

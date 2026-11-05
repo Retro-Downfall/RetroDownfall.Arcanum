@@ -9909,11 +9909,11 @@
         "GuildOwnerCleanupCoordinator.RunBatchAsync"
       ],
       "symbolValues": {
-        "GuildStore.ListAsync": "100 records and 1 MiB per page; smaller maintenance batches yield and resume",
-        "GuildDeclaredAgentSourceReader.ReadPageAsync": "100 records and 1 MiB per page; smaller maintenance batches yield and resume",
-        "GuildOwnerCleanupCoordinator.RunBatchAsync": "100 records and 1 MiB per page; smaller maintenance batches yield and resume"
+        "GuildStore.ListAsync": "Up to 100 records and a 1 MiB materialization budget per page",
+        "GuildDeclaredAgentSourceReader.ReadPageAsync": "Up to 100 direct files per page; each file uses the effective Spell byte limit; at most one more directory entry name than the page size is retained",
+        "GuildOwnerCleanupCoordinator.RunBatchAsync": "Caller-supplied event and orphan batch sizes; hosted cleanup requests 64 events and 64 orphans per turn, with protected content paged by the shared purger target limit"
       },
-      "currentValue": "100 records and 1 MiB per page; smaller maintenance batches yield and resume",
+      "currentValue": "Card lists: up to 100 records and 1 MiB per page. Declared sources: up to 100 files, each bounded by the effective Spell byte limit. Hosted cleanup: 64 events and 64 orphans per turn.",
       "owner": "host",
       "enforcementPoint": "Admitted keyset pages, bounded retained directory names and owner cleanup turns",
       "userVisibleBehavior": "Every page advances or completes; remaining agents and owner work remain reachable through continuation.",

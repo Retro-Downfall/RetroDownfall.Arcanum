@@ -81,11 +81,13 @@ internal static class GuildContentLifecycle
             throw new InvalidDataException("Guild protected content no longer matches its immutable sensitivity evidence.");
         }
 
-        await using SqliteCommand command = connection.CreateCommand();
+        DateTimeOffset erasedAt = DateTimeOffset.UtcNow;
 
-        command.Transaction = transaction;
+        await using SqliteCommand receipt = connection.CreateCommand();
 
-        command.CommandText = """
+        receipt.Transaction = transaction;
+
+        receipt.CommandText = """
             INSERT INTO guild_content_erasure_receipts
                 (ContentId,SessionId,CampaignId,ContentKindCode,SourceRecordId,Revision,Digest,MimeType,ByteLength,ErasedAtUtc)
             SELECT ContentId,SessionId,CampaignId,ContentKindCode,SourceRecordId,Revision,Digest,MimeType,length(Body),$now
@@ -93,32 +95,46 @@ internal static class GuildContentLifecycle
             ON CONFLICT(ContentId) DO NOTHING;
             """;
 
-        _ = command.Parameters.AddWithValue("$id", Format(artifactId));
+        _ = receipt.Parameters.AddWithValue("$id", Format(artifactId));
 
-        _ = UtcInstantSql.AddParameter(command, "$now", DateTimeOffset.UtcNow);
+        _ = UtcInstantSql.AddParameter(receipt, "$now", erasedAt);
 
-        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        _ = await receipt.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-        command.CommandText = """
+        await using SqliteCommand verification = connection.CreateCommand();
+
+        verification.Transaction = transaction;
+
+        verification.CommandText = """
             SELECT COUNT(*) FROM guild_content c JOIN guild_content_erasure_receipts r ON r.ContentId=c.ContentId
             WHERE c.ContentId=$id AND r.SessionId IS c.SessionId AND r.CampaignId IS c.CampaignId
               AND r.ContentKindCode=c.ContentKindCode AND r.SourceRecordId=c.SourceRecordId
               AND r.Revision=c.Revision AND r.Digest=c.Digest AND r.MimeType=c.MimeType AND r.ByteLength=length(c.Body)
             """;
 
-        if (!Equals(1L, await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)))
+        _ = verification.Parameters.AddWithValue("$id", Format(artifactId));
+
+        if (!Equals(1L, await verification.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)))
         {
             throw new InvalidDataException("Guild content erasure conflicts with retained revision evidence.");
         }
 
-        command.CommandText = """
+        await using SqliteCommand head = connection.CreateCommand();
+
+        head.Transaction = transaction;
+
+        head.CommandText = """
             UPDATE guild_agent_cards SET ContentId=NULL,Available=0,ReasonCode=$reason,UpdatedAtUtc=$now
             WHERE ContentId=$id
             """;
 
-        _ = command.Parameters.AddWithValue("$reason", ErrorCodes.Guild.ContentErased);
+        _ = head.Parameters.AddWithValue("$id", Format(artifactId));
 
-        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        _ = UtcInstantSql.AddParameter(head, "$now", erasedAt);
+
+        _ = head.Parameters.AddWithValue("$reason", ErrorCodes.Guild.ContentErased);
+
+        _ = await head.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static bool OwnerMatches(SqliteDataReader reader, int ordinal, Guid? owner) => owner is { } id
