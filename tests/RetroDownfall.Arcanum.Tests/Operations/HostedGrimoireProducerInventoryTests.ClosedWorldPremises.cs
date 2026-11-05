@@ -968,6 +968,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("Issue145AffectedPrimary")]
     [InlineData("Issue145SchemaAdditional")]
     [Trait("Category", "HostedProducerProductionAnalysis")]
+    [Trait("Category", "HostedProducerAdditionalAnalysis")]
     public void The_production_entry_runs_only_the_named_roots_under_the_production_premise(string serviceType)
     {
         if (serviceType is "Issue145AffectedPrimary" or "Issue145SchemaAdditional")
