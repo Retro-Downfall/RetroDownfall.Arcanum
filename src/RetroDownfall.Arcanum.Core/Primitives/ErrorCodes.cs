@@ -6,6 +6,106 @@ namespace RetroDownfall.Arcanum.Core.Primitives;
 /// </summary>
 public static class ErrorCodes
 {
+    /// <summary>Dormant Guild contracts; HTTP mappings belong to their future emitting surfaces.</summary>
+    public static class Guild
+    {
+        public const string InvalidRequest = "Guild.InvalidRequest";
+
+        public const string ConvergenceInvalid = "Guild.ConvergenceInvalid";
+
+        public const string CursorInvalid = "Guild.CursorInvalid";
+
+        public const string UnsupportedContent = "Guild.UnsupportedContent";
+
+        public const string UnknownTool = "Guild.UnknownTool";
+
+        public const string Forbidden = "Guild.Forbidden";
+
+        public const string GrantWidening = "Guild.GrantWidening";
+
+        public const string AuthorityUnavailable = "Guild.AuthorityUnavailable";
+
+        public const string AuthorityRevoked = "Guild.AuthorityRevoked";
+
+        public const string AuthorityExpired = "Guild.AuthorityExpired";
+
+        public const string AuthorityMismatch = "Guild.AuthorityMismatch";
+
+        public const string ToolNotGranted = "Guild.ToolNotGranted";
+
+        public const string ToolBoundaryUnavailable = "Guild.ToolBoundaryUnavailable";
+
+        public const string MemoryNotGranted = "Guild.MemoryNotGranted";
+
+        public const string PeerGrantRequired = "Guild.PeerGrantRequired";
+
+        public const string LeaseNotHeld = "Guild.LeaseNotHeld";
+
+        public const string NotFound = "Guild.NotFound";
+
+        public const string OwnerUnavailable = "Guild.OwnerUnavailable";
+
+        public const string RevisionConflict = "Guild.RevisionConflict";
+
+        public const string IdempotencyConflict = "Guild.IdempotencyConflict";
+
+        public const string ResultConflict = "Guild.ResultConflict";
+
+        public const string GrantExceeded = "Guild.GrantExceeded";
+
+        public const string PriceUnavailable = "Guild.PriceUnavailable";
+
+        public const string BudgetCapabilityUnavailable = "Guild.BudgetCapabilityUnavailable";
+
+        public const string DelegationCycle = "Guild.DelegationCycle";
+
+        public const string LegacyRunUnavailable = "Guild.LegacyRunUnavailable";
+
+        public const string LegacyToolName = "Guild.LegacyToolName";
+
+        public const string ReconciliationRequired = "Guild.ReconciliationRequired";
+
+        public const string UnsupportedTransportState = "Guild.UnsupportedTransportState";
+
+        public const string SequenceExhausted = "Guild.SequenceExhausted";
+
+        public const string MembershipConflict = "Guild.MembershipConflict";
+
+        public const string CohortClosed = "Guild.CohortClosed";
+
+        public const string NoEligibleBidder = "Guild.NoEligibleBidder";
+
+        public const string BidConflict = "Guild.BidConflict";
+
+        public const string OfferClosed = "Guild.OfferClosed";
+
+        public const string DestinationChanged = "Guild.DestinationChanged";
+
+        public const string LeaseConflict = "Guild.LeaseConflict";
+
+        public const string LeaseLapsed = "Guild.LeaseLapsed";
+
+        public const string WorkspaceIdentityUnavailable = "Guild.WorkspaceIdentityUnavailable";
+
+        public const string LeaseReconciliationRequired = "Guild.LeaseReconciliationRequired";
+
+        public const string SourceConflict = "Guild.SourceConflict";
+
+        public const string ContentErased = "Guild.ContentErased";
+
+        public const string CursorGone = "Guild.CursorGone";
+
+        public const string PayloadTooLarge = "Guild.PayloadTooLarge";
+
+        public const string Unavailable = "Guild.Unavailable";
+
+        public const string StoragePressure = "Guild.StoragePressure";
+
+        public const string MaintenanceDeferred = "Guild.MaintenanceDeferred";
+
+        public const string Rejected = "Guild.Rejected";
+    }
+
     public static class MemorySearch
     {
         public const string IndexUnavailable = "MemorySearch.IndexUnavailable";

@@ -9781,6 +9781,32 @@
         "ConstraintInventoryTests",
         "UnrestrictedHarnessContractTests"
       ]
+    },
+    {
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Core/Guild/GuildRemoteStateProjection.cs#MaximumDiagnosticCharacters"
+      ],
+      "coveredSymbols": [
+        "GuildRemoteStateProjection.MaximumDiagnosticCharacters"
+      ],
+      "symbolValues": {
+        "GuildRemoteStateProjection.MaximumDiagnosticCharacters": "128 UTF-16 code units for one remote-state diagnostic; never split a surrogate pair"
+      },
+      "currentValue": "128 UTF-16 code units for one unknown remote-state observation",
+      "owner": "physical-resource",
+      "enforcementPoint": "GuildRemoteStateProjection.Observe",
+      "userVisibleBehavior": "Unknown remote state remains working with reconciliation required; only its diagnostic sample is bounded and control characters are replaced.",
+      "originalRationale": "An unrecognized transport value cannot create unbounded diagnostic metadata.",
+      "threatOrFailureModel": "Arbitrary peer state text could otherwise exceed the bounded metadata representation or inject control characters.",
+      "classification": "Required physical resource protection",
+      "action": "retain",
+      "replacementOrContinuation": "Reconcile the bound remote work; the diagnostic bound never stops execution, retries, tree traversal or durable delivery.",
+      "tests": [
+        "GuildIdentityTests.Unknown_remote_state_is_bounded_nonterminal_reconciliation",
+        "GuildSerializationRoundTripTests"
+      ],
+      "id": "boundary.guild-remote-state-diagnostic",
+      "subsystem": "Guild transport observations"
     }
   ]
 }

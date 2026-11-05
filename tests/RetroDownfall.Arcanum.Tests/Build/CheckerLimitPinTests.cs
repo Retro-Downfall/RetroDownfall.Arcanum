@@ -850,8 +850,8 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
         // value with the slots the inventory follows and reads none of its properties), and no destructuring is configured.
         Assert.Empty(findings);
 
-        // The product's converters are the wire converters of the OpenAI surface and the configuration; a converter runs when a value is read or
-        // written, in code the census does not follow, so the list is exact and none of them reaches a producer site.
+        // The product's converters cover OpenAI, configuration, dormant Guild data and host-handle refusal. A converter runs when a value is read
+        // or written, in code the census does not follow, so the list is exact and none of them reaches a producer site.
         string[] converters = Production(CheckerLimitScans.JsonConverters);
 
         Assert.Equal(
@@ -862,6 +862,8 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
                 "RetroDownfall.Arcanum.Api.Intelligence.OpenAi.OpenAiMessageContentConverter",
                 "RetroDownfall.Arcanum.Api.Intelligence.OpenAi.OpenAiModerationInputConverter",
                 "RetroDownfall.Arcanum.Core.Configuration.ModelEntryJsonConverter",
+                "RetroDownfall.Arcanum.Core.Guild.GuildHostHandleJsonConverter`1",
+                "RetroDownfall.Arcanum.Core.Guild.GuildRequestedGrantJsonConverter",
                 "RetroDownfall.Arcanum.Core.Serialization.StringOnlyJsonStringEnumConverter`1",
             ],
             converters);

@@ -7,7 +7,7 @@
 
 ## Project layout & dependency direction
 `Cli → Api → Infrastructure → Core` (Infrastructure also references the isolated `Secrets` project).
-- **`Core`** — domain primitives, `Result`/`Result<T>`, `ApiResponse<T>`, config POCOs, source-gen JSON contexts (`GrimoireJsonContext`, `ConfigurationJsonContext`, `TheForgeJsonContext`).
+- **`Core`** — domain primitives, `Result`/`Result<T>`, `ApiResponse<T>`, config POCOs, source-gen JSON contexts (`GrimoireJsonContext`, `ConfigurationJsonContext`, `GuildJsonContext`, `TheForgeJsonContext`).
 - **`Infrastructure`** — Grimoire (EF Core + SQLCipher), MCP client layer, Serilog, workspace tools. Schema lives as one `.sql` file per object under `Infrastructure/Data/Schema/**`. Update the object definition and its declared, fingerprinted schema-family transition chain when evolving an installed schema. `Data/Migrations` is EF design-time scaffolding only and is never applied.
 - **`NativeSqlCipher`** — assets only: the hermetic SQLCipher library (built from pinned upstream sources with statically linked OpenSSL) for each shipping RID, plus `native-source-manifest.json`. Shipping RIDs are `osx-arm64`, `win-x64`, `win-arm64`; **there is no fallback** — a RID without a verified asset fails the build. Never add a `SQLitePCLRaw.bundle*` package, and never open a SQLite connection without `SqliteNativeRuntime.Instance.Initialize()` first.
 - **`Api`** — class library (not an exe): `MapArcanumEndpoints`, `WizardIntelligenceProvider`, `TurnEngine`, `ToolExecutionPipeline`, `ArcanumJsonContext`, `/v1` OpenAI compat endpoints.
@@ -31,6 +31,7 @@ dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj
 dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj
 ./scripts/coverage.sh --threshold        # Cobertura + HTML coverage, tiered gates
 ./scripts/verify-aot-il-warnings.sh      # AOT publish closure must be free of first-party IL/AOT warnings
+./scripts/verify-guild-aot.sh --rid osx-arm64  # dormant Guild graph; reflection-free Native AOT round trips
 ./scripts/verify-shipping-publish.sh --rid osx-arm64  # exact Native AOT apphost + in-process provider-contract smoke
 ./scripts/verify-native-sqlcipher.sh --rid osx-arm64   # native provenance, hashes, symbols, compile options
 ```

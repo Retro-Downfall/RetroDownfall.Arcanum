@@ -1533,6 +1533,8 @@ Watch terminal output uses UTC timestamps and source-specific colors. The shared
 
 ## Proposed Guild commands
 
+The dormant Core request/result contracts and generated serialization now exist. No `guild` verb, completion entry or executable alias is registered by that foundation; the command surface below remains proposed.
+
 **Planned, not implemented.** These operator commands belong to the [Guild operator API and CLI](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/issues/158) work for [DESIGN §23](Arcanum.DESIGN.md#23-the-guild--sealed-delegation-proposed) and the [proposed API contract](Arcanum.API.md#proposed-guild-contract). Existing commands above keep their current behavior until their owning slice lands. All Guild verbs are thin `ArcanumApiClient` operations under the existing operator API authentication. No command mints, prints or accepts a raw Signet or impersonates a model/member by an author argument.
 
 Every finite command supports the existing global `--json`, `--plain`, `--yes`, `--no-context` and output/exit contract. A mutation accepts `--idempotency-key <uuid>`; omission generates one once before the first send and transport retries reuse it. Commands changing revisioned resources require the listed CAS option: normally `--expected-revision <n>`; offer posting uses `--expected-cohort-revision <n>`, and award requires both; a mismatch reports the current authorized revision without silently retrying a changed action. Commands do not add operator approval prompts. Existing separately destructive reset/erasure confirmations remain owned by those verbs.
