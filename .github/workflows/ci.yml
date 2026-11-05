@@ -689,7 +689,8 @@ jobs:
     needs: [sdk, native-sqlcipher-assets, scope]
     if: needs.scope.outputs.full == 'true' && needs.native-sqlcipher-assets.outputs.win-x64 == 'verified'
     runs-on: windows-latest
-    # About 124 minutes measured on the hosted runner; the limit is about twice that.
+    # Budget for native builds, separate diagnostic and shipping AOT publishes, executable
+    # smokes and the Windows/Long Rest suites, with headroom for hosted-runner variability.
     timeout-minutes: 270
     env:
       DOTNET_NOLOGO: true
@@ -950,7 +951,8 @@ jobs:
     # Each Windows architecture tests on its own architecture for the reason build-windows.yml
     # publishes on its own: `windows-11-arm` is free for this repository because it is public.
     runs-on: windows-11-arm
-    # About 131 minutes measured on the hosted runner; the limit is about twice that.
+    # Budget for native ARM64 builds, separate diagnostic and shipping AOT publishes,
+    # executable smokes and the Windows/Long Rest suites, with hosted-runner headroom.
     timeout-minutes: 270
     env:
       DOTNET_NOLOGO: true
@@ -1208,9 +1210,9 @@ jobs:
     # Both executable smokes open the Grimoire, so this host RID needs its verified native
     # SQLCipher asset just like build-test.
     runs-on: macos-26
-    # Budget for two separate CLI AOT publishes, the regex smoke and the provider-contract
-    # harness. A diagnostic phase measured about 65 minutes; 180 leaves headroom for both profiles.
-    timeout-minutes: 180
+    # Match the Windows native gates' budget for two separate CLI AOT publishes, the regex
+    # smoke and the provider-contract harness, with headroom for hosted-runner variability.
+    timeout-minutes: 270
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
