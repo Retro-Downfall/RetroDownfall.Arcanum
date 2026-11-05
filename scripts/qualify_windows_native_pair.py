@@ -34,10 +34,10 @@ PROPERTIES = (
     "RuntimePackagePath", "_NETCoreAppRuntimePackPath", "IlcFrameworkNativePath",
     "ILCompilerTargetsPath", "NETCoreSdkVersion", "NETCoreSdkPortableRuntimeIdentifier",
     "_hostArchitecture", "_targetArchitecture", "_VCVarsAllFound", "IlcUseEnvironmentalTools",
-    "PublishAotUsingRuntimePack", "_FindVCVarsallOutput", "PublishAot", "SelfContained",
+    "PublishAotUsingRuntimePack", "_IsPublishing", "_FindVCVarsallOutput", "PublishAot", "SelfContained",
     "PublishSingleFile", "DebugType", "NativeDebugSymbols", "OptimizationPreference",
 )
-PACK_ITEMS = ("AdditionalNativeLibraryDirectories", "ResolvedILCompilerPack",
+PACK_ITEMS = ("FrameworkReference", "AdditionalNativeLibraryDirectories", "ResolvedILCompilerPack",
               "ResolvedTargetILCompilerPack", "ResolvedFrameworkReference", "ResolvedRuntimePack")
 TEST_PROJECT = "tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj"
 FOCUSED_FILTER = "FullyQualifiedName~AiReflection|FullyQualifiedName~AiPackageVersion|FullyQualifiedName~NativeSqlCipherDeliveryTests|FullyQualifiedName~SqlCipherCompatibilityTests"
@@ -71,6 +71,17 @@ def file_record(path):
 
 def sorted_relative_paths(directory, paths):
     return sorted(paths, key=lambda path: path.relative_to(directory).as_posix())
+
+
+def publishing_properties(rid):
+    return ["-p:Configuration=Release", "-p:RuntimeIdentifier=" + rid,
+            "-p:PublishAot=true", "-p:SelfContained=true", "-p:PublishSingleFile=false", "-p:_IsPublishing=true"]
+
+
+def restore_arguments(rid):
+    # dotnet restore --runtime populates RuntimeIdentifiers, not the singular property that
+    # activates the CLI's AOT profile. Restore and evaluate the same publishing graph.
+    return publishing_properties(rid)
 
 
 def inventory(directory, rid):
@@ -176,7 +187,7 @@ class Pair:
         # runs findvcvarsall: PATH link and inherited vcvars variables do not prove the selected tool.
         args = ["dotnet", "msbuild", PROJECT,
                 "-target:ResolveFrameworkReferences;SetupOSSpecificProps", "-nologo", "-m:1", "-nodeReuse:false",
-                "-p:Configuration=Release", "-p:RuntimeIdentifier=" + self.rid,
+                *publishing_properties(self.rid),
                 "-p:BuildProjectReferences=false", "-getProperty:" + ",".join(PROPERTIES),
                 "-getItem:" + ",".join(PACK_ITEMS)]
         raw = json.loads(self.command(args, label + "-native-properties", 300))
@@ -184,7 +195,7 @@ class Pair:
         if properties["_VCVarsAllFound"] != "0" or properties["IlcUseEnvironmentalTools"] == "true":
             raise RuntimeError("Actual SDK-discovered native toolchain is unavailable")
         for key, expected in (("PublishAot", "true"), ("SelfContained", "true"),
-                              ("PublishSingleFile", "false"), ("NETCoreSdkVersion", self.sdk)):
+                              ("PublishSingleFile", "false"), ("_IsPublishing", "true"), ("NETCoreSdkVersion", self.sdk)):
             if properties[key] != expected:
                 raise RuntimeError("Unexpected native shipping/toolchain property: " + key)
         architecture = self.rid.removeprefix("win-")
@@ -196,6 +207,10 @@ class Pair:
         frameworks = raw["Items"]["ResolvedFrameworkReference"]
         if not frameworks or not any(item.get("RuntimePackVersion") for item in frameworks):
             raise RuntimeError("Missing resolved native runtime pack version metadata")
+        if properties["PublishAotUsingRuntimePack"] == "true" and not any(
+                item.get("Identity") == "Microsoft.NETCore.App" and item.get("RuntimePackLabels") == "NativeAOT"
+                for item in raw["Items"]["FrameworkReference"]):
+            raise RuntimeError("Publishing context did not select the Native AOT runtime pack")
         for item in libraries:
             path = Path(item["Identity"])
             if not path.is_absolute() or not path.is_dir():
@@ -234,8 +249,8 @@ class Pair:
         self.check_source(sha)
         stage = self.output / label
         stage.mkdir()
-        self.command(["dotnet", "restore", PROJECT, "--runtime", self.rid,
-                      "-p:Configuration=Release", "--disable-parallel"], label + "-restore", 900)
+        self.command(["dotnet", "restore", PROJECT, *restore_arguments(self.rid),
+                      "--disable-parallel"], label + "-restore", 900)
         if label == "candidate":
             self.command(["bash", "scripts/verify-aot-il-warnings.sh", self.rid], "candidate-aot-audit")
             self.command(["bash", "scripts/verify-native-sqlcipher.sh", "--rid", self.rid, "--strict"],

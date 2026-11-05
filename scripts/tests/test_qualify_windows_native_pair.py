@@ -8,6 +8,7 @@ from unittest.mock import patch
 import xml.etree.ElementTree as ET
 from contextlib import redirect_stdout
 import io
+import shutil
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "qualify_windows_native_pair.py"
@@ -80,6 +81,40 @@ class WindowsManifestOrderTests(unittest.TestCase):
         self.assertEqual(["LICENSE.txt", "RetroDownfall.Arcanum.Cli.exe", "e_sqlcipher.dll", "libonigwrap.dll", "symbols.pdb"], actual)
 
 
+class ActualSdkPublishingContextTests(unittest.TestCase):
+    def test_fresh_restore_imports_the_real_native_setup_target_in_the_publishing_context(self):
+        if shutil.which("dotnet") is None:
+            self.fail("The actual shipping SDK is required for the publishing-context regression")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = root / "Fresh.csproj"
+            project.write_text('''<Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType><IsAotCompatible>true</IsAotCompatible></PropertyGroup>
+              <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''"><PublishAot>true</PublishAot><SelfContained>true</SelfContained><PublishSingleFile>false</PublishSingleFile></PropertyGroup>
+            </Project>''')
+            info = subprocess.check_output(["dotnet", "--info"], text=True)
+            import re
+            host = re.search(r"^\s*RID:\s*(\S+)", info, re.M).group(1)
+            rid = host if host in ("win-x64", "win-arm64") else "win-x64"
+            self.assertFalse((root / "obj").exists())
+            restored = subprocess.run(["dotnet", "restore", str(project), *pair.restore_arguments(rid)],
+                                      cwd=root, capture_output=True, text=True, timeout=900)
+            self.assertEqual(0, restored.returncode, restored.stdout + restored.stderr)
+            properties = pair.publishing_properties(rid)
+            evaluated = subprocess.run(["dotnet", "msbuild", str(project), "-nologo", *properties,
+                                        "-getProperty:ILCompilerTargetsPath,_IsPublishing,PublishAot"],
+                                       cwd=root, capture_output=True, text=True, check=True, timeout=120)
+            values = json.loads(evaluated.stdout)["Properties"]
+            self.assertTrue(values["ILCompilerTargetsPath"], "Fresh restore did not import the Native AOT compiler targets")
+            self.assertEqual("true", values["_IsPublishing"])
+            self.assertEqual("true", values["PublishAot"])
+            processed = root / "expanded.xml"
+            subprocess.run(["dotnet", "msbuild", str(project), "-nologo", *properties,
+                            "-preprocess:" + str(processed)], cwd=root, check=True, capture_output=True, timeout=120)
+            targets = ET.parse(processed).getroot().findall("{*}Target")
+            self.assertTrue(any(target.get("Name") == "SetupOSSpecificProps" for target in targets))
+
+
 class ToolchainTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -98,10 +133,11 @@ class ToolchainTests(unittest.TestCase):
                           IlcToolsPath=str(self.root), IlcSdkPath=str(native),
                           NETCoreSdkVersion="10.0.403", _VCVarsAllFound="0",
                           _hostArchitecture="x64", _targetArchitecture="x64", _FindVCVarsallOutput="actual SDK libraries",
-                          PublishAot="true", SelfContained="true", PublishSingleFile="false")
+                          PublishAot="true", SelfContained="true", PublishSingleFile="false", _IsPublishing="true", PublishAotUsingRuntimePack="true")
         self.raw = {"Properties": properties, "Items": {key: [] for key in pair.PACK_ITEMS}}
         self.raw["Items"]["AdditionalNativeLibraryDirectories"] = [{"Identity": str(native)}]
         self.raw["Items"]["ResolvedFrameworkReference"] = [{"Identity": "Microsoft.NETCore.App", "RuntimePackVersion": "10.0.14", "RuntimePackPath": str(native)}]
+        self.raw["Items"]["FrameworkReference"] = [{"Identity": "Microsoft.NETCore.App", "RuntimePackLabels": "NativeAOT"}]
         self.versions = [{"path": str(path), "fileVersion": "10.0.14", "productVersion": "10.0.14"} for path in self.tools.values()]
         self.commands = []
 
