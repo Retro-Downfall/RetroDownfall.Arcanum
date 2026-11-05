@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 namespace RetroDownfall.Arcanum.Tests.Guild;
 
+[Collection(ProcessGlobalSeamCollectionName.Value)]
 public sealed class GuildDeclaredAgentSourceTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "guild-roster-" + Guid.NewGuid().ToString("N"));
