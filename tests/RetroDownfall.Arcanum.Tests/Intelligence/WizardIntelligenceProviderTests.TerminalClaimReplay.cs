@@ -279,6 +279,61 @@ public sealed partial class WizardIntelligenceProviderTests
         }
     }
 
+    [Fact]
+    public async Task Cancellation_begin_injection_waits_for_the_execution_token_to_observe_cancellation()
+    {
+        using CancellationTokenSource caller = new();
+
+        using CancellationTokenSource producer = CancellationTokenSource.CreateLinkedTokenSource(caller.Token);
+
+        using CancellationTokenSource execution = CancellationTokenSource.CreateLinkedTokenSource(producer.Token);
+
+        using ManualResetEventSlim propagationEntered = new();
+
+        using ManualResetEventSlim releasePropagation = new();
+
+        // Registrations run in reverse order: hold CancelAsync before it notifies execution.
+        // The outer caller can then cancel while producer is requested but not fully notified.
+        using CancellationTokenRegistration held = producer.Token.Register(() =>
+        {
+            propagationEntered.Set();
+
+            Assert.True(releasePropagation.Wait(TimeSpan.FromSeconds(60)));
+        });
+
+        Task propagation = producer.CancelAsync();
+
+        Task<Result<AssistantReplyBeginReceipt>>? begun = null;
+
+        try
+        {
+            Assert.True(propagationEntered.Wait(TimeSpan.FromSeconds(30)));
+
+            TerminalReplayBeginRefusal injection = new(null!, throws: false, caller);
+
+            begun = injection.BeginClaimedAssistantReplyAsync(null!, CanonicalCampaignContext.GlobalOnly,
+                "cancel at begin", "model", execution.Token).AsTask();
+
+            Assert.True(caller.IsCancellationRequested);
+
+            Assert.False(execution.IsCancellationRequested);
+
+            Assert.False(begun.IsCompleted,
+                "The cancellation fixture returned a begin refusal before execution observed cancellation.");
+        }
+        finally
+        {
+            releasePropagation.Set();
+
+            await propagation.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+
+        OperationCanceledException cancellation = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => begun!.WaitAsync(TimeSpan.FromSeconds(30)));
+
+        Assert.Equal(execution.Token, cancellation.CancellationToken);
+    }
+
     private sealed class TerminalReplayHealthProbe(Action failed) : IProviderHealthTracker
     {
         private readonly RetroDownfall.Arcanum.Infrastructure.Resilience.ProviderHealthTracker _inner = new(
@@ -311,18 +366,22 @@ public sealed partial class WizardIntelligenceProviderTests
         public ValueTask<Result<SessionTurnClaimInputSnapshot>> ReadClaimInputAsync(Guid sessionId, CancellationToken cancellationToken) =>
             inner.ReadClaimInputAsync(sessionId, cancellationToken);
 
-        public ValueTask<Result<AssistantReplyBeginReceipt>> BeginClaimedAssistantReplyAsync(SessionTurnClaimLease claimLease,
+        public async ValueTask<Result<AssistantReplyBeginReceipt>> BeginClaimedAssistantReplyAsync(SessionTurnClaimLease claimLease,
             CanonicalCampaignContext campaign, string prompt, string model, CancellationToken cancellationToken)
         {
             if (cancel is not null)
             {
                 cancel.Cancel();
 
-                cancellationToken.ThrowIfCancellationRequested();
+                // Public streaming cancellation can already be unwinding an intermediate linked
+                // source through CancelAsync. Wait for this execution token's notification instead
+                // of assuming caller.Cancel synchronously propagated through every linked source.
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken)
+                    .WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
             }
 
             return throws ? throw new InvalidOperationException("Controlled unexpected begin failure.")
-                : ValueTask.FromResult(Result<AssistantReplyBeginReceipt>.Failure(new Error(ErrorCodes.Hub.ContextBudgetExceeded, "Controlled begin refusal.")));
+                : Result<AssistantReplyBeginReceipt>.Failure(new Error(ErrorCodes.Hub.ContextBudgetExceeded, "Controlled begin refusal."));
         }
     }
 
