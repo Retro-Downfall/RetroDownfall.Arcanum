@@ -564,6 +564,69 @@ public sealed class PublishedApphostVerificationScriptTests
         Assert.Equal(3, fixture.ReadRemovalAttempts().Length);
     }
 
+    [SkippableTheory]
+    [InlineData("win-x64")]
+    [InlineData("win-arm64")]
+    public async Task Windows_workflow_reuses_a_fresh_qualified_apphost_and_exports_its_native_path(string rid)
+    {
+        RequirePosixScriptFixture();
+
+        using ScriptFixture fixture = new();
+
+        string script = fixture.PrepareWindowsShippingStep(rid);
+
+        ScriptResult first = await fixture.RunAsync(script);
+
+        Assert.True(first.ExitCode == 0, first.StandardError);
+
+        string exported = File.ReadAllText(Path.Combine(fixture.Root, "github-env"));
+
+        Assert.Equal("ARCANUM_PUBLISHED_EXECUTABLE=C:\\runner temp\\qualified\\RetroDownfall.Arcanum.Cli.exe\n", exported);
+
+        ScriptResult second = await fixture.RunAsync(script);
+
+        Assert.True(second.ExitCode == 0, second.StandardError);
+
+        string[] retained = File.ReadAllLines(Path.Combine(fixture.Root, "retained-paths"));
+
+        Assert.Equal(2, retained.Length);
+
+        Assert.NotEqual(retained[0], retained[1]);
+
+        Assert.All(retained, path => Assert.True(File.Exists(Path.Combine(path, "RetroDownfall.Arcanum.Cli.exe"))));
+    }
+
+    [SkippableTheory]
+    [InlineData("win-x64", "verifier")]
+    [InlineData("win-arm64", "verifier")]
+    [InlineData("win-x64", "missing-apphost")]
+    [InlineData("win-arm64", "missing-apphost")]
+    [InlineData("win-x64", "posix-path")]
+    [InlineData("win-arm64", "posix-path")]
+    [InlineData("win-x64", "native-path")]
+    [InlineData("win-arm64", "native-path")]
+    public async Task Windows_workflow_never_exports_an_unqualified_or_unavailable_apphost(string rid, string failure)
+    {
+        RequirePosixScriptFixture();
+
+        using ScriptFixture fixture = new();
+
+        string script = fixture.PrepareWindowsShippingStep(rid);
+
+        fixture.EnvironmentOverrides["FAKE_WINDOWS_FAILURE"] = failure;
+
+        ScriptResult result = await fixture.RunAsync(script);
+
+        Assert.NotEqual(0, result.ExitCode);
+
+        Assert.False(File.Exists(Path.Combine(fixture.Root, "github-env")));
+
+        if (failure == "verifier")
+        {
+            Assert.Equal(17, result.ExitCode);
+        }
+    }
+
     [Fact]
     public void Shipping_publish_delegates_the_exact_output_to_the_reusable_non_publishing_gate()
     {
@@ -977,6 +1040,75 @@ public sealed class PublishedApphostVerificationScriptTests
             RunAsync(
                 Path.Combine(RepositoryRoot, "scripts", "verify-shipping-publish.sh"),
                 ["--rid", "osx-arm64", .. arguments]);
+
+        public string PrepareWindowsShippingStep(string rid)
+        {
+            string workflow = File.ReadAllText(Path.Combine(RepositoryRoot, ".github", "workflows", "ci.yml"));
+
+            string step = Assert.Single(workflow.Replace("\r\n", "\n", StringComparison.Ordinal)
+                .Split("      - name:", StringSplitOptions.None), candidate => candidate.StartsWith(
+                    " Verify warning-free " + rid + " shipping executable and provider-contract smoke\n", StringComparison.Ordinal));
+
+            string run = step.Split("        run:", 2, StringSplitOptions.None)[1];
+
+            string body = run.StartsWith(" |\n", StringComparison.Ordinal)
+                ? string.Join('\n', run[3..].Split('\n').TakeWhile(static line => line.Length == 0 || line.StartsWith("          ", StringComparison.Ordinal))
+                    .Select(static line => line.Length == 0 ? line : line[10..]))
+                : run.Trim().Split('\n')[0];
+
+            string script = Path.Combine(_root, "windows-shipping-step.sh");
+
+            File.WriteAllText(script, body);
+
+            Directory.CreateDirectory(Path.Combine(_root, "scripts"));
+
+            Directory.CreateDirectory(Path.Combine(_root, "runner temp"));
+
+            EnvironmentOverrides["RUNNER_TEMP"] = "C:\\runner temp";
+
+            EnvironmentOverrides["GITHUB_ENV"] = Path.Combine(_root, "github-env");
+
+            EnvironmentOverrides["FAKE_WINDOWS_ROOT"] = _root;
+
+            EnvironmentOverrides["FAKE_WINDOWS_RID"] = rid;
+
+            WriteExecutable(Path.Combine(FakeBin, "cygpath"),
+                """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                case "${1:?}" in
+                  -u)
+                    [[ "${2:?}" == 'C:\runner temp' ]]
+                    printf '%s\n' "${FAKE_WINDOWS_ROOT:?}/runner temp"
+                    [[ "${FAKE_WINDOWS_FAILURE:-}" != posix-path ]] || exit 29
+                    ;;
+                  -w)
+                    [[ "${FAKE_WINDOWS_FAILURE:-}" != native-path ]] || exit 23
+                    [[ -f "${2:?}" ]]
+                    printf '%s\n' 'C:\runner temp\qualified\RetroDownfall.Arcanum.Cli.exe'
+                    ;;
+                  *) exit 24 ;;
+                esac
+                """);
+
+            WriteExecutable(Path.Combine(_root, "scripts", "verify-shipping-publish.sh"),
+                """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                [[ "$#" == 4 && "$1" == --rid && "$2" == "${FAKE_WINDOWS_RID:?}" && "$3" == --retain-publish-dir ]] || exit 25
+                destination="$4"
+                [[ -d "$(dirname "$destination")" && ! -e "$destination" ]]
+                case "$destination" in "${FAKE_WINDOWS_ROOT:?}/runner temp/"*) ;; *) exit 26 ;; esac
+                [[ "${FAKE_WINDOWS_FAILURE:-}" != verifier ]] || exit 17
+                mkdir "$destination"
+                printf '%s\n' "$destination" >> "${FAKE_WINDOWS_ROOT:?}/retained-paths"
+                if [[ "${FAKE_WINDOWS_FAILURE:-}" != missing-apphost ]]; then
+                  printf '%s\n' 'qualified apphost' > "$destination/RetroDownfall.Arcanum.Cli.exe"
+                fi
+                """);
+
+            return script;
+        }
 
         public void EnableShippingSuccess()
         {

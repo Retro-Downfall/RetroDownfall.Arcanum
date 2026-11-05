@@ -12,6 +12,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConnectionFactory
 {
+    private readonly string _canonicalDatabasePath;
+
     private readonly IGrimoireOrdinaryConnectionLifecycle _lifecycle;
 
     private readonly ICovenantConnectionDrain _drain;
@@ -48,6 +50,10 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
         ArgumentNullException.ThrowIfNull(testSeam);
 
         ArgumentNullException.ThrowIfNull(logger);
+
+        // A connection owner must retain its installation target together with its passphrase.
+        // Later changes to the process profile cannot retarget an already-composed installation.
+        _canonicalDatabasePath = Path.GetFullPath(ArcanumPaths.GrimoireDatabaseFile);
 
         _lifecycle = lifecycle;
 
@@ -175,7 +181,7 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
 
                 builder = new()
                 {
-                    DataSource = ArcanumPaths.GrimoireDatabaseFile,
+                    DataSource = _canonicalDatabasePath,
 
                     Password = _passphraseSource.Passphrase,
 
@@ -194,7 +200,7 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
 
                 builder = new()
                 {
-                    DataSource = ArcanumPaths.GrimoireDatabaseFile,
+                    DataSource = _canonicalDatabasePath,
 
                     Password = _passphraseSource.Passphrase,
 
@@ -442,7 +448,7 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
         }
     }
 
-    private static Result ValidateCanonicalTarget(SqliteConnection connection)
+    private Result ValidateCanonicalTarget(SqliteConnection connection)
     {
         string dataSource;
 
@@ -472,7 +478,7 @@ internal sealed class GrimoireOrdinaryConnectionFactory : IGrimoireOrdinaryConne
         {
             normalizedTarget = Path.GetFullPath(dataSource);
 
-            normalizedCanonical = Path.GetFullPath(ArcanumPaths.GrimoireDatabaseFile);
+            normalizedCanonical = _canonicalDatabasePath;
         }
         catch (Exception failed) when (failed is ArgumentException
             or NotSupportedException

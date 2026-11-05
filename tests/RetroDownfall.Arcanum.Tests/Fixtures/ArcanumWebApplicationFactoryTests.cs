@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -547,6 +548,118 @@ public sealed class ArcanumWebApplicationFactoryTests
                 Directory.Delete(otherHome, recursive: true);
             }
         }
+    }
+
+    [SkippableTheory]
+    [InlineData((int)GrimoireOrdinaryFreshConnectionKind.ReadOnly)]
+    [InlineData((int)GrimoireOrdinaryFreshConnectionKind.ReadWrite)]
+    [InlineData((int)GrimoireOrdinaryFreshConnectionKind.IsolatedHeartbeat)]
+    public async Task Started_host_does_not_create_database_in_a_later_factory_profile(int freshKind)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory firstFactory = new();
+
+        using HttpClient client = firstFactory.CreateAuthenticatedClient();
+
+        using IServiceScope scope = firstFactory.Services.CreateScope();
+
+        IGrimoireOrdinaryConnectionFactory connections = scope.ServiceProvider
+            .GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
+
+        ArcanumDbContext firstDatabase = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        string firstDatabasePath = new SqliteConnectionStringBuilder(
+            firstDatabase.Database.GetDbConnection().ConnectionString).DataSource;
+
+        Result<Guid> firstIdentity = await scope.ServiceProvider
+            .GetRequiredService<IInstallationResetDatabaseIdentityReader>()
+            .ReadAsync(CancellationToken.None);
+
+        Assert.True(firstIdentity.IsSuccess, firstIdentity.Error.Code);
+
+        string markerTitle = $"profile-owner-{Guid.NewGuid():N}";
+
+        Session marker = await scope.ServiceProvider.GetRequiredService<ISessionRepository>()
+            .CreateAsync(campaignId: null, title: markerTitle, CancellationToken.None);
+
+        await using ArcanumWebApplicationFactory laterFactory = new();
+
+        string laterDatabasePath = Path.Combine(laterFactory.TempHome, ".config", "arcanum", "arcanum.db");
+
+        Assert.False(File.Exists(laterDatabasePath));
+
+        Result<IGrimoireOrdinaryConnectionLease> opened = await connections.OpenFreshAsync(
+            (GrimoireOrdinaryFreshConnectionKind)freshKind,
+            CancellationToken.None);
+
+        try
+        {
+            Assert.False(File.Exists(laterDatabasePath),
+                "A running host created a database in a later factory's isolated profile.");
+
+            Assert.True(opened.IsSuccess, opened.Error.Code);
+
+            Assert.Equal(
+                firstDatabasePath,
+                new SqliteConnectionStringBuilder(opened.Value.Connection.ConnectionString).DataSource);
+
+            Result<Guid> openedIdentity = await InstallationResetDatabaseIdentityReader.ReadOpenConnectionAsync(
+                opened.Value.Connection,
+                CancellationToken.None);
+
+            Assert.True(openedIdentity.IsSuccess, openedIdentity.Error.Code);
+
+            Assert.Equal(firstIdentity.Value, openedIdentity.Value);
+
+            await using SqliteCommand markerRead = opened.Value.Connection.CreateCommand();
+
+            markerRead.CommandText = "SELECT COUNT(*) FROM Sessions WHERE Title = $title;";
+
+            _ = markerRead.Parameters.AddWithValue("$title", markerTitle);
+
+            Assert.Equal(1L, (long)(await markerRead.ExecuteScalarAsync())!);
+
+            await using SqliteConnection laterConnection = new(new SqliteConnectionStringBuilder
+            {
+                DataSource = laterDatabasePath,
+            }.ToString());
+
+            Result<IGrimoireOrdinaryConnectionLease> refused = await connections.AcquireScopedAsync(
+                laterConnection,
+                CovenantSqliteConnectionMode.ReadWrite,
+                CancellationToken.None);
+
+            Assert.True(refused.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.Unavailable, refused.Error.Code);
+
+            Assert.Equal(System.Data.ConnectionState.Closed, laterConnection.State);
+
+            Assert.False(File.Exists(laterDatabasePath));
+        }
+        finally
+        {
+            if (opened.IsSuccess)
+            {
+                await opened.Value.DisposeAsync();
+            }
+        }
+
+        using HttpClient laterClient = laterFactory.CreateAuthenticatedClient();
+
+        using IServiceScope laterScope = laterFactory.Services.CreateScope();
+
+        Result<Guid> laterIdentity = await laterScope.ServiceProvider
+            .GetRequiredService<IInstallationResetDatabaseIdentityReader>()
+            .ReadAsync(CancellationToken.None);
+
+        Assert.True(laterIdentity.IsSuccess, laterIdentity.Error.Code);
+
+        Session? foreignMarker = await laterScope.ServiceProvider.GetRequiredService<ISessionRepository>()
+            .GetByIdAsync(marker.Id, CancellationToken.None);
+
+        Assert.Null(foreignMarker);
     }
 
     [SkippableFact]

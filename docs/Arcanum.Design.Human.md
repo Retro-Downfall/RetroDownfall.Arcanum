@@ -506,3 +506,9 @@ The fantasy names are functional labels:
 `arcanum memory status|sources|search|explain` answers the separate persistence question: what is stored, where it came from, how long it remains, and whether it could participate in the next turn. It does not assemble or spend a model turn. Search scope is explicit or visibly defaults to `all`, and results stay attributed to Session, attachments, workspace, Saga, or Lexicon. This is a unified view, not a unified store; disabling or deleting one source does not imply deletion of another.
 
 The full vocabulary and cross-references are in[`Arcanum.DESIGN.md` §17](Arcanum.DESIGN.md#17-glossary).
+
+## Planned Guild delegation
+
+The resolved [Guild design](Arcanum.DESIGN.md#23-the-guild--sealed-delegation-proposed) is the implementation contract for epic [Sealed Delegation delivery](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/issues/143), not shipped behavior. It gives each local or remote job a durable Commission, a private host-held Signet with bounded authority, and addressed Circle messages. Cohorts add explicit membership, deterministic result collection and shared work; workspace leases coordinate participating host writers. Budget, memory and mutation checks must be implemented before the local port is enabled.
+
+The proposed feature defaults off. Restart reconciles the same work; restored authority stays inactive. Cancellation is visibly pending until work is confirmed stopped, and unknown remote costs remain unknown. Agent text never supplies credentials or operator authority. The [implementation queue](Arcanum.DESIGN.md#2318-delivery-order-and-acceptance-ownership) puts [Guild architecture and dormant Core contracts](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/issues/144)'s remaining Core contracts first; its architecture decisions are now documented.

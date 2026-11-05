@@ -97,6 +97,11 @@
 
     <ProjectReference Include="..\..\src\RetroDownfall.Arcanum.Infrastructure\RetroDownfall.Arcanum.Infrastructure.csproj" />
 
+    <!-- Build the desktop closure for the metadata guard without loading UI assemblies into the test host. -->
+    <ProjectReference Include="../../src/RetroDownfall.Compendium.Ux/RetroDownfall.Compendium.Ux.csproj" ReferenceOutputAssembly="false" />
+
+    <ProjectReference Include="../../src/RetroDownfall.TheForge.Ux/RetroDownfall.TheForge.Ux.csproj" ReferenceOutputAssembly="false" />
+
     <ProjectReference Include="../RetroDownfall.Arcanum.SqliteReaderSmoke/RetroDownfall.Arcanum.SqliteReaderSmoke.csproj" />
 
   </ItemGroup>
@@ -112,6 +117,41 @@
     </Content>
 
   </ItemGroup>
+
+  <!-- The guard reconciles this same-build inventory with every authored src project. NativeSqlCipher is assets only. -->
+  <ItemGroup>
+
+    <AiReflectionProject Include="../../src/RetroDownfall.Arcanum.Core/RetroDownfall.Arcanum.Core.csproj" />
+
+    <AiReflectionProject Include="../../src/RetroDownfall.Arcanum.Secrets/RetroDownfall.Arcanum.Secrets.csproj" />
+
+    <AiReflectionProject Include="../../src/RetroDownfall.Arcanum.Infrastructure/RetroDownfall.Arcanum.Infrastructure.csproj" />
+
+    <AiReflectionProject Include="../../src/RetroDownfall.Arcanum.Api/RetroDownfall.Arcanum.Api.csproj" />
+
+    <AiReflectionProject Include="../../src/RetroDownfall.Arcanum.Api.DevHost/RetroDownfall.Arcanum.Api.DevHost.csproj" />
+
+    <AiReflectionProject Include="../../src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj" />
+
+    <AiReflectionProject Include="../../src/RetroDownfall.Compendium.Ux/RetroDownfall.Compendium.Ux.csproj" />
+
+    <AiReflectionProject Include="../../src/RetroDownfall.TheForge.Core/RetroDownfall.TheForge.Core.csproj" />
+
+    <AiReflectionProject Include="../../src/RetroDownfall.TheForge.Ux/RetroDownfall.TheForge.Ux.csproj" />
+
+  </ItemGroup>
+
+  <Target Name="RecordAiReflectionAssemblyClosure" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
+
+    <MSBuild Projects="@(AiReflectionProject)" Targets="GetTargetPath" BuildInParallel="false">
+
+      <Output TaskParameter="TargetOutputs" ItemName="_AiReflectionTarget" />
+
+    </MSBuild>
+
+    <WriteLinesToFile File="$(OutDir)ai-reflection-assemblies.txt" Lines="@(_AiReflectionTarget->'%(MSBuildSourceProjectFile)|%(FullPath)')" Overwrite="true" />
+
+  </Target>
 
   <!-- Keep the jailed child outside Coverlet's instrumented test output. Its unload tracker writes files. -->
   <Target Name="RecordManagedDocumentWorkerClosure" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">

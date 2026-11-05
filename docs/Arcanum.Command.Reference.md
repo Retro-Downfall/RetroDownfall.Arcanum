@@ -1530,3 +1530,69 @@ Watch terminal output uses UTC timestamps and source-specific colors. The shared
 - [`Arcanum.API.md`](Arcanum.API.md) — HTTP routes, wire shapes, status mapping, and public error codes.
 - [`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md) — operator troubleshooting.
 - [`Arcanum.CommandMap.json`](../tests/RetroDownfall.Arcanum.Tests/TestData/Contracts/Arcanum.CommandMap.json) — the machine-readable command map: every command path, argument, option, alias, closed value set, dynamic-completion source, and example, projected from the live parser. It is regenerated and diffed by test, so an unintended entry in its diff is an unintended change to the public CLI surface.
+
+## Proposed Guild commands
+
+**Planned, not implemented.** These operator commands belong to the [Guild operator API and CLI](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/issues/158) work for [DESIGN §23](Arcanum.DESIGN.md#23-the-guild--sealed-delegation-proposed) and the [proposed API contract](Arcanum.API.md#proposed-guild-contract). Existing commands above keep their current behavior until their owning slice lands. All Guild verbs are thin `ArcanumApiClient` operations under the existing operator API authentication. No command mints, prints or accepts a raw Signet or impersonates a model/member by an author argument.
+
+Every finite command supports the existing global `--json`, `--plain`, `--yes`, `--no-context` and output/exit contract. A mutation accepts `--idempotency-key <uuid>`; omission generates one once before the first send and transport retries reuse it. Commands changing revisioned resources require the listed CAS option: normally `--expected-revision <n>`; offer posting uses `--expected-cohort-revision <n>`, and award requires both; a mismatch reports the current authorized revision without silently retrying a changed action. Commands do not add operator approval prompts. Existing separately destructive reset/erasure confirmations remain owned by those verbs.
+
+Selectors accept full UUID, exact visible name where the resource has a name, then unique UUID prefix using the shared resource catalog. Duplicate names/prefixes return visible candidates. Interactive missing selection may use the existing picker; redirected, `--json` or `--print` execution never opens one and exits 2 on ambiguity/missing required values. An `agent` selector resolves a pinned Roster Agent/Card revision; `workspace:`/`global:` disambiguate declared names. A Commission id, Apprentice id and Cohort id are different resource types and cannot be substituted for each other. Full-tree reads use Commission ids. Workspace paths resolve through the host's registered workspace API, never a client-invented trusted id.
+
+| Command | Operation and specific options |
+| --- | --- |
+| `guild status` | Feature/schema/capability state and legacy pending count. |
+| `guild agent list` | Optional `--source`, `--skill`, `--cursor`, `--page-size`. |
+| `guild agent show <agent>` | Optional `--card-revision`; exact visible Card. |
+| `guild agent refresh [agent]` | Refresh selected or one bounded batch of visible configured sources; `--cursor` advances refresh-all batches, with bounded diagnostics/cursor. |
+| `guild task create --goal <text> --grant-file <path> [--agent <agent>]` | New root. Optional `--name`, `--session`, `--campaign`, `--workspace`, `--predecessor`; grant file contains the complete `GuildGrant` JSON. The client reads bounded JSON; the host verifies every owner/resource. |
+| `guild task delegate <parent> --goal <text> --expected-revision <n> [--agent <agent>]` | Child under exact live parent; optional `--name`, `--grant-file` narrowing. |
+| `guild task list` | Optional `--root`, `--parent`, `--state`, `--cursor`, `--page-size`. |
+| `guild task show <task>` | Metadata by default; `--show-content` explicitly fetches authorized goal/result bodies. |
+| `guild task tree <task>` | One bounded page of exact subtree; `--cursor`, `--page-size`. States live per page, structural watermark fixed. |
+| `guild task message <task> --text <text> --expected-revision <n>` | Operator-authored informational message; `--continue` instead answers the current input-required question with that revision. |
+| `guild task cancel <task> --expected-revision <n>` | Durable cancel request; reports pending versus converged. |
+| `guild task spend <task>` | Known/unknown, held/unsettled and remaining authority for exact subtree. |
+| `guild signet revoke <signet> --expected-revision <n>` | Idempotent subtree revocation, with pending cancellation visible; no raw bearer. |
+| `guild content show <content-id> --revision <n>` | Explicit protected content disclosure through its current owning checks. |
+| `guild watch tree <task>` | Live tree projection; `--after <cursor>` resumes. |
+| `guild watch cohort <cohort>` | Live Cohort projection; `--after <cursor>` resumes. |
+
+| Command | Operation and specific options |
+| --- | --- |
+| `guild cohort create --issuer <commission> --name <text> --policy all\|first\|quorum --result-type text/plain\|application/json` | Operator management with Cohort right under chosen live issuer; initial revision 1; `--quorum <n>` is required only for quorum; optional `--grant-file <path>` narrows the issuer grant, including its budget. |
+| `guild cohort list [--root <commission>] [--state <state>]` | Operator root/owner visibility |
+| `guild cohort show <cohort>` | Operator owner/sensitivity scope |
+| `guild cohort admit <cohort> --goal <text> --expected-revision <n> [--agent <agent>]` | Operator management of the Cohort; `expectedRevision`; same ordinary mint request as Commission create; optional `--name` and `--grant-file` use the child issuance data shape. |
+| `guild cohort members <cohort>` | Operator owner/sensitivity scope; includes withdrawn/frozen status |
+| `guild cohort remove <cohort> <member> --expected-revision <n>` | Operator management; aggregate revision; 202 until removed subtree converges |
+| `guild cohort close <cohort> --expected-revision <n>` | Operator management; aggregate revision |
+| `guild cohort cancel <cohort> --expected-revision <n>` | Operator management; aggregate revision; 202 until converged |
+| `guild cohort contributions <cohort> [--selected]` | Operator owner view; selected-only projection retains snapshot decision |
+| `guild cohort convergence <cohort>` | Operator owner/sensitivity scope |
+| `guild offer post <cohort> --skill <id> --goal <text> --result-type text/plain\|application/json --expected-cohort-revision <n>` | Operator management with stored issuer issuance rights; `expectedCohortRevision`; optional `--grant-file` narrows the issuer/Cohort envelope. |
+| `guild offer list <cohort> [--state <state>]` | Operator owner/sensitivity scope |
+| `guild offer show <offer>` | Operator owner/sensitivity scope |
+| `guild offer withdraw <offer> --expected-revision <n>` | Operator management; offer revision |
+| `guild bid list <offer>` | Operator owner/sensitivity scope |
+| `guild offer award <offer> --bid <bid> --expected-revision <n> --expected-cohort-revision <n>` | Operator management, stored issuer current grant and membership; offer+Cohort revisions |
+| `guild note append <cohort> --kind observation\|proposal\|correction --text <text> [--subject <id>] [--corrects <note>] --expected-revision <n>` | Operator management with operator-authored note; aggregate revision |
+| `guild note list <cohort>` | Operator owner/sensitivity scope, per-body authorization retained |
+| `guild lease acquire --workspace <path> --scope <relative-path:kind>…` | Authenticated operator receives separate host-derived operator owner; complete set all-or-none; each scope kind is `file` or `subtree`; all scopes are acquired together. |
+| `guild lease list [--workspace <path>] [--commission <id>] [--state <state>]` | Operator-authorized workspace inspection; holding identity redacted outside authorized root |
+| `guild lease renew <lease> --epoch <n> --expected-revision <n>` | Exact operator holder, `epoch` + `expectedRevision`, unexpired |
+| `guild lease release <lease> --epoch <n> --expected-revision <n>` | Exact operator holder or explicit operator management cancellation; epoch+revision; 202 if draining |
+| `guild cohort member-work <cohort> <member>` | Page explicit primary/award Commission associations; optional `--cursor`, `--page-size`. |
+
+Omitting `--agent` on task creation/delegation or Cohort admission creates a local ad-hoc agent with one stable identity per logical issue, reused by retries. It receives only the verified root/child grant.
+
+Cohort, offer, bid, note and lease list commands accept `--cursor` and `--page-size`. Native commands are operator management actions with Operator provenance; no bid-submit/withdraw command or `--member`/`--author` impersonation field exists. Only a live member authors or withdraws its own bid through the run-bound internal tool. Cohort budget narrowing is part of `--grant-file`, with no second budget option.
+
+
+The `--goal`/`--text` options above also accept `--goal-file <path>`/`--text-file <path>` as mutually exclusive bounded UTF-8 input alternatives; stdin is selected by path `-`. In noninteractive use a missing input is an exit-2 error. `--grant-file` and these file inputs are local CLI reads only; they grant no host filesystem authority. Lists return one page and its cursor. `--page-size` requests 1–100; the response-byte limit may return fewer. The client never silently auto-collects an unlimited tree into one document. Finite `--json` is exactly one JSON document on stdout; diagnostics stay on stderr. Accepted asynchronous work is a successful command (exit 0) with pending status, not proof that its execution completed. Existing generic/domain, invalid-input, network and cancellation exits remain 1, 2, 3 and 130.
+
+**Watch output.** `guild watch ... --json` opens its authorized SSE endpoint with no cursor, consumes the first `snapshot` frame, closes the subscription and emits that snapshot data as its one JSON document. `--after` is invalid with `--json` (exit 2), because resumed streams need not send a snapshot. No separate snapshot endpoint or unbounded collection is implied. As a finite snapshot operation it emits exactly one generated JSON document containing the current summary, first member page/cursor and resume cursor, then exits 0. Live machine-readable mode is the explicit mutually exclusive `--ndjson`, emitting one `{ event, id, data }` JSON record per SSE event until disconnect/terminal/cancellation; it is not an alias for `--json`. With neither, use the normal interactive/plain live renderer. `resync` is actionable: NDJSON emits the control event then exits 1 with a stderr explanation and resume/snapshot guidance; interactive mode obtains the new snapshot and resumes, keeping the resync visible. Cancellation exits 130. Snapshot/stream endpoints and cursor invalidation use the API contract; missing retained history never becomes a silently complete view.
+
+The [Guild operator API and CLI](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/issues/158) work also corrects finite `arcanum apprentice list/show --json` through the existing generated DTOs. Planned `/api/apprentices` filters `parentId` and `rootId` remain **Apprentice ids**, joined to their associated Commission identities; an unknown/unlinked id returns an empty linked result page and never an unfiltered list. New Guild commands use Commission ids throughout. Legacy Apprentice rows remain visible in ordinary Apprentice views with explicit `guildCommissionId=null`; they are not fabricated Guild records.
+
+The exhaustive model-facing tool rename table belongs to DESIGN §23.16. CLI family names remain thematic (`guild`, `cohort`, `signet`); renaming model tools does not rename unrelated existing CLI verbs. Update the live command tree, selector catalogs, suggestions, output tests and `tests/RetroDownfall.Arcanum.Tests/TestData/Contracts/Arcanum.CommandMap.json` together when implementation lands. This design-only appendix does not regenerate a command map for commands that do not exist yet.
