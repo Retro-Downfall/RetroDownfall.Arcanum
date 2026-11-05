@@ -876,6 +876,33 @@ CI uses a conservative documentation-only path for pull requests that change onl
 
 Both Windows lanes retain full native test coverage for full qualification. Their warning-free shipping verifier retains its exact apphost for the AppContainer broker smoke, eliminating a separate broker publish. Native diagnostic audits remain separate because they deliberately enable the dependency diagnostics that the ordinary shipping profile suppresses.
 
+### Paired native Windows qualification
+
+Use `.github/workflows/qualify-windows-native-pair.yml` for a same-toolchain baseline/candidate size comparison and focused native qualification. Its default `both` selection starts two native runner jobs: `win-x64` on `windows-latest` and `win-arm64` on `windows-11-arm`. Each job requires the exact requested SDK and matching SDK host RID, then publishes both revisions sequentially from the same checkout path. The helper requires a clean exact candidate, a distinct full ancestor baseline SHA, unchanged shipping/audit profile owners, and identical discovered compiler/runtime packs, native tool versions/hashes, Windows SDK paths and shipping properties across the measurements. DESIGN's [MEAI qualification record](Arcanum.DESIGN.md#microsoftextensionsai-package-qualification) owns the detailed contract; native Windows evidence is still pending.
+
+Until the new workflow is registered on the default branch, dispatch the already registered Windows build workflow against the candidate branch or tag with `baseline-sha` supplied. That input selects paired qualification for both architectures; its ordinary packaging mode remains available when the input is empty. Pin SDK `10.0.403` for the current comparison:
+
+```bash
+gh workflow run build-windows.yml \
+  --ref <candidate-branch-or-tag> \
+  --field baseline-sha=b458d92b8b1fc20a17ab1c9457fa289f173edb82 \
+  --field sdk-version=10.0.403
+```
+
+The candidate is the dispatch's exact `github.sha`; confirm that the branch/tag resolves to the intended commit and retain the run's checkout SHA in the delivery record. Once registered, the direct entry point accepts the same baseline and SDK inputs, with `--field rid=both`:
+
+```bash
+gh workflow run qualify-windows-native-pair.yml \
+  --ref <candidate-branch-or-tag> \
+  --field baseline-sha=b458d92b8b1fc20a17ab1c9457fa289f173edb82 \
+  --field sdk-version=10.0.403 \
+  --field rid=both
+```
+
+Both revisions must pass warning-free shipping publish and the exact-apphost provider-contract smoke. The candidate must also pass the separate detailed AOT warning audit, strict native SQLCipher inspection, and focused AI package/reflection/native SQLCipher tests. The helper validates the focused TRX's required classes and complete production-closure method, consistent counters, unique identities, and zero skipped or nonpassing results. This focused workflow supplements full CI.
+
+Download both `native-pair-<rid>-<candidate-sha>` artifacts and require successful jobs plus `summary.json` with `success: true` for each RID. Each bundle retains both publish directories, source-bound per-file size/hash manifests, before/after toolchain captures, command logs and candidate focused TRX. Report apphost and complete-publish byte deltas separately; the total includes every regular file, including symbols and licenses. Partial evidence is uploaded after failure for diagnosis and is not a pass. Keep the Windows rows marked pending until those exact run results and manifests have been reviewed; creating or dispatching this workflow does not establish native qualification.
+
 ### Release-qualification evidence
 
 A release is qualified by the artifacts a CI run leaves behind, not by a reviewer's recollection that the run was green. This is the complete set of artifacts `.github/workflows/ci.yml` uploads during full qualification, and it is the checklist a release qualification is read against. Documentation-only qualification does not produce this complete evidence and cannot stand in for it:

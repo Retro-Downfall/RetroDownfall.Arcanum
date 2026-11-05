@@ -1,0 +1,137 @@
+name: Qualify paired Windows Native AOT publishes
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline-sha:
+        description: Full ancestor commit for the before measurement.
+        required: true
+        type: string
+        default: "b458d92b8b1fc20a17ab1c9457fa289f173edb82"
+      sdk-version:
+        description: Exact stable SDK shared by both publishes on each native runner.
+        required: true
+        type: string
+        default: "10.0.403"
+      rid:
+        description: Native architecture to qualify; both runs exactly two jobs.
+        required: true
+        type: choice
+        default: both
+        options:
+          - both
+          - win-x64
+          - win-arm64
+  workflow_call:
+    inputs:
+      baseline-sha:
+        required: true
+        type: string
+      sdk-version:
+        required: true
+        type: string
+      rid:
+        required: false
+        type: string
+        default: both
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-pair-${{ github.ref }}-${{ inputs.rid }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    name: Paired native qualification (${{ matrix.rid }})
+    runs-on: ${{ matrix.rid == 'win-arm64' && 'windows-11-arm' || 'windows-latest' }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        rid: ${{ inputs.rid == 'both' && fromJSON('["win-x64","win-arm64"]') || inputs.rid == 'win-arm64' && fromJSON('["win-arm64"]') || fromJSON('["win-x64"]') }}
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+      BASELINE_SHA: ${{ inputs.baseline-sha }}
+      CANDIDATE_SHA: ${{ github.sha }}
+      SDK_VERSION: ${{ inputs.sdk-version }}
+      RID: ${{ matrix.rid }}
+      QUALIFICATION_RID: ${{ inputs.rid }}
+    steps:
+      - name: Validate the native RID selection
+        shell: pwsh
+        run: |
+          if (@('both', 'win-x64', 'win-arm64') -notcontains $env:QUALIFICATION_RID) {
+            throw 'Qualification requires both, win-x64, or win-arm64.'
+          }
+
+      - name: Checkout the exact candidate and its baseline history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Setup the selected SDK
+        uses: ./.github/actions/setup-dotnet
+        with:
+          sdk-version: ${{ inputs.sdk-version }}
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+            **/*.csproj
+            .config/dotnet-tools.json
+
+      - name: Make native inspection tools available
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: ${{ matrix.rid == 'win-arm64' && 'arm64' || 'amd64' }}
+
+      - name: Install missing verification tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Command rg -CommandType Application -ErrorAction SilentlyContinue)) {
+            choco install ripgrep --version=15.2.0 --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if (-not (Get-Command jq -CommandType Application -ErrorAction SilentlyContinue)) {
+            choco install jq --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          rg --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          jq --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Test qualification authority
+        shell: pwsh
+        run: |
+          python -m unittest scripts/tests/test_qualify_windows_native_pair.py scripts/tests/test_windows_native_pair_workflow.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Qualify both revisions with one native toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $helper = Join-Path $env:RUNNER_TEMP "qualify_windows_native_pair-$env:RID.py"
+          $outputParent = Join-Path $env:RUNNER_TEMP 'arcanum-native-pair'
+          New-Item -ItemType Directory -Force -Path $outputParent | Out-Null
+          $output = Join-Path $outputParent $env:RID
+          Copy-Item -LiteralPath 'scripts/qualify_windows_native_pair.py' -Destination $helper
+          python $helper `
+            --baseline-sha "$env:BASELINE_SHA" `
+            --candidate-sha "$env:CANDIDATE_SHA" `
+            --rid "$env:RID" `
+            --sdk-version "$env:SDK_VERSION" `
+            --output-dir "$output"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Preserve qualification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-pair-${{ matrix.rid }}-${{ github.sha }}
+          path: ${{ runner.temp }}/arcanum-native-pair/${{ matrix.rid }}
+          if-no-files-found: error
+          retention-days: 14

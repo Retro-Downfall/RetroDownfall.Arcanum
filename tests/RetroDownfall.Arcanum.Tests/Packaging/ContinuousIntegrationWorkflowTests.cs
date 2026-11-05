@@ -1259,17 +1259,18 @@ public sealed class ContinuousIntegrationWorkflowTests
                     continue;
                 }
 
-                string rid = RuntimeIdentifierFor(job.RunsOn);
-
-                if (HasVerifiedNativeSqlCipherAsset(repositoryRoot, rid)
-                    || job.IsConditional && !IsFullQualificationOnly(job))
+                foreach (string rid in RuntimeIdentifiersFor(job.RunsOn))
                 {
-                    continue;
-                }
+                    if (HasVerifiedNativeSqlCipherAsset(repositoryRoot, rid)
+                        || job.IsConditional && !IsFullQualificationOnly(job))
+                    {
+                        continue;
+                    }
 
-                offenders.Add(
-                    $"{Path.GetFileName(workflow)}: {job.Id} (runs-on: {job.RunsOn}, needs a "
-                    + $"verified {rid} asset)");
+                    offenders.Add(
+                        $"{Path.GetFileName(workflow)}: {job.Id} (runs-on: {job.RunsOn}, needs a "
+                        + $"verified {rid} asset)");
+                }
             }
         }
 
@@ -1731,8 +1732,9 @@ public sealed class ContinuousIntegrationWorkflowTests
     private const string ResolvedSdkInput = "sdk-version: ${{ needs.sdk.outputs.version }}";
 
     /// <summary>
-    /// Every compiler lane consumes the run's resolved SDK through the shared installer; the
-    /// repository policy sets only the serviced floor and stable latest-installed selection.
+    /// Compiler lanes consume the run's resolved SDK through the shared installer. The paired
+    /// native comparison accepts one exact stable SDK for both revisions and both architectures,
+    /// validated by that same installer, without allocating a separate resolver runner.
     /// </summary>
     [Fact]
     public void Every_workflow_uses_the_same_resolved_stable_dotnet_sdk()
@@ -1751,6 +1753,8 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         int setups = 0;
 
+        int pairedSetups = 0;
+
         foreach (string workflow in WorkflowFiles(repositoryRoot))
         {
             string text = File.ReadAllText(workflow);
@@ -1761,6 +1765,23 @@ public sealed class ContinuousIntegrationWorkflowTests
             {
                 if (!job.Body.Contains("uses: ./.github/actions/setup-dotnet", StringComparison.Ordinal))
                 {
+                    continue;
+                }
+
+                if (Path.GetFileName(workflow) == "qualify-windows-native-pair.yml")
+                {
+                    pairedSetups++;
+
+                    Assert.Equal("qualify", job.Id);
+
+                    Assert.Contains("sdk-version: ${{ inputs.sdk-version }}", job.Body, StringComparison.Ordinal);
+
+                    Assert.Contains("SDK_VERSION: ${{ inputs.sdk-version }}", job.Body, StringComparison.Ordinal);
+
+                    Assert.Contains("--sdk-version \"$env:SDK_VERSION\"", job.Body, StringComparison.Ordinal);
+
+                    Assert.Equal(2, Regex.Matches(text, @"(?m)^      sdk-version:\r?\n(?:        [^\r\n]*\r?\n)*?        required: true$").Count);
+
                     continue;
                 }
 
@@ -1775,6 +1796,8 @@ public sealed class ContinuousIntegrationWorkflowTests
         }
 
         Assert.Equal(12, setups);
+
+        Assert.Equal(1, pairedSetups);
 
         string action = File.ReadAllText(Path.Combine(repositoryRoot, ".github/actions/setup-dotnet/action.yml"));
 
@@ -1924,6 +1947,29 @@ public sealed class ContinuousIntegrationWorkflowTests
             _ when runsOn.StartsWith("macos", StringComparison.Ordinal) => "osx-arm64",
             _ => "linux-x64",
         };
+
+    private static IReadOnlyList<string> RuntimeIdentifiersFor(string runsOn) =>
+        runsOn == "${{ matrix.rid == 'win-arm64' && 'windows-11-arm' || 'windows-latest' }}"
+            ? ["win-arm64", "win-x64"]
+            : [RuntimeIdentifierFor(runsOn)];
+
+    [Theory]
+    [InlineData("windows-11-arm", "win-arm64")]
+    [InlineData("windows-latest", "win-x64")]
+    [InlineData("macos-latest", "osx-arm64")]
+    [InlineData("${{ inputs.unknown }}", "linux-x64")]
+    public void Native_asset_runner_mapping_keeps_unknown_expressions_fail_closed(string label, string expectedRid)
+    {
+        Assert.Equal([expectedRid], RuntimeIdentifiersFor(label));
+    }
+
+    [Fact]
+    public void Paired_windows_runner_mapping_requires_both_native_assets()
+    {
+        Assert.Equal(
+            ["win-arm64", "win-x64"],
+            RuntimeIdentifiersFor("${{ matrix.rid == 'win-arm64' && 'windows-11-arm' || 'windows-latest' }}"));
+    }
 
     /// <summary>
     /// Every runtime identifier the hermetic manifest declares, which is the authority on what the

@@ -16,6 +16,16 @@ on:
         required: false
         type: string
         default: "0.1.0-beta"
+      baseline-sha:
+        description: "Optional full ancestor SHA: qualify paired baseline/candidate publishes on both Windows RIDs instead of packaging products."
+        required: false
+        type: string
+        default: ''
+      sdk-version:
+        description: "Optional exact stable SDK; paired qualification defaults to 10.0.403."
+        required: false
+        type: string
+        default: ''
 
   # Called once per RID by the unified release. One workflow with a RID input rather than one
   # workflow per architecture: everything below that named x64 was a runner label or an archive
@@ -35,18 +45,34 @@ on:
         description: "SemVer (e.g. 0.1.0-beta.1). No +build metadata."
         required: true
         type: string
+      baseline-sha:
+        description: "Optional full ancestor SHA for paired qualification instead of product packaging."
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
+  paired-qualification:
+    name: Paired native qualification
+    if: inputs.baseline-sha != ''
+    uses: ./.github/workflows/qualify-windows-native-pair.yml
+    with:
+      baseline-sha: ${{ inputs.baseline-sha }}
+      sdk-version: ${{ inputs.sdk-version || '10.0.403' }}
+      rid: both
+
   sdk:
     name: Select stable .NET SDK
+    if: inputs.baseline-sha == ''
     uses: ./.github/workflows/resolve-dotnet-sdk.yml
     with:
       sdk-version: ${{ inputs.sdk-version }}
 
   native-sqlcipher-asset:
+    if: inputs.baseline-sha == ''
     # A RID whose hermetic SQLCipher asset is still `pending` cannot be built at all: the targets
     # raise ARCSQLC002 before CopyFilesToOutputDirectory, deliberately, with no probe and no
     # fallback. Neither trigger of this workflow runs on a pull request, so nothing else reports
@@ -85,7 +111,7 @@ jobs:
   package:
     name: Publish Arcanum + Compendium + The Forge (${{ inputs.rid }})
     needs: [sdk, native-sqlcipher-asset]
-    if: needs.native-sqlcipher-asset.outputs.status == 'verified'
+    if: inputs.baseline-sha == '' && needs.native-sqlcipher-asset.outputs.status == 'verified'
     # Each Windows architecture builds on its own architecture. Native AOT can target win-arm64
     # from an x64 host, but only from a shell that has already sourced the cross MSVC environment.
     # A native runner removes that toolchain ambiguity, and `windows-11-arm` is free for this
