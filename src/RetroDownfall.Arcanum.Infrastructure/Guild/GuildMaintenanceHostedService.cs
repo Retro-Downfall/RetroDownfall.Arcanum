@@ -29,7 +29,9 @@ internal sealed class GuildMaintenanceHostedService(
             {
                 Result<GuildCleanupOutcome> outcome = await RunOnceAsync(stoppingToken).ConfigureAwait(false);
 
-                if (outcome.IsFailure && !string.Equals(previousError, outcome.Error.Code, StringComparison.Ordinal))
+                if (outcome.IsFailure
+                    && outcome.Error.Code != ErrorCodes.Guild.MaintenanceDeferred
+                    && !string.Equals(previousError, outcome.Error.Code, StringComparison.Ordinal))
                 {
                     logger.LogWarning("Guild owner cleanup deferred: {ErrorCode}.", outcome.Error.Code);
                 }
@@ -53,32 +55,39 @@ internal sealed class GuildMaintenanceHostedService(
     {
         if (!admission.TryAcquireWorkLease(GrimoireWorkKind.GuildMaintenance, out IGrimoireWorkLease? acquired) || acquired is null)
         {
-            return new Error(ErrorCodes.Guild.Unavailable, "Guild owner cleanup is deferred while ordinary work admission is closed.");
+            return new Error(ErrorCodes.Guild.MaintenanceDeferred, "Guild owner cleanup is deferred while ordinary work admission is closed.");
         }
 
         await using IGrimoireWorkLease work = acquired;
 
         using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, work.MaintenanceRevocation);
 
-        await using AsyncServiceScope scope = scopes.CreateAsyncScope();
-
-        IOperatorAuthorityContextIssuer issuer = scope.ServiceProvider.GetRequiredService<IOperatorAuthorityContextIssuer>();
-
-        Result<OperatorAuthorityContext> authority = issuer.Issue(CovenantAuthorityRequirement.SensitivityRetentionPurge);
-
-        if (authority.IsSuccess)
+        try
         {
-            Result published = scope.ServiceProvider.GetRequiredService<CovenantSensitivePurgeAuthorityScope>().Publish(authority.Value);
+            await using AsyncServiceScope scope = scopes.CreateAsyncScope();
 
-            if (published.IsFailure)
+            IOperatorAuthorityContextIssuer issuer = scope.ServiceProvider.GetRequiredService<IOperatorAuthorityContextIssuer>();
+
+            Result<OperatorAuthorityContext> authority = issuer.Issue(CovenantAuthorityRequirement.SensitivityRetentionPurge);
+
+            if (authority.IsSuccess)
             {
-                return published.Error;
-            }
-        }
+                Result published = scope.ServiceProvider.GetRequiredService<CovenantSensitivePurgeAuthorityScope>().Publish(authority.Value);
 
-        // An unavailable Covenant authority still permits the shared purger's unlabelled arm. A
-        // labelled target is refused by that same purger and keeps its durable checkpoint and cursor.
-        return await scope.ServiceProvider.GetRequiredService<GuildOwnerCleanupCoordinator>()
-            .RunBatchAsync(64, 64, lifetime.Token).ConfigureAwait(false);
+                if (published.IsFailure)
+                {
+                    return published.Error;
+                }
+            }
+
+            // An unavailable Covenant authority still permits the shared purger's unlabelled arm. A
+            // labelled target is refused by that same purger and keeps its durable checkpoint and cursor.
+            return await scope.ServiceProvider.GetRequiredService<GuildOwnerCleanupCoordinator>()
+                .RunBatchAsync(64, 64, lifetime.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && work.MaintenanceRevocation.IsCancellationRequested)
+        {
+            return new Error(ErrorCodes.Guild.MaintenanceDeferred, "Guild owner cleanup yielded to installation maintenance.");
+        }
     }
 }

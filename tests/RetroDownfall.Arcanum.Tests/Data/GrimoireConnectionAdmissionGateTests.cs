@@ -3043,7 +3043,7 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
 
         Assert.True(outcome.IsFailure);
 
-        Assert.Equal(ErrorCodes.Guild.Unavailable, outcome.Error.Code);
+        Assert.Equal(ErrorCodes.Guild.MaintenanceDeferred, outcome.Error.Code);
 
         Assert.Equal(0, scopes.Created);
     }

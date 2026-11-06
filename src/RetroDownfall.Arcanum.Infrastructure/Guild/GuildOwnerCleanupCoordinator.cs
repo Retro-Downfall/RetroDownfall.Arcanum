@@ -47,7 +47,7 @@ internal sealed class GuildOwnerCleanupCoordinator(
 
         if (!admission.TryAcquireWorkLease(GrimoireWorkKind.GuildMaintenance, out IGrimoireWorkLease? acquired) || acquired is null)
         {
-            return Deferred();
+            return MaintenanceDeferred();
         }
 
         await using IGrimoireWorkLease work = acquired;
@@ -56,7 +56,7 @@ internal sealed class GuildOwnerCleanupCoordinator(
 
         if (!work.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? group) || group is null)
         {
-            return Deferred();
+            return MaintenanceDeferred();
         }
 
         await using IGrimoireExternalEffectGroup effects = group;
@@ -497,6 +497,8 @@ internal sealed class GuildOwnerCleanupCoordinator(
 
         return command;
     }
+
+    private static Error MaintenanceDeferred() => new(ErrorCodes.Guild.MaintenanceDeferred, "Guild owner cleanup is deferred while ordinary work or effect admission is closed.");
 
     private static Error Deferred() => new(ErrorCodes.Guild.Unavailable, "Guild owner cleanup is deferred; its family cursor has not advanced past unfinished work.");
 }
