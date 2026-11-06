@@ -643,6 +643,9 @@ jobs:
       # gate failure rather than as a compile break, and an incremental build hides the analyzer
       # diagnostics a clean one raises. Naming the project here is also what puts it inside the
       # compiled-project closure ContinuousIntegrationWorkflowTests walks.
+      - name: Test the Covenant benchmark launcher
+        run: python3 -m unittest scripts/tests/test_benchmark_covenant_launcher.py -v
+
       - name: Build the Covenant benchmark host
         run: |
           dotnet build tests/RetroDownfall.Arcanum.Covenant.Benchmarks/RetroDownfall.Arcanum.Covenant.Benchmarks.csproj \

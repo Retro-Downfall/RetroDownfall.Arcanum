@@ -145,9 +145,30 @@ OUTPUT="$(mktemp -d "${TMPDIR:-/tmp}/covenant-benchmark-XXXXXX")"
 
 trap 'rm -rf "$OUTPUT"' EXIT
 
+# Earlier builds can leave compiler servers and MSBuild nodes resident. The benchmark measures
+# its Native AOT host, so retire inherited servers before publishing and confirm shutdown again
+# before measurement. Refusing this boundary is an unmeasurable run, not a latency-gate breach.
+shutdown_build_servers() {
+
+    local phase="$1"
+
+    if ! dotnet build-server shutdown >"$OUTPUT/shutdown-$phase.log" 2>&1; then
+
+        echo "The benchmark could not be measured: build-server shutdown failed ($phase)." >&2
+
+        cat "$OUTPUT/shutdown-$phase.log" >&2
+
+        exit 2
+
+    fi
+
+}
+
+shutdown_build_servers before-publish
+
 echo "publishing $RID" >&2
 
-dotnet publish "$PROJECT" -c Release -r "$RID" -o "$OUTPUT" --nologo >"$OUTPUT/publish.log" 2>&1 || {
+dotnet publish "$PROJECT" -c Release -r "$RID" -o "$OUTPUT" --nologo --disable-build-servers >"$OUTPUT/publish.log" 2>&1 || {
 
     echo "The benchmark host failed to publish:" >&2
 
@@ -156,6 +177,8 @@ dotnet publish "$PROJECT" -c Release -r "$RID" -o "$OUTPUT" --nologo >"$OUTPUT/p
     exit 2
 
 }
+
+shutdown_build_servers before-measurement
 
 EXECUTABLE="$OUTPUT/RetroDownfall.Arcanum.Covenant.Benchmarks"
 
