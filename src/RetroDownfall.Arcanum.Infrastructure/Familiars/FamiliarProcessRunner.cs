@@ -23,6 +23,21 @@ namespace RetroDownfall.Arcanum.Infrastructure.Familiars;
 /// </remarks>
 public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger = null) : IFamiliarProcessRunner
 {
+    private readonly Func<FamiliarProcessRequest, CancellationToken, CancellationTokenSource> _createDeadline = CreateDeadline;
+
+    private readonly Action<int, bool, string?>? _afterOutputAndExit;
+
+    /// <summary>Controls deadline scheduling and observes the real post-EOF boundary in process tests.</summary>
+    internal FamiliarProcessRunner(
+        Func<FamiliarProcessRequest, CancellationToken, CancellationTokenSource> createDeadline,
+        Action<int, bool, string?> afterOutputAndExit,
+        ILogger<FamiliarProcessRunner>? logger = null) : this(logger)
+    {
+        _createDeadline = createDeadline ?? throw new ArgumentNullException(nameof(createDeadline));
+
+        _afterOutputAndExit = afterOutputAndExit ?? throw new ArgumentNullException(nameof(afterOutputAndExit));
+    }
+
     /// <summary>
     /// Both CLIs speak UTF-8 on every platform, so the transport pins it rather than inheriting the
     /// host's console code page — which on Windows is CP437 on a default console and CP_ACP with no
@@ -39,7 +54,7 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
         using Process process = CreateProcess(request);
 
-        using CancellationTokenSource deadline = CreateDeadline(request, cancellationToken);
+        using CancellationTokenSource deadline = _createDeadline(request, cancellationToken);
 
         Start(process, request);
 
@@ -136,6 +151,8 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
                 throw TimedOut(request, standardError);
             }
 
+            _afterOutputAndExit?.Invoke(process.ExitCode, !errorPump.IsCompleted, null);
+
             await AwaitErrorPumpAsync(errorPump).ConfigureAwait(false);
 
             // The verdict is read off the deadline rather than inferred from an exception, because on
@@ -196,7 +213,7 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
         using Process process = created;
 
-        using CancellationTokenSource deadline = CreateDeadline(request, cancellationToken);
+        using CancellationTokenSource deadline = _createDeadline(request, cancellationToken);
 
         try
         {
@@ -240,6 +257,8 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
             }
 
             await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
+
+            _afterOutputAndExit?.Invoke(process.ExitCode, !errorPump.IsCompleted, standardOutput.ToString());
 
             await AwaitErrorPumpAsync(errorPump).ConfigureAwait(false);
 

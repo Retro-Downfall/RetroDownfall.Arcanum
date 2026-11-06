@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Text;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Familiars;
 
@@ -12,6 +14,20 @@ internal sealed class StubFamiliarCli : IDisposable
 {
 
     private readonly string _directory;
+
+    private string? _startupReleasePath;
+
+    private string? _startupReadyPath;
+
+    private string? _errorReleasePath;
+
+    private string? _errorHolderPidPath;
+
+    private global::System.Diagnostics.Process? _errorHolder;
+
+    private bool _errorHolderJoined;
+
+    private int _disposed;
 
     private StubFamiliarCli(string directory, string fileName, IReadOnlyList<string> arguments)
     {
@@ -122,8 +138,8 @@ internal sealed class StubFamiliarCli : IDisposable
 
     /// <summary>
     /// Writes a stub that finishes — its frames, then <paramref name="exitCode"/> — while a
-    /// background grandchild holds the stderr pipe open behind it for
-    /// <paramref name="errorStreamHeldOpenFor"/>. That shape reproduces on a POSIX host what Windows
+    /// background grandchild holds the stderr pipe open behind it until the test releases it.
+    /// That shape reproduces on a POSIX host what Windows
     /// does to every Familiar it kills: by the time the deadline fires the child has already exited
     /// and stdout has already ended at EOF, so no read is left pending to observe the cancellation and
     /// the runner reaches its verdict with a real exit code in hand and nothing thrown. Unix only, and
@@ -132,7 +148,7 @@ internal sealed class StubFamiliarCli : IDisposable
     public static StubFamiliarCli CreateExitingBehindAHeldOpenErrorStream(
         IEnumerable<string> stdoutLines,
         int exitCode,
-        TimeSpan errorStreamHeldOpenFor)
+        bool holdStartupUntilReleased = false)
     {
 
         string directory = Path.Combine(
@@ -147,14 +163,26 @@ internal sealed class StubFamiliarCli : IDisposable
 
         string scriptPath = Path.Combine(directory, "familiar-stub");
 
+        string startupReleasePath = Path.Combine(directory, "startup.release");
+
+        string startupReadyPath = Path.Combine(directory, "startup.ready");
+
+        string errorReleasePath = Path.Combine(directory, "stderr.release");
+
+        string errorHolderPidPath = Path.Combine(directory, "stderr-holder.pid");
+
         // The grandchild inherits stderr and nothing else — its own stdout goes to /dev/null — so the
         // runner still sees end of stream the moment this script exits, and is left waiting on the
         // one pipe that has a writer alive past the deadline.
         File.WriteAllText(
             scriptPath,
             "#!/bin/sh\n"
+            + (holdStartupUntilReleased
+                ? $"printf ready > '{startupReadyPath}'\nwhile [ ! -f '{startupReleasePath}' ]; do sleep 0.01; done\n"
+                : string.Empty)
             + $"cat '{payloadPath}'\n"
-            + $"{{ sleep {errorStreamHeldOpenFor.TotalSeconds:0.###}; }} >/dev/null &\n"
+            + $"/bin/sh -c 'while [ ! -f \"$1\" ]; do sleep 0.01; done' held-stderr '{errorReleasePath}' >/dev/null &\n"
+            + $"printf '%s\\n' \"$!\" > '{errorHolderPidPath}'\n"
             + $"exit {exitCode}\n");
 
         if (!OperatingSystem.IsWindows())
@@ -166,7 +194,13 @@ internal sealed class StubFamiliarCli : IDisposable
 
         }
 
-        return new StubFamiliarCli(directory, scriptPath, []);
+        return new StubFamiliarCli(directory, scriptPath, [])
+        {
+            _startupReleasePath = holdStartupUntilReleased ? startupReleasePath : null,
+            _startupReadyPath = holdStartupUntilReleased ? startupReadyPath : null,
+            _errorReleasePath = errorReleasePath,
+            _errorHolderPidPath = errorHolderPidPath,
+        };
 
     }
 
@@ -191,22 +225,131 @@ internal sealed class StubFamiliarCli : IDisposable
             ? File.ReadAllText(StandardInputLogPath)
             : string.Empty;
 
-    public void Dispose()
+    internal void ReleaseStartup()
     {
+        if (_startupReleasePath is not null)
+        {
+            File.WriteAllText(_startupReleasePath, string.Empty);
+        }
+    }
+
+    internal async Task WaitUntilStartupHeldAsync()
+    {
+        ArgumentNullException.ThrowIfNull(_startupReadyPath);
+
+        using CancellationTokenSource guard = new(TimeSpan.FromSeconds(10));
+
+        while (!File.Exists(_startupReadyPath))
+        {
+            await Task.Delay(10, guard.Token).ConfigureAwait(false);
+        }
+    }
+
+    internal void CaptureErrorHolder()
+    {
+        if (!TryCaptureErrorHolder() || _errorHolder!.HasExited)
+        {
+            throw new InvalidOperationException("The stderr holder must still be alive after stdout EOF and process exit.");
+        }
+    }
+
+    private bool TryCaptureErrorHolder()
+    {
+        if (_errorHolder is not null)
+        {
+            return true;
+        }
+
+        if (_errorHolderPidPath is null || !File.Exists(_errorHolderPidPath))
+        {
+            return false;
+        }
 
         try
         {
+            if (!int.TryParse(File.ReadAllText(_errorHolderPidPath), NumberStyles.Integer, CultureInfo.InvariantCulture, out int pid))
+            {
+                return false;
+            }
 
-            Directory.Delete(_directory, recursive: true);
+            _errorHolder = global::System.Diagnostics.Process.GetProcessById(pid);
 
+            return true;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (TestDescendantProcess.IsDescendantAlreadyGone(exception))
         {
+            // A setup failure may have reaped the tree before it could publish a usable holder.
+            return false;
+        }
+    }
 
-            // A leftover temp directory is not worth failing a test over.
+    internal void ReleaseErrorStream()
+    {
+        if (_errorReleasePath is not null)
+        {
+            File.WriteAllText(_errorReleasePath, string.Empty);
+        }
+    }
 
+    internal async Task JoinErrorHolderAsync()
+    {
+        _ = TryCaptureErrorHolder();
+
+        ReleaseErrorStream();
+
+        if (_errorHolder is not { } holder)
+        {
+            return;
         }
 
+        try
+        {
+            await holder.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+
+            _errorHolderJoined = true;
+        }
+        catch (TimeoutException)
+        {
+            TestDescendantProcess.KillTreeIfRunning(holder.Id);
+
+            await holder.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+
+            _errorHolderJoined = true;
+
+            throw;
+        }
+        finally
+        {
+            holder.Dispose();
+
+            _errorHolder = null;
+        }
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            ReleaseStartup();
+
+            ReleaseErrorStream();
+        }
+        finally
+        {
+            if (!_errorHolderJoined && _errorHolderPidPath is not null)
+            {
+                TestDescendantProcess.KillRecorded(_errorHolderPidPath);
+            }
+
+            _errorHolder?.Dispose();
+
+            TestDirectoryCleanup.TryDelete(_directory, nameof(StubFamiliarCli));
+        }
     }
 
     private static StubFamiliarCli CreateUnix(

@@ -599,22 +599,41 @@ public sealed class FamiliarProcessRunnerTests : IAsyncLifetime
         using StubFamiliarCli stub = StubFamiliarCli.CreateExitingBehindAHeldOpenErrorStream(
             ["one"],
             exitCode: 3,
-            errorStreamHeldOpenFor: TimeSpan.FromSeconds(5));
+            holdStartupUntilReleased: true);
+
+        using PostExitControl control = new();
 
         List<string> received = [];
 
-        FamiliarProcessException failure = await Assert.ThrowsAsync<FamiliarProcessException>(
-            async () =>
-            {
-                await foreach (string line in RunAsync(stub, timeout: TimeSpan.FromMilliseconds(750)))
-                {
-                    received.Add(line);
-                }
-            });
+        Task operation = ConsumePostExitLinesAsync(control.Runner, stub, received, CancellationToken.None);
 
-        Assert.Equal(["one"], received);
+        try
+        {
+            await stub.WaitUntilStartupHeldAsync();
 
-        Assert.Equal(FamiliarProcessFailure.TimedOut, failure.Failure);
+            Assert.False(control.DeadlineExpired);
+
+            Assert.False(operation.IsCompleted);
+
+            stub.ReleaseStartup();
+
+            await control.WaitAfterOutputAndExitAsync(stub, operation);
+
+            Assert.Equal(["one"], received);
+
+            control.Expire();
+
+            FamiliarProcessException failure = await Assert.ThrowsAsync<FamiliarProcessException>(
+                () => operation.WaitAsync(TimeSpan.FromSeconds(10)));
+
+            Assert.Equal(["one"], received);
+
+            Assert.Equal(FamiliarProcessFailure.TimedOut, failure.Failure);
+        }
+        finally
+        {
+            await CompletePostExitCleanupAsync(control, stub, operation);
+        }
     }
 
     /// <summary>
@@ -630,20 +649,35 @@ public sealed class FamiliarProcessRunnerTests : IAsyncLifetime
 
         using StubFamiliarCli stub = StubFamiliarCli.CreateExitingBehindAHeldOpenErrorStream(
             ["one"],
-            exitCode: 3,
-            errorStreamHeldOpenFor: TimeSpan.FromSeconds(5));
+            exitCode: 3);
+
+        using PostExitControl control = new();
 
         using CancellationTokenSource cts = new();
 
-        cts.CancelAfter(TimeSpan.FromMilliseconds(250));
+        List<string> received = [];
 
-        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            async () =>
-            {
-                await foreach (string _ in RunAsync(stub, cancellationToken: cts.Token))
-                {
-                }
-            });
+        Task operation = ConsumePostExitLinesAsync(control.Runner, stub, received, cts.Token);
+
+        try
+        {
+            await control.WaitAfterOutputAndExitAsync(stub, operation);
+
+            Assert.Equal(["one"], received);
+
+            await cts.CancelAsync();
+
+            _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => operation.WaitAsync(TimeSpan.FromSeconds(10)));
+
+            Assert.False(control.DeadlineExpired);
+
+            Assert.Equal(["one"], received);
+        }
+        finally
+        {
+            await CompletePostExitCleanupAsync(control, stub, operation);
+        }
     }
 
     [Fact]
@@ -720,21 +754,28 @@ public sealed class FamiliarProcessRunnerTests : IAsyncLifetime
 
         using StubFamiliarCli stub = StubFamiliarCli.CreateExitingBehindAHeldOpenErrorStream(
             ["{\"loggedIn\":false}"],
-            exitCode: 3,
-            errorStreamHeldOpenFor: TimeSpan.FromSeconds(5));
+            exitCode: 3);
 
-        FamiliarProcessOutput output = await _runner.RunToCompletionAsync(
-            new FamiliarProcessRequest
-            {
-                FileName = stub.FileName,
+        using PostExitControl control = new();
 
-                Arguments = stub.Arguments,
+        Task<FamiliarProcessOutput> operation = control.Runner.RunToCompletionAsync(PostExitRequest(stub), CancellationToken.None);
 
-                Timeout = TimeSpan.FromMilliseconds(750),
-            },
-            CancellationToken.None);
+        try
+        {
+            await control.WaitAfterOutputAndExitAsync(stub, operation, "{\"loggedIn\":false}\n");
 
-        Assert.Equal(FamiliarProcessFailure.TimedOut, output.Failure);
+            control.Expire();
+
+            FamiliarProcessOutput output = await operation.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal("{\"loggedIn\":false}\n", output.StandardOutput);
+
+            Assert.Equal(FamiliarProcessFailure.TimedOut, output.Failure);
+        }
+        finally
+        {
+            await CompletePostExitCleanupAsync(control, stub, operation);
+        }
     }
 
     /// <summary>
@@ -750,24 +791,29 @@ public sealed class FamiliarProcessRunnerTests : IAsyncLifetime
 
         using StubFamiliarCli stub = StubFamiliarCli.CreateExitingBehindAHeldOpenErrorStream(
             ["{\"loggedIn\":false}"],
-            exitCode: 3,
-            errorStreamHeldOpenFor: TimeSpan.FromSeconds(5));
+            exitCode: 3);
+
+        using PostExitControl control = new();
 
         using CancellationTokenSource cts = new();
 
-        cts.CancelAfter(TimeSpan.FromMilliseconds(250));
+        Task<FamiliarProcessOutput> operation = control.Runner.RunToCompletionAsync(PostExitRequest(stub), cts.Token);
 
-        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => _runner.RunToCompletionAsync(
-                new FamiliarProcessRequest
-                {
-                    FileName = stub.FileName,
+        try
+        {
+            await control.WaitAfterOutputAndExitAsync(stub, operation, "{\"loggedIn\":false}\n");
 
-                    Arguments = stub.Arguments,
+            await cts.CancelAsync();
 
-                    Timeout = TimeSpan.FromMinutes(2),
-                },
-                cts.Token));
+            _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => operation.WaitAsync(TimeSpan.FromSeconds(10)));
+
+            Assert.False(control.DeadlineExpired);
+        }
+        finally
+        {
+            await CompletePostExitCleanupAsync(control, stub, operation);
+        }
     }
 
     /// <summary>
@@ -828,9 +874,10 @@ public sealed class FamiliarProcessRunnerTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The four facts above stage, on a POSIX host, the sequence Windows produces by itself: a read
-    /// that ends normally after the deadline or the caller's cancellation has already fired. Staging it
-    /// takes a background grandchild holding a pipe open, which is a <c>/bin/sh</c> construction — and
+    /// The four facts above isolate, on a POSIX host, the verdict Windows requires when cancellation
+    /// ends a read at EOF: stdout EOF and process exit have completed before cancellation is triggered,
+    /// with only an owned background stderr holder still keeping the run pending. That holder is a
+    /// <c>/bin/sh</c> construction — and
     /// on Windows there is nothing to stage, because every timed-out run there takes that route
     /// natively and <see cref="A_wedged_familiar_is_torn_down_by_its_deadline"/> and
     /// <see cref="Run_to_completion_surfaces_caller_cancellation_rather_than_a_timeout"/> are these
@@ -840,6 +887,107 @@ public sealed class FamiliarProcessRunnerTests : IAsyncLifetime
         Skip.If(
             OperatingSystem.IsWindows(),
             "Windows takes this route natively, so the two unstaged facts in this class cover it there.");
+
+    private static FamiliarProcessRequest PostExitRequest(StubFamiliarCli stub) => new()
+    {
+        FileName = stub.FileName,
+
+        Arguments = stub.Arguments,
+
+        Timeout = TimeSpan.FromMilliseconds(750),
+    };
+
+    private static async Task ConsumePostExitLinesAsync(
+        FamiliarProcessRunner runner,
+        StubFamiliarCli stub,
+        List<string> received,
+        CancellationToken cancellationToken)
+    {
+        await foreach (string line in runner.RunLinesAsync(PostExitRequest(stub), cancellationToken))
+        {
+            received.Add(line);
+        }
+    }
+
+    private static async Task CompletePostExitCleanupAsync(PostExitControl control, StubFamiliarCli stub, Task operation)
+    {
+        control.CancelForCleanup();
+
+        stub.ReleaseStartup();
+
+        stub.ReleaseErrorStream();
+
+        try
+        {
+            // The test's assertion owns the outcome. Cleanup still observes the actual operation,
+            // including a fault/cancellation on a setup failure, before its process fixture is disposed.
+            await operation.ContinueWith(
+                static completed => { _ = completed.Exception; },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            await stub.JoinErrorHolderAsync();
+        }
+    }
+
+    private sealed class PostExitControl : IDisposable
+    {
+        private readonly ManualTimerTimeProvider _clock = new();
+
+        private readonly CancellationTokenSource _deadline;
+
+        private readonly TaskCompletionSource<(int ExitCode, bool StderrPending, string? Output)> _checkpoint =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal PostExitControl()
+        {
+            _deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(750), _clock);
+
+            Runner = new FamiliarProcessRunner(
+                (request, caller) =>
+                {
+                    Assert.Equal(TimeSpan.FromMilliseconds(750), request.Timeout);
+
+                    return CancellationTokenSource.CreateLinkedTokenSource(caller, _deadline.Token);
+                },
+                (exitCode, stderrPending, output) => _checkpoint.TrySetResult((exitCode, stderrPending, output)));
+        }
+
+        internal FamiliarProcessRunner Runner { get; }
+
+        internal bool DeadlineExpired => _deadline.IsCancellationRequested;
+
+        internal async Task WaitAfterOutputAndExitAsync(StubFamiliarCli stub, Task operation, string? expectedBufferedOutput = null)
+        {
+            var checkpoint = await _checkpoint.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal(3, checkpoint.ExitCode);
+
+            Assert.True(checkpoint.StderrPending, "The deadline must land while only the stderr pump remains pending.");
+
+            Assert.Equal(expectedBufferedOutput, checkpoint.Output);
+
+            Assert.False(operation.IsCompleted);
+
+            Assert.False(DeadlineExpired);
+
+            stub.CaptureErrorHolder();
+        }
+
+        internal void Expire()
+        {
+            _clock.Advance(TimeSpan.FromMilliseconds(750));
+
+            Assert.True(DeadlineExpired);
+        }
+
+        internal void CancelForCleanup() => _deadline.Cancel();
+
+        public void Dispose() => _deadline.Dispose();
+    }
 
     private async Task<List<string>> CollectAsync(
         StubFamiliarCli stub,
