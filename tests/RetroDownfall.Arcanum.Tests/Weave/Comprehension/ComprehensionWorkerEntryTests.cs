@@ -183,32 +183,46 @@ public sealed class ComprehensionWorkerEntryTests
     [Fact]
     public void Run_ExtractionThatOutlivesTheDeadline_EndsAtTheDeadlineWithNothingWritten()
     {
+        using ManualResetEventSlim entered = new(false);
+
         using ManualResetEventSlim release = new(false);
+
+        using MemoryStream input = new(PdfFixtures.Read("cups-text.pdf"), writable: false);
+
+        using MemoryStream output = new();
+
+        ControlledWorkerScheduler scheduler = new(entered);
 
         CancellationToken observed = default;
 
-        Stopwatch elapsed = Stopwatch.StartNew();
+        Stopwatch elapsed = new();
 
         try
         {
-            (ComprehensionWorkerExitCode code, byte[] written) = Run(
-                PdfFixtures.Read("cups-text.pdf"),
-                TimeSpan.FromMilliseconds(200),
+            ComprehensionWorkerExitCode code = ComprehensionWorkerEntry.Run(
+                DocumentWorkerProfile.Pdf with { SelfDeadline = TimeSpan.FromMilliseconds(200) },
+                input,
+                output,
                 (_, token) =>
                 {
                     observed = token;
 
+                    elapsed.Start();
+
+                    entered.Set();
+
                     // A parser that never looks at its token, as PdfPig does inside one page.
-                    release.Wait(TimeSpan.FromSeconds(30));
+                    release.Wait(Generous);
 
                     return DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText);
-                });
+                },
+                scheduler);
 
             elapsed.Stop();
 
             Assert.Equal(ComprehensionWorkerExitCode.Deadline, code);
 
-            Assert.Empty(written);
+            Assert.Empty(output.ToArray());
 
             Assert.True(elapsed.Elapsed < TimeSpan.FromSeconds(10), $"The worker waited {elapsed.Elapsed} past a 200 ms deadline.");
 
@@ -217,6 +231,70 @@ public sealed class ComprehensionWorkerEntryTests
         finally
         {
             release.Set();
+
+            scheduler.Join();
+        }
+    }
+
+    [Fact]
+    public void Run_WorkQueuedUntilAfterTheDeadline_ReceivesACancelledTokenWithoutWriting()
+    {
+        using MemoryStream input = new(PdfFixtures.Read("cups-text.pdf"), writable: false);
+
+        using MemoryStream output = new();
+
+        ControlledWorkerScheduler scheduler = new();
+
+        CancellationToken observed = default;
+
+        int extractions = 0;
+
+        Stopwatch elapsed = Stopwatch.StartNew();
+
+        try
+        {
+            ComprehensionWorkerExitCode code = ComprehensionWorkerEntry.Run(
+                DocumentWorkerProfile.Pdf with { SelfDeadline = TimeSpan.FromMilliseconds(200) },
+                input,
+                output,
+                (_, token) =>
+                {
+                    extractions++;
+
+                    observed = token;
+
+                    return DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText);
+                },
+                scheduler);
+
+            elapsed.Stop();
+
+            Assert.Equal(ComprehensionWorkerExitCode.Deadline, code);
+
+            Assert.Empty(output.ToArray());
+
+            Assert.True(elapsed.Elapsed < TimeSpan.FromSeconds(10), $"The worker waited {elapsed.Elapsed} past a 200 ms deadline.");
+
+            Assert.False(scheduler.Work.IsCompleted);
+
+            Assert.Equal(0, extractions);
+
+            // Run has cancelled and disposed its source before the queued delegate gets to start.
+            scheduler.ExecuteQueued();
+
+            Assert.Null(scheduler.Work.Exception);
+
+            Assert.True(scheduler.Work.IsCompletedSuccessfully);
+
+            Assert.Equal(1, extractions);
+
+            Assert.True(observed.IsCancellationRequested, "The late extraction did not receive the cancelled deadline token.");
+
+            Assert.Empty(output.ToArray());
+        }
+        finally
+        {
+            scheduler.Join();
         }
     }
 
@@ -362,6 +440,60 @@ public sealed class ComprehensionWorkerEntryTests
             x is not null && y is not null && x.Kind == y.Kind && x.Truncated == y.Truncated && x.Pages.SequenceEqual(y.Pages);
 
         public int GetHashCode(DocumentExtractionOutcome obj) => obj.Kind.GetHashCode();
+    }
+
+    /// <summary>Either holds the worker queued, or confirms parser entry before the caller begins its deadline wait.</summary>
+    private sealed class ControlledWorkerScheduler(ManualResetEventSlim? entered = null) : TaskScheduler
+    {
+        private Task? _work;
+
+        private Thread? _thread;
+
+        internal Task Work => _work ?? throw new InvalidOperationException("No worker was queued.");
+
+        protected override void QueueTask(Task task)
+        {
+            Assert.Null(_work);
+
+            _work = task;
+
+            if (entered is null)
+            {
+                return;
+            }
+
+            _thread = new Thread(() => TryExecuteTask(task)) { IsBackground = true };
+
+            _thread.Start();
+
+            Assert.True(entered.Wait(Generous), "The worker did not enter the extractor.");
+        }
+
+        protected override bool TryExecuteTaskInline(Task task, bool taskWasPreviouslyQueued) => false;
+
+        protected override IEnumerable<Task> GetScheduledTasks() => _work is { IsCompleted: false } work ? [work] : [];
+
+        internal void ExecuteQueued()
+        {
+            Assert.Null(_thread);
+
+            if (!Work.IsCompleted)
+            {
+                Assert.True(TryExecuteTask(Work), "The queued worker could not be executed.");
+            }
+        }
+
+        internal void Join()
+        {
+            if (_thread is not null)
+            {
+                Assert.True(_thread.Join(Generous), "The released worker did not finish.");
+            }
+            else if (_work is not null)
+            {
+                ExecuteQueued();
+            }
+        }
     }
 
     /// <summary>A stream that serves zero bytes up to a length and counts what it served.</summary>

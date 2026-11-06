@@ -162,7 +162,16 @@ internal static class ComprehensionWorkerEntry
         DocumentWorkerProfile profile,
         Stream input,
         Stream output,
-        Func<ReadOnlyMemory<byte>, CancellationToken, DocumentExtractionOutcome> extract)
+        Func<ReadOnlyMemory<byte>, CancellationToken, DocumentExtractionOutcome> extract) =>
+        Run(profile, input, output, extract, TaskScheduler.Default);
+
+    /// <summary>The same worker with explicit scheduling, so tests can control whether its deadline expires before work starts.</summary>
+    internal static ComprehensionWorkerExitCode Run(
+        DocumentWorkerProfile profile,
+        Stream input,
+        Stream output,
+        Func<ReadOnlyMemory<byte>, CancellationToken, DocumentExtractionOutcome> extract,
+        TaskScheduler scheduler)
     {
         ArgumentNullException.ThrowIfNull(profile);
 
@@ -172,9 +181,17 @@ internal static class ComprehensionWorkerEntry
 
         ArgumentNullException.ThrowIfNull(extract);
 
+        ArgumentNullException.ThrowIfNull(scheduler);
+
         using CancellationTokenSource expiry = new();
 
-        Task<WorkerVerdict> work = Task.Run(() => ReadAndExtract(input, profile, extract, expiry.Token), CancellationToken.None);
+        CancellationToken cancellationToken = expiry.Token;
+
+        Task<WorkerVerdict> work = Task.Factory.StartNew(
+            () => ReadAndExtract(input, profile, extract, cancellationToken),
+            CancellationToken.None,
+            TaskCreationOptions.DenyChildAttach,
+            scheduler);
 
         bool finished;
 
