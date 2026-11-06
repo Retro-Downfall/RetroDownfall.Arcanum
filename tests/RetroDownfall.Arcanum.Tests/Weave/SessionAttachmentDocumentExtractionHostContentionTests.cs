@@ -161,7 +161,7 @@ public sealed class SessionAttachmentDocumentExtractionHostContentionTests
     {
         ManualTimerTimeProvider clock = new();
 
-        using ManualResetEventSlim release = new(false);
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -170,31 +170,33 @@ public sealed class SessionAttachmentDocumentExtractionHostContentionTests
         int invocations = 0;
 
         SessionAttachmentDocumentExtractionHost host = new(
-            (bytes, output, _) =>
+            async (bytes, output, _) =>
             {
                 if (Interlocked.Increment(ref invocations) == 1)
                 {
                     entered.TrySetResult();
 
                     // An uncooperative parser: it ignores cancellation and outlives its own budget.
-                    release.Wait();
+                    await release.Task.ConfigureAwait(false);
 
                     ended.TrySetResult();
 
-                    return ValueTask.CompletedTask;
+                    return;
                 }
 
                 output.TryAppend("healthy");
-
-                return ValueTask.CompletedTask;
             },
             TimeSpan.FromMilliseconds(100), timeProvider: clock);
 
+        Task<SessionAttachmentExtractionResult> overrunning = ExtractAsync(host, Healthy);
+
+        SessionAttachmentExtractionResult recovered;
+
         try
         {
-            Task<SessionAttachmentExtractionResult> overrunning = ExtractAsync(host, Healthy);
-
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            await clock.WaitForTimerCountAsync(2, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.False(overrunning.IsCompleted);
 
@@ -225,12 +227,14 @@ public sealed class SessionAttachmentDocumentExtractionHostContentionTests
         }
         finally
         {
-            release.Set();
+            release.TrySetResult();
+
+            await ended.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            _ = await overrunning.WaitAsync(TimeSpan.FromSeconds(5));
+
+            recovered = await EventuallyExtractedAsync(host);
         }
-
-        await ended.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        SessionAttachmentExtractionResult recovered = await EventuallyExtractedAsync(host);
 
         Assert.Equal("healthy", recovered.Text);
     }
@@ -242,37 +246,45 @@ public sealed class SessionAttachmentDocumentExtractionHostContentionTests
 
         byte[] poison = "ARCCOMP1\npoison"u8.ToArray();
 
-        using ManualResetEventSlim release = new(false);
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource ended = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         int healthyParses = 0;
 
         SessionAttachmentDocumentExtractionHost host = new(
-            (bytes, output, cancellationToken) =>
+            async (bytes, output, cancellationToken) =>
             {
                 if (bytes.Span.SequenceEqual(poison))
                 {
                     entered.TrySetResult();
 
                     // An uncooperative parser: it ignores cancellation, so its overrun quarantines the family.
-                    release.Wait(TimeSpan.FromSeconds(30));
+                    await release.Task.ConfigureAwait(false);
 
-                    return ValueTask.CompletedTask;
+                    ended.TrySetResult();
+
+                    return;
                 }
 
                 Interlocked.Increment(ref healthyParses);
 
-                return new ComprehensionTextContainerExtractor().ExtractAsync(bytes, output, cancellationToken);
+                await new ComprehensionTextContainerExtractor().ExtractAsync(bytes, output, cancellationToken).ConfigureAwait(false);
             },
             TimeSpan.FromMilliseconds(200),
             slotWait: TimeSpan.FromSeconds(20), timeProvider: clock);
 
+        Task<SessionAttachmentExtractionResult> overrunning = ExtractAsync(host, poison);
+
+        SessionAttachmentExtractionResult recovered;
+
         try
         {
-            Task<SessionAttachmentExtractionResult> overrunning = ExtractAsync(host, poison);
-
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            await clock.WaitForTimerCountAsync(2, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
 
             // Queued for the slot while the parser still runs within its budget.
             Task<SessionAttachmentExtractionResult> queued = ExtractAsync(host, Healthy);
@@ -304,10 +316,14 @@ public sealed class SessionAttachmentDocumentExtractionHostContentionTests
         }
         finally
         {
-            release.Set();
-        }
+            release.TrySetResult();
 
-        SessionAttachmentExtractionResult recovered = await EventuallyExtractedAsync(host);
+            await ended.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            _ = await overrunning.WaitAsync(TimeSpan.FromSeconds(5));
+
+            recovered = await EventuallyExtractedAsync(host);
+        }
 
         Assert.Equal("healthy", recovered.Text);
     }

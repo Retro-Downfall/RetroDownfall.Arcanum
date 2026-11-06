@@ -41,6 +41,8 @@ public sealed class SessionAttachmentDocumentExtractionHostParseStepTests
 
         using CancellationTokenSource caller = new();
 
+        SessionAttachmentExtractionResult recovered;
+
         try
         {
             using (SessionAttachmentDocumentSnapshot snapshot = await ReadAsync(host))
@@ -80,14 +82,16 @@ public sealed class SessionAttachmentDocumentExtractionHostParseStepTests
         finally
         {
             parser.Release();
+
+            await parser.Ended.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            // Once the parse really ends it gives the slot back, and the quarantine ends with it.
+            using SessionAttachmentDocumentSnapshot snapshot = await EventuallyHeldAsync(host);
+
+            recovered = await host.ParseInProcessAsync(snapshot, CancellationToken.None);
         }
 
-        await parser.Ended.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        // Once the parse really ends it gives the slot back, and the quarantine ends with it.
-        using SessionAttachmentDocumentSnapshot recovered = await EventuallyHeldAsync(host);
-
-        Assert.Equal("healthy", (await host.ParseInProcessAsync(recovered, CancellationToken.None)).Text);
+        Assert.Equal("healthy", recovered.Text);
     }
 
     [Fact]
@@ -98,6 +102,8 @@ public sealed class SessionAttachmentDocumentExtractionHostParseStepTests
         SessionAttachmentDocumentExtractionHost host = new(parser.ExtractAsync, TimeSpan.FromSeconds(30), slotWait: SlotWait);
 
         using CancellationTokenSource caller = new();
+
+        SessionAttachmentExtractionResult recovered;
 
         try
         {
@@ -139,13 +145,15 @@ public sealed class SessionAttachmentDocumentExtractionHostParseStepTests
         finally
         {
             parser.Release();
+
+            await parser.Ended.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            using SessionAttachmentDocumentSnapshot snapshot = await EventuallyHeldAsync(host);
+
+            recovered = await host.ParseInProcessAsync(snapshot, CancellationToken.None);
         }
 
-        await parser.Ended.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        using SessionAttachmentDocumentSnapshot recovered = await EventuallyHeldAsync(host);
-
-        Assert.Equal("healthy", (await host.ParseInProcessAsync(recovered, CancellationToken.None)).Text);
+        Assert.Equal("healthy", recovered.Text);
     }
 
     // ---------------------------------------------------------------- one budget for the read and the parse
@@ -388,7 +396,7 @@ public sealed class SessionAttachmentDocumentExtractionHostParseStepTests
     /// <summary>A parser whose first invocation ignores cancellation and runs until released; later ones are healthy.</summary>
     private sealed class StuckParser
     {
-        private readonly ManualResetEventSlim _release = new(false);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private int _invocations;
 
@@ -396,24 +404,22 @@ public sealed class SessionAttachmentDocumentExtractionHostParseStepTests
 
         public TaskCompletionSource Ended { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public ValueTask ExtractAsync(ReadOnlyMemory<byte> bytes, ISessionAttachmentDocumentTextSink output, CancellationToken cancellationToken)
+        public async ValueTask ExtractAsync(ReadOnlyMemory<byte> bytes, ISessionAttachmentDocumentTextSink output, CancellationToken cancellationToken)
         {
             if (Interlocked.Increment(ref _invocations) == 1)
             {
                 Entered.TrySetResult();
 
-                _release.Wait(TimeSpan.FromSeconds(30));
+                await _release.Task.ConfigureAwait(false);
 
                 Ended.TrySetResult();
 
-                return ValueTask.CompletedTask;
+                return;
             }
 
             output.TryAppend("healthy");
-
-            return ValueTask.CompletedTask;
         }
 
-        public void Release() => _release.Set();
+        public void Release() => _release.TrySetResult();
     }
 }

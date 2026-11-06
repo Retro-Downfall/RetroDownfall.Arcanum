@@ -120,7 +120,9 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
 
         PoisonAwareExtractor extractor = new(poison);
 
-        SessionAttachmentDocumentExtractionHost host = new(extractor.ExtractAsync, TimeSpan.FromMilliseconds(100));
+        ManualTimerTimeProvider clock = new();
+
+        SessionAttachmentDocumentExtractionHost host = new(extractor.ExtractAsync, TimeSpan.FromMilliseconds(100), timeProvider: clock);
 
         ImmediateTimeProvider retryTime = new();
 
@@ -130,10 +132,7 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
         {
             // Another caller (a turn reference, a pin) runs a parser that overruns its own budget and ignores
             // cancellation, so the family stays quarantined while the indexer reaches the healthy document.
-            SessionAttachmentExtractionResult overran = await host.ExtractAsync(
-                _ => Task.FromResult<ReadOnlyMemory<byte>>(poison), poison.Length, 1024, CancellationToken.None);
-
-            Assert.Equal(SessionAttachmentExtractionStatus.Failed, overran.Status);
+            await QuarantineAsync(host, extractor, poison, clock);
 
             SessionAttachmentIndexOutcome deferred = await service.ProcessOneAsync(
                 Dequeue(service, new SessionAttachmentIndexRequest(healthy.Id, sessionId)),
@@ -175,7 +174,7 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
         }
         finally
         {
-            extractor.Release();
+            await ReleasePoisonAndDrainAsync(host, extractor);
         }
 
         SessionAttachmentIndexState indexed = await _index.GetStateAsync(healthy.Id, CancellationToken.None);
@@ -259,7 +258,9 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
 
         PoisonAwareExtractor extractor = new(poison);
 
-        SessionAttachmentDocumentExtractionHost host = new(extractor.ExtractAsync, TimeSpan.FromMilliseconds(100));
+        ManualTimerTimeProvider clock = new();
+
+        SessionAttachmentDocumentExtractionHost host = new(extractor.ExtractAsync, TimeSpan.FromMilliseconds(100), timeProvider: clock);
 
         SignallingNeverTimeProvider retryTime = new();
 
@@ -267,8 +268,7 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
         {
             try
             {
-                _ = await host.ExtractAsync(
-                    _ => Task.FromResult<ReadOnlyMemory<byte>>(poison), poison.Length, 1024, CancellationToken.None);
+                await QuarantineAsync(host, extractor, poison, clock);
 
                 using CancellationTokenSource stopping = new();
 
@@ -285,11 +285,9 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
             }
             finally
             {
-                extractor.Release();
+                await ReleasePoisonAndDrainAsync(host, extractor);
             }
         }
-
-        await extractor.PoisonFinished.WaitAsync(TimeSpan.FromSeconds(5));
 
         SessionAttachmentIndexState stopped = await _index!.GetStateAsync(healthy.Id, CancellationToken.None);
 
@@ -341,7 +339,9 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
 
         PoisonAwareExtractor extractor = new(poison);
 
-        SessionAttachmentDocumentExtractionHost host = new(extractor.ExtractAsync, TimeSpan.FromMilliseconds(100));
+        ManualTimerTimeProvider clock = new();
+
+        SessionAttachmentDocumentExtractionHost host = new(extractor.ExtractAsync, TimeSpan.FromMilliseconds(100), timeProvider: clock);
 
         ImmediateTimeProvider retryTime = new();
 
@@ -359,8 +359,7 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
 
         try
         {
-            _ = await host.ExtractAsync(
-                _ => Task.FromResult<ReadOnlyMemory<byte>>(poison), poison.Length, 1024, CancellationToken.None);
+            await QuarantineAsync(host, extractor, poison, clock);
 
             SessionAttachmentIndexOutcome deferred = await service.ProcessOneAsync(
                 Dequeue(service, new SessionAttachmentIndexRequest(healthy.Id, sessionId)),
@@ -372,10 +371,8 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
         {
             retryTime.OnDelay = null;
 
-            extractor.Release();
+            await ReleasePoisonAndDrainAsync(host, extractor);
         }
-
-        await extractor.PoisonFinished.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.True(filled > 0, "Other attachments must have filled the queue during the backoff.");
 
@@ -592,10 +589,65 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
             NullLogger<SessionAttachmentIndexingService>.Instance);
     }
 
+    private static async Task QuarantineAsync(
+        SessionAttachmentDocumentExtractionHost host,
+        PoisonAwareExtractor extractor,
+        byte[] poison,
+        ManualTimerTimeProvider clock)
+    {
+        Task<SessionAttachmentExtractionResult> overrunning = host.ExtractAsync(
+            _ => Task.FromResult<ReadOnlyMemory<byte>>(poison), poison.Length, 1024, CancellationToken.None);
+
+        await extractor.Started.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await clock.WaitForTimerCountAsync(2, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(overrunning.IsCompleted);
+
+        clock.Advance(TimeSpan.FromMilliseconds(100));
+
+        SessionAttachmentExtractionResult overran = await overrunning.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Failed, overran.Status);
+
+        Assert.Equal(SessionAttachmentDocumentExtractionHost.DeadlineReason, overran.FailureReason);
+    }
+
+    private static async Task ReleasePoisonAndDrainAsync(SessionAttachmentDocumentExtractionHost host, PoisonAwareExtractor extractor)
+    {
+        extractor.Release();
+
+        if (extractor.Started.IsCompleted)
+        {
+            await extractor.PoisonFinished.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+
+        DateTimeOffset giveUp = DateTimeOffset.UtcNow.AddSeconds(5);
+
+        while (true)
+        {
+            // Holding a fresh snapshot proves the parser returned its slot without adding a healthy parse.
+            using SessionAttachmentDocumentSnapshot snapshot = await host.ReadSnapshotAsync(
+                _ => Task.FromResult(ReadOnlyMemory<byte>.Empty), 0, 1024, CancellationToken.None, waitForSlot: false)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            if (snapshot.Refusal is null)
+            {
+                return;
+            }
+
+            Assert.True(DateTimeOffset.UtcNow < giveUp, "The released poison parser did not return its family slot.");
+
+            await Task.Delay(10);
+        }
+    }
+
     /// <summary>A parser that stalls past its budget on one poison payload and reads everything else normally.</summary>
     private sealed class PoisonAwareExtractor(byte[] poison) : ISessionAttachmentDocumentExtractor
     {
-        private readonly ManualResetEventSlim _release = new(false);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private readonly TaskCompletionSource _poisonFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -603,28 +655,32 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
 
         internal Task PoisonFinished => _poisonFinished.Task;
 
+        internal Task Started => _started.Task;
+
         internal int HealthyParses => Volatile.Read(ref _healthyParses);
 
-        internal void Release() => _release.Set();
+        internal void Release() => _release.TrySetResult();
 
-        public ValueTask ExtractAsync(
+        public async ValueTask ExtractAsync(
             ReadOnlyMemory<byte> bytes,
             ISessionAttachmentDocumentTextSink output,
             CancellationToken cancellationToken)
         {
             if (bytes.Span.SequenceEqual(poison))
             {
+                _started.TrySetResult();
+
                 // Deliberately ignores cancellation: the family stays quarantined until the test releases it.
-                _release.Wait(TimeSpan.FromSeconds(30));
+                await _release.Task.ConfigureAwait(false);
 
                 _poisonFinished.TrySetResult();
 
-                return ValueTask.CompletedTask;
+                return;
             }
 
             Interlocked.Increment(ref _healthyParses);
 
-            return new ComprehensionTextContainerExtractor().ExtractAsync(bytes, output, cancellationToken);
+            await new ComprehensionTextContainerExtractor().ExtractAsync(bytes, output, cancellationToken).ConfigureAwait(false);
         }
     }
 
