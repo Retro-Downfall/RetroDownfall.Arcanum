@@ -19,7 +19,7 @@ internal sealed class GuildSignetCleanupParticipant(IGrimoireConnectionAdmission
             // Sealing it removes that root from the next query without imposing a work ceiling.
             await using (SqliteCommand command = OwnerCommand(owner, connection, null))
             {
-                command.CommandText = $"SELECT CASE WHEN typeof(RootCommissionId)='text' AND length(CAST(RootCommissionId AS BLOB))=36 THEN RootCommissionId ELSE '' END FROM guild_signets WHERE {OwnerPredicate(owner)} AND (Revoked=0 OR CancellationRequested=0) ORDER BY RootCommissionId LIMIT 1;";
+                command.CommandText = $"SELECT CASE WHEN typeof(RootQuestId)='text' AND length(CAST(RootQuestId AS BLOB))=36 THEN RootQuestId ELSE '' END FROM guild_signets WHERE {OwnerPredicate(owner)} AND (Revoked=0 OR CancellationRequested=0) ORDER BY RootQuestId LIMIT 1;";
 
                 object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
@@ -48,7 +48,7 @@ internal sealed class GuildSignetCleanupParticipant(IGrimoireConnectionAdmission
 
                 await using SqliteCommand command = OwnerCommand(owner, connection, transaction);
 
-                command.CommandText = $"UPDATE guild_signets SET Revoked=1,CancellationRequested=1,RevocationGeneration=RevocationGeneration+1,Revision=Revision+1 WHERE {OwnerPredicate(owner)} AND RootCommissionId=$root COLLATE NOCASE AND (Revoked=0 OR CancellationRequested=0);";
+                command.CommandText = $"UPDATE guild_signets SET Revoked=1,CancellationRequested=1,RevocationGeneration=RevocationGeneration+1,Revision=Revision+1 WHERE {OwnerPredicate(owner)} AND RootQuestId=$root COLLATE NOCASE AND (Revoked=0 OR CancellationRequested=0);";
 
                 command.Parameters.AddWithValue("$root", root.ToString("D").ToUpperInvariant());
 
@@ -82,7 +82,7 @@ internal sealed class GuildSignetCleanupParticipant(IGrimoireConnectionAdmission
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        // No execution is enabled in this slice. The Commission cleanup participant must reconcile
+        // No execution is enabled in this slice. The Quest cleanup participant must reconcile
         // actual work before this coordinator reaches its final deletion transaction.
         return ValueTask.FromResult(Result.Success());
     }
@@ -91,7 +91,7 @@ internal sealed class GuildSignetCleanupParticipant(IGrimoireConnectionAdmission
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Until the Commission slice can prove terminal/replay/settlement closure, retained
+        // Until the Quest slice can prove terminal/replay/settlement closure, retained
         // denial evidence outlives its deleted owner. Physical removal belongs to full reset.
         return ValueTask.FromResult(Result.Success());
     }

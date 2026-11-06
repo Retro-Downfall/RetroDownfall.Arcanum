@@ -342,7 +342,7 @@ internal sealed partial class GuildStore(IGrimoireOrdinaryConnectionFactory conn
         return labelled.IsFailure ? labelled.Error : new GuildDataRef(write.ContentId, write.Kind, write.Revision, Convert.ToHexString(digest), write.MimeType, write.Body.Length, false);
     }
 
-    private async Task<Result<GuildStoredCard>> UpsertWithinAsync(SqliteConnection connection, SqliteTransaction transaction, GuildCardWrite write, CancellationToken ct)
+    internal async Task<Result<GuildStoredCard>> UpsertWithinAsync(SqliteConnection connection, SqliteTransaction transaction, GuildCardWrite write, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(write.SourceIdentity) || string.IsNullOrWhiteSpace(write.SourceDigest) || write.Payload?.Card is not { } incoming
             || incoming.Skills.IsDefault || incoming.DefaultInputModes.IsDefault || incoming.DefaultOutputModes.IsDefault || write.Payload.RequestedTools.IsDefault
@@ -861,9 +861,11 @@ internal sealed partial class GuildStore(IGrimoireOrdinaryConnectionFactory conn
         await using SqliteCommand command = Command(connection, transaction, """
             SELECT CASE WHEN
               ($session IS NULL OR (EXISTS(SELECT 1 FROM Sessions WHERE Id=$session AND CampaignId IS $campaign)
-                AND NOT EXISTS(SELECT 1 FROM owner_deletion_events WHERE OwnerKindCode=2 AND OwnerId=$session)))
+                AND NOT EXISTS(SELECT 1 FROM owner_deletion_events WHERE OwnerKindCode=2 AND OwnerId=$session)
+                AND NOT EXISTS(SELECT 1 FROM guild_owner_cleanup WHERE OwnerKindCode=2 AND OwnerId=$session)))
               AND ($campaign IS NULL OR (EXISTS(SELECT 1 FROM Campaigns WHERE Id=$campaign)
-                AND NOT EXISTS(SELECT 1 FROM owner_deletion_events WHERE OwnerKindCode=1 AND OwnerId=$campaign)))
+                AND NOT EXISTS(SELECT 1 FROM owner_deletion_events WHERE OwnerKindCode=1 AND OwnerId=$campaign)
+                AND NOT EXISTS(SELECT 1 FROM guild_owner_cleanup WHERE OwnerKindCode=1 AND OwnerId=$campaign)))
             THEN 1 ELSE 0 END
             """);
 

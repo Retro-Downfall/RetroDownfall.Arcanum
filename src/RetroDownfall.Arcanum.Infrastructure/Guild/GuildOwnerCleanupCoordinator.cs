@@ -203,6 +203,9 @@ internal sealed class GuildOwnerCleanupCoordinator(
                 UNION SELECT 1,CampaignId FROM guild_signets WHERE CampaignId IS NOT NULL AND (Revoked=0 OR CancellationRequested=0)
                 UNION SELECT 2,SessionId FROM guild_signets WHERE SessionId IS NOT NULL AND (Revoked=0 OR CancellationRequested=0)
                 UNION SELECT 1,WorkspaceId FROM guild_signets WHERE WorkspaceId IS NOT NULL AND (Revoked=0 OR CancellationRequested=0)
+                UNION SELECT 1,CampaignId FROM guild_quests WHERE CampaignId IS NOT NULL AND (Retired=0 OR CancellationRequested=0)
+                UNION SELECT 2,SessionId FROM guild_quests WHERE SessionId IS NOT NULL AND (Retired=0 OR CancellationRequested=0)
+                UNION SELECT 1,WorkspaceId FROM guild_quests WHERE WorkspaceId IS NOT NULL AND (Retired=0 OR CancellationRequested=0)
             ) orphan
             WHERE ((Kind=1 AND NOT EXISTS(SELECT 1 FROM Campaigns owner WHERE owner.Id=orphan.Id COLLATE NOCASE))
                 OR (Kind=2 AND NOT EXISTS(SELECT 1 FROM Sessions owner WHERE owner.Id=orphan.Id COLLATE NOCASE)))
@@ -238,7 +241,7 @@ internal sealed class GuildOwnerCleanupCoordinator(
     {
         await using SqliteCommand command = connection.CreateCommand();
 
-        command.CommandText = "SELECT OwnerKindCode,OwnerId,EventSequence FROM guild_owner_cleanup ORDER BY EventSequence IS NULL,EventSequence,OwnerKindCode,OwnerId LIMIT $limit;";
+        command.CommandText = "SELECT OwnerKindCode,OwnerId,EventSequence FROM guild_owner_cleanup WHERE PhaseCode<6 ORDER BY EventSequence IS NULL,EventSequence,OwnerKindCode,OwnerId LIMIT $limit;";
 
         command.Parameters.AddWithValue("$limit", limit);
 
@@ -372,6 +375,11 @@ internal sealed class GuildOwnerCleanupCoordinator(
                 return unlabelled.Error;
             }
 
+            foreach (Guid id in ids)
+            {
+                await GuildContentLifecycle.PrepareOrdinaryPurgeAsync(connection, transaction, id.ToString("N"), ct).ConfigureAwait(false);
+            }
+
             after = ids[^1].ToString("D").ToUpperInvariant();
         }
 
@@ -399,7 +407,14 @@ internal sealed class GuildOwnerCleanupCoordinator(
 
         string column = owner.Kind == 1 ? "CampaignId" : "SessionId";
 
-        command.CommandText = $"DELETE FROM guild_content WHERE {column}=$owner COLLATE NOCASE; DELETE FROM guild_content_erasure_receipts WHERE {column}=$owner COLLATE NOCASE; DELETE FROM guild_owner_cleanup WHERE OwnerKindCode=$kind AND OwnerId=$owner COLLATE NOCASE;";
+        command.CommandText = $"""
+            DELETE FROM guild_content WHERE {column}=$owner COLLATE NOCASE;
+            DELETE FROM guild_content_erasure_receipts WHERE {column}=$owner COLLATE NOCASE
+                AND NOT ({GuildQuestRetentionPins.ContentReferences});
+            UPDATE guild_owner_cleanup SET PhaseCode=6,UpdatedAtUtc=$now WHERE OwnerKindCode=$kind AND OwnerId=$owner COLLATE NOCASE;
+            """;
+
+        command.Parameters.AddWithValue("$now", UtcInstantText.Format(clock.GetUtcNow()));
 
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 

@@ -11,19 +11,19 @@ public sealed record GuildProducerIdentity(
     GuildProducerKind Kind,
     Guid? AgentId,
     Guid? RunId,
-    Guid? CommissionId,
+    Guid? QuestId,
     string? OperatorPrincipalId,
     Guid? DomainOwnerId,
     GuildReceiptSourceKind? SourceKind,
     Guid? ReceiptId)
 {
-    public GuildProducerKind Kind { get; } = Validate(Kind, AgentId, RunId, CommissionId, OperatorPrincipalId, DomainOwnerId, SourceKind, ReceiptId);
+    public GuildProducerKind Kind { get; } = Validate(Kind, AgentId, RunId, QuestId, OperatorPrincipalId, DomainOwnerId, SourceKind, ReceiptId);
 
     public Guid? AgentId { get; } = AgentId;
 
     public Guid? RunId { get; } = RunId;
 
-    public Guid? CommissionId { get; } = CommissionId;
+    public Guid? QuestId { get; } = QuestId;
 
     public string? OperatorPrincipalId { get; } = OperatorPrincipalId;
 
@@ -33,27 +33,27 @@ public sealed record GuildProducerIdentity(
 
     public Guid? ReceiptId { get; } = ReceiptId;
 
-    public GuildProducerStreamKey StreamKey(Guid commissionId)
+    public GuildProducerStreamKey StreamKey(Guid questId)
     {
-        if (commissionId == Guid.Empty || (Kind == GuildProducerKind.Run && CommissionId != commissionId))
-            throw new ArgumentException("The producer stream requires its exact Commission.", nameof(commissionId));
+        if (questId == Guid.Empty || (Kind == GuildProducerKind.Run && QuestId != questId))
+            throw new ArgumentException("The producer stream requires its exact Quest.", nameof(questId));
 
-        return new(Kind, AgentId, RunId, OperatorPrincipalId, DomainOwnerId, SourceKind, commissionId);
+        return new(Kind, AgentId, RunId, OperatorPrincipalId, DomainOwnerId, SourceKind, questId);
     }
 
-    public GuildPublishDedupeKey DedupeKey(Guid commissionId, Guid producerRequestId)
+    public GuildPublishDedupeKey DedupeKey(Guid questId, Guid producerRequestId)
     {
         if (producerRequestId == Guid.Empty || (Kind == GuildProducerKind.HostReceipt && producerRequestId != ReceiptId))
             throw new ArgumentException("A host receipt publication retains the immutable receipt identity.", nameof(producerRequestId));
 
-        return new(StreamKey(commissionId), producerRequestId);
+        return new(StreamKey(questId), producerRequestId);
     }
 
-    private static GuildProducerKind Validate(GuildProducerKind kind, Guid? agentId, Guid? runId, Guid? commissionId, string? operatorPrincipalId, Guid? domainOwnerId, GuildReceiptSourceKind? sourceKind, Guid? receiptId)
+    private static GuildProducerKind Validate(GuildProducerKind kind, Guid? agentId, Guid? runId, Guid? questId, string? operatorPrincipalId, Guid? domainOwnerId, GuildReceiptSourceKind? sourceKind, Guid? receiptId)
     {
-        bool runFields = agentId is { } agent && agent != Guid.Empty && runId is { } run && run != Guid.Empty && commissionId is { } commission && commission != Guid.Empty;
+        bool runFields = agentId is { } agent && agent != Guid.Empty && runId is { } run && run != Guid.Empty && questId is { } quest && quest != Guid.Empty;
 
-        bool noRunFields = agentId is null && runId is null && commissionId is null;
+        bool noRunFields = agentId is null && runId is null && questId is null;
 
         bool noReceiptFields = domainOwnerId is null && sourceKind is null && receiptId is null;
 
@@ -73,14 +73,14 @@ public sealed record GuildProducerIdentity(
 }
 
 /// <summary>HostReceipt stream ordering is shared by owner/source across individual receipts.</summary>
-public sealed record GuildProducerStreamKey(GuildProducerKind Kind, Guid? AgentId, Guid? RunId, string? OperatorPrincipalId, Guid? DomainOwnerId, GuildReceiptSourceKind? SourceKind, Guid CommissionId);
+public sealed record GuildProducerStreamKey(GuildProducerKind Kind, Guid? AgentId, Guid? RunId, string? OperatorPrincipalId, Guid? DomainOwnerId, GuildReceiptSourceKind? SourceKind, Guid QuestId);
 
 /// <summary>The immutable domain receipt remains part of HostReceipt deduplication.</summary>
 public sealed record GuildPublishDedupeKey(GuildProducerStreamKey Stream, Guid ProducerRequestId);
 
-public sealed record GuildCircleAddress(GuildCircleAddressKind Kind, Guid? CommissionId, Guid? CohortId, long? MembershipVersion);
+public sealed record GuildCircleAddress(GuildCircleAddressKind Kind, Guid? QuestId, Guid? CohortId, long? MembershipVersion);
 
 /// <summary>Intent only. Caller, producer, relationship and resolved fan-out are supplied by verified host context.</summary>
 public sealed record GuildPublishRequest(Guid IdempotencyKey, GuildCircleAddress Address, GuildEnvelopeKind Kind, string MimeType, string Body, long? ExpectedRevision);
 
-public sealed record GuildEnvelope(Guid Id, GuildProducerIdentity Producer, Guid CommissionId, Guid RootCommissionId, long? AuthorityGeneration, Guid? SessionId, Guid? CampaignId, GuildAuthorityKind Authority, GuildEnvelopeKind Kind, GuildDataRef ContentRef, long SenderSequence, DateTimeOffset CreatedAt, GuildCircleAddress Address);
+public sealed record GuildEnvelope(Guid Id, GuildProducerIdentity Producer, Guid QuestId, Guid RootQuestId, long? AuthorityGeneration, Guid? SessionId, Guid? CampaignId, GuildAuthorityKind Authority, GuildEnvelopeKind Kind, GuildDataRef ContentRef, long SenderSequence, DateTimeOffset CreatedAt, GuildCircleAddress Address);

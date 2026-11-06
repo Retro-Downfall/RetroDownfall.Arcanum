@@ -263,7 +263,7 @@ internal sealed class GuildRoster(GuildStore store, GuildRosterRefreshStore refr
             return Invalid();
         }
 
-        string source = $"derived:{issuance.InstallationGeneration:D}:{issuance.IssuerCommissionId}:{issuance.RootInvocationId}:{issuance.IssuingStepId:D}:{issuance.LogicalCallId:D}";
+        string source = $"derived:{issuance.InstallationGeneration:D}:{issuance.IssuerQuestId}:{issuance.RootInvocationId}:{issuance.IssuingStepId:D}:{issuance.LogicalCallId:D}";
 
         GuildParsedAgent parsed = new(null, name, description, "1", ["apprentice-goal-execution"], ["text/plain"], ["text/plain"], [], string.Empty);
 

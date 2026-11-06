@@ -38,7 +38,9 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(0, await CampaignScalarCountAsync("SELECT COUNT(*) FROM guild_declared_roots;"));
 
-        Assert.Equal(0, await CampaignScalarCountAsync("SELECT COUNT(*) FROM guild_owner_cleanup;"));
+        Assert.Equal(0, await CampaignScalarCountAsync("SELECT COUNT(*) FROM guild_owner_cleanup WHERE PhaseCode<6;"));
+
+        Assert.Equal(1, await CampaignScalarCountAsync($"SELECT COUNT(*) FROM guild_owner_cleanup WHERE PhaseCode=6 AND OwnerKindCode=1 AND OwnerId='{Canonical(campaign)}'"));
 
         Assert.Equal(1, result.Value.OwnersCleaned);
     }

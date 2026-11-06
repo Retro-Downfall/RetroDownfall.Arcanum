@@ -19,4 +19,7 @@ internal sealed record GrimoireSchemaInitializationContext(
     uint MasterKeyVersion,
     byte[] MasterKeyFingerprint,
     long RecoveryEnvelopeEpoch,
-    DateTimeOffset InstalledAtUtc);
+    DateTimeOffset InstalledAtUtc)
+{
+    internal int DeclaredSchemaVersion { get; init; }
+}

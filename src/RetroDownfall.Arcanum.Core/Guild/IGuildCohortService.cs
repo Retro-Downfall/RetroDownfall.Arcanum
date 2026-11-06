@@ -9,7 +9,7 @@ public interface IGuildCohortService
 
     Task<Result<CohortDto>> GetAsync(GuildCallerContext caller, Guid cohortId, CancellationToken cancellationToken);
 
-    Task<Result<CohortPageDto>> ListAsync(GuildCallerContext caller, Guid? rootCommissionId, GuildCohortState? state, GuildPageQuery query, CancellationToken cancellationToken);
+    Task<Result<CohortPageDto>> ListAsync(GuildCallerContext caller, Guid? rootQuestId, GuildCohortState? state, GuildPageQuery query, CancellationToken cancellationToken);
 
     Task<Result<CohortMemberDto>> JoinAsync(GuildCallerContext caller, GuildMutationIdentity mutation, Guid cohortId, AdmitCohortMemberRequest request, CancellationToken cancellationToken);
 
@@ -17,7 +17,7 @@ public interface IGuildCohortService
 
     Task<Result<CohortMemberPageDto>> ListMembersAsync(GuildCallerContext caller, Guid cohortId, GuildPageQuery query, CancellationToken cancellationToken);
 
-    Task<Result<CohortMemberCommissionPageDto>> ListMemberCommissionsAsync(GuildCallerContext caller, Guid cohortId, Guid memberId, GuildPageQuery query, CancellationToken cancellationToken);
+    Task<Result<CohortMemberQuestPageDto>> ListMemberQuestsAsync(GuildCallerContext caller, Guid cohortId, Guid memberId, GuildPageQuery query, CancellationToken cancellationToken);
 
     Task<Result<CohortDto>> CloseAsync(GuildCallerContext caller, GuildMutationIdentity mutation, Guid cohortId, GuildRevisionRequest request, CancellationToken cancellationToken);
 

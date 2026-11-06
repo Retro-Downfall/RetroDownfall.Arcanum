@@ -1217,14 +1217,21 @@ internal sealed partial class LongRunningOperationStore(
             cancellationToken, cancellableAttempts: cancellationToken.CanBeCanceled);
     }
 
-    public Task<bool> TryTransitionAsync(
+    public async Task<bool> TryTransitionAsync(
         Guid operationId,
         long expectedRevision,
         string? ownerId,
         LongRunningOperationState state,
         DateTimeOffset utcNow,
         string? terminalErrorCode = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await ExecuteLedgerCommandAsync(
+            command => ConfigureTransitionCommand(command, operationId, expectedRevision, ownerId, state, utcNow, terminalErrorCode),
+            cancellationToken,
+            cancellableAttempts: cancellationToken.CanBeCanceled).ConfigureAwait(false) == 1;
+
+    private static void ConfigureTransitionCommand(DbCommand cmd, Guid operationId, long expectedRevision,
+        string? ownerId, LongRunningOperationState state, DateTimeOffset utcNow, string? terminalErrorCode)
     {
         bool releasesLease = state is LongRunningOperationState.Completed
             or LongRunningOperationState.Failed
@@ -1234,7 +1241,7 @@ internal sealed partial class LongRunningOperationStore(
             or LongRunningOperationState.Failed
             or LongRunningOperationState.Abandoned;
 
-        return ExecuteUpdateAsync(
+        cmd.CommandText =
             """
             UPDATE "LongRunningOperations"
             SET "State" = CASE
@@ -1247,24 +1254,33 @@ internal sealed partial class LongRunningOperationStore(
                 "TerminalErrorCode" = @error,
                 "Revision" = "Revision" + 1
             WHERE "Id" = @id AND "Revision" = @revision
+              AND "Revision" < 9223372036854775807
               AND (@owner IS NULL OR "LeaseOwner" = @owner)
-            """,
-            cmd =>
-            {
-                Add(cmd, "@id", Format(operationId));
-                Add(cmd, "@revision", expectedRevision);
-                Add(cmd, "@owner", ownerId is null ? null : Bound(ownerId, MaxOwnerLength));
-                Add(cmd, "@state", (int)state);
-                Add(cmd, "@cancelling", (int)LongRunningOperationState.Cancelling);
-                Add(cmd, "@retentionPrune", LongRunningOperationKinds.DataRetentionPrune);
-                Add(cmd, "@reconciliation", (int)LongRunningOperationState.ReconciliationRequired);
-                Add(cmd, "@retentionRecovery", ErrorCodes.Data.ReconciliationFailed);
-                Add(cmd, "@completed", completed ? 1 : 0);
-                Add(cmd, "@release", releasesLease ? 1 : 0);
-                Add(cmd, "@now", Format(utcNow));
-                Add(cmd, "@error", terminalErrorCode is null ? null : Bound(terminalErrorCode, MaxErrorCodeLength));
-            },
-            cancellationToken, cancellableAttempts: cancellationToken.CanBeCanceled);
+            """;
+
+        Add(cmd, "@id", Format(operationId));
+
+        Add(cmd, "@revision", expectedRevision);
+
+        Add(cmd, "@owner", ownerId is null ? null : Bound(ownerId, MaxOwnerLength));
+
+        Add(cmd, "@state", (int)state);
+
+        Add(cmd, "@cancelling", (int)LongRunningOperationState.Cancelling);
+
+        Add(cmd, "@retentionPrune", LongRunningOperationKinds.DataRetentionPrune);
+
+        Add(cmd, "@reconciliation", (int)LongRunningOperationState.ReconciliationRequired);
+
+        Add(cmd, "@retentionRecovery", ErrorCodes.Data.ReconciliationFailed);
+
+        Add(cmd, "@completed", completed ? 1 : 0);
+
+        Add(cmd, "@release", releasesLease ? 1 : 0);
+
+        Add(cmd, "@now", Format(utcNow));
+
+        Add(cmd, "@error", terminalErrorCode is null ? null : Bound(terminalErrorCode, MaxErrorCodeLength));
     }
 
     /// <summary>

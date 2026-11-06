@@ -70,7 +70,7 @@ public sealed class GuildProtectedOwnerDeletionTests
         await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
         {
             Result<GuildDataRef> written = await GuildStore.WriteContentWithinAsync(connection, transaction,
-                new GuildContentWrite(contentId, Guid.NewGuid(), GuildContentKind.CommissionGoal, 1, sessionId, campaignId,
+                new GuildContentWrite(contentId, Guid.NewGuid(), GuildContentKind.QuestGoal, 1, sessionId, campaignId,
                     "text/plain", body, sensitivity), DateTimeOffset.UtcNow, CancellationToken.None);
 
             Assert.True(written.IsSuccess, written.Error.Message);

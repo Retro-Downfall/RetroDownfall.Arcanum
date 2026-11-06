@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS idx_guild_result_outbox_recipient ON guild_result_outbox(RecipientQuestId,DeliveryStateCode,QuestId);

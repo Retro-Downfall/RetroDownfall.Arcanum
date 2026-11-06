@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -24,23 +25,76 @@ internal sealed partial class DataRetentionService
             retention, cancellationToken).ConfigureAwait(false);
 
         await AddCompositeDatabaseStatusAsync(items, RetentionDataClass.GuildEvidence,
-            ["guild_signets", "guild_signet_revocations", "guild_signet_authority_state", "guild_content_erasure_receipts", "guild_owner_cleanup", "guild_roster_refreshes", "guild_roster_cursors", "guild_declared_source_claims", "guild_declared_roots"],
+            ["guild_continuations", "guild_result_inputs", "guild_result_applications", "guild_result_outbox", "guild_result_receipts", "guild_dispatches", "guild_quest_start_intents", "guild_quests", "guild_signets", "guild_signet_revocations", "guild_signet_authority_state", "guild_content_erasure_receipts", "guild_owner_cleanup", "guild_roster_refreshes", "guild_roster_cursors", "guild_declared_source_claims", "guild_declared_roots"],
             "Content-free Guild erasure and owner cleanup evidence; never aged out on a timer.",
             retention, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<string> GuildOperationLinkPinAsync(CancellationToken cancellationToken) =>
+        await TableExistsAsync("guild_quests", cancellationToken).ConfigureAwait(false)
+            ? "AND NOT EXISTS(SELECT 1 FROM guild_quests c WHERE c.OperationId=LongRunningOperations.Id)"
+            : string.Empty;
+
+    private async Task<DataRetentionConflict[]> ReadGuildResetConflictsAsync(DbConnection connection, DbTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        bool quests = await TableExistsAsync("guild_quests", cancellationToken).ConfigureAwait(false);
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = quests
+            ? $"SELECT c.Id FROM guild_quests c WHERE {GuildQuestRetentionPins.Unresolved}"
+                + " UNION SELECT operation.Id FROM LongRunningOperations operation WHERE operation.Kind='guild-quest'"
+                + " AND NOT EXISTS(SELECT 1 FROM guild_quests c WHERE c.OperationId=operation.Id)"
+            : "SELECT Id FROM LongRunningOperations WHERE Kind='guild-quest'";
+
+        List<DataRetentionConflict> conflicts = [];
+
+        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            conflicts.Add(new(ErrorCodes.Guild.ReconciliationRequired, Guid.Parse(reader.GetString(0)).ToString("D"),
+                "A Guild Quest retains unresolved execution, delivery or accounting evidence."));
+        }
+
+        return [.. conflicts];
     }
 
     private const string GuildContentCandidatePrefix = "guild-content:";
 
     private const string GuildRecordCandidatePrefix = "guild-record:";
 
-    // Later Guild slices must add eligibility for their content kinds alongside their active,
-    // reconciliation and accounting pins. The roster foundation can authorize only card content.
     private const string GuildContentRetentionPredicate = """
         content.ContentKindCode = 0 AND content.SensitivityCode = 0 AND content.CreatedAtUtc <= @cutoff
         AND NOT EXISTS (SELECT 1 FROM guild_agent_cards card WHERE card.ContentId = content.ContentId)
         AND NOT EXISTS (SELECT 1 FROM artifact_sensitivity label WHERE label.ArtifactKindCode = 17
             AND lower(replace(label.ArtifactId, '-', '')) = lower(replace(content.ContentId, '-', '')))
         """;
+
+    private async Task<string> GuildContentPredicateAsync(CancellationToken cancellationToken)
+    {
+        if (!await TableExistsAsync("guild_quests", cancellationToken).ConfigureAwait(false))
+        {
+            return GuildContentRetentionPredicate;
+        }
+
+        return $"""
+            content.SensitivityCode=0 AND content.CreatedAtUtc<=@cutoff
+            AND NOT EXISTS(SELECT 1 FROM artifact_sensitivity label WHERE label.ArtifactKindCode=17
+                AND lower(replace(label.ArtifactId,'-',''))=lower(replace(content.ContentId,'-','')))
+            AND ((content.ContentKindCode=0 AND NOT EXISTS(SELECT 1 FROM guild_agent_cards card WHERE card.ContentId=content.ContentId))
+              OR (content.ContentKindCode IN(1,2) AND EXISTS(
+                SELECT 1 FROM guild_quests c WHERE
+                  ((content.ContentKindCode=1 AND c.GoalContentId=content.ContentId)
+                   OR (content.ContentKindCode=2 AND EXISTS(SELECT 1 FROM guild_result_receipts result WHERE result.QuestId=c.Id AND result.ContentId=content.ContentId)))
+                  AND NOT {GuildQuestRetentionPins.Unresolved}
+                  AND NOT EXISTS(SELECT 1 FROM guild_quests child WHERE child.ParentQuestId=c.Id)
+                  AND NOT EXISTS(SELECT 1 FROM guild_result_applications application WHERE application.QuestId=c.Id))))
+            """;
+    }
 
     private async Task AddGuildCandidatesAsync(RetentionSettings retention, int limit,
         List<DataRetentionPlanItem> items, List<string> candidates, CancellationToken cancellationToken)
@@ -52,11 +106,15 @@ internal sealed partial class DataRetentionService
 
         SqliteConnection connection = (SqliteConnection)await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
+        string contentPredicate = await GuildContentPredicateAsync(cancellationToken).ConfigureAwait(false);
+
+        bool quests = await TableExistsAsync("guild_quests", cancellationToken).ConfigureAwait(false);
+
         if (retention.GuildContent.Enabled)
         {
             await using SqliteCommand command = connection.CreateCommand();
 
-            command.CommandText = $"SELECT content.ContentId FROM guild_content content WHERE {GuildContentRetentionPredicate} ORDER BY content.CreatedAtUtc, content.ContentId LIMIT @limit;";
+            command.CommandText = $"SELECT content.ContentId FROM guild_content content WHERE {contentPredicate} ORDER BY content.CreatedAtUtc, content.ContentId LIMIT @limit;";
 
             Add(command, "@cutoff", FormatTimestamp(PrunePlanningTimestamp.AddDays(-ArcanumSettingClamps.RetentionRuleDays(retention.GuildContent.Days))));
 
@@ -85,7 +143,9 @@ internal sealed partial class DataRetentionService
         {
             await using SqliteCommand command = connection.CreateCommand();
 
-            command.CommandText = "SELECT CardId FROM guild_agent_cards WHERE Available = 0 AND UpdatedAtUtc <= @cutoff ORDER BY UpdatedAtUtc, CardId LIMIT @limit;";
+            command.CommandText = "SELECT CardId FROM guild_agent_cards WHERE Available = 0 AND UpdatedAtUtc <= @cutoff"
+                + (quests ? " AND NOT EXISTS(SELECT 1 FROM guild_quests c WHERE c.CardId=guild_agent_cards.CardId)" : string.Empty)
+                + " ORDER BY UpdatedAtUtc, CardId LIMIT @limit;";
 
             Add(command, "@cutoff", FormatTimestamp(PrunePlanningTimestamp.AddDays(-ArcanumSettingClamps.RetentionRuleDays(retention.GuildRecords.Days))));
 
@@ -159,9 +219,14 @@ internal sealed partial class DataRetentionService
 
         command.Transaction = (SqliteTransaction)transaction;
 
+        bool quests = await TableExistsAsync("guild_quests", cancellationToken).ConfigureAwait(false);
+
+        string contentPredicate = await GuildContentPredicateAsync(cancellationToken).ConfigureAwait(false);
+
         command.CommandText = card
-            ? "SELECT COUNT(*) FROM guild_agent_cards WHERE CardId = @id AND Available = 0 AND UpdatedAtUtc <= @cutoff;"
-            : $"SELECT COUNT(*) FROM guild_content content WHERE content.ContentId = @id AND {GuildContentRetentionPredicate};";
+            ? "SELECT COUNT(*) FROM guild_agent_cards WHERE CardId = @id AND Available = 0 AND UpdatedAtUtc <= @cutoff"
+                + (quests ? " AND NOT EXISTS(SELECT 1 FROM guild_quests c WHERE c.CardId=guild_agent_cards.CardId)" : string.Empty) + ";"
+            : $"SELECT COUNT(*) FROM guild_content content WHERE content.ContentId = @id AND {contentPredicate};";
 
         Add(command, "@id", id.ToString("D").ToUpperInvariant());
 
@@ -181,6 +246,12 @@ internal sealed partial class DataRetentionService
             {
                 return CandidateDeleteResult.Empty;
             }
+        }
+
+        if (!card)
+        {
+            await GuildContentLifecycle.PrepareOrdinaryPurgeAsync(connection, (SqliteTransaction)transaction,
+                id.ToString("N"), cancellationToken).ConfigureAwait(false);
         }
 
         await using SqliteCommand deletion = connection.CreateCommand();

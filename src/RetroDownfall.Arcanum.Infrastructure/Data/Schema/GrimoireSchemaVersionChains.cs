@@ -156,7 +156,7 @@ internal static class GrimoireSchemaVersionChains
     /// </remarks>
     internal const int CoreSchemaVersion = 38;
 
-    internal const int GuildCanonicalSchemaVersion = 2;
+    internal const int GuildCanonicalSchemaVersion = 3;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -196,6 +196,8 @@ internal static class GrimoireSchemaVersionChains
     private static readonly IReadOnlyDictionary<(GrimoireSchemaTransactionTier Tier, int ToVersion), string> SourcePins =
         new Dictionary<(GrimoireSchemaTransactionTier, int), string>
         {
+            [(GrimoireSchemaTransactionTier.GuildCanonical, 3)] = "816961C80560CD3A36EB64111D1F19240A3B781516180E9A2609A8CA919F501F",
+
             [(GrimoireSchemaTransactionTier.GuildCanonical, 2)] = "A2D7615924865817A560C42D3B65016159D4084B6DB5AAAD4617C6A8DAFAE7B4",
 
             // Read out of the Core head tree immediately before saga_memories.sql and

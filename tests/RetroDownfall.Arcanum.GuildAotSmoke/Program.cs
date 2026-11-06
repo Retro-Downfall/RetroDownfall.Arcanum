@@ -31,9 +31,9 @@ internal static class GuildAotSmoke
 
         Exercise(SampleCohortDto(), GuildJsonContext.Default.CohortDto);
 
-        Exercise(SampleCohortMemberCommissionDto(), GuildJsonContext.Default.CohortMemberCommissionDto);
+        Exercise(SampleCohortMemberQuestDto(), GuildJsonContext.Default.CohortMemberQuestDto);
 
-        Exercise(SampleCohortMemberCommissionPageDto(), GuildJsonContext.Default.CohortMemberCommissionPageDto);
+        Exercise(SampleCohortMemberQuestPageDto(), GuildJsonContext.Default.CohortMemberQuestPageDto);
 
         Exercise(SampleCohortMemberDto(), GuildJsonContext.Default.CohortMemberDto);
 
@@ -63,7 +63,7 @@ internal static class GuildAotSmoke
 
         Exercise(SampleGuildBudgetGrant(), GuildJsonContext.Default.GuildBudgetGrant);
 
-        Exercise(SampleGuildCancelCommissionRequest(), GuildJsonContext.Default.GuildCancelCommissionRequest);
+        Exercise(SampleGuildCancelQuestRequest(), GuildJsonContext.Default.GuildCancelQuestRequest);
 
         Exercise(SampleGuildCancellationDto(), GuildJsonContext.Default.GuildCancellationDto);
 
@@ -85,9 +85,17 @@ internal static class GuildAotSmoke
 
         Exercise(SampleGuildCohortSnapshotDto(), GuildJsonContext.Default.GuildCohortSnapshotDto);
 
-        Exercise(SampleGuildCommissionDto(), GuildJsonContext.Default.GuildCommissionDto);
+        Exercise(SampleGuildQuestDto(), GuildJsonContext.Default.GuildQuestDto);
 
-        Exercise(SampleGuildCommissionPageDto(), GuildJsonContext.Default.GuildCommissionPageDto);
+        Exercise(SampleGuildQuestPageDto(), GuildJsonContext.Default.GuildQuestPageDto);
+
+        Exercise(new GuildQuestInputEvidence(Id, Id), GuildJsonContext.Default.GuildQuestInputEvidence);
+
+        Exercise(new GuildQuestProjectionEvidence(Id, Id, QuestState.Working, GuildWaitReason.Input,
+            new(Id, Id), SampleGuildResultReceipt(), true, true, true, true, true), GuildJsonContext.Default.GuildQuestProjectionEvidence);
+
+        Exercise(new GuildQuestProjectedState(QuestState.Working, GuildWaitReason.Reconciliation,
+            true, false, true, "Guild.ReconciliationRequired"), GuildJsonContext.Default.GuildQuestProjectedState);
 
         Exercise(SampleGuildCommitResultRequest(), GuildJsonContext.Default.GuildCommitResultRequest);
 
@@ -121,7 +129,7 @@ internal static class GuildAotSmoke
 
         Exercise(SampleGuildListAgentsQuery(), GuildJsonContext.Default.GuildListAgentsQuery);
 
-        Exercise(SampleGuildListCommissionsQuery(), GuildJsonContext.Default.GuildListCommissionsQuery);
+        Exercise(SampleGuildListQuestsQuery(), GuildJsonContext.Default.GuildListQuestsQuery);
 
         Exercise(SampleGuildMemoryGrant(), GuildJsonContext.Default.GuildMemoryGrant);
 
@@ -225,7 +233,7 @@ internal static class GuildAotSmoke
 
         Exercise(SampleWorkspaceLeasePageDto(), GuildJsonContext.Default.WorkspaceLeasePageDto);
 
-        Exercise(CommissionState.Submitted, GuildJsonContext.Default.CommissionState);
+        Exercise(QuestState.Submitted, GuildJsonContext.Default.QuestState);
 
         Exercise(GuildAccountingState.Settled, GuildJsonContext.Default.GuildAccountingState);
 
@@ -261,9 +269,9 @@ internal static class GuildAotSmoke
 
         Exercise(GuildDispatchEvidence.Prepared, GuildJsonContext.Default.GuildDispatchEvidence);
 
-        Exercise(GuildEnvelopeKind.CommissionIssued, GuildJsonContext.Default.GuildEnvelopeKind);
+        Exercise(GuildEnvelopeKind.QuestIssued, GuildJsonContext.Default.GuildEnvelopeKind);
 
-        Exercise(GuildEventKind.CommissionChanged, GuildJsonContext.Default.GuildEventKind);
+        Exercise(GuildEventKind.QuestChanged, GuildJsonContext.Default.GuildEventKind);
 
         Exercise(GuildMemberAssociationKind.Primary, GuildJsonContext.Default.GuildMemberAssociationKind);
 
@@ -281,7 +289,7 @@ internal static class GuildAotSmoke
 
         Exercise(GuildProducerKind.Run, GuildJsonContext.Default.GuildProducerKind);
 
-        Exercise(GuildReceiptSourceKind.CommissionIssue, GuildJsonContext.Default.GuildReceiptSourceKind);
+        Exercise(GuildReceiptSourceKind.QuestIssue, GuildJsonContext.Default.GuildReceiptSourceKind);
 
         Exercise(GuildToolSourceKind.BuiltIn, GuildJsonContext.Default.GuildToolSourceKind);
 
@@ -295,11 +303,18 @@ internal static class GuildAotSmoke
 
         Exercise(GuildWorkspaceAccess.Read, GuildJsonContext.Default.GuildWorkspaceAccess);
 
-        Exercise(GuildWorkspaceLeaseOwnerKind.Commission, GuildJsonContext.Default.GuildWorkspaceLeaseOwnerKind);
+        Exercise(GuildWorkspaceLeaseOwnerKind.Quest, GuildJsonContext.Default.GuildWorkspaceLeaseOwnerKind);
 
         Exercise(GuildWorkspaceLeaseState.Held, GuildJsonContext.Default.GuildWorkspaceLeaseState);
 
         ExerciseLiteralsAndBoundaries();
+
+        byte[] checkpoint = GuildQuestCheckpoint.Encode(Id);
+
+        var restoredCheckpoint = GuildQuestCheckpoint.Decode(1, checkpoint);
+
+        Require(restoredCheckpoint.IsSuccess && restoredCheckpoint.Value.QuestId == Id
+            && restoredCheckpoint.Value.Phase == "admitted", "Quest checkpoints require generated, content-free native round trips.");
 
         RoundTrip(new GuildStoredAgentCardPayload(SampleGuildAgentCard(), "Bounded guidance: λ", ["read_file"]),
             GuildStorageJsonContext.Default.GuildStoredAgentCardPayload);
@@ -343,27 +358,41 @@ internal static class GuildAotSmoke
 
     private static void ExerciseLiteralsAndBoundaries()
     {
-        (CommissionState State, string Wire)[] states =
+        GuildIssueRootRequest firstIntent = new(Id, null, "Smith", "cafe\u0301\r\nnext", SampleGuildGrant());
+
+        var firstDigest = GuildQuestIntent.Compute(firstIntent);
+
+        Require(firstDigest.IsSuccess && firstDigest.Value.Length == 64, "Quest intent must have a bounded SHA256 identity.");
+
+        var repeatedDigest = GuildQuestIntent.Compute(firstIntent with { IdempotencyKey = Guid.NewGuid(), Goal = "café\nnext" });
+
+        Require(repeatedDigest.IsSuccess && repeatedDigest.Value == firstDigest.Value, "Canonical intent must ignore retry keys and normalize goal text.");
+
+        var childDigest = GuildQuestIntent.Compute(Id, new GuildIssueChildRequest(Id, 17, null, "Smith", "goal", new()));
+
+        Require(childDigest.IsSuccess && childDigest.Value != firstDigest.Value, "Child caller intent must retain its parent and requested-grant identity.");
+
+        (QuestState State, string Wire)[] states =
         [
-            (CommissionState.Submitted, "submitted"),
-            (CommissionState.Working, "working"),
-            (CommissionState.InputRequired, "input-required"),
-            (CommissionState.Completed, "completed"),
-            (CommissionState.Failed, "failed"),
-            (CommissionState.Canceled, "canceled"),
-            (CommissionState.Rejected, "rejected")
+            (QuestState.Submitted, "submitted"),
+            (QuestState.Working, "working"),
+            (QuestState.InputRequired, "input-required"),
+            (QuestState.Completed, "completed"),
+            (QuestState.Failed, "failed"),
+            (QuestState.Canceled, "canceled"),
+            (QuestState.Rejected, "rejected")
         ];
 
-        foreach ((CommissionState state, string wire) in states)
-            Require(JsonSerializer.Serialize(state, GuildJsonContext.Default.CommissionState) == $"\"{wire}\"", "Commission wire state changed.");
+        foreach ((QuestState state, string wire) in states)
+            Require(JsonSerializer.Serialize(state, GuildJsonContext.Default.QuestState) == $"\"{wire}\"", "Quest wire state changed.");
 
-        RejectJson("42", GuildJsonContext.Default.CommissionState);
+        RejectJson("42", GuildJsonContext.Default.QuestState);
 
-        RejectJson("\"future-success-state\"", GuildJsonContext.Default.CommissionState);
+        RejectJson("\"future-success-state\"", GuildJsonContext.Default.QuestState);
 
         GuildRemoteStateProjection unknown = GuildRemoteStateProjection.Observe(new string('x', 4096));
 
-        Require(unknown.State == CommissionState.Working && unknown.ReconciliationRequired && unknown.RemoteStateDiagnostic!.Length <= 128, "Unknown peer states must remain reconciliable nonterminal observations.");
+        Require(unknown.State == QuestState.Working && unknown.ReconciliationRequired && unknown.RemoteStateDiagnostic!.Length <= 128, "Unknown peer states must remain reconciliable nonterminal observations.");
 
         GuildRequestedGrant omitted = JsonSerializer.Deserialize("{}", GuildJsonContext.Default.GuildRequestedGrant)!;
 
@@ -406,37 +435,37 @@ internal static class GuildAotSmoke
 
     private static AcquireWorkspaceLeaseRequest SampleAcquireWorkspaceLeaseRequest() => new(IdempotencyKey: Id, WorkspaceId: Id, Scopes: [SampleGuildPathScope()]);
 
-    private static AdmitCohortMemberRequest SampleAdmitCohortMemberRequest() => new(IdempotencyKey: Id, ExpectedRevision: 17L, Commission: SampleGuildIssueChildData());
+    private static AdmitCohortMemberRequest SampleAdmitCohortMemberRequest() => new(IdempotencyKey: Id, ExpectedRevision: 17L, Quest: SampleGuildIssueChildData());
 
     private static AppendSharedNoteRequest SampleAppendSharedNoteRequest() => new(IdempotencyKey: Id, ExpectedRevision: 17L, Kind: GuildNoteKind.Correction, SubjectId: Id, Body: "A bounded Guild result.\nSecond line: λ", CorrectsNoteId: Id);
 
     private static AwardWorkRequest SampleAwardWorkRequest() => new(IdempotencyKey: Id, ExpectedRevision: 17L, ExpectedCohortRevision: 17L, BidId: Id);
 
-    private static CohortContributionDto SampleCohortContributionDto() => new(CohortId: Id, MemberId: Id, PrimaryVotingCommissionId: Id, ResultSequence: 17L, Outcome: GuildContributionOutcome.Accepted, ResultRef: SampleGuildDataRef(), AgreementDigest: "sample-AgreementDigest", Selected: true);
+    private static CohortContributionDto SampleCohortContributionDto() => new(CohortId: Id, MemberId: Id, PrimaryVotingQuestId: Id, ResultSequence: 17L, Outcome: GuildContributionOutcome.Accepted, ResultRef: SampleGuildDataRef(), AgreementDigest: "sample-AgreementDigest", Selected: true);
 
     private static CohortContributionPageDto SampleCohortContributionPageDto() => new(Items: [SampleCohortContributionDto()], NextCursor: "sample-NextCursor", SnapshotSequence: 17L, StateConsistency: "livePerPage");
 
     private static CohortConvergenceDto SampleCohortConvergenceDto() => new(CohortId: Id, Revision: 17L, State: GuildCohortState.Completed, Decision: GuildConvergenceDecision.Success, ReasonCode: "sample-ReasonCode", SelectedResultRef: SampleGuildDataRef(), FrozenMemberCount: 17L, PendingMemberCount: 17L, PendingDescendantCount: 17L, CancelRequestedCount: 17L, Spend: SampleGuildSpendDto(), EventWatermark: 17L);
 
-    private static CohortDto SampleCohortDto() => new(Id: Id, Name: "sample-Name", RootCommissionId: Id, IssuerCommissionId: Id, CampaignId: Id, Policy: SampleGuildConvergencePolicy(), ResultContract: SampleGuildResultContract(), State: GuildCohortState.Completed, Revision: 17L, MembershipVersion: 17L, ClosedMembershipVersion: 17L, CohortGrant: SampleGuildGrant(), AllocationAccountId: Id, EventWatermark: 17L, Receipt: SampleGuildMutationReceiptDto());
+    private static CohortDto SampleCohortDto() => new(Id: Id, Name: "sample-Name", RootQuestId: Id, IssuerQuestId: Id, CampaignId: Id, Policy: SampleGuildConvergencePolicy(), ResultContract: SampleGuildResultContract(), State: GuildCohortState.Completed, Revision: 17L, MembershipVersion: 17L, ClosedMembershipVersion: 17L, CohortGrant: SampleGuildGrant(), AllocationAccountId: Id, EventWatermark: 17L, Receipt: SampleGuildMutationReceiptDto());
 
-    private static CohortMemberCommissionDto SampleCohortMemberCommissionDto() => new(MemberId: Id, CommissionId: Id, AssociationKind: GuildMemberAssociationKind.Primary, AssociationSequence: 17L);
+    private static CohortMemberQuestDto SampleCohortMemberQuestDto() => new(MemberId: Id, QuestId: Id, AssociationKind: GuildMemberAssociationKind.Primary, AssociationSequence: 17L);
 
-    private static CohortMemberCommissionPageDto SampleCohortMemberCommissionPageDto() => new(Items: [SampleCohortMemberCommissionDto()], NextCursor: "sample-NextCursor", SnapshotSequence: 17L, StateConsistency: "livePerPage");
+    private static CohortMemberQuestPageDto SampleCohortMemberQuestPageDto() => new(Items: [SampleCohortMemberQuestDto()], NextCursor: "sample-NextCursor", SnapshotSequence: 17L, StateConsistency: "livePerPage");
 
-    private static CohortMemberDto SampleCohortMemberDto() => new(Id: Id, CohortId: Id, PrimaryVotingCommissionId: Id, AgentId: Id, AdmissionSequence: 17L, State: GuildCohortMemberState.Active, InClosedSnapshot: true, RemovalSequence: null, AssociatedCommissionCount: 17L, Receipt: SampleGuildMutationReceiptDto());
+    private static CohortMemberDto SampleCohortMemberDto() => new(Id: Id, CohortId: Id, PrimaryVotingQuestId: Id, AgentId: Id, AdmissionSequence: 17L, State: GuildCohortMemberState.Active, InClosedSnapshot: true, RemovalSequence: null, AssociatedQuestCount: 17L, Receipt: SampleGuildMutationReceiptDto());
 
     private static CohortMemberPageDto SampleCohortMemberPageDto() => new(Items: [SampleCohortMemberDto()], NextCursor: "sample-NextCursor", SnapshotSequence: 17L, StateConsistency: "livePerPage");
 
     private static CohortPageDto SampleCohortPageDto() => new(Items: [SampleCohortDto()], NextCursor: "sample-NextCursor", SnapshotSequence: 17L, StateConsistency: "livePerPage");
 
-    private static CreateCohortRequest SampleCreateCohortRequest() => new(IdempotencyKey: Id, IssuerCommissionId: Id, Name: "sample-Name", Policy: SampleGuildConvergencePolicy(), ResultContract: SampleGuildResultContract(), RequestedGrant: SampleGuildRequestedGrant());
+    private static CreateCohortRequest SampleCreateCohortRequest() => new(IdempotencyKey: Id, IssuerQuestId: Id, Name: "sample-Name", Policy: SampleGuildConvergencePolicy(), ResultContract: SampleGuildResultContract(), RequestedGrant: SampleGuildRequestedGrant());
 
     private static GuildActionRequest SampleGuildActionRequest() => new(Action: GuildAuthorityAction.Issue, ResourceId: Id);
 
-    private static GuildAdmissionReceipt SampleGuildAdmissionReceipt() => new(CommissionId: Id, OperationId: Id, SignetId: Id, AllocationAccountId: Id, Receipt: SampleGuildMutationReceiptDto());
+    private static GuildAdmissionReceipt SampleGuildAdmissionReceipt() => new(QuestId: Id, OperationId: Id, SignetId: Id, AllocationAccountId: Id, Receipt: SampleGuildMutationReceiptDto());
 
-    private static GuildAdmissionRequest SampleGuildAdmissionRequest() => new(Mutation: SampleGuildMutationIdentity(), Issuance: SampleGuildIssuanceIdentity(), Commission: SampleGuildCommissionDto(), Goal: SampleGuildDataRef(), AcceptedResolutionDigest: "sample-AcceptedResolutionDigest", ExpectedIssuerRevision: 17L);
+    private static GuildAdmissionRequest SampleGuildAdmissionRequest() => new(Mutation: SampleGuildMutationIdentity(), Issuance: SampleGuildIssuanceIdentity(), Quest: SampleGuildQuestDto(), Goal: SampleGuildDataRef(), AcceptedResolutionDigest: "sample-AcceptedResolutionDigest", ExpectedIssuerRevision: 17L);
 
     private static GuildAgentCapabilitiesDto SampleGuildAgentCapabilitiesDto() => new(Streaming: true, PushNotifications: true, StateTransitionHistory: true);
 
@@ -452,11 +481,11 @@ internal static class GuildAotSmoke
 
     private static GuildBudgetGrant SampleGuildBudgetGrant() => new(Usd: SampleGuildUsdBudget(), Tokens: SampleGuildTokenBudget());
 
-    private static GuildCancelCommissionRequest SampleGuildCancelCommissionRequest() => new(IdempotencyKey: Id, ExpectedRevision: 17L, ReasonCode: GuildCancellationReason.OperatorRequested);
+    private static GuildCancelQuestRequest SampleGuildCancelQuestRequest() => new(IdempotencyKey: Id, ExpectedRevision: 17L, ReasonCode: GuildCancellationReason.OperatorRequested);
 
-    private static GuildCancellationDto SampleGuildCancellationDto() => new(CommissionId: Id, RootCommissionId: Id, Revision: 17L, CancellationRequested: true, CancellationConverged: true, PendingExecutionCount: 0L, UnresolvedExternalEffectCount: 0L, AccountingState: GuildAccountingState.Settled, EventWatermark: 17L, Receipt: SampleGuildMutationReceiptDto());
+    private static GuildCancellationDto SampleGuildCancellationDto() => new(QuestId: Id, RootQuestId: Id, Revision: 17L, CancellationRequested: true, CancellationConverged: true, PendingExecutionCount: 0L, UnresolvedExternalEffectCount: 0L, AccountingState: GuildAccountingState.Settled, EventWatermark: 17L, Receipt: SampleGuildMutationReceiptDto());
 
-    private static GuildChangeEventDto SampleGuildChangeEventDto() => new(EventSequence: 17L, EventKind: GuildEventKind.CommissionChanged, ObjectId: Id, Revision: 17L, ContentRefs: [SampleGuildDataRef()]);
+    private static GuildChangeEventDto SampleGuildChangeEventDto() => new(EventSequence: 17L, EventKind: GuildEventKind.QuestChanged, ObjectId: Id, Revision: 17L, ContentRefs: [SampleGuildDataRef()]);
 
     private static GuildCircleAcknowledgeRequest SampleGuildCircleAcknowledgeRequest() => new(Mutation: SampleGuildMutationIdentity(), ApplicationReceiptId: Id, ApplicationDigest: "sample-ApplicationDigest", ExpectedInboxRevision: 17L);
 
@@ -468,17 +497,17 @@ internal static class GuildAotSmoke
 
     private static GuildCircleInboxPage SampleGuildCircleInboxPage() => new(Items: [SampleGuildCircleInboxItem()], NextCursor: "sample-NextCursor", SnapshotSequence: 17L, StateConsistency: "livePerPage");
 
-    private static GuildCircleInboxQuery SampleGuildCircleInboxQuery() => new(RecipientCommissionId: Id, Cursor: "sample-Cursor", PageSize: 3);
+    private static GuildCircleInboxQuery SampleGuildCircleInboxQuery() => new(RecipientQuestId: Id, Cursor: "sample-Cursor", PageSize: 3);
 
     private static GuildCohortContributionRequest SampleGuildCohortContributionRequest() => new(Mutation: SampleGuildMutationIdentity(), CohortId: Id, MemberId: Id, ExpectedRevision: 17L, Result: SampleGuildResultReceipt());
 
     private static GuildCohortSnapshotDto SampleGuildCohortSnapshotDto() => new(Summary: SampleCohortDto(), Members: SampleCohortMemberPageDto(), Watermark: 17L, ResumeCursor: "sample-ResumeCursor");
 
-    private static GuildCommissionDto SampleGuildCommissionDto() => new(Id: Id, Name: "sample-Name", OperationId: Id, AgentId: Id, CardId: Id, CardRevision: 17L, RunId: Id, ParentCommissionId: Id, RootCommissionId: Id, SessionId: Id, CampaignId: Id, WorkspaceId: Id, SignetId: Id, SignetRevision: 17L, Revision: 17L, IssuedSequence: 17L, State: CommissionState.Completed, WaitReason: GuildWaitReason.Input, CancellationRequested: true, CancellationConverged: true, ReconciliationRequired: true, DeliveryState: GuildDeliveryState.None, AccountingState: GuildAccountingState.Settled, GoalRef: SampleGuildDataRef(), ResultRef: SampleGuildDataRef(), ResultReceiptId: Id, ResolvedGrant: SampleGuildGrant(), CreatedAt: Instant, UpdatedAt: Instant, EventWatermark: 17L, Receipt: SampleGuildMutationReceiptDto());
+    private static GuildQuestDto SampleGuildQuestDto() => new(Id: Id, Name: "sample-Name", OperationId: Id, AgentId: Id, CardId: Id, CardRevision: 17L, RunId: Id, ParentQuestId: Id, RootQuestId: Id, SessionId: Id, CampaignId: Id, WorkspaceId: Id, SignetId: Id, SignetRevision: 17L, Revision: 17L, IssuedSequence: 17L, State: QuestState.Completed, WaitReason: GuildWaitReason.Input, CancellationRequested: true, CancellationConverged: true, ReconciliationRequired: true, DeliveryState: GuildDeliveryState.None, AccountingState: GuildAccountingState.Settled, GoalRef: SampleGuildDataRef(), ResultRef: SampleGuildDataRef(), ResultReceiptId: Id, ResolvedGrant: SampleGuildGrant(), CreatedAt: Instant, UpdatedAt: Instant, EventWatermark: 17L, Receipt: SampleGuildMutationReceiptDto());
 
-    private static GuildCommissionPageDto SampleGuildCommissionPageDto() => new(Items: [SampleGuildCommissionDto()], NextCursor: "sample-NextCursor", SnapshotSequence: 17L, StateConsistency: "livePerPage");
+    private static GuildQuestPageDto SampleGuildQuestPageDto() => new(Items: [SampleGuildQuestDto()], NextCursor: "sample-NextCursor", SnapshotSequence: 17L, StateConsistency: "livePerPage");
 
-    private static GuildCommitResultRequest SampleGuildCommitResultRequest() => new(Mutation: SampleGuildMutationIdentity(), ExpectedCommissionRevision: 17L, ExpectedOperationRevision: 17L, Result: SampleGuildResultReceipt());
+    private static GuildCommitResultRequest SampleGuildCommitResultRequest() => new(Mutation: SampleGuildMutationIdentity(), ExpectedQuestRevision: 17L, ExpectedOperationRevision: 17L, Result: SampleGuildResultReceipt());
 
     private static GuildContentDto SampleGuildContentDto() => new(Reference: SampleGuildDataRef(), Body: "A bounded Guild result.\nSecond line: λ");
 
@@ -488,15 +517,15 @@ internal static class GuildAotSmoke
 
     private static GuildDataRef SampleGuildDataRef() => new(ContentId: Id, Kind: GuildContentKind.AgentCard, Revision: 17L, Digest: "0000000000000000000000000000000000000000000000000000000000000000", MimeType: "text/plain", ByteLength: 17L, ContentErased: true);
 
-    private static GuildDispatchObservation SampleGuildDispatchObservation() => new(CommissionId: Id, DispatchId: Id, Evidence: GuildDispatchEvidence.Prepared, State: CommissionState.Completed, ReconciliationRequired: true, ReasonCode: "sample-ReasonCode", LocalChildId: Id, RemoteTaskId: "sample-RemoteTaskId", RemoteContextId: "sample-RemoteContextId");
+    private static GuildDispatchObservation SampleGuildDispatchObservation() => new(QuestId: Id, DispatchId: Id, Evidence: GuildDispatchEvidence.Prepared, State: QuestState.Completed, ReconciliationRequired: true, ReasonCode: "sample-ReasonCode", LocalChildId: Id, RemoteTaskId: "sample-RemoteTaskId", RemoteContextId: "sample-RemoteContextId");
 
-    private static GuildDispatchRequest SampleGuildDispatchRequest() => new(Mutation: SampleGuildMutationIdentity(), CommissionId: Id, OperationId: Id, RunId: Id, DispatchId: Id, ExpectedOperationRevision: 17L, InvocationDigest: "sample-InvocationDigest");
+    private static GuildDispatchRequest SampleGuildDispatchRequest() => new(Mutation: SampleGuildMutationIdentity(), QuestId: Id, OperationId: Id, RunId: Id, DispatchId: Id, ExpectedOperationRevision: 17L, InvocationDigest: "sample-InvocationDigest");
 
-    private static GuildEnvelope SampleGuildEnvelope() => new(Id: Id, Producer: SampleGuildProducerIdentity(), CommissionId: Id, RootCommissionId: Id, AuthorityGeneration: 17L, SessionId: Id, CampaignId: Id, Authority: GuildAuthorityKind.Parent, Kind: GuildEnvelopeKind.Progress, ContentRef: SampleGuildDataRef(), SenderSequence: 17L, CreatedAt: Instant, Address: SampleGuildCircleAddress());
+    private static GuildEnvelope SampleGuildEnvelope() => new(Id: Id, Producer: SampleGuildProducerIdentity(), QuestId: Id, RootQuestId: Id, AuthorityGeneration: 17L, SessionId: Id, CampaignId: Id, Authority: GuildAuthorityKind.Parent, Kind: GuildEnvelopeKind.Progress, ContentRef: SampleGuildDataRef(), SenderSequence: 17L, CreatedAt: Instant, Address: SampleGuildCircleAddress());
 
     private static GuildEventPage SampleGuildEventPage() => new(Items: [SampleGuildChangeEventDto()], NextCursor: "sample-NextCursor", SnapshotSequence: 17L, StateConsistency: "livePerPage");
 
-    private static GuildEventQuery SampleGuildEventQuery() => new(RootCommissionId: Id, SubtreeCommissionId: Id, CohortId: Id, Cursor: "sample-Cursor", PageSize: 3);
+    private static GuildEventQuery SampleGuildEventQuery() => new(RootQuestId: Id, SubtreeQuestId: Id, CohortId: Id, Cursor: "sample-Cursor", PageSize: 3);
 
     private static GuildGrant SampleGuildGrant() => new(Workspaces: [SampleGuildWorkspaceGrant()], Tools: [SampleGuildToolGrant()], Memory: [SampleGuildMemoryGrant()], Budget: SampleGuildBudgetGrant(), Delegation: [GuildDelegationKind.Local], ExpiresAtUtc: Instant);
 
@@ -506,17 +535,17 @@ internal static class GuildAotSmoke
 
     private static GuildIssueChildRequest SampleGuildIssueChildRequest() => new(IdempotencyKey: Id, ExpectedRevision: 17L, AgentId: Id, Name: "sample-Name", Goal: "sample-Goal", RequestedGrant: SampleGuildRequestedGrant());
 
-    private static GuildIssueRootRequest SampleGuildIssueRootRequest() => new(IdempotencyKey: Id, AgentId: Id, Name: "sample-Name", Goal: "sample-Goal", Grant: SampleGuildGrant(), SessionId: Id, CampaignId: Id, WorkspaceId: Id, PredecessorCommissionId: Id);
+    private static GuildIssueRootRequest SampleGuildIssueRootRequest() => new(IdempotencyKey: Id, AgentId: Id, Name: "sample-Name", Goal: "sample-Goal", Grant: SampleGuildGrant(), SessionId: Id, CampaignId: Id, WorkspaceId: Id, PredecessorQuestId: Id);
 
     private static GuildListAgentsQuery SampleGuildListAgentsQuery() => new(Source: GuildAgentSourceKind.DeclaredGlobal, Skill: "sample-Skill", Cursor: "sample-Cursor", PageSize: 3);
 
-    private static GuildListCommissionsQuery SampleGuildListCommissionsQuery() => new(RootId: Id, ParentId: Id, State: CommissionState.Completed, Cursor: "sample-Cursor", PageSize: 3);
+    private static GuildListQuestsQuery SampleGuildListQuestsQuery() => new(RootId: Id, ParentId: Id, State: QuestState.Completed, Cursor: "sample-Cursor", PageSize: 3);
 
     private static GuildMemoryGrant SampleGuildMemoryGrant() => new(Store: GuildMemoryStore.Transcript, Operation: GuildMemoryOperation.Read, Scope: SampleGuildMemoryScope());
 
     private static GuildMemoryScope SampleGuildMemoryScope() => new(GuildMemoryScopeKind.Campaign, Id);
 
-    private static GuildMessageReceipt SampleGuildMessageReceipt() => new(CommissionId: Id, MessageId: Id, Revision: 17L, DeliveryState: GuildDeliveryState.None, EventWatermark: 17L, Receipt: SampleGuildMutationReceiptDto());
+    private static GuildMessageReceipt SampleGuildMessageReceipt() => new(QuestId: Id, MessageId: Id, Revision: 17L, DeliveryState: GuildDeliveryState.None, EventWatermark: 17L, Receipt: SampleGuildMutationReceiptDto());
 
     private static GuildMutationIdentity SampleGuildMutationIdentity() => new(IdempotencyKey: Id, CanonicalRequestDigest: "1111111111111111111111111111111111111111111111111111111111111111");
 
@@ -534,7 +563,7 @@ internal static class GuildAotSmoke
 
     private static GuildPublishDedupeKey SampleGuildPublishDedupeKey() => SampleGuildProducerIdentity().DedupeKey(Id, Id);
 
-    private static GuildPublishRequest SampleGuildPublishRequest() => new(IdempotencyKey: Id, Address: SampleGuildCircleAddress(), Kind: GuildEnvelopeKind.CommissionIssued, MimeType: "text/plain", Body: "A bounded Guild result.\nSecond line: λ", ExpectedRevision: 17L);
+    private static GuildPublishRequest SampleGuildPublishRequest() => new(IdempotencyKey: Id, Address: SampleGuildCircleAddress(), Kind: GuildEnvelopeKind.QuestIssued, MimeType: "text/plain", Body: "A bounded Guild result.\nSecond line: λ", ExpectedRevision: 17L);
 
     private static GuildRefreshAgentsRequest SampleGuildRefreshAgentsRequest() => new(IdempotencyKey: Id, AgentId: Id, Cursor: "sample-Cursor");
 
@@ -550,15 +579,15 @@ internal static class GuildAotSmoke
 
     private static GuildRequestedGrant SampleGuildRequestedGrant() => new(Budget: new(true, SampleGuildBudgetGrant()), ExpiresAtUtc: new(true, Instant));
 
-    private static GuildResultApplicationReceipt SampleGuildResultApplicationReceipt() => new(RecipientCommissionId: Id, CommissionId: Id, ResultId: Id, CanonicalContentDigest: "sample-CanonicalContentDigest", RecipientRevision: 17L, Receipt: SampleGuildMutationReceiptDto());
+    private static GuildResultApplicationReceipt SampleGuildResultApplicationReceipt() => new(RecipientQuestId: Id, QuestId: Id, ResultId: Id, CanonicalContentDigest: "sample-CanonicalContentDigest", RecipientRevision: 17L, Receipt: SampleGuildMutationReceiptDto());
 
-    private static GuildResultApplicationRequest SampleGuildResultApplicationRequest() => new(Mutation: SampleGuildMutationIdentity(), RecipientCommissionId: Id, CommissionId: Id, ResultId: Id, CanonicalContentDigest: "sample-CanonicalContentDigest", ExpectedRecipientRevision: 17L);
+    private static GuildResultApplicationRequest SampleGuildResultApplicationRequest() => new(Mutation: SampleGuildMutationIdentity(), RecipientQuestId: Id, QuestId: Id, ResultId: Id, CanonicalContentDigest: "sample-CanonicalContentDigest", ExpectedRecipientRevision: 17L);
 
     private static GuildResultContract SampleGuildResultContract() => new(MimeType: "text/plain");
 
-    private static GuildResultReceipt SampleGuildResultReceipt() => new(CommissionId: Id, ResultId: Id, CanonicalContentDigest: "sample-CanonicalContentDigest", Content: SampleGuildDataRef(), Outcome: CommissionState.Completed, ReasonCode: "sample-ReasonCode");
+    private static GuildResultReceipt SampleGuildResultReceipt() => new(QuestId: Id, ResultId: Id, CanonicalContentDigest: "sample-CanonicalContentDigest", Content: SampleGuildDataRef(), Outcome: QuestState.Completed, ReasonCode: "sample-ReasonCode");
 
-    private static GuildResyncEventDto SampleGuildResyncEventDto() => new(ReasonCode: "sample-ReasonCode", SnapshotRoute: "/api/guild/commissions/a1111111-1111-4111-8111-111111111111", ResumeCursor: "sample-ResumeCursor");
+    private static GuildResyncEventDto SampleGuildResyncEventDto() => new(ReasonCode: "sample-ReasonCode", SnapshotRoute: "/api/guild/quests/a1111111-1111-4111-8111-111111111111", ResumeCursor: "sample-ResumeCursor");
 
     private static GuildRevisionRequest SampleGuildRevisionRequest() => new(IdempotencyKey: Id, ExpectedRevision: 17L);
 
@@ -566,21 +595,21 @@ internal static class GuildAotSmoke
 
     private static GuildSendOperatorMessageRequest SampleGuildSendOperatorMessageRequest() => new(IdempotencyKey: Id, ExpectedRevision: 17L, Kind: GuildMessageKind.Message, MimeType: "text/plain", Body: "A bounded Guild result.\nSecond line: λ");
 
-    private static GuildSignetBinding SampleGuildSignetBinding() => new(SignetId: Id, AgentId: Id, RunId: Id, CommissionId: Id, RootCommissionId: Id, IssuerSignetId: Id, Grant: SampleGuildGrant(), IssuedAtUtc: Instant, OriginPrincipalId: Id);
+    private static GuildSignetBinding SampleGuildSignetBinding() => new(SignetId: Id, AgentId: Id, RunId: Id, QuestId: Id, RootQuestId: Id, IssuerSignetId: Id, Grant: SampleGuildGrant(), IssuedAtUtc: Instant, OriginPrincipalId: Id);
 
     private static GuildSignetStatus SampleGuildSignetStatus() => new(SignetId: Id, Revision: 17L, CredentialGeneration: 17L, RevocationGeneration: 17L, Revoked: true, RestoredInert: true);
 
-    private static GuildSpendDto SampleGuildSpendDto() => new(CommissionId: Id, KnownUsd: 1.25m, KnownTokens: 17L, UnknownUsd: true, UnknownTokens: true, PricedCount: 17L, UnpricedCount: 17L, UncertainCount: 17L, OutstandingAllocation: SampleGuildBudgetGrant(), UnresolvedHolds: SampleGuildBudgetGrant(), Remaining: SampleGuildBudgetGrant(), EventWatermark: 17L);
+    private static GuildSpendDto SampleGuildSpendDto() => new(QuestId: Id, KnownUsd: 1.25m, KnownTokens: 17L, UnknownUsd: true, UnknownTokens: true, PricedCount: 17L, UnpricedCount: 17L, UncertainCount: 17L, OutstandingAllocation: SampleGuildBudgetGrant(), UnresolvedHolds: SampleGuildBudgetGrant(), Remaining: SampleGuildBudgetGrant(), EventWatermark: 17L);
 
     private static GuildStatusDto SampleGuildStatusDto() => new(Enabled: true, Available: true, ReasonCodes: ["sample-value"], SchemaVersion: 17L, LegacyPendingCount: 17L);
 
-    private static GuildTerminalEventDto SampleGuildTerminalEventDto() => new(ObjectId: Id, Revision: 17L, State: CommissionState.Completed, AccountingState: GuildAccountingState.Settled, EventWatermark: 17L);
+    private static GuildTerminalEventDto SampleGuildTerminalEventDto() => new(ObjectId: Id, Revision: 17L, State: QuestState.Completed, AccountingState: GuildAccountingState.Settled, EventWatermark: 17L);
 
     private static GuildTokenBudget SampleGuildTokenBudget() => new(Mode: GuildBudgetMode.Finite, Value: 17L);
 
     private static GuildToolGrant SampleGuildToolGrant() => new(SourceKind: GuildToolSourceKind.BuiltIn, SourceRegistrationId: "arcanum", Name: "sample-Name");
 
-    private static GuildTreeSnapshotDto SampleGuildTreeSnapshotDto() => new(Summary: SampleGuildCommissionDto(), Members: SampleGuildCommissionPageDto(), Watermark: 17L, ResumeCursor: "sample-ResumeCursor");
+    private static GuildTreeSnapshotDto SampleGuildTreeSnapshotDto() => new(Summary: SampleGuildQuestDto(), Members: SampleGuildQuestPageDto(), Watermark: 17L, ResumeCursor: "sample-ResumeCursor");
 
     private static GuildUsdBudget SampleGuildUsdBudget() => new(Mode: GuildBudgetMode.Finite, Value: 1.25m);
 
@@ -592,7 +621,7 @@ internal static class GuildAotSmoke
 
     private static RenewWorkspaceLeaseRequest SampleRenewWorkspaceLeaseRequest() => new(IdempotencyKey: Id, ExpectedRevision: 17L, Epoch: 17L);
 
-    private static SharedNoteDto SampleSharedNoteDto() => new(Id: Id, CohortId: Id, Sequence: 17L, AuthorCommissionId: Id, AuthorMemberId: Id, Authority: GuildAuthorityKind.Operator, Kind: GuildNoteKind.Correction, SubjectId: Id, BodyRef: SampleGuildDataRef(), CorrectsNoteId: Id, CreatedAt: Instant, Receipt: SampleGuildMutationReceiptDto());
+    private static SharedNoteDto SampleSharedNoteDto() => new(Id: Id, CohortId: Id, Sequence: 17L, AuthorQuestId: Id, AuthorMemberId: Id, Authority: GuildAuthorityKind.Operator, Kind: GuildNoteKind.Correction, SubjectId: Id, BodyRef: SampleGuildDataRef(), CorrectsNoteId: Id, CreatedAt: Instant, Receipt: SampleGuildMutationReceiptDto());
 
     private static SharedNotePageDto SampleSharedNotePageDto() => new(Items: [SampleSharedNoteDto()], NextCursor: "sample-NextCursor", SnapshotSequence: 17L, StateConsistency: "livePerPage");
 
@@ -600,17 +629,17 @@ internal static class GuildAotSmoke
 
     private static SubmitBidRequest SampleSubmitBidRequest() => new(IdempotencyKey: Id, ExpectedRevision: 17L, Note: "sample-Note", ClaimedCostUsd: 1.25m);
 
-    private static WorkAwardDto SampleWorkAwardDto() => new(Id: Id, OfferId: Id, BidId: Id, CommissionId: Id, MemberId: Id, State: GuildWorkAwardState.Committed, Receipt: SampleGuildMutationReceiptDto());
+    private static WorkAwardDto SampleWorkAwardDto() => new(Id: Id, OfferId: Id, BidId: Id, QuestId: Id, MemberId: Id, State: GuildWorkAwardState.Committed, Receipt: SampleGuildMutationReceiptDto());
 
     private static WorkBidDto SampleWorkBidDto() => new(Id: Id, OfferId: Id, MemberId: Id, AgentId: Id, CardRevision: 17L, BidSequence: 17L, Revision: 17L, State: GuildWorkBidState.Submitted, NoteRef: SampleGuildDataRef(), ClaimedCostUsd: 1.25m, Receipt: SampleGuildMutationReceiptDto());
 
     private static WorkBidPageDto SampleWorkBidPageDto() => new(Items: [SampleWorkBidDto()], NextCursor: "sample-NextCursor", SnapshotSequence: 17L, StateConsistency: "livePerPage");
 
-    private static WorkOfferDto SampleWorkOfferDto() => new(Id: Id, CohortId: Id, IssuerCommissionId: Id, OfferSequence: 17L, Revision: 17L, SkillId: "apprentice-goal-execution", ResultContract: SampleGuildResultContract(), GoalRef: SampleGuildDataRef(), State: GuildWorkOfferState.Awarded, AwardId: Id, CommissionId: Id, Receipt: SampleGuildMutationReceiptDto());
+    private static WorkOfferDto SampleWorkOfferDto() => new(Id: Id, CohortId: Id, IssuerQuestId: Id, OfferSequence: 17L, Revision: 17L, SkillId: "apprentice-goal-execution", ResultContract: SampleGuildResultContract(), GoalRef: SampleGuildDataRef(), State: GuildWorkOfferState.Awarded, AwardId: Id, QuestId: Id, Receipt: SampleGuildMutationReceiptDto());
 
     private static WorkOfferPageDto SampleWorkOfferPageDto() => new(Items: [SampleWorkOfferDto()], NextCursor: "sample-NextCursor", SnapshotSequence: 17L, StateConsistency: "livePerPage");
 
-    private static WorkspaceLeaseDto SampleWorkspaceLeaseDto() => new(Id: Id, WorkspaceId: Id, OwnerKind: GuildWorkspaceLeaseOwnerKind.Commission, CommissionId: Id, RootCommissionId: Id, Scopes: [SampleGuildPathScope()], State: GuildWorkspaceLeaseState.Held, Epoch: 17L, Revision: 17L, ExpiresAt: Instant, InFlightMutationCount: 17L, ReasonCode: "sample-ReasonCode", Receipt: SampleGuildMutationReceiptDto());
+    private static WorkspaceLeaseDto SampleWorkspaceLeaseDto() => new(Id: Id, WorkspaceId: Id, OwnerKind: GuildWorkspaceLeaseOwnerKind.Quest, QuestId: Id, RootQuestId: Id, Scopes: [SampleGuildPathScope()], State: GuildWorkspaceLeaseState.Held, Epoch: 17L, Revision: 17L, ExpiresAt: Instant, InFlightMutationCount: 17L, ReasonCode: "sample-ReasonCode", Receipt: SampleGuildMutationReceiptDto());
 
     private static WorkspaceLeasePageDto SampleWorkspaceLeasePageDto() => new(Items: [SampleWorkspaceLeaseDto()], NextCursor: "sample-NextCursor", SnapshotSequence: 17L, StateConsistency: "livePerPage");
 }

@@ -100,7 +100,7 @@ public sealed class GuildAuthorityContractTests
         Assert.Throws<ArgumentException>(() => new GuildCallerContext("", "digest", invocation, installation));
 
         Assert.Equal(GuildCallerKind.HostReceipt, new GuildCallerContext(GuildCallerKind.HostReceipt, principal, invocation, installation,
-            receiptId: Guid.NewGuid(), receiptSource: "commission-result").Kind);
+            receiptId: Guid.NewGuid(), receiptSource: "quest-result").Kind);
     }
 
     [Fact]

@@ -16516,6 +16516,30 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     }
 
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public void GenericTaskJoinWrapperRetainsCompletionInsideAnOuterTry(bool wrapped, bool owned)
+    {
+        const string helper = "static class Helper { public static async Task<int> ProduceAsync() { await Task.Yield(); System.IO.File.Delete(\"path\"); return 1; } "
+            + "public static async Task<int> ObserveAsync() { Task<int> pending = ProduceAsync(); return await JoinAsync(pending); } "
+            + "public static async Task<int> JoinAsync(Task<int> pending) { int result; try { Release(); } finally { result = await pending; } return result; } "
+            + "private static void Release() { throw new InvalidOperationException(); } }";
+
+        string observation = wrapped
+            ? "int result = await Helper.ObserveAsync();"
+            : "Task<int> pending = Helper.ProduceAsync(); int result = await Helper.JoinAsync(pending);";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source(R2Admission + "try { " + observation + " } catch (Exception) { }", helper));
+
+        Assert.Equal(owned, !result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+
+        Assert.Equal(owned, !result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code is "HOSTED_SITE_WORK_FRONTIER_MISSING" or "HOSTED_SITE_EFFECT_FRONTIER_MISSING"));
+    }
+
+    [Theory]
     [InlineData("await Task.WhenAll(first, second);", true)]
     [InlineData("await Task.WhenAny(first, second);", false)]
     [InlineData("_ = Task.WhenAll(first, second);", false)]

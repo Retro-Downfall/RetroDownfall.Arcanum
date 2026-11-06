@@ -106,7 +106,7 @@ public sealed record GuildConvergencePolicy(
 
 public sealed record CreateCohortRequest(
     Guid IdempotencyKey,
-    Guid IssuerCommissionId,
+    Guid IssuerQuestId,
     string Name,
     GuildConvergencePolicy Policy,
     GuildResultContract ResultContract,
@@ -115,13 +115,13 @@ public sealed record CreateCohortRequest(
 public sealed record AdmitCohortMemberRequest(
     Guid IdempotencyKey,
     long ExpectedRevision,
-    GuildIssueChildData Commission);
+    GuildIssueChildData Quest);
 
 public sealed record CohortDto(
     Guid Id,
     string Name,
-    Guid RootCommissionId,
-    Guid IssuerCommissionId,
+    Guid RootQuestId,
+    Guid IssuerQuestId,
     Guid? CampaignId,
     GuildConvergencePolicy Policy,
     GuildResultContract ResultContract,
@@ -137,25 +137,25 @@ public sealed record CohortDto(
 public sealed record CohortMemberDto(
     Guid Id,
     Guid CohortId,
-    Guid PrimaryVotingCommissionId,
+    Guid PrimaryVotingQuestId,
     Guid AgentId,
     long AdmissionSequence,
     GuildCohortMemberState State,
     bool InClosedSnapshot,
     long? RemovalSequence,
-    long AssociatedCommissionCount,
+    long AssociatedQuestCount,
     GuildMutationReceiptDto? Receipt = null);
 
-public sealed record CohortMemberCommissionDto(
+public sealed record CohortMemberQuestDto(
     Guid MemberId,
-    Guid CommissionId,
+    Guid QuestId,
     GuildMemberAssociationKind AssociationKind,
     long AssociationSequence);
 
 public sealed record CohortContributionDto(
     Guid CohortId,
     Guid MemberId,
-    Guid PrimaryVotingCommissionId,
+    Guid PrimaryVotingQuestId,
     long ResultSequence,
     GuildContributionOutcome Outcome,
     GuildDataRef? ResultRef,
@@ -188,8 +188,8 @@ public sealed record CohortMemberPageDto(
     long SnapshotSequence,
     string StateConsistency = "livePerPage");
 
-public sealed record CohortMemberCommissionPageDto(
-    ImmutableArray<CohortMemberCommissionDto> Items,
+public sealed record CohortMemberQuestPageDto(
+    ImmutableArray<CohortMemberQuestDto> Items,
     string? NextCursor,
     long SnapshotSequence,
     string StateConsistency = "livePerPage");

@@ -12,184 +12,207 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 /// Dormant host authority participant. The private policy recognizes authenticated coordinator
 /// claims; no policy, execution activation or effect adapters are registered by this slice.
 /// </summary>
-internal sealed class SignetAuthority(GuildSignetStore store, IGrimoireConnectionAdmissionGate gate,
+internal sealed partial class SignetAuthority(GuildSignetStore store, IGrimoireConnectionAdmissionGate gate,
     IGuildSignetHostPolicy policy, TimeProvider time) : ISignetAuthority, IGuildToolAuthority, IDisposable
 {
     private readonly ConcurrentDictionary<GuildExecutionHandle, Credential> _credentials = new(ReferenceEqualityComparer.Instance);
 
     private int _disposed;
 
-    public Task<Result<GuildExecutionHandle>> MintAsync(GuildAdmissionContext admission, GuildSignetBinding binding, CancellationToken cancellationToken)
+    public Task<Result<GuildExecutionHandle>> MintAsync(GuildAdmissionContext admission, GuildSignetBinding binding, CancellationToken cancellationToken) =>
+        IssueStandaloneAsync(admission, binding, null, null, cancellationToken);
+
+    public Task<Result<GuildExecutionHandle>> AttenuateAsync(GuildAdmissionContext admission, GuildExecutionHandle parent,
+        GuildSignetBinding child, GuildRequestedGrant request, CancellationToken cancellationToken) =>
+        parent is null || request is null
+            ? Task.FromResult(Result<GuildExecutionHandle>.Failure(Mismatch))
+            : IssueStandaloneAsync(admission, child, parent, request, cancellationToken);
+
+    private Task<Result<GuildExecutionHandle>> IssueStandaloneAsync(GuildAdmissionContext admission, GuildSignetBinding binding,
+        GuildExecutionHandle? parent, GuildRequestedGrant? request, CancellationToken cancellationToken)
     {
-        if (!ValidBinding(binding) || binding.CommissionId != binding.RootCommissionId || binding.IssuerSignetId is not null
-            || admission?.Caller.Kind is not (GuildCallerKind.Operator or GuildCallerKind.Peer)
-            || admission.Caller.InstallationGeneration != policy.InstallationGeneration
-            || admission.Caller.Kind == GuildCallerKind.Operator && admission.Caller.PrincipalId != binding.OriginPrincipalId)
+        if (!ValidIssuance(admission, binding, parent, request))
         {
             return Task.FromResult(Result<GuildExecutionHandle>.Failure(Mismatch));
         }
 
-        return UnderRootAsync(binding.RootCommissionId, true, async ct =>
+        return UnderRootAsync(binding.RootQuestId, true, async ct =>
         {
-            Result<GuildSignetAdmissionEvidence> authorized = await policy.AuthorizeAdmissionAsync(admission, binding, ct).ConfigureAwait(false);
+            Result<GuildSignetAdmissionEvidence> authorized = await AuthorizeIssuanceAsync(admission, binding, parent, request, ct).ConfigureAwait(false);
 
             if (authorized.IsFailure)
             {
                 return Result<GuildExecutionHandle>.Failure(authorized.Error);
             }
 
-            GuildSignetOwnerBinding owners = authorized.Value.Owners;
-
-            if (!MatchesPeer(admission.Caller, owners) || authorized.Value.Edge != GuildSignetIssuanceEdge.Root)
-            {
-                return Result<GuildExecutionHandle>.Failure(Mismatch);
-            }
-
             using Credential credential = Credential.Create();
 
-            Result<GuildSignetRecord> committed = await store.ExecuteAsync<GuildSignetRecord>(true, async (connection, transaction, token) =>
-            {
-                Result<Guid> epoch = await GuildSignetStore.EpochAsync(connection, transaction, token).ConfigureAwait(false);
-
-                if (epoch.IsFailure)
-                {
-                    return epoch.Error;
-                }
-
-                GuildSignetRecord row = new(binding, CopyOwners(owners), policy.InstallationGeneration, epoch.Value, 1, 1,
-                    credential.Digest(), 0, false, false, false, false);
-
-                Result live = await GuildSignetStore.OwnersAsync(connection, transaction, row, token).ConfigureAwait(false);
-
-                if (live.IsFailure)
-                {
-                    return live.Error;
-                }
-
-                Result<GuildSignetPolicyEvidence> current = await policy.ResolveCurrentAsync([row], token).ConfigureAwait(false);
-
-                if (current.IsFailure)
-                {
-                    return current.Error;
-                }
-
-                Result<GuildGrant> within = GuildGrantPolicy.Attenuate(current.Value.HostGrant, Request(binding.Grant), current.Value.ScopeEvidence);
-
-                if (within.IsFailure)
-                {
-                    return within.Error;
-                }
-
-                if (admission.Caller.Kind == GuildCallerKind.Peer && !EqualGrant(binding.Grant, current.Value.HostGrant))
-                {
-                    return Mismatch;
-                }
-
-                if (binding.Grant.ExpiresAtUtc is { } expiry && time.GetUtcNow() >= expiry)
-                {
-                    return Expired;
-                }
-
-                Result<bool> inserted = await GuildSignetStore.InsertAsync(connection, transaction, row, token).ConfigureAwait(false);
-
-                return inserted.IsSuccess ? Result<GuildSignetRecord>.Success(row) : Result<GuildSignetRecord>.Failure(inserted.Error);
-            }, ct).ConfigureAwait(false);
+            Result<GuildSignetRecord> committed = await store.ExecuteAsync<GuildSignetRecord>(true,
+                (connection, transaction, token) => IssueWithinAsync(connection, transaction, admission, binding, parent,
+                    request, authorized.Value, credential, token), ct).ConfigureAwait(false);
 
             return committed.IsSuccess ? Register(committed.Value, credential.Take()) : Result<GuildExecutionHandle>.Failure(committed.Error);
         }, cancellationToken);
     }
 
-    public Task<Result<GuildExecutionHandle>> AttenuateAsync(GuildAdmissionContext admission, GuildExecutionHandle parent,
-        GuildSignetBinding child, GuildRequestedGrant request, CancellationToken cancellationToken)
+    private bool ValidIssuance(GuildAdmissionContext admission, GuildSignetBinding binding,
+        GuildExecutionHandle? parent, GuildRequestedGrant? request)
     {
-        if (!ValidBinding(child) || parent is null || child.RootCommissionId != parent.RootCommissionId || child.IssuerSignetId != parent.SignetId
-            || child.CommissionId == parent.CommissionId || child.RunId == parent.RunId || request is null
-            || admission?.Caller.Kind is not (GuildCallerKind.Operator or GuildCallerKind.Run)
-            || admission.Caller.InstallationGeneration != policy.InstallationGeneration
-            || admission.Caller.Kind == GuildCallerKind.Run && !ReferenceEquals(admission.Caller.Execution, parent))
+        if (!ValidBinding(binding) || admission is null || admission.Caller.InstallationGeneration != policy.InstallationGeneration)
         {
-            return Task.FromResult(Result<GuildExecutionHandle>.Failure(Mismatch));
+            return false;
         }
 
-        return UnderRootAsync(parent.RootCommissionId, true, async ct =>
+        return parent is null
+            ? request is null && binding.QuestId == binding.RootQuestId && binding.IssuerSignetId is null
+                && admission.Caller.Kind is GuildCallerKind.Operator or GuildCallerKind.Peer
+                && (admission.Caller.Kind != GuildCallerKind.Operator || admission.Caller.PrincipalId == binding.OriginPrincipalId)
+            : request is not null && binding.RootQuestId == parent.RootQuestId && binding.IssuerSignetId == parent.SignetId
+                && binding.QuestId != parent.QuestId && binding.RunId != parent.RunId
+                && admission.Caller.Kind is GuildCallerKind.Operator or GuildCallerKind.Run
+                && (admission.Caller.Kind != GuildCallerKind.Run || ReferenceEquals(admission.Caller.Execution, parent));
+    }
+
+    private async Task<Result<GuildSignetAdmissionEvidence>> AuthorizeIssuanceAsync(GuildAdmissionContext admission,
+        GuildSignetBinding binding, GuildExecutionHandle? parent, GuildRequestedGrant? request, CancellationToken ct)
+    {
+        if (!ValidIssuance(admission, binding, parent, request))
         {
-            Result<GuildSignetAdmissionEvidence> authorized = await policy.AuthorizeAdmissionAsync(admission, child, ct).ConfigureAwait(false);
+            return Mismatch;
+        }
 
-            if (authorized.IsFailure)
-            {
-                return Result<GuildExecutionHandle>.Failure(authorized.Error);
-            }
+        Result<GuildSignetAdmissionEvidence> authorized = await policy.AuthorizeAdmissionAsync(admission, binding, ct).ConfigureAwait(false);
 
-            using Credential credential = Credential.Create();
+        if (authorized.IsFailure)
+        {
+            return authorized.Error;
+        }
 
-            Result<GuildSignetRecord> committed = await store.ExecuteAsync<GuildSignetRecord>(true, async (connection, transaction, token) =>
-            {
-                Result<Verified> live = await LiveAsync(connection, transaction, parent, token).ConfigureAwait(false);
+        return parent is null && (!MatchesPeer(admission.Caller, authorized.Value.Owners) || authorized.Value.Edge != GuildSignetIssuanceEdge.Root)
+            ? Result<GuildSignetAdmissionEvidence>.Failure(Mismatch) : authorized;
+    }
 
-                if (live.IsFailure)
-                {
-                    return live.Error;
-                }
+    private Task<Result<GuildSignetRecord>> IssueWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        GuildAdmissionContext admission, GuildSignetBinding binding, GuildExecutionHandle? parent, GuildRequestedGrant? request,
+        GuildSignetAdmissionEvidence authorized, Credential credential, CancellationToken ct) => parent is null
+            ? MintWithinAsync(connection, transaction, admission, binding, authorized.Owners, credential, ct)
+            : AttenuateWithinAsync(connection, transaction, parent, binding, request!, authorized, credential, ct);
 
-                GuildSignetIssuanceEdge edge = authorized.Value.Edge;
+    private async Task<Result<GuildSignetRecord>> MintWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        GuildAdmissionContext admission, GuildSignetBinding binding, GuildSignetOwnerBinding owners, Credential credential, CancellationToken ct)
+    {
+        Result<Guid> epoch = await GuildSignetStore.EpochAsync(connection, transaction, ct).ConfigureAwait(false);
 
-                GuildDelegationKind? transport = edge switch
-                {
-                    GuildSignetIssuanceEdge.Local or GuildSignetIssuanceEdge.LocalCohort => GuildDelegationKind.Local,
-                    GuildSignetIssuanceEdge.Remote or GuildSignetIssuanceEdge.RemoteCohort => GuildDelegationKind.Remote,
-                    _ => null,
-                };
+        if (epoch.IsFailure)
+        {
+            return epoch.Error;
+        }
 
-                if (transport is null || !live.Value.Effective.Delegation.Contains(transport.Value)
-                    || edge is GuildSignetIssuanceEdge.LocalCohort or GuildSignetIssuanceEdge.RemoteCohort
-                        && !live.Value.Effective.Delegation.Contains(GuildDelegationKind.Cohort))
-                {
-                    return new Error(ErrorCodes.Guild.Forbidden, "The issuing run lacks the exact delegation rights for this host-bound edge.");
-                }
+        GuildSignetRecord row = new(binding, CopyOwners(owners), policy.InstallationGeneration, epoch.Value, 1, 1,
+            credential.Digest(), 0, false, false, false, false);
 
-                if (live.Value.Lineage.Any(row => row.Binding.AgentId == child.AgentId))
-                {
-                    return new Error(ErrorCodes.Guild.DelegationCycle, "The stable agent already occurs in the issuer lineage.");
-                }
+        Result live = await GuildSignetStore.OwnersAsync(connection, transaction, row, ct).ConfigureAwait(false);
 
-                GuildSignetRecord issuer = live.Value.Lineage[0];
+        if (live.IsFailure)
+        {
+            return live.Error;
+        }
 
-                GuildSignetOwnerBinding owners = authorized.Value.Owners;
+        Result<GuildSignetPolicyEvidence> current = await policy.ResolveCurrentAsync([row], ct).ConfigureAwait(false);
 
-                if (!SameRootOwners(issuer.Owners, owners) || child.OriginPrincipalId != issuer.Binding.OriginPrincipalId)
-                {
-                    return Mismatch;
-                }
+        if (current.IsFailure)
+        {
+            return current.Error;
+        }
 
-                Result<GuildGrant> attenuated = GuildGrantPolicy.Attenuate(live.Value.Effective, request, live.Value.Evidence);
+        Result<GuildGrant> within = GuildGrantPolicy.Attenuate(current.Value.HostGrant, Request(binding.Grant), current.Value.ScopeEvidence);
 
-                if (attenuated.IsFailure)
-                {
-                    return attenuated.Error;
-                }
+        if (within.IsFailure)
+        {
+            return within.Error;
+        }
 
-                if (!EqualGrant(child.Grant, attenuated.Value))
-                {
-                    return Mismatch;
-                }
+        if (admission.Caller.Kind == GuildCallerKind.Peer && !EqualGrant(binding.Grant, current.Value.HostGrant))
+        {
+            return Mismatch;
+        }
 
-                GuildSignetRecord row = new(child with { Grant = attenuated.Value }, CopyOwners(owners), issuer.InstallationGeneration,
-                    issuer.AuthorityEpoch, 1, 1, credential.Digest(), 0, false, false, false, false);
+        if (binding.Grant.ExpiresAtUtc is { } expiry && time.GetUtcNow() >= expiry)
+        {
+            return Expired;
+        }
 
-                Result owned = await GuildSignetStore.OwnersAsync(connection, transaction, row, token).ConfigureAwait(false);
+        Result<bool> inserted = await GuildSignetStore.InsertAsync(connection, transaction, row, ct).ConfigureAwait(false);
 
-                if (owned.IsFailure)
-                {
-                    return owned.Error;
-                }
+        return inserted.IsSuccess ? Result<GuildSignetRecord>.Success(row) : Result<GuildSignetRecord>.Failure(inserted.Error);
+    }
 
-                Result<bool> inserted = await GuildSignetStore.InsertAsync(connection, transaction, row, token).ConfigureAwait(false);
+    private async Task<Result<GuildSignetRecord>> AttenuateWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        GuildExecutionHandle parent, GuildSignetBinding child, GuildRequestedGrant request,
+        GuildSignetAdmissionEvidence authorized, Credential credential, CancellationToken ct)
+    {
+        Result<Verified> live = await LiveAsync(connection, transaction, parent, ct).ConfigureAwait(false);
 
-                return inserted.IsSuccess ? Result<GuildSignetRecord>.Success(row) : Result<GuildSignetRecord>.Failure(inserted.Error);
-            }, ct).ConfigureAwait(false);
+        if (live.IsFailure)
+        {
+            return live.Error;
+        }
 
-            return committed.IsSuccess ? Register(committed.Value, credential.Take()) : Result<GuildExecutionHandle>.Failure(committed.Error);
-        }, cancellationToken);
+        GuildSignetIssuanceEdge edge = authorized.Edge;
+
+        GuildDelegationKind? transport = edge switch
+        {
+            GuildSignetIssuanceEdge.Local or GuildSignetIssuanceEdge.LocalCohort => GuildDelegationKind.Local,
+            GuildSignetIssuanceEdge.Remote or GuildSignetIssuanceEdge.RemoteCohort => GuildDelegationKind.Remote,
+            _ => null,
+        };
+
+        if (transport is null || !live.Value.Effective.Delegation.Contains(transport.Value)
+            || edge is GuildSignetIssuanceEdge.LocalCohort or GuildSignetIssuanceEdge.RemoteCohort
+                && !live.Value.Effective.Delegation.Contains(GuildDelegationKind.Cohort))
+        {
+            return new Error(ErrorCodes.Guild.Forbidden, "The issuing run lacks the exact delegation rights for this host-bound edge.");
+        }
+
+        if (live.Value.Lineage.Any(row => row.Binding.AgentId == child.AgentId))
+        {
+            return new Error(ErrorCodes.Guild.DelegationCycle, "The stable agent already occurs in the issuer lineage.");
+        }
+
+        GuildSignetRecord issuer = live.Value.Lineage[0];
+
+        GuildSignetOwnerBinding owners = authorized.Owners;
+
+        if (!SameRootOwners(issuer.Owners, owners) || child.OriginPrincipalId != issuer.Binding.OriginPrincipalId)
+        {
+            return Mismatch;
+        }
+
+        Result<GuildGrant> attenuated = GuildGrantPolicy.Attenuate(live.Value.Effective, request, live.Value.Evidence);
+
+        if (attenuated.IsFailure)
+        {
+            return attenuated.Error;
+        }
+
+        if (!EqualGrant(child.Grant, attenuated.Value))
+        {
+            return Mismatch;
+        }
+
+        GuildSignetRecord row = new(child with { Grant = attenuated.Value }, CopyOwners(owners), issuer.InstallationGeneration,
+            issuer.AuthorityEpoch, 1, 1, credential.Digest(), 0, false, false, false, false);
+
+        Result owned = await GuildSignetStore.OwnersAsync(connection, transaction, row, ct).ConfigureAwait(false);
+
+        if (owned.IsFailure)
+        {
+            return owned.Error;
+        }
+
+        Result<bool> inserted = await GuildSignetStore.InsertAsync(connection, transaction, row, ct).ConfigureAwait(false);
+
+        return inserted.IsSuccess ? Result<GuildSignetRecord>.Success(row) : Result<GuildSignetRecord>.Failure(inserted.Error);
     }
 
     public Task<Result<GuildVerifiedAuthority>> VerifyAsync(GuildExecutionHandle execution, GuildActionRequest action, CancellationToken cancellationToken)
@@ -199,7 +222,7 @@ internal sealed class SignetAuthority(GuildSignetStore store, IGrimoireConnectio
             return Task.FromResult(Result<GuildVerifiedAuthority>.Failure(Mismatch));
         }
 
-        return UnderRootAsync(execution.RootCommissionId, false, async ct =>
+        return UnderRootAsync(execution.RootQuestId, false, async ct =>
         {
             Result<Verified> live = await ReadLiveAsync(execution, ct).ConfigureAwait(false);
 
@@ -210,7 +233,7 @@ internal sealed class SignetAuthority(GuildSignetStore store, IGrimoireConnectio
 
             // Resource-specific readers and mutations need their later typed boundary participants.
             // A generic Guid cannot authorize a path, memory store, remote edge or tool identity.
-            if (action.ResourceId != execution.CommissionId || action.Action is not
+            if (action.ResourceId != execution.QuestId || action.Action is not
                 (GuildAuthorityAction.Start or GuildAuthorityAction.Continue or GuildAuthorityAction.Cancel or GuildAuthorityAction.ResultApply))
             {
                 return Result<GuildVerifiedAuthority>.Failure(new(ErrorCodes.Guild.AuthorityUnavailable,
@@ -241,7 +264,7 @@ internal sealed class SignetAuthority(GuildSignetStore store, IGrimoireConnectio
             return Task.FromResult(Result<T>.Failure(Mismatch));
         }
 
-        return UnderRootAsync(execution.RootCommissionId, action == GuildAuthorityAction.ToolDispatch, async token =>
+        return UnderRootAsync(execution.RootQuestId, action == GuildAuthorityAction.ToolDispatch, async token =>
         {
             Result<Verified> live = await ReadLiveAsync(execution, token).ConfigureAwait(false);
 
@@ -286,7 +309,7 @@ internal sealed class SignetAuthority(GuildSignetStore store, IGrimoireConnectio
             return found.Error;
         }
 
-        return await UnderRootAsync(found.Value.Binding.RootCommissionId, true, ct =>
+        return await UnderRootAsync(found.Value.Binding.RootQuestId, true, ct =>
             store.ExecuteAsync<SignetRevocationDto>(true, async (connection, transaction, token) =>
             {
                 Result<GuildSignetRecord> current = await GuildSignetStore.ReadAsync(connection, transaction, signetId, false, token).ConfigureAwait(false);
@@ -326,20 +349,20 @@ internal sealed class SignetAuthority(GuildSignetStore store, IGrimoireConnectio
             return Mismatch;
         }
 
-        Result<GuildSignetRecord> found = await FindAsync(recovery.CommissionId, true, cancellationToken).ConfigureAwait(false);
+        Result<GuildSignetRecord> found = await FindAsync(recovery.QuestId, true, cancellationToken).ConfigureAwait(false);
 
         if (found.IsFailure)
         {
             return found.Error;
         }
 
-        return await UnderRootAsync(found.Value.Binding.RootCommissionId, true, async ct =>
+        return await UnderRootAsync(found.Value.Binding.RootQuestId, true, async ct =>
         {
             using Credential replacement = Credential.Create();
 
             Result<GuildSignetRecord> committed = await store.ExecuteAsync<GuildSignetRecord>(true, async (connection, transaction, token) =>
             {
-                Result<GuildSignetRecord> row = await GuildSignetStore.ReadAsync(connection, transaction, recovery.CommissionId, true, token).ConfigureAwait(false);
+                Result<GuildSignetRecord> row = await GuildSignetStore.ReadAsync(connection, transaction, recovery.QuestId, true, token).ConfigureAwait(false);
 
                 if (row.IsFailure)
                 {
@@ -409,7 +432,7 @@ internal sealed class SignetAuthority(GuildSignetStore store, IGrimoireConnectio
         GuildSignetRecord target = row.Value;
 
         if (execution.AgentId != target.Binding.AgentId || execution.RunId != target.Binding.RunId
-            || execution.CommissionId != target.Binding.CommissionId || execution.RootCommissionId != target.Binding.RootCommissionId
+            || execution.QuestId != target.Binding.QuestId || execution.RootQuestId != target.Binding.RootQuestId
             || execution.IssuerSignetId != target.Binding.IssuerSignetId || execution.CredentialGeneration != target.CredentialGeneration
             || execution.RevocationGeneration != target.RevocationGeneration || !_credentials.TryGetValue(execution, out Credential? credential)
             || !credential.Matches(target.TokenDigest))
@@ -482,9 +505,9 @@ internal sealed class SignetAuthority(GuildSignetStore store, IGrimoireConnectio
         return new Verified(effective, path.Value, evidence.ScopeEvidence);
     }
 
-    private Task<Result<GuildSignetRecord>> FindAsync(Guid id, bool byCommission, CancellationToken ct) =>
+    private Task<Result<GuildSignetRecord>> FindAsync(Guid id, bool byQuest, CancellationToken ct) =>
         WithInstallationAsync(false, token => store.ExecuteAsync(false,
-            (connection, transaction, admitted) => GuildSignetStore.ReadAsync(connection, transaction, id, byCommission, admitted), token), ct);
+            (connection, transaction, admitted) => GuildSignetStore.ReadAsync(connection, transaction, id, byQuest, admitted), token), ct);
 
     private Task<Result<T>> UnderRootAsync<T>(Guid root, bool effect, Func<CancellationToken, Task<Result<T>>> action, CancellationToken ct) =>
         WithInstallationAsync(effect, token => GuildSignetRootGate.RunAsync(gate, root, action, token), ct);
@@ -535,8 +558,8 @@ internal sealed class SignetAuthority(GuildSignetStore store, IGrimoireConnectio
     {
         GuildSignetBinding binding = row.Binding;
 
-        GuildExecutionHandle handle = new(binding.SignetId, binding.AgentId, binding.RunId, binding.CommissionId,
-            binding.RootCommissionId, row.CredentialGeneration, row.RevocationGeneration, binding.IssuerSignetId);
+        GuildExecutionHandle handle = new(binding.SignetId, binding.AgentId, binding.RunId, binding.QuestId,
+            binding.RootQuestId, row.CredentialGeneration, row.RevocationGeneration, binding.IssuerSignetId);
 
         if (Volatile.Read(ref _disposed) != 0 || !_credentials.TryAdd(handle, credential))
         {
@@ -581,10 +604,10 @@ internal sealed class SignetAuthority(GuildSignetStore store, IGrimoireConnectio
     }
 
     private bool ValidBinding(GuildSignetBinding binding) => binding is not null && binding.SignetId != Guid.Empty
-        && binding.AgentId != Guid.Empty && binding.RunId != Guid.Empty && binding.CommissionId != Guid.Empty
-        && binding.RootCommissionId != Guid.Empty && binding.OriginPrincipalId != Guid.Empty
+        && binding.AgentId != Guid.Empty && binding.RunId != Guid.Empty && binding.QuestId != Guid.Empty
+        && binding.RootQuestId != Guid.Empty && binding.OriginPrincipalId != Guid.Empty
         && binding.IssuedAtUtc.Offset == TimeSpan.Zero && binding.IssuedAtUtc <= time.GetUtcNow()
-        && (binding.CommissionId == binding.RootCommissionId ? binding.IssuerSignetId is null : binding.IssuerSignetId is { } id && id != Guid.Empty)
+        && (binding.QuestId == binding.RootQuestId ? binding.IssuerSignetId is null : binding.IssuerSignetId is { } id && id != Guid.Empty)
         && GuildGrantPolicy.Validate(binding.Grant).IsSuccess;
 
     private static bool MatchesPeer(GuildCallerContext caller, GuildSignetOwnerBinding owners) => caller.Kind == GuildCallerKind.Peer
@@ -611,7 +634,7 @@ internal sealed class SignetAuthority(GuildSignetStore store, IGrimoireConnectio
         && value.All(character => character is >= '0' and <= '9' or >= 'A' and <= 'F');
 
     private static GuildVerifiedAuthority Proof(GuildExecutionHandle execution, GuildAuthorityAction action, Verified verified, GuildToolGrant? tool = null) =>
-        new(execution, action, execution.CommissionId, verified.Lineage[0].Revision, verified.Effective, tool);
+        new(execution, action, execution.QuestId, verified.Lineage[0].Revision, verified.Effective, tool);
 
     private static Error Mismatch => new(ErrorCodes.Guild.AuthorityMismatch, "The Guild execution or trusted host binding does not match.");
 

@@ -46,7 +46,7 @@ public sealed record SharedNoteDto(
     Guid Id,
     Guid CohortId,
     long Sequence,
-    Guid? AuthorCommissionId,
+    Guid? AuthorQuestId,
     Guid? AuthorMemberId,
     GuildAuthorityKind Authority,
     GuildNoteKind Kind,

@@ -7,7 +7,7 @@ public interface ICircle
 {
     Task<Result<GuildMessageReceipt>> PublishAsync(GuildCallerContext caller, GuildMutationIdentity mutation, GuildPublishRequest request, CancellationToken cancellationToken);
 
-    Task<Result<GuildInboxClaim>> ClaimAsync(GuildVerifiedAuthority authority, Guid recipientCommissionId, CancellationToken cancellationToken);
+    Task<Result<GuildInboxClaim>> ClaimAsync(GuildVerifiedAuthority authority, Guid recipientQuestId, CancellationToken cancellationToken);
 
     Task<Result<GuildCircleInboxItem>> ReadClaimAsync(GuildInboxClaim claim, CancellationToken cancellationToken);
 

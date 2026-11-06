@@ -3,8 +3,8 @@ BEFORE UPDATE ON guild_signets
 WHEN NEW.SignetId IS NOT OLD.SignetId
   OR NEW.AgentId IS NOT OLD.AgentId
   OR NEW.RunId IS NOT OLD.RunId
-  OR NEW.CommissionId IS NOT OLD.CommissionId
-  OR NEW.RootCommissionId IS NOT OLD.RootCommissionId
+  OR NEW.QuestId IS NOT OLD.QuestId
+  OR NEW.RootQuestId IS NOT OLD.RootQuestId
   OR NEW.IssuerSignetId IS NOT OLD.IssuerSignetId
   OR NEW.GrantJson IS NOT OLD.GrantJson
   OR NEW.IssuedAtUtc IS NOT OLD.IssuedAtUtc

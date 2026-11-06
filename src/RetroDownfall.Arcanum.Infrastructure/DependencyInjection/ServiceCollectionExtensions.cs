@@ -1492,6 +1492,10 @@ public static class ServiceCollectionExtensions
         // Issue #40: every kind in LongRunningOperationRecoveryRegistry owns a handler, so a stranded
         // operation reaches explicit recovery instead of falling through to "handler missing". A kind is
         // registered only together with the production code that creates its rows.
+        services.AddSingleton<IGuildQuestRecoveryObserver, UnavailableGuildQuestRecoveryObserver>();
+
+        services.AddScoped<ILongRunningOperationRecoveryHandler, GuildQuestRecoveryHandler>();
+
         services.AddScoped<ILongRunningOperationRecoveryHandler, SubagentRecoveryHandler>();
         services.AddScoped<ILongRunningOperationRecoveryHandler, MemoryEvaluationRecoveryHandler>();
         services.AddScoped<RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation.IMemoryEvaluationEvidenceStore, RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation.MemoryEvaluationEvidenceStore>();
@@ -2474,6 +2478,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IGuildOwnerCleanupParticipant, GuildRosterCleanupParticipant>();
 
         services.AddScoped<IGuildOwnerCleanupParticipant, GuildSignetCleanupParticipant>();
+
+        services.AddScoped<IGuildOwnerCleanupParticipant, GuildQuestCleanupParticipant>();
 
         services.AddScoped(static sp => new GuildOwnerCleanupCoordinator(
             sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),

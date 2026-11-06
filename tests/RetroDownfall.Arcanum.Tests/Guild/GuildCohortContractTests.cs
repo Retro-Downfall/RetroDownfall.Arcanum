@@ -15,12 +15,12 @@ public sealed class GuildCohortContractTests
     {
         "GuildRevisionRequest", "GuildResultContract", "GuildConvergencePolicy",
         "CreateCohortRequest", "AdmitCohortMemberRequest", "CohortDto", "CohortMemberDto",
-        "CohortMemberCommissionDto", "CohortContributionDto", "CohortConvergenceDto",
+        "CohortMemberQuestDto", "CohortContributionDto", "CohortConvergenceDto",
         "PostWorkOfferRequest", "SubmitBidRequest", "AwardWorkRequest", "WorkOfferDto",
         "WorkBidDto", "WorkAwardDto", "AppendSharedNoteRequest", "SharedNoteDto",
         "AcquireWorkspaceLeaseRequest", "GuildPathScope", "RenewWorkspaceLeaseRequest",
         "ReleaseWorkspaceLeaseRequest", "WorkspaceLeaseDto", "CohortPageDto",
-        "CohortMemberPageDto", "CohortMemberCommissionPageDto", "CohortContributionPageDto",
+        "CohortMemberPageDto", "CohortMemberQuestPageDto", "CohortContributionPageDto",
         "WorkOfferPageDto", "WorkBidPageDto", "SharedNotePageDto", "WorkspaceLeasePageDto",
     };
 
@@ -72,7 +72,7 @@ public sealed class GuildCohortContractTests
         { typeof(GuildNoteKind), ["observation", "proposal", "correction"] },
         { typeof(GuildAuthorityKind), ["operator", "parent", "peer", "child"] },
         { typeof(GuildWorkspaceLeaseState), ["held", "draining", "released", "reconciliation-required"] },
-        { typeof(GuildWorkspaceLeaseOwnerKind), ["commission", "operator"] },
+        { typeof(GuildWorkspaceLeaseOwnerKind), ["quest", "operator"] },
         { typeof(GuildPathScopeKind), ["file", "subtree"] },
     };
 
@@ -116,8 +116,8 @@ public sealed class GuildCohortContractTests
 
     public static TheoryData<Type, string[]> RequestProperties => new()
     {
-        { typeof(CreateCohortRequest), ["IdempotencyKey", "IssuerCommissionId", "Name", "Policy", "ResultContract", "RequestedGrant"] },
-        { typeof(AdmitCohortMemberRequest), ["IdempotencyKey", "ExpectedRevision", "Commission"] },
+        { typeof(CreateCohortRequest), ["IdempotencyKey", "IssuerQuestId", "Name", "Policy", "ResultContract", "RequestedGrant"] },
+        { typeof(AdmitCohortMemberRequest), ["IdempotencyKey", "ExpectedRevision", "Quest"] },
         { typeof(PostWorkOfferRequest), ["IdempotencyKey", "ExpectedCohortRevision", "SkillId", "Goal", "RequestedGrant", "ResultContract"] },
         { typeof(SubmitBidRequest), ["IdempotencyKey", "ExpectedRevision", "Note", "ClaimedCostUsd"] },
         { typeof(AwardWorkRequest), ["IdempotencyKey", "ExpectedRevision", "ExpectedCohortRevision", "BidId"] },
@@ -143,7 +143,7 @@ public sealed class GuildCohortContractTests
     {
         { typeof(CohortPageDto), typeof(CohortDto) },
         { typeof(CohortMemberPageDto), typeof(CohortMemberDto) },
-        { typeof(CohortMemberCommissionPageDto), typeof(CohortMemberCommissionDto) },
+        { typeof(CohortMemberQuestPageDto), typeof(CohortMemberQuestDto) },
         { typeof(CohortContributionPageDto), typeof(CohortContributionDto) },
         { typeof(WorkOfferPageDto), typeof(WorkOfferDto) },
         { typeof(WorkBidPageDto), typeof(WorkBidDto) },
@@ -231,7 +231,7 @@ public sealed class GuildCohortContractTests
         string[] leaseFields = document.RootElement.GetProperty("items")[0].EnumerateObject().Select(property => property.Name).ToArray();
 
         Assert.Equal(
-            new[] { "id", "workspaceId", "ownerKind", "commissionId", "rootCommissionId", "scopes", "state", "epoch", "revision", "expiresAt", "inFlightMutationCount", "reasonCode", "receipt" },
+            new[] { "id", "workspaceId", "ownerKind", "questId", "rootQuestId", "scopes", "state", "epoch", "revision", "expiresAt", "inFlightMutationCount", "reasonCode", "receipt" },
             leaseFields);
     }
 }

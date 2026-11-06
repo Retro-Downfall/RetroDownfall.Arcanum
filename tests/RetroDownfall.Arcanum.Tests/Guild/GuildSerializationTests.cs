@@ -7,7 +7,7 @@ public sealed class GuildSerializationTests
     [Theory]
     [InlineData("Guild.GuildAgentCard")]
     [InlineData("Guild.GuildAgentCardDto")]
-    [InlineData("Guild.GuildCommissionDto")]
+    [InlineData("Guild.GuildQuestDto")]
     [InlineData("Guild.GuildProducerIdentity")]
     [InlineData("Guild.GuildEnvelope")]
     [InlineData("Guild.GuildSpendDto")]

@@ -11,7 +11,7 @@ public interface IGuildWorkspaceLeaseService
 
     Task<Result<WorkspaceLeaseDto>> ReleaseAsync(GuildCallerContext caller, GuildMutationIdentity mutation, Guid leaseId, ReleaseWorkspaceLeaseRequest request, CancellationToken cancellationToken);
 
-    Task<Result<WorkspaceLeasePageDto>> ListAsync(GuildCallerContext caller, Guid? workspaceId, Guid? commissionId, GuildWorkspaceLeaseState? state, GuildPageQuery query, CancellationToken cancellationToken);
+    Task<Result<WorkspaceLeasePageDto>> ListAsync(GuildCallerContext caller, Guid? workspaceId, Guid? questId, GuildWorkspaceLeaseState? state, GuildPageQuery query, CancellationToken cancellationToken);
 
     Task<Result<GuildMutationPermit>> AdmitMutationAsync(GuildVerifiedAuthority authority, GuildMutationPlan plan, CancellationToken cancellationToken);
 

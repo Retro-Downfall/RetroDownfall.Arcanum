@@ -81,6 +81,35 @@ internal static class GuildContentLifecycle
             throw new InvalidDataException("Guild protected content no longer matches its immutable sensitivity evidence.");
         }
 
+        await RecordErasureAsync(connection, transaction, artifactId, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task PrepareOrdinaryPurgeAsync(SqliteConnection connection, SqliteTransaction transaction,
+        string artifactKey, CancellationToken cancellationToken)
+    {
+        Guid artifactId = Guid.ParseExact(artifactKey, "N");
+
+        await using SqliteCommand kind = connection.CreateCommand();
+
+        kind.Transaction = transaction;
+
+        kind.CommandText = "SELECT ContentKindCode FROM guild_content WHERE ContentId=$id AND SensitivityCode=0";
+
+        kind.Parameters.AddWithValue("$id", Format(artifactId));
+
+        object? stored = await kind.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        // Card-cache pruning retains its existing lifecycle. Quest and later domain bodies
+        // leave exact content-free evidence before their bytes are removed.
+        if (stored is long contentKind && contentKind != 0)
+        {
+            await RecordErasureAsync(connection, transaction, artifactId, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task RecordErasureAsync(SqliteConnection connection, SqliteTransaction transaction,
+        Guid artifactId, CancellationToken cancellationToken)
+    {
         DateTimeOffset erasedAt = DateTimeOffset.UtcNow;
 
         await using SqliteCommand receipt = connection.CreateCommand();
@@ -135,6 +164,28 @@ internal static class GuildContentLifecycle
         _ = head.Parameters.AddWithValue("$reason", ErrorCodes.Guild.ContentErased);
 
         _ = await head.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        await using SqliteCommand quest = connection.CreateCommand();
+
+        quest.Transaction = transaction;
+
+        quest.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='guild_quests'";
+
+        if (Equals(1L, await quest.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)))
+        {
+            quest.CommandText = """
+                UPDATE guild_quests SET Name=NULL,Revision=Revision+1,UpdatedAtUtc=$now
+                WHERE GoalContentId=$id AND Name IS NOT NULL;
+                UPDATE guild_result_outbox SET DeliveryStateCode=3,Revision=Revision+1,AcknowledgedAtUtc=$now
+                WHERE DeliveryStateCode=1 AND QuestId IN(SELECT QuestId FROM guild_result_receipts WHERE ContentId=$id);
+                """;
+
+            quest.Parameters.AddWithValue("$id", Format(artifactId));
+
+            UtcInstantSql.AddParameter(quest, "$now", erasedAt);
+
+            _ = await quest.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private static bool OwnerMatches(SqliteDataReader reader, int ordinal, Guid? owner) => owner is { } id

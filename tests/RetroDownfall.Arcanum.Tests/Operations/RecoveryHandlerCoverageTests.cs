@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -42,6 +43,7 @@ public sealed class RecoveryHandlerCoverageTests
     private static readonly IReadOnlyDictionary<string, Type> ExpectedHandlers =
         new Dictionary<string, Type>(StringComparer.Ordinal)
         {
+            [LongRunningOperationKinds.GuildQuest] = typeof(GuildQuestRecoveryHandler),
             [LongRunningOperationKinds.MemoryEvaluation] = typeof(MemoryEvaluationRecoveryHandler),
             [LongRunningOperationKinds.LongRestSweep] = typeof(LongRestSweepRecoveryHandler),
             [LongRunningOperationKinds.Subagent] = typeof(SubagentRecoveryHandler),
@@ -66,6 +68,8 @@ public sealed class RecoveryHandlerCoverageTests
     private static readonly IReadOnlyDictionary<string, string> ProductionProducers =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
+            [LongRunningOperationKinds.GuildQuest] =
+                "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.cs",
             [LongRunningOperationKinds.MemoryEvaluation] =
                 "src/RetroDownfall.Arcanum.Api/ProvingGrounds/MemoryEvaluation/MemoryEvaluationRunner.cs",
             [LongRunningOperationKinds.LongRestSweep] =

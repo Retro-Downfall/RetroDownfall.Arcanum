@@ -4,8 +4,8 @@ using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.Guild;
 
-[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CommissionState>))]
-public enum CommissionState
+[JsonConverter(typeof(StringOnlyJsonStringEnumConverter<QuestState>))]
+public enum QuestState
 {
     [JsonStringEnumMemberName("submitted")]
     Submitted = 0,
@@ -99,11 +99,11 @@ public enum GuildContentKind
     [JsonStringEnumMemberName("agentCard")]
     AgentCard = 0,
 
-    [JsonStringEnumMemberName("commissionGoal")]
-    CommissionGoal = 1,
+    [JsonStringEnumMemberName("questGoal")]
+    QuestGoal = 1,
 
-    [JsonStringEnumMemberName("commissionResult")]
-    CommissionResult = 2,
+    [JsonStringEnumMemberName("questResult")]
+    QuestResult = 2,
 
     [JsonStringEnumMemberName("circleBody")]
     CircleBody = 3,
@@ -160,8 +160,8 @@ public enum GuildProducerKind
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<GuildReceiptSourceKind>))]
 public enum GuildReceiptSourceKind
 {
-    [JsonStringEnumMemberName("commissionIssue")]
-    CommissionIssue = 0,
+    [JsonStringEnumMemberName("questIssue")]
+    QuestIssue = 0,
 
     [JsonStringEnumMemberName("result")]
     Result = 1,
@@ -189,8 +189,8 @@ public enum GuildCircleAddressKind
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<GuildEnvelopeKind>))]
 public enum GuildEnvelopeKind
 {
-    [JsonStringEnumMemberName("commission.issued")]
-    CommissionIssued = 0,
+    [JsonStringEnumMemberName("quest.issued")]
+    QuestIssued = 0,
 
     [JsonStringEnumMemberName("progress")]
     Progress = 1,
@@ -211,8 +211,8 @@ public enum GuildEnvelopeKind
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<GuildEventKind>))]
 public enum GuildEventKind
 {
-    [JsonStringEnumMemberName("commissionChanged")]
-    CommissionChanged = 0,
+    [JsonStringEnumMemberName("questChanged")]
+    QuestChanged = 0,
 
     [JsonStringEnumMemberName("messageCommitted")]
     MessageCommitted = 1,

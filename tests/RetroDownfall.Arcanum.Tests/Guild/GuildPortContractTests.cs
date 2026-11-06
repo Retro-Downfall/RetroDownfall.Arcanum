@@ -8,8 +8,8 @@ public sealed class GuildPortContractTests
     [Theory]
     [InlineData("IGuildRoster")]
     [InlineData("ISignetAuthority")]
-    [InlineData("IGuildCommissionCoordinator")]
-    [InlineData("ICommissionStore")]
+    [InlineData("IGuildQuestCoordinator")]
+    [InlineData("IQuestStore")]
     [InlineData("ICircle")]
     [InlineData("IGuildPort")]
     [InlineData("IGuildCohortService")]
@@ -54,7 +54,7 @@ public sealed class GuildPortContractTests
             "PeerGrantRequired", "LeaseNotHeld", "NotFound", "OwnerUnavailable", "RevisionConflict",
             "IdempotencyConflict", "ResultConflict", "GrantExceeded", "PriceUnavailable",
             "BudgetCapabilityUnavailable", "DelegationCycle", "LegacyRunUnavailable", "LegacyToolName",
-            "ReconciliationRequired", "UnsupportedTransportState", "SequenceExhausted", "MembershipConflict",
+            "ReconciliationRequired", "AwaitingInput", "UnsupportedTransportState", "SequenceExhausted", "MembershipConflict",
             "CohortClosed", "NoEligibleBidder", "BidConflict", "OfferClosed", "DestinationChanged",
             "LeaseConflict", "LeaseLapsed", "WorkspaceIdentityUnavailable", "LeaseReconciliationRequired",
             "SourceConflict", "ContentErased", "CursorGone", "PayloadTooLarge", "Unavailable",

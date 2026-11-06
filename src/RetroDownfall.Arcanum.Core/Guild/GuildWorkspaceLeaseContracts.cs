@@ -23,8 +23,8 @@ public enum GuildWorkspaceLeaseState
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<GuildWorkspaceLeaseOwnerKind>))]
 public enum GuildWorkspaceLeaseOwnerKind
 {
-    [JsonStringEnumMemberName("commission")]
-    Commission = 1,
+    [JsonStringEnumMemberName("quest")]
+    Quest = 1,
 
     [JsonStringEnumMemberName("operator")]
     Operator = 2,
@@ -64,8 +64,8 @@ public sealed record WorkspaceLeaseDto(
     Guid Id,
     Guid WorkspaceId,
     GuildWorkspaceLeaseOwnerKind OwnerKind,
-    Guid? CommissionId,
-    Guid? RootCommissionId,
+    Guid? QuestId,
+    Guid? RootQuestId,
     ImmutableArray<GuildPathScope> Scopes,
     GuildWorkspaceLeaseState State,
     long Epoch,

@@ -19,6 +19,14 @@ internal static class UtcInstantColumnInventory
         new("guild_content_erasure_receipts", ["ErasedAtUtc"]),
         new("guild_owner_cleanup", ["CreatedAtUtc", "UpdatedAtUtc"]),
         new("guild_signets", ["IssuedAtUtc"]),
+        new("guild_quests", ["CreatedAtUtc", "UpdatedAtUtc"]),
+        new("guild_dispatches", ["CreatedAtUtc", "UpdatedAtUtc"]),
+        new("guild_result_receipts", ["CreatedAtUtc"]),
+        new("guild_result_outbox", ["CreatedAtUtc", "AcknowledgedAtUtc"]),
+        new("guild_result_applications", ["CreatedAtUtc"]),
+        new("guild_result_inputs", ["CreatedAtUtc"]),
+        new("guild_quest_start_intents", ["CreatedAtUtc"]),
+        new("guild_continuations", ["CreatedAtUtc"]),
     ];
 
     // The version-9 sweep runs before version-11 columns exist. Its positional cursor also depends

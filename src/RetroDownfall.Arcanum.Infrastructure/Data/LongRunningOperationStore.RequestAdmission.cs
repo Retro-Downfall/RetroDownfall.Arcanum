@@ -6,8 +6,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed partial class LongRunningOperationStore
 {
+    internal static Task<LongRunningOperation> CreateWithinAsync(DbConnection connection, DbTransaction? transaction,
+        LongRunningOperationCreateRequest request, CancellationToken ct) =>
+        CreateWithinAsync(connection, transaction, Guid.NewGuid(), request, 0, null, null, ct);
+
+    /// <summary>Creates the ledger identity and its first checkpoint in the caller-owned domain transaction.</summary>
     internal static async Task<LongRunningOperation> CreateWithinAsync(DbConnection connection, DbTransaction? transaction,
-        LongRunningOperationCreateRequest request, CancellationToken ct)
+        Guid operationId, LongRunningOperationCreateRequest request, int checkpointVersion, byte[]? checkpointPayload,
+        string? checkpointReference, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Kind);
 
@@ -17,8 +23,6 @@ internal sealed partial class LongRunningOperationStore
         {
             throw new ArgumentException($"Operation kind '{request.Kind}' is not registered with recovery policy '{request.RecoveryPolicy}'.", nameof(request));
         }
-
-        Guid id = Guid.NewGuid();
 
         string kind = Bound(request.Kind, MaxKindLength);
 
@@ -40,10 +44,10 @@ internal sealed partial class LongRunningOperationStore
                 (@id, @kind, @state, @policy, @root, @parent,
                  @session, @run, @inference, @reservation, @claim,
                  @created, NULL, NULL, NULL, NULL, NULL,
-                 0, 0, NULL, NULL, @summary, NULL, 0)
+                 0, @checkpoint, @payload, @reference, @summary, NULL, 0)
             """;
 
-        Add(cmd, "@id", Format(id));
+        Add(cmd, "@id", Format(operationId));
 
         Add(cmd, "@kind", kind);
 
@@ -67,12 +71,18 @@ internal sealed partial class LongRunningOperationStore
 
         _ = UtcInstantSql.AddParameter(cmd, "@created", request.CreatedAt);
 
+        Add(cmd, "@checkpoint", checkpointVersion);
+
+        Add(cmd, "@payload", checkpointPayload);
+
+        Add(cmd, "@reference", checkpointReference);
+
         Add(cmd, "@summary", summary);
 
         _ = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
         return new LongRunningOperation(
-            id,
+            operationId,
             kind,
             LongRunningOperationState.Pending,
             request.RecoveryPolicy,
@@ -90,12 +100,29 @@ internal sealed partial class LongRunningOperationStore
             LeaseOwner: null,
             LeaseExpiresAt: null,
             AttemptCount: 0,
-            CheckpointVersion: 0,
-            CheckpointPayload: null,
-            CheckpointReference: null,
+            CheckpointVersion: checkpointVersion,
+            CheckpointPayload: checkpointPayload,
+            CheckpointReference: checkpointReference,
             summary,
             TerminalErrorCode: null,
             Revision: 0);
+    }
+
+    /// <summary>
+    /// Applies the ledger's ordinary revision/owner CAS within a caller-owned domain transaction.
+    /// Callers requiring a live lease must verify its expiry on this same transaction before invoking it.
+    /// </summary>
+    internal static async Task<bool> TryTransitionWithinAsync(DbConnection connection, DbTransaction? transaction,
+        Guid operationId, long expectedRevision, string? ownerId, LongRunningOperationState state,
+        DateTimeOffset utcNow, string? terminalErrorCode, CancellationToken ct)
+    {
+        await using DbCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        ConfigureTransitionCommand(command, operationId, expectedRevision, ownerId, state, utcNow, terminalErrorCode);
+
+        return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1;
     }
 
     internal static async Task<LongRunningOperation?> ReadWithinAsync(DbConnection connection, DbTransaction transaction,

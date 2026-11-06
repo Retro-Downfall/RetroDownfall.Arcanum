@@ -5176,7 +5176,7 @@ internal sealed partial class DataRetentionService(
                 Add(catalog, names[index], selections[index].Table);
             }
 
-            catalog.CommandText = $"SELECT name, type FROM sqlite_master WHERE name IN ({string.Join(",", names)})";
+            catalog.CommandText = $"SELECT name, type FROM sqlite_master WHERE type='table' AND name IN ({string.Join(",", names)})";
 
             await using DbDataReader reader = await catalog.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
@@ -5611,6 +5611,8 @@ internal sealed partial class DataRetentionService(
 
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
+
+        conflicts.AddRange(await ReadGuildResetConflictsAsync(connection, null, cancellationToken).ConfigureAwait(false));
 
         if (await TableExistsAsync(
                 "LongRunningOperations",

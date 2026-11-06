@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using System.Data.Common;
 
 using System.Globalization;
@@ -30,6 +31,14 @@ internal sealed partial class DataRetentionService
 {
     private static readonly FactoryTablePlan[] FactoryPlanTables =
     [
+        new("guild_continuations", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_result_inputs", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_result_applications", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_result_outbox", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_result_receipts", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_dispatches", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_quest_start_intents", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_quests", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_signet_revocations", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_signets", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_signet_authority_state", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
@@ -139,6 +148,14 @@ internal sealed partial class DataRetentionService
 
     private static readonly FactoryTablePlan[] FactoryDeletionTables =
     [
+        new("guild_continuations", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_result_inputs", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_result_applications", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_result_outbox", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_result_receipts", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_dispatches", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_quest_start_intents", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_quests", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_signet_revocations", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_signets", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_signet_authority_state", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
@@ -1009,6 +1026,8 @@ internal sealed partial class DataRetentionService
         CancellationToken cancellationToken)
     {
         List<DataRetentionConflict> conflicts = [];
+
+        conflicts.AddRange(await ReadGuildResetConflictsAsync(connection, transaction, cancellationToken).ConfigureAwait(false));
 
         // Preserve the two existing eligibility reads and borrowed transaction. Recorded recovery
         // context selects guidance; attention classification alone cannot authorize retry or cancel.

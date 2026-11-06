@@ -1,0 +1,1 @@
+DROP TRIGGER guild_signets_guard_update;

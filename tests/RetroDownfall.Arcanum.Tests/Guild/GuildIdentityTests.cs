@@ -16,9 +16,9 @@ public sealed class GuildIdentityTests
     [InlineData("failed", "Failed")]
     [InlineData("canceled", "Canceled")]
     [InlineData("rejected", "Rejected")]
-    public void Commission_states_use_exact_closed_wire_literals(string wire, string member)
+    public void Quest_states_use_exact_closed_wire_literals(string wire, string member)
     {
-        Type type = Require("CommissionState");
+        Type type = Require("QuestState");
 
         JsonTypeInfo metadata = Metadata(type);
 
@@ -32,9 +32,9 @@ public sealed class GuildIdentityTests
     [Theory]
     [InlineData("0")]
     [InlineData("\"newer-success-state\"")]
-    public void Commission_state_refuses_unknown_and_integer_values(string json)
+    public void Quest_state_refuses_unknown_and_integer_values(string json)
     {
-        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize(json, Metadata(Require("CommissionState"))));
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize(json, Metadata(Require("QuestState"))));
     }
 
     [Theory]
@@ -79,9 +79,9 @@ public sealed class GuildIdentityTests
     {
         JsonTypeInfo metadata = Metadata(Require("GuildProducerIdentity"));
 
-        Assert.ThrowsAny<Exception>(() => JsonSerializer.Deserialize("""{"kind":"operator","agentId":"11111111-1111-1111-1111-111111111111","runId":"22222222-2222-2222-2222-222222222222","commissionId":null,"operatorPrincipalId":"local-operator","domainOwnerId":null,"sourceKind":null,"receiptId":null}""", metadata));
+        Assert.ThrowsAny<Exception>(() => JsonSerializer.Deserialize("""{"kind":"operator","agentId":"11111111-1111-1111-1111-111111111111","runId":"22222222-2222-2222-2222-222222222222","questId":null,"operatorPrincipalId":"local-operator","domainOwnerId":null,"sourceKind":null,"receiptId":null}""", metadata));
 
-        Assert.ThrowsAny<Exception>(() => JsonSerializer.Deserialize("""{"kind":"hostReceipt","agentId":null,"runId":null,"commissionId":null,"operatorPrincipalId":null,"domainOwnerId":"11111111-1111-1111-1111-111111111111","sourceKind":"result","receiptId":null}""", metadata));
+        Assert.ThrowsAny<Exception>(() => JsonSerializer.Deserialize("""{"kind":"hostReceipt","agentId":null,"runId":null,"questId":null,"operatorPrincipalId":null,"domainOwnerId":"11111111-1111-1111-1111-111111111111","sourceKind":"result","receiptId":null}""", metadata));
     }
 
     private static Type Require(string name) => Assert.IsAssignableFrom<Type>(typeof(Result).Assembly.GetType($"RetroDownfall.Arcanum.Core.Guild.{name}"));

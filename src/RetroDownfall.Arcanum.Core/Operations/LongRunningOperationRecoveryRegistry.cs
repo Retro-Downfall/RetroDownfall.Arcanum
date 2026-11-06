@@ -54,6 +54,16 @@ public static class LongRunningOperationRecoveryRegistry
         new[]
         {
             new LongRunningOperationRecoveryDescriptor(
+                LongRunningOperationKinds.GuildQuest,
+                LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+                Owner: "GuildQuestCoordinator",
+                MinCheckpointVersion: 1,
+                MaxCheckpointVersion: 1,
+                LongRunningOperationStartupPriority.Readiness,
+                RecoveryIntent: "Inspect the same committed Quest, child/task and immutable receipts; never dispatch replacement paid work.",
+                ManualRepairGuidance: "Inspect the Quest's dispatch, cancellation, delivery and accounting evidence. Unknown external effects require reconciliation, never an automatic relaunch."),
+
+            new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.MemoryEvaluation, LongRunningOperationRecoveryPolicy.AbandonSafely,
                 "MemoryEvaluationRunner", 0, 1, LongRunningOperationStartupPriority.Readiness,
                 "Settle metadata and measured accounting without replaying inference.",

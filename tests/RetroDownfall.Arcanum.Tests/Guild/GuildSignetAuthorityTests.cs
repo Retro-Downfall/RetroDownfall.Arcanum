@@ -17,7 +17,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Guild;
 
-public sealed class GuildSignetAuthorityTests
+public sealed partial class GuildSignetAuthorityTests
 {
     [Fact]
     public void Signet_authority_has_a_host_owned_runtime_implementation()
@@ -39,8 +39,8 @@ public sealed class GuildSignetAuthorityTests
 
         Assert.True((await f.Authority.VerifyToolAsync(execution, Fixture.Tool, true, default)).IsSuccess);
 
-        GuildExecutionHandle copy = new(execution.SignetId, execution.AgentId, execution.RunId, execution.CommissionId,
-            execution.RootCommissionId, execution.CredentialGeneration, execution.RevocationGeneration);
+        GuildExecutionHandle copy = new(execution.SignetId, execution.AgentId, execution.RunId, execution.QuestId,
+            execution.RootQuestId, execution.CredentialGeneration, execution.RevocationGeneration);
 
         Assert.Equal(ErrorCodes.Guild.AuthorityMismatch,
             (await f.Authority.VerifyToolAsync(copy, Fixture.Tool, true, default)).Error.Code);
@@ -128,7 +128,7 @@ public sealed class GuildSignetAuthorityTests
 
         GuildExecutionHandle original = await f.RootAsync();
 
-        GuildRecoveryContext recovery = new(original.CommissionId, Guid.NewGuid(), 1);
+        GuildRecoveryContext recovery = new(original.QuestId, Guid.NewGuid(), 1);
 
         f.Policy.Recoveries.Add(recovery);
 
@@ -140,7 +140,7 @@ public sealed class GuildSignetAuthorityTests
 
         Assert.Equal(original.RunId, result.Value.RunId);
 
-        Assert.Equal(original.CommissionId, result.Value.CommissionId);
+        Assert.Equal(original.QuestId, result.Value.QuestId);
 
         Assert.Equal(2, result.Value.CredentialGeneration);
 
@@ -162,7 +162,7 @@ public sealed class GuildSignetAuthorityTests
 
         Assert.Equal(ErrorCodes.Guild.AuthorityRevoked, (await f.Authority.VerifyToolAsync(execution, Fixture.Tool, true, default)).Error.Code);
 
-        GuildRecoveryContext recovery = new(execution.CommissionId, Guid.NewGuid(), 2);
+        GuildRecoveryContext recovery = new(execution.QuestId, Guid.NewGuid(), 2);
 
         f.Policy.Recoveries.Add(recovery);
 
@@ -389,7 +389,7 @@ public sealed class GuildSignetAuthorityTests
 
         Assert.Equal(32, retiredBuffer.Length);
 
-        GuildRecoveryContext recovery = new(root.CommissionId, Guid.NewGuid(), 1);
+        GuildRecoveryContext recovery = new(root.QuestId, Guid.NewGuid(), 1);
 
         f.Policy.Recoveries.Add(recovery);
 
@@ -444,7 +444,7 @@ public sealed class GuildSignetAuthorityTests
             Delegation = [GuildDelegationKind.Remote],
         };
 
-        Result<GuildVerifiedAuthority> verified = await f.Authority.VerifyAsync(root, new(GuildAuthorityAction.Start, root.CommissionId), default);
+        Result<GuildVerifiedAuthority> verified = await f.Authority.VerifyAsync(root, new(GuildAuthorityAction.Start, root.QuestId), default);
 
         Assert.True(verified.IsSuccess, verified.Error.Message);
 
@@ -476,7 +476,7 @@ public sealed class GuildSignetAuthorityTests
 
         Assert.Equal(ErrorCodes.Guild.OwnerUnavailable, (await f.Authority.VerifyToolAsync(root, Fixture.Tool, true, default)).Error.Code);
 
-        GuildRecoveryContext recovery = new(root.CommissionId, Guid.NewGuid(), 1);
+        GuildRecoveryContext recovery = new(root.QuestId, Guid.NewGuid(), 1);
 
         f.Policy.Recoveries.Add(recovery);
 
@@ -498,7 +498,7 @@ public sealed class GuildSignetAuthorityTests
 
         Assert.Equal(ErrorCodes.Guild.AuthorityRevoked, (await f.Authority.VerifyToolAsync(root, Fixture.Tool, true, default)).Error.Code);
 
-        GuildRecoveryContext recovery = new(root.CommissionId, Guid.NewGuid(), 1);
+        GuildRecoveryContext recovery = new(root.QuestId, Guid.NewGuid(), 1);
 
         f.Policy.Recoveries.Add(recovery);
 
@@ -557,9 +557,9 @@ public sealed class GuildSignetAuthorityTests
 
         GuildExecutionHandle original = await f.RootAsync();
 
-        GuildRecoveryContext firstClaim = new(original.CommissionId, Guid.NewGuid(), 1);
+        GuildRecoveryContext firstClaim = new(original.QuestId, Guid.NewGuid(), 1);
 
-        GuildRecoveryContext secondClaim = new(original.CommissionId, Guid.NewGuid(), 1);
+        GuildRecoveryContext secondClaim = new(original.QuestId, Guid.NewGuid(), 1);
 
         f.Policy.Recoveries.UnionWith([firstClaim, secondClaim]);
 
@@ -676,7 +676,7 @@ public sealed class GuildSignetAuthorityTests
 
     [Theory]
     [InlineData("RunId")]
-    [InlineData("CommissionId")]
+    [InlineData("QuestId")]
     [InlineData("IssuerSignetId")]
     public async Task Persisted_execution_binding_corruption_refuses_the_actual_effect_callback(string axis)
     {
@@ -849,9 +849,9 @@ public sealed class GuildSignetAuthorityTests
 
         internal GuildSignetBinding Binding(GuildGrant? grant = null, GuildExecutionHandle? parent = null)
         {
-            Guid commission = Guid.NewGuid();
+            Guid quest = Guid.NewGuid();
 
-            return new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), commission, parent?.RootCommissionId ?? commission,
+            return new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), quest, parent?.RootQuestId ?? quest,
                 parent?.SignetId, grant ?? Grant, Time.GetUtcNow(), Operator.PrincipalId!.Value);
         }
 
@@ -933,7 +933,7 @@ public sealed class GuildSignetAuthorityTests
             axis switch
             {
                 "RunId" => "UPDATE guild_signets SET RunId=$value WHERE SignetId=$id",
-                "CommissionId" => "UPDATE guild_signets SET CommissionId=$value WHERE SignetId=$id",
+                "QuestId" => "UPDATE guild_signets SET QuestId=$value WHERE SignetId=$id",
                 "IssuerSignetId" => "UPDATE guild_signets SET IssuerSignetId=$value WHERE SignetId=$id",
                 _ => throw new ArgumentOutOfRangeException(nameof(axis)),
             }, replacement.ToString("D").ToUpperInvariant());

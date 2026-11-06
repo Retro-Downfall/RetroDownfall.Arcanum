@@ -963,6 +963,91 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
+    public void Guild_Quest_recovery_retains_its_own_ordinary_recovery_work_and_effect(bool inheritedEffect)
+    {
+        string root = "GuildQuestRecoveryHandler";
+
+        string type = "RetroDownfall.Arcanum.Infrastructure.Guild.GuildQuestRecoveryHandler";
+
+        string path = "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestRecoveryHandler.cs";
+
+        string member = "RecoverAsync";
+
+        IReadOnlyList<CSharpCompilation> compilations = HostedGrimoireProducerInventory.ProductionCompilations;
+
+        if (inheritedEffect)
+        {
+            const string shell = """
+                using System.Threading;
+                using System.Threading.Tasks;
+                using RetroDownfall.Arcanum.Core.Operations;
+                using RetroDownfall.Arcanum.Infrastructure.Data;
+
+                namespace RetroDownfall.Arcanum.Infrastructure.Guild;
+
+                internal sealed class QuestRecoveryProofShell(IGrimoireConnectionAdmissionGate gate,
+                    GuildQuestRecoveryHandler handler, LongRunningOperation operation)
+                {
+                    internal async Task RunAsync(CancellationToken token)
+                    {
+                        if (!gate.TryAcquireWorkLease(GrimoireWorkKind.LongRunningOperationRecovery, out IGrimoireWorkLease? work))
+                            return;
+
+                        await using IGrimoireWorkLease held = work!;
+
+                        if (!held.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effect))
+                            return;
+
+                        await using IGrimoireExternalEffectGroup group = effect!;
+
+                        await handler.RecoverAsync(operation, token);
+                    }
+                }
+                """;
+
+            root = "QuestRecoveryProofShell";
+
+            type = "RetroDownfall.Arcanum.Infrastructure.Guild.QuestRecoveryProofShell";
+
+            path = "src/QuestRecoveryProofShell.cs";
+
+            member = "RunAsync";
+
+            CSharpCompilation infrastructure = Assert.Single(compilations, static compilation =>
+                compilation.AssemblyName == "RetroDownfall.Arcanum.Infrastructure");
+
+            SyntaxTree fixture = CSharpSyntaxTree.ParseText(shell,
+                (CSharpParseOptions)infrastructure.SyntaxTrees.First().Options, path);
+
+            CSharpCompilation modified = infrastructure.AddSyntaxTrees(fixture);
+
+            Assert.Empty(modified.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+            compilations = [.. compilations.Select(compilation => compilation == infrastructure ? modified : compilation)];
+        }
+
+        HostedProducerOperationEntry recovery = new(type + "." + member, path, type, member,
+            HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.LongRunningOperationRecovery, null, []);
+
+        HostedProducerDiscovery<HostedProducerSite> scoped = HostedGrimoireProducerInventory.DiscoverProducerSitesUnderPremises(
+            HostedGrimoireProducerInventory.ProductionPremises, compilations,
+            new([root], []), [new(root, [recovery])], []);
+
+        Assert.True(scoped.Diagnostics.Count == 0,
+            HostedGrimoireProducerInventory.RenderDiagnosticReport(scoped.Diagnostics));
+
+        Assert.Contains(scoped.Items, static site => site.Kind == HostedProducerSiteKind.DatabaseAccess);
+
+        Assert.Contains(scoped.Items, static site => site.Callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal)
+            && site.AdmittedWorkKind == GrimoireWorkKind.LongRunningOperationRecovery);
+
+        Assert.Contains(scoped.Items, static site => site.Callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal));
+    }
+
+    [Theory]
     [InlineData("PidFileService")]
     [InlineData("GuildMaintenanceHostedService")]
     [InlineData("Issue145AffectedPrimary")]

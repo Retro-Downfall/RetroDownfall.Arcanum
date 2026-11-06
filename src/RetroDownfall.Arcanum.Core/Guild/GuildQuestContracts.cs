@@ -11,7 +11,7 @@ public sealed record GuildDataRef(Guid ContentId, GuildContentKind Kind, long Re
 
 public sealed record GuildContentDto(GuildDataRef Reference, string Body);
 
-public sealed record GuildIssueRootRequest(Guid IdempotencyKey, Guid? AgentId, string? Name, string Goal, GuildGrant Grant, Guid? SessionId = null, Guid? CampaignId = null, Guid? WorkspaceId = null, Guid? PredecessorCommissionId = null);
+public sealed record GuildIssueRootRequest(Guid IdempotencyKey, Guid? AgentId, string? Name, string Goal, GuildGrant Grant, Guid? SessionId = null, Guid? CampaignId = null, Guid? WorkspaceId = null, Guid? PredecessorQuestId = null);
 
 public sealed record GuildIssueChildData(Guid? AgentId, string? Name, string Goal, GuildRequestedGrant? RequestedGrant);
 
@@ -19,13 +19,13 @@ public sealed record GuildIssueChildRequest(Guid IdempotencyKey, long ExpectedRe
 
 public sealed record GuildSendOperatorMessageRequest(Guid IdempotencyKey, long ExpectedRevision, GuildMessageKind Kind, string MimeType, string Body);
 
-public sealed record GuildCancelCommissionRequest(Guid IdempotencyKey, long ExpectedRevision, GuildCancellationReason ReasonCode);
+public sealed record GuildCancelQuestRequest(Guid IdempotencyKey, long ExpectedRevision, GuildCancellationReason ReasonCode);
 
-public sealed record GuildListCommissionsQuery(Guid? RootId = null, Guid? ParentId = null, CommissionState? State = null, string? Cursor = null, int PageSize = 100);
+public sealed record GuildListQuestsQuery(Guid? RootId = null, Guid? ParentId = null, QuestState? State = null, string? Cursor = null, int PageSize = 100);
 
 public sealed record GuildPageQuery(string? Cursor = null, int PageSize = 100);
 
-public sealed record GuildCommissionDto(
+public sealed record GuildQuestDto(
     Guid Id,
     string? Name,
     Guid OperationId,
@@ -33,8 +33,8 @@ public sealed record GuildCommissionDto(
     Guid CardId,
     long CardRevision,
     Guid RunId,
-    Guid? ParentCommissionId,
-    Guid RootCommissionId,
+    Guid? ParentQuestId,
+    Guid RootQuestId,
     Guid? SessionId,
     Guid? CampaignId,
     Guid? WorkspaceId,
@@ -42,7 +42,7 @@ public sealed record GuildCommissionDto(
     long SignetRevision,
     long Revision,
     long IssuedSequence,
-    CommissionState State,
+    QuestState State,
     GuildWaitReason? WaitReason,
     bool CancellationRequested,
     bool CancellationConverged,
@@ -58,12 +58,12 @@ public sealed record GuildCommissionDto(
     long EventWatermark,
     GuildMutationReceiptDto? Receipt = null);
 
-public sealed record GuildCancellationDto(Guid CommissionId, Guid RootCommissionId, long Revision, bool CancellationRequested, bool CancellationConverged, long PendingExecutionCount, long UnresolvedExternalEffectCount, GuildAccountingState AccountingState, long EventWatermark, GuildMutationReceiptDto? Receipt = null);
+public sealed record GuildCancellationDto(Guid QuestId, Guid RootQuestId, long Revision, bool CancellationRequested, bool CancellationConverged, long PendingExecutionCount, long UnresolvedExternalEffectCount, GuildAccountingState AccountingState, long EventWatermark, GuildMutationReceiptDto? Receipt = null);
 
 /// <summary>Physical usage and separate remaining authority; unknown dimensions never imply measured zero.</summary>
-public sealed record GuildSpendDto(Guid CommissionId, decimal KnownUsd, long KnownTokens, bool UnknownUsd, bool UnknownTokens, long PricedCount, long UnpricedCount, long UncertainCount, GuildBudgetGrant OutstandingAllocation, GuildBudgetGrant UnresolvedHolds, GuildBudgetGrant Remaining, long EventWatermark);
+public sealed record GuildSpendDto(Guid QuestId, decimal KnownUsd, long KnownTokens, bool UnknownUsd, bool UnknownTokens, long PricedCount, long UnpricedCount, long UncertainCount, GuildBudgetGrant OutstandingAllocation, GuildBudgetGrant UnresolvedHolds, GuildBudgetGrant Remaining, long EventWatermark);
 
-public sealed record GuildMessageReceipt(Guid CommissionId, Guid MessageId, long Revision, GuildDeliveryState DeliveryState, long EventWatermark, GuildMutationReceiptDto? Receipt = null);
+public sealed record GuildMessageReceipt(Guid QuestId, Guid MessageId, long Revision, GuildDeliveryState DeliveryState, long EventWatermark, GuildMutationReceiptDto? Receipt = null);
 
 public sealed record GuildRevokeSignetRequest(Guid IdempotencyKey, long ExpectedRevision, GuildCancellationReason ReasonCode);
 

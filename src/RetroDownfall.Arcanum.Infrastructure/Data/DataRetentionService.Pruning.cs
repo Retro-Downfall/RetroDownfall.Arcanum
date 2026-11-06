@@ -2944,6 +2944,8 @@ internal sealed partial class DataRetentionService
         DateTimeOffset cutoff = PrunePlanningTimestamp.AddDays(
             -ArcanumSettingClamps.RetentionRuleDays(rule.Days));
 
+        string guildLinkPin = await GuildOperationLinkPinAsync(cancellationToken).ConfigureAwait(false);
+
         string[] ids = await ReadStringIdsAsync(
             "LongRunningOperations",
             "Id",
@@ -2951,6 +2953,7 @@ internal sealed partial class DataRetentionService
             State IN ({(int)LongRunningOperationState.Completed},
                       {(int)LongRunningOperationState.Failed},
                       {(int)LongRunningOperationState.Abandoned})
+              AND Kind<>'guild-quest' {guildLinkPin}
               AND julianday(COALESCE(CompletedAt, CreatedAt)) <= julianday(@cutoff)
               AND NOT EXISTS (
                   SELECT 1 FROM LongRunningOperations child
@@ -5116,6 +5119,8 @@ internal sealed partial class DataRetentionService
 
         if (TryReadGuidCandidate(candidate, OperationCandidatePrefix, out Guid historyId))
         {
+            string guildLinkPin = await GuildOperationLinkPinAsync(cancellationToken).ConfigureAwait(false);
+
             int rows = await ExecuteStandaloneAsync(
                 $"""
                 DELETE FROM LongRunningOperations
@@ -5123,6 +5128,7 @@ internal sealed partial class DataRetentionService
                   AND State IN ({(int)LongRunningOperationState.Completed},
                                 {(int)LongRunningOperationState.Failed},
                                 {(int)LongRunningOperationState.Abandoned})
+                  AND Kind<>'guild-quest' {guildLinkPin}
                   AND NOT EXISTS (
                       SELECT 1 FROM LongRunningOperations child
                       WHERE child.ParentOperationId = LongRunningOperations.Id
@@ -5140,6 +5146,7 @@ internal sealed partial class DataRetentionService
                 AND State IN ({(int)LongRunningOperationState.Completed},
                               {(int)LongRunningOperationState.Failed},
                               {(int)LongRunningOperationState.Abandoned})
+                AND Kind<>'guild-quest' {guildLinkPin}
                 AND NOT EXISTS (
                     SELECT 1 FROM LongRunningOperations child
                     WHERE child.ParentOperationId = LongRunningOperations.Id

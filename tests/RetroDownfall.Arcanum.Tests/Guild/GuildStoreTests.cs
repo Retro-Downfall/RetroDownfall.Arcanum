@@ -53,6 +53,7 @@ public sealed class GuildStoreTests
 
         Assert.Equal("Original description", pinned.Value.Payload.Card.Description);
     }
+
     [Fact]
     public async Task A_valid_refresh_of_identical_bytes_restores_destination_availability()
     {
@@ -85,6 +86,7 @@ public sealed class GuildStoreTests
 
         Assert.Equal(first.Value.Content, replay.Value.Content);
     }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -104,7 +106,7 @@ public sealed class GuildStoreTests
 
         byte[] body = "erased content"u8.ToArray();
 
-        GuildContentWrite Write(Guid id) => new(id, sourceId, GuildContentKind.CommissionGoal, 1, null, null, "text/plain", body,
+        GuildContentWrite Write(Guid id) => new(id, sourceId, GuildContentKind.QuestGoal, 1, null, null, "text/plain", body,
             new DerivedArtifactWrite(SensitiveArtifactKind.GuildContent, id, null, null, null, 1,
                 new CovenantDigest(SHA256.HashData(body)), ContentSensitivity.None, GenerationProvenance.CreateExact([])));
 
@@ -130,6 +132,7 @@ public sealed class GuildStoreTests
 
         Assert.Equal(0L, await command.ExecuteScalarAsync());
     }
+
     [Fact]
     public async Task Skill_filtered_pages_keep_admission_order_and_initial_membership()
     {
@@ -373,7 +376,7 @@ public sealed class GuildStoreTests
 
         byte[] body = invalidUtf8 ? [0xC3, 0x28] : "valid text"u8.ToArray();
 
-        GuildContentWrite write = new(id, Guid.NewGuid(), GuildContentKind.CommissionGoal, 1, null, null, mime, body,
+        GuildContentWrite write = new(id, Guid.NewGuid(), GuildContentKind.QuestGoal, 1, null, null, mime, body,
             new(SensitiveArtifactKind.GuildContent, id, null, null, null, 1, new(SHA256.HashData(body)), ContentSensitivity.None, GenerationProvenance.CreateExact([])));
 
         var result = await store.WriteContentAsync(write, CancellationToken.None);

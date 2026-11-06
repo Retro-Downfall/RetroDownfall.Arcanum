@@ -143,12 +143,12 @@ public sealed class GuildCallerContext
 [JsonConverter(typeof(GuildHostHandleJsonConverter<GuildExecutionHandle>))]
 public sealed class GuildExecutionHandle
 {
-    internal GuildExecutionHandle(Guid signetId, Guid agentId, Guid runId, Guid commissionId, Guid rootCommissionId,
+    internal GuildExecutionHandle(Guid signetId, Guid agentId, Guid runId, Guid questId, Guid rootQuestId,
         long credentialGeneration, long revocationGeneration, Guid? issuerSignetId = null)
     {
-        if (signetId == Guid.Empty || agentId == Guid.Empty || runId == Guid.Empty || commissionId == Guid.Empty
-            || rootCommissionId == Guid.Empty || credentialGeneration <= 0 || revocationGeneration < 0
-            || (commissionId == rootCommissionId ? issuerSignetId is not null : issuerSignetId is null || issuerSignetId == Guid.Empty))
+        if (signetId == Guid.Empty || agentId == Guid.Empty || runId == Guid.Empty || questId == Guid.Empty
+            || rootQuestId == Guid.Empty || credentialGeneration <= 0 || revocationGeneration < 0
+            || (questId == rootQuestId ? issuerSignetId is not null : issuerSignetId is null || issuerSignetId == Guid.Empty))
         {
             throw new ArgumentException("The trusted Guild execution binding is incomplete.");
         }
@@ -159,9 +159,9 @@ public sealed class GuildExecutionHandle
 
         RunId = runId;
 
-        CommissionId = commissionId;
+        QuestId = questId;
 
-        RootCommissionId = rootCommissionId;
+        RootQuestId = rootQuestId;
 
         CredentialGeneration = credentialGeneration;
 
@@ -176,9 +176,9 @@ public sealed class GuildExecutionHandle
 
     public Guid RunId { get; }
 
-    public Guid CommissionId { get; }
+    public Guid QuestId { get; }
 
-    public Guid RootCommissionId { get; }
+    public Guid RootQuestId { get; }
 
     public long CredentialGeneration { get; }
 
@@ -258,21 +258,21 @@ public sealed class GuildVerifiedAuthority
 [JsonConverter(typeof(GuildHostHandleJsonConverter<GuildRecoveryContext>))]
 public sealed class GuildRecoveryContext
 {
-    internal GuildRecoveryContext(Guid commissionId, Guid operationId, long expectedRevision)
+    internal GuildRecoveryContext(Guid questId, Guid operationId, long expectedRevision)
     {
-        if (commissionId == Guid.Empty || operationId == Guid.Empty || expectedRevision < 0)
+        if (questId == Guid.Empty || operationId == Guid.Empty || expectedRevision < 0)
         {
             throw new ArgumentException("The trusted Guild recovery binding is incomplete.");
         }
 
-        CommissionId = commissionId;
+        QuestId = questId;
 
         OperationId = operationId;
 
         ExpectedRevision = expectedRevision;
     }
 
-    public Guid CommissionId { get; }
+    public Guid QuestId { get; }
 
     public Guid OperationId { get; }
 
@@ -312,9 +312,9 @@ public sealed class GuildAdmissionContext
 [JsonConverter(typeof(GuildHostHandleJsonConverter<GuildInboxClaim>))]
 public sealed class GuildInboxClaim
 {
-    internal GuildInboxClaim(Guid envelopeId, Guid recipientCommissionId, Guid operationId, long leaseRevision, long inboxRevision)
+    internal GuildInboxClaim(Guid envelopeId, Guid recipientQuestId, Guid operationId, long leaseRevision, long inboxRevision)
     {
-        if (envelopeId == Guid.Empty || recipientCommissionId == Guid.Empty || operationId == Guid.Empty
+        if (envelopeId == Guid.Empty || recipientQuestId == Guid.Empty || operationId == Guid.Empty
             || leaseRevision < 0 || inboxRevision < 0)
         {
             throw new ArgumentException("The trusted Guild inbox claim is incomplete.");
@@ -322,7 +322,7 @@ public sealed class GuildInboxClaim
 
         EnvelopeId = envelopeId;
 
-        RecipientCommissionId = recipientCommissionId;
+        RecipientQuestId = recipientQuestId;
 
         OperationId = operationId;
 
@@ -333,7 +333,7 @@ public sealed class GuildInboxClaim
 
     public Guid EnvelopeId { get; }
 
-    public Guid RecipientCommissionId { get; }
+    public Guid RecipientQuestId { get; }
 
     public Guid OperationId { get; }
 

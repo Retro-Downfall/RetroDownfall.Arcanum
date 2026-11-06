@@ -130,7 +130,7 @@ public sealed partial class DataRetentionServiceTests
 
         string beforeEpoch = Assert.IsType<string>(await authority.ScalarAsync("SELECT Epoch FROM guild_signet_authority_state;"));
 
-        GuildRecoveryContext recovery = new(root.CommissionId, Guid.NewGuid(), 1);
+        GuildRecoveryContext recovery = new(root.QuestId, Guid.NewGuid(), 1);
 
         authority.Policy.Recoveries.Add(recovery);
 

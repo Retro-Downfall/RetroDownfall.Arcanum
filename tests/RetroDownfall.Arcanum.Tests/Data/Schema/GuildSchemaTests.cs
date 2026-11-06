@@ -31,6 +31,7 @@ public sealed class GuildSchemaTests
 
         Assert.Equal(0L, await command.ExecuteScalarAsync());
     }
+
     [Fact]
     public async Task Unrelated_Covenant_drift_does_not_prevent_Guild_installation()
     {
@@ -50,7 +51,7 @@ public sealed class GuildSchemaTests
 
         Assert.False(result.CovenantCanonical.IsHealthy);
 
-        command.CommandText = "SELECT COUNT(*) FROM grimoire_feature_schemas WHERE FamilyCode=2 AND TransactionTierCode=3 AND SchemaVersion=2 AND HealthCode=0";
+        command.CommandText = "SELECT COUNT(*) FROM grimoire_feature_schemas WHERE FamilyCode=2 AND TransactionTierCode=3 AND SchemaVersion=3 AND HealthCode=0";
 
         Assert.Equal(1L, await command.ExecuteScalarAsync());
     }
@@ -78,6 +79,7 @@ public sealed class GuildSchemaTests
 
         await Assert.ThrowsAsync<SqliteException>(() => command.ExecuteNonQueryAsync());
     }
+
     [Fact]
     public async Task Published_Core37_upgrades_through_declared_transition_without_changing_prior_pin()
     {
@@ -123,6 +125,7 @@ public sealed class GuildSchemaTests
 
         Assert.Contains("15, 16, 17", (string)(await command.ExecuteScalarAsync())!);
     }
+
     [Fact]
     public async Task Guild_catalog_damage_leaves_Core_and_Covenant_healthy()
     {

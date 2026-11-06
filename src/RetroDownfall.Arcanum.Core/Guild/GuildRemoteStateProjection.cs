@@ -3,22 +3,22 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Core.Guild;
 
 /// <summary>A transport observation cannot create terminal completion evidence.</summary>
-public sealed record GuildRemoteStateProjection(CommissionState State, bool ReconciliationRequired, string? ReasonCode, string? RemoteStateDiagnostic)
+public sealed record GuildRemoteStateProjection(QuestState State, bool ReconciliationRequired, string? ReasonCode, string? RemoteStateDiagnostic)
 {
     /// <summary>Representation bound for a diagnostic observation, not a work/retry/lifetime ceiling.</summary>
     public const int MaximumDiagnosticCharacters = 128;
 
     public static GuildRemoteStateProjection Observe(string? remoteState)
     {
-        CommissionState? state = remoteState switch
+        QuestState? state = remoteState switch
         {
-            "submitted" => CommissionState.Submitted,
-            "working" => CommissionState.Working,
-            "input-required" => CommissionState.InputRequired,
-            "completed" => CommissionState.Completed,
-            "failed" => CommissionState.Failed,
-            "canceled" => CommissionState.Canceled,
-            "rejected" => CommissionState.Rejected,
+            "submitted" => QuestState.Submitted,
+            "working" => QuestState.Working,
+            "input-required" => QuestState.InputRequired,
+            "completed" => QuestState.Completed,
+            "failed" => QuestState.Failed,
+            "canceled" => QuestState.Canceled,
+            "rejected" => QuestState.Rejected,
             _ => null
         };
 
@@ -38,6 +38,6 @@ public sealed record GuildRemoteStateProjection(CommissionState State, bool Reco
                 destination[index] = char.IsControl(source[index]) ? '?' : source[index];
         });
 
-        return new(CommissionState.Working, true, ErrorCodes.Guild.UnsupportedTransportState, diagnostic);
+        return new(QuestState.Working, true, ErrorCodes.Guild.UnsupportedTransportState, diagnostic);
     }
 }

@@ -65,6 +65,8 @@ public static class ErrorCodes
 
         public const string ReconciliationRequired = "Guild.ReconciliationRequired";
 
+        public const string AwaitingInput = "Guild.AwaitingInput";
+
         public const string UnsupportedTransportState = "Guild.UnsupportedTransportState";
 
         public const string SequenceExhausted = "Guild.SequenceExhausted";

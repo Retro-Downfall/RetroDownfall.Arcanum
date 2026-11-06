@@ -10,52 +10,52 @@ public sealed record GuildMutationIdentity(Guid IdempotencyKey, string Canonical
 /// <summary>The durable logical issuance key excludes generated children and retry counters.</summary>
 public sealed record GuildIssuanceIdentity(
     Guid InstallationGeneration,
-    Guid? IssuerCommissionId,
+    Guid? IssuerQuestId,
     Guid? RootInvocationId,
     Guid IssuingStepId,
     Guid LogicalCallId);
 
-/// <summary>Resolved identities committed together with the Commission, its LRO and grant allocation.</summary>
+/// <summary>Resolved identities committed together with the Quest, its LRO and grant allocation.</summary>
 public sealed record GuildAdmissionRequest(
     GuildMutationIdentity Mutation,
     GuildIssuanceIdentity Issuance,
-    GuildCommissionDto Commission,
+    GuildQuestDto Quest,
     GuildDataRef Goal,
     string AcceptedResolutionDigest,
     long? ExpectedIssuerRevision);
 
 public sealed record GuildAdmissionReceipt(
-    Guid CommissionId,
+    Guid QuestId,
     Guid OperationId,
     Guid SignetId,
     Guid AllocationAccountId,
     GuildMutationReceiptDto Receipt);
 
 public sealed record GuildResultReceipt(
-    Guid CommissionId,
+    Guid QuestId,
     Guid ResultId,
     string CanonicalContentDigest,
     GuildDataRef? Content,
-    CommissionState Outcome,
+    QuestState Outcome,
     string? ReasonCode);
 
 public sealed record GuildCommitResultRequest(
     GuildMutationIdentity Mutation,
-    long ExpectedCommissionRevision,
+    long ExpectedQuestRevision,
     long ExpectedOperationRevision,
     GuildResultReceipt Result);
 
 public sealed record GuildResultApplicationRequest(
     GuildMutationIdentity Mutation,
-    Guid RecipientCommissionId,
-    Guid CommissionId,
+    Guid RecipientQuestId,
+    Guid QuestId,
     Guid ResultId,
     string CanonicalContentDigest,
     long ExpectedRecipientRevision);
 
 public sealed record GuildResultApplicationReceipt(
-    Guid RecipientCommissionId,
-    Guid CommissionId,
+    Guid RecipientQuestId,
+    Guid QuestId,
     Guid ResultId,
     string CanonicalContentDigest,
     long RecipientRevision,
@@ -81,7 +81,7 @@ public enum GuildDispatchEvidence
 /// <summary>Data bound to committed work; an execution handle is separately required by the port.</summary>
 public sealed record GuildDispatchRequest(
     GuildMutationIdentity Mutation,
-    Guid CommissionId,
+    Guid QuestId,
     Guid OperationId,
     Guid RunId,
     Guid DispatchId,
@@ -89,10 +89,10 @@ public sealed record GuildDispatchRequest(
     string InvocationDigest);
 
 public sealed record GuildDispatchObservation(
-    Guid CommissionId,
+    Guid QuestId,
     Guid DispatchId,
     GuildDispatchEvidence Evidence,
-    CommissionState State,
+    QuestState State,
     bool ReconciliationRequired,
     string? ReasonCode,
     Guid? LocalChildId,
@@ -106,7 +106,7 @@ public sealed record GuildContinueRequest(
     string MimeType,
     string Body);
 
-public sealed record GuildCircleInboxQuery(Guid RecipientCommissionId, string? Cursor, int PageSize = 100);
+public sealed record GuildCircleInboxQuery(Guid RecipientQuestId, string? Cursor, int PageSize = 100);
 
 public sealed record GuildCircleInboxItem(Guid InboxId, GuildEnvelope Envelope, long Revision);
 
@@ -128,7 +128,7 @@ public sealed record GuildCircleAcknowledgement(
     long Revision,
     GuildMutationReceiptDto Receipt);
 
-public sealed record GuildEventQuery(Guid RootCommissionId, Guid? SubtreeCommissionId, Guid? CohortId, string? Cursor, int PageSize = 100);
+public sealed record GuildEventQuery(Guid RootQuestId, Guid? SubtreeQuestId, Guid? CohortId, string? Cursor, int PageSize = 100);
 
 public sealed record GuildEventPage(
     ImmutableArray<GuildChangeEventDto> Items,
@@ -152,8 +152,8 @@ public sealed record GuildSignetBinding(
     Guid SignetId,
     Guid AgentId,
     Guid RunId,
-    Guid CommissionId,
-    Guid RootCommissionId,
+    Guid QuestId,
+    Guid RootQuestId,
     Guid? IssuerSignetId,
     GuildGrant Grant,
     DateTimeOffset IssuedAtUtc,

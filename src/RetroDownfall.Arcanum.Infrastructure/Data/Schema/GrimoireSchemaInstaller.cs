@@ -553,7 +553,7 @@ internal sealed class GrimoireSchemaInstaller(
         ArgumentNullException.ThrowIfNull(context);
 
         await _initializers.For(chain.TransactionTier)
-            .InitializeAsync(connection, transaction, context, cancellationToken)
+            .InitializeAsync(connection, transaction, context with { DeclaredSchemaVersion = chain.HeadVersion }, cancellationToken)
             .ConfigureAwait(false);
 
         GrimoireSchemaInspectionResult inspection = await _inspector

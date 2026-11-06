@@ -61,7 +61,7 @@ public sealed record AwardWorkRequest(
 public sealed record WorkOfferDto(
     Guid Id,
     Guid CohortId,
-    Guid IssuerCommissionId,
+    Guid IssuerQuestId,
     long OfferSequence,
     long Revision,
     string SkillId,
@@ -69,7 +69,7 @@ public sealed record WorkOfferDto(
     GuildDataRef GoalRef,
     GuildWorkOfferState State,
     Guid? AwardId,
-    Guid? CommissionId,
+    Guid? QuestId,
     GuildMutationReceiptDto? Receipt = null);
 
 public sealed record WorkBidDto(
@@ -89,7 +89,7 @@ public sealed record WorkAwardDto(
     Guid Id,
     Guid OfferId,
     Guid BidId,
-    Guid CommissionId,
+    Guid QuestId,
     Guid MemberId,
     GuildWorkAwardState State,
     GuildMutationReceiptDto? Receipt = null);

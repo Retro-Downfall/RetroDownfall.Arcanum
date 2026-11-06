@@ -11,7 +11,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 /// <summary>Signet SQL participant. Callers hold installation admission, then the exact root gate.</summary>
 internal sealed class GuildSignetStore(IGrimoireOrdinaryConnectionFactory connections)
 {
-    private const string Columns = "SignetId,AgentId,RunId,CommissionId,RootCommissionId,IssuerSignetId,GrantJson,IssuedAtUtc,OriginPrincipalId,SessionId,CampaignId,WorkspaceId,PeerId,PeerGrantRevision,InstallationGeneration,AuthorityEpoch,Revision,CredentialGeneration,TokenDigest,RevocationGeneration,Revoked,RestoredInert,Retired,CancellationRequested,WorkspaceIdentityPolicyVersion,WorkspaceIdentityRevision,WorkspaceRootIdentity";
+    private const string Columns = "SignetId,AgentId,RunId,QuestId,RootQuestId,IssuerSignetId,GrantJson,IssuedAtUtc,OriginPrincipalId,SessionId,CampaignId,WorkspaceId,PeerId,PeerGrantRevision,InstallationGeneration,AuthorityEpoch,Revision,CredentialGeneration,TokenDigest,RevocationGeneration,Revoked,RestoredInert,Retired,CancellationRequested,WorkspaceIdentityPolicyVersion,WorkspaceIdentityRevision,WorkspaceRootIdentity";
 
     private static readonly string ReadColumns = Columns.Replace("GrantJson",
         "CASE WHEN length(CAST(GrantJson AS BLOB))<=$maximumGrantBytes THEN GrantJson ELSE NULL END", StringComparison.Ordinal);
@@ -19,7 +19,7 @@ internal sealed class GuildSignetStore(IGrimoireOrdinaryConnectionFactory connec
     private const string VariableTextBytes = "length(CAST(GrantJson AS BLOB))+COALESCE(length(CAST(PeerId AS BLOB)),0)+COALESCE(length(CAST(PeerGrantRevision AS BLOB)),0)";
 
     private static readonly string ReadShape = string.Join(" AND ",
-        new[] { "SignetId", "AgentId", "RunId", "CommissionId", "RootCommissionId", "OriginPrincipalId", "InstallationGeneration", "AuthorityEpoch" }
+        new[] { "SignetId", "AgentId", "RunId", "QuestId", "RootQuestId", "OriginPrincipalId", "InstallationGeneration", "AuthorityEpoch" }
             .Select(column => $"(typeof({column})='text' AND length(CAST({column} AS BLOB))=36)")
             .Concat(new[] { "IssuerSignetId", "SessionId", "CampaignId", "WorkspaceId" }
                 .Select(column => $"({column} IS NULL OR (typeof({column})='text' AND length(CAST({column} AS BLOB))=36))")))
@@ -99,10 +99,10 @@ internal sealed class GuildSignetStore(IGrimoireOrdinaryConnectionFactory connec
     }
 
     internal static async Task<Result<GuildSignetRecord>> ReadAsync(SqliteConnection connection, SqliteTransaction transaction,
-        Guid id, bool byCommission, CancellationToken ct)
+        Guid id, bool byQuest, CancellationToken ct)
     {
         await using SqliteCommand command = Command(connection, transaction,
-            $"SELECT {ReadColumns},{VariableTextBytes},CASE WHEN {ReadShape} THEN 1 ELSE 0 END FROM guild_signets WHERE {(byCommission ? "CommissionId" : "SignetId")}=$id");
+            $"SELECT {ReadColumns},{VariableTextBytes},CASE WHEN {ReadShape} THEN 1 ELSE 0 END FROM guild_signets WHERE {(byQuest ? "QuestId" : "SignetId")}=$id");
 
         Add(command, "$id", Id(id));
 
@@ -177,7 +177,7 @@ internal sealed class GuildSignetStore(IGrimoireOrdinaryConnectionFactory connec
         while (true)
         {
             if (!visited.Add(current.Binding.SignetId) || !agents.Add(current.Binding.AgentId)
-                || current.Binding.RootCommissionId != target.Binding.RootCommissionId)
+                || current.Binding.RootQuestId != target.Binding.RootQuestId)
             {
                 return new Error(ErrorCodes.Guild.AuthorityMismatch, "The persisted Guild authority lineage is invalid.");
             }
@@ -186,7 +186,7 @@ internal sealed class GuildSignetStore(IGrimoireOrdinaryConnectionFactory connec
 
             if (current.Binding.IssuerSignetId is not { } issuer)
             {
-                return current.Binding.CommissionId == current.Binding.RootCommissionId
+                return current.Binding.QuestId == current.Binding.RootQuestId
                     ? Result<ImmutableArray<GuildSignetRecord>>.Success(lineage.ToImmutable())
                     : Result<ImmutableArray<GuildSignetRecord>>.Failure(Unavailable);
             }
@@ -271,7 +271,7 @@ internal sealed class GuildSignetStore(IGrimoireOrdinaryConnectionFactory connec
 
         await using SqliteCommand command = Command(connection, transaction, $"""
             INSERT INTO guild_signets({Columns}) VALUES
-            ($id,$agent,$run,$commission,$root,$issuer,$grant,$issued,$origin,$session,$campaign,$workspace,$peer,$peerRevision,
+            ($id,$agent,$run,$quest,$root,$issuer,$grant,$issued,$origin,$session,$campaign,$workspace,$peer,$peerRevision,
              $installation,$epoch,$revision,$credential,$digest,$revocation,$revoked,$inert,$retired,$cancel,$workspacePolicy,$workspaceRevision,$workspaceIdentity)
             """);
 
@@ -283,9 +283,9 @@ internal sealed class GuildSignetStore(IGrimoireOrdinaryConnectionFactory connec
 
         Add(command, "$run", Id(binding.RunId));
 
-        Add(command, "$commission", Id(binding.CommissionId));
+        Add(command, "$quest", Id(binding.QuestId));
 
-        Add(command, "$root", Id(binding.RootCommissionId));
+        Add(command, "$root", Id(binding.RootQuestId));
 
         Add(command, "$issuer", Id(binding.IssuerSignetId));
 

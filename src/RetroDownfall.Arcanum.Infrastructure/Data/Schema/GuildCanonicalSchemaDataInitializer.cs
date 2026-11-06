@@ -26,7 +26,8 @@ internal sealed class GuildCanonicalSchemaDataInitializer : IGrimoireSchemaDataI
             }
         }
 
-        await GuildStorageIntegrity.ValidateAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        await GuildStorageIntegrity.ValidateAsync(connection, transaction, cancellationToken,
+            context.DeclaredSchemaVersion == 0 ? GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion : context.DeclaredSchemaVersion).ConfigureAwait(false);
 
         await using SqliteCommand command = connection.CreateCommand();
 

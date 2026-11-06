@@ -63,6 +63,7 @@ public sealed class GuildSignetCleanupBoundaryTests
             Assert.True((await effect).IsSuccess);
         }
     }
+
     [Theory]
     [InlineData(1)]
     [InlineData(2)]
@@ -84,7 +85,7 @@ public sealed class GuildSignetCleanupBoundaryTests
 
         GuildExecutionHandle[] roots = second is null ? [first] : [first, second];
 
-        GuildExecutionHandle execution = roots.OrderBy(root => root.RootCommissionId.ToString("D"), StringComparer.Ordinal).First();
+        GuildExecutionHandle execution = roots.OrderBy(root => root.RootQuestId.ToString("D"), StringComparer.Ordinal).First();
 
         GuildExecutionHandle? independent = roots.FirstOrDefault(root => !ReferenceEquals(root, execution));
 

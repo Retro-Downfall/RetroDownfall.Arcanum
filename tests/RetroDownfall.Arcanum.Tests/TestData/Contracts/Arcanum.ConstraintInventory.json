@@ -9953,7 +9953,7 @@
       "threatOrFailureModel": "A peer can advertise or stream an arbitrarily large response independent of the normalized Card representation.",
       "classification": "Required physical resource protection",
       "action": "retain",
-      "replacementOrContinuation": "Correct the configured peer response and refresh again; the bound does not restrict Commission work or the number of peers.",
+      "replacementOrContinuation": "Correct the configured peer response and refresh again; the bound does not restrict Quest work or the number of peers.",
       "tests": [
         "GuildRemoteCardReaderTests"
       ]

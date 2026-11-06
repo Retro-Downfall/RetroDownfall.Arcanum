@@ -128,14 +128,14 @@ public sealed class GuildSignetLifecycleTests
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = """
-            INSERT INTO guild_signets(SignetId,AgentId,RunId,CommissionId,RootCommissionId,GrantJson,IssuedAtUtc,
+            INSERT INTO guild_signets(SignetId,AgentId,RunId,QuestId,RootQuestId,GrantJson,IssuedAtUtc,
                 OriginPrincipalId,SessionId,InstallationGeneration,AuthorityEpoch,Revision,CredentialGeneration,
                 TokenDigest,RevocationGeneration,Revoked,RestoredInert,Retired)
-            VALUES($id,$agent,$run,$commission,$commission,'{}','2026-01-01T00:00:00.0000000Z',
+            VALUES($id,$agent,$run,$quest,$quest,'{}','2026-01-01T00:00:00.0000000Z',
                 $principal,$owner,$installation,$epoch,1,1,zeroblob(32),0,0,0,0)
             """;
 
-        foreach (string name in new[] { "$id", "$agent", "$run", "$commission", "$principal", "$installation" })
+        foreach (string name in new[] { "$id", "$agent", "$run", "$quest", "$principal", "$installation" })
         {
             command.Parameters.AddWithValue(name, Guid.NewGuid().ToString("D").ToUpperInvariant());
         }
