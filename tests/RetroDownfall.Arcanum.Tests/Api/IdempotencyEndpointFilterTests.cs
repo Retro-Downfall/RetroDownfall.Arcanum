@@ -1117,7 +1117,7 @@ public sealed class IdempotencyEndpointFilterTests
     }
 
     [SkippableFact]
-    public async Task PostChatCompletions_LargeKeyedBody_DoesNotMaterializeWholeBodyInManagedMemory()
+    public async Task PostChatCompletions_LargeKeyedBody_CompletesWithTheExpectedResponse()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -1131,9 +1131,14 @@ public sealed class IdempotencyEndpointFilterTests
 
         const int contentSize = 8 * 1024 * 1024;
 
-        string payload = "{\"model\":\"mistral:latest\",\"messages\":[{\"role\":\"user\",\"content\":\""
-            + new string('a', contentSize)
-            + "\"}]}";
+        const int messageCount = 16;
+
+        // Keep the same 8 MiB of text while respecting the code-owned 1 MiB bound on each message.
+        string message = "{\"role\":\"user\",\"content\":\"" + new string('a', contentSize / messageCount) + "\"}";
+
+        string payload = "{\"model\":\"mistral:latest\",\"messages\":["
+            + string.Join(",", Enumerable.Repeat(message, messageCount))
+            + "]}";
 
         HttpRequestMessage BuildRequest()
         {
@@ -1147,56 +1152,36 @@ public sealed class IdempotencyEndpointFilterTests
             return req;
         }
 
-        // Warm up the request pipeline (JIT, first-request DI graph construction) on the same shape
-        // of request so the measured call below isolates per-request allocation behavior rather than
-        // one-time host startup cost.
-        HttpRequestMessage warmRequest = BuildRequest();
+        // Retain the real transport, JSON binding and handler coverage for the full-size keyed body.
+        // The direct filter tests below measure its synchronous fingerprint prefix separately, because
+        // a process-wide counter across an HTTP await also counts unrelated hosts and test threads.
+        using HttpRequestMessage firstRequest = BuildRequest();
 
-        HttpRequestMessage measuredRequest = BuildRequest();
+        using HttpRequestMessage secondRequest = BuildRequest();
 
-        HttpResponseMessage warmResponse = await client.SendAsync(warmRequest);
+        using HttpResponseMessage firstResponse = await client.SendAsync(firstRequest);
 
-        _ = await warmResponse.Content.ReadAsStringAsync();
+        string firstBody = await firstResponse.Content.ReadAsStringAsync();
 
-        GC.Collect();
+        Assert.True(firstResponse.StatusCode == HttpStatusCode.OK,
+            $"Expected a successful large-body request; received {(int)firstResponse.StatusCode}: {firstBody}");
 
-        GC.WaitForPendingFinalizers();
+        Assert.Contains("large-body-probe-response", firstBody, StringComparison.Ordinal);
 
-        GC.Collect();
+        using HttpResponseMessage secondResponse = await client.SendAsync(secondRequest);
 
-        long before = GC.GetTotalAllocatedBytes(precise: true);
+        string secondBody = await secondResponse.Content.ReadAsStringAsync();
 
-        HttpResponseMessage measuredResponse = await client.SendAsync(measuredRequest);
+        Assert.True(secondResponse.StatusCode == HttpStatusCode.OK,
+            $"Expected a successful large-body request; received {(int)secondResponse.StatusCode}: {secondBody}");
 
-        _ = await measuredResponse.Content.ReadAsStringAsync();
-
-        long after = GC.GetTotalAllocatedBytes(precise: true);
-
-        long allocated = after - before;
-
-        // Measured directly against this exact test (git stash the fix, rerun): the old ForRawBody
-        // (EnableBuffering's spool, then a doubling-growth MemoryStream, then a final ToArray()) here
-        // allocates ~10.5x the 8 MiB body (~88 MB) on top of whatever TestServer's own in-memory
-        // transport and request/response processing account for; the fix measures ~4.0x (~34 MB) for
-        // the same body — TestServer's own baseline, not this filter. 5x leaves ~20% headroom above
-        // the fix's measured cost and stays well under half the old code's, so it separates a real
-        // regression back to materializing the body from ordinary run-to-run GC noise.
-        Assert.True(
-            allocated < 5L * contentSize,
-            $"Expected allocated bytes well under the old code's ~10x multiple of the 8 MiB body; observed {allocated:N0} bytes for a {contentSize:N0}-byte body.");
+        Assert.Contains("large-body-probe-response", secondBody, StringComparison.Ordinal);
     }
 
-    // ComputeBodyDigestAsync reads the body through an 80 KiB (81920-byte)
-    // pooled buffer, one ReadAsync per iteration. Nothing pinned that the loop actually consumes
-    // every byte of every chunk rather than, say, only the start of each read — a bug shaped exactly
-    // like that would still pass every existing test, none of which sends a body over one buffer's
-    // worth. Two bodies here share their first 85,000 bytes (past the boilerplate and past the first
-    // 81920-byte chunk boundary, so both chunks' starts fall inside the shared region) and then
-    // diverge in a short distinct tail. The shared block lives inside the JSON "content" string's
-    // value so both bodies stay valid, so a digest that only sampled each chunk's leading bytes would
-    // still see byte-identical input from both requests and treat the second as a replay of the
-    // first. The real, correct loop hashes every byte, so the two full bodies produce different
-    // digests, different fingerprints, and Security.IdempotencyConflict (409) under the same key.
+    // Two bodies share a large prefix and differ only in a short tail inside their JSON content.
+    // The digest must include that tail, so the second request conflicts under the same key instead
+    // of replaying the first response. This is a prefix/tail identity check: ArrayPool may return a
+    // buffer larger than the requested 81920 bytes, so the prefix does not establish a read boundary.
     [SkippableFact]
     public async Task PostChatCompletions_TwoLargeBodiesSharingAnEightyKibPrefix_SecondRequestConflictsInsteadOfReplaying()
     {
@@ -1242,10 +1227,196 @@ public sealed class IdempotencyEndpointFilterTests
 
 public sealed class IdempotencyEndpointFilterOwnershipTests
 {
+    private const int LargeRawBodyBytes = 8 * 1024 * 1024;
+
+    private const long RawBodyAllocationLimit = 1024 * 1024;
+
     /// <summary>How long a wait that only guards against a hang may take: the awaited task is expected to
     /// finish, so the bound decides nothing but how long a broken build hangs, and a second or two is not
     /// enough on a loaded CI runner.</summary>
     private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ForRawBody_LargeBody_AllocationsExcludeUnrelatedThreads(bool allocateOnUnrelatedThread)
+    {
+        _ = await MeasureRawBodyAllocationsAsync(allocateOnUnrelatedThread: false, materializeBody: false);
+
+        long allocated = await MeasureRawBodyAllocationsAsync(allocateOnUnrelatedThread, materializeBody: false);
+
+        Assert.True(allocated < RawBodyAllocationLimit,
+            $"Incremental fingerprinting allocated {allocated:N0} bytes for an {LargeRawBodyBytes:N0}-byte body; the bounded filter budget is {RawBodyAllocationLimit:N0} bytes.");
+    }
+
+    [Fact]
+    public async Task ForRawBody_AllocationBudget_RejectsWholeBodyMaterializationAfterTheFinalRead()
+    {
+        long allocated = await MeasureRawBodyAllocationsAsync(allocateOnUnrelatedThread: false, materializeBody: true);
+
+        Assert.True(allocated >= RawBodyAllocationLimit,
+            "The allocation guard did not detect a whole-body copy and ToArray after the fingerprint read completed.");
+    }
+
+    private static async Task<long> MeasureRawBodyAllocationsAsync(bool allocateOnUnrelatedThread, bool materializeBody)
+    {
+        byte[] bytes = new byte[LargeRawBodyBytes];
+
+        bytes.AsSpan().Fill((byte)'a');
+
+        int measuredThread = global::System.Environment.CurrentManagedThreadId;
+
+        byte[]? unrelatedAllocation = null;
+
+        Thread unrelated = new(() => unrelatedAllocation = new byte[2 * LargeRawBodyBytes]);
+
+        using SynchronousChunkStream body = new(bytes, measuredThread, () =>
+        {
+            if (allocateOnUnrelatedThread)
+            {
+                unrelated.Start();
+
+                Assert.True(unrelated.Join(HangGuard), "The unrelated allocation did not finish.");
+            }
+        });
+
+        long measuredAtLookup = -1;
+
+        int handlerCalls = 0;
+
+        FakeClaimStore store = new()
+        {
+            TryGetFailure = _ =>
+            {
+                Assert.Equal(measuredThread, global::System.Environment.CurrentManagedThreadId);
+
+                Assert.Equal(0, body.Position);
+
+                if (materializeBody)
+                {
+                    // Negative control: include a complete old-style copy after EOF, not merely allocations made while reading.
+                    using MemoryStream copied = new();
+
+                    body.CopyTo(copied);
+
+                    GC.KeepAlive(copied.ToArray());
+
+                    body.Position = 0;
+                }
+
+                measuredAtLookup = GC.GetAllocatedBytesForCurrentThread();
+
+                return null;
+            },
+        };
+
+        using ServiceProvider services = CreateServices(store);
+
+        (TestEndpointFilterInvocationContext context, CompletionTrackingResponseFeature response) =
+            CreateContext(services, "raw-body-allocation-" + Guid.NewGuid().ToString("N"), path: "/v1/chat/completions");
+
+        context.HttpContext.Request.Body = body;
+
+        context.HttpContext.Request.ContentLength = bytes.Length;
+
+        // Every body read and the post-fingerprint boundary completes on this same thread. This
+        // counter owns the entire measured prefix without charging other hosts' background work.
+        long before = GC.GetAllocatedBytesForCurrentThread();
+
+        try
+        {
+            ValueTask<object?> invocation = IdempotencyEndpointFilters.ForRawBody(context, _ =>
+            {
+                Assert.Equal(measuredThread, global::System.Environment.CurrentManagedThreadId);
+
+                handlerCalls++;
+
+                return ValueTask.FromResult<object?>(null);
+            });
+
+            Assert.True(invocation.IsCompletedSuccessfully, "The allocation fixture must complete synchronously through fingerprinting and handler entry.");
+
+            _ = invocation.Result;
+
+            Assert.Equal(1, handlerCalls);
+
+            Assert.True(body.ReadCalls > 1, "The body must cross multiple hashing buffers.");
+
+            Assert.True(measuredAtLookup >= before, "The post-fingerprint allocation boundary was not reached.");
+
+            GC.KeepAlive(unrelatedAllocation);
+
+            return measuredAtLookup - before;
+        }
+        finally
+        {
+            await response.CompleteAsync().WaitAsync(HangGuard);
+        }
+    }
+
+    /// <summary>A seekable request body that completes every bounded read on the measuring thread.</summary>
+    private sealed class SynchronousChunkStream(byte[] bytes, int measuringThread, Action firstRead) : Stream
+    {
+        private readonly MemoryStream _inner = new(bytes, writable: false);
+
+        internal int ReadCalls { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => true;
+
+        public override bool CanWrite => false;
+
+        public override long Length => _inner.Length;
+
+        public override long Position { get => _inner.Position; set => _inner.Position = value; }
+
+        public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+
+        public override int Read(Span<byte> buffer)
+        {
+            Assert.Equal(measuringThread, global::System.Environment.CurrentManagedThreadId);
+
+            if (ReadCalls++ == 0)
+            {
+                firstRead();
+            }
+
+            return _inner.Read(buffer[..Math.Min(buffer.Length, 81920)]);
+        }
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return ValueTask.FromResult(Read(buffer.Span));
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return Task.FromResult(Read(buffer, offset, count));
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
+
+        public override void Flush() { }
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _inner.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+    }
 
     [Fact]
     public void OwnerIds_UseStableProcessComponentAndUniqueRequestComponent()

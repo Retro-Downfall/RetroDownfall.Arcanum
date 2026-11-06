@@ -445,8 +445,11 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                 },
                 resumedBatch.Mutations);
 
+            await ExerciseRealGuildMaintenanceAfterReopenAsync(harness, losingGeneration + 1, timeout.Token);
+
             GrimoireEffectObservation resumedEffect = Assert.Single(
-                harness.Admission.Effects.Skip(effectsAfterA));
+                harness.Admission.Effects.Skip(effectsAfterA),
+                effect => effect.Kind == GrimoireWorkKind.SessionAttachmentIndexing);
 
             Assert.Equal(GrimoireWorkKind.SessionAttachmentIndexing, resumedEffect.Kind);
 
@@ -657,8 +660,17 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         int enrolmentsBeforeLosingOpen = harness.Drain.Enrolments.Count;
 
+        int ticketsBeforeLosingOpen = harness.Admission.Tickets.Count;
+
+        TaskCompletionSource<GrimoireMaintenanceAdmissionObserver.OpenTicketSelection> selectedTicketScope =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         Task<RetroDownfall.Arcanum.Core.Primitives.Result<IGrimoireOrdinaryConnectionLease>> opening = Task.Factory.StartNew(async () =>
         {
+            using GrimoireMaintenanceAdmissionObserver.OpenTicketSelection executionTickets = harness.Admission.SelectCurrentExecution();
+
+            selectedTicketScope.TrySetResult(executionTickets);
+
             using IDisposable selected = harness.RawOpen.SelectCurrentExecution();
 
             return await rawFactory.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, timeout.Token);
@@ -668,7 +680,27 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Assert.Equal(1, harness.RawOpen.SelectedConstructions);
 
-        var losingTicket = Assert.Single(harness.Admission.Tickets, ticket => ticket.TerminalCount == 0);
+        GrimoireMaintenanceAdmissionObserver.OpenTicketSelection selectedTickets = await selectedTicketScope.Task.WaitAsync(timeout.Token);
+
+        GrimoireTicketObservation losingTicket;
+
+        try
+        {
+            losingTicket = await SelectPausedRawTicketWithIndependentOpenAsync(harness, selectedTickets, ticketsBeforeLosingOpen, losingGeneration, timeout.Token);
+        }
+        catch
+        {
+            harness.RawOpen.Checkpoint.Release();
+
+            var stoppedOpening = await opening.WaitAsync(TimeSpan.FromSeconds(10));
+
+            if (stoppedOpening.IsSuccess)
+            {
+                await stoppedOpening.Value.DisposeAsync();
+            }
+
+            throw;
+        }
 
         SqliteConnection losingConnection = Assert.IsType<SqliteConnection>(losingTicket.Connection);
 
@@ -876,6 +908,11 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
             var refusedOpen = await opening.WaitAsync(timeout.Token);
 
+            Assert.Same(losingTicket, Assert.Single(selectedTickets.Tickets));
+
+            Assert.Same(losingTicket, Assert.Single(harness.Admission.Tickets.Skip(ticketsBeforeLosingOpen),
+                ticket => ReferenceEquals(ticket.Connection, losingConnection)));
+
             if (refusedOpen.IsSuccess)
             {
                 await refusedOpen.Value.DisposeAsync();
@@ -960,7 +997,10 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                 },
                 resumedBatch.Mutations);
 
-            Assert.Equal(effectsAfterA, harness.Admission.Effects.Count);
+            await ExerciseRealGuildMaintenanceAfterReopenAsync(harness, losingGeneration + 1, timeout.Token);
+
+            Assert.DoesNotContain(harness.Admission.Effects.Skip(effectsAfterA),
+                effect => effect.Kind == GrimoireWorkKind.SessionAttachmentIndexing);
 
             Assert.Equal(1, harness.Weave.Calls);
 
@@ -1016,6 +1056,138 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
             await Task.WhenAll(stats, opening, reset).ContinueWith(_ => { }, TaskScheduler.Default).WaitAsync(TimeSpan.FromSeconds(10));
         }
+    }
+
+    private static async Task<GrimoireTicketObservation> SelectPausedRawTicketWithIndependentOpenAsync(
+        GrimoireMaintenanceAdmissionHarness harness,
+        GrimoireMaintenanceAdmissionObserver.OpenTicketSelection targetSelection,
+        int ticketsBeforeTarget,
+        long expectedGeneration,
+        CancellationToken cancellationToken)
+    {
+        // The second real factory uses the same host lifecycle and physical target, with only
+        // its own pause seam. Both native opens remain pending at the selection assertion.
+        IServiceProvider services = harness.Factory.Services;
+
+        PausingOrdinaryConnectionFactoryTestSeam independentSeam = new();
+
+        GrimoireOrdinaryConnectionFactory independentFactory = new(
+            services.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),
+            services.GetRequiredService<ICovenantConnectionDrain>(),
+            services.GetRequiredService<IGrimoireDbPassphraseSource>(),
+            services.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+            services.GetRequiredService<ISqliteNativeRuntime>(),
+            independentSeam,
+            services.GetRequiredService<Microsoft.Extensions.Logging.ILogger<GrimoireOrdinaryConnectionFactory>>());
+
+        TaskCompletionSource<GrimoireMaintenanceAdmissionObserver.OpenTicketSelection> independentSelection =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<RetroDownfall.Arcanum.Core.Primitives.Result<IGrimoireOrdinaryConnectionLease>> independentOpening;
+
+        using (ExecutionContext.SuppressFlow())
+        {
+            independentOpening = Task.Factory.StartNew(async () =>
+            {
+                using GrimoireMaintenanceAdmissionObserver.OpenTicketSelection selected = harness.Admission.SelectCurrentExecution();
+
+                independentSelection.TrySetResult(selected);
+
+                using IDisposable pause = independentSeam.SelectCurrentExecution();
+
+                return await independentFactory.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, cancellationToken);
+            }, cancellationToken, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
+        }
+
+        GrimoireTicketObservation? independentTicket = null;
+
+        try
+        {
+            await independentSeam.Checkpoint.WaitUntilReachedAsync();
+
+            GrimoireMaintenanceAdmissionObserver.OpenTicketSelection selected = await independentSelection.Task.WaitAsync(cancellationToken);
+
+            independentTicket = Assert.Single(selected.Tickets);
+
+            Assert.Equal(1, independentSeam.SelectedConstructions);
+
+            Assert.Equal(expectedGeneration, independentTicket.Generation);
+
+            Assert.Equal(ConnectionState.Closed, independentTicket.Connection.State);
+
+            Assert.Equal(0, independentTicket.TerminalCount);
+
+            Assert.False(independentOpening.IsCompleted);
+
+            GrimoireTicketObservation target = Assert.Single(targetSelection.Tickets);
+
+            Assert.NotSame(independentTicket.Connection, target.Connection);
+
+            Assert.Equal(expectedGeneration, target.Generation);
+
+            Assert.Equal(0, target.TerminalCount);
+
+            Assert.Same(target, Assert.Single(harness.Admission.Tickets.Skip(ticketsBeforeTarget),
+                ticket => ReferenceEquals(ticket.Connection, target.Connection)));
+
+            return target;
+        }
+        finally
+        {
+            independentSeam.Checkpoint.Release();
+
+            var opened = await independentOpening.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.True(opened.IsSuccess, opened.Error.Message);
+
+            await using IGrimoireOrdinaryConnectionLease lease = opened.Value;
+
+            if (independentTicket is not null)
+            {
+                Assert.Same(independentTicket.Connection, lease.Connection);
+
+                Assert.Equal(1, independentTicket.TerminalCount);
+
+                Assert.Equal("opened", independentTicket.Terminal);
+            }
+        }
+    }
+
+    private static async Task ExerciseRealGuildMaintenanceAfterReopenAsync(
+        GrimoireMaintenanceAdmissionHarness harness,
+        long expectedGeneration,
+        CancellationToken cancellationToken)
+    {
+        // Execute the real hosted pass against this host's admitted services. It owns and
+        // disposes its actual work/effect scopes; no synthetic observation is inserted.
+        IServiceProvider services = harness.Factory.Services;
+
+        int effectsBefore = harness.Admission.Effects.Count;
+
+        int workBefore = harness.Admission.WorkAttempts.Count;
+
+        using RetroDownfall.Arcanum.Infrastructure.Guild.GuildMaintenanceHostedService worker = new(
+            services.GetRequiredService<IServiceScopeFactory>(),
+            harness.Admission,
+            services.GetRequiredService<IGrimoireDbReadiness>(),
+            services.GetRequiredService<TimeProvider>(),
+            services.GetRequiredService<Microsoft.Extensions.Logging.ILogger<RetroDownfall.Arcanum.Infrastructure.Guild.GuildMaintenanceHostedService>>());
+
+        var outcome = await worker.RunOnceAsync(cancellationToken);
+
+        // Full factory reset deliberately leaves the Guild authority epoch absent until its
+        // next bootstrap. That typed unavailable result still follows real effect admission.
+        Assert.True(outcome.IsSuccess || outcome.Error.Code == RetroDownfall.Arcanum.Core.Primitives.ErrorCodes.Guild.Unavailable,
+            outcome.Error.Message);
+
+        Assert.Equal(expectedGeneration, harness.Admission.CurrentGeneration);
+
+        Assert.Contains(harness.Admission.WorkAttempts.Skip(workBefore), attempt =>
+            attempt.Kind == GrimoireWorkKind.GuildMaintenance && attempt.Acquired
+                && attempt.Generation == expectedGeneration && attempt.Disposals == 1);
+
+        Assert.Contains(harness.Admission.Effects.Skip(effectsBefore), effect =>
+            effect.Kind == GrimoireWorkKind.GuildMaintenance && effect.Disposals == 1 && effect.TerminalCount == 1);
     }
 
     private sealed record FactoryDrainEvidence(long Rows, long DerivedRecords, string[] Files, long AuditBytes, Guid GuildAuthorityEpoch);

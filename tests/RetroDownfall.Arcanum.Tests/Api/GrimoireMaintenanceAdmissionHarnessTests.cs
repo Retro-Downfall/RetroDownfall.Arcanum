@@ -995,6 +995,10 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         int previousTickets = harness.Admission.Tickets.Count;
 
+        long openingGeneration = harness.Admission.CurrentGeneration;
+
+        using GrimoireMaintenanceAdmissionObserver.OpenTicketSelection selectedTickets = harness.Admission.SelectCurrentExecution();
+
         Task<bool> opening = Task.Factory.StartNew(OpenAsync, timeout.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
 
         MaintenanceCheckpoint checkpoint = useEf ? harness.EfOpen.Checkpoint : harness.RawOpen.Checkpoint;
@@ -1005,7 +1009,43 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
         {
             await checkpoint.WaitUntilReachedAsync();
 
-            GrimoireTicketObservation ticket = Assert.Single(harness.Admission.Tickets.Skip(previousTickets));
+            // The real hosted services may open other connections while this selected open is
+            // paused. Force one such independent open instead of relying on their timer ordering.
+            await using (AsyncServiceScope unrelatedScope = harness.Factory.Services.CreateAsyncScope())
+            {
+                IGrimoireOrdinaryConnectionFactory unrelatedFactory = unrelatedScope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
+
+                Task<RetroDownfall.Arcanum.Core.Primitives.Result<IGrimoireOrdinaryConnectionLease>> unrelatedOpening;
+
+                using (ExecutionContext.SuppressFlow())
+                {
+                    unrelatedOpening = Task.Run(() => unrelatedFactory.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, timeout.Token));
+                }
+
+                var unrelatedResult = await unrelatedOpening.WaitAsync(timeout.Token);
+
+                Assert.True(unrelatedResult.IsSuccess, unrelatedResult.Error.Message);
+
+                await using IGrimoireOrdinaryConnectionLease unrelatedLease = unrelatedResult.Value;
+
+                GrimoireTicketObservation unrelatedTicket = Assert.Single(harness.Admission.Tickets,
+                    observation => ReferenceEquals(observation.Connection, unrelatedLease.Connection));
+
+                Assert.Equal(harness.Admission.CurrentGeneration, unrelatedTicket.Generation);
+
+                Assert.Equal(1, unrelatedTicket.TerminalCount);
+
+                Assert.Equal("opened", unrelatedTicket.Terminal);
+            }
+
+            GrimoireTicketObservation selectedTicket = Assert.Single(selectedTickets.Tickets);
+
+            GrimoireTicketObservation ticket = Assert.Single(harness.Admission.Tickets.Skip(previousTickets),
+                observation => ReferenceEquals(observation.Connection, selectedTicket.Connection));
+
+            Assert.Same(selectedTicket, ticket);
+
+            Assert.Equal(openingGeneration, ticket.Generation);
 
             connection = ticket.Connection;
 
@@ -1047,6 +1087,8 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
             checkpoint.Release();
 
             Assert.Equal(!closeAdmission, await opening.WaitAsync(timeout.Token));
+
+            Assert.Same(selectedTicket, Assert.Single(selectedTickets.Tickets));
 
             Assert.Equal(1, ticket.TerminalCount);
 

@@ -1585,6 +1585,8 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
     private readonly ConcurrentQueue<GrimoireTicketObservation> _tickets = new();
 
+    private readonly AsyncLocal<OpenTicketSelection?> _selectedOpen = new();
+
     private readonly ConcurrentQueue<GrimoireOwnerObservation> _closingOwners = new();
 
     private readonly ConcurrentQueue<GrimoireOwnerObservation> _closedLeases = new();
@@ -1613,6 +1615,17 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
         _firstEffects.GetOrAdd(kind, static _ => new(TaskCreationOptions.RunContinuationsAsynchronously));
 
     internal IReadOnlyList<GrimoireTicketObservation> Tickets => _tickets.ToArray();
+
+    internal OpenTicketSelection SelectCurrentExecution()
+    {
+        OpenTicketSelection? previous = _selectedOpen.Value;
+
+        OpenTicketSelection selected = new(() => _selectedOpen.Value = previous);
+
+        _selectedOpen.Value = selected;
+
+        return selected;
+    }
 
     internal IReadOnlyList<GrimoireOwnerObservation> ClosingOwners => _closingOwners.ToArray();
 
@@ -1685,11 +1698,33 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
         _tickets.Enqueue(observation);
 
+        _selectedOpen.Value?.Observe(observation);
+
         IGrimoireConnectionOpenTicket ticket = new ObservedTicket(actual, observation);
 
         observation.Ticket = ticket;
 
         return ticket;
+    }
+
+    /// <summary>One test execution's ticket observations, isolated from the host's already-running services.</summary>
+    internal sealed class OpenTicketSelection(Action restore) : IDisposable
+    {
+        private readonly ConcurrentQueue<GrimoireTicketObservation> _tickets = new();
+
+        private int _disposed;
+
+        internal IReadOnlyList<GrimoireTicketObservation> Tickets => _tickets.ToArray();
+
+        internal void Observe(GrimoireTicketObservation ticket) => _tickets.Enqueue(ticket);
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                restore();
+            }
+        }
     }
 
     public Result<IGrimoireClosingOwner> BeginOrResumeExclusive(
