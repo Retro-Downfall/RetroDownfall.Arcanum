@@ -68,7 +68,7 @@ jobs:
           }
 
       - name: Checkout the exact candidate and its baseline history
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -83,9 +83,10 @@ jobs:
             .config/dotnet-tools.json
 
       - name: Make native inspection tools available
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
-        with:
-          arch: ${{ matrix.rid == 'win-arm64' && 'arm64' || 'amd64' }}
+        shell: pwsh
+        env:
+          MSVC_ARCH: ${{ matrix.rid == 'win-arm64' && 'arm64' || 'amd64' }}
+        run: python scripts/setup_msvc_environment.py --arch "$env:MSVC_ARCH"
 
       - name: Install missing verification tools
         shell: pwsh
@@ -129,7 +130,7 @@ jobs:
 
       - name: Preserve qualification evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-pair-${{ matrix.rid }}-${{ github.sha }}
           path: ${{ runner.temp }}/arcanum-native-pair/${{ matrix.rid }}

@@ -293,7 +293,7 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
 
         string job = workflow[windows..];
 
-        int toolchain = job.IndexOf("ilammy/msvc-dev-cmd@", StringComparison.Ordinal);
+        int toolchain = job.IndexOf("python scripts/setup_msvc_environment.py --arch", StringComparison.Ordinal);
 
         int verify = job.IndexOf("./scripts/verify-native-sqlcipher.sh --rid", StringComparison.Ordinal);
 

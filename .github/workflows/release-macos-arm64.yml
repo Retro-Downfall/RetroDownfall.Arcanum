@@ -60,11 +60,11 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Nothing in this job talks to git; `gh` carries its own GH_TOKEN at the release step.
-          # Left on, checkout persists the `contents: write` token into .git/config as an http
-          # extraheader, which is the one credential anything running early in the job gets free.
+          # Left on, checkout persists the `contents: write` credential under RUNNER_TEMP and
+          # wires git to use it, making it available to earlier steps that do not need it.
           persist-credentials: false
 
       - name: Assert Apple Silicon and print toolchain
@@ -336,7 +336,7 @@ jobs:
             --output-dir dist
 
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-arm64-${{ steps.ver.outputs.version }}
           path: |
