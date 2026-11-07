@@ -175,7 +175,7 @@ public sealed partial class CampaignRollupStoreTests
     [InlineData(true, false)]
     [InlineData(false, true)]
     [InlineData(true, true)]
-    public async Task A_concurrent_source_commit_during_read_validation_refuses_snapshot_promotion_without_partial_publication(bool legacy, bool protectedChange)
+    public async Task A_concurrent_source_writer_waits_for_publication_then_invalidates_the_completed_rollup(bool legacy, bool protectedChange)
     {
         await using StoreFixture fixture = await StoreFixture.CreateAsync(legacy);
 
@@ -207,6 +207,35 @@ public sealed partial class CampaignRollupStoreTests
 
         Exception? blockedWriter = null;
 
+        void MutateSource()
+        {
+            if (protectedChange)
+            {
+                Result<LabeledArtifactWriteReceipt> label = new ArtifactSensitivityLedger(new FixedCovenantConnectionSource(peer))
+                    .LabelAsync(new DerivedArtifactWrite(SensitiveArtifactKind.AssistantEntry,
+                        Guid.Parse("20601337-085E-4095-9BC0-9D34B70B48E8"), SessionA, Campaign, null, 0,
+                        DerivedArtifactContentDigest.ForText("Choose SQLite"), ContentSensitivity.CovenantDerived,
+                        GenerationProvenance.CreateExact([Guid.NewGuid()])), CancellationToken.None).GetAwaiter().GetResult();
+
+                if (label.IsFailure)
+                {
+                    throw new InvalidOperationException(label.Error.Message);
+                }
+
+                return;
+            }
+
+            using SqliteCommand writer = peer.CreateCommand();
+
+            writer.CommandTimeout = 1;
+
+            writer.CommandText = "UPDATE Entries SET Content = 'changed during validation' WHERE SessionId = $session;";
+
+            writer.Parameters.AddWithValue("$session", SessionA.ToString("D").ToUpperInvariant());
+
+            writer.ExecuteNonQuery();
+        }
+
         SQLitePCL.raw.sqlite3_trace(fixture.Connection.Handle, (object? _, string sql) =>
         {
             if (attempted || !sql.Contains("SELECT SessionId, CampaignId, ContributionArtifactId", StringComparison.Ordinal))
@@ -218,31 +247,7 @@ public sealed partial class CampaignRollupStoreTests
 
             try
             {
-                if (protectedChange)
-                {
-                    Result<LabeledArtifactWriteReceipt> label = new ArtifactSensitivityLedger(new FixedCovenantConnectionSource(peer))
-                        .LabelAsync(new DerivedArtifactWrite(SensitiveArtifactKind.AssistantEntry,
-                            Guid.Parse("20601337-085E-4095-9BC0-9D34B70B48E8"), SessionA, Campaign, null, 0,
-                            DerivedArtifactContentDigest.ForText("Choose SQLite"), ContentSensitivity.CovenantDerived,
-                            GenerationProvenance.CreateExact([Guid.NewGuid()])), CancellationToken.None).GetAwaiter().GetResult();
-
-                    if (label.IsFailure)
-                    {
-                        throw new InvalidOperationException(label.Error.Message);
-                    }
-
-                    return;
-                }
-
-                using SqliteCommand writer = peer.CreateCommand();
-
-                writer.CommandTimeout = 1;
-
-                writer.CommandText = "UPDATE Entries SET Content = 'changed during validation' WHERE SessionId = $session;";
-
-                writer.Parameters.AddWithValue("$session", SessionA.ToString("D").ToUpperInvariant());
-
-                writer.ExecuteNonQuery();
+                MutateSource();
             }
             catch (Exception exception)
             {
@@ -263,24 +268,43 @@ public sealed partial class CampaignRollupStoreTests
 
         Assert.True(attempted);
 
-        Assert.Null(blockedWriter);
-
-        Assert.True(publication.IsFailure);
-
-        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_artifacts;"));
-
-        if (legacy)
+        if (protectedChange)
         {
-            Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_sources;"));
+            Assert.Contains("SQLite=5,", Assert.IsType<InvalidOperationException>(blockedWriter).Message, StringComparison.Ordinal);
         }
         else
         {
-            Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_manifests;"));
-
-            Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_manifest_sources;"));
+            Assert.Equal(5, Assert.IsType<SqliteException>(blockedWriter).SqliteErrorCode);
         }
 
-        Assert.Null((await fixture.Store.ReadCurrentAsync(Campaign, null, CancellationToken.None)).Value);
+        Assert.True(publication.IsSuccess, publication.Error.Message);
+
+        Assert.Equal(2, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_artifacts;"));
+
+        if (legacy)
+        {
+            Assert.Equal(3, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_sources;"));
+        }
+        else
+        {
+            Assert.Equal(2, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_manifests;"));
+
+            Assert.Equal(2, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_manifest_sources;"));
+        }
+
+        var current = await fixture.Store.ReadCurrentAsync(Campaign, null, CancellationToken.None);
+
+        Assert.True(current.IsSuccess, current.Error.Message);
+
+        Assert.Equal(publication.Value.ArtifactId, current.Value!.ArtifactId);
+
+        MutateSource();
+
+        var invalidated = await fixture.Store.ReadCurrentAsync(Campaign, null, CancellationToken.None);
+
+        Assert.True(invalidated.IsSuccess, invalidated.Error.Message);
+
+        Assert.Null(invalidated.Value);
     }
 
     [Fact]

@@ -41,7 +41,7 @@ internal sealed partial class CampaignRollupStore(
 
     public Task<Result<CampaignRollupInput?>> PrepareRollupAsync(Guid campaignId,
         ICovenantSnapshotReadLease? authority, CancellationToken cancellationToken) =>
-        WithinAsync(false, (connection, transaction) => PrepareRollupWithinAsync(
+        WithinAsync(true, (connection, transaction) => PrepareRollupWithinAsync(
             connection, transaction, campaignId, authority, cancellationToken), cancellationToken);
 
     public Task<Result<CampaignRollupArtifact>> PublishContributionAsync(CampaignContributionInput input, string content,
@@ -100,7 +100,7 @@ internal sealed partial class CampaignRollupStore(
 
     public Task<Result<CampaignRollupArtifact>> PublishRollupAsync(CampaignRollupInput input, string content,
         CampaignMaintenancePublication? publication, ICovenantSnapshotReadLease? authority, CancellationToken cancellationToken) =>
-        WithinAsync(false, async (connection, transaction) =>
+        WithinAsync(true, async (connection, transaction) =>
         {
             RequireOutput(content);
 
