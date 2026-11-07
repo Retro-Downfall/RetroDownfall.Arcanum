@@ -236,11 +236,30 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
 
         string factoryHome = factory.TempHome;
 
-        Task disposal = synchronous ? Task.Run(active.Dispose) : active.DisposeAsync().AsTask();
+        Task? disposal = null;
 
         try
         {
+            // Establish ownership before calling factory disposal: the entrypoint must already be
+            // inside its blocked asynchronous DI disposal. Stop callback arrival order is not ownership.
+            active.Services.GetRequiredService<IHostApplicationLifetime>().StopApplication();
+
             await barrier.DisposalStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            // WebApplicationFactory.DisposeAsync can call IHost.Dispose synchronously before its
+            // first await. Keep either API off the driver so it can release the barrier, and use a
+            // dedicated caller rather than occupying a pooled worker needed by shutdown continuations.
+            disposal = Task.Factory.StartNew(async () =>
+            {
+                if (synchronous)
+                {
+                    active.Dispose();
+                }
+                else
+                {
+                    await active.DisposeAsync().ConfigureAwait(false);
+                }
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
 
             await Assert.ThrowsAsync<TimeoutException>(() => disposal.WaitAsync(TimeSpan.FromMilliseconds(250)));
 
@@ -252,9 +271,17 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
         {
             barrier.ReleaseDisposal.TrySetResult();
 
-            await disposal.WaitAsync(TimeSpan.FromSeconds(30));
-
-            await factory.DisposeAsync();
+            try
+            {
+                if (disposal is not null)
+                {
+                    await disposal.WaitAsync(TimeSpan.FromSeconds(30));
+                }
+            }
+            finally
+            {
+                await factory.DisposeAsync();
+            }
         }
 
         Assert.True(barrier.DisposalFinished.Task.IsCompletedSuccessfully);
@@ -333,8 +360,6 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
 
     private sealed class EntryPointDisposalBarrier : IHostedService, IAsyncDisposable
     {
-        private int _stops;
-
         private int _disposals;
 
         internal TaskCompletionSource DisposalStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -345,15 +370,7 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
 
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-        public async Task StopAsync(CancellationToken cancellationToken)
-        {
-            // Let the entrypoint's concurrent shutdown reach disposal before the factory's first
-            // StopAsync returns. Host.DisposeAsync's idempotent second call does not join the first.
-            if (Interlocked.Increment(ref _stops) == 1)
-            {
-                await DisposalStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
-            }
-        }
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
         public async ValueTask DisposeAsync()
         {
