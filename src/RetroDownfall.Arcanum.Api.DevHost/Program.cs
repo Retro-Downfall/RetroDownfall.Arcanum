@@ -71,6 +71,8 @@ builder.Services.AddArcanumApiServices(builder.Configuration);
 // loopback Host-header allow-list whatever they say too.
 builder.Services.AddArcanumLoopbackHostFiltering();
 
+builder.Services.AddSingleton<DevHostShutdownCompletion>();
+
 WebApplication app = builder.Build();
 
 app.UseArcanumExceptionHandler();
@@ -84,6 +86,10 @@ app.UseArcanumRateLimiter();
 app.UseArcanumMetrics();
 
 app.MapArcanumEndpoints();
+
+DevHostShutdownCompletion shutdown = app.Services.GetRequiredService<DevHostShutdownCompletion>();
+
+shutdown.Enter();
 
 try
 {
@@ -108,16 +114,33 @@ try
 }
 finally
 {
+    Exception? shutdownFailure = null;
+
     try
     {
-        await app.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            await app.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Arcanum DevHost StopAsync during cleanup failed.");
+        }
+
+        await app.DisposeAsync().ConfigureAwait(false);
+
+        Log.CloseAndFlush();
     }
-    catch (Exception ex)
+    catch (Exception exception)
     {
-        Log.Warning(ex, "Arcanum DevHost StopAsync during cleanup failed.");
+        shutdownFailure = exception;
+
+        throw;
     }
-
-    await app.DisposeAsync().ConfigureAwait(false);
-
-    Log.CloseAndFlush();
+    finally
+    {
+        // Host.DisposeAsync is idempotent, but another disposer does not join an in-flight call.
+        // Publish completion only after this entrypoint can no longer touch global logging or paths.
+        shutdown.Complete(shutdownFailure);
+    }
 }

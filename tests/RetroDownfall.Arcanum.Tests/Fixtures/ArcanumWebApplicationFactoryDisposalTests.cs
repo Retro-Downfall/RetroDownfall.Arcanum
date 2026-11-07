@@ -208,6 +208,168 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
 
     }
 
+    [SkippableTheory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task DisposeAsync_waits_for_entrypoint_owned_async_disposal_before_restoring_environment(bool delegated, bool synchronous)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string parentHome = CreateTempHome("parent-entrypoint-disposal");
+
+        using TestingEnvironmentScope scope = new(parentHome);
+
+        EntryPointDisposalBarrier barrier = new();
+
+        ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services => services.AddSingleton<IHostedService>(_ => barrier),
+        };
+
+        Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> active = delegated
+            ? factory.WithWebHostBuilder(_ => { })
+            : factory;
+
+        _ = active.Services;
+
+        string factoryHome = factory.TempHome;
+
+        Task disposal = synchronous ? Task.Run(active.Dispose) : active.DisposeAsync().AsTask();
+
+        try
+        {
+            await barrier.DisposalStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            await Assert.ThrowsAsync<TimeoutException>(() => disposal.WaitAsync(TimeSpan.FromMilliseconds(250)));
+
+            Assert.Equal(factoryHome, global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME"));
+
+            Assert.True(Directory.Exists(factoryHome));
+        }
+        finally
+        {
+            barrier.ReleaseDisposal.TrySetResult();
+
+            await disposal.WaitAsync(TimeSpan.FromSeconds(30));
+
+            await factory.DisposeAsync();
+        }
+
+        Assert.True(barrier.DisposalFinished.Task.IsCompletedSuccessfully);
+
+        Assert.Equal(parentHome, global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME"));
+
+        await using ArcanumWebApplicationFactory next = new();
+
+        _ = next.Services;
+
+        Assert.True(next.Services.GetRequiredService<RetroDownfall.Arcanum.Core.Storage.IGrimoireDbReadiness>().IsReady);
+    }
+
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Entrypoint_failure_finishes_cleanup_and_releases_factory_isolation(bool failStartup)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string parentHome = CreateTempHome("parent-entrypoint-failure");
+
+        using TestingEnvironmentScope scope = new(parentHome);
+
+        EntrypointFailureProbe probe = new(failStartup);
+
+        ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services => services.AddSingleton<IHostedService>(_ => probe),
+        };
+
+        string factoryHome = factory.TempHome;
+
+        if (failStartup)
+        {
+            Exception failure = Assert.ThrowsAny<Exception>(() => _ = factory.Services);
+
+            Assert.Contains("expected entrypoint startup failure", failure.ToString(), StringComparison.Ordinal);
+
+            await factory.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        else
+        {
+            _ = factory.Services;
+
+            Exception failure = await Assert.ThrowsAnyAsync<Exception>(() => factory.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30)));
+
+            Assert.Contains("expected entrypoint disposal failure", failure.ToString(), StringComparison.Ordinal);
+        }
+
+        Assert.True(probe.Disposed);
+
+        Assert.Equal(parentHome, global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME"));
+
+        Assert.False(Directory.Exists(factoryHome));
+    }
+
+    private sealed class EntrypointFailureProbe(bool failStartup) : IHostedService, IAsyncDisposable
+    {
+        internal bool Disposed { get; private set; }
+
+        public Task StartAsync(CancellationToken cancellationToken) => failStartup
+            ? Task.FromException(new InvalidOperationException("expected entrypoint startup failure"))
+            : Task.CompletedTask;
+
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+
+            return failStartup ? ValueTask.CompletedTask
+                : ValueTask.FromException(new InvalidOperationException("expected entrypoint disposal failure"));
+        }
+    }
+
+    private sealed class EntryPointDisposalBarrier : IHostedService, IAsyncDisposable
+    {
+        private int _stops;
+
+        private int _disposals;
+
+        internal TaskCompletionSource DisposalStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource ReleaseDisposal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource DisposalFinished { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public async Task StopAsync(CancellationToken cancellationToken)
+        {
+            // Let the entrypoint's concurrent shutdown reach disposal before the factory's first
+            // StopAsync returns. Host.DisposeAsync's idempotent second call does not join the first.
+            if (Interlocked.Increment(ref _stops) == 1)
+            {
+                await DisposalStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Increment(ref _disposals) != 1)
+            {
+                return;
+            }
+
+            DisposalStarted.TrySetResult();
+
+            await ReleaseDisposal.Task;
+
+            DisposalFinished.TrySetResult();
+        }
+    }
+
     private static ArcanumWebApplicationFactory CreateStartedFactory(ShutdownPathProbe probe)
     {
 
@@ -334,11 +496,8 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
             if (Interlocked.Exchange(ref _captured, 1) != 0)
             {
 
-                // Shutdown runs this hosted service more than once. The factory stops the host, which
-                // releases the DevHost entry point parked in WaitForShutdownAsync — that stops the host
-                // a second time, and Program's finally stops it a third. Only the first pass is awaited
-                // inside the factory's isolated environment; the later ones can still be delaying when
-                // the environment is restored, so they must not overwrite what the first pass observed.
+                // Stop is idempotent at the service boundary even though the framework and entrypoint
+                // can both request it. Every pass now finishes before the factory releases isolation.
                 return;
 
             }

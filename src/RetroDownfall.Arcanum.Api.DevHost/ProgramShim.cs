@@ -17,3 +17,29 @@ public partial class Program
             ? null
             : $"Arcanum DevHost is intended for Development or Testing environments and will not start in '{environmentName}'. Use `arcanum serve` instead.";
 }
+
+/// <summary>Joins the DevHost entrypoint's final cleanup before a test factory releases its profile.</summary>
+public sealed class DevHostShutdownCompletion
+{
+    private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private int _entered;
+
+    public bool Entered => Volatile.Read(ref _entered) != 0;
+
+    public Task Completion => _completion.Task;
+
+    public void Enter() => Volatile.Write(ref _entered, 1);
+
+    public void Complete(Exception? failure)
+    {
+        if (failure is null)
+        {
+            _completion.TrySetResult();
+        }
+        else
+        {
+            _completion.TrySetException(failure);
+        }
+    }
+}

@@ -47,9 +47,9 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
     private readonly Dictionary<string, string?> _originalEnvironment = new();
 
-    private IHost? _applicationHost;
+    private readonly List<DevHostShutdownCompletion> _entrypointShutdowns = [];
 
-    private int _applicationHostStopped;
+    private readonly List<EntrypointJoinedHost> _applicationHosts = [];
 
     private int _isolatedResourcesDisposed;
 
@@ -400,16 +400,29 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
         global::System.Environment.SetEnvironmentVariable("ARCANUM_SKIP_KEY_BOOTSTRAP", "1");
 
+        DevHostShutdownCompletion shutdown = new();
+
+        _entrypointShutdowns.Add(shutdown);
+
+        builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<DevHostShutdownCompletion>();
+
+            services.AddSingleton(shutdown);
+        });
+
         IHost host = base.CreateHost(builder);
 
-        _applicationHost = host;
+        EntrypointJoinedHost joined = new(host, shutdown);
+
+        _applicationHosts.Add(joined);
 
         if (initialSeedClaimed && _profile.Grimoire is not null)
         {
             SeedExternalInstallationIdentity(host);
         }
 
-        return host;
+        return joined;
     }
 
     private void SeedExternalInstallationIdentity(IHost host)
@@ -528,7 +541,16 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
         {
             try
             {
-                await StopApplicationHostAsync();
+                try
+                {
+                    await Task.WhenAll(_applicationHosts.Select(host => host.DisposeAsync().AsTask())).ConfigureAwait(false);
+                }
+                finally
+                {
+                    // A failed StartAsync never returns a host, but its entrypoint still owns cleanup.
+                    await Task.WhenAll(_entrypointShutdowns.Where(shutdown => shutdown.Entered)
+                        .Select(shutdown => shutdown.Completion)).ConfigureAwait(false);
+                }
             }
             finally
             {
@@ -541,16 +563,57 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
         }
     }
 
-    private async ValueTask StopApplicationHostAsync()
+    /// <summary>Framework-owned delegated factories must join the same entrypoint cleanup too.</summary>
+    private sealed class EntrypointJoinedHost(IHost inner, DevHostShutdownCompletion shutdown) : IHost, IAsyncDisposable
     {
-        IHost? host = _applicationHost;
+        private readonly object _disposeSync = new();
 
-        if (host is null || Interlocked.Exchange(ref _applicationHostStopped, 1) != 0)
+        private Task? _disposal;
+
+        public IServiceProvider Services => inner.Services;
+
+        public Task StartAsync(CancellationToken cancellationToken = default) => inner.StartAsync(cancellationToken);
+
+        public Task StopAsync(CancellationToken cancellationToken = default) => inner.StopAsync(cancellationToken);
+
+        public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+        public ValueTask DisposeAsync()
         {
-            return;
+            lock (_disposeSync)
+            {
+                return new ValueTask(_disposal ??= DisposeCoreAsync());
+            }
         }
 
-        await host.StopAsync();
+        private async Task DisposeCoreAsync()
+        {
+            try
+            {
+                try
+                {
+                    await inner.StopAsync().ConfigureAwait(false);
+                }
+                finally
+                {
+                    if (shutdown.Entered)
+                    {
+                        await shutdown.Completion.ConfigureAwait(false);
+                    }
+                }
+            }
+            finally
+            {
+                if (inner is IAsyncDisposable asynchronous)
+                {
+                    await asynchronous.DisposeAsync().ConfigureAwait(false);
+                }
+                else
+                {
+                    inner.Dispose();
+                }
+            }
+        }
     }
 
     private void DisposeIsolatedResources()
