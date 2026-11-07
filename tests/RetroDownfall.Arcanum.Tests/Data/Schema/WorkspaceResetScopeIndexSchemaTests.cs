@@ -20,13 +20,14 @@ public sealed class WorkspaceResetScopeIndexSchemaTests
         Assert.DoesNotContain(CoreSchemaVersionThirtyFixture.Objects,
             static item => item.Sql.Contains(IndexName, StringComparison.Ordinal));
 
+        // The captured predecessor is Core-only; its ChainSet uses the current optional-family heads.
         Assert.Equal(38, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
         Assert.Equal(7, GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion);
 
         Assert.Equal(1, GrimoireSchemaVersionChains.CovenantAcceleratorSchemaVersion);
 
-        Assert.Equal(2, GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion);
+        Assert.Equal(4, GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion);
     }
 
     [Fact]

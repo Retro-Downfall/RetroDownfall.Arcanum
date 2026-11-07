@@ -88,6 +88,12 @@ internal sealed partial class GuildQuestStore
 
                 if (await wait.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 1) return RevisionConflict;
 
+                Result<long> projected = await GuildPortalEvents.AppendWithinAsync(connection, transaction,
+                    row.Quest.RootQuestId, row.Quest.Id, GuildEventKind.QuestChanged,
+                    row.Quest.Id, row.Quest.Revision + 1, null, now, token).ConfigureAwait(false);
+
+                if (projected.IsFailure) return projected.Error;
+
                 return await ReadWithinAsync(connection, transaction, row.Quest.Id, token).ConfigureAwait(false);
             }, ct);
     }
@@ -240,6 +246,12 @@ internal sealed partial class GuildQuestStore
 
                 if (!await LongRunningOperationStore.TryTransitionWithinAsync(connection, transaction, operation.Id, operation.Revision,
                     null, LongRunningOperationState.Running, now, null, token).ConfigureAwait(false)) return RevisionConflict;
+
+                Result<long> projected = await GuildPortalEvents.AppendWithinAsync(connection, transaction,
+                    row.Quest.RootQuestId, questId, GuildEventKind.QuestChanged,
+                    questId, row.Quest.Revision + 1, null, now, token).ConfigureAwait(false);
+
+                if (projected.IsFailure) return projected.Error;
 
                 Result<GuildQuestStored> accepted = await ReadWithinAsync(connection, transaction, questId, token).ConfigureAwait(false);
 

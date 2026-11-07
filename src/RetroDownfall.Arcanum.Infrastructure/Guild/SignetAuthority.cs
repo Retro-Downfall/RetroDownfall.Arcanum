@@ -338,7 +338,31 @@ internal sealed partial class SignetAuthority(GuildSignetStore store, IGrimoireC
                     return GuildSignetStore.NotFound;
                 }
 
-                return await GuildSignetStore.RevokeAsync(connection, transaction, current.Value, mutation, request, token).ConfigureAwait(false);
+                Result<SignetRevocationDto> revoked = await GuildSignetStore.RevokeAsync(
+                    connection, transaction, current.Value, mutation, request, token).ConfigureAwait(false);
+
+                if (revoked.IsFailure)
+                {
+                    return revoked.Error;
+                }
+
+                DateTimeOffset now = time.GetUtcNow();
+
+                Result withheld = await GuildPortalCleanupParticipant.WithholdRevokedWithinAsync(
+                    connection, transaction, current.Value.Binding.QuestId, now, token).ConfigureAwait(false);
+
+                if (withheld.IsFailure)
+                {
+                    return withheld.Error;
+                }
+
+                Result<long> projected = await GuildPortalEvents.AppendWithinAsync(connection, transaction,
+                    current.Value.Binding.RootQuestId, current.Value.Binding.QuestId, GuildEventKind.SignetRevoked,
+                    signetId, revoked.Value.Revision, null, now, token, GuildPortalEventSource.Signet).ConfigureAwait(false);
+
+                return projected.IsSuccess
+                    ? revoked.Value with { EventWatermark = projected.Value }
+                    : projected.Error;
             }, ct), cancellationToken).ConfigureAwait(false);
     }
 

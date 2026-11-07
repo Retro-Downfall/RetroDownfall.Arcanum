@@ -77,6 +77,9 @@ internal static class GuildAotSmoke
 
         Exercise(SampleGuildCircleInboxItem(), GuildJsonContext.Default.GuildCircleInboxItem);
 
+        Exercise(SampleGuildCircleInboxItem() with { Envelope = null, DeliveryState = GuildDeliveryState.Withheld,
+            ReasonCode = "OwnerUnavailable", EnvelopeId = Id }, GuildJsonContext.Default.GuildCircleInboxItem);
+
         Exercise(SampleGuildCircleInboxPage(), GuildJsonContext.Default.GuildCircleInboxPage);
 
         Exercise(SampleGuildCircleInboxQuery(), GuildJsonContext.Default.GuildCircleInboxQuery);
@@ -485,7 +488,7 @@ internal static class GuildAotSmoke
 
     private static GuildCancellationDto SampleGuildCancellationDto() => new(QuestId: Id, RootQuestId: Id, Revision: 17L, CancellationRequested: true, CancellationConverged: true, PendingExecutionCount: 0L, UnresolvedExternalEffectCount: 0L, AccountingState: GuildAccountingState.Settled, EventWatermark: 17L, Receipt: SampleGuildMutationReceiptDto());
 
-    private static GuildChangeEventDto SampleGuildChangeEventDto() => new(EventSequence: 17L, EventKind: GuildEventKind.QuestChanged, ObjectId: Id, Revision: 17L, ContentRefs: [SampleGuildDataRef()]);
+    private static GuildChangeEventDto SampleGuildChangeEventDto() => new(EventSequence: 17L, EventKind: GuildEventKind.QuestChanged, ObjectId: Id, Revision: 17L, ContentRefs: [SampleGuildDataRef()], QuestId: Id);
 
     private static GuildCircleAcknowledgeRequest SampleGuildCircleAcknowledgeRequest() => new(Mutation: SampleGuildMutationIdentity(), ApplicationReceiptId: Id, ApplicationDigest: "sample-ApplicationDigest", ExpectedInboxRevision: 17L);
 

@@ -48,6 +48,8 @@ internal sealed partial class GuildQuestStore
                     if (!Equals(1L, await eligible.ExecuteScalarAsync(token).ConfigureAwait(false))) return Conflict;
                 }
 
+                DateTimeOffset now = time.GetUtcNow();
+
                 await using SqliteCommand insert = Command(connection, transaction, """
                     INSERT INTO guild_dispatches(DispatchId,QuestId,InvocationDigest,IsContinuation,AccountingAssociationId,
                         EvidenceCode,Revision,CreatedAtUtc,UpdatedAtUtc)
@@ -59,9 +61,14 @@ internal sealed partial class GuildQuestStore
                 Add(insert, "$digest", Convert.FromHexString(invocationDigest));
                 Add(insert, "$continuation", isContinuation ? 1 : 0);
                 Add(insert, "$accounting", Id(accountingAssociationId));
-                Add(insert, "$now", UtcInstantText.Format(time.GetUtcNow()));
+                Add(insert, "$now", UtcInstantText.Format(now));
 
                 _ = await insert.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+
+                Result<long> projected = await GuildPortalEvents.AppendWithinAsync(connection, transaction,
+                    row.Quest.RootQuestId, row.Quest.Id, GuildEventKind.QuestChanged, dispatchId, 1, null, now, token, GuildPortalEventSource.Dispatch).ConfigureAwait(false);
+
+                if (projected.IsFailure) return projected.Error;
 
                 return new GuildQuestDispatchRecord(dispatchId, row.Quest.Id, invocationDigest, accountingAssociationId,
                     isContinuation, GuildDispatchEvidence.Prepared, null, null, null, 1);
@@ -104,6 +111,8 @@ internal sealed partial class GuildQuestStore
 
                 if (admitted.Value.Operation.LeaseExpiresAt <= time.GetUtcNow()) return RevisionConflict;
 
+                DateTimeOffset now = time.GetUtcNow();
+
                 await using SqliteCommand update = Command(connection, transaction, """
                     UPDATE guild_dispatches SET EvidenceCode=2,Revision=Revision+1,UpdatedAtUtc=$now
                     WHERE DispatchId=$id AND Revision=$revision AND EvidenceCode=1;
@@ -114,9 +123,15 @@ internal sealed partial class GuildQuestStore
                 Add(update, "$id", Id(dispatchId));
                 Add(update, "$revision", expectedDispatchRevision);
                 Add(update, "$quest", Id(dispatch.QuestId));
-                Add(update, "$now", UtcInstantText.Format(time.GetUtcNow()));
+                Add(update, "$now", UtcInstantText.Format(now));
 
                 if (await update.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 2) return RevisionConflict;
+
+                Result<long> projected = await GuildPortalEvents.AppendWithinAsync(connection, transaction,
+                    admitted.Value.Row.Quest.RootQuestId, dispatch.QuestId, GuildEventKind.QuestChanged,
+                    dispatchId, dispatch.Revision + 1, null, now, token, GuildPortalEventSource.Dispatch).ConfigureAwait(false);
+
+                if (projected.IsFailure) return projected.Error;
 
                 return new GuildQuestDispatchAdmission(dispatch with { Evidence = GuildDispatchEvidence.PossiblyDispatched, Revision = dispatch.Revision + 1 }, true);
             }, ct);
@@ -163,6 +178,8 @@ internal sealed partial class GuildQuestStore
 
                 if (dispatch.Revision == long.MaxValue) return ExhaustedReceipt;
 
+                DateTimeOffset now = time.GetUtcNow();
+
                 await using SqliteCommand update = Command(connection, transaction, """
                     UPDATE guild_dispatches SET EvidenceCode=$evidence,LocalChildId=$child,RemoteTaskId=$task,RemoteContextId=$context,
                         Revision=Revision+1,UpdatedAtUtc=$now WHERE DispatchId=$id AND Revision=$revision
@@ -174,16 +191,22 @@ internal sealed partial class GuildQuestStore
                 Add(update, "$child", Id(evidence.LocalChildId));
                 Add(update, "$task", evidence.RemoteTaskId);
                 Add(update, "$context", evidence.RemoteContextId);
-                Add(update, "$now", UtcInstantText.Format(time.GetUtcNow()));
+                Add(update, "$now", UtcInstantText.Format(now));
 
                 if (await update.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 1) return RevisionConflict;
+
+                Result<long> projected = await GuildPortalEvents.AppendWithinAsync(connection, transaction,
+                    admitted.Value.Row.Quest.RootQuestId, dispatch.QuestId, GuildEventKind.QuestChanged,
+                    dispatch.DispatchId, dispatch.Revision + 1, null, now, token, GuildPortalEventSource.Dispatch).ConfigureAwait(false);
+
+                if (projected.IsFailure) return projected.Error;
 
                 return dispatch with { Evidence = evidence.Evidence, LocalChildId = evidence.LocalChildId, RemoteTaskId = evidence.RemoteTaskId,
                     RemoteContextId = evidence.RemoteContextId, Revision = dispatch.Revision + 1 };
             }, ct);
     }
 
-    private async Task<Result<(GuildQuestStored Row, LongRunningOperation Operation)>> RequireDriverWithinAsync(
+    internal async Task<Result<(GuildQuestStored Row, LongRunningOperation Operation)>> RequireDriverWithinAsync(
         SqliteConnection connection, SqliteTransaction transaction, SignetAuthority.QuestTransaction signets,
         GuildQuestDriver driver, bool requireLease, bool allowCancelling, CancellationToken ct)
     {

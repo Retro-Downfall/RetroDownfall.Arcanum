@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS guild_inbox (
+    Id TEXT NOT NULL PRIMARY KEY CHECK(Id=upper(Id) AND length(Id)=36 AND substr(Id,9,1)='-' AND substr(Id,14,1)='-' AND substr(Id,19,1)='-' AND substr(Id,24,1)='-' AND length(replace(Id,'-',''))=32 AND replace(Id,'-','') NOT GLOB '*[^0-9A-F]*' AND Id<>'00000000-0000-0000-0000-000000000000'),
+    EnvelopeId TEXT NOT NULL CHECK(EnvelopeId=upper(EnvelopeId) AND length(EnvelopeId)=36 AND substr(EnvelopeId,9,1)='-' AND substr(EnvelopeId,14,1)='-' AND substr(EnvelopeId,19,1)='-' AND substr(EnvelopeId,24,1)='-' AND length(replace(EnvelopeId,'-',''))=32 AND replace(EnvelopeId,'-','') NOT GLOB '*[^0-9A-F]*' AND EnvelopeId<>'00000000-0000-0000-0000-000000000000'),
+    RecipientKey TEXT NOT NULL CHECK((typeof(RecipientKey)='text' AND length(CAST(RecipientKey AS BLOB)) BETWEEN 1 AND 256)),
+    RecipientQuestId TEXT NULL CHECK(RecipientQuestId IS NULL OR (RecipientQuestId=upper(RecipientQuestId) AND length(RecipientQuestId)=36 AND substr(RecipientQuestId,9,1)='-' AND substr(RecipientQuestId,14,1)='-' AND substr(RecipientQuestId,19,1)='-' AND substr(RecipientQuestId,24,1)='-' AND length(replace(RecipientQuestId,'-',''))=32 AND replace(RecipientQuestId,'-','') NOT GLOB '*[^0-9A-F]*' AND RecipientQuestId<>'00000000-0000-0000-0000-000000000000')),
+    StreamId TEXT NOT NULL REFERENCES guild_portal_streams(StreamId) ON DELETE RESTRICT CHECK(StreamId=upper(StreamId) AND length(StreamId)=36 AND substr(StreamId,9,1)='-' AND substr(StreamId,14,1)='-' AND substr(StreamId,19,1)='-' AND substr(StreamId,24,1)='-' AND length(replace(StreamId,'-',''))=32 AND replace(StreamId,'-','') NOT GLOB '*[^0-9A-F]*' AND StreamId<>'00000000-0000-0000-0000-000000000000'),
+    SenderSequence INTEGER NOT NULL CHECK(typeof(SenderSequence)='integer' AND SenderSequence>=1),
+    DeliveryStateCode INTEGER NOT NULL CHECK(typeof(DeliveryStateCode)='integer' AND DeliveryStateCode IN(1,2,3)),
+    Revision INTEGER NOT NULL CHECK(typeof(Revision)='integer' AND Revision>=1),
+    LeaseOwner TEXT NULL CHECK(LeaseOwner IS NULL OR (typeof(LeaseOwner)='text' AND length(CAST(LeaseOwner AS BLOB)) BETWEEN 1 AND 800)),
+    LeaseRevision INTEGER NULL CHECK(LeaseRevision IS NULL OR (typeof(LeaseRevision)='integer' AND LeaseRevision>=1)),
+    OperationId TEXT NULL CHECK(OperationId IS NULL OR (length(OperationId)=32 AND OperationId NOT GLOB '*[^0-9a-f]*' AND OperationId<>'00000000000000000000000000000000')),
+    ReasonCode TEXT NULL CHECK(ReasonCode IS NULL OR (typeof(ReasonCode)='text' AND length(CAST(ReasonCode AS BLOB)) BETWEEN 1 AND 128)),
+    CreatedAtUtc TEXT NOT NULL,
+    AcknowledgedAtUtc TEXT NULL,
+    UNIQUE(EnvelopeId,RecipientKey),
+    UNIQUE(Id,RecipientQuestId,EnvelopeId),
+    FOREIGN KEY(EnvelopeId,StreamId,SenderSequence) REFERENCES guild_envelopes(Id,StreamId,SenderSequence) ON DELETE RESTRICT,
+    CHECK((LeaseOwner IS NULL AND LeaseRevision IS NULL AND OperationId IS NULL) OR (LeaseOwner IS NOT NULL AND LeaseRevision IS NOT NULL AND OperationId IS NOT NULL)),
+    CHECK((DeliveryStateCode=1 AND AcknowledgedAtUtc IS NULL) OR (DeliveryStateCode IN(2,3) AND AcknowledgedAtUtc IS NOT NULL))
+);

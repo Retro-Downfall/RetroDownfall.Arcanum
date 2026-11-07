@@ -2,6 +2,8 @@
 
 This document records the completed Core slice in issue #310 from the resolved DESIGN §23 and proposed API appendix. It delivers reusable Core values, pure policies, ports and generated serialization. Subsequent slices add storage, Signet authority and the [Quest foundation](Arcanum.Guild.Quest.Plan.md); executable Guild admission, transports, endpoints, commands and settings remain proposed. The existing LRO, SQLCipher and effect pipelines retain their selected ownership.
 
+The [Portal foundation](Arcanum.Guild.Portal.Plan.md) extends the dormant implementation with verified direct-address publication, exact LRO-fenced ordered effects, content-free projection replay and source receipt outboxes. Existing Circle contract names and published wire values remain compatible. Current membership-based Cohorts and public API/CLI/SSE activation remain with their own delivery slices. DESIGN §23.7 and §23.15 own the implemented transaction and retention rules.
+
 ## Constraints and decisions
 
 - Keep all contracts in Core/Guild; use Result/Result<T> and cancellation for asynchronous ports.

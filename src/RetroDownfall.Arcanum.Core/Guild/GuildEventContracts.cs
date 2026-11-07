@@ -14,7 +14,8 @@ public sealed record GuildTreeSnapshotDto(GuildQuestDto Summary, GuildQuestPageD
 
 public sealed record GuildCohortSnapshotDto(CohortDto Summary, CohortMemberPageDto Members, long Watermark, string ResumeCursor);
 
-public sealed record GuildChangeEventDto(long EventSequence, GuildEventKind EventKind, Guid ObjectId, long Revision, ImmutableArray<GuildDataRef> ContentRefs);
+public sealed record GuildChangeEventDto(long EventSequence, GuildEventKind EventKind, Guid ObjectId, long Revision,
+    ImmutableArray<GuildDataRef> ContentRefs, Guid? QuestId = null);
 
 public sealed record GuildResyncEventDto(string ReasonCode, string SnapshotRoute, string ResumeCursor);
 

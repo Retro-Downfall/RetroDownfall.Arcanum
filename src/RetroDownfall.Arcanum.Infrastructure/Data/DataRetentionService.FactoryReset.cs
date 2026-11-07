@@ -31,6 +31,15 @@ internal sealed partial class DataRetentionService
 {
     private static readonly FactoryTablePlan[] FactoryPlanTables =
     [
+        new("guild_portal_inputs", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_portal_receipts", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_inbox", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_portal_outbox", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_events", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_portal_cursors", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_envelopes", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_portal_streams", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_event_streams", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_continuations", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_result_inputs", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_result_applications", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
@@ -148,6 +157,15 @@ internal sealed partial class DataRetentionService
 
     private static readonly FactoryTablePlan[] FactoryDeletionTables =
     [
+        new("guild_portal_inputs", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_portal_receipts", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_inbox", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_portal_outbox", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_events", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_portal_cursors", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_envelopes", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_portal_streams", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_event_streams", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_continuations", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_result_inputs", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_result_applications", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),

@@ -59,6 +59,7 @@ public sealed class HostedProducerAnalysisCollectionTests
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Every_production_root_stays_within_its_ratchet_ceiling",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ExplicitWriterDisposal_actual_batch_preserves_physical_rows_and_records_each_logical_call",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.FrameworkCollectionIndexerUsesProductionReferencePackIdentity",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Guild_Quest_recovery_retains_its_own_ordinary_recovery_work_and_effect",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.HostedClosureActualRetentionRecoveryRetainsTheLoggedCheckpointZeroTerminalProof",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.HostedClosureActualRetentionWeakTableFactoryCompletesSynchronously",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.HostedClosureActualScalarOperationsRetainClosedFrameworkSemantics",

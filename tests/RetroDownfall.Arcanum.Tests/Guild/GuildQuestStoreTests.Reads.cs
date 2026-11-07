@@ -151,13 +151,19 @@ public sealed partial class GuildQuestStoreTests
 
         GuildQuestCleanupParticipant cleanup = new(f.Connections, TimeProvider.System);
 
+        GuildPortalCleanupParticipant portalCleanup = new(TimeProvider.System);
+
         GuildCleanupOwner owner = new(2, parent.Quest.SessionId!.Value, null);
 
         await using (SqliteConnection connection = await f.OpenAsync())
         {
             await using SqliteTransaction transaction = connection.BeginTransaction();
 
+            Assert.True((await portalCleanup.SealAsync(owner, connection, transaction, default)).IsSuccess);
+
             Assert.True((await cleanup.SealAsync(owner, connection, transaction, default)).IsSuccess);
+
+            Assert.True((await portalCleanup.DeleteAsync(owner, connection, transaction, default)).IsSuccess);
 
             Assert.True((await cleanup.DeleteAsync(owner, connection, transaction, default)).IsSuccess);
 

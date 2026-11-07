@@ -9869,21 +9869,24 @@
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.cs#MaximumContentBytes",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetGrantJson.cs#MaximumBytes",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.SourceClaims.cs#ObserveDeclaredSourceAsync",
-        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildRosterRefreshStore.cs#FindWithinAsync"
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildRosterRefreshStore.cs#FindWithinAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Admission.cs#PublishWithinAsync"
       ],
       "coveredSymbols": [
         "GuildStore.MaximumContentBytes",
         "GuildSignetGrantJson.MaximumBytes",
         "GuildStore.ObserveDeclaredSourceAsync",
-        "GuildRosterRefreshStore.FindWithinAsync"
+        "GuildRosterRefreshStore.FindWithinAsync",
+        "GuildPortalStore.PublishWithinAsync"
       ],
       "symbolValues": {
         "GuildStore.MaximumContentBytes": "65,536 encoded bytes per content body or variable metadata record",
         "GuildSignetGrantJson.MaximumBytes": "65,536 encoded bytes per content body or variable metadata record",
         "GuildStore.ObserveDeclaredSourceAsync": "65,536 encoded bytes per content body or variable metadata record",
-        "GuildRosterRefreshStore.FindWithinAsync": "65,536 encoded bytes per content body or variable metadata record"
+        "GuildRosterRefreshStore.FindWithinAsync": "65,536 encoded bytes per content body or variable metadata record",
+        "GuildPortalStore.PublishWithinAsync": "65,536 UTF-8 body bytes; 16,384 encoded envelope metadata bytes"
       },
-      "currentValue": "65,536 encoded bytes per content body or variable metadata record",
+      "currentValue": "65,536 encoded bytes per content body or variable metadata record; Portal envelope metadata at most 16,384 bytes",
       "owner": "host",
       "enforcementPoint": "Guild storage admission and scalar length checks before replay materialization",
       "userVisibleBehavior": "Oversized inputs refuse without truncation; malformed retained buffers refuse before allocation.",
@@ -9896,7 +9899,8 @@
         "GuildStoreTests",
         "GuildSignetAuthorityTests.Stored_oversize_grant_is_refused_before_its_json_is_materialized",
         "GuildDeclaredSourceStateTests",
-        "GuildRosterRefreshStoreTests"
+        "GuildRosterRefreshStoreTests",
+        "GuildPortalStoreTests"
       ]
     },
     {
@@ -9905,19 +9909,25 @@
       "sourceLocations": [
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.cs#ListAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildDeclaredAgentSourceReader.cs#ReadPageAsync",
-        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOwnerCleanupCoordinator.cs#RunBatchAsync"
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOwnerCleanupCoordinator.cs#RunBatchAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Reads.cs#PortalPageBytes",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Outbox.cs#DrainOutboxAsync"
       ],
       "coveredSymbols": [
         "GuildStore.ListAsync",
         "GuildDeclaredAgentSourceReader.ReadPageAsync",
-        "GuildOwnerCleanupCoordinator.RunBatchAsync"
+        "GuildOwnerCleanupCoordinator.RunBatchAsync",
+        "GuildPortalStore.PortalPageBytes",
+        "GuildPortalStore.DrainOutboxAsync"
       ],
       "symbolValues": {
         "GuildStore.ListAsync": "Up to 100 records and a 1 MiB materialization budget per page",
         "GuildDeclaredAgentSourceReader.ReadPageAsync": "Up to 100 direct files per page; each file uses the effective Spell byte limit; at most one more directory entry name than the page size is retained",
-        "GuildOwnerCleanupCoordinator.RunBatchAsync": "Caller-supplied event and orphan batch sizes; hosted cleanup requests 64 events and 64 orphans per turn, with protected content paged by the shared purger target limit"
+        "GuildOwnerCleanupCoordinator.RunBatchAsync": "Caller-supplied event and orphan batch sizes; hosted cleanup requests 64 events and 64 orphans per turn, with protected content paged by the shared purger target limit",
+        "GuildPortalStore.PortalPageBytes": "1,048,576 encoded bytes and at most 100 scanned rows per Portal page",
+        "GuildPortalStore.DrainOutboxAsync": "At most 100 pending source receipts per admitted turn; remaining work stays durable"
       },
-      "currentValue": "Card lists: up to 100 records and 1 MiB per page. Declared sources: up to 100 files, each bounded by the effective Spell byte limit. Hosted cleanup: 64 events and 64 orphans per turn.",
+      "currentValue": "Card and Portal lists: up to 100 records and 1 MiB per page. Portal source delivery: up to 100 receipts per turn. Declared sources: up to 100 files, each bounded by the effective Spell byte limit. Hosted cleanup: 64 events and 64 orphans per turn.",
       "owner": "host",
       "enforcementPoint": "Admitted keyset pages, bounded retained directory names and owner cleanup turns",
       "userVisibleBehavior": "Every page advances or completes; remaining agents and owner work remain reachable through continuation.",
@@ -9930,7 +9940,8 @@
         "GuildStoreTests.Byte_bounded_pages_make_progress_without_limiting_total_records",
         "GuildRosterTests",
         "GuildDeclaredAgentSourceTests",
-        "DataRetentionServiceTests"
+        "DataRetentionServiceTests",
+        "GuildPortalStoreTests"
       ]
     },
     {

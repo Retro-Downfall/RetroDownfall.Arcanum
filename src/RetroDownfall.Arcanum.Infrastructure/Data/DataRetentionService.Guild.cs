@@ -25,7 +25,7 @@ internal sealed partial class DataRetentionService
             retention, cancellationToken).ConfigureAwait(false);
 
         await AddCompositeDatabaseStatusAsync(items, RetentionDataClass.GuildEvidence,
-            ["guild_continuations", "guild_result_inputs", "guild_result_applications", "guild_result_outbox", "guild_result_receipts", "guild_dispatches", "guild_quest_start_intents", "guild_quests", "guild_signets", "guild_signet_revocations", "guild_signet_authority_state", "guild_content_erasure_receipts", "guild_owner_cleanup", "guild_roster_refreshes", "guild_roster_cursors", "guild_declared_source_claims", "guild_declared_roots"],
+            ["guild_portal_inputs", "guild_portal_receipts", "guild_inbox", "guild_portal_outbox", "guild_events", "guild_portal_cursors", "guild_envelopes", "guild_portal_streams", "guild_event_streams", "guild_continuations", "guild_result_inputs", "guild_result_applications", "guild_result_outbox", "guild_result_receipts", "guild_dispatches", "guild_quest_start_intents", "guild_quests", "guild_signets", "guild_signet_revocations", "guild_signet_authority_state", "guild_content_erasure_receipts", "guild_owner_cleanup", "guild_roster_refreshes", "guild_roster_cursors", "guild_declared_source_claims", "guild_declared_roots"],
             "Content-free Guild erasure and owner cleanup evidence; never aged out on a timer.",
             retention, cancellationToken).ConfigureAwait(false);
     }
@@ -49,6 +49,13 @@ internal sealed partial class DataRetentionService
                 + " UNION SELECT operation.Id FROM LongRunningOperations operation WHERE operation.Kind='guild-quest'"
                 + " AND NOT EXISTS(SELECT 1 FROM guild_quests c WHERE c.OperationId=operation.Id)"
             : "SELECT Id FROM LongRunningOperations WHERE Kind='guild-quest'";
+
+        if (await TableExistsAsync("guild_inbox", cancellationToken).ConfigureAwait(false))
+        {
+            command.CommandText += " UNION SELECT i.Id FROM guild_inbox i JOIN guild_envelopes e ON e.Id=i.EnvelopeId WHERE "
+                + GuildQuestRetentionPins.UnresolvedPortalInbox
+                + " UNION SELECT ReceiptId FROM guild_portal_outbox WHERE DeliveryStateCode=1";
+        }
 
         List<DataRetentionConflict> conflicts = [];
 
@@ -85,6 +92,11 @@ internal sealed partial class DataRetentionService
             content.SensitivityCode=0 AND content.CreatedAtUtc<=@cutoff
             AND NOT EXISTS(SELECT 1 FROM artifact_sensitivity label WHERE label.ArtifactKindCode=17
                 AND lower(replace(label.ArtifactId,'-',''))=lower(replace(content.ContentId,'-','')))
+            AND NOT EXISTS(SELECT 1 FROM guild_envelopes envelope
+                JOIN guild_inbox delivery ON delivery.EnvelopeId=envelope.Id
+                JOIN guild_portal_inputs input ON input.InboxId=delivery.Id
+                LEFT JOIN guild_quests c ON c.Id=input.RecipientQuestId
+                WHERE envelope.ContentId=content.ContentId AND (c.Id IS NULL OR {GuildQuestRetentionPins.ExecutionUnresolved}))
             AND ((content.ContentKindCode=0 AND NOT EXISTS(SELECT 1 FROM guild_agent_cards card WHERE card.ContentId=content.ContentId))
               OR (content.ContentKindCode IN(1,2) AND EXISTS(
                 SELECT 1 FROM guild_quests c WHERE
@@ -92,7 +104,16 @@ internal sealed partial class DataRetentionService
                    OR (content.ContentKindCode=2 AND EXISTS(SELECT 1 FROM guild_result_receipts result WHERE result.QuestId=c.Id AND result.ContentId=content.ContentId)))
                   AND NOT {GuildQuestRetentionPins.Unresolved}
                   AND NOT EXISTS(SELECT 1 FROM guild_quests child WHERE child.ParentQuestId=c.Id)
-                  AND NOT EXISTS(SELECT 1 FROM guild_result_applications application WHERE application.QuestId=c.Id))))
+                  AND NOT EXISTS(SELECT 1 FROM guild_result_applications application WHERE application.QuestId=c.Id)))
+              OR (content.ContentKindCode=3 AND EXISTS(SELECT 1 FROM guild_envelopes envelope WHERE envelope.ContentId=content.ContentId)
+                AND EXISTS(SELECT 1 FROM guild_inbox delivery JOIN guild_envelopes envelope ON envelope.Id=delivery.EnvelopeId
+                    WHERE envelope.ContentId=content.ContentId)
+                AND NOT EXISTS(SELECT 1 FROM guild_inbox delivery JOIN guild_envelopes envelope ON envelope.Id=delivery.EnvelopeId
+                    LEFT JOIN guild_portal_receipts receipt ON receipt.InboxId=delivery.Id
+                    WHERE envelope.ContentId=content.ContentId AND (delivery.DeliveryStateCode=1 OR delivery.AcknowledgedAtUtc IS NULL
+                        OR receipt.InboxId IS NULL OR receipt.Digest<>envelope.IntentDigest
+                        OR (delivery.DeliveryStateCode=3 AND receipt.EffectKindCode<>3)
+                        OR (delivery.DeliveryStateCode=2 AND receipt.EffectKindCode=3)))))
             """;
     }
 

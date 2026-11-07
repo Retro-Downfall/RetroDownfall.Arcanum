@@ -41,7 +41,7 @@ public sealed class GrimoireSchemaVersionChainTests
 
         Assert.Equal(1, GrimoireSchemaVersionChains.CovenantAcceleratorSchemaVersion);
 
-        Assert.Equal(3, GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion);
+        Assert.Equal(4, GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion);
     }
 
     [Fact]

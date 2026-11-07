@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS guild_portal_inputs (
+    InboxId TEXT NOT NULL PRIMARY KEY REFERENCES guild_portal_receipts(InboxId) ON DELETE RESTRICT CHECK(InboxId=upper(InboxId) AND length(InboxId)=36 AND substr(InboxId,9,1)='-' AND substr(InboxId,14,1)='-' AND substr(InboxId,19,1)='-' AND substr(InboxId,24,1)='-' AND length(replace(InboxId,'-',''))=32 AND replace(InboxId,'-','') NOT GLOB '*[^0-9A-F]*' AND InboxId<>'00000000-0000-0000-0000-000000000000'),
+    RecipientQuestId TEXT NOT NULL CHECK(RecipientQuestId=upper(RecipientQuestId) AND length(RecipientQuestId)=36 AND substr(RecipientQuestId,9,1)='-' AND substr(RecipientQuestId,14,1)='-' AND substr(RecipientQuestId,19,1)='-' AND substr(RecipientQuestId,24,1)='-' AND length(replace(RecipientQuestId,'-',''))=32 AND replace(RecipientQuestId,'-','') NOT GLOB '*[^0-9A-F]*' AND RecipientQuestId<>'00000000-0000-0000-0000-000000000000'),
+    EnvelopeId TEXT NOT NULL CHECK(EnvelopeId=upper(EnvelopeId) AND length(EnvelopeId)=36 AND substr(EnvelopeId,9,1)='-' AND substr(EnvelopeId,14,1)='-' AND substr(EnvelopeId,19,1)='-' AND substr(EnvelopeId,24,1)='-' AND length(replace(EnvelopeId,'-',''))=32 AND replace(EnvelopeId,'-','') NOT GLOB '*[^0-9A-F]*' AND EnvelopeId<>'00000000-0000-0000-0000-000000000000'),
+    CreatedAtUtc TEXT NOT NULL,
+    FOREIGN KEY(InboxId,RecipientQuestId,EnvelopeId) REFERENCES guild_inbox(Id,RecipientQuestId,EnvelopeId) ON DELETE RESTRICT
+);

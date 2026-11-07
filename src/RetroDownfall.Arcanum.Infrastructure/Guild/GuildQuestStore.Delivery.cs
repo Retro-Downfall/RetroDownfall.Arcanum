@@ -15,70 +15,80 @@ internal sealed partial class GuildQuestStore
             return Task.FromResult(Result<GuildDeliveryState>.Failure(InvalidReceipt));
 
         return authority.InQuestTransactionAsync<GuildDeliveryState>(questId,
-            async (connection, transaction, signets, token) =>
-            {
-                Result<GuildQuestStored> found = await ReadWithinAsync(connection, transaction, questId, token).ConfigureAwait(false);
+            (connection, transaction, _, token) => AcknowledgeRootResultWithinAsync(connection, transaction, caller,
+                questId, resultId, digest, expectedDeliveryRevision, token), ct);
+    }
 
-                if (found.IsFailure) return found.Error;
+    internal async Task<Result<GuildDeliveryState>> AcknowledgeRootResultWithinAsync(SqliteConnection connection,
+        SqliteTransaction transaction, GuildCallerContext caller, Guid questId, Guid resultId, string digest,
+        long expectedDeliveryRevision, CancellationToken token)
+    {
+        Result<GuildQuestStored> found = await ReadWithinAsync(connection, transaction, questId, token).ConfigureAwait(false);
 
-                GuildQuestStored row = found.Value;
+        if (found.IsFailure) return found.Error;
 
-                Result visible = await RequireVisibleAsync(connection, transaction, caller, row, token).ConfigureAwait(false);
+        GuildQuestStored row = found.Value;
 
-                if (visible.IsFailure) return visible.Error;
+        Result visible = await RequireVisibleAsync(connection, transaction, caller, row, token).ConfigureAwait(false);
 
-                if (row.Quest.ParentQuestId is not null || row.Quest.RootQuestId != questId
-                    || row.Quest.ResultReceiptId != resultId || row.Quest.ReconciliationRequired) return Conflict;
+        if (visible.IsFailure) return visible.Error;
 
-                await using SqliteCommand receipt = Command(connection, transaction, """
-                    SELECT b.DeliveryStateCode,b.Revision FROM guild_result_outbox b
-                    JOIN guild_result_receipts r ON r.QuestId=b.QuestId AND r.ResultId=b.ResultId AND r.Digest=b.Digest
-                    WHERE b.QuestId=$id AND b.ResultId=$result AND b.Digest=$digest AND b.RecipientQuestId IS NULL
-                    """);
+        if (row.Quest.ParentQuestId is not null || row.Quest.RootQuestId != questId
+            || row.Quest.ResultReceiptId != resultId || row.Quest.ReconciliationRequired) return Conflict;
 
-                Add(receipt, "$id", Id(questId));
+        await using SqliteCommand receipt = Command(connection, transaction, """
+            SELECT b.DeliveryStateCode,b.Revision FROM guild_result_outbox b
+            JOIN guild_result_receipts r ON r.QuestId=b.QuestId AND r.ResultId=b.ResultId AND r.Digest=b.Digest
+            WHERE b.QuestId=$id AND b.ResultId=$result AND b.Digest=$digest AND b.RecipientQuestId IS NULL
+            """);
 
-                Add(receipt, "$result", Id(resultId));
+        Add(receipt, "$id", Id(questId));
 
-                Add(receipt, "$digest", Convert.FromHexString(digest));
+        Add(receipt, "$result", Id(resultId));
 
-                long revision;
+        Add(receipt, "$digest", Convert.FromHexString(digest));
 
-                GuildDeliveryState state;
+        long revision;
 
-                await using (SqliteDataReader reader = await receipt.ExecuteReaderAsync(token).ConfigureAwait(false))
-                {
-                    if (!await reader.ReadAsync(token).ConfigureAwait(false)) return Conflict;
+        GuildDeliveryState state;
 
-                    state = (GuildDeliveryState)reader.GetInt32(0);
+        await using (SqliteDataReader reader = await receipt.ExecuteReaderAsync(token).ConfigureAwait(false))
+        {
+            if (!await reader.ReadAsync(token).ConfigureAwait(false)) return Conflict;
 
-                    revision = reader.GetInt64(1);
-                }
+            state = (GuildDeliveryState)reader.GetInt32(0);
 
-                if (state == GuildDeliveryState.Applied) return state;
+            revision = reader.GetInt64(1);
+        }
 
-                if (state == GuildDeliveryState.Withheld || row.Quest.ResultRef?.ContentErased == true)
-                    return new Error(ErrorCodes.Guild.ContentErased, "The result was withheld after content erasure.");
+        if (state == GuildDeliveryState.Applied) return state;
 
-                if (state != GuildDeliveryState.Pending) return Unavailable;
+        if (state == GuildDeliveryState.Withheld || row.Quest.ResultRef?.ContentErased == true)
+            return new Error(ErrorCodes.Guild.ContentErased, "The result was withheld after content erasure.");
 
-                if (revision != expectedDeliveryRevision) return RevisionConflict;
+        if (state != GuildDeliveryState.Pending) return Unavailable;
 
-                if (revision == long.MaxValue) return ExhaustedReceipt;
+        if (revision != expectedDeliveryRevision) return RevisionConflict;
 
-                await using SqliteCommand acknowledge = Command(connection, transaction, """
-                    UPDATE guild_result_outbox SET DeliveryStateCode=2,Revision=Revision+1,AcknowledgedAtUtc=$now
-                    WHERE QuestId=$id AND Revision=$revision AND DeliveryStateCode=1
-                    """);
+        if (revision == long.MaxValue) return ExhaustedReceipt;
 
-                Add(acknowledge, "$id", Id(questId));
+        await using SqliteCommand acknowledge = Command(connection, transaction, """
+            UPDATE guild_result_outbox SET DeliveryStateCode=2,Revision=Revision+1,AcknowledgedAtUtc=$now
+            WHERE QuestId=$id AND Revision=$revision AND DeliveryStateCode=1
+            """);
 
-                Add(acknowledge, "$revision", revision);
+        Add(acknowledge, "$id", Id(questId));
 
-                Add(acknowledge, "$now", UtcInstantText.Format(time.GetUtcNow()));
+        Add(acknowledge, "$revision", revision);
 
-                return await acknowledge.ExecuteNonQueryAsync(token).ConfigureAwait(false) == 1
-                    ? GuildDeliveryState.Applied : RevisionConflict;
-            }, ct);
+        Add(acknowledge, "$now", UtcInstantText.Format(time.GetUtcNow()));
+
+        if (await acknowledge.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 1) return RevisionConflict;
+
+        Result<long> projected = await GuildPortalEvents.AppendWithinAsync(connection, transaction, row.Quest.RootQuestId,
+            questId, GuildEventKind.QuestChanged, resultId, revision + 1, null, time.GetUtcNow(), token,
+            GuildPortalEventSource.ResultDelivery).ConfigureAwait(false);
+
+        return projected.IsFailure ? projected.Error : GuildDeliveryState.Applied;
     }
 }

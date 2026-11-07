@@ -108,7 +108,13 @@ public sealed record GuildContinueRequest(
 
 public sealed record GuildCircleInboxQuery(Guid RecipientQuestId, string? Cursor, int PageSize = 100);
 
-public sealed record GuildCircleInboxItem(Guid InboxId, GuildEnvelope Envelope, long Revision);
+public sealed record GuildCircleInboxItem(
+    Guid InboxId,
+    GuildEnvelope? Envelope,
+    long Revision,
+    GuildDeliveryState DeliveryState = GuildDeliveryState.Pending,
+    string? ReasonCode = null,
+    Guid? EnvelopeId = null);
 
 public sealed record GuildCircleInboxPage(
     ImmutableArray<GuildCircleInboxItem> Items,

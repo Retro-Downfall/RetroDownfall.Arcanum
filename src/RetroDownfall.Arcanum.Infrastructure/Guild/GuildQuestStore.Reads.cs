@@ -27,7 +27,7 @@ internal sealed partial class GuildQuestStore
                 return found;
             }, ct);
 
-    private async Task<Result> RequireVisibleAsync(SqliteConnection connection, SqliteTransaction transaction,
+    internal async Task<Result> RequireVisibleAsync(SqliteConnection connection, SqliteTransaction transaction,
         GuildCallerContext caller, GuildQuestStored row, CancellationToken ct)
     {
         if (caller.InstallationGeneration != policy.InstallationGeneration || row.Issuance.InstallationGeneration != policy.InstallationGeneration || row.Retired)
@@ -251,7 +251,7 @@ internal sealed partial class GuildQuestStore
                 UNION
                 SELECT child.Id FROM guild_quests child JOIN subtree parent ON child.ParentQuestId=parent.Id)
             """ + " SELECT NOT EXISTS(SELECT 1 FROM guild_quests c WHERE c.Id IN(SELECT Id FROM subtree) AND "
-                + GuildQuestRetentionPins.Unresolved + ")");
+                + GuildQuestRetentionPins.ExecutionUnresolved + ")");
 
         Add(command, "$id", Id(id));
 

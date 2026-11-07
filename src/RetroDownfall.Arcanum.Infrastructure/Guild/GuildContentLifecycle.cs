@@ -186,6 +186,25 @@ internal static class GuildContentLifecycle
 
             _ = await quest.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
+
+        quest.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='guild_envelopes'";
+
+        if (Equals(1L, await quest.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)))
+        {
+            quest.CommandText = "SELECT Revision FROM guild_content WHERE ContentId=$content";
+
+            quest.Parameters.AddWithValue("$content", Format(artifactId));
+
+            object? storedRevision = await quest.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+            if (storedRevision is not long revision || revision < 1)
+            {
+                throw new InvalidDataException("Guild content no longer has a valid immutable revision.");
+            }
+
+            await GuildPortalWithholding.PrepareContentErasureWithinAsync(connection, transaction,
+                artifactId, revision, erasedAt, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private static bool OwnerMatches(SqliteDataReader reader, int ordinal, Guid? owner) => owner is { } id

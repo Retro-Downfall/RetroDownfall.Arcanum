@@ -1036,6 +1036,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             HostedGrimoireProducerInventory.ProductionPremises, compilations,
             new([root], []), [new(root, [recovery])], []);
 
+        HostedProducerAnalysisMetrics recoveryMetrics = Assert.IsType<HostedProducerAnalysisMetrics>(scoped.AnalysisMetrics);
+
+        foreach (string line in RenderRootTraversalMetrics(recoveryMetrics.RootTraversals)) output.WriteLine(line);
+
         Assert.True(scoped.Diagnostics.Count == 0,
             HostedGrimoireProducerInventory.RenderDiagnosticReport(scoped.Diagnostics));
 
@@ -1078,6 +1082,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             const string operationId = "RetroDownfall.Arcanum.Infrastructure.Guild.GuildMaintenanceHostedService.ExecuteAsync";
 
             HostedProducerAnalysisMetrics metrics = Assert.IsType<HostedProducerAnalysisMetrics>(scoped.AnalysisMetrics);
+
+            foreach (string line in RenderRootTraversalMetrics(metrics.RootTraversals)) output.WriteLine(line);
 
             HostedProducerRootTraversalMetric traversal = Assert.Single(metrics.RootTraversals);
 

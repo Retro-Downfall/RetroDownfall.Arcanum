@@ -17,4 +17,12 @@ UNION ALL SELECT 'guild_result_outbox' AS TableName, 'AcknowledgedAtUtc' AS Colu
 UNION ALL SELECT 'guild_result_applications' AS TableName, 'CreatedAtUtc' AS ColumnName
 UNION ALL SELECT 'guild_result_inputs' AS TableName, 'CreatedAtUtc' AS ColumnName
 UNION ALL SELECT 'guild_quest_start_intents' AS TableName, 'CreatedAtUtc' AS ColumnName
-UNION ALL SELECT 'guild_continuations' AS TableName, 'CreatedAtUtc' AS ColumnName;
+UNION ALL SELECT 'guild_continuations' AS TableName, 'CreatedAtUtc' AS ColumnName
+UNION ALL SELECT 'guild_envelopes' AS TableName, 'CreatedAtUtc' AS ColumnName
+UNION ALL SELECT 'guild_inbox' AS TableName, 'CreatedAtUtc' AS ColumnName
+UNION ALL SELECT 'guild_inbox' AS TableName, 'AcknowledgedAtUtc' AS ColumnName
+UNION ALL SELECT 'guild_portal_receipts' AS TableName, 'CreatedAtUtc' AS ColumnName
+UNION ALL SELECT 'guild_portal_inputs' AS TableName, 'CreatedAtUtc' AS ColumnName
+UNION ALL SELECT 'guild_events' AS TableName, 'CreatedAtUtc' AS ColumnName
+UNION ALL SELECT 'guild_portal_cursors' AS TableName, 'CreatedAtUtc' AS ColumnName
+UNION ALL SELECT 'guild_portal_outbox' AS TableName, 'CreatedAtUtc' AS ColumnName;

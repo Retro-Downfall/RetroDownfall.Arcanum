@@ -51,7 +51,7 @@ public sealed class GuildSchemaTests
 
         Assert.False(result.CovenantCanonical.IsHealthy);
 
-        command.CommandText = "SELECT COUNT(*) FROM grimoire_feature_schemas WHERE FamilyCode=2 AND TransactionTierCode=3 AND SchemaVersion=3 AND HealthCode=0";
+        command.CommandText = "SELECT COUNT(*) FROM grimoire_feature_schemas WHERE FamilyCode=2 AND TransactionTierCode=3 AND SchemaVersion=4 AND HealthCode=0";
 
         Assert.Equal(1L, await command.ExecuteScalarAsync());
     }

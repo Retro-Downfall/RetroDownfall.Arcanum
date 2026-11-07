@@ -131,7 +131,29 @@ internal sealed partial class GuildQuestStore
                 Add(update, "$converged", receipt.Outcome == QuestState.Canceled ? 1 : 0);
                 Add(update, "$now", UtcInstantText.Format(now));
 
-                return await update.ExecuteNonQueryAsync(token).ConfigureAwait(false) == 1 ? receipt : RevisionConflict;
+                if (await update.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 1) return RevisionConflict;
+
+                Result disposition = await GuildPortalCleanupParticipant.WithholdTerminalWithinAsync(
+                    connection, transaction, row.Quest.Id, now, token).ConfigureAwait(false);
+
+                if (disposition.IsFailure) return disposition.Error;
+
+                Result<long> projected = await GuildPortalEvents.RecordSourceWithinAsync(connection, transaction,
+                    row.Quest.RootQuestId, row.Quest.Id, GuildReceiptSourceKind.Result, receipt.ResultId,
+                    expectedQuestRevision + 1, now, token).ConfigureAwait(false);
+
+                if (projected.IsFailure) return projected.Error;
+
+                if (settled.Value == GuildAccountingState.Settled)
+                {
+                    Result<long> settlement = await GuildPortalEvents.RecordSourceWithinAsync(connection, transaction,
+                        row.Quest.RootQuestId, row.Quest.Id, GuildReceiptSourceKind.Settlement, receipt.ResultId,
+                        expectedQuestRevision + 1, now, token).ConfigureAwait(false);
+
+                    if (settlement.IsFailure) return settlement.Error;
+                }
+
+                return receipt;
             }, ct);
     }
 
@@ -150,109 +172,119 @@ internal sealed partial class GuildQuestStore
         if (located.IsFailure) return located.Error;
 
         return await authority.InQuestTransactionAsync<GuildResultApplicationReceipt>(located.Value.Quest.RootQuestId,
-            async (connection, transaction, signets, token) =>
-            {
-                Result<GuildQuestStored> recipient = await ReadWithinAsync(connection, transaction, request.RecipientQuestId, token).ConfigureAwait(false);
+            (connection, transaction, signets, token) => ApplyResultWithinAsync(connection, transaction, signets, caller, request, token), ct).ConfigureAwait(false);
+    }
 
-                if (recipient.IsFailure) return recipient.Error;
+    internal async Task<Result<GuildResultApplicationReceipt>> ApplyResultWithinAsync(SqliteConnection connection,
+        SqliteTransaction transaction, SignetAuthority.QuestTransaction signets, GuildCallerContext caller,
+        GuildResultApplicationRequest request, CancellationToken token)
+    {
+        Result<GuildQuestStored> recipient = await ReadWithinAsync(connection, transaction, request.RecipientQuestId, token).ConfigureAwait(false);
 
-                Result recipientVisible = await RequireVisibleAsync(connection, transaction, caller, recipient.Value, token).ConfigureAwait(false);
+        if (recipient.IsFailure) return recipient.Error;
 
-                if (recipientVisible.IsFailure) return recipientVisible.Error;
+        Result recipientVisible = await RequireVisibleAsync(connection, transaction, caller, recipient.Value, token).ConfigureAwait(false);
 
-                if (caller.Execution is { } execution)
-                {
-                    Result<GuildGrant> live = await signets.VerifyAsync(execution, token).ConfigureAwait(false);
+        if (recipientVisible.IsFailure) return recipientVisible.Error;
 
-                    if (live.IsFailure) return live.Error;
-                }
+        if (caller.Execution is { } execution)
+        {
+            Result<GuildGrant> live = await signets.VerifyAsync(execution, token).ConfigureAwait(false);
 
-                Result<GuildQuestStored> source = await ReadWithinAsync(connection, transaction, request.QuestId, token).ConfigureAwait(false);
+            if (live.IsFailure) return live.Error;
+        }
 
-                if (source.IsFailure) return source.Error;
+        Result<GuildQuestStored> source = await ReadWithinAsync(connection, transaction, request.QuestId, token).ConfigureAwait(false);
 
-                Result sourceVisible = await RequireVisibleAsync(connection, transaction, caller, source.Value, token).ConfigureAwait(false);
+        if (source.IsFailure) return source.Error;
 
-                if (sourceVisible.IsFailure) return sourceVisible.Error;
+        Result sourceVisible = await RequireVisibleAsync(connection, transaction, caller, source.Value, token).ConfigureAwait(false);
 
-                if (source.Value.Quest.ParentQuestId != recipient.Value.Quest.Id
-                    || source.Value.Quest.RootQuestId != recipient.Value.Quest.RootQuestId) return OwnerUnavailable;
+        if (sourceVisible.IsFailure) return sourceVisible.Error;
 
-                Result<GuildResultReceipt?> recorded = await ReadResultWithinAsync(connection, transaction, source.Value, token).ConfigureAwait(false);
+        if (source.Value.Quest.ParentQuestId != recipient.Value.Quest.Id
+            || source.Value.Quest.RootQuestId != recipient.Value.Quest.RootQuestId) return OwnerUnavailable;
 
-                if (recorded.IsFailure) return recorded.Error;
+        Result<GuildResultReceipt?> recorded = await ReadResultWithinAsync(connection, transaction, source.Value, token).ConfigureAwait(false);
 
-                if (recorded.Value is not { } result) return Unavailable;
+        if (recorded.IsFailure) return recorded.Error;
 
-                if (result.ResultId != request.ResultId || result.CanonicalContentDigest != request.CanonicalContentDigest) return Conflict;
+        if (recorded.Value is not { } result) return Unavailable;
 
-                if (source.Value.Quest.ReconciliationRequired) return UncertainDispatch;
+        if (result.ResultId != request.ResultId || result.CanonicalContentDigest != request.CanonicalContentDigest) return Conflict;
 
-                Result<GuildResultApplicationReceipt?> prior = await ReadApplicationWithinAsync(connection, transaction, request, token).ConfigureAwait(false);
+        if (source.Value.Quest.ReconciliationRequired) return UncertainDispatch;
 
-                if (prior.IsFailure) return prior.Error;
+        Result<GuildResultApplicationReceipt?> prior = await ReadApplicationWithinAsync(connection, transaction, request, token).ConfigureAwait(false);
 
-                if (prior.Value is { } accepted) return accepted with { Receipt = accepted.Receipt with { Replayed = true } };
+        if (prior.IsFailure) return prior.Error;
 
-                Result<GuildGrant> eligible = await signets.ValidateCurrentGrantAsync(recipient.Value.Quest.Id, token).ConfigureAwait(false);
+        if (prior.Value is { } accepted) return accepted with { Receipt = accepted.Receipt with { Replayed = true } };
 
-                if (eligible.IsFailure) return eligible.Error;
+        Result<GuildGrant> eligible = await signets.ValidateCurrentGrantAsync(recipient.Value.Quest.Id, token).ConfigureAwait(false);
 
-                if (recipient.Value.Quest.Revision != request.ExpectedRecipientRevision) return RevisionConflict;
+        if (eligible.IsFailure) return eligible.Error;
 
-                if (recipient.Value.Quest.Revision == long.MaxValue) return ExhaustedReceipt;
+        if (recipient.Value.Quest.Revision != request.ExpectedRecipientRevision) return RevisionConflict;
 
-                if (result.Content?.ContentErased == true) return new Error(ErrorCodes.Guild.ContentErased, "The result body was erased before application.");
+        if (recipient.Value.Quest.Revision == long.MaxValue) return ExhaustedReceipt;
 
-                if (recipient.Value.Quest.State is QuestState.Completed or QuestState.Failed or QuestState.Rejected or QuestState.Canceled
-                    || recipient.Value.Quest.CancellationRequested) return ClosedDispatch;
+        if (result.Content?.ContentErased == true) return new Error(ErrorCodes.Guild.ContentErased, "The result body was erased before application.");
 
-                DateTimeOffset now = time.GetUtcNow();
+        if (recipient.Value.Quest.State is QuestState.Completed or QuestState.Failed or QuestState.Rejected or QuestState.Canceled
+            || recipient.Value.Quest.CancellationRequested) return ClosedDispatch;
 
-                long revision = recipient.Value.Quest.Revision + 1;
+        DateTimeOffset now = time.GetUtcNow();
 
-                await using (SqliteCommand apply = Command(connection, transaction, """
-                    INSERT INTO guild_result_applications(RecipientQuestId,QuestId,ResultId,Digest,MutationId,AcceptedRecipientRevision,CreatedAtUtc)
-                    VALUES($recipient,$quest,$result,$digest,$mutation,$revision,$now);
-                    INSERT INTO guild_result_inputs(RecipientQuestId,QuestId,ResultId,Digest,CreatedAtUtc)
-                    VALUES($recipient,$quest,$result,$digest,$now);
-                    """))
-                {
-                    BindResult(apply, result);
-                    Add(apply, "$recipient", Id(request.RecipientQuestId));
-                    Add(apply, "$mutation", Id(request.Mutation.IdempotencyKey));
-                    Add(apply, "$revision", revision);
-                    Add(apply, "$now", UtcInstantText.Format(now));
+        long revision = recipient.Value.Quest.Revision + 1;
 
-                    if (await apply.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 2) return Unavailable;
-                }
+        await using (SqliteCommand apply = Command(connection, transaction, """
+            INSERT INTO guild_result_applications(RecipientQuestId,QuestId,ResultId,Digest,MutationId,AcceptedRecipientRevision,CreatedAtUtc)
+            VALUES($recipient,$quest,$result,$digest,$mutation,$revision,$now);
+            INSERT INTO guild_result_inputs(RecipientQuestId,QuestId,ResultId,Digest,CreatedAtUtc)
+            VALUES($recipient,$quest,$result,$digest,$now);
+            """))
+        {
+            BindResult(apply, result);
+            Add(apply, "$recipient", Id(request.RecipientQuestId));
+            Add(apply, "$mutation", Id(request.Mutation.IdempotencyKey));
+            Add(apply, "$revision", revision);
+            Add(apply, "$now", UtcInstantText.Format(now));
 
-                await using (SqliteCommand ack = Command(connection, transaction, """
-                    UPDATE guild_result_outbox SET DeliveryStateCode=2,Revision=Revision+1,AcknowledgedAtUtc=$now
-                    WHERE QuestId=$quest AND ResultId=$result AND Digest=$digest AND RecipientQuestId=$recipient
-                        AND DeliveryStateCode=1 AND Revision<9223372036854775807;
-                    """))
-                {
-                    BindResult(ack, result);
-                    Add(ack, "$recipient", Id(request.RecipientQuestId));
-                    Add(ack, "$now", UtcInstantText.Format(now));
+            if (await apply.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 2) return Unavailable;
+        }
 
-                    if (await ack.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 1) return Unavailable;
-                }
+        await using (SqliteCommand ack = Command(connection, transaction, """
+            UPDATE guild_result_outbox SET DeliveryStateCode=2,Revision=Revision+1,AcknowledgedAtUtc=$now
+            WHERE QuestId=$quest AND ResultId=$result AND Digest=$digest AND RecipientQuestId=$recipient
+                AND DeliveryStateCode=1 AND Revision<9223372036854775807;
+            """))
+        {
+            BindResult(ack, result);
+            Add(ack, "$recipient", Id(request.RecipientQuestId));
+            Add(ack, "$now", UtcInstantText.Format(now));
 
-                await using SqliteCommand update = Command(connection, transaction, """
-                    UPDATE guild_quests SET Revision=Revision+1,UpdatedAtUtc=$now WHERE Id=$recipient AND Revision=$expected
-                    """);
+            if (await ack.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 1) return Unavailable;
+        }
 
-                Add(update, "$recipient", Id(request.RecipientQuestId));
-                Add(update, "$expected", request.ExpectedRecipientRevision);
-                Add(update, "$now", UtcInstantText.Format(now));
+        await using SqliteCommand update = Command(connection, transaction, """
+            UPDATE guild_quests SET Revision=Revision+1,UpdatedAtUtc=$now WHERE Id=$recipient AND Revision=$expected
+            """);
 
-                if (await update.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 1) return RevisionConflict;
+        Add(update, "$recipient", Id(request.RecipientQuestId));
+        Add(update, "$expected", request.ExpectedRecipientRevision);
+        Add(update, "$now", UtcInstantText.Format(now));
 
-                return new GuildResultApplicationReceipt(request.RecipientQuestId, result.QuestId, result.ResultId,
-                    result.CanonicalContentDigest, revision, new(result.ResultId, request.Mutation.IdempotencyKey, false, now, revision));
-            }, ct).ConfigureAwait(false);
+        if (await update.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 1) return RevisionConflict;
+
+        Result<long> projected = await GuildPortalEvents.AppendWithinAsync(connection, transaction,
+            recipient.Value.Quest.RootQuestId, recipient.Value.Quest.Id, GuildEventKind.QuestChanged,
+            recipient.Value.Quest.Id, revision, null, now, token).ConfigureAwait(false);
+
+        if (projected.IsFailure) return projected.Error;
+
+        return new GuildResultApplicationReceipt(request.RecipientQuestId, result.QuestId, result.ResultId,
+            result.CanonicalContentDigest, revision, new(result.ResultId, request.Mutation.IdempotencyKey, false, now, revision));
     }
 
     private static async Task<Result> RequireOutcomeProofWithinAsync(SqliteConnection connection, SqliteTransaction transaction,

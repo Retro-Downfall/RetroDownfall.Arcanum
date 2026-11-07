@@ -26,7 +26,7 @@ public sealed class GuildQuestSchemaTests
 
         Assert.Equal(0L, await ScalarAsync(connection, "SELECT COUNT(*) FROM pragma_table_info('guild_quests') WHERE name='State' OR name='StateCode'"));
 
-        Assert.Equal(3L, await ScalarAsync(connection, "SELECT SchemaVersion FROM grimoire_feature_schemas WHERE FamilyCode=2"));
+        Assert.Equal(4L, await ScalarAsync(connection, "SELECT SchemaVersion FROM grimoire_feature_schemas WHERE FamilyCode=2"));
     }
 
     [Fact]

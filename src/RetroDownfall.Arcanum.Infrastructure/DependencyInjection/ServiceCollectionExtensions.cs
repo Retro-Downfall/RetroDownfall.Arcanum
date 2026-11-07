@@ -2479,6 +2479,8 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<IGuildOwnerCleanupParticipant, GuildSignetCleanupParticipant>();
 
+        services.AddScoped<IGuildOwnerCleanupParticipant, GuildPortalCleanupParticipant>();
+
         services.AddScoped<IGuildOwnerCleanupParticipant, GuildQuestCleanupParticipant>();
 
         services.AddScoped(static sp => new GuildOwnerCleanupCoordinator(

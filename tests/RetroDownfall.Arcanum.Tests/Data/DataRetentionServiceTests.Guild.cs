@@ -156,7 +156,7 @@ public sealed partial class DataRetentionServiceTests
                 Assert.Empty(plan.Conflicts);
 
                 Assert.Contains(plan.Items, item => item.DataClass == RetentionDataClass.GuildEvidence
-                    && item.DerivedRecords == 4); // Two Signets, one revocation receipt and the authority epoch.
+                    && item.DerivedRecords == 6); // Two Signets, revocation receipt, authority epoch, event and event stream.
 
                 var reset = await ReconcileFactoryResetV0Async(service, "populated-signet-reset");
 

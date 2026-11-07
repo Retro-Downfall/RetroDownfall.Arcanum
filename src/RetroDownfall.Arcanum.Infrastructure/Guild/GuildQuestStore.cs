@@ -188,6 +188,11 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
             await InsertAsync(connection, transaction, proposal, issuance, destination.Value, goal.Value, binding, operationId, account.Value,
                 root?.Name ?? child?.Name, now, token).ConfigureAwait(false);
 
+            Result<long> projected = await GuildPortalEvents.RecordSourceWithinAsync(connection, transaction, rootId, id,
+                GuildReceiptSourceKind.QuestIssue, id, 1, now, token).ConfigureAwait(false);
+
+            if (projected.IsFailure) return projected.Error;
+
             return await ReadWithinAsync(connection, transaction, id, token).ConfigureAwait(false);
         }, ct);
     }
