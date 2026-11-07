@@ -27,6 +27,22 @@ namespace RetroDownfall.Arcanum.Tests.A2A;
 /// </summary>
 public sealed class A2AParkedSendingTests
 {
+    [Fact]
+    public void Historical_intervention_event_does_not_claim_authenticated_operator_origin()
+    {
+        string? progress = ArcanumA2AAgentHandler.DescribeProgress(new ApprenticeEvent
+        {
+            Type = ApprenticeEventType.ApprenticeIntervened,
+            ApprenticeId = Guid.NewGuid(),
+        });
+
+        Assert.NotNull(progress);
+
+        Assert.DoesNotContain("operator", progress, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("Dungeon Master", progress, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static ArcanumSettings EnabledSettings() => new()
     {
         Features = new FeatureSettings { Conclave = true, A2AServer = true },
@@ -78,9 +94,9 @@ public sealed class A2AParkedSendingTests
 
         Assert.Equal(TaskState.Completed, state);
 
-        Assert.Equal([original], restarted.Runtime.IntervenedApprenticeIds);
+        Assert.Equal([original], restarted.Runtime.ContinuedApprenticeIds);
 
-        Assert.Equal(["use staging"], restarted.Runtime.InterventionGuidance);
+        Assert.Equal(["use staging"], restarted.Runtime.ContinuationGuidance);
 
         // The failure #64 removed, displaced past a restart boundary: a second Apprentice with none of the
         // first one's plan, session, or progress.
@@ -101,7 +117,7 @@ public sealed class A2AParkedSendingTests
         // "Nothing recorded" is a new Sending, not a silent failure.
         Assert.Single(harness.Archmage.Created);
 
-        Assert.Empty(harness.Runtime.IntervenedApprenticeIds);
+        Assert.Empty(harness.Runtime.ContinuedApprenticeIds);
     }
 
     [Fact]
@@ -132,7 +148,7 @@ public sealed class A2AParkedSendingTests
         // Apprentice, which is why the ceiling costs the fast path rather than the work.
         Assert.Equal(2, harness.Ledger.ParkedLookups.Count(static id => string.Equals(id, "task-0", StringComparison.Ordinal)));
 
-        Assert.Equal([firstApprentice], harness.Runtime.IntervenedApprenticeIds);
+        Assert.Equal([firstApprentice], harness.Runtime.ContinuedApprenticeIds);
 
         string newest = $"task-{ArcanumA2AAgentHandler.MaxParkedContinuations}";
 
@@ -505,11 +521,11 @@ public sealed class A2AParkedSendingTests
 
         Assert.Equal("task-1", response.Task?.Id);
 
-        await WaitForAsync(() => restarted.Runtime.IntervenedApprenticeIds.Count > 0);
+        await WaitForAsync(() => restarted.Runtime.ContinuedApprenticeIds.Count > 0);
 
         // Before the durable task store, the SDK answered this with TaskNotFound and the handler was
         // never reached — so the durable Apprentice mapping underneath could never matter (issue #68).
-        Assert.Equal([original], restarted.Runtime.IntervenedApprenticeIds);
+        Assert.Equal([original], restarted.Runtime.ContinuedApprenticeIds);
 
         Assert.Empty(restarted.Archmage.Created);
     }
@@ -926,9 +942,9 @@ public sealed class A2AParkedSendingTests
     {
         public List<Guid> CancelledApprenticeIds { get; } = [];
 
-        public List<Guid> IntervenedApprenticeIds { get; } = [];
+        public List<Guid> ContinuedApprenticeIds { get; } = [];
 
-        public List<string> InterventionGuidance { get; } = [];
+        public List<string> ContinuationGuidance { get; } = [];
 
         public Task<Result<string>> StartAsync(Guid apprenticeId, CancellationToken cancellationToken = default) =>
             Task.FromResult(Result<string>.Success("started"));
@@ -951,15 +967,26 @@ public sealed class A2AParkedSendingTests
             IReadOnlyList<PlanStep> steps,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
+        public Task<Result<string>> InterveneOperatorAsync(Guid apprenticeId, string guidance, bool resume,
+            ApprenticeOperatorInterventionContext context, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Remote continuations cannot use operator intervention.");
+
         public Task<Result<string>> InterveneAsync(
+            Guid apprenticeId,
+            string guidance,
+            bool resume,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("A peer continuation must not use the operator intervention route.");
+
+        public Task<Result<string>> ContinueAsync(
             Guid apprenticeId,
             string guidance,
             bool resume,
             CancellationToken cancellationToken = default)
         {
-            IntervenedApprenticeIds.Add(apprenticeId);
+            ContinuedApprenticeIds.Add(apprenticeId);
 
-            InterventionGuidance.Add(guidance);
+            ContinuationGuidance.Add(guidance);
 
             return Task.FromResult(Result<string>.Success("resumed"));
         }

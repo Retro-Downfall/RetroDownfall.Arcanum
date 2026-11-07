@@ -19071,7 +19071,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Contains(apprentice.Operations, static operation => operation.Member == "RunApprenticeAsync" && operation.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork && operation.WorkKind == GrimoireWorkKind.ApprenticeExecution);
 
-        Assert.Equal(["CancelAsync", "InterveneAsync", "PauseAsync", "ResumeAsync", "ReweaveAsync", "StartAsync"], apprentice.Operations.Where(static operation => operation.Authority == HostedProducerAuthorityKind.FiniteRequest).Select(static operation => operation.Member).Order(StringComparer.Ordinal));
+        Assert.Equal(["CancelAsync", "ContinueAsync", "InterveneAsync", "InterveneOperatorAsync", "PauseAsync", "ResumeAsync", "ReweaveAsync", "StartAsync"], apprentice.Operations.Where(static operation => operation.Authority == HostedProducerAuthorityKind.FiniteRequest).Select(static operation => operation.Member).Order(StringComparer.Ordinal));
     }
 
     [Theory]

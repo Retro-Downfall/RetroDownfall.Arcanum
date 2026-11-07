@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -7,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Conclave;
+using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -49,6 +51,31 @@ public sealed class ApprenticeCheckpointDelegationChainTests
     }
 
     [Fact]
+    public async Task CompleteStepAsync_ClearsGuidanceChannelsAndPreservesGoalOrigin()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = DelegatedApprentice(apprenticeId, ApprenticeStatus.Running);
+
+        apprentice.CheckpointData = """{"goalAuthority":"operator","operatorGuidance":"operator answer","parentGuidance":"parent answer","dmGuidance":"old answer"}""";
+
+        RecordingApprenticeRepository repository = new(apprentice);
+
+        await InvokeCompleteStepAsync(CreateService(repository), repository, apprentice, apprenticeId);
+
+        using JsonDocument checkpoint = JsonDocument.Parse(repository.Get(apprenticeId).CheckpointData!);
+
+        Assert.True(checkpoint.RootElement.TryGetProperty("goalAuthority", out JsonElement authority));
+
+        Assert.Equal("operator", authority.GetString());
+
+        foreach (string field in new[] { "operatorGuidance", "parentGuidance", "dmGuidance" })
+        {
+            Assert.True(!checkpoint.RootElement.TryGetProperty(field, out JsonElement guidance) || guidance.ValueKind == JsonValueKind.Null);
+        }
+    }
+
+    [Fact]
     public async Task CompleteStepAsync_PreservesDelegationChain()
     {
         Guid apprenticeId = Guid.NewGuid();
@@ -70,7 +97,7 @@ public sealed class ApprenticeCheckpointDelegationChainTests
     [Fact]
     public async Task CompleteStepAsync_ForwardsEveryCheckpointMemberItDoesNotDeliberatelyChange()
     {
-        string[] deliberatelyChanged = ["CurrentStep", "Timestamp", "DmGuidance"];
+        string[] deliberatelyChanged = ["CurrentStep", "Timestamp", "DmGuidance", "OperatorGuidance", "ParentGuidance"];
 
         Guid apprenticeId = Guid.NewGuid();
 
@@ -82,6 +109,9 @@ public sealed class ApprenticeCheckpointDelegationChainTests
             Timestamp = DateTimeOffset.UtcNow.AddMinutes(-5),
             EscalationReason = "an earlier escalation",
             DmGuidance = "guidance the completed step consumed",
+            OperatorGuidance = "consumed operator guidance",
+            ParentGuidance = "consumed parent guidance",
+            GoalAuthority = GuildAuthorityKind.Parent,
             ParentApprenticeId = Guid.NewGuid(),
             DelegationChain = InboundChain,
         };

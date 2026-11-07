@@ -150,10 +150,40 @@ internal sealed partial class GuildQuestStore
                     if (issuer.IsFailure) return issuer.Error;
                 }
 
+                GuildAuthorityKind acceptedAuthority = caller.Kind == GuildCallerKind.Operator ? GuildAuthorityKind.Operator : GuildAuthorityKind.Parent;
+
+                GuildProducerIdentity producer = caller.Execution is { } parent
+                    ? new(GuildProducerKind.Run, parent.AgentId, parent.RunId, parent.QuestId, null, null, null, null)
+                    : new(GuildProducerKind.Operator, null, null, null, Id(caller.PrincipalId!.Value), null, null, null);
+
+                // Retained rows may no longer obey installed CHECKs. Preserve a corrupt prior row as
+                // a refusal, and project no unbounded metadata into provider getters before validation.
                 await using SqliteCommand prior = Command(connection, transaction, """
-                    SELECT ContinuationId,MutationId,CASE WHEN typeof(Digest)='blob' AND length(Digest)=32 THEN Digest ELSE NULL END,
-                        AcceptedRevision,CreatedAtUtc FROM guild_continuations
-                    WHERE QuestId=$id AND (ContinuationId=$continuation OR MutationId=$mutation)
+                    WITH candidate AS (
+                        SELECT ContinuationId,MutationId,Digest,AcceptedRevision,CreatedAtUtc,AuthorityCode,
+                            ProducerAgentId,ProducerRunId,ProducerQuestId,OperatorPrincipalId,
+                            CASE WHEN typeof(ContinuationId)='text' AND length(CAST(ContinuationId AS BLOB))=36
+                                AND typeof(MutationId)='text' AND length(CAST(MutationId AS BLOB))=36
+                                AND typeof(Digest)='blob' AND length(Digest)=32
+                                AND typeof(AcceptedRevision)='integer' AND AcceptedRevision BETWEEN 1 AND $maximumRevision
+                                AND typeof(CreatedAtUtc)='text' AND length(CAST(CreatedAtUtc AS BLOB)) BETWEEN 1 AND 64
+                                AND typeof(AuthorityCode)='integer' AND AuthorityCode IN(0,1,2)
+                                AND (ProducerAgentId IS NULL OR (typeof(ProducerAgentId)='text' AND length(CAST(ProducerAgentId AS BLOB))=36))
+                                AND (ProducerRunId IS NULL OR (typeof(ProducerRunId)='text' AND length(CAST(ProducerRunId AS BLOB))=36))
+                                AND (ProducerQuestId IS NULL OR (typeof(ProducerQuestId)='text' AND length(CAST(ProducerQuestId AS BLOB))=36))
+                                AND (OperatorPrincipalId IS NULL OR (typeof(OperatorPrincipalId)='text' AND length(CAST(OperatorPrincipalId AS BLOB))=36))
+                                AND ((AuthorityCode=0 AND ProducerAgentId IS NULL AND ProducerRunId IS NULL AND ProducerQuestId IS NULL AND OperatorPrincipalId IS NULL)
+                                    OR (AuthorityCode=1 AND ProducerAgentId IS NULL AND ProducerRunId IS NULL AND ProducerQuestId IS NULL AND OperatorPrincipalId IS NOT NULL)
+                                    OR (AuthorityCode=2 AND ProducerAgentId IS NOT NULL AND ProducerRunId IS NOT NULL AND ProducerQuestId IS NOT NULL AND OperatorPrincipalId IS NULL))
+                                THEN 1 ELSE 0 END AS Valid
+                        FROM guild_continuations WHERE QuestId=$id AND (ContinuationId=$continuation OR MutationId=$mutation)
+                    )
+                    SELECT CASE WHEN Valid=1 THEN ContinuationId END,CASE WHEN Valid=1 THEN MutationId END,
+                        CASE WHEN Valid=1 THEN Digest END,CASE WHEN Valid=1 THEN AcceptedRevision END,
+                        CASE WHEN Valid=1 THEN CreatedAtUtc END,CASE WHEN Valid=1 THEN AuthorityCode END,
+                        CASE WHEN Valid=1 THEN ProducerAgentId END,CASE WHEN Valid=1 THEN ProducerRunId END,
+                        CASE WHEN Valid=1 THEN ProducerQuestId END,CASE WHEN Valid=1 THEN OperatorPrincipalId END,Valid
+                    FROM candidate
                     """);
 
                 Add(prior, "$id", Id(questId));
@@ -162,17 +192,25 @@ internal sealed partial class GuildQuestStore
 
                 Add(prior, "$mutation", Id(request.IdempotencyKey));
 
+                Add(prior, "$maximumRevision", row.Quest.Revision);
+
                 await using (SqliteDataReader reader = await prior.ExecuteReaderAsync(token).ConfigureAwait(false))
                 {
                     if (await reader.ReadAsync(token).ConfigureAwait(false))
                     {
-                        if (reader.IsDBNull(2)) return Unavailable;
+                        if (reader.GetInt32(10) != 1 || !UtcInstantText.TryParse(reader.GetString(4), out DateTimeOffset acceptedAt))
+                            return Unavailable;
 
                         if (reader.GetString(0) != Id(request.ContinuationId) || reader.GetString(1) != Id(request.IdempotencyKey)
-                            || Convert.ToHexString((byte[])reader.GetValue(2)) != intent) return Conflict;
+                            || Convert.ToHexString((byte[])reader.GetValue(2)) != intent
+                            || reader.GetInt32(5) != (int)acceptedAuthority
+                            || (reader.IsDBNull(6) ? null : reader.GetString(6)) != Id(producer.AgentId)
+                            || (reader.IsDBNull(7) ? null : reader.GetString(7)) != Id(producer.RunId)
+                            || (reader.IsDBNull(8) ? null : reader.GetString(8)) != Id(producer.QuestId)
+                            || (reader.IsDBNull(9) ? null : reader.GetString(9)) != producer.OperatorPrincipalId) return Conflict;
 
                         GuildMutationReceiptDto receipt = new(request.ContinuationId, request.IdempotencyKey, true,
-                            UtcInstantText.Parse(reader.GetString(4)), reader.GetInt64(3));
+                            acceptedAt, reader.GetInt64(3));
 
                         return row with { Quest = row.Quest with { Receipt = receipt } };
                     }
@@ -222,11 +260,22 @@ internal sealed partial class GuildQuestStore
                 if (content.IsFailure) return content.Error;
 
                 await using SqliteCommand accept = Command(connection, transaction, """
-                    INSERT INTO guild_continuations(QuestId,ContinuationId,MutationId,Digest,ContentId,AcceptedRevision,CreatedAtUtc)
-                    VALUES($id,$continuation,$mutation,$digest,$content,$revision+1,$now);
+                    INSERT INTO guild_continuations(QuestId,ContinuationId,MutationId,Digest,ContentId,AcceptedRevision,CreatedAtUtc,
+                        AuthorityCode,ProducerAgentId,ProducerRunId,ProducerQuestId,OperatorPrincipalId)
+                    VALUES($id,$continuation,$mutation,$digest,$content,$revision+1,$now,$authority,$agent,$run,$producerQuest,$operator);
                     UPDATE guild_quests SET LastNonterminalStateCode=1,WaitReasonCode=NULL,QuestionId=NULL,ContinuationId=NULL,
                         Revision=Revision+1,UpdatedAtUtc=$now WHERE Id=$id AND Revision=$revision;
                     """);
+
+                Add(accept, "$authority", (int)acceptedAuthority);
+
+                Add(accept, "$agent", Id(producer.AgentId));
+
+                Add(accept, "$run", Id(producer.RunId));
+
+                Add(accept, "$producerQuest", Id(producer.QuestId));
+
+                Add(accept, "$operator", producer.OperatorPrincipalId);
 
                 Add(accept, "$id", Id(questId));
 

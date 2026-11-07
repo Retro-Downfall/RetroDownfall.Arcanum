@@ -1231,7 +1231,7 @@ class NewRoot:
     reason: str
 
 
-# The roots a regeneration may add besides the Long Rest roots. Each is a Chain entry of the checker's non-hosted catalog, declared
+# The roots a regeneration may add besides the Long Rest roots. Each is an exact reviewed catalog entry, declared
 # with an authority, and a reason that names the code it covers. A row under one of them is class n.
 NEW_ROOTS = (
     NewRoot(
@@ -1251,6 +1251,18 @@ NEW_ROOTS = (
         "RetroDownfall.Arcanum.Infrastructure.InstallationReset.StoppedHostFactoryErasure.ApplyAsync",
         "the reset-only protected erasure a stopped-host global reset runs for the one operation its authenticated record claimed, "
         "under the installation-reset maintenance lock lent by the stopped-host issuer",
+    ),
+    NewRoot(
+        "ApprenticeService",
+        "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ContinueAsync",
+        "the finite legacy remote guidance request awaits checkpoint persistence under the caller's existing admission; "
+        "its unverified content remains LegacyUnknown and it creates no execution authority",
+    ),
+    NewRoot(
+        "ApprenticeService",
+        "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.InterveneOperatorAsync",
+        "the finite native operator guidance request verifies the host-owned target context and awaits checkpoint persistence "
+        "under the caller's existing admission; provenance creates no execution authority",
     ),
 )
 

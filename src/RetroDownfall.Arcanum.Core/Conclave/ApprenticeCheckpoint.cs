@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Guild;
+
 namespace RetroDownfall.Arcanum.Core.Conclave;
 
 public sealed record ApprenticeCheckpoint
@@ -30,6 +32,16 @@ public sealed record ApprenticeCheckpoint
 
     public string? EscalationReason { get; init; }
 
+    /// <summary>Host-stamped goal attribution. Missing historical evidence remains unknown.</summary>
+    public GuildAuthorityKind GoalAuthority { get; init; } = GuildAuthorityKind.LegacyUnknown;
+
+    /// <summary>Guidance admitted by the authenticated native operator boundary.</summary>
+    public string? OperatorGuidance { get; init; }
+
+    /// <summary>Reserved for a verified issuing-parent boundary; never populated by legacy A2A.</summary>
+    public string? ParentGuidance { get; init; }
+
+    /// <summary>Legacy or unverified guidance. Its historical name conveys no operator authority.</summary>
     public string? DmGuidance { get; init; }
 
     public Guid? ParentApprenticeId { get; init; }

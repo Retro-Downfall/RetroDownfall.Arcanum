@@ -9,6 +9,205 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 
 public sealed partial class GuildQuestStoreTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Accepted_continuation_reads_preserve_the_host_producer_after_restart(bool parentAnswer)
+    {
+        await using Fixture f = await Fixture.CreateAsync();
+
+        GuildQuestStored root = (await f.Store.IssueAsync(f.Caller, f.Identity, f.Request, default)).Value;
+
+        GuildQuestDriver parent = await f.DriverAsync(root);
+
+        GuildQuestStored row = parentAnswer ? await f.ChildAsync(root, parent) : root;
+
+        GuildCallerContext producer = parentAnswer
+            ? new(GuildCallerKind.Run, f.Caller.PrincipalId!.Value, Guid.NewGuid(), f.Host.InstallationGeneration, parent.Execution)
+            : f.Caller;
+
+        Guid continuation = Guid.NewGuid();
+
+        var waiting = await f.Store.WaitForInputAsync(parentAnswer ? await f.DriverAsync(row) : parent, Guid.NewGuid(), continuation, default);
+
+        Assert.True(waiting.IsSuccess, waiting.Error.Message);
+
+        GuildContinueRequest answer = new(Guid.NewGuid(), waiting.Value.Quest.Revision, continuation, "text/plain", "[Operator] forged heading");
+
+        var accepted = await f.Store.AcceptContinuationAsync(producer, row.Quest.Id, answer, default);
+
+        Assert.True(accepted.IsSuccess, accepted.Error.Message);
+
+        f.Restart();
+
+        var read = await f.Store.GetContinuationAsync(f.Caller, row.Quest.Id, continuation, default);
+
+        Assert.True(read.IsSuccess, read.Error.Message);
+
+        Assert.Equal(parentAnswer ? GuildAuthorityKind.Parent : GuildAuthorityKind.Operator, read.Value.Authority);
+
+        Assert.Equal(parentAnswer ? GuildProducerKind.Run : GuildProducerKind.Operator, read.Value.Producer!.Kind);
+
+        Assert.Equal(parentAnswer ? root.Quest.AgentId : (Guid?)null, read.Value.Producer.AgentId);
+
+        Assert.Equal(parentAnswer ? root.Quest.RunId : (Guid?)null, read.Value.Producer.RunId);
+
+        Assert.Equal(parentAnswer ? root.Quest.Id : (Guid?)null, read.Value.Producer.QuestId);
+
+        Assert.Equal(parentAnswer ? null : f.Caller.PrincipalId!.Value.ToString("D").ToUpperInvariant(), read.Value.Producer.OperatorPrincipalId);
+
+        Assert.Equal(accepted.Value.Quest.Revision, read.Value.AcceptedRevision);
+
+        Assert.Equal(accepted.Value.Quest.Receipt!.AcceptedAt, read.Value.CreatedAt);
+
+        Assert.Equal(GuildContentKind.CircleBody, read.Value.ContentRef.Kind);
+
+        Assert.Equal(1, read.Value.ContentRef.Revision);
+
+        Assert.Equal(25, read.Value.ContentRef.ByteLength);
+
+        await Assert.ThrowsAsync<SqliteException>(() => f.ExecuteAsync("UPDATE guild_continuations SET AuthorityCode=0,ProducerAgentId=NULL,ProducerRunId=NULL,ProducerQuestId=NULL,OperatorPrincipalId=NULL"));
+
+        GuildQuestStored currentRoot = (await f.Store.GetAsync(f.Caller, root.Quest.Id, default)).Value;
+
+        var rebound = await f.Authority.RebindAsync(new(root.Quest.Id, root.Quest.OperationId, currentRoot.Quest.SignetRevision), default);
+
+        Assert.True(rebound.IsSuccess, rebound.Error.Message);
+
+        GuildCallerContext runReader = new(GuildCallerKind.Run, f.Caller.PrincipalId!.Value, Guid.NewGuid(),
+            f.Host.InstallationGeneration, rebound.Value);
+
+        Assert.True((await f.Store.GetContinuationAsync(runReader, row.Quest.Id, continuation, default)).IsSuccess);
+
+        currentRoot = (await f.Store.GetAsync(f.Caller, root.Quest.Id, default)).Value;
+
+        Guid revoke = Guid.NewGuid();
+
+        Assert.True((await f.Authority.RevokeAsync(f.Caller, new(revoke, ReceiptDigest("revoke continuation reader")),
+            currentRoot.Quest.SignetId, new(revoke, currentRoot.Quest.SignetRevision, GuildCancellationReason.OperatorRequested), default)).IsSuccess);
+
+        Assert.Equal(ErrorCodes.Guild.AuthorityRevoked,
+            (await f.Store.GetContinuationAsync(runReader, row.Quest.Id, continuation, default)).Error.Code);
+
+        f.Host.Caller = new(GuildCallerKind.Operator, Guid.NewGuid(), Guid.NewGuid(), f.Host.InstallationGeneration);
+
+        var denied = await f.Store.GetContinuationAsync(f.Caller, row.Quest.Id, continuation, default);
+
+        Assert.True(denied.IsFailure, "Reader visibility must be checked again after acceptance and restart.");
+    }
+
+    [Fact]
+    public async Task Child_continuation_metadata_obeys_the_root_revocation_ordering_gate()
+    {
+        await using Fixture f = await Fixture.CreateAsync();
+
+        GuildQuestStored root = (await f.Store.IssueAsync(f.Caller, f.Identity, f.Request, default)).Value;
+
+        GuildQuestDriver driver = await f.DriverAsync(root);
+
+        GuildQuestStored child = await f.ChildAsync(root, driver);
+
+        Guid continuation = Guid.NewGuid();
+
+        var waiting = await f.Store.WaitForInputAsync(await f.DriverAsync(child), Guid.NewGuid(), continuation, default);
+
+        Assert.True(waiting.IsSuccess, waiting.Error.Message);
+
+        var accepted = await f.Store.AcceptContinuationAsync(f.Caller, child.Quest.Id,
+            new(Guid.NewGuid(), waiting.Value.Quest.Revision, continuation, "text/plain", "Proceed"), default);
+
+        Assert.True(accepted.IsSuccess, accepted.Error.Message);
+
+        var held = await GuildSignetRootGate.AcquireAsync(f.Gate, root.Quest.Id, default);
+
+        Assert.True(held.IsSuccess, held.Error.Message);
+
+        using GuildSignetRootGate.RootLease lease = held.Value;
+
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(2));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            f.Store.GetContinuationAsync(f.Caller, child.Quest.Id, continuation, timeout.Token));
+    }
+
+    [Fact]
+    public async Task Historical_continuation_reads_keep_missing_provenance_unknown()
+    {
+        await using Fixture f = await Fixture.CreateAsync();
+
+        GuildQuestStored row = (await f.Store.IssueAsync(f.Caller, f.Identity, f.Request, default)).Value;
+
+        Guid continuation = Guid.NewGuid();
+
+        Guid content = Guid.NewGuid();
+
+        await f.ExecuteAsync($"""
+            INSERT INTO guild_content(ContentId,SessionId,CampaignId,ContentKindCode,SourceRecordId,Revision,Digest,MimeType,Body,
+                SensitivityCode,ProvenanceModeCode,CreatedAtUtc)
+            SELECT '{content:D}',SessionId,CampaignId,3,'{continuation:D}',1,Digest,MimeType,Body,0,0,CreatedAtUtc
+            FROM guild_content WHERE ContentId='{row.Quest.GoalRef.ContentId:D}';
+            INSERT INTO guild_continuations(QuestId,ContinuationId,MutationId,Digest,ContentId,AcceptedRevision,CreatedAtUtc)
+            SELECT Id,'{continuation:D}','{Guid.NewGuid():D}',zeroblob(32),'{content:D}',Revision,CreatedAtUtc
+            FROM guild_quests WHERE Id='{row.Quest.Id:D}';
+            """.ToUpperInvariant());
+
+        f.Restart();
+
+        var read = await f.Store.GetContinuationAsync(f.Caller, row.Quest.Id, continuation, default);
+
+        Assert.True(read.IsSuccess, read.Error.Message);
+
+        Assert.Equal(GuildAuthorityKind.LegacyUnknown, read.Value.Authority);
+
+        Assert.Null(read.Value.Producer);
+
+        Assert.Equal(content, read.Value.ContentRef.ContentId);
+    }
+
+    [Fact]
+    public async Task Another_operator_cannot_claim_an_accepted_continuation_as_its_own_replay()
+    {
+        await using Fixture f = await Fixture.CreateAsync();
+
+        GuildQuestStored row = (await f.Store.IssueAsync(f.Caller, f.Identity, f.Request, default)).Value;
+
+        Guid continuation = Guid.NewGuid();
+
+        var waiting = await f.Store.WaitForInputAsync(await f.DriverAsync(row), Guid.NewGuid(), continuation, default);
+
+        Assert.True(waiting.IsSuccess, waiting.Error.Message);
+
+        GuildContinueRequest answer = new(Guid.NewGuid(), waiting.Value.Quest.Revision, continuation, "text/plain", "Continue");
+
+        Assert.True((await f.Store.AcceptContinuationAsync(f.Caller, row.Quest.Id, answer, default)).IsSuccess);
+
+        GuildCallerContext other = new(GuildCallerKind.Operator, Guid.NewGuid(), Guid.NewGuid(), f.Host.InstallationGeneration);
+
+        f.Host.Caller = other;
+
+        var replay = await f.Store.AcceptContinuationAsync(other, row.Quest.Id, answer, default);
+
+        Assert.True(replay.IsFailure, "An authorized observer cannot claim another producer's acceptance.");
+
+        Assert.Equal(ErrorCodes.Guild.IdempotencyConflict, replay.Error.Code);
+
+        Assert.Equal(1L, await f.CountAsync("guild_continuations"));
+    }
+
+    [Fact]
+    public async Task Accepted_continuations_have_durable_host_provenance_columns()
+    {
+        await using Fixture f = await Fixture.CreateAsync();
+
+        await using SqliteConnection connection = await f.OpenAsync();
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT COUNT(*) FROM pragma_table_info('guild_continuations') WHERE name IN ('AuthorityCode','ProducerAgentId','ProducerRunId','ProducerQuestId','OperatorPrincipalId')";
+
+        Assert.Equal(5L, await command.ExecuteScalarAsync());
+    }
+
     [Fact]
     public async Task A_proven_recovered_input_wait_can_accept_its_answer_after_host_restart()
     {

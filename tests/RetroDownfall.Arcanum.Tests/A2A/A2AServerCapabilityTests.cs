@@ -581,7 +581,14 @@ public sealed class A2AServerCapabilityTests
             IReadOnlyList<PlanStep> steps,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
-        public Task<Result<string>> InterveneAsync(
+        public Task<Result<string>> InterveneOperatorAsync(Guid apprenticeId, string guidance, bool resume,
+            ApprenticeOperatorInterventionContext context, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Remote continuations cannot use operator intervention.");
+
+        public Task<Result<string>> InterveneAsync(Guid apprenticeId, string guidance, bool resume, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Remote continuations cannot use intervention.");
+
+        public Task<Result<string>> ContinueAsync(
             Guid apprenticeId,
             string guidance,
             bool resume,

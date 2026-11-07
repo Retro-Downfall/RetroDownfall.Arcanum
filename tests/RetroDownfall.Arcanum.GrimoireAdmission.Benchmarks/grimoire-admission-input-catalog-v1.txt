@@ -30,6 +30,7 @@ R	src/RetroDownfall.Arcanum.Core/Conclave/ApprenticeDtos.cs
 R	src/RetroDownfall.Arcanum.Core/Conclave/ApprenticeEvent.cs
 R	src/RetroDownfall.Arcanum.Core/Conclave/ApprenticeEventType.cs
 R	src/RetroDownfall.Arcanum.Core/Conclave/ApprenticeExecutionPolicy.cs
+R	src/RetroDownfall.Arcanum.Core/Conclave/ApprenticeOperatorInterventionContext.cs
 R	src/RetroDownfall.Arcanum.Core/Conclave/ApprenticePlanParser.cs
 R	src/RetroDownfall.Arcanum.Core/Conclave/ApprenticeStatus.cs
 R	src/RetroDownfall.Arcanum.Core/Conclave/IApprenticeRepository.cs
@@ -1326,6 +1327,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canoni
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V4/210_idx_guild_inbox_pending_stream.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V4/900_guild_utc_instant_columns_drop.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V4/910_guild_utc_instant_columns.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V5/010_continuation_provenance.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_agent_card_revisions_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_content_erasure_receipts_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_content_guard_delete.sql
@@ -2307,12 +2309,15 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Admission.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Authority.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Delivery.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Outbox.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Prompts.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Reads.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPromptBuilder.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestCheckpoint.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestCleanupParticipant.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestRecoveryHandler.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestRetentionPins.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.ContinuationReads.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Continuations.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Contracts.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Delivery.cs

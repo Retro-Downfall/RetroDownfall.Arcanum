@@ -90,28 +90,30 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
     // A row is the maximum measured under one, two and three root workers, plus max(8, ceil(maximum * 0.05)),
     // rounded up to a multiple of eight. Selection roots omit the digest after the tilde. Hard/model/effect limits are unchanged.
-    // Reviewed Portal production src/ tree: b3940546a5fed307326bc957800ac6948314c876.
-    // The checker and hard/model/effect limits are unchanged.
+    // Reviewed untrusted-data production source snapshot: 555259a43bf2d38c89736097ab8511a0a71794ccdcd63dfb33de2e778f23142c.
+    // The checker and hard/model/effect limits are unchanged. The digest covers sorted source/vendor/MSBuild input paths and bytes.
     // One-, two- and three-worker discoveries report zero primary/additional diagnostics and the same
-    // 7,872-capsule primary manifest. Primary manifest comparison passed in each arrangement; primary/additional
-    // headroom gates passed under two and three workers. All 71 primary and 31 additional roots were measured in each arrangement.
+    // 7,896-capsule primary manifest. Primary manifest comparison and additional headroom passed in each arrangement.
+    // All 73 primary and 31 additional roots were measured in each arrangement; final compiled ceiling metadata was checked
+    // against all three captured measurements after adding the two newly catalogued finite guidance roots.
     // Every ceiling is prescribed by the maximum of its three measured counts. The largest maximum is 6,850
     // (ceiling 7,200), below the unchanged 7,372 bound of the 8,192-state cap.
-    // The reviewed maxima agree across the three arrangements: RunApprenticeAsync reaches 3,148 (ceiling 3,312),
-    // with a repeated two-worker check observing 1,574; ordinary MCP bootstrap reaches 486 (ceiling 512).
-    // Changed rows state all three counts and the reviewed closure; no hard/model/effect limit changes.
+    // RunApprenticeAsync reaches 3,176 (ceiling 3,336), with the two-worker check observing 1,588;
+    // ordinary MCP bootstrap reaches 486 (ceiling 512). Changed rows state all three counts and the reviewed closure.
     private static readonly HeadroomCeiling[] ProductionRootCeilings =
     [
         new("A2ASendingLeaseRenewer", "RetroDownfall.Arcanum.Infrastructure.A2A.A2ASendingLeaseRenewer.ExecuteAsync", 224), // measured 208, 208, 208 under one, two and three workers; reviewed short-ledger timeout and command-cleanup closure
         new("A2ASendingLeaseRenewer", "RetroDownfall.Arcanum.Infrastructure.A2A.A2ASendingLeaseRenewer.Forget", 16), // measured 2
         new("A2ASendingLeaseRenewer", "RetroDownfall.Arcanum.Infrastructure.A2A.A2ASendingLeaseRenewer.Track", 16), // measured 2
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.CancelAsync", 232), // measured 214, 214, 214 under one, two and three workers; reviewed Apprentice control, callback and bound-Session closure
+        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ContinueAsync", 248), // measured 229, 229, 229 under one, two and three workers; reviewed awaited LegacyUnknown guidance checkpoint persistence under caller admission
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ExecuteAsync", 424), // measured 402, 402, 402 under one, two and three workers; reviewed Apprentice control, callback and bound-Session closure
-        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.InterveneAsync", 240), // measured 228, 228, 228 under one, two and three workers; prescribed ceiling unchanged
+        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.InterveneAsync", 248), // measured 229, 229, 229 under one, two and three workers; reviewed explicit await of shared provenance-aware checkpoint persistence
+        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.InterveneOperatorAsync", 248), // measured 229, 229, 229 under one, two and three workers; reviewed host-context validation and awaited Operator checkpoint persistence under caller admission
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.PauseAsync", 216), // measured 205, 205, 205 under one, two and three workers; prescribed ceiling unchanged
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ResumeAsync", 232), // measured 219, 219, 219 under one, two and three workers; prescribed ceiling unchanged
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ReweaveAsync", 224), // measured 211, 211, 211 under one, two and three workers; prescribed ceiling unchanged
-        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync", 3312), // measured 3148, 3148, 3148 under one, two and three workers; maximum and prescribed ceiling retained across worker arrangements
+        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync", 3336), // measured 3176, 1588, 3176 under one, two and three workers; reviewed provenance-preserving prompt and guidance-consumption closure
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.StartAsync", 240), // measured 227, 227, 227 under one, two and three workers; prescribed ceiling unchanged
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.StopAsync", 16), // measured 5
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.SubscribeChronicleAsync", 24), // measured 12

@@ -920,7 +920,7 @@ public sealed partial class ApprenticeServiceReliabilityTests
         {
             await Task.Yield();
 
-            if (request.Prompt.Contains("Branch B  ← CURRENT", StringComparison.Ordinal))
+            if (request.Prompt.Contains("→ Step 2  ← CURRENT", StringComparison.Ordinal))
             {
                 _ = Interlocked.Increment(ref _branchBStreams);
 

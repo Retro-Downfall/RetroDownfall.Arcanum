@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 
@@ -245,6 +246,16 @@ internal static class GuildAotSmoke
         Exercise(GuildAuthorityAction.Issue, GuildJsonContext.Default.GuildAuthorityAction);
 
         Exercise(GuildAuthorityKind.Operator, GuildJsonContext.Default.GuildAuthorityKind);
+
+        Exercise(GuildAuthorityKind.LegacyUnknown, GuildJsonContext.Default.GuildAuthorityKind);
+
+        RoundTrip(new ApprenticeCheckpoint { GoalAuthority = GuildAuthorityKind.Operator, OperatorGuidance = "operator input" },
+            ArcanumCoreJsonContext.Default.ApprenticeCheckpoint);
+
+        RoundTrip(new ApprenticeCheckpoint { GoalAuthority = GuildAuthorityKind.Parent, ParentGuidance = "parent input" },
+            ArcanumCoreJsonContext.Default.ApprenticeCheckpoint);
+
+        RoundTrip(new ApprenticeCheckpoint { DmGuidance = "legacy input" }, ArcanumCoreJsonContext.Default.ApprenticeCheckpoint);
 
         Exercise(GuildBudgetMode.Finite, GuildJsonContext.Default.GuildBudgetMode);
 

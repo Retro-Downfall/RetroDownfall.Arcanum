@@ -70,7 +70,7 @@ public sealed class GuildCohortContractTests
         { typeof(GuildWorkBidState), ["submitted", "withdrawn"] },
         { typeof(GuildWorkAwardState), ["committed"] },
         { typeof(GuildNoteKind), ["observation", "proposal", "correction"] },
-        { typeof(GuildAuthorityKind), ["operator", "parent", "peer", "child"] },
+        { typeof(GuildAuthorityKind), ["legacyUnknown", "operator", "parent", "peer", "child"] },
         { typeof(GuildWorkspaceLeaseState), ["held", "draining", "released", "reconciliation-required"] },
         { typeof(GuildWorkspaceLeaseOwnerKind), ["quest", "operator"] },
         { typeof(GuildPathScopeKind), ["file", "subtree"] },
@@ -109,9 +109,9 @@ public sealed class GuildCohortContractTests
     }
 
     [Fact]
-    public void TrustedAuthority_RejectsLegacyUnknownProvenance()
+    public void AuthorityMetadata_PreservesLegacyUnknownProvenance()
     {
-        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize("\"legacyUnknown\"", GuildJsonContext.Default.GuildAuthorityKind));
+        Assert.Equal(GuildAuthorityKind.LegacyUnknown, JsonSerializer.Deserialize("\"legacyUnknown\"", GuildJsonContext.Default.GuildAuthorityKind));
     }
 
     public static TheoryData<Type, string[]> RequestProperties => new()

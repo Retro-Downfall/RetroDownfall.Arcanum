@@ -1187,6 +1187,21 @@ class ClassifyManifestDiffTests(unittest.TestCase):
 
         self.assertEqual("n", result[("+", edited)].label)
 
+    def test_split_apprentice_guidance_roots_are_reviewed_without_widening_the_family(self) -> None:
+        old = site("src/A.cs")
+
+        for member, expected in (("ContinueAsync", "n"), ("InterveneOperatorAsync", "n"), ("UnreviewedGuidanceAsync", "d")):
+            with self.subTest(member=member):
+                added = site(
+                    "src/UneditedRepository.cs",
+                    root="ApprenticeService",
+                    operation="RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService." + member,
+                )
+
+                result = classify(manifest(old), manifest(old, added))
+
+                self.assertEqual(expected, result[("+", added)].label)
+
     def test_a_row_of_a_root_nobody_reviewed_is_not_n(self) -> None:
         old = site("src/A.cs")
 

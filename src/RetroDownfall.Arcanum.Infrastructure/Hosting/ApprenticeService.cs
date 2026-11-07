@@ -633,7 +633,36 @@ internal sealed class ApprenticeService(
         Guid apprenticeId,
         string guidance,
         bool resume,
+        CancellationToken cancellationToken = default) =>
+        await ApplyGuidanceAsync(apprenticeId, guidance, resume, operatorApproved: false, cancellationToken).ConfigureAwait(false);
+
+    public async Task<Result<string>> ContinueAsync(
+        Guid apprenticeId,
+        string guidance,
+        bool resume,
+        CancellationToken cancellationToken = default) =>
+        await ApplyGuidanceAsync(apprenticeId, guidance, resume, operatorApproved: false, cancellationToken).ConfigureAwait(false);
+
+    public async Task<Result<string>> InterveneOperatorAsync(
+        Guid apprenticeId,
+        string guidance,
+        bool resume,
+        ApprenticeOperatorInterventionContext context,
         CancellationToken cancellationToken = default)
+    {
+        if (context is null || context.ApprenticeId != apprenticeId)
+            return Result<string>.Failure(new Error(ErrorCodes.Apprentice.InvalidGuidance,
+                "Operator guidance requires the authenticated target binding."));
+
+        return await ApplyGuidanceAsync(apprenticeId, guidance, resume, operatorApproved: true, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<Result<string>> ApplyGuidanceAsync(
+        Guid apprenticeId,
+        string guidance,
+        bool resume,
+        bool operatorApproved,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(guidance))
         {
@@ -669,7 +698,7 @@ internal sealed class ApprenticeService(
         {
             int observedStep = apprentice.CurrentStep;
 
-            ApplyDivineInterventionGuidance(apprentice, guidance.Trim());
+            ApplyCheckpointGuidance(apprentice, guidance.Trim(), operatorApproved);
 
             if (resume)
             {
@@ -716,7 +745,7 @@ internal sealed class ApprenticeService(
         }
     }
 
-    private static void ApplyDivineInterventionGuidance(Apprentice apprentice, string guidance)
+    private static void ApplyCheckpointGuidance(Apprentice apprentice, string guidance, bool operatorApproved)
     {
         List<PlanStep> plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
 
@@ -751,7 +780,9 @@ internal sealed class ApprenticeService(
         {
             CurrentStep = apprentice.CurrentStep,
             Timestamp = DateTimeOffset.UtcNow,
-            DmGuidance = guidance,
+            DmGuidance = operatorApproved ? null : guidance,
+            OperatorGuidance = operatorApproved ? guidance : null,
+            ParentGuidance = null,
         });
 
         apprentice.ErrorMessage = null;
@@ -2698,6 +2729,8 @@ internal sealed class ApprenticeService(
             CurrentStep = apprentice.CurrentStep,
             Timestamp = DateTimeOffset.UtcNow,
             DmGuidance = null,
+            OperatorGuidance = null,
+            ParentGuidance = null,
         });
 
         if (!await repo
@@ -2924,6 +2957,8 @@ internal sealed class ApprenticeService(
                     CurrentStep = groupEnd,
                     Timestamp = DateTimeOffset.UtcNow,
                     DmGuidance = null,
+                    OperatorGuidance = null,
+                    ParentGuidance = null,
                 });
             }
 

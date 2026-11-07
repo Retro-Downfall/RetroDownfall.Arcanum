@@ -52,7 +52,15 @@ public sealed class GuildDormancyTests
         foreach (var type in typeof(IGuildPort).Assembly.GetExportedTypes().Where(type =>
             type.Namespace == typeof(IGuildPort).Namespace && !type.ContainsGenericParameters))
         {
-            Assert.Null(ArcanumJsonContext.Default.GetTypeInfo(type));
+            // Apprentice checkpoint provenance exposes this shared enum without activating Guild transport.
+            if (type == typeof(GuildAuthorityKind))
+            {
+                Assert.NotNull(ArcanumJsonContext.Default.GetTypeInfo(type));
+            }
+            else
+            {
+                Assert.Null(ArcanumJsonContext.Default.GetTypeInfo(type));
+            }
 
             Assert.Null(ConfigurationJsonContext.Default.GetTypeInfo(type));
         }

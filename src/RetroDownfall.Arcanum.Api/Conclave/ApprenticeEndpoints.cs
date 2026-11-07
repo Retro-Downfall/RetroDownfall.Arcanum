@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Conclave;
+using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -140,6 +141,11 @@ internal static class ApprenticeEndpoints
                     Plan = "[]",
                     CurrentStep = 0,
                     Status = ApprenticeStatus.Idle.ToString(),
+                    CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
+                    {
+                        GoalAuthority = GuildAuthorityKind.Operator,
+                        Timestamp = now,
+                    }),
                     WorkspacePath = workspaceResult.Value!,
                     CreatedAt = now,
                     UpdatedAt = now,
@@ -285,8 +291,14 @@ internal static class ApprenticeEndpoints
                             traceId));
                 }
 
+                if (id == Guid.Empty)
+                {
+                    return MapInterveneResult(Result<string>.Failure(
+                        new Error(ErrorCodes.Apprentice.NotFound, "Apprentice was not found.")), traceId);
+                }
+
                 Result<string> result = await runtime
-                    .InterveneAsync(id, request.Guidance, request.Resume, ctx.RequestAborted)
+                    .InterveneOperatorAsync(id, request.Guidance, request.Resume, new ApprenticeOperatorInterventionContext(id), ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 return MapInterveneResult(result, traceId);

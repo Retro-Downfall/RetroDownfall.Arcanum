@@ -6,6 +6,38 @@ namespace RetroDownfall.Arcanum.Tests.Conclave;
 
 public sealed class ApprenticeCheckpointTests
 {
+    [Theory]
+    [InlineData("operatorGuidance")]
+    [InlineData("parentGuidance")]
+    public void Guidance_origin_survives_checkpoint_round_trip(string field)
+    {
+        string json = "{\"" + field + "\":\"answer data\",\"goalAuthority\":\"operator\"}";
+
+        ApprenticeCheckpoint checkpoint = JsonSerializer.Deserialize(json, ArcanumCoreJsonContext.Default.ApprenticeCheckpoint)!;
+
+        using JsonDocument persisted = JsonDocument.Parse(JsonSerializer.Serialize(checkpoint, ArcanumCoreJsonContext.Default.ApprenticeCheckpoint));
+
+        Assert.True(persisted.RootElement.TryGetProperty(field, out JsonElement guidance));
+
+        Assert.Equal("answer data", guidance.GetString());
+
+        Assert.Equal("operator", persisted.RootElement.GetProperty("goalAuthority").GetString());
+    }
+
+    [Fact]
+    public void Legacy_guidance_never_gains_operator_provenance_after_round_trip()
+    {
+        ApprenticeCheckpoint checkpoint = JsonSerializer.Deserialize("{\"dmGuidance\":\"old answer\"}", ArcanumCoreJsonContext.Default.ApprenticeCheckpoint)!;
+
+        using JsonDocument persisted = JsonDocument.Parse(JsonSerializer.Serialize(checkpoint, ArcanumCoreJsonContext.Default.ApprenticeCheckpoint));
+
+        Assert.True(persisted.RootElement.TryGetProperty("goalAuthority", out JsonElement authority));
+
+        Assert.Equal("legacyUnknown", authority.GetString());
+
+        Assert.Equal("old answer", persisted.RootElement.GetProperty("dmGuidance").GetString());
+    }
+
 
     [Fact]
     public void CompletedToolCallIds_IsReadOnly_NotADowncastableList()

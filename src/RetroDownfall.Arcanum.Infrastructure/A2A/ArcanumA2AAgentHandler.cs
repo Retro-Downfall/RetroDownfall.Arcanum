@@ -427,7 +427,7 @@ public sealed class ArcanumA2AAgentHandler(
     }
 
     /// <summary>
-    /// Resumes an escalated Apprentice with the peer's answer through Divine Intervention and re-attaches
+    /// Resumes an escalated Apprentice with unverified legacy peer data and re-attaches
     /// the task relay, instead of minting a second Apprentice that knows nothing of the first (issue #64).
     /// </summary>
     private async Task ContinueApprenticeAsync(
@@ -463,7 +463,7 @@ public sealed class ArcanumA2AAgentHandler(
         {
 
             Result<string> intervened = await runtime
-                .InterveneAsync(apprenticeId, guidance, resume: true, cancellationToken)
+                .ContinueAsync(apprenticeId, guidance, resume: true, cancellationToken)
                 .ConfigureAwait(false);
 
             if (intervened.IsFailure)
@@ -755,7 +755,7 @@ public sealed class ArcanumA2AAgentHandler(
         ApprenticeEventType.StepCompleted => $"Completed step {StepLabel(@event)}.",
         ApprenticeEventType.StepRetrying => $"Retrying step {StepLabel(@event)}.",
         ApprenticeEventType.PlanRevised => "Plan revised.",
-        ApprenticeEventType.ApprenticeIntervened => "Resumed with operator guidance.",
+        ApprenticeEventType.ApprenticeIntervened => "Resumed with guidance.",
         ApprenticeEventType.ApprenticePaused => "Paused.",
         ApprenticeEventType.ApprenticeResumed => "Resumed.",
         _ => null,

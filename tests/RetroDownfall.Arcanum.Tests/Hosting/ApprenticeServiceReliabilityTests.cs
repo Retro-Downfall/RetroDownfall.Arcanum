@@ -5838,7 +5838,7 @@ public sealed partial class ApprenticeServiceReliabilityTests
             [EnumeratorCancellation] CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null)
         {
-            if (!request.Prompt.Contains("Retry branch", StringComparison.Ordinal))
+            if (!request.Prompt.Contains("→ Step 0  ← CURRENT", StringComparison.Ordinal))
             {
                 yield return new IntelligenceEvent(IntelligenceEventType.Result, "stable complete");
 
@@ -5879,7 +5879,7 @@ public sealed partial class ApprenticeServiceReliabilityTests
             [EnumeratorCancellation] CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null)
         {
-            if (!request.Prompt.Contains("Fault branch", StringComparison.Ordinal))
+            if (!request.Prompt.Contains("→ Step 0  ← CURRENT", StringComparison.Ordinal))
             {
                 yield return new IntelligenceEvent(IntelligenceEventType.Result, "stable complete");
 
@@ -5910,7 +5910,7 @@ public sealed partial class ApprenticeServiceReliabilityTests
             [EnumeratorCancellation] CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null)
         {
-            if (!request.Prompt.Contains("Cancel branch", StringComparison.Ordinal))
+            if (!request.Prompt.Contains("→ Step 0  ← CURRENT", StringComparison.Ordinal))
             {
                 yield return new IntelligenceEvent(IntelligenceEventType.Result, "stable complete");
 

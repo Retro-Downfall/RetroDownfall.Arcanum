@@ -21,6 +21,9 @@ public enum GuildNoteKind
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<GuildAuthorityKind>))]
 public enum GuildAuthorityKind
 {
+    [JsonStringEnumMemberName("legacyUnknown")]
+    LegacyUnknown = 0,
+
     [JsonStringEnumMemberName("operator")]
     Operator = 1,
 

@@ -61,6 +61,19 @@ public sealed class ApprenticeEndpointTests
 
         Assert.Equal("Verify apprentice endpoints", body.Data.Goal);
 
+        await using (AsyncServiceScope scope = _factory.Services.CreateAsyncScope())
+        {
+            IApprenticeRepository repository = scope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
+
+            Apprentice stored = (await repository.GetByIdAsync(body.Data.Id))!;
+
+            Assert.NotNull(stored.CheckpointData);
+
+            using JsonDocument checkpoint = JsonDocument.Parse(stored.CheckpointData);
+
+            Assert.Equal("operator", checkpoint.RootElement.GetProperty("goalAuthority").GetString());
+        }
+
         HttpResponseMessage getResponse = await client.GetAsync($"/api/apprentices/{body.Data.Id:D}");
 
         Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
@@ -68,6 +81,59 @@ public sealed class ApprenticeEndpointTests
         HttpResponseMessage deleteResponse = await client.DeleteAsync($"/api/apprentices/{body.Data.Id:D}");
 
         Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+    }
+
+    [SkippableFact]
+    public async Task Native_intervention_for_empty_id_returns_not_found_without_minting_context()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.PostAsync($"/api/apprentices/{Guid.Empty:D}/intervene",
+            new StringContent("{\"guidance\":\"operator answer\",\"resume\":false}", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [SkippableFact]
+    public async Task Native_intervention_persists_operator_guidance_separately_from_legacy_data()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        Guid apprenticeId = await CreateApprenticeAsync(client);
+
+        await using (AsyncServiceScope scope = _factory.Services.CreateAsyncScope())
+        {
+            IApprenticeRepository repository = scope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
+
+            Apprentice stored = (await repository.GetByIdAsync(apprenticeId))!;
+
+            stored.Status = ApprenticeStatus.Escalated.ToString();
+
+            stored.CheckpointData = "{\"dmGuidance\":\"legacy answer\"}";
+
+            await repository.UpdateAsync(stored);
+        }
+
+        using HttpResponseMessage response = await client.PostAsync($"/api/apprentices/{apprenticeId:D}/intervene",
+            new StringContent("{\"guidance\":\"operator answer\",\"resume\":false}", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+
+        await using AsyncServiceScope verification = _factory.Services.CreateAsyncScope();
+
+        Apprentice persisted = (await verification.ServiceProvider.GetRequiredService<IApprenticeRepository>().GetByIdAsync(apprenticeId))!;
+
+        using JsonDocument checkpoint = JsonDocument.Parse(persisted.CheckpointData!);
+
+        Assert.True(checkpoint.RootElement.TryGetProperty("operatorGuidance", out JsonElement guidance));
+
+        Assert.Equal("operator answer", guidance.GetString());
+
+        Assert.True(!checkpoint.RootElement.TryGetProperty("dmGuidance", out JsonElement legacy) || legacy.ValueKind == JsonValueKind.Null);
     }
 
     [SkippableFact]

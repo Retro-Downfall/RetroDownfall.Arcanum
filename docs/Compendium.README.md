@@ -486,6 +486,8 @@ The dormant `GuildGrant`/`GuildRequestedGrant` data contracts now exist in Core 
 
 The Portal foundation adds no configuration keys or background delivery activation. Its body, envelope-metadata and page bounds are code-owned allocation limits from DESIGN §23.7, not configurable inbox-depth, lifetime-work or retry limits. Existing `GuildContent` retention can prune eligible acknowledged Portal payloads only after exact durable application/withholding evidence exists and active consumer dependencies are resolved; pending source intentions and inbox effects retain their required evidence. Sequence, dedupe, cursor and erasure evidence belongs to `GuildEvidence` and is not aged out by a timer.
 
+Apprentice prompt fencing and provenance preservation are unconditional and add no configuration key. Guardrails retain their existing opt-in policy and run on complete materialized prompts; disabling content filtering does not disable fences or grant additional authority. Existing A2A flags do not establish a verified Parent principal or enable the dormant Guild execution path.
+
 **Planned, not accepted by the current configuration binder.** The following is the resolved configuration contract for [DESIGN §23](Arcanum.DESIGN.md#23-the-guild--sealed-delegation-proposed), introduced by the owning Guild slices. Adding these keys to a current installation before those slices land is invalid; this documentation change does not enable a feature or modify runtime defaults.
 
 The following planned definitions are an implementation specification, separate from the accepted setting inventory above. Each definition retains its intended type, default and validation contract; none is a supported setting until its owning implementation lands.

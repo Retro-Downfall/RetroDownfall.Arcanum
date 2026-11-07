@@ -913,7 +913,7 @@ Runs Proving Grounds evaluation against a spell, prompt, or Apprentice goal. It 
 
 Apprentice orchestration (requires arcanum serve).
 
-Manages durable Apprentice orchestration, intervention, replanning, child delegation, and Chronicle streaming. Lifecycle commands resolve an Apprentice selector before mutation.
+Manages durable Apprentice orchestration, intervention, replanning, child delegation, and Chronicle streaming. Lifecycle commands resolve an Apprentice selector before mutation. `create` and `intervene` use the native authenticated API, which records Operator provenance; their supplied goals and guidance are still fenced task data. Legacy A2A continuations retain unknown provenance until peer identity is verified. No command option can select a trusted authority label or expand an execution grant.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
