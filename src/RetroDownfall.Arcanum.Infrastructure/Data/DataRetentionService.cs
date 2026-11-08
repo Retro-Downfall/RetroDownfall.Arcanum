@@ -7486,7 +7486,7 @@ internal sealed partial class DataRetentionService(
                     Convert.FromBase64String(parts[2]));
 
                 if (string.IsNullOrWhiteSpace(relativePath)
-                    || Path.IsPathFullyQualified(relativePath))
+                    || Path.IsPathRooted(relativePath))
                 {
                     throw InvalidMutationJournal(RetentionMutationRecoveryCause.JournalPathInvalid, diagnostic);
                 }

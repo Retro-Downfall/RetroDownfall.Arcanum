@@ -45,6 +45,21 @@ internal static class SandboxedFileIo
         set => BeforeDestinationPreambleReadOverride.Value = value;
     }
 
+    private static readonly AsyncLocal<Action<string>?> BeforeMovedDestinationOpenOverride = new();
+
+    /// <summary>
+    /// Flow-local observer invoked after the mandatory post-move fingerprint has closed its handle
+    /// and immediately before the destination is reopened for sandbox verification. Tests can remove
+    /// the real destination here without racing a fingerprint handle that denies deletion on Windows.
+    /// It observes; it does not replace the reopen or any verification.
+    /// </summary>
+    internal static Action<string>? BeforeMovedDestinationOpenForTests
+    {
+        get => BeforeMovedDestinationOpenOverride.Value;
+
+        set => BeforeMovedDestinationOpenOverride.Value = value;
+    }
+
     internal static bool TryOpenForRead(
         string workspaceRoot,
         string absolutePath,
@@ -442,6 +457,8 @@ internal static class SandboxedFileIo
         [NotNullWhen(false)] out McpToolsCallResultWire? error)
     {
         error = null;
+
+        BeforeMovedDestinationOpenForTests?.Invoke(absolutePath);
 
         FileStream verifyStream;
 

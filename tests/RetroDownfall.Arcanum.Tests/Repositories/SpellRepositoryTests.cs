@@ -2024,14 +2024,18 @@ public sealed partial class SpellRepositoryTests : IAsyncLifetime
     /// is told the update failed, so SPELL.md is put back rather than left describing a spell the sidecar does
     /// not match.
     /// </summary>
-    [SkippableFact]
-    public async Task UpdateAsync_restores_SPELL_md_when_the_sidecar_write_fails()
+    [SkippableTheory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public async Task UpdateAsync_restores_SPELL_md_when_the_sidecar_write_fails(string lineEnding)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string spellDir = await WriteExportableSpellAsync("rollback-update");
 
-        string original = await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md"));
+        string original = (await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md"))).ReplaceLineEndings(lineEnding);
+
+        await File.WriteAllTextAsync(Path.Combine(spellDir, "SPELL.md"), original);
 
         // A directory where the sidecar belongs: the scan sees no sidecar, and writing one cannot succeed.
         Directory.CreateDirectory(Path.Combine(spellDir, "SPELL.json"));
@@ -2061,11 +2065,13 @@ public sealed partial class SpellRepositoryTests : IAsyncLifetime
 
         Assert.Equal(original, await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md")));
 
-        Assert.Contains(logger.Entries, static entry => entry.Level == LogLevel.Error);
+        Assert.Single(logger.Entries, static entry => entry.Level == LogLevel.Error);
     }
 
-    [SkippableFact]
-    public async Task ActivateVersionAsync_restores_SPELL_md_and_drops_its_backup_when_the_sidecar_write_fails()
+    [SkippableTheory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public async Task ActivateVersionAsync_restores_SPELL_md_and_drops_its_backup_when_the_sidecar_write_fails(string lineEnding)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -2079,13 +2085,17 @@ public sealed partial class SpellRepositoryTests : IAsyncLifetime
             description: export fixture
             ---
             version body
-            """);
+            """.ReplaceLineEndings(lineEnding));
 
-        string original = await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md"));
+        string original = (await File.ReadAllTextAsync(Path.Combine(spellDir, "SPELL.md"))).ReplaceLineEndings(lineEnding);
+
+        await File.WriteAllTextAsync(Path.Combine(spellDir, "SPELL.md"), original);
 
         Directory.CreateDirectory(Path.Combine(spellDir, "SPELL.json"));
 
-        SpellRepository repository = CreateRepository();
+        TestCapturingLogger<SpellRepository> logger = new();
+
+        SpellRepository repository = CreateRepository(logger: logger);
 
         Result<SpellVersionDto> activated = await repository.ActivateVersionAsync(
             "rollback-activate",
@@ -2102,6 +2112,10 @@ public sealed partial class SpellRepositoryTests : IAsyncLifetime
         // The backup this activation wrote of the working copy is removed with the rollback, so a failed
         // activation does not leave a stray version file that blocks a later one.
         Assert.False(File.Exists(Path.Combine(spellDir, "SPELL.v0.md")));
+
+        Assert.Single(logger.Entries, static entry => entry.Level == LogLevel.Error);
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level == LogLevel.Warning);
     }
 
     /// <summary>

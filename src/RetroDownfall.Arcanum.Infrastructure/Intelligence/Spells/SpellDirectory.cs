@@ -310,7 +310,8 @@ internal sealed partial class SpellDirectory : IDisposable
                     return false;
                 }
 
-                using FileStream stream = new(file, FileAccess.Read, 4096, isAsync: false);
+                // Relative read handles use overlapped I/O on Windows, as in SecureFileReader.
+                using FileStream stream = new(file, FileAccess.Read, 4096, isAsync: OperatingSystem.IsWindows());
 
                 if (stream.Length != expectedContent.Length)
                 {

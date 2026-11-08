@@ -447,6 +447,7 @@ public sealed partial class DataRetentionServiceTests
     [InlineData("entry", "JournalEntryInvalid")]
     [InlineData("root", "JournalRootInvalid")]
     [InlineData("path", "JournalPathInvalid")]
+    [InlineData("fully-qualified-path", "JournalPathInvalid")]
     [InlineData("duplicate", "JournalDuplicatePath")]
     public async Task MutationRecovery_StoredCorruption_NamesClosedCauseWithoutContent(string defect, string reason)
     {
@@ -490,6 +491,11 @@ public sealed partial class DataRetentionServiceTests
                 break;
             case "path":
                 lines[4] = lines[4].Replace(lines[4].Split(':')[2], Convert.ToBase64String(Encoding.UTF8.GetBytes("/" + MutationRecoveryCanary)), StringComparison.Ordinal);
+
+                break;
+            case "fully-qualified-path":
+                lines[4] = lines[4].Replace(lines[4].Split(':')[2], Convert.ToBase64String(Encoding.UTF8.GetBytes(
+                    Path.GetPathRoot(_attachmentsRoot)! + MutationRecoveryCanary)), StringComparison.Ordinal);
 
                 break;
             case "duplicate":

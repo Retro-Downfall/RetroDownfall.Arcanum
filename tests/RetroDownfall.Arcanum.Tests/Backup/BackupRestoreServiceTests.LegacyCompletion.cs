@@ -63,6 +63,8 @@ public sealed partial class BackupRestoreServiceTests
 
         GrimoireDbPassphraseSource passphrases = new();
 
+        _bootstrapPassphrases.Add(passphrases);
+
         await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(secrets, passphrases,
             provider.GetRequiredService<IServiceScopeFactory>(), Path.Combine(_installation, "arcanum.db"),
             _installation, held, expectedInstallationId: null, CancellationToken.None);

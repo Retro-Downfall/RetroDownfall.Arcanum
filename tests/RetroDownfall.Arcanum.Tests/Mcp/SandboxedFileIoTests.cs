@@ -1510,23 +1510,24 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
     {
         string target = Path.Combine(_workspace.Root, "vanishes-before-verify.txt");
 
-        int existingObservations = 0;
+        List<string> verifiedPaths = [];
 
-        // The destination is new, so the only path-metadata probes that find it are the two made by the
-        // post-move fingerprint check (on entry and after hashing). The second one removes it once its
-        // real metadata is in hand, which leaves the fingerprint satisfied and the reopen with nothing.
-        FileHandleIdentityInterop.TryGetPathMetadataForTests = path =>
+        Assert.False(File.Exists(target));
+
+        // Delete only after the mandatory fingerprint check has closed its read handle. Deleting
+        // inside that check's metadata probe fails on Windows because the handle shares only reads,
+        // and tests fingerprint rollback rather than the destination reopen this fixture targets.
+        SandboxedFileIo.BeforeMovedDestinationOpenForTests = path =>
         {
-            FileHandleMetadata? real = ResolveRealPathMetadata(path);
+            verifiedPaths.Add(path);
 
-            if (real is not null
-                && string.Equals(path, target, StringComparison.Ordinal)
-                && ++existingObservations == 2)
-            {
-                File.Delete(target);
-            }
+            Assert.Equal(target, path);
 
-            return real;
+            Assert.Equal("replacement", File.ReadAllText(path));
+
+            File.Delete(path);
+
+            Assert.False(File.Exists(path));
         };
 
         try
@@ -1544,7 +1545,7 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
                 "Write replaced the file but post-move verification failed; destination left unverified.",
                 AssertSingleErrorText(error));
 
-            Assert.Equal(2, existingObservations);
+            Assert.Equal(target, Assert.Single(verifiedPaths));
 
             Assert.False(File.Exists(target));
 
@@ -1552,7 +1553,7 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         }
         finally
         {
-            FileHandleIdentityInterop.TryGetPathMetadataForTests = null;
+            SandboxedFileIo.BeforeMovedDestinationOpenForTests = null;
         }
     }
 

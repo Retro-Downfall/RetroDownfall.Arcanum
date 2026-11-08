@@ -60,6 +60,8 @@ public sealed partial class BackupRestoreServiceTests : IDisposable
 
     private readonly string _archives;
 
+    private readonly List<GrimoireDbPassphraseSource> _bootstrapPassphrases = [];
+
     public BackupRestoreServiceTests()
     {
         _installation = Path.Combine(_root, "profile", "arcanum");
@@ -73,6 +75,31 @@ public sealed partial class BackupRestoreServiceTests : IDisposable
 
     public void Dispose()
     {
+        // The real host bootstrapper pools its connections. Drain only this fixture's exact pools
+        // after its providers have closed, before Windows attempts to remove the database files.
+        foreach (GrimoireDbPassphraseSource source in _bootstrapPassphrases)
+        {
+            string passphrase;
+
+            try
+            {
+                passphrase = source.Passphrase;
+            }
+            catch (InvalidOperationException)
+            {
+                // Bootstrap failed before resolving a key, so it did not open this pool.
+                continue;
+            }
+
+            using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+            {
+                DataSource = Path.Combine(_installation, "arcanum.db"),
+                Password = passphrase,
+            }.ToString());
+
+            SqliteConnection.ClearPool(connection);
+        }
+
         if (Directory.Exists(_root))
         {
             Directory.Delete(_root, recursive: true);
@@ -3885,7 +3912,11 @@ public sealed partial class BackupRestoreServiceTests : IDisposable
             BackupManifestEntry existing = manifest.Entries.Single(
                 entry => entry.Path == existingEntryPath);
 
-            BackupManifestEntry duplicate = existing with { Path = duplicateEntryPath };
+            // Publish a portable archive first. The real writer verifies by extracting, so asking it
+            // to create an adversarial file/directory collision already fails on Windows.
+            const string portableDuplicatePath = "attachments/session/fixture-duplicate.bin";
+
+            BackupManifestEntry duplicate = existing with { Path = portableDuplicatePath };
 
             BackupManifestEntry[] entries =
             [
@@ -3918,7 +3949,7 @@ public sealed partial class BackupRestoreServiceTests : IDisposable
                         entry.Path,
                         Path.Combine(
                             extractRoot,
-                            (entry.Path == duplicateEntryPath
+                            (entry.Path == portableDuplicatePath
                                 ? existingEntryPath
                                 : entry.Path).Replace('/', Path.DirectorySeparatorChar)))),
             ];
@@ -3932,6 +3963,21 @@ public sealed partial class BackupRestoreServiceTests : IDisposable
                 Passphrase.AsMemory(),
                 overwrite: true,
                 CancellationToken.None);
+
+            await BackupAuthenticatedPayloadFixture.RenameEntryAsync(
+                archive,
+                Passphrase,
+                portableDuplicatePath,
+                duplicateEntryPath);
+
+            // Prove the fixture still authenticates and names the adversarial path. A corrupt cipher
+            // would reject for the wrong reason and would not exercise destination collision checks.
+            BackupInspectResult inspection = await codec.InspectAsync(
+                archive,
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+            Assert.Contains(inspection.Manifest!.Entries, entry => entry.Path == duplicateEntryPath);
 
             return archive;
         }

@@ -103,6 +103,8 @@ public sealed partial class BackupRestoreServiceTests
 
         GrimoireDbPassphraseSource passphrases = new();
 
+        _bootstrapPassphrases.Add(passphrases);
+
         await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
             secrets,
             passphrases,

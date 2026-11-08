@@ -103,8 +103,49 @@ public sealed class ContinuousIntegrationWorkflowTests
         // Each worker uploads evidence under its own name, so no two partitions can overwrite one another's receipt.
         Assert.Equal(
             lanes.Length,
-            lanes.Select(static lane => Regex.Match(lane.Body, @"upload-artifact@[^\n]*\n\s+with:\n\s+name: (\S+)").Groups[1].Value).Distinct(StringComparer.Ordinal).Count());
+            lanes.Select(static lane => SourceAnalysisArtifactName(lane.Body)).Distinct(StringComparer.Ordinal).Count());
     }
+
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public void Source_analysis_artifact_selection_preserves_the_exact_name_for_each_line_ending(string newline)
+    {
+        string body = string.Join(newline,
+            "      - name: Upload evidence",
+            "        uses: actions/upload-artifact@pinned",
+            "        with:",
+            "          name: hosted-producer-primary-analysis",
+            "          path: .tmp/coverage/analysis-primary");
+
+        Assert.Equal("hosted-producer-primary-analysis", SourceAnalysisArtifactName(body));
+    }
+
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public void Source_analysis_dependency_selection_retains_only_worker_job_names_for_each_line_ending(string newline)
+    {
+        string body = string.Join(newline,
+            "    needs:",
+            "      - scope",
+            "      - build-test",
+            "      - hosted-producer-primary-analysis",
+            "      - hosted-producer-additional-analysis",
+            "    if: always()",
+            "    steps:",
+            "      - name: Reconcile evidence");
+
+        Assert.Equal(
+            new[] { "hosted-producer-primary-analysis", "hosted-producer-additional-analysis" },
+            SourceAnalysisDependencies(body));
+    }
+
+    private static string SourceAnalysisArtifactName(string body) =>
+        Regex.Match(body, @"upload-artifact@[^\n]*\n\s+with:\r?\n\s+name: (\S+)").Groups[1].Value;
+
+    private static string[] SourceAnalysisDependencies(string body) =>
+        [.. Regex.Matches(body, @"^      - (hosted-producer-\S+)\r?$", RegexOptions.Multiline).Select(static match => match.Groups[1].Value)];
 
     [Fact]
     public void A_fixture_partition_is_one_process_on_one_slot_and_never_runs_production()
@@ -145,7 +186,7 @@ public sealed class ContinuousIntegrationWorkflowTests
         Assert.Contains("if: always()", lane.Body, StringComparison.Ordinal);
 
         // The authority needs exactly the workers, so a partition added to the list without a worker, or a worker without a partition, fails here.
-        string[] needs = [.. Regex.Matches(lane.Body, @"^      - (hosted-producer-\S+)$", RegexOptions.Multiline).Select(static match => match.Groups[1].Value)];
+        string[] needs = SourceAnalysisDependencies(lane.Body);
 
         Assert.Equal(
             SourceAnalysisPartitions.Select(static entry => entry.JobId).Order(StringComparer.Ordinal),

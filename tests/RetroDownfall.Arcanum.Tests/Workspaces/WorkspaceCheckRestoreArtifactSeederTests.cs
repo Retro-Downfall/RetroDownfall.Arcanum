@@ -117,7 +117,7 @@ public sealed class WorkspaceCheckRestoreArtifactSeederTests : IDisposable
         string[] found = [.. WorkspaceCheckRestoreArtifactSeeder.EnumerateProjectFiles(workspace)];
 
         Assert.Equal(
-            kept.Select(relative => Path.Combine(_root, relative)).Order(StringComparer.Ordinal),
+            kept.Select(relative => Path.GetFullPath(Path.Combine(_root, relative))).Order(StringComparer.Ordinal),
             found.Order(StringComparer.Ordinal));
     }
 
