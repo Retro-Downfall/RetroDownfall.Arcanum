@@ -233,6 +233,12 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         | WriteDacAccess
         | WriteOwnerAccess;
 
+    internal const uint WindowsChildOwnerDaclDesiredAccess =
+        FileReadAttributes
+        | ReadControlAccess
+        | WriteDacAccess
+        | SynchronizeAccess;
+
     internal const uint WindowsChildShareMode =
         FileShareRead | FileShareWrite | FileShareDelete;
 
@@ -625,13 +631,14 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         {
             if (OperatingSystem.IsWindows())
             {
-                // Enumeration retains a read capability, not WRITE_DAC/WRITE_OWNER. Reopen only
-                // this exact file through the retained parent before changing its security.
-                SecureFileOpenStatus permissionStatus = OpenChild(
+                // Enumeration retains a read capability. DACL normalization needs WRITE_DAC,
+                // not ownership-changing or file-data rights, on this exact retained-parent child.
+                SecureFileOpenStatus permissionStatus = OpenWindowsChild(
                     relativeLeaf,
                     createExclusive: false,
-                    writable: true,
-                    out permissionHandle);
+                    writable: false,
+                    out permissionHandle,
+                    ownerDaclOnly: true);
 
                 if (permissionStatus is not SecureFileOpenStatus.Success || permissionHandle is null
                     || !FileHandleIdentityInterop.TryGetHandleMetadata(
@@ -641,14 +648,15 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                     || permissionMetadata.HardLinkCount != 1
                     || !FileHandleIdentity.IdentitiesMatch(
                         expected.Metadata.Identity,
-                        permissionMetadata.Identity))
+                        permissionMetadata.Identity)
+                    || !VerifyWindowsOwnerOnlyHandle(permissionHandle))
                 {
                     return RecoveryRequired();
                 }
             }
 
             bool applied = OperatingSystem.IsWindows()
-                ? ApplyWindowsOwnerOnly(permissionHandle!)
+                ? ApplyWindowsOwnerOnlyDacl(permissionHandle!)
                 : Fchmod(expected.Handle.DangerousGetHandle().ToInt32(), OwnerOnlyUnixMode) == 0;
 
             bool capturedOwnerOnly = OperatingSystem.IsWindows()
@@ -1113,9 +1121,15 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
         string leaf,
         bool createExclusive,
         bool writable,
-        out SafeFileHandle? handle)
+        out SafeFileHandle? handle,
+        bool ownerDaclOnly = false)
     {
         handle = null;
+
+        if (ownerDaclOnly && (createExclusive || writable))
+        {
+            return SecureFileOpenStatus.Rejected;
+        }
 
         IntPtr securityDescriptor = IntPtr.Zero;
 
@@ -1145,9 +1159,11 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                     SecurityQualityOfService = IntPtr.Zero,
                 };
 
-                uint desired = writable
-                    ? WindowsChildWritableDesiredAccess
-                    : WindowsChildReadDesiredAccess;
+                uint desired = ownerDaclOnly
+                    ? WindowsChildOwnerDaclDesiredAccess
+                    : writable
+                        ? WindowsChildWritableDesiredAccess
+                        : WindowsChildReadDesiredAccess;
 
                 int status = NtCreateFile(
                     out IntPtr raw,
@@ -1250,6 +1266,44 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
                 return renameStatus >= 0;
             }
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static bool ApplyWindowsOwnerOnlyDacl(SafeFileHandle handle)
+    {
+        if (!TryCreateOwnerOnlySecurityDescriptor(out IntPtr descriptor))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (!GetSecurityDescriptorDaclWindows(
+                    descriptor,
+                    out bool present,
+                    out IntPtr dacl,
+                    out _)
+                || !present
+                || dacl == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            const uint protectedDaclInformation = 0x80000000;
+
+            return SetSecurityInfoWindows(
+                handle,
+                objectType: 1,
+                DaclSecurityInformation | protectedDaclInformation,
+                IntPtr.Zero,
+                IntPtr.Zero,
+                dacl,
+                IntPtr.Zero) == 0;
+        }
+        finally
+        {
+            _ = LocalFreeWindows(descriptor);
         }
     }
 

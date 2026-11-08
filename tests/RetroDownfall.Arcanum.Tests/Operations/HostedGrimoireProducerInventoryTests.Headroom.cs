@@ -98,12 +98,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     // the actual compiled parser, exact root ownership and generated-catalog validation before its guarded manifest update.
     // Those arrangements reported zero diagnostics and identical canonical sites over all 84 primary and 31 additional roots.
     // Ordinary MCP bootstrap was the sole count difference: 492, 246 and 246 states.
-    // Current qualification after the Windows journal ACL capability repair is fresh three-worker discovery over all 84 primary
-    // and 31 additional roots, source inventory 75c4d2cb2755f1ba3620037048243e1263d088750459e94fb9c0ed8b6bd70a90,
+    // Current qualification after the dedicated Windows journal DACL capability correction is fresh three-worker discovery over
+    // all 84 primary and 31 additional roots, source inventory 46fb6255bfe56c6e497466fa6f2e406a31268f56170c93cd670a652fe85fd565,
     // and the unchanged checker. Earlier one- and two-worker captures remain historical, not current-source arrangements.
-    // Compared with the preceding child-frontier capture, StartAsync grew by four states (two root entries), five other primary
-    // journal roots and four additional journal roots grew by two each, and the other 105 root counts were unchanged.
-    // Actual compiled headroom validation accepts every current count against the retained ceilings without recalibration.
+    // Compared with the preceding Windows journal capability capture, StoppedHostFactoryErasure.ApplyAsync decreased from 1,375
+    // to 1,374 states; the other 114 root counts were unchanged. Actual compiled headroom validation accepts every current count
+    // against the retained ceilings without recalibration. Generated revision metadata and compiled-binary provenance are recorded separately.
     // Current primary discovery, parser, exact root ownership and generated-catalog validation report zero diagnostics;
     // additional discovery also reports zero diagnostics. Both canonical manifests are byte-identical to the preceding capture.
     // Primary manifest: 9,263 site rows, SHA-256 f388100f3317ddae9c9815da2461184d4d283a97aaacb273f55640914dc5b4c4.

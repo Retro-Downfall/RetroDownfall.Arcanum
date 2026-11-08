@@ -1,8 +1,11 @@
 """Exercise the CI authority and pin conservative documentation-only job wiring."""
 
+import os
 import re
+import shutil
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 
 
@@ -31,6 +34,50 @@ def step(body, name):
 
 
 class CiScopeWorkflowTests(unittest.TestCase):
+    def test_execution_qualifier_requires_windows_permission_witnesses_only_on_windows(self):
+        windows_cases = (
+            "RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests."
+            "Windows_owner_only_application_accepts_an_enumerated_modify_only_read_handle",
+            "RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests."
+            "Windows_owner_only_application_refuses_a_weakened_same_file_without_changing_its_acl",
+        )
+        for host, required in (("Darwin", False), ("MINGW64_NT-10.0", True)):
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                scripts = root / "scripts"
+                scripts.mkdir()
+                harness = scripts / "qualify-guild-execution.sh"
+                shutil.copyfile(ROOT / "scripts/qualify-guild-execution.sh", harness)
+                commands = root / "commands"
+                commands.mkdir()
+                captured = root / "validator-arguments.txt"
+                stubs = {
+                    "dotnet": "#!/bin/sh\nexit 0\n",
+                    "git": "#!/bin/sh\nexit 0\n",
+                    "uname": '#!/bin/sh\nprintf "%s\\n" "$QUALIFIER_TEST_HOST"\n',
+                    "python3": '#!/bin/sh\nprintf "%s\\n" "$@" >> "$QUALIFIER_TEST_CAPTURE"\n',
+                }
+                for name, content in stubs.items():
+                    command = commands / name
+                    command.write_text(content)
+                    command.chmod(0o755)
+                result = subprocess.run(
+                    ["bash", str(harness)], cwd=root, capture_output=True, text=True,
+                    env={"PATH": str(commands) + os.pathsep + os.defpath,
+                         "QUALIFIER_TEST_HOST": host, "QUALIFIER_TEST_CAPTURE": str(captured)},
+                    timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                arguments = captured.read_text().splitlines()
+                required_cases = [arguments[index + 1] for index, argument in enumerate(arguments)
+                                  if argument == "--required-case"]
+                for case in windows_cases:
+                    with self.subTest(case=case):
+                        self.assertEqual(required_cases.count(case), 1 if required else 0, case)
+                self.assertIn("RetroDownfall.Arcanum.Tests.Guild.GuildWorkspaceLeaseHostLockTests."
+                              + ("Windows_retained_no_delete_sharing_prevents_lock_leaf_replacement" if required
+                                 else "Replaced_lock_file_or_reparse_path_revokes_admission"), required_cases)
+
     def test_focused_execution_profile_requires_both_hosts_and_execution_evidence(self):
         focused = job("guild-execution")
         self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.qualification == 'guild-execution'", focused)

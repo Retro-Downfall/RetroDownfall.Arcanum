@@ -1896,6 +1896,14 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildWritableDesiredAccess
                 & (writeDac | writeOwner));
 
+        Assert.Equal(0x00160080U,
+            GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildOwnerDaclDesiredAccess);
+
+        Assert.Equal(
+            0U,
+            GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildOwnerDaclDesiredAccess
+                & (writeOwner | 0x00000002U | 0x00010000U));
+
         Assert.False(GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildStreamsAreAsync);
     }
 

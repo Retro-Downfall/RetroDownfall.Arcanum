@@ -41,9 +41,18 @@ dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj
   --logger 'trx;LogFileName=guild-execution.trx' --logger 'console;verbosity=normal' --results-directory "$results"
 
 host_lock_case=RetroDownfall.Arcanum.Tests.Guild.GuildWorkspaceLeaseHostLockTests.
+platform_required_cases=(--required-case)
 case "$(uname -s)" in
-  Darwin) host_lock_case+=Replaced_lock_file_or_reparse_path_revokes_admission ;;
-  MINGW*|MSYS*|CYGWIN*) host_lock_case+=Windows_retained_no_delete_sharing_prevents_lock_leaf_replacement ;;
+  Darwin)
+    host_lock_case+=Replaced_lock_file_or_reparse_path_revokes_admission
+    platform_required_cases+=("$host_lock_case")
+    ;;
+  MINGW*|MSYS*|CYGWIN*)
+    host_lock_case+=Windows_retained_no_delete_sharing_prevents_lock_leaf_replacement
+    platform_required_cases+=("$host_lock_case"
+      --required-case RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_owner_only_application_accepts_an_enumerated_modify_only_read_handle
+      --required-case RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_owner_only_application_refuses_a_weakened_same_file_without_changing_its_acl)
+    ;;
   *) printf '%s\n' 'Focused execution qualification requires macOS or Windows.' >&2; exit 1 ;;
 esac
 
@@ -92,7 +101,7 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.t
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Local_child_frontier_does_not_count_its_own_interruption_as_a_descendant \
   --required-case RetroDownfall.Arcanum.Tests.Operations.LongRunningOperationRecoveryOwnershipTests.Generic_recovery_claims_process_ownership_before_lease_acquisition_and_releases_after_settlement \
   --required-case RetroDownfall.Arcanum.Tests.Hosting.ApprenticeServiceReliabilityTests.Guild_cutover_never_resumes_legacy_crash_recovery_into_execution_capacity \
-  --required-case "$host_lock_case" \
+  "${platform_required_cases[@]}" \
   --required-case RetroDownfall.Arcanum.Tests.Backup.BackupRestoreServiceTests.A_full_archive_restores_onto_a_clean_machine_without_the_source_credential_store \
   --required-case RetroDownfall.Arcanum.Tests.Backup.BackupRestoreStagedDrainTests.An_archive_already_at_head_needs_no_drain \
   --required-case RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Factory_reset_refuses_local_execution_evidence_whose_quest_link_is_missing \

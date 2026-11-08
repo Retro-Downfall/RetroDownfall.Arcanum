@@ -1695,21 +1695,36 @@ public sealed partial class GrimoireOfflineTransitionJournalStoreTests : IDispos
 
         using CancellationTokenSource cancellation = new();
 
+        List<string> observedSteps = [];
+
         GrimoireOfflineTransitionJournalStore store = new(
             _credentials,
             new GrimoireOfflineTransitionJournalFileStore(afterStep: step =>
             {
+                observedSteps.Add("after:" + step);
+
                 if (step == "file:parent-flushed")
                 {
                     cancellation.Cancel();
                 }
+            }, failBeforeStep: step =>
+            {
+                observedSteps.Add("before:" + step);
+
+                return false;
             }),
             new GrimoireOfflineTransitionJournalAnchorStore(_credentials));
 
-        GrimoireOfflineTransitionJournalRecoveryState recovered = Value(await store.RecoverAsync(
+        Result<GrimoireOfflineTransitionJournalRecoveryState> recovery = await store.RecoverAsync(
             _lock,
             _guarded,
-            cancellation.Token));
+            cancellation.Token);
+
+        Assert.True(recovery.IsSuccess,
+            (recovery.IsFailure ? recovery.Error.Code : "success")
+            + "; observed recovery stages: " + string.Join(", ", observedSteps));
+
+        GrimoireOfflineTransitionJournalRecoveryState recovered = Value(recovery);
 
         Assert.True(cancellation.IsCancellationRequested);
 
