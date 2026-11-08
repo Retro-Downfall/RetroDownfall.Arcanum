@@ -1,6 +1,6 @@
 # Arcanum
 
-**A local-first AI assistant and inference hub for .NET.** One self-contained executable, an OpenAI-compatible Chat Completions API, and an encrypted local store. Use a local model server or configure an external provider.
+**A local-first AI assistant with durable memory, practical tools, and one API for your models.**
 
 [![CI](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/actions/workflows/ci.yml/badge.svg)](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/Retro-Downfall/RetroDownfall.Arcanum?include_prereleases&sort=semver&label=release)](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/releases)
@@ -8,184 +8,183 @@
 [![Native AOT](https://img.shields.io/badge/Native%20AOT-yes-2ea44f)](#one-executable-no-runtime)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20arm64%20%C2%B7%20Windows%20x64%2Farm64-blue)](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/releases)
 
-Arcanum runs a long-lived HTTP host (`arcanum serve`) with a set of thin CLI clients over that same API. It exposes an **OpenAI-compatible Chat Completions API** for existing clients and scripts, and routes inference through configured **OpenAI-compatible providers**, including hosted services and local Ollama or other model servers. Optional Familiar transports also use the `Claude Code` and `Codex` CLIs you already have installed and signed in. Everything it learns lives in a **SQLCipher-encrypted** store on your disk, and the executable runs on **macOS and Windows**.
+Connect a local model server or hosted provider, work from the terminal or desktop, and keep your conversations and memory in an encrypted store on your own machine. Arcanum combines a progress-driven tool loop with memory you can inspect, correct, scope, and erase.
 
-This page is a tour of what Arcanum does and how it differs. The authoritative architecture, HTTP contracts, CLI reference, and configuration reference are linked below; this one assumes you're comfortable with the usual terms.
+The Native AOT `arcanum` executable is both the HTTP host and its command-line client. It runs on Apple Silicon macOS and Windows x64/arm64 without a separately installed .NET runtime. Models run through your configured providers; Arcanum does not bundle a model runtime.
 
-Ordinary background work stays on the queue-free fast path. A destructive Grimoire transition closes host-wide admission and drains work already admitted before it takes exclusive control. If the process stops, startup resumes only from authenticated durable evidence; evidence it cannot verify keeps the Grimoire closed instead of guessing.
+## What you can do
 
-## Functions and how Arcanum differs
+- **Work across models.** Use OpenAI-compatible hosted APIs, Ollama, or another local model server behind the same commands and API.
+- **Carry work across conversations.** Organize Sessions into Campaigns, maintain cross-session summaries, and retrieve relevant files and memories.
+- **Act on your workspace.** Read, search, and edit files; use MCP tools; run permitted commands; and repeat workflows with named Spells and stored Prompts.
+- **Manage what the assistant remembers.** Inspect provenance and eligibility, correct facts, review new memories, pin useful material, retire outdated claims, or erase an exact item.
+- **Evaluate and observe.** Inspect planned context, track usage and budgets, run Trials, and compare answers with and without selected memory.
 
-### One executable, no runtime
-Arcanum is a single self-contained executable built for **Native AOT** — so there's no .NET runtime, no Python interpreter, and no Node.js to install. The shipping targets are macOS on Apple Silicon and Windows on x64 or arm64; platform-specific capabilities and prerequisites are documented below.
-
-### OpenAI-compatible, not OpenAI-dependent
-Arcanum implements the OpenAI Chat Completions subset and can route inference to configured OpenAI-compatible providers. Point it at a hosted API, a model server you run yourself, or the `Claude Code` / `Codex` CLIs you already have authenticated — Arcanum installs, updates, or signs in to nothing, and your subscription identity and credentials stay yours. Only text completions are routed through those CLIs; Arcanum's tool loop runs over OpenAI-compatible providers, not through the CLIs' own runtime.
-
-### A progress-driven agent loop
-Unlike a chatbot that stops after a single exchange, Arcanum keeps working until the task is done or you cancel it. The loop can make repeated model calls and tool rounds, correct its own errors, and follow through on sub-tasks. It stops on completion, cancellation, client-tool forwarding, an operator budget, a provider or context boundary, a safety or integrity refusal, or repeated lack of progress. Per-call, per-frame, and concurrency limits are local safety rails, not a hard ceiling on a completed task.
-
-An instruction can use a **Spell** — a named, repeatable workflow — stored **Prompts**, a **Campaign** (a persistent authority scope for one body of work), and **Apprentices** for delegated work. Configured **Daemons** schedule recurring work, while registered **long-running operations** provide progress and recovery for supported workflows. Server tool calls produce informational **Ward** audit records; tool authority and **Sanctum** policy govern execution. A **Trial** compares model behavior.
-
-### A governed memory system
-Arcanum remembers things about you and your projects across conversations. Its design follows one rule: **a memory may become shorter, simpler, or more useful — but it can never quietly become more authoritative.** What you told it is not treated the same as what the model inferred, which is not the same as a search result. Each subsystem has a role:
-
-| What it is | What it does |
-|------------|--------------|
-| **Grimoire** | The encrypted local store that holds conversations, files, history, and notes |
-| **Comprehension** *(IN DEVELOPMENT, opt-in)* | Turns supported document attachments into bounded, untrusted text for existing context and retrieval paths; reads Word, Excel, PowerPoint, OpenDocument, and Visio files (`.docx`, `.xlsx`, `.pptx`, `.odt`, `.ods`, `.odp`, `.vsdx`, and the macro-enabled variants as text only) with Arcanum's own bounded parsers (for files up to the 1 MiB attachment limit), applying format-specific hidden-content rules and omitting comments and speaker notes; these parsers do not render pages and cannot detect every visually hidden string; also reads Rich Text Format (`.rtf`) with a bounded first-party parser that omits hidden and deleted text, metadata, annotations, objects, and pictures and refuses files with stylesheets or style-dependent text visibility, and reads the text layer of PDFs in a separate, sandboxed worker process with page ranges on retrieved excerpts, keeping every text run the file draws, so PDF text may include text a reader would not see; scans without a text layer, older binary Office formats, EPUB, MIME messages, and OCR are not supported |
-| **Session history** | An ordered record of each conversation, including which files or links were shared |
-| **Workspace search (the Eye of the World)** | Indexes eligible files in a registered workspace for bounded, scope-aware retrieval |
-| **Saga** | Auto-extracts recurring topics and lessons from past conversations |
-| **Lexicon** | Durable, structured facts — yours or the assistant's |
-| **Covenant** | A standing, user-authored "rulebook" (below) |
-
-These subsystems are stitched together by **OATH**, Arcanum's governing memory architecture. See [OATH: a memory that cannot outrank its origin](#oath--origin-bound-authority-conserving-transactional-history) below.
-
-#### The Tapestry — recursive **RAPTOR** memory
-The Tapestry implements **RAPTOR** with global and local UMAP reduction, Gaussian-mixture clustering, BIC model selection, and soft membership. It summarizes eligible source groups, then recursively clusters and summarizes those results. Overlapping groups form a graph that supports retrieval across levels of detail. Summaries retain source provenance and remain derived evidence; they do not acquire the authority of an original source.
-
-#### Locating context — RAG and full-text search
-Two search mechanisms back the memory system:
-
-- **Full-text search (FTS5):** native indexes over supported conversation, memory, workspace, and attachment projections. Session search supports FTS5 query syntax; the operator's `memory search` treats its input literally. Scope and eligibility checks still apply.
-- **Retrieval-Augmented Generation (RAG):** configured embedding models turn text into vectors so eligible files, notes, and conversation material can provide source context for a reply. Semantic search uses managed cosine over durable embedding BLOBs; the hermetic database runtime disallows dynamic extension loading.
-
-#### The Covenant: a rulebook you control
-Beyond ordinary memory, Arcanum can hold a **Covenant** — personal or project rules the assistant follows. Anything the assistant suggests is surfaced to you before it's trusted, and suggestions can never become rules on their own. Enabling the Covenant may mean those memories travel to where the assistant talks to the model — and Arcanum can't un-send them — so its protection ships by default and turning it on is a deliberate, protected choice.
-
-### OATH — Origin-Bound, Authority-Conserving Transactional History
-OATH is the model that ties the memory subsystems together. Its one hard rule: **memory cannot outrank its origin.**
-
-Consider three identical sentences:
-
-- You said, "Production billing uses PostgreSQL."
-- The assistant inferred, "Production billing probably uses PostgreSQL."
-- A search result surfaces text containing, "Production billing uses PostgreSQL."
-
-The words are the same, but their authority is not. An ordinary assistant can remember a great deal without knowing what any one memory is allowed to mean. OATH does.
-
-**What OATH is.** A durable memory travels with its papers: where it came from, who authorized it, where it may apply, which version is current, how sensitive it is, and what later summaries or indexes derive from it. A memory may become shorter, simpler, or more useful — but it can never quietly become more powerful. What you told it is not the same as what the model inferred, which is not the same as a search hit. The four load-bearing properties spell the acronym:
-
-| Property | What it means |
-|----------|---------------|
-| **Origin-Bound** | Every retained claim or derivative binds its immutable source — identity, revision, hash, scope, and the receipt that produced it. Deleting a source changes its availability; it does not make a surviving derivative look self-authored. |
-| **Authority-Conserving** | Summarizing, extracting, ranking, or repeating can narrow a memory's authority but never widen it: a proposed guess cannot become an operator instruction, a campaign fact cannot leak to everyone, sensitivity cannot drop, and lineage cannot be dropped. Only a new authenticated action creates a more powerful claim. |
-| **Transactional** | Local bookkeeping uses append-only revisions, guarded current pointers, and idempotency receipts. The rule that matters for a turn: **the assistant's answer and its staged memory publish together, or neither does.** |
-| **History** | Corrections are new revisions, retirements are tombstones, receipts distinguish a replay from a different request. Current state is a view over immutable history, not one mutable truth slot. |
-
-**How OATH is implemented.** OATH is a cross-cutting rule set, not a single feature or table. It governs the boundary *between* the memory subsystems, each of which keeps its own role:
-
-- **The Grimoire** is the encrypted, transactional substrate that stores canonical and derived records — it does not itself decide a record's authority.
-- **The Covenant** supplies OATH's governing claim and authority substrate: immutable versions, operator-authorized **Confirmed** claims and agent-suggested **Proposed** claims, policy, evidence, and the publication rules.
-- **The Lexicon**, **Saga**, **Tapestry**, **Weave**, and **Divination**, plus **Session history**, each serve a different memory role.
-
-OATH's central test is simple: **retrieval can discover a candidate, but it cannot promote its authority.** To keep that true, OATH separates five decisions that simpler systems merge — *retention* (does it exist?), *discovery* (can it be found?), *eligibility* (does policy permit it here?), *admission* (does it fit this exact provider request?), and *authority* (what is it allowed to mean?). Retrieval only answers "what might be relevant."
-
-In practice OATH shows up in a few places:
-
-- **Two lanes.** The Covenant keeps an operator lane (**Confirmed**, rendered as structured `CONTEXT`) and a separate agent lane (**Proposed**, rendered as fenced `DATA`). Proposed material can never become context, and it cannot grant tool permission.
-- **Atomic publication.** A turn's assistant result and its staged memory mutations commit in one transaction, so a failed or cancelled answer never leaves a plausible-looking memory behind.
-- **Fenced, not promoted.** Under context pressure, Proposed material is the first thing removed — admitted through a deterministic prefix so the same inputs always reach the same decision.
-- **Acknowledged disclosure.** Before protected material leaves Arcanum for a provider or external tool, the system durably records the disclosure — a receipt, not a promise that it can be recalled.
-- **Failure closed.** Missing or malformed origin evidence yields refusal, quarantine, or erasure — never a guess.
-
-OATH retains immutable history, revisions, timestamps, generations, and source versions. Saga ranking honors stored validity intervals; broader bitemporal query and reasoning behavior remains future work.
-
-### Encrypted by default
-Your sessions, attachments, and uploads are stored **encrypted on your own disk**, never in plain text. API keys and stored provider credentials use the operating system's secure storage, with owner-only encrypted fallback files; providers can also use environment-variable credential references; the key that unlocks the session database is kept only in such an owner-only file. Those files keep your secrets from other users of the machine, but they are not a defence against someone who can read your whole disk or an unprotected copy of it — pair Arcanum with full-disk encryption and protected backups for that. Filesystem tools enforce workspace containment, and process tools have separate Sanctum and platform sandbox requirements. Enabled inference, retrieval, and background features may send admitted content to their configured providers.
-
-### Full control over your data
-- **Backups** — authenticated, encrypted portable archives with explicit component selection and coordinated access to the installation.
-- **Retention** — decide how long to keep data before it's eligible for cleanup.
-- **Key rotation** — separate API-key management from journaled encrypted-blob key rotation.
-- **Full-erasure** — wipe your data when you want it gone.
-
-### Background work
-Beyond a single reply, Arcanum can keep going on its own: schedule **daemons**, resume **long-running operations**, watch files, and execute multi-step work that isn't one-shot conversation.
-
-### See what's happening
-- **`arcanum context inspect`** — inspect planned context and advertised tools without dispatching the main answer. Add `--no-retrieval` to omit auxiliary retrieval and embedding work.
-- **`arcanum doctor`** — health checks with suggested fixes, applied only with your confirmation.
-- **`arcanum look`** — an instant snapshot of the directory currently in view.
-
-### One engine, many clients
-The same engine powers the terminal program (`arcanum run`, `serve`, `session`, `memory`, …), the interactive terminal workspace (`arcanum center`, the Command Center), the configuration editor (**Compendium**), and the inference IDE (**The Forge**). Server-backed operations use the same API. Compendium also edits local configuration directly, and the CLI provides explicit local setup and maintenance commands. Arcanum's tool loop also runs over **MCP tools** (read, edit, and search files; run commands; extract and curate memory) that follow the same workspace sandbox and Sanctum security policy.
-
-### Setup presets
-Pick from six workflow presets. Each shows what it changes, what might be needed to enable it, and what it leaves alone — so what happens is always clear.
-
----
+Capabilities have explicit feature, provider, and platform requirements. The [configuration reference](docs/Compendium.README.md#feature-opt-ins) explains what each switch enables.
 
 ## Install
 
-Grab a build from the [latest release](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/releases).
+Download the appropriate archive from [Releases](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/releases) and verify it against `SHA256SUMS.txt` from the same release.
 
-**macOS (Apple Silicon)** — signed with a Developer ID certificate and notarized.
+**macOS — Apple Silicon.** The release is signed with Developer ID and notarized.
 
 ```bash
-unzip arcanum-osx-arm64.zip && cd arcanum-osx-arm64
+unzip arcanum-osx-arm64.zip
+cd arcanum-osx-arm64
 ./arcanum setup
 ```
 
-**Windows (x64 or arm64)** — unsigned, so SmartScreen may warn.
+**Windows — x64 or arm64.** Windows releases are unsigned, so SmartScreen may warn. This example uses x64; choose the arm64 archive on an arm64 machine.
 
 ```powershell
 Expand-Archive .\arcanum-win-x64.zip -DestinationPath .
 .\arcanum-win-x64\arcanum.exe setup
 ```
 
-Windows also needs the **Microsoft Visual C++ Redistributable** (2015–2022) for its architecture,
-which many machines already have: [x64](https://aka.ms/vs/17/release/vc_redist.x64.exe) ·
-[arm64](https://aka.ms/vs/17/release/vc_redist.arm64.exe). Without it the encrypted store's
-library cannot load and `arcanum serve` cannot start.
+Windows needs the **Microsoft Visual C++ Redistributable** for its architecture: [x64](https://aka.ms/vs/17/release/vc_redist.x64.exe) · [arm64](https://aka.ms/vs/17/release/vc_redist.arm64.exe). Without it, the encrypted store's native library cannot load.
 
-Verify any download against `SHA256SUMS.txt` from the same release. Run as a normal user —
-elevation is never required.
+Run Arcanum as a normal user; elevation is not required. Compendium and The Forge are separate desktop downloads in the same release.
 
 ## Quickstart
 
-`arcanum setup` is a guided wizard that walks eight steps and **writes nothing until you accept the
-plan**, so Ctrl+C at any point leaves your machine exactly as it was. Point it at a local model
-server and you never touch a hosted provider:
+Run `arcanum setup` to select a provider, model, credentials, workspace, and preset. The wizard validates the provider and shows the complete configuration plan before you accept it. Cancelling before acceptance leaves your existing configuration and credentials unchanged.
+
+With the executable on your `PATH`:
 
 ```bash
-arcanum setup                  # endpoint, model, credential, workspace, preset — then a diff to accept
-arcanum run "Hello"            # one-shot prompt
-arcanum serve                  # long-lived host; thin clients talk to it over the same API
-arcanum key list               # what credentials Arcanum holds (presence and status only, never values)
+arcanum setup
+arcanum run "Hello"
+arcanum center
 ```
+
+Interactive `run` and Command Center can start the local host. To keep it running explicitly, start `arcanum serve` in one terminal, then use the clients in another:
+
+```bash
+arcanum run "Explain this code" --with @src/example.cs
+arcanum memory status
+arcanum memory search "project conventions"
+arcanum context inspect --no-retrieval
+arcanum doctor
+```
+
+Replace the example file with one of your own. For automation, commands support `--json`; the [Command Reference](docs/Arcanum.Command.Reference.md) covers output, context selection, and exit codes.
+
+## One engine, many ways to work
+
+| Interface | Use it for |
+|---|---|
+| **Command Center** — `arcanum center` | Interactive terminal conversations, Session navigation, attachments, and live progress |
+| **CLI** — `arcanum run`, `session`, `memory`, and more | One-shot prompts, scripts, inspection, and administration |
+| **The Forge** — `arcanum open theforge` | A desktop inference IDE for Sessions, Campaigns, Spells, and Apprentices |
+| **Compendium** — `arcanum open compendium` | Editing local configuration, providers, feature opt-ins, and presets |
+| **HTTP API** — `arcanum serve` | Native Arcanum clients and existing OpenAI-compatible Chat Completions clients |
+
+Server-backed operations share the same API. Compendium also edits local configuration directly; setup and maintenance commands can operate on the installation without a running host.
+
+### One executable, no runtime
+
+The CLI and HTTP host ship as one self-contained Native AOT executable. The application is built with .NET 10, ASP.NET Core, and an encrypted SQLCipher store. The desktop clients use Avalonia. See the [engineering guide](docs/Arcanum.Engineering.md) for the architecture, platform prerequisites, and build instructions.
+
+### Your provider, your choice
+
+Configure OpenAI-compatible endpoints for hosted services or local inference, including Ollama's `/v1` API. Arcanum exposes a Chat Completions compatibility subset for existing clients; moderation, image-generation, and audio APIs are not implemented.
+
+Optional **Familiar** transports use your separately installed and authenticated Claude Code or Codex CLI for text completions. Arcanum does not install or sign in to those tools, and its own tool loop runs through OpenAI-compatible providers rather than the CLIs' agent runtimes.
+
+## Memory you can inspect and govern
+
+Arcanum's memory is more than conversation history. Each part has a specific job:
+
+| Capability | What it gives you |
+|---|---|
+| **Saga and Lexicon** | Extracted observations and structured facts that persist across conversations |
+| **Campaign-scoped memory** | An opt-in retrieval policy that keeps another project's memories out of the current Campaign |
+| **Campaign rollups** | Opt-in summaries that carry continuity between Sessions without replacing each Session's own history |
+| **The Annals** | Claim history recording who asserted something, when it applied, and when Arcanum came to hold it |
+| **The Long Rest** | Opt-in consolidation, supersession, and evidence-based ranking over Saga memory |
+| **The Covenant** | Opt-in standing context with separate operator-confirmed and assistant-proposed lanes |
+
+Annals capture defaults on for ordinary Saga and Lexicon writes. Saga extraction, Campaign-scoped retrieval, Campaign rollups, Long Rest, and Covenant turn participation are separate opt-ins. Enabling a memory feature does not grant permission to bypass a source's authority or sensitivity rules.
+
+### Correct, review, retire, or erase
+
+The `arcanum memory` commands show what is stored, where it came from, and whether it is eligible for retrieval. You can correct an exact memory, review new claims, pin material against automatic pruning, or retire it while keeping it inspectable. Selective erasure removes the targeted local memory and its covered derivatives, with content-free suppression evidence to prevent ordinary extraction or restore from resurrecting it.
+
+Long Rest separates discovering similar memories from deciding they are equivalent. Consolidation retains source history, and repeated retrieval alone earns no positive usefulness credit. The [Proving Grounds API](docs/Arcanum.API.md#821-the-proving-grounds) can run paired evaluations with and without the same selected memory to report benefit, harm, no measurable effect, or insufficient evidence.
+
+### OATH — Origin-Bound, Authority-Conserving Transactional History
+
+**Memory cannot outrank its origin.** An operator-confirmed instruction, a model inference, and a retrieved quotation may contain the same words; they carry different authority.
+
+OATH binds memory to its source, scope, sensitivity, revisions, and evidence. Summarizing or repeatedly retrieving a claim cannot turn it into an instruction or grant it tool rights. The Covenant keeps confirmed context separate from proposed data, and a protected turn's assistant result and staged memory mutations publish together or neither does. Disclosure receipts record protected content sent outside Arcanum; they do not promise that it can be recalled.
+
+Read the [plain-language OATH guide](docs/ArcanumOATH.Human.md) or the [architecture companion](docs/Arcanum.OATH.md) for the full model.
+
+## Find the right context
+
+**Workspace, Session, and attachment retrieval** combine full-text search with semantic search over locally stored embeddings. Managed cosine search preserves exact results; compact quantized representations can reduce full-vector reads without replacing the authoritative embeddings or turning retrieval into approximate search. Performance depends on the corpus and query.
+
+**The Tapestry** adds opt-in recursive RAPTOR summaries over eligible workspace, text-attachment, and Session material. It builds multiple levels of context for questions that span a collection. Those summaries retain source lineage and remain derived evidence.
+
+**Attachments** are encrypted, versioned Session snapshots. You can add, reference, refresh, pin, inspect, and export them; retrieval follows the owning Session and exact attachment version. Text and source files can also be supplied directly with `run --with`.
+
+**Comprehension is experimental and opt-in.** It extracts bounded text from modern Office, OpenDocument, Visio, RTF, and text-layer PDF attachments. PDF extraction runs in a sandboxed worker and can include text a reader would not see; these parsers are not document renderers. OCR, scanned PDFs without text, and legacy binary Office formats are unsupported. Both Comprehension and attachment retrieval must be enabled. Upload documents with `arcanum attachment add`, then pass their ID to `arcanum run --attachment`; `--with` does not extract them. The [configuration reference](docs/Compendium.README.md#feature-opt-ins) owns the exact format and eligibility limits.
+
+## Tools, workflows, and follow-through
+
+Arcanum's agent loop can make repeated model and tool calls, correct errors, and continue while it makes progress. It stops for completion, cancellation, explicit budgets, provider/context boundaries, safety or integrity refusals, or repeated lack of progress.
+
+- **Spells and Prompts** make instructions and workflows reusable.
+- **MCP tools** connect inference to permitted workspace and service actions.
+- **Web research** combines search, browsing, and a server-owned research workflow when enabled.
+- **Apprentices and delegated tasks** support bounded work; native child tasks are model-only, with no ambient parent history or child tools.
+- **Daemons and long-running operations** support scheduled work and handler-specific durable recovery.
+- **Trials** evaluate model behavior using regex, JSON-schema, or semantic checks.
+
+Tool execution follows workspace containment, explicit authority, Sanctum policy, and the available platform sandbox. Ward records provide an informational audit trail. Process tools have platform requirements; `workspace_check` is currently available only on eligible macOS hosts.
+
+## Local storage and data control
+
+Sessions, attachments, and uploads are stored encrypted on your machine. API keys and provider credentials use operating-system secure storage with owner-only encrypted fallback files; provider credentials can also reference environment variables. The database key is held in an owner-only file. Protect the machine and its backups with full-disk encryption: local storage encryption does not protect against someone who can read both the data and its keys.
+
+Authenticated encrypted backups, selective restore, retention policies, encrypted-blob key rotation, and installation reset give you control over the data lifecycle. Local erasure cannot revoke copies already disclosed to a provider or another external destination. Inference, embedding, and enabled background features may send admitted content to the providers you configure.
+
+Ordinary background work stays on the queue-free fast path. A destructive Grimoire transition closes host-wide admission and drains work already admitted before it takes exclusive control. If the process stops, startup resumes only from authenticated durable evidence; evidence it cannot verify keeps the Grimoire closed instead of guessing.
+
+## Coming soon
+
+The [Arcanum Feature Tracker](https://github.com/orgs/Retro-Downfall/projects/1) describes the planned capabilities:
+
+- **The Guild:** coordinated local and remote agents with durable Quests, scoped authority, shared work, budgets, and cancellation.
+- **An organized installation:** one central Arcanum directory, configuration split by domain, and clear homes for data, authored assets, logs, caches, backups, and recovery files.
+- **Stop and steer active work:** send an ordinary message while Arcanum is working and have it steer the same task at the earliest safe boundary, with visible stop controls.
+- **Desktop memory management:** inspect, explain, correct, and review Saga, Lexicon, and Covenant memories directly in The Forge.
+- **More document understanding:** additional document formats, OCR for scanned pages and images, and document-aware Tapestry summaries.
+- **The Crucible:** independent evidence for verified task completion and admission of learned Spells, so a model cannot certify its own success.
 
 ## Documentation
 
-| Document | What it is |
+| Document | What it covers |
 |---|---|
-| [`Arcanum.Design.Human.md`](docs/Arcanum.Design.Human.md) | **Start here** — the human-friendly navigation companion |
-| [`Arcanum.Engineering.md`](docs/Arcanum.Engineering.md) | Contributor and agent orientation: standards, repository map, configuration, distribution, build and verification |
-| [`Arcanum.DESIGN.md`](docs/Arcanum.DESIGN.md) | Authoritative: architecture, persistence, runtime behavior, packaging, testing |
-| [`Arcanum.API.md`](docs/Arcanum.API.md) | Exact HTTP contracts |
-| [`Arcanum.Command.Reference.md`](docs/Arcanum.Command.Reference.md) | Complete CLI syntax, options, aliases, exit behavior |
-| [`Arcanum.CHAT-LOOP.md`](docs/Arcanum.CHAT-LOOP.md) | The chat loop, attachments, context ledger, and memory promotion |
-| [`Arcanum.OATH.md`](docs/Arcanum.OATH.md) | The formal architecture for governed, origin-bound memory |
-| [`ArcanumOATH.Human.md`](docs/ArcanumOATH.Human.md) | The human-friendly guide to the same architecture |
-| [`Compendium.README.md`](docs/Compendium.README.md) | The complete configuration reference |
-| [`Arcanum.DEBUGGING.Human.md`](docs/Arcanum.DEBUGGING.Human.md) | Debugging guide |
+| [Human architecture guide](docs/Arcanum.Design.Human.md) | A guided tour and navigation through the system |
+| [Engineering guide](docs/Arcanum.Engineering.md) | Contributor orientation, platform details, build, and verification |
+| [Architecture reference](docs/Arcanum.DESIGN.md) | Authoritative architecture, persistence, runtime behavior, and testing |
+| [HTTP API](docs/Arcanum.API.md) | Exact native and compatibility contracts |
+| [Command Reference](docs/Arcanum.Command.Reference.md) | Complete CLI syntax, options, output, and exit behavior |
+| [Chat loop](docs/Arcanum.CHAT-LOOP.md) | Model/tool rounds, attachments, and context handling |
+| [OATH architecture](docs/Arcanum.OATH.md) · [OATH guide](docs/ArcanumOATH.Human.md) | Governed, origin-bound memory |
+| [Configuration](docs/Compendium.README.md) | Providers, features, presets, and every public setting |
+| [Debugging guide](docs/Arcanum.DEBUGGING.Human.md) | Tracing and diagnosing the running system |
 
-## Status
-
-`0.1.0-beta` — see [`Directory.Build.props`](Directory.Build.props). The API and CLI surfaces are still moving.
-
-**Current operator limitations** — an honest list of what does not work yet, in [`Arcanum.Engineering.md`](docs/Arcanum.Engineering.md#current-operator-limitations). Worth reading before you rely on anything here.
-
-**Stack:** .NET 10 · ASP.NET Core Minimal API · Native AOT on macOS and Windows · `Microsoft.Extensions.AI` · EF Core 10 + hermetic SQLCipher 4.17.0 · Avalonia · MCP client (stdio + HTTP)
+Arcanum is in beta; API and CLI surfaces can change. The [current operator limitations](docs/Arcanum.Engineering.md#current-operator-limitations) describe the practical boundaries of the implemented features.
 
 ## Contributing
 
-Issues and pull requests are welcome. [`Arcanum.Engineering.md`](docs/Arcanum.Engineering.md) is the orientation document for working on the code.
+Contributions are welcome. Start with the [engineering guide](docs/Arcanum.Engineering.md) for repository conventions and verification requirements.
 
 ## License
 
-Arcanum is released under the MIT License. See the [`LICENSE`](LICENSE) file for the full text. In short, you have permission to use, copy, modify, and redistribute the software, provided you keep the original copyright and license notice with any copies.
+Arcanum is released under the [MIT License](LICENSE).
 
 Copyright (c) 2026 Retro Downfall
 
