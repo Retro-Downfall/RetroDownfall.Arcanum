@@ -1,3 +1,5 @@
+using System.Security.AccessControl;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
@@ -47,6 +49,48 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests
             + (applied.IsFailure ? applied.Error.Code : "success"));
 
         Assert.True(GrimoireOfflineTransitionJournalFilePrimitives.VerifyOwnerControlledOpenedFileHandle(observed));
+    }
+
+    [SkippableFact]
+    public void Windows_owner_only_application_refuses_a_weakened_same_file_without_changing_its_acl()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: preserves the exact rejected DACL.");
+
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        GrimoireOfflineTransitionJournalLocation location = Location();
+
+        using GrimoireOfflineTransitionJournalFilePrimitives primitives = Value(
+            GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                Path.GetDirectoryName(location.JournalPath)!,
+                location.GuardedParentPhysicalIdentityDigest));
+
+        using GrimoireOfflineTransitionJournalOpenedFile created = Value(
+            primitives.CreateWorkingExclusive(location.WorkingLeaf));
+
+        using GrimoireOfflineTransitionJournalChildEnumeration children = Value(
+            primitives.EnumerateExactChildren([location.WorkingLeaf]));
+
+        GrimoireOfflineTransitionJournalOpenedFile observed = children.ExactChildren[location.WorkingLeaf];
+
+        GrantWindowsWorldRead(location.WorkingPath);
+
+        string before = new FileInfo(location.WorkingPath).GetAccessControl()
+            .GetSecurityDescriptorSddlForm(AccessControlSections.All);
+
+        Assert.False(GrimoireOfflineTransitionJournalFilePrimitives.VerifyOwnerControlledOpenedFileHandle(observed));
+
+        Result applied = primitives.ApplyOwnerOnlyAndVerify(observed, location.WorkingLeaf);
+
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, applied.Error.Code);
+
+        Assert.Equal(before, new FileInfo(location.WorkingPath).GetAccessControl()
+            .GetSecurityDescriptorSddlForm(AccessControlSections.All));
     }
 
     [Fact]
