@@ -120,6 +120,7 @@ public static class MemoryErasureTableCodes
         "memory_evaluations",
         "saga_committed_uses",
         "saga_memory_embeddings_quantized",
+        "guild_memory_attribution",
     ];
 
     /// <summary>The code of one registered table.</summary>

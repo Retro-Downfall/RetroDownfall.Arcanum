@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Core.Guild;
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
@@ -63,6 +65,8 @@ internal sealed partial class TapestryStore(
         bool includeSessions,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         List<TapestryScope> scopes = [];
 
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -117,6 +121,8 @@ internal sealed partial class TapestryStore(
         SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
+                GuildMemoryAccess.DemandOperator();
+
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbTransaction transaction = await connection
@@ -282,6 +288,8 @@ internal sealed partial class TapestryStore(
         int maxLeaves,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         ArgumentOutOfRangeException.ThrowIfLessThan(maxLeaves, 1);
 
         LeafCorpus corpus = LeafCorpus.For(scope.Kind);
@@ -487,6 +495,8 @@ internal sealed partial class TapestryStore(
         int expectedDimensions,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         LeafCorpus corpus = LeafCorpus.For(scope.Kind);
 
         IReadOnlyList<string> ids = await ListLeafIdsAsync(corpus, scope.Id, cancellationToken).ConfigureAwait(false);
@@ -622,6 +632,8 @@ internal sealed partial class TapestryStore(
     public Task<TapestryGeneration?> GetCurrentGenerationAsync(TapestryScope scope, CancellationToken cancellationToken) =>
         SqliteBusyRetry.ExecuteAsync(async () =>
         {
+            GuildMemoryAccess.DemandOperator();
+
             DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -644,6 +656,8 @@ internal sealed partial class TapestryStore(
         DateTimeOffset startedAt,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         string generationId = Guid.NewGuid().ToString("N");
 
         return SqliteBusyRetry.ExecuteAsync(
@@ -708,6 +722,8 @@ internal sealed partial class TapestryStore(
         IReadOnlyList<TapestryNodeWrite> nodes,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         ArgumentNullException.ThrowIfNull(nodes);
 
         if (nodes.Count == 0)
@@ -831,6 +847,8 @@ internal sealed partial class TapestryStore(
         IReadOnlyList<string> childNodeIds,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         ArgumentNullException.ThrowIfNull(childNodeIds);
 
         if (childNodeIds.Count == 0)
@@ -884,6 +902,8 @@ internal sealed partial class TapestryStore(
         DateTimeOffset completedAt,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         // The old builder's counts are advisory. Publication computes and validates actual coverage.
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
@@ -916,6 +936,8 @@ internal sealed partial class TapestryStore(
         SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
+                GuildMemoryAccess.DemandOperator();
+
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbTransaction transaction = await connection
@@ -937,6 +959,8 @@ internal sealed partial class TapestryStore(
         SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
+                GuildMemoryAccess.DemandOperator();
+
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                 await using DbTransaction transaction = await connection
@@ -1078,6 +1102,8 @@ internal sealed partial class TapestryStore(
         int layer,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand command = connection.CreateCommand();
@@ -1110,6 +1136,8 @@ internal sealed partial class TapestryStore(
         IReadOnlyList<string> nodeIds,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         ArgumentNullException.ThrowIfNull(nodeIds);
 
         Dictionary<string, float[]> embeddings = new(StringComparer.Ordinal);
@@ -1144,6 +1172,8 @@ internal sealed partial class TapestryStore(
         string childMembershipHash,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         TapestryGeneration? generation = await GetCurrentGenerationAsync(scope, cancellationToken).ConfigureAwait(false);
 
         if (generation is null)
@@ -1194,6 +1224,8 @@ internal sealed partial class TapestryStore(
 
     public async Task<int> GetTerminalLayerAsync(string generationId, CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand command = connection.CreateCommand();
@@ -1212,6 +1244,8 @@ internal sealed partial class TapestryStore(
         Guid? sessionId,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand command = connection.CreateCommand();
@@ -1258,6 +1292,8 @@ internal sealed partial class TapestryStore(
 
     public async Task<int> CountPublishedNodesAsync(Guid? sessionId, CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand command = connection.CreateCommand();

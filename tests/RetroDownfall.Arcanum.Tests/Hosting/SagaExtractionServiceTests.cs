@@ -11,6 +11,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Memory;
@@ -21,11 +22,13 @@ using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Guild;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
@@ -75,6 +78,36 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         {
             File.Delete(_dbPath);
         }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Guild_enqueue_skips_the_unscoped_background_writer_without_borrowing_operator_authority(bool appendGranted)
+    {
+        await using GuildSignetAuthorityTests.Fixture f = await GuildSignetAuthorityTests.Fixture.CreateAsync();
+
+        GuildGrant grant = appendGranted
+            ? f.Grant with { Memory = [new(GuildMemoryStore.Saga, GuildMemoryOperation.Append, new(GuildMemoryScopeKind.Global))] }
+            : f.Grant;
+
+        f.Policy.HostGrant = grant;
+
+        GuildExecutionHandle execution = await f.RootAsync(grant);
+
+        Guid session = Guid.NewGuid();
+
+        SkipSignalLogger logger = new(session);
+
+        SagaExtractionService service = CreateService(logger);
+
+        using IDisposable invocation = GuildMemoryInvocationAmbient.Begin(new(f.Authority, execution));
+
+        service.EnqueueExtraction(new(session, [], false, 0, 1));
+
+        Assert.Empty(service.PendingRequestsForTests);
+
+        Assert.True(logger.Skipped.IsCompleted, "The unavailable optional writer must record its explicit skip reason.");
     }
 
     [SkippableFact]

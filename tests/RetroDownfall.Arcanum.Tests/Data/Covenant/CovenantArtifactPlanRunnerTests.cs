@@ -75,7 +75,7 @@ public sealed class CovenantArtifactPlanRunnerTests
             new("long_rest_protected_receipt_inputs", 0), new("long_rest_protected_receipt_evidence", 0),
             new("long_rest_receipts", 0), new("long_rest_suppressions", 0), new("long_rest_receipt_inputs", 0),
             new("annal_review_decision_receipts", 0), new("annal_review_events", 1), new("annal_dependencies", 0),
-            new("annal_heads", 1), new("saga_committed_uses", 0), new("annal_versions", 1), new("annal_claims", 1),
+            new("annal_heads", 1), new("saga_committed_uses", 0), new("guild_memory_attribution", 0), new("annal_versions", 1), new("annal_claims", 1),
             new("saga_memory_embeddings_quantized", 1),
             new("saga_memory_embeddings", 1),
             new("saga_memory_attachment_provenance", 0), new("saga_memories", 1),
@@ -249,7 +249,7 @@ public sealed class CovenantArtifactPlanRunnerTests
                      "long_rest_protected_receipt_inputs", "long_rest_protected_receipt_evidence",
                      "long_rest_receipts", "long_rest_suppressions", "long_rest_receipt_inputs",
                      "lexicon_annal_fact_provenance", "annal_review_decision_receipts", "annal_review_events",
-                     "annal_dependencies", "annal_heads", "annal_versions", "annal_claims",
+                     "annal_dependencies", "annal_heads", "guild_memory_attribution", "annal_versions", "annal_claims",
                      "lexicon_fact_attachment_provenance", "lexicon_entries",
                  })
         {
@@ -285,7 +285,8 @@ public sealed class CovenantArtifactPlanRunnerTests
     /// A genuine Core 11 database, built by the version-11 chain, so the two review tables version 12
     /// adds are absent rather than emptied. A statement against either would fail on the missing table,
     /// which is what proves the gate issued none, and the tally still names both, because a plan's
-    /// target list has one shape whatever version it runs against.
+    /// target list has one shape whatever version it runs against. Optional Guild attribution
+    /// is also listed at zero because these ordinary writes carry no Guild authorship.
     /// </remarks>
     [Fact]
     public async Task A_target_gated_above_the_committed_Core_version_is_listed_at_zero_and_never_touched()
@@ -330,7 +331,7 @@ public sealed class CovenantArtifactPlanRunnerTests
             new("long_rest_protected_receipt_inputs", 0), new("long_rest_protected_receipt_evidence", 0),
             new("long_rest_receipts", 0), new("long_rest_suppressions", 0), new("long_rest_receipt_inputs", 0),
             new("annal_review_decision_receipts", 0), new("annal_review_events", 0), new("annal_dependencies", 0),
-            new("annal_heads", 1), new("saga_committed_uses", 0), new("annal_versions", 1), new("annal_claims", 1),
+            new("annal_heads", 1), new("saga_committed_uses", 0), new("guild_memory_attribution", 0), new("annal_versions", 1), new("annal_claims", 1),
             new("saga_memory_embeddings_quantized", 0),
             new("saga_memory_embeddings", 1),
             new("saga_memory_attachment_provenance", 0), new("saga_memories", 1),

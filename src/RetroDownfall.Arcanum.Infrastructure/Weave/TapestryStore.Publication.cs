@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Core.Guild;
 using System.Data.Common;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -11,6 +13,8 @@ internal sealed partial class TapestryStore
     public Task<Result> PublishGenerationAsync(TapestryPublishRequest request, CancellationToken cancellationToken) =>
         SqliteBusyRetry.ExecuteAsync(async () =>
         {
+            GuildMemoryAccess.DemandOperator();
+
             ArgumentNullException.ThrowIfNull(request);
 
             DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);

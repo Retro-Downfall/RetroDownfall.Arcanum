@@ -107,6 +107,36 @@ internal static class GuildStorageIntegrity
         {
             await ValidateQuestsAsync(connection, transaction, ct).ConfigureAwait(false);
         }
+
+        if (declaredSchemaVersion >= 6)
+        {
+            await ValidateMemoryAttributionAsync(connection, transaction, ct).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task ValidateMemoryAttributionAsync(SqliteConnection connection, SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            SELECT EXISTS(SELECT 1 FROM guild_memory_attribution attribution WHERE
+                NOT EXISTS(SELECT 1 FROM annal_versions version
+                    JOIN annal_claims claim ON claim.ClaimId=version.ClaimId
+                    WHERE version.VersionId=attribution.ImmutableVersionId
+                        AND claim.SubjectStoreCode=attribution.StoreCode AND claim.SubjectId=attribution.SubjectId)
+                OR NOT EXISTS(SELECT 1 FROM guild_signets signet WHERE signet.SignetId=attribution.SignetId
+                    AND signet.AgentId=attribution.AgentId AND signet.RunId=attribution.RunId AND signet.QuestId=attribution.QuestId)
+                OR (attribution.StoreCode=1 AND NOT EXISTS(SELECT 1 FROM saga_memories memory WHERE memory.Id=attribution.SubjectId))
+                OR (attribution.StoreCode=2 AND NOT EXISTS(SELECT 1 FROM lexicon_entries entry WHERE entry.Id=attribution.SubjectId)))
+            """;
+
+        if (!Equals(0L, await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)))
+        {
+            throw new GuildStorageIntegrityException();
+        }
     }
 
     private static async Task ValidateQuestsAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken ct)

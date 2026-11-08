@@ -491,6 +491,12 @@ internal static class AnnalsClaimWriter
 
         foreach (AnnalsErasureStep step in steps)
         {
+            if (step.OptionalTable && !await AnnalsErasurePlan.IsTableInstalledAsync(
+                connection, transaction, step.Table, cancellationToken).ConfigureAwait(false))
+            {
+                continue;
+            }
+
             if (step.Receipts is { } receipts)
             {
                 if (!receiptsRemoved)

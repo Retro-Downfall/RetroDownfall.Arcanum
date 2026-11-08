@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Core.Guild;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -91,6 +93,7 @@ internal sealed class ArcanumMemoryRecallTool : AIFunction
 
     internal static bool IsEligible(PingRequest request, ArcanumInvocationContext invocation, bool enabled) =>
         enabled
+        && !GuildMemoryAccess.IsGuildInvocation
         && !SubagentExecutionAmbient.IsIsolated
         && !request.UnattendedMode
         && !request.DisableAllTools

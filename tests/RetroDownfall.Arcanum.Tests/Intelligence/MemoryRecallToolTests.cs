@@ -21,6 +21,26 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class MemoryRecallToolTests
 {
     [Fact]
+    public async Task Guild_memory_invocation_cannot_reuse_an_attended_operator_recall_tool()
+    {
+        await using var f = await RetroDownfall.Arcanum.Tests.Guild.GuildSignetAuthorityTests.Fixture.CreateAsync();
+
+        var execution = await f.RootAsync();
+
+        var reader = new Reader();
+
+        var tool = Tool(reader);
+
+        using var invocation = RetroDownfall.Arcanum.Infrastructure.Guild.GuildMemoryInvocationAmbient.Begin(new(f.Authority, execution));
+
+        var result = await tool.InvokeAsync(Arguments());
+
+        Assert.Contains("unavailable", result!.ToString(), StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(0, reader.Reads);
+    }
+
+    [Fact]
     public void Missing_authority_is_rejected_before_a_recall_tool_can_be_advertised()
     {
         Assert.Throws<ArgumentNullException>("authority", () => new ArcanumMemoryRecallTool(new Reader(),

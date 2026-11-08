@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Core.Guild;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.AI;
@@ -91,6 +93,8 @@ public sealed class SessionContextPinMaterializer(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         IReadOnlyList<SessionContextPinRecord> rows =
             await pins.ListAsync(sessionId, cancellationToken).ConfigureAwait(false);
         List<AIContent> contents = [];

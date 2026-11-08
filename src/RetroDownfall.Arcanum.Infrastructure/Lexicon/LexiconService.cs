@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Memory;
@@ -22,6 +23,7 @@ using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Memory;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Lexicon;
@@ -70,7 +72,8 @@ internal sealed partial class LexiconService(
         IReadOnlyList<string> facts,
         LexiconScope scope,
         CancellationToken cancellationToken = default) =>
-        UpsertCoreAsync(name, type, facts, scope, provenance: null, cancellationToken);
+        GuildMemoryAccess.RunResultAsync(GuildMemoryStore.Lexicon, GuildMemoryOperation.Append,
+            ct => UpsertCoreAsync(name, type, facts, scope, provenance: null, ct), cancellationToken);
 
     public Task<Result<LexiconEntryDto>> UpsertAsync(
         string name,
@@ -82,7 +85,8 @@ internal sealed partial class LexiconService(
     {
         ArgumentNullException.ThrowIfNull(provenance);
 
-        return UpsertCoreAsync(name, type, facts, scope, provenance, cancellationToken);
+        return GuildMemoryAccess.RunResultAsync(GuildMemoryStore.Lexicon, GuildMemoryOperation.Append,
+            ct => UpsertCoreAsync(name, type, facts, scope, provenance, ct), cancellationToken);
     }
 
     private async Task<Result<LexiconEntryDto>> UpsertCoreAsync(
@@ -127,7 +131,15 @@ internal sealed partial class LexiconService(
 
                         try
                         {
+                            await GuildMemoryAccess.ValidateMutationAsync(connection, null, GuildMemoryStore.Lexicon,
+                                GuildMemoryOperation.Append, scope.CampaignId, scope.IsGlobal, cancellationToken).ConfigureAwait(false);
+
+                            await GuildMemoryAccess.ValidateSourceProvenanceAsync(connection, null, GuildMemoryStore.Lexicon,
+                                provenance, options.CurrentValue, cancellationToken).ConfigureAwait(false);
+
                             bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
+
+                            await DemandCleanGuildMutationAsync(connection, normalized, scope.Key, cancellationToken).ConfigureAwait(false);
 
                             LexiconEntryDto? existing = await ReadByNormalizedAsync(connection, normalized, scope.Key, cancellationToken).ConfigureAwait(false);
 
@@ -188,9 +200,17 @@ internal sealed partial class LexiconService(
 
                             if (!changed)
                             {
+                                await GuildMemoryAccess.ValidateMutationAsync(connection, null, GuildMemoryStore.Lexicon,
+                                    GuildMemoryOperation.Append, scope.CampaignId, scope.IsGlobal, cancellationToken).ConfigureAwait(false);
+
+                                await GuildMemoryAccess.ValidateSourceProvenanceAsync(connection, null, GuildMemoryStore.Lexicon,
+                                    provenance, options.CurrentValue, cancellationToken).ConfigureAwait(false);
+
                                 await ExecuteNonQueryAsync(connection, cancellationToken, "COMMIT").ConfigureAwait(false);
 
-                                return Result<LexiconEntryDto>.Success(existing!);
+                                return Result<LexiconEntryDto>.Success(GuildMemoryAccess.IsGuildInvocation
+                                    ? GuildWriteAcknowledgement(existing!.Id, incoming.Value, scope, existing.UpdatedAt)
+                                    : existing!);
                             }
 
                             if (label is not null)
@@ -222,12 +242,12 @@ internal sealed partial class LexiconService(
                                 connection, id, existing?.FactProvenance ?? [], incoming.Value.Facts, content.Facts,
                                 provenance, cancellationToken).ConfigureAwait(false);
 
-                            if (options.CurrentValue.Features.Annals || head is not null)
+                            if (options.CurrentValue.Features.Annals || head is not null || GuildMemoryAccess.IsGuildInvocation)
                             {
                                 // Publish after replacing current provenance so immutable ordinal evidence
                                 // describes the resulting canonical value. Existing history must continue
                                 // to describe its row even when ordinary capture is disabled.
-                                _ = await AnnalsClaimWriter.AppendCorrectionAsync(
+                                string? versionId = await AnnalsClaimWriter.AppendCorrectionAsync(
                                     connection,
                                     transaction: null,
                                     AnnalSubjectStore.Lexicon,
@@ -246,12 +266,28 @@ internal sealed partial class LexiconService(
                                     sourceSessionId: null,
                                     cancellationToken,
                                     legacySchema: !curation).ConfigureAwait(false);
+
+                                if (GuildMemoryAccess.IsGuildInvocation)
+                                {
+                                    RequireIntegrity(versionId is not null);
+
+                                    await GuildMemoryAccess.RecordAttributionAsync(connection, null, GuildMemoryStore.Lexicon,
+                                        id.ToString("N"), versionId!, cancellationToken).ConfigureAwait(false);
+                                }
                             }
+
+                            await GuildMemoryAccess.ValidateMutationAsync(connection, null, GuildMemoryStore.Lexicon,
+                                GuildMemoryOperation.Append, scope.CampaignId, scope.IsGlobal, cancellationToken).ConfigureAwait(false);
+
+                            await GuildMemoryAccess.ValidateSourceProvenanceAsync(connection, null, GuildMemoryStore.Lexicon,
+                                provenance, options.CurrentValue, cancellationToken).ConfigureAwait(false);
 
                             await ExecuteNonQueryAsync(connection, cancellationToken, "COMMIT").ConfigureAwait(false);
 
                             return Result<LexiconEntryDto>.Success(
-                                new LexiconEntryDto(
+                                GuildMemoryAccess.IsGuildInvocation
+                                    ? GuildWriteAcknowledgement(id, incoming.Value, scope, now)
+                                    : new LexiconEntryDto(
                                     id,
                                     content.Name,
                                     content.Type,
@@ -286,6 +322,10 @@ internal sealed partial class LexiconService(
         {
             return exception.Error;
         }
+        catch (GuildMemoryAccessException exception)
+        {
+            return exception.Error;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogError(ex, "Lexicon upsert failed for entity {Name}.", trimmedName);
@@ -314,7 +354,7 @@ internal sealed partial class LexiconService(
         }
     }
 
-    public async Task<Result<Guid?>> FindAllLifecycleIdentityForDeletionAsync(
+    private async Task<Result<Guid?>> FindAllLifecycleIdentityForDeletionCoreAsync(
         string name,
         LexiconScope scope,
         CancellationToken cancellationToken = default)
@@ -331,6 +371,10 @@ internal sealed partial class LexiconService(
             return Result<Guid?>.Success(await ReadAllLifecycleIdentityForDeletionAsync(
                 connection, NormalizeName(name), scope.Key, cancellationToken).ConfigureAwait(false));
         }
+        catch (GuildMemoryAccessException exception)
+        {
+            return exception.Error;
+        }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogWarning(exception, "Lexicon deletion identity lookup failed.");
@@ -339,7 +383,7 @@ internal sealed partial class LexiconService(
         }
     }
 
-    public async Task<Result<LexiconAgentDeletionTarget?>> FindAgentDeletionTargetAsync(
+    private async Task<Result<LexiconAgentDeletionTarget?>> FindAgentDeletionTargetCoreAsync(
         string name,
         LexiconScope scope,
         CancellationToken cancellationToken = default)
@@ -365,6 +409,10 @@ internal sealed partial class LexiconService(
 
             return Result<LexiconAgentDeletionTarget?>.Success(target);
         }
+        catch (GuildMemoryAccessException exception)
+        {
+            return exception.Error;
+        }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogWarning(exception, "Lexicon agent deletion lookup failed.");
@@ -379,7 +427,7 @@ internal sealed partial class LexiconService(
         CancellationToken cancellationToken = default) =>
         DeleteByNameAsync(name, scope, LexiconDeletionOrigin.Operator, cancellationToken);
 
-    public async Task<Result<bool>> DeleteByNameAsync(
+    private async Task<Result<bool>> DeleteByNameCoreAsync(
         string name,
         LexiconScope scope,
         LexiconDeletionOrigin origin,
@@ -407,11 +455,14 @@ internal sealed partial class LexiconService(
 
                     try
                     {
+                        await GuildMemoryAccess.ValidateMutationAsync(connection, null, GuildMemoryStore.Lexicon,
+                            GuildMemoryOperation.Delete, scope.CampaignId, scope.IsGlobal, cancellationToken).ConfigureAwait(false);
+
                         // An agent may remove only an active, unpinned entry. Decided here, under the write
                         // lock, whatever the tool read before it: a retired or pinned entry is curated state
                         // the operator owns. Only an explicit operator origin skips the check, so an
                         // undefined origin fails closed as an agent's.
-                        if (origin != LexiconDeletionOrigin.Operator)
+                        if (origin != LexiconDeletionOrigin.Operator || GuildMemoryAccess.IsGuildInvocation)
                         {
                             bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
 
@@ -427,6 +478,8 @@ internal sealed partial class LexiconService(
                                     : new Error(ErrorCodes.Lexicon.PinnedMutationRefused, LexiconAgentRefusals.OperatorManaged));
                             }
                         }
+
+                        await DemandCleanGuildMutationAsync(connection, normalized, scope.Key, cancellationToken).ConfigureAwait(false);
 
                         // Deletion must guard the exact identity even when it is retired. Operational
                         // retrieval deliberately cannot see that row, and no content is needed here.
@@ -481,6 +534,9 @@ internal sealed partial class LexiconService(
 
                         int affected = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
+                        await GuildMemoryAccess.ValidateMutationAsync(connection, null, GuildMemoryStore.Lexicon,
+                            GuildMemoryOperation.Delete, scope.CampaignId, scope.IsGlobal, cancellationToken).ConfigureAwait(false);
+
                         await ExecuteNonQueryAsync(connection, cancellationToken, "COMMIT").ConfigureAwait(false);
 
                         return Result<bool>.Success(affected > 0);
@@ -496,6 +552,10 @@ internal sealed partial class LexiconService(
 
             return removed;
         }
+        catch (GuildMemoryAccessException exception)
+        {
+            return exception.Error;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogError(ex, "Lexicon delete failed for entity {Name}.", trimmedName);
@@ -504,7 +564,7 @@ internal sealed partial class LexiconService(
         }
     }
 
-    public async Task<Result<bool>> HasEligibleEntriesAsync(
+    private async Task<Result<bool>> HasEligibleEntriesCoreAsync(
         LexiconScope scope,
         CancellationToken cancellationToken = default)
     {
@@ -521,7 +581,7 @@ internal sealed partial class LexiconService(
 
                         await using DbCommand command = connection.CreateCommand();
 
-                        command.CommandText = $"SELECT 1 FROM lexicon_entries WHERE ScopeCampaignId IN (@scopeKey, @globalKey) {(curation ? "AND RetiredAtUtc IS NULL" : "")} LIMIT 1";
+                        command.CommandText = $"SELECT 1 FROM lexicon_entries WHERE ScopeCampaignId IN (@scopeKey, @globalKey) {(curation ? "AND RetiredAtUtc IS NULL" : "")} AND {GuildMemoryAccess.SqlScope(command, GuildMemoryStore.Lexicon, GuildMemoryOperation.Read, "ScopeCampaignId")} {(GuildMemoryAccess.IsGuildInvocation ? CleanRecallPredicate("lexicon_entries") : "")} LIMIT 1";
 
                         AddParameter(command, "@scopeKey", scope.Key);
 
@@ -533,6 +593,10 @@ internal sealed partial class LexiconService(
                 cancellationToken).ConfigureAwait(false);
 
             return Result<bool>.Success(exists);
+        }
+        catch (GuildMemoryAccessException exception)
+        {
+            return exception.Error;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -547,14 +611,16 @@ internal sealed partial class LexiconService(
         int limit,
         LexiconScope scope,
         CancellationToken cancellationToken = default) =>
-        MatchEntitiesCoreAsync(entities, limit, scope, false, cancellationToken);
+        GuildMemoryAccess.RunResultAsync(GuildMemoryStore.Lexicon, GuildMemoryOperation.Read,
+            ct => MatchEntitiesCoreAsync(entities, limit, scope, false, ct), cancellationToken);
 
     public Task<Result<IReadOnlyList<LexiconEntryDto>>> MatchCleanEntitiesAsync(
         IReadOnlyList<string> entities,
         int limit,
         LexiconScope scope,
         CancellationToken cancellationToken = default) =>
-        MatchEntitiesCoreAsync(entities, limit, scope, true, cancellationToken);
+        GuildMemoryAccess.RunResultAsync(GuildMemoryStore.Lexicon, GuildMemoryOperation.Read,
+            ct => MatchEntitiesCoreAsync(entities, limit, scope, true, ct), cancellationToken);
 
     private async Task<Result<IReadOnlyList<LexiconEntryDto>>> MatchEntitiesCoreAsync(
         IReadOnlyList<string> entities,
@@ -563,6 +629,8 @@ internal sealed partial class LexiconService(
         bool cleanOnly,
         CancellationToken cancellationToken)
     {
+        cleanOnly |= GuildMemoryAccess.IsGuildInvocation;
+
         if (entities is null || entities.Count == 0)
         {
             return Result<IReadOnlyList<LexiconEntryDto>>.Success(Array.Empty<LexiconEntryDto>());
@@ -660,6 +728,10 @@ internal sealed partial class LexiconService(
                 },
                 cancellationToken).ConfigureAwait(false);
         }
+        catch (GuildMemoryAccessException exception)
+        {
+            return exception.Error;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             if (cleanOnly)
@@ -675,7 +747,7 @@ internal sealed partial class LexiconService(
         }
     }
 
-    public async Task<Result<LexiconEntryDto?>> GetByNameAsync(
+    private async Task<Result<LexiconEntryDto?>> GetByNameCoreAsync(
         string name,
         LexiconScope scope,
         CancellationToken cancellationToken = default)
@@ -716,6 +788,10 @@ internal sealed partial class LexiconService(
 
             return Result<LexiconEntryDto?>.Success(entry);
         }
+        catch (GuildMemoryAccessException exception)
+        {
+            return exception.Error;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogWarning(ex, "Lexicon get failed for entity {Name}.", trimmedName);
@@ -724,7 +800,7 @@ internal sealed partial class LexiconService(
         }
     }
 
-    public async Task<Result<LexiconEntryDto?>> GetByNameInScopeAsync(
+    private async Task<Result<LexiconEntryDto?>> GetByNameInScopeCoreAsync(
         string name,
         LexiconScope scope,
         CancellationToken cancellationToken = default)
@@ -752,6 +828,10 @@ internal sealed partial class LexiconService(
                 cancellationToken).ConfigureAwait(false);
 
             return Result<LexiconEntryDto?>.Success(entry);
+        }
+        catch (GuildMemoryAccessException exception)
+        {
+            return exception.Error;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -883,6 +963,7 @@ internal sealed partial class LexiconService(
         }
 
         _ = sql.Append(") AND ScopeCampaignId = @scopeKey")
+            .Append(" AND ").Append(GuildMemoryAccess.SqlScope(cmd, GuildMemoryStore.Lexicon, GuildMemoryOperation.Read, "ScopeCampaignId"))
             .Append(curation ? " AND RetiredAtUtc IS NULL" : "")
             .Append(cleanOnly ? CleanRecallPredicate("lexicon_entries") : "")
             .Append(" ORDER BY UpdatedAt DESC LIMIT @limit");
@@ -968,6 +1049,7 @@ internal sealed partial class LexiconService(
             FROM lexicon_fts
             INNER JOIN lexicon_entries e ON e.rowid = lexicon_fts.rowid
             WHERE lexicon_fts MATCH @query AND e.ScopeCampaignId = @scopeKey {(curation ? "AND e.RetiredAtUtc IS NULL" : "")}
+                AND {GuildMemoryAccess.SqlScope(cmd, GuildMemoryStore.Lexicon, GuildMemoryOperation.Read, "e.ScopeCampaignId")}
                 {(cleanOnly ? CleanRecallPredicate("e") : "")}
             ORDER BY bm25(lexicon_fts, 3.0, 2.0, 1.0) ASC
             LIMIT @limit
@@ -1015,6 +1097,7 @@ internal sealed partial class LexiconService(
         _ = sql.Append("SELECT ")
             .Append(cleanOnly ? CleanRecallColumns(curation, "lexicon_entries") : EntryColumnsFor(curation))
             .Append(" FROM lexicon_entries WHERE ScopeCampaignId = @scopeKey")
+            .Append(" AND ").Append(GuildMemoryAccess.SqlScope(cmd, GuildMemoryStore.Lexicon, GuildMemoryOperation.Read, "ScopeCampaignId"))
             .Append(curation ? " AND RetiredAtUtc IS NULL" : "")
             .Append(cleanOnly ? CleanRecallPredicate("lexicon_entries") : "")
             .Append(" AND (");
@@ -1100,10 +1183,16 @@ internal sealed partial class LexiconService(
         string scopeKey,
         CancellationToken cancellationToken)
     {
+        if (!GuildMemoryAccess.IsScopeAllowed(GuildMemoryStore.Lexicon, GuildMemoryOperation.Read,
+            Guid.TryParse(scopeKey, out Guid campaign) ? campaign : null, scopeKey.Length == 0))
+        {
+            return null;
+        }
+
         bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
 
         return await ReadNamedEntryAsync(connection, normalized, scopeKey,
-            $"SELECT {EntryColumnsFor(curation)} FROM lexicon_entries WHERE NameNormalized = @normalized AND ScopeCampaignId = @scopeKey {(curation ? "AND RetiredAtUtc IS NULL" : "")} LIMIT 1",
+            $"SELECT {RecallMatchColumns(curation, GuildMemoryAccess.IsGuildInvocation, "lexicon_entries")} FROM lexicon_entries WHERE NameNormalized = @normalized AND ScopeCampaignId = @scopeKey {(curation ? "AND RetiredAtUtc IS NULL" : "")} {(GuildMemoryAccess.IsGuildInvocation ? CleanRecallPredicate("lexicon_entries") : "")} LIMIT 1",
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -1113,6 +1202,12 @@ internal sealed partial class LexiconService(
         string scopeKey,
         CancellationToken cancellationToken)
     {
+        if (!GuildMemoryAccess.IsScopeAllowed(GuildMemoryStore.Lexicon, GuildMemoryOperation.Delete,
+            Guid.TryParse(scopeKey, out Guid campaign) ? campaign : null, scopeKey.Length == 0))
+        {
+            throw new GuildMemoryAccessException(new(ErrorCodes.Guild.MemoryNotGranted, "The Lexicon deletion scope is not granted."));
+        }
+
         await using DbCommand command = connection.CreateCommand();
 
         command.CommandText = "SELECT Id FROM lexicon_entries WHERE NameNormalized = @normalized AND ScopeCampaignId = @scopeKey LIMIT 1";
@@ -1141,6 +1236,12 @@ internal sealed partial class LexiconService(
         bool curation,
         CancellationToken cancellationToken)
     {
+        if (!GuildMemoryAccess.IsScopeAllowed(GuildMemoryStore.Lexicon, GuildMemoryOperation.Delete,
+            Guid.TryParse(scopeKey, out Guid campaign) ? campaign : null, scopeKey.Length == 0))
+        {
+            throw new GuildMemoryAccessException(new(ErrorCodes.Guild.MemoryNotGranted, "The Lexicon deletion scope is not granted."));
+        }
+
         await using DbCommand command = connection.CreateCommand();
 
         command.CommandText = $"SELECT {(curation ? "Id, RetiredAtUtc, PinnedAtUtc" : "Id, NULL AS RetiredAtUtc, NULL AS PinnedAtUtc")} FROM lexicon_entries WHERE NameNormalized = @normalized AND ScopeCampaignId = @scopeKey LIMIT 1";

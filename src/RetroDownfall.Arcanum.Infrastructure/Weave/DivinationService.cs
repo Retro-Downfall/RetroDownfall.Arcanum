@@ -14,6 +14,9 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
+using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 // Divination searches the named durable BLOB table through the scoped Grimoire connection.
@@ -28,6 +31,40 @@ internal sealed class DivinationService(
     IOptionsMonitor<ArcanumSettings> options,
     TimeProvider? timeProvider = null) : IDivinationService
 {
+    private static Task<T> RunMemorySearchAsync<T>(string tableName, Func<CancellationToken, Task<T>> action,
+        CancellationToken cancellationToken)
+    {
+        if (IsSaga(tableName))
+        {
+            return GuildMemoryAccess.RunAsync(GuildMemoryStore.Saga, GuildMemoryOperation.Read, action, cancellationToken);
+        }
+
+        if (tableName == "session_attachment_embeddings")
+        {
+            return GuildMemoryAccess.RunAsync(GuildMemoryStore.Attachment, GuildMemoryOperation.Read, action, cancellationToken);
+        }
+
+        GuildMemoryAccess.DemandOperator();
+
+        return action(cancellationToken);
+    }
+
+    private static string GuildCandidatePredicate(DbCommand command, string tableName, string ownerAlias)
+    {
+        if (tableName == "session_attachment_embeddings")
+        {
+            string scope = GuildMemoryAccess.SqlSession(command, GuildMemoryStore.Attachment, GuildMemoryOperation.Read,
+                ownerAlias + ".SessionId");
+
+            return !GuildMemoryAccess.IsGuildInvocation ? scope
+                : $"({scope}) AND {SessionAttachmentGuildReadPolicy.Indexed(ownerAlias)}";
+        }
+
+        GuildMemoryAccess.DemandOperator();
+
+        return "1 = 1";
+    }
+
     private bool RankingEnabled => options.CurrentValue.Features.LongRest;
 
     private DateTimeOffset RankingInstant => (timeProvider ?? TimeProvider.System).GetUtcNow();
@@ -35,7 +72,17 @@ internal sealed class DivinationService(
     private static readonly IReadOnlyDictionary<string, string> EmptyMetadata =
         new Dictionary<string, string>(0);
 
-    public async Task<Result<DivinationResult[]>> SearchAsync(
+    public Task<Result<DivinationResult[]>> SearchAsync(
+        string tableName,
+        string primaryKeyColumn,
+        string embeddingColumn,
+        Embedding<float> queryEmbedding,
+        int maxResults,
+        float similarityThreshold,
+        CancellationToken cancellationToken) =>
+        RunMemorySearchAsync(tableName, token => SearchCoreAsync(tableName, primaryKeyColumn, embeddingColumn, queryEmbedding, maxResults, similarityThreshold, token), cancellationToken);
+
+    private async Task<Result<DivinationResult[]>> SearchCoreAsync(
         string tableName,
         string primaryKeyColumn,
         string embeddingColumn,
@@ -80,6 +127,10 @@ internal sealed class DivinationService(
         {
             throw;
         }
+        catch (GuildMemoryAccessException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Divination search against {TableName} failed; treating as no results.", tableName);
@@ -90,7 +141,21 @@ internal sealed class DivinationService(
         }
     }
 
-    public async Task<Result<DivinationResult[]>> SearchScopedAsync(
+    public Task<Result<DivinationResult[]>> SearchScopedAsync(
+        string tableName,
+        string primaryKeyColumn,
+        string embeddingColumn,
+        string scopeTableName,
+        string scopeJoinColumn,
+        string scopeFilterColumn,
+        string scopeFilterValue,
+        Embedding<float> queryEmbedding,
+        int maxResults,
+        float similarityThreshold,
+        CancellationToken cancellationToken) =>
+        RunMemorySearchAsync(tableName, token => SearchScopedCoreAsync(tableName, primaryKeyColumn, embeddingColumn, scopeTableName, scopeJoinColumn, scopeFilterColumn, scopeFilterValue, queryEmbedding, maxResults, similarityThreshold, token), cancellationToken);
+
+    private async Task<Result<DivinationResult[]>> SearchScopedCoreAsync(
         string tableName,
         string primaryKeyColumn,
         string embeddingColumn,
@@ -144,6 +209,10 @@ internal sealed class DivinationService(
         {
             throw;
         }
+        catch (GuildMemoryAccessException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Scoped divination search against {TableName} failed; treating as no results.", tableName);
@@ -154,7 +223,18 @@ internal sealed class DivinationService(
         }
     }
 
-    public async Task<Result<DivinationResult[]>> SearchCampaignScopedAsync(
+    public Task<Result<DivinationResult[]>> SearchCampaignScopedAsync(
+        string tableName,
+        string primaryKeyColumn,
+        string embeddingColumn,
+        DivinationCampaignScope scope,
+        Embedding<float> queryEmbedding,
+        int maxResults,
+        float similarityThreshold,
+        CancellationToken cancellationToken) =>
+        RunMemorySearchAsync(tableName, token => SearchCampaignScopedCoreAsync(tableName, primaryKeyColumn, embeddingColumn, scope, queryEmbedding, maxResults, similarityThreshold, token), cancellationToken);
+
+    private async Task<Result<DivinationResult[]>> SearchCampaignScopedCoreAsync(
         string tableName,
         string primaryKeyColumn,
         string embeddingColumn,
@@ -197,6 +277,10 @@ internal sealed class DivinationService(
                 cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (GuildMemoryAccessException)
         {
             throw;
         }
@@ -243,7 +327,7 @@ internal sealed class DivinationService(
 
         SagaRankingReader? ranking = saga ? await SagaRankingReader.CreateAsync(connection, RankingEnabled, RankingInstant, cancellationToken).ConfigureAwait(false) : null;
 
-        string eligible = saga ? $"m.\"RetiredAtUtc\" IS NULL AND {LongRestRecallSql.Eligible("m", longRest)}" : "1 = 1";
+        string eligible = saga ? $"m.\"RetiredAtUtc\" IS NULL AND {LongRestRecallSql.Eligible("m", longRest)} AND {SagaCleanRecallSql.GuildEligible("m")}" : "1 = 1";
 
         string ownership = scope.CampaignId is null
             ? $"""o."{scope.OwnerScopeKindColumn}" = @globalScopeKind"""
@@ -261,6 +345,7 @@ internal sealed class DivinationService(
             INNER JOIN "{scope.OwnerTableName}" o ON e."{primaryKeyColumn}" = o."{scope.OwnerJoinColumn}"
             {sagaJoin}
             WHERE ({ownership}) AND {eligible}
+                AND {(saga ? GuildMemoryAccess.SqlScope(cmd, GuildMemoryStore.Saga, GuildMemoryOperation.Read, "m.CampaignId", "m.ScopeKindCode") : GuildCandidatePredicate(cmd, blobTableName, "o"))}
             """;
 
         AddParameter(cmd, "@globalScopeKind", scope.GlobalScopeKindCode);
@@ -312,7 +397,7 @@ internal sealed class DivinationService(
 
         SagaRankingReader? ranking = saga ? await SagaRankingReader.CreateAsync(connection, RankingEnabled, RankingInstant, cancellationToken).ConfigureAwait(false) : null;
 
-        string eligible = saga ? $"m.\"RetiredAtUtc\" IS NULL AND {LongRestRecallSql.Eligible("m", longRest)}" : "1 = 1";
+        string eligible = saga ? $"m.\"RetiredAtUtc\" IS NULL AND {LongRestRecallSql.Eligible("m", longRest)} AND {SagaCleanRecallSql.GuildEligible("m")}" : "1 = 1";
 
         // Apply the opt-out before scoring/top-K so stored document chunks cannot displace ordinary
         // text after Comprehension is disabled. Attachment chunks carry their immutable source MIME.
@@ -339,6 +424,7 @@ internal sealed class DivinationService(
             INNER JOIN "{scopeTableName}" s ON e."{primaryKeyColumn}" = s."{scopeJoinColumn}"
             {sagaJoin}
             WHERE s."{scopeFilterColumn}" = @scopeFilterValue AND {eligible}
+                AND {(saga ? GuildMemoryAccess.SqlScope(cmd, GuildMemoryStore.Saga, GuildMemoryOperation.Read, "m.CampaignId", "m.ScopeKindCode") : GuildCandidatePredicate(cmd, blobTableName, "s"))}
             """;
 
         AddParameter(cmd, "@scopeFilterValue", scopeFilterValue);
@@ -374,6 +460,8 @@ internal sealed class DivinationService(
             INNER JOIN saga_memories m ON m."Id" = e."{primaryKeyColumn}"
             {SagaRankingReader.Join(longRest)}
             WHERE m."RetiredAtUtc" IS NULL AND {LongRestRecallSql.Eligible("m", longRest)}
+                AND {SagaCleanRecallSql.GuildEligible("m")}
+                AND {GuildMemoryAccess.SqlScope(cmd, GuildMemoryStore.Saga, GuildMemoryOperation.Read, "m.CampaignId", "m.ScopeKindCode")}
             """;
 
         return await ScoreManagedRowsAsync(cmd, queryVector, maxResults, similarityThreshold, cancellationToken, ranking,
@@ -393,6 +481,8 @@ internal sealed class DivinationService(
         float similarityThreshold,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         await using DbCommand cmd = connection.CreateCommand();
 
         cmd.CommandText =

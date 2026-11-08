@@ -1,3 +1,6 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Primitives;
 using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
@@ -169,6 +172,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         AttachmentSourceClaim source,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         AttachmentSourceResolution resolution = _sourceResolver is null
             ? new(AttachmentSourceMetadata.SnapshotOnly with
             {
@@ -194,6 +199,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         SessionAttachmentKind kind,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         PersistNewCoreResult persisted = await PersistNewCoreAsync(
             sessionId,
             pendingTurnId,
@@ -219,6 +226,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         SessionAttachmentKind kind,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         PersistNewCoreResult persisted = await PersistNewCoreAsync(
             sessionId,
             pendingTurnId,
@@ -244,6 +253,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         AttachmentSourceResolution source,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         AttachmentSourceMetadata persistedSource = ValidateResolvedSource(
             source,
             allowPriorVersion: false);
@@ -309,6 +320,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         AttachmentSourceResolution current,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         ArgumentNullException.ThrowIfNull(latest);
 
         if (latest.State != SessionAttachmentState.Bound || latest.SessionId is not { } sessionId)
@@ -575,6 +588,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         Guid? entryId,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         if (!SessionAttachmentPathSanitizer.TryValidatePendingTurnId(
                 pendingTurnId,
                 out string validatedPendingTurnId,
@@ -740,37 +755,42 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
     public async Task<SessionAttachmentRecord?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        return await SqliteBusyRetry.ExecuteAsync(
-            async () =>
-            {
-                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-                await using DbCommand cmd = connection.CreateCommand();
-
-                cmd.CommandText =
-                    """
-                    SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
-                           "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
-                           "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
-                           "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
-                           "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
-                    FROM "SessionAttachments"
-                    WHERE "Id" = @id
-                    LIMIT 1
-                    """;
-
-                AddParameter(cmd, "@id", GrimoireEntitySql.Format(id));
-
-                await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        return await GuildMemoryAccess.RunAsync<SessionAttachmentRecord?>(GuildMemoryStore.Attachment, GuildMemoryOperation.Read, async guildToken =>
+        {
+            return await SqliteBusyRetry.ExecuteAsync(
+                async () =>
                 {
-                    return null;
-                }
+                    DbConnection connection = await OpenConnectionAsync(guildToken).ConfigureAwait(false);
 
-                return ReadRecord(reader);
-            },
-            cancellationToken).ConfigureAwait(false);
+                    await using DbCommand cmd = connection.CreateCommand();
+
+                    cmd.CommandText =
+                        """
+                        SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
+                               "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                               "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
+                               "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
+                               "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
+                        FROM "SessionAttachments"
+                        WHERE "Id" = @id
+                        LIMIT 1
+                        """;
+
+                    AddParameter(cmd, "@id", GrimoireEntitySql.Format(id));
+
+                    AddGuildAttachmentScope(cmd, "\"SessionAttachments\".\"SessionId\"");
+
+                    await using DbDataReader reader = await cmd.ExecuteReaderAsync(guildToken).ConfigureAwait(false);
+
+                    if (!await reader.ReadAsync(guildToken).ConfigureAwait(false))
+                    {
+                        return null;
+                    }
+
+                    return ReadRecord(reader);
+                },
+                guildToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<SessionAttachmentRecord?> GetByLogicalAsync(
@@ -779,97 +799,102 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         int? version,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrEmpty(logicalKey))
+        return await GuildMemoryAccess.RunAsync<SessionAttachmentRecord?>(GuildMemoryStore.Attachment, GuildMemoryOperation.Read, async guildToken =>
         {
-            return null;
-        }
-
-        string? sanitizedKey = SessionAttachmentPathSanitizer.TrySanitize(logicalKey, out string canonical, out _)
-            ? canonical
-            : null;
-
-        // Resolve the complete exact-key family and its optional normalized alias in one read
-        // snapshot. A missing version can never redirect a legacy key to a different family.
-        return await SqliteBusyRetry.ExecuteAsync(
-            async () =>
+            if (string.IsNullOrEmpty(logicalKey))
             {
-                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+                return null;
+            }
 
-                await using DbCommand cmd = connection.CreateCommand();
+            string? sanitizedKey = SessionAttachmentPathSanitizer.TrySanitize(logicalKey, out string canonical, out _)
+                ? canonical
+                : null;
 
-                if (version is null)
+            // Resolve the complete exact-key family and its optional normalized alias in one read
+            // snapshot. A missing version can never redirect a legacy key to a different family.
+            return await SqliteBusyRetry.ExecuteAsync(
+                async () =>
                 {
-                    cmd.CommandText =
-                        """
-                        SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
-                               "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
-                               "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
-                               "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
-                               "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
-                        FROM "SessionAttachments"
-                        WHERE "SessionId" = @sessionId
-                          AND "LogicalKey" = CASE
-                              WHEN @logicalKey = @sanitizedKey OR EXISTS (
-                                  SELECT 1
-                                  FROM "SessionAttachments" AS exactKey
-                                  WHERE exactKey."SessionId" = @sessionId
-                                    AND exactKey."LogicalKey" = @logicalKey
-                                    AND exactKey."State" = @state
-                              ) THEN @logicalKey
-                              ELSE @sanitizedKey
-                          END
-                          AND "State" = @state
-                        ORDER BY "Version" DESC
-                        LIMIT 1
-                        """;
-                }
-                else
-                {
-                    cmd.CommandText =
-                        """
-                        SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
-                               "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
-                               "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
-                               "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
-                               "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
-                        FROM "SessionAttachments"
-                        WHERE "SessionId" = @sessionId
-                          AND "LogicalKey" = CASE
-                              WHEN @logicalKey = @sanitizedKey OR EXISTS (
-                                  SELECT 1
-                                  FROM "SessionAttachments" AS exactKey
-                                  WHERE exactKey."SessionId" = @sessionId
-                                    AND exactKey."LogicalKey" = @logicalKey
-                                    AND exactKey."State" = @state
-                              ) THEN @logicalKey
-                              ELSE @sanitizedKey
-                          END
-                          AND "Version" = @version
-                          AND "State" = @state
-                        LIMIT 1
-                        """;
+                    DbConnection connection = await OpenConnectionAsync(guildToken).ConfigureAwait(false);
 
-                    AddParameter(cmd, "@version", version.Value);
-                }
+                    await using DbCommand cmd = connection.CreateCommand();
 
-                AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
+                    if (version is null)
+                    {
+                        cmd.CommandText =
+                            """
+                            SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
+                                   "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                                   "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
+                                   "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
+                                   "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
+                            FROM "SessionAttachments"
+                            WHERE "SessionId" = @sessionId
+                              AND "LogicalKey" = CASE
+                                  WHEN @logicalKey = @sanitizedKey OR EXISTS (
+                                      SELECT 1
+                                      FROM "SessionAttachments" AS exactKey
+                                      WHERE exactKey."SessionId" = @sessionId
+                                        AND exactKey."LogicalKey" = @logicalKey
+                                        AND exactKey."State" = @state
+                                  ) THEN @logicalKey
+                                  ELSE @sanitizedKey
+                              END
+                              AND "State" = @state
+                            ORDER BY "Version" DESC
+                            LIMIT 1
+                            """;
+                    }
+                    else
+                    {
+                        cmd.CommandText =
+                            """
+                            SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
+                                   "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                                   "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
+                                   "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
+                                   "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
+                            FROM "SessionAttachments"
+                            WHERE "SessionId" = @sessionId
+                              AND "LogicalKey" = CASE
+                                  WHEN @logicalKey = @sanitizedKey OR EXISTS (
+                                      SELECT 1
+                                      FROM "SessionAttachments" AS exactKey
+                                      WHERE exactKey."SessionId" = @sessionId
+                                        AND exactKey."LogicalKey" = @logicalKey
+                                        AND exactKey."State" = @state
+                                  ) THEN @logicalKey
+                                  ELSE @sanitizedKey
+                              END
+                              AND "Version" = @version
+                              AND "State" = @state
+                            LIMIT 1
+                            """;
 
-                AddParameter(cmd, "@logicalKey", logicalKey);
+                        AddParameter(cmd, "@version", version.Value);
+                    }
 
-                AddParameter(cmd, "@sanitizedKey", (object?)sanitizedKey ?? DBNull.Value);
+                    AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
 
-                AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
+                    AddParameter(cmd, "@logicalKey", logicalKey);
 
-                await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                    AddParameter(cmd, "@sanitizedKey", (object?)sanitizedKey ?? DBNull.Value);
 
-                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                {
-                    return null;
-                }
+                    AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
 
-                return ReadRecord(reader);
-            },
-            cancellationToken).ConfigureAwait(false);
+                    AddGuildAttachmentScope(cmd, "\"SessionAttachments\".\"SessionId\"");
+
+                    await using DbDataReader reader = await cmd.ExecuteReaderAsync(guildToken).ConfigureAwait(false);
+
+                    if (!await reader.ReadAsync(guildToken).ConfigureAwait(false))
+                    {
+                        return null;
+                    }
+
+                    return ReadRecord(reader);
+                },
+                guildToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundAsync(
@@ -935,111 +960,121 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         int pageSize,
         CancellationToken cancellationToken)
     {
-        _ = Interlocked.Increment(ref _boundRecordPageReadCountForTesting);
+        return await GuildMemoryAccess.RunAsync<IReadOnlyList<SessionAttachmentRecord>>(GuildMemoryStore.Attachment, GuildMemoryOperation.Read, async guildToken =>
+        {
+            _ = Interlocked.Increment(ref _boundRecordPageReadCountForTesting);
 
-        return await SqliteBusyRetry.ExecuteAsync(
-            async () =>
-            {
-                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-                await using DbCommand cmd = connection.CreateCommand();
-
-                cmd.CommandText =
-                    """
-                    SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
-                           "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
-                           "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
-                           "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
-                           "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
-                    FROM "SessionAttachments"
-                    WHERE "SessionId" = @sessionId
-                      AND "State" = @state
-                      AND (
-                          @afterLogicalKey IS NULL
-                          OR "LogicalKey" > @afterLogicalKey
-                          OR ("LogicalKey" = @afterLogicalKey AND "Version" > @afterVersion))
-                    ORDER BY "LogicalKey" ASC, "Version" ASC
-                    LIMIT @pageSize
-                    """;
-
-                AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
-
-                AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
-
-                AddParameter(cmd, "@afterLogicalKey", (object?)afterLogicalKey ?? DBNull.Value);
-
-                AddParameter(cmd, "@afterVersion", afterVersion);
-
-                AddParameter(cmd, "@pageSize", pageSize);
-
-                List<SessionAttachmentRecord> rows = new(pageSize);
-
-                await using DbDataReader reader = await cmd
-                    .ExecuteReaderAsync(cancellationToken)
-                    .ConfigureAwait(false);
-
-                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            return await SqliteBusyRetry.ExecuteAsync(
+                async () =>
                 {
-                    rows.Add(ReadRecord(reader));
-                }
+                    DbConnection connection = await OpenConnectionAsync(guildToken).ConfigureAwait(false);
 
-                return (IReadOnlyList<SessionAttachmentRecord>)rows;
-            },
-            cancellationToken).ConfigureAwait(false);
+                    await using DbCommand cmd = connection.CreateCommand();
+
+                    cmd.CommandText =
+                        """
+                        SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
+                               "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                               "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
+                               "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
+                               "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
+                        FROM "SessionAttachments"
+                        WHERE "SessionId" = @sessionId
+                          AND "State" = @state
+                          AND (
+                              @afterLogicalKey IS NULL
+                              OR "LogicalKey" > @afterLogicalKey
+                              OR ("LogicalKey" = @afterLogicalKey AND "Version" > @afterVersion))
+                        ORDER BY "LogicalKey" ASC, "Version" ASC
+                        LIMIT @pageSize
+                        """;
+
+                    AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
+
+                    AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
+
+                    AddParameter(cmd, "@afterLogicalKey", (object?)afterLogicalKey ?? DBNull.Value);
+
+                    AddParameter(cmd, "@afterVersion", afterVersion);
+
+                    AddParameter(cmd, "@pageSize", pageSize);
+
+                    List<SessionAttachmentRecord> rows = new(pageSize);
+
+                    AddGuildAttachmentScope(cmd, "\"SessionAttachments\".\"SessionId\"");
+
+                    await using DbDataReader reader = await cmd
+                        .ExecuteReaderAsync(guildToken)
+                        .ConfigureAwait(false);
+
+                    while (await reader.ReadAsync(guildToken).ConfigureAwait(false))
+                    {
+                        rows.Add(ReadRecord(reader));
+                    }
+
+                    return (IReadOnlyList<SessionAttachmentRecord>)rows;
+                },
+                guildToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<SessionAttachmentRecord>> ListLatestBoundAsync(
         Guid sessionId,
         CancellationToken cancellationToken = default)
     {
-        return await SqliteBusyRetry.ExecuteAsync(
-            async () =>
-            {
-                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-                await using DbCommand cmd = connection.CreateCommand();
-
-                cmd.CommandText =
-                    """
-                    SELECT current."Id", current."SessionId", current."EntryId", current."PendingTurnId",
-                           current."State", current."LogicalKey", current."OriginalFileName", current."Version",
-                           current."RelativePath", current."ContentSha256", current."MimeType", current."ByteLength",
-                           current."Kind", current."CreatedAt", current."SourceKind",
-                           current."SourceWorkspaceIdentity", current."SourceRelativePath", current."SourceCanonicalPath",
-                           current."SourceContentSha256", current."SourceFileIdentity", current."SourceLastWriteAt",
-                           current."SourceByteLength", current."SourceStatus", current."SourceDiagnosticReason",
-                           current."EncryptionVersion", current."EncryptionKeyId"
-                    FROM "SessionAttachments" AS current
-                    WHERE current."SessionId" = @sessionId
-                      AND current."State" = @state
-                      AND NOT EXISTS (
-                          SELECT 1
-                          FROM "SessionAttachments" AS newer
-                          WHERE newer."SessionId" = current."SessionId"
-                            AND newer."State" = current."State"
-                            AND newer."LogicalKey" = current."LogicalKey"
-                            AND newer."Version" > current."Version")
-                    ORDER BY current."LogicalKey" ASC
-                    """;
-
-                AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
-
-                AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
-
-                List<SessionAttachmentRecord> rows = [];
-
-                await using DbDataReader reader = await cmd
-                    .ExecuteReaderAsync(cancellationToken)
-                    .ConfigureAwait(false);
-
-                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        return await GuildMemoryAccess.RunAsync<IReadOnlyList<SessionAttachmentRecord>>(GuildMemoryStore.Attachment, GuildMemoryOperation.Read, async guildToken =>
+        {
+            return await SqliteBusyRetry.ExecuteAsync(
+                async () =>
                 {
-                    rows.Add(ReadRecord(reader));
-                }
+                    DbConnection connection = await OpenConnectionAsync(guildToken).ConfigureAwait(false);
 
-                return (IReadOnlyList<SessionAttachmentRecord>)rows;
-            },
-            cancellationToken).ConfigureAwait(false);
+                    await using DbCommand cmd = connection.CreateCommand();
+
+                    cmd.CommandText =
+                        """
+                        SELECT current."Id", current."SessionId", current."EntryId", current."PendingTurnId",
+                               current."State", current."LogicalKey", current."OriginalFileName", current."Version",
+                               current."RelativePath", current."ContentSha256", current."MimeType", current."ByteLength",
+                               current."Kind", current."CreatedAt", current."SourceKind",
+                               current."SourceWorkspaceIdentity", current."SourceRelativePath", current."SourceCanonicalPath",
+                               current."SourceContentSha256", current."SourceFileIdentity", current."SourceLastWriteAt",
+                               current."SourceByteLength", current."SourceStatus", current."SourceDiagnosticReason",
+                               current."EncryptionVersion", current."EncryptionKeyId"
+                        FROM "SessionAttachments" AS current
+                        WHERE current."SessionId" = @sessionId
+                          AND current."State" = @state
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM "SessionAttachments" AS newer
+                              WHERE newer."SessionId" = current."SessionId"
+                                AND newer."State" = current."State"
+                                AND newer."LogicalKey" = current."LogicalKey"
+                                AND newer."Version" > current."Version")
+                        ORDER BY current."LogicalKey" ASC
+                        """;
+
+                    AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
+
+                    AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
+
+                    List<SessionAttachmentRecord> rows = [];
+
+                    AddGuildAttachmentScope(cmd, "current.\"SessionId\"");
+
+                    await using DbDataReader reader = await cmd
+                        .ExecuteReaderAsync(guildToken)
+                        .ConfigureAwait(false);
+
+                    while (await reader.ReadAsync(guildToken).ConfigureAwait(false))
+                    {
+                        rows.Add(ReadRecord(reader));
+                    }
+
+                    return (IReadOnlyList<SessionAttachmentRecord>)rows;
+                },
+                guildToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<SessionAttachmentRecord>>
@@ -1048,65 +1083,68 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             IReadOnlyList<string> logicalKeys,
             CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(logicalKeys);
-
-        if (logicalKeys.Count == 0)
+        return await GuildMemoryAccess.RunAsync<IReadOnlyList<SessionAttachmentRecord>>(GuildMemoryStore.Attachment, GuildMemoryOperation.Read, async guildToken =>
         {
-            return [];
-        }
+            ArgumentNullException.ThrowIfNull(logicalKeys);
 
-        List<string> orderedKeys = new(logicalKeys.Count);
-        HashSet<string> seenKeys = new(StringComparer.Ordinal);
-
-        foreach (string logicalKey in logicalKeys)
-        {
-            if (!string.IsNullOrEmpty(logicalKey)
-                && seenKeys.Add(logicalKey))
+            if (logicalKeys.Count == 0)
             {
-                orderedKeys.Add(logicalKey);
+                return [];
             }
-        }
 
-        Dictionary<string, SessionAttachmentRecord> rowsByLogicalKey =
-            new(StringComparer.Ordinal);
+            List<string> orderedKeys = new(logicalKeys.Count);
+            HashSet<string> seenKeys = new(StringComparer.Ordinal);
 
-        for (int offset = 0;
-             offset < orderedKeys.Count;
-             offset += LatestLogicalKeyQueryPageSize)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            IReadOnlyList<string> pageKeys = orderedKeys
-                .Skip(offset)
-                .Take(LatestLogicalKeyQueryPageSize)
-                .ToArray();
-            IReadOnlyList<SessionAttachmentRecord> page =
-                await ReadLatestBoundByLogicalKeyPageAsync(
-                        sessionId,
-                        pageKeys,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-
-            foreach (SessionAttachmentRecord row in page)
+            foreach (string logicalKey in logicalKeys)
             {
-                rowsByLogicalKey[row.LogicalKey] = row;
+                if (!string.IsNullOrEmpty(logicalKey)
+                    && seenKeys.Add(logicalKey))
+                {
+                    orderedKeys.Add(logicalKey);
+                }
             }
-        }
 
-        List<SessionAttachmentRecord> orderedRows =
-            new(rowsByLogicalKey.Count);
+            Dictionary<string, SessionAttachmentRecord> rowsByLogicalKey =
+                new(StringComparer.Ordinal);
 
-        foreach (string logicalKey in orderedKeys)
-        {
-            if (rowsByLogicalKey.TryGetValue(
-                    logicalKey,
-                    out SessionAttachmentRecord? row))
+            for (int offset = 0;
+                 offset < orderedKeys.Count;
+                 offset += LatestLogicalKeyQueryPageSize)
             {
-                orderedRows.Add(row);
-            }
-        }
+                guildToken.ThrowIfCancellationRequested();
 
-        return orderedRows;
+                IReadOnlyList<string> pageKeys = orderedKeys
+                    .Skip(offset)
+                    .Take(LatestLogicalKeyQueryPageSize)
+                    .ToArray();
+                IReadOnlyList<SessionAttachmentRecord> page =
+                    await ReadLatestBoundByLogicalKeyPageAsync(
+                            sessionId,
+                            pageKeys,
+                            guildToken)
+                        .ConfigureAwait(false);
+
+                foreach (SessionAttachmentRecord row in page)
+                {
+                    rowsByLogicalKey[row.LogicalKey] = row;
+                }
+            }
+
+            List<SessionAttachmentRecord> orderedRows =
+                new(rowsByLogicalKey.Count);
+
+            foreach (string logicalKey in orderedKeys)
+            {
+                if (rowsByLogicalKey.TryGetValue(
+                        logicalKey,
+                        out SessionAttachmentRecord? row))
+                {
+                    orderedRows.Add(row);
+                }
+            }
+
+            return orderedRows;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<IReadOnlyList<SessionAttachmentRecord>>
@@ -1171,6 +1209,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 List<SessionAttachmentRecord> rows =
                     new(logicalKeys.Count);
 
+                AddGuildAttachmentScope(cmd, "current.\"SessionId\"");
+
                 await using DbDataReader reader = await cmd
                     .ExecuteReaderAsync(cancellationToken)
                     .ConfigureAwait(false);
@@ -1192,45 +1232,48 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         int maxItems,
         CancellationToken cancellationToken = default)
     {
-        int cap = Math.Max(1, maxItems);
-
-        List<SessionAttachmentIndexItem> items = [];
-
-        IReadOnlyList<AttachmentIndexLatestProjection> latestItems = await ReadIndexLatestAsync(
-            sessionId,
-            cap,
-            cancellationToken).ConfigureAwait(false);
-
-        foreach (AttachmentIndexLatestProjection latest in latestItems)
+        return await GuildMemoryAccess.RunAsync<IReadOnlyList<SessionAttachmentIndexItem>>(GuildMemoryStore.Attachment, GuildMemoryOperation.Read, async guildToken =>
         {
-            IReadOnlyList<int> versionPage =
-                await ReadIndexVersionPageAsync(
-                    sessionId,
+            int cap = Math.Max(1, maxItems);
+
+            List<SessionAttachmentIndexItem> items = [];
+
+            IReadOnlyList<AttachmentIndexLatestProjection> latestItems = await ReadIndexLatestAsync(
+                sessionId,
+                cap,
+                guildToken).ConfigureAwait(false);
+
+            foreach (AttachmentIndexLatestProjection latest in latestItems)
+            {
+                IReadOnlyList<int> versionPage =
+                    await ReadIndexVersionPageAsync(
+                        sessionId,
+                        latest.LogicalKey,
+                        latest.Version,
+                        afterVersion: 0,
+                        pageSize: IndexVersionPageSize + 1,
+                        guildToken).ConfigureAwait(false);
+                bool hasMoreVersions =
+                    versionPage.Count > IndexVersionPageSize;
+                int? nextVersion = hasMoreVersions
+                    ? versionPage[IndexVersionPageSize]
+                    : null;
+                IReadOnlyList<int> versions = hasMoreVersions
+                    ? versionPage.Take(IndexVersionPageSize).ToArray()
+                    : versionPage;
+
+                items.Add(new SessionAttachmentIndexItem(
                     latest.LogicalKey,
-                    latest.Version,
-                    afterVersion: 0,
-                    pageSize: IndexVersionPageSize + 1,
-                    cancellationToken).ConfigureAwait(false);
-            bool hasMoreVersions =
-                versionPage.Count > IndexVersionPageSize;
-            int? nextVersion = hasMoreVersions
-                ? versionPage[IndexVersionPageSize]
-                : null;
-            IReadOnlyList<int> versions = hasMoreVersions
-                ? versionPage.Take(IndexVersionPageSize).ToArray()
-                : versionPage;
+                    latest.OriginalFileName,
+                    versions,
+                    latest.Kind,
+                    latest.ByteLength,
+                    hasMoreVersions,
+                    nextVersion));
+            }
 
-            items.Add(new SessionAttachmentIndexItem(
-                latest.LogicalKey,
-                latest.OriginalFileName,
-                versions,
-                latest.Kind,
-                latest.ByteLength,
-                hasMoreVersions,
-                nextVersion));
-        }
-
-        return items;
+            return items;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<IReadOnlyList<AttachmentIndexLatestProjection>> ReadIndexLatestAsync(
@@ -1270,6 +1313,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 AddParameter(cmd, "@maxItems", maxItems);
 
                 List<AttachmentIndexLatestProjection> rows = new(maxItems);
+
+                AddGuildAttachmentScope(cmd, "current.\"SessionId\"");
 
                 await using DbDataReader reader = await cmd
                     .ExecuteReaderAsync(cancellationToken)
@@ -1332,6 +1377,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
                 List<int> rows = new(pageSize);
 
+                AddGuildAttachmentScope(cmd, "\"SessionAttachments\".\"SessionId\"");
+
                 await using DbDataReader reader = await cmd
                     .ExecuteReaderAsync(cancellationToken)
                     .ConfigureAwait(false);
@@ -1353,7 +1400,14 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         SessionAttachmentKind Kind,
         long ByteLength);
 
-    public async Task<Stream> OpenReadAsync(
+    public Task<Stream> OpenReadAsync(SessionAttachmentRecord record, CancellationToken cancellationToken = default)
+    {
+        GuildMemoryAccess.DemandOperator();
+
+        return OpenReadCoreAsync(record, cancellationToken);
+    }
+
+    private async Task<Stream> OpenReadCoreAsync(
         SessionAttachmentRecord record,
         CancellationToken cancellationToken = default)
     {
@@ -1561,55 +1615,109 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         SessionAttachmentRecord record,
         CancellationToken cancellationToken = default)
     {
-        await using Stream decrypted = await OpenReadAsync(record, cancellationToken).ConfigureAwait(false);
-
-        if (record.ByteLength < 0 || record.ByteLength > int.MaxValue)
+        return await GuildMemoryAccess.RunAsync<ReadOnlyMemory<byte>>(GuildMemoryStore.Attachment, GuildMemoryOperation.Read, async guildToken =>
         {
-            throw new InvalidDataException(
-                "Attachment exceeds the single-memory read protocol boundary; use OpenReadAsync.");
-        }
-
-        byte[] output = new byte[(int)record.ByteLength];
-
-        try
-        {
-            int offset = 0;
-
-            while (offset < output.Length)
+            if (GuildMemoryAccess.IsGuildInvocation)
             {
-                int count = Math.Min(AttachmentIoPageSize, output.Length - offset);
+                SessionAttachmentRecord? current = await GetByIdAsync(record.Id, guildToken).ConfigureAwait(false);
 
-                int read = await decrypted
-                    .ReadAsync(output.AsMemory(offset, count), cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (read == 0)
+                if (current is null || current.State is not SessionAttachmentState.Bound
+                    || current.SessionId != record.SessionId || current.Version != record.Version
+                    || current.ByteLength != record.ByteLength || current.Kind != record.Kind
+                    || current.MimeType != record.MimeType || current.ContentSha256 != record.ContentSha256
+                    || current.RelativePath != record.RelativePath || current.EncryptionVersion != record.EncryptionVersion
+                    || current.EncryptionKeyId != record.EncryptionKeyId)
                 {
-                    throw new InvalidDataException(
-                        $"Attachment plaintext ended before its declared length for '{record.Id}'.");
+                    throw new GuildMemoryAccessException(new(ErrorCodes.Guild.MemoryNotGranted, "The exact attachment snapshot is unavailable in this Guild scope."));
                 }
 
-                offset += read;
+                record = current;
             }
 
-            byte[] sentinel = new byte[1];
+            await using Stream decrypted = await OpenReadCoreAsync(record, guildToken).ConfigureAwait(false);
 
-            if (await decrypted
-                .ReadAsync(sentinel, cancellationToken)
-                .ConfigureAwait(false) != 0)
+            if (record.ByteLength < 0 || record.ByteLength > int.MaxValue)
             {
                 throw new InvalidDataException(
-                    $"Attachment plaintext exceeded its declared length for '{record.Id}'.");
+                    "Attachment exceeds the single-memory read protocol boundary; use OpenReadAsync.");
             }
 
-            return output;
-        }
-        catch
-        {
-            CryptographicOperations.ZeroMemory(output);
+            byte[] output = new byte[(int)record.ByteLength];
 
-            throw;
+            try
+            {
+                int offset = 0;
+
+                while (offset < output.Length)
+                {
+                    int count = Math.Min(AttachmentIoPageSize, output.Length - offset);
+
+                    int read = await decrypted
+                        .ReadAsync(output.AsMemory(offset, count), guildToken)
+                        .ConfigureAwait(false);
+
+                    if (read == 0)
+                    {
+                        throw new InvalidDataException(
+                            $"Attachment plaintext ended before its declared length for '{record.Id}'.");
+                    }
+
+                    offset += read;
+                }
+
+                byte[] sentinel = new byte[1];
+
+                if (await decrypted
+                    .ReadAsync(sentinel, guildToken)
+                    .ConfigureAwait(false) != 0)
+                {
+                    throw new InvalidDataException(
+                        $"Attachment plaintext exceeded its declared length for '{record.Id}'.");
+                }
+
+                if (GuildMemoryAccess.IsGuildInvocation
+                    && await GetByIdAsync(record.Id, guildToken).ConfigureAwait(false) is null)
+                {
+                    throw new GuildMemoryAccessException(new(ErrorCodes.Guild.MemoryNotGranted, "The attachment source changed before disclosure."));
+                }
+
+                return output;
+            }
+            catch
+            {
+                CryptographicOperations.ZeroMemory(output);
+
+                throw;
+            }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void AddGuildAttachmentScope(DbCommand command, string sessionExpression)
+    {
+        if (!GuildMemoryAccess.IsGuildInvocation)
+        {
+            return;
         }
+
+        string predicate = GuildMemoryAccess.SqlSession(command, GuildMemoryStore.Attachment, GuildMemoryOperation.Read, sessionExpression);
+
+        int qualifier = sessionExpression.LastIndexOf('.');
+
+        if (qualifier <= 0)
+        {
+            throw new InvalidOperationException("An attachment read requires an explicit source table identity.");
+        }
+
+        predicate += " AND " + SessionAttachmentGuildReadPolicy.Eligible(sessionExpression[..qualifier]);
+
+        int where = command.CommandText.IndexOf("WHERE ", StringComparison.Ordinal);
+
+        if (where < 0)
+        {
+            throw new InvalidOperationException("An attachment read has no scoped predicate boundary.");
+        }
+
+        command.CommandText = command.CommandText.Insert(where + 6, $"({predicate}) AND ");
     }
 
     private static string ComputeContentSha256(ReadOnlyMemory<byte> bytes)
@@ -1637,6 +1745,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
     public async Task DeleteStalePendingAsync(TimeSpan olderThan, CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         DateTimeOffset threshold = DateTimeOffset.UtcNow - olderThan;
 
         List<(Guid Id, string PendingTurnId, string RelativePath)> stale =

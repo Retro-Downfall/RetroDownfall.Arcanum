@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Core.Guild;
 using System.Text;
 using Microsoft.Extensions.Logging;
 
@@ -62,6 +64,8 @@ internal sealed class TapestryRetriever(ITapestryStore store, IModelTokenEstimat
 
     public async Task<Result<IReadOnlyList<TapestryRetrievedNode>>> RetrieveAsync(TapestryRetrievalRequest request, CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         ArgumentNullException.ThrowIfNull(request);
 
         cancellationToken.ThrowIfCancellationRequested();

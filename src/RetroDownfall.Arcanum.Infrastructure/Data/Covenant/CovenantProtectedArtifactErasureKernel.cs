@@ -33,7 +33,8 @@ internal sealed record CovenantArtifactPurgeTarget(
     string? RowIdentity = null,
     bool LongRestNode = false,
     bool CampaignManifestNode = false,
-    bool GuildContentProjection = false)
+    bool GuildContentProjection = false,
+    bool OptionalTable = false)
 {
     /// <summary>This target's delete, keyed by an already-normalised parameter.</summary>
     internal string DeleteBy(string parameter) => $"DELETE FROM {Table} WHERE {Predicate(parameter)};";
@@ -201,7 +202,7 @@ internal static class CovenantArtifactPurgePlans
 
     private static IEnumerable<CovenantArtifactPurgeTarget> AnnalsTargets(AnnalSubjectStore store) =>
         AnnalsErasurePlan.ForStore(store)
-            .Select(step => new CovenantArtifactPurgeTarget(step.Table, "SubjectId", AnnalStore: store, RequiredFromCoreVersion: step.RequiredFromCoreVersion));
+            .Select(step => new CovenantArtifactPurgeTarget(step.Table, "SubjectId", AnnalStore: store, RequiredFromCoreVersion: step.RequiredFromCoreVersion, OptionalTable: step.OptionalTable));
 
     /// <summary>
     /// The plan for a kind, or the label-only plan for a kind whose storage this build does not ship.

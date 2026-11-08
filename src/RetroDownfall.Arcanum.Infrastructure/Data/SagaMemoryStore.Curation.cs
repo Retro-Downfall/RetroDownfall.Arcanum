@@ -15,12 +15,17 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
+using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed partial class SagaMemoryStore
 {
     public async Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         return await ReadLongRestSnapshotAsync<SagaMemoryCurationRow?>(
             async (connection, longRest) =>
             {
@@ -76,6 +81,8 @@ internal sealed partial class SagaMemoryStore
     public async Task<SagaCurationOutcome> RetireAsync(
         string id, byte[] expectedContentDigest, DateTimeOffset retiredAt, CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
 
         ArgumentException.ThrowIfNullOrEmpty(id);
@@ -291,6 +298,8 @@ internal sealed partial class SagaMemoryStore
         DateTimeOffset reinstatedAt,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
 
         ArgumentException.ThrowIfNullOrEmpty(id);
@@ -507,6 +516,8 @@ internal sealed partial class SagaMemoryStore
         DateTimeOffset correctedAt,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
 
         ArgumentException.ThrowIfNullOrEmpty(id);
@@ -725,6 +736,8 @@ internal sealed partial class SagaMemoryStore
     public async Task<SagaCurationOutcome> SetPinAsync(
         string id, bool pinned, DateTimeOffset changedAt, CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
 
         ArgumentException.ThrowIfNullOrEmpty(id);

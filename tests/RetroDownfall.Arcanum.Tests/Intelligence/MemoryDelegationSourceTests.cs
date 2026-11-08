@@ -23,6 +23,50 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class MemoryDelegationSourceTests
 {
     [SkippableFact]
+    public async Task Guild_cannot_validate_a_selected_source_prepared_outside_its_execution()
+    {
+        await using var h = await MemoryEvaluationSourceHarness.CreateAsync();
+
+        await Insert(h, "source", "selected protected fact");
+
+        await h.AdmitAsync();
+
+        var reader = Reader(h);
+
+        var snapshot = MemoryEvaluationSourceHarness.Require(await reader.ReadAsync(Grant(await h.RequestAsync("source")), Parent(h), h.Lease, default));
+
+        await using var f = await RetroDownfall.Arcanum.Tests.Guild.GuildSignetAuthorityTests.Fixture.CreateAsync();
+
+        var execution = await f.RootAsync();
+
+        using var invocation = RetroDownfall.Arcanum.Infrastructure.Guild.GuildMemoryInvocationAmbient.Begin(new(f.Authority, execution));
+
+        Assert.Equal(ErrorCodes.Guild.AuthorityUnavailable, (await reader.ValidateAsync(snapshot, h.Lease, default)).Error.Code);
+    }
+
+    [SkippableFact]
+    public async Task Guild_cannot_borrow_a_retained_operator_Turn_for_selected_memory_materialization()
+    {
+        await using var h = await MemoryEvaluationSourceHarness.CreateAsync();
+
+        await Insert(h, "source", "selected protected fact");
+
+        await h.AdmitAsync();
+
+        var grant = Grant(await h.RequestAsync("source"));
+
+        await using var f = await RetroDownfall.Arcanum.Tests.Guild.GuildSignetAuthorityTests.Fixture.CreateAsync();
+
+        var execution = await f.RootAsync();
+
+        using var invocation = RetroDownfall.Arcanum.Infrastructure.Guild.GuildMemoryInvocationAmbient.Begin(new(f.Authority, execution));
+
+        var result = await Reader(h).ReadAsync(grant, Parent(h), h.Lease, default);
+
+        Assert.Equal(ErrorCodes.Guild.AuthorityUnavailable, result.Error.Code);
+    }
+
+    [SkippableFact]
     public async Task Native_delegate_read_authority_is_independent_of_the_conservative_mcp_tool_classification()
     {
         await using var h = await MemoryEvaluationSourceHarness.CreateAsync();

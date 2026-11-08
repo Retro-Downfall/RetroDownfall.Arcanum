@@ -45,6 +45,11 @@ internal sealed partial class LexiconService
         ICovenantSnapshotReadLease? readLease,
         CancellationToken cancellationToken)
     {
+        if (GuildOperatorRefusal() is { } refusal)
+        {
+            return refusal;
+        }
+
         if (request is null || request.Validate().IsFailure)
         {
             return new Error(ErrorCodes.Validation.InvalidBody, "A valid Lexicon review page request is required.");
@@ -64,6 +69,11 @@ internal sealed partial class LexiconService
         ICovenantSnapshotReadLease? readLease,
         CancellationToken cancellationToken)
     {
+        if (GuildOperatorRefusal() is { } refusal)
+        {
+            return refusal;
+        }
+
         if (request is null || request.Validate().IsFailure)
         {
             return new Error(ErrorCodes.Validation.InvalidBody, "A valid Lexicon review request is required.");
@@ -83,6 +93,11 @@ internal sealed partial class LexiconService
         CovenantWriteLease? writeLease,
         CancellationToken cancellationToken)
     {
+        if (GuildOperatorRefusal() is { } refusal)
+        {
+            return refusal;
+        }
+
         await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
 
         if (request is null || request.Validate().IsFailure)

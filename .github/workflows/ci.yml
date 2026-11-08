@@ -13,6 +13,15 @@ on:
   #     branches:
   #       - main
   workflow_dispatch:
+    inputs:
+      qualification:
+        description: Full CI or focused Guild memory regression evidence
+        type: choice
+        required: true
+        default: full
+        options:
+          - full
+          - guild-memory
 
 permissions:
   contents: read
@@ -91,6 +100,7 @@ jobs:
 
   build-test:
     needs: [sdk, scope]
+    if: inputs.qualification != 'guild-memory'
     name: Build, test, coverage
     # macOS arm64, not ubuntu: the Grimoire's SQLCipher library is now built by Arcanum and shipped
     # per RID, and Linux is not a shipping RID. A Linux runner has no native asset, so the build
@@ -170,7 +180,7 @@ jobs:
       # stubbed `security`/`codesign`. Native bundle controls additionally use ad-hoc signatures
       # on disposable fixtures; neither test path touches a real signing identity or keychain.
       - name: Test the macOS signing helpers
-        if: needs.scope.outputs.full == 'true'
+        if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory'
         run: ./scripts/packaging/macos/common_test.sh
 
       - name: Test documentation contracts
@@ -182,7 +192,7 @@ jobs:
             --filter "FullyQualifiedName~Documentation|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Build.CliInfrastructureBoundaryTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Build.CoverageDenominatorTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Build.RetiredServerNamespaceTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Build.DataRetentionReasonCodeContractTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Api.ApiWireShapeInventoryTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Api.ErrorCodeCatalogContractTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Cli.CliSurfaceTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Cli.CliJsonEnvelopeContractTests|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Configuration.ConstraintInventoryTests.Markdown_inventory_table_has_exact_json_row_parity|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Memory.MemoryReviewContractTests.The_api_reference_enumerates_every_outcome_of_the_closed_set|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.ReleasePipelineTests.The_release_concurrency_documentation_says_a_waiting_dispatch_is_superseded_not_queued|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.LocalOllamaAotQualificationContractTests.Qualified_vision_fixture_digest_is_rebaselined_consistently|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.LocalOllamaLongRestQualificationHarnessContractTests.The_design_states_the_corpus_size_the_recovery_rule_the_exporter_start_and_the_mutiny_scenario_as_what_they_are|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.HostProcessToolsMarkerNativeCapabilityContractTests.The_design_marker_slot_table_names_the_windows_compare_delete_window|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Build.CheckerLimitPinTests.Every_stated_limit_has_a_pin_and_the_design_still_states_it|FullyQualifiedName=RetroDownfall.Arcanum.Tests.NativeSqlCipher.NativeSqlCipherWindowsImportTableTests.A_dll_importing_the_visual_cpp_runtime_has_its_prerequisite_in_the_install_instructions|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Intelligence.DciRegressionSuiteTests.The_oath_records_the_invocation_that_runs_the_dci_suite|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Intelligence.ToolRiskClassifierTests.Design_ward_inventory_matches_every_known_tool_and_names_no_ward_decision"
 
       - name: Arcanum tests + coverage thresholds
-        if: needs.scope.outputs.full == 'true'
+        if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory'
         run: |
           python3 -m unittest scripts/coverage_threshold_test.py scripts/coverage_workflow_test.py scripts/hosted_producer_analysis_runner_test.py
           ./scripts/coverage.sh --threshold --ci-runtime-only
@@ -203,7 +213,7 @@ jobs:
 
   hosted-producer-primary-analysis:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory'
     name: Hosted producer primary analysis
     runs-on: macos-26
     timeout-minutes: 80
@@ -255,7 +265,7 @@ jobs:
 
   hosted-producer-additional-analysis:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory'
     name: Hosted producer additional analysis
     runs-on: macos-26
     timeout-minutes: 80
@@ -304,7 +314,7 @@ jobs:
 
   hosted-producer-fixture-analysis:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory'
     name: Hosted producer fixture analysis
     # One fixture process per job, whatever the slot count: the process keeps the bound production compilations in memory and a
     # standard macos-26 runner has about 7 GB, so --jobs 1 and the runner's own one-process plan agree.
@@ -355,7 +365,7 @@ jobs:
 
   hosted-producer-fixture-build-analysis:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory'
     name: Hosted producer fixture build analysis
     # The fixtures marked HostedProducerBuildAnalysis: the Build scan classes and the Serve worker theories, each of which reads the production
     # source as a whole (docs/Arcanum.DESIGN.md, Verification Lanes).
@@ -408,7 +418,7 @@ jobs:
 
   hosted-producer-serve-host-analysis:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory'
     name: Hosted producer serve host analysis
     # One fixture process per job, whatever the slot count: the process keeps the bound production compilations in memory and a
     # standard macos-26 runner has about 7 GB, so --jobs 1 and the runner's own one-process plan agree.
@@ -467,7 +477,7 @@ jobs:
       - hosted-producer-fixture-analysis
       - hosted-producer-fixture-build-analysis
       - hosted-producer-serve-host-analysis
-    if: always()
+    if: always() && inputs.qualification != 'guild-memory'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -499,42 +509,42 @@ jobs:
           fi
 
       - name: Download primary source analysis evidence
-        if: needs.scope.outputs.full == 'true'
+        if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: hosted-producer-primary-analysis
           path: .tmp/coverage/analysis-primary
 
       - name: Download additional source analysis evidence
-        if: needs.scope.outputs.full == 'true'
+        if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: hosted-producer-additional-analysis
           path: .tmp/coverage/analysis-additional
 
       - name: Download fixture source analysis evidence
-        if: needs.scope.outputs.full == 'true'
+        if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: hosted-producer-fixture-analysis
           path: .tmp/coverage/analysis-fixtures
 
       - name: Download fixture build source analysis evidence
-        if: needs.scope.outputs.full == 'true'
+        if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: hosted-producer-fixture-build-analysis
           path: .tmp/coverage/analysis-fixtures-build
 
       - name: Download serve host source analysis evidence
-        if: needs.scope.outputs.full == 'true'
+        if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: hosted-producer-serve-host-analysis
           path: .tmp/coverage/analysis-serve-host
 
       - name: Reconcile complete source analysis evidence
-        if: needs.scope.outputs.full == 'true'
+        if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory'
         run: |
           python3 scripts/hosted_producer_analysis_runner.py \
             --aggregate-primary-results .tmp/coverage/analysis-primary \
@@ -556,7 +566,7 @@ jobs:
 
   macos-workspace-check:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory'
     name: macOS workspace-check runtime
     runs-on: macos-26
     timeout-minutes: 120
@@ -690,7 +700,7 @@ jobs:
     # The gate stays now that win-x64's asset is checked in: nothing in the job would run without
     # it, so the condition is the honest statement of the prerequisite rather than a leftover.
     needs: [sdk, native-sqlcipher-assets, scope]
-    if: needs.scope.outputs.full == 'true' && needs.native-sqlcipher-assets.outputs.win-x64 == 'verified'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && needs.native-sqlcipher-assets.outputs.win-x64 == 'verified'
     runs-on: windows-latest
     # Budget for native builds, separate diagnostic and shipping AOT publishes, executable
     # smokes and the Windows/Long Rest suites, with headroom for hosted-runner variability.
@@ -946,7 +956,7 @@ jobs:
     # `dotnet build` with ARCSQLC002 rather than skip honestly, which is the property the manifest
     # gate exists to preserve.
     needs: [sdk, native-sqlcipher-assets, scope]
-    if: needs.scope.outputs.full == 'true' && needs.native-sqlcipher-assets.outputs.win-arm64 == 'verified'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && needs.native-sqlcipher-assets.outputs.win-arm64 == 'verified'
     # A whole job rather than a matrix leg of windows-suite, deliberately, for two reasons that both
     # fail silently. `needs:` names a job id and waits for every leg of that job's matrix, so folding
     # arm64 into windows-suite would put this lane behind anything that gates on that job id, without
@@ -1216,7 +1226,7 @@ jobs:
 
   aot-il:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory'
     name: Native AOT IL and executable gates
     # Both executable smokes open the Grimoire, so this host RID needs its verified native
     # SQLCipher asset just like build-test.
@@ -1261,6 +1271,43 @@ jobs:
 
       - name: Verify Guild Native AOT graph (osx-arm64)
         run: ./scripts/verify-guild-aot.sh --rid osx-arm64
+
+  guild-memory:
+    name: Focused Guild memory qualification
+    needs: sdk
+    if: github.event_name == 'workflow_dispatch' && inputs.qualification == 'guild-memory'
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: ./.github/actions/setup-dotnet
+        with:
+          sdk-version: ${{ needs.sdk.outputs.version }}
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+            **/*.csproj
+            **/Directory.Packages.props
+
+      - name: Qualify Guild memory and affected lifecycle contracts
+        run: ./scripts/qualify-guild-memory.sh
+
+      - name: Upload focused evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guild-memory-qualification
+          path: .tmp/guild-memory-qualification/
+          if-no-files-found: error
+          retention-days: 14
 
   static-analysis:
     # These tools ship in the repository, so their own regression tests and checks must run here.

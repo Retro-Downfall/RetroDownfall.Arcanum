@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Core.Guild;
 using System.Data.Common;
 
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
@@ -13,6 +15,8 @@ internal sealed partial class TapestryStore
     public Task<TapestryBuildSnapshot> ReadBuildSnapshotAsync(TapestryScope scope, CancellationToken cancellationToken) =>
         SqliteBusyRetry.ExecuteAsync(async () =>
         {
+            GuildMemoryAccess.DemandOperator();
+
             DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -103,6 +107,8 @@ internal sealed partial class TapestryStore
     public Task<string> BeginGraphGenerationAsync(TapestryBuildSnapshot snapshot, TapestryGenerationRecipe recipe, DateTimeOffset startedAt, CancellationToken cancellationToken) =>
         SqliteBusyRetry.ExecuteAsync(async () =>
         {
+            GuildMemoryAccess.DemandOperator();
+
             ArgumentNullException.ThrowIfNull(snapshot);
 
             ArgumentNullException.ThrowIfNull(recipe);

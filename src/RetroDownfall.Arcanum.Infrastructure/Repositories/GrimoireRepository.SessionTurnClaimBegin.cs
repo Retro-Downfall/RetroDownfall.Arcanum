@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 /// <summary>Consumes a durable claim reservation in the transaction that writes its two Entries.</summary>
@@ -19,6 +21,8 @@ public sealed partial class GrimoireRepository : ISessionTurnClaimBeginStore
         Guid sessionId,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         if (_db.Database.GetDbConnection() is not SqliteConnection connection)
         {
             throw new InvalidOperationException("The Grimoire requires a SQLCipher connection.");

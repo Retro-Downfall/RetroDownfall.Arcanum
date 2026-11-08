@@ -130,6 +130,11 @@ internal sealed partial class LexiconService : ILexiconErasureService
         LexiconErasePrepareRequest request,
         CancellationToken cancellationToken)
     {
+        if (GuildOperatorRefusal() is { } refusal)
+        {
+            return refusal;
+        }
+
         if (erasure is not { } dependencies)
         {
             return MemoryErasureProtocol.UnavailableError;
@@ -275,6 +280,11 @@ internal sealed partial class LexiconService : ILexiconErasureService
         OperatorAuthorityContext authority,
         CancellationToken cancellationToken)
     {
+        if (GuildOperatorRefusal() is { } refusal)
+        {
+            return refusal;
+        }
+
         await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
 
         if (erasure is not { } dependencies)

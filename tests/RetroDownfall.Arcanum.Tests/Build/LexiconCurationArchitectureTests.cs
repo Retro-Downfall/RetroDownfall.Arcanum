@@ -14,6 +14,8 @@ public sealed class LexiconCurationArchitectureTests
 {
     private const string Service = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs";
 
+    private const string Guild = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.Guild.cs";
+
     private const string CleanRecall = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.CleanRecall.cs";
 
     private const string Inspection = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.CurationInspection.cs";
@@ -43,7 +45,8 @@ public sealed class LexiconCurationArchitectureTests
 
     public static TheoryData<string, string, int, string> Projections => new()
     {
-        { Service, "HasEligibleEntriesAsync", 0, "1" },
+        { Service, "HasEligibleEntriesCoreAsync", 0, "1" },
+        { Guild, "DemandCleanGuildMutationAsync", 0, "1" },
         { Service, "FillExactMatchesAsync", 0, EntryColumns },
         { Service, "FillFtsMatchesViaMatchAsync", 0, EntryColumns },
         { Service, "FillFtsMatchesViaLikeAsync", 0, EntryColumns },
@@ -167,7 +170,7 @@ public sealed class LexiconCurationArchitectureTests
 
         string[] readers = [.. methods.Where(method => ReaderSlots(method).Length > 0).Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
-        Assert.Equal(Readers.Where(row => (string)row[0] is Service or Inspection or Projection or Review or Erasure).Select(row => (string)row[1]).Order(StringComparer.Ordinal), readers);
+        Assert.Equal(Readers.Where(row => (string)row[0] is Service or Guild or Inspection or Projection or Review or Erasure).Select(row => (string)row[1]).Order(StringComparer.Ordinal), readers);
 
         string[] executed = [.. methods.Where(method => Calls(method, "ExecuteReaderAsync")).Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
@@ -184,10 +187,10 @@ public sealed class LexiconCurationArchitectureTests
         }.Order(StringComparer.Ordinal), executed);
 
         string[] projected = [.. methods.Where(method => SqlText(method).Contains("SELECT", StringComparison.Ordinal)
-            && !new[] { "DeleteByNameAsync", "ShowExactAsync", "ShowEffectiveAsync" }.Contains(method.Identifier.ValueText, StringComparer.Ordinal))
+            && !new[] { "DeleteByNameCoreAsync", "ShowExactAsync", "ShowEffectiveAsync" }.Contains(method.Identifier.ValueText, StringComparer.Ordinal))
             .Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
-        Assert.Equal(Projections.Where(row => (string)row[0] is Service or Inspection or Projection or Review or Erasure).Select(row => (string)row[1])
+        Assert.Equal(Projections.Where(row => (string)row[0] is Service or Guild or Inspection or Projection or Review or Erasure).Select(row => (string)row[1])
             .Append("VersionColumnsFor").Append("InspectionEvidenceColumns").Append("CleanRecallPredicate")
             .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal), projected);
 
@@ -237,7 +240,7 @@ public sealed class LexiconCurationArchitectureTests
 
         Assert.Matches(@"\bRetiredAtUtc IS NULL\b", SqlText(Method(Inspection, "ShowEffectiveAsync")));
 
-        foreach (string method in new[] { "GetByNameAsync", "GetByNameInScopeAsync" })
+        foreach (string method in new[] { "GetByNameCoreAsync", "GetByNameInScopeCoreAsync" })
         {
             Assert.True(Calls(Method(Service, method), "ReadActiveByNormalizedAsync"), method);
 
@@ -282,11 +285,14 @@ public sealed class LexiconCurationArchitectureTests
 
         foreach ((string entryPoint, string cleanOnly) in new[] { ("MatchEntitiesAsync", "false"), ("MatchCleanEntitiesAsync", "true") })
         {
-            InvocationExpressionSyntax call = Assert.Single(Method(Service, entryPoint).DescendantNodes().OfType<InvocationExpressionSyntax>());
+            MethodDeclarationSyntax entry = Method(Service, entryPoint);
 
-            Assert.Equal("MatchEntitiesCoreAsync", call.Expression.ToString());
+            Assert.True(Calls(entry, "RunResultAsync"), entryPoint + " must retain Guild admission");
 
-            Assert.Equal(new[] { "entities", "limit", "scope", cleanOnly, "cancellationToken" },
+            InvocationExpressionSyntax call = Assert.Single(entry.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+                invocation => invocation.Expression.ToString() == "MatchEntitiesCoreAsync");
+
+            Assert.Equal(new[] { "entities", "limit", "scope", cleanOnly, "ct" },
                 call.ArgumentList.Arguments.Select(argument => argument.Expression.ToString()));
         }
     }
@@ -296,8 +302,8 @@ public sealed class LexiconCurationArchitectureTests
     {
         foreach ((string path, string method) in new (string, string)[]
         {
-            (Service, "HasEligibleEntriesAsync"),
-            (Service, "MatchEntitiesCoreAsync"), (Service, "GetByNameAsync"), (Service, "GetByNameInScopeAsync"),
+            (Service, "HasEligibleEntriesCoreAsync"),
+            (Service, "MatchEntitiesCoreAsync"), (Service, "GetByNameCoreAsync"), (Service, "GetByNameInScopeCoreAsync"),
             (Annals, "GetVersionsAsync"), (Annals, "GetLexiconFactProvenanceAsync"),
             ("RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Pruning.cs", "AddLexiconCandidatesAsync"),
         })
@@ -467,6 +473,7 @@ public sealed class LexiconCurationArchitectureTests
             "DataRetentionService.Pruning.AddLexiconCandidatesCoreAsync",
             "DataRetentionService.Pruning.DeleteLexiconCandidateAsync",
             "GrimoireSchemaInstaller.TryRebuildLexiconFtsAsync",
+            "GuildStorageIntegrity.ValidateMemoryAttributionAsync",
             "MemoryAnnalsBackfill.ReadBatchAsync",
             "MemoryEndpoints.BuildStatusAsync",
             "MemorySourceProofReader.Lexicon.ReadLexiconAsync",

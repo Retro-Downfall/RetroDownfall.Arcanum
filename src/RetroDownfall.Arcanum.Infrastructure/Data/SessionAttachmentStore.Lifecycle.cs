@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Core.Guild;
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
@@ -20,6 +22,8 @@ internal sealed partial class SessionAttachmentStore
 
     public bool TryDeleteSessionDirectory(Guid sessionId)
     {
+        GuildMemoryAccess.DemandOperator();
+
         string sessionSegment = sessionId.ToString("N");
 
         string dir = Path.GetFullPath(Path.Combine(_attachmentsRoot, sessionSegment));
@@ -60,6 +64,8 @@ internal sealed partial class SessionAttachmentStore
         IReadOnlyList<Guid> entryIds,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         ArgumentNullException.ThrowIfNull(entryIds);
 
         if (entryIds.Count == 0)
@@ -102,6 +108,8 @@ internal sealed partial class SessionAttachmentStore
         IReadOnlySet<Guid>? copiedSourceEntryIds,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         IReadOnlyList<SessionAttachmentRecord> bound = await ListBoundAsync(sourceSessionId, cancellationToken)
             .ConfigureAwait(false);
 
@@ -129,6 +137,8 @@ internal sealed partial class SessionAttachmentStore
         bool includeEntrylessAttachments,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         Guid? afterAttachmentId = null;
 
         while (true)
@@ -241,6 +251,8 @@ internal sealed partial class SessionAttachmentStore
 
     public SessionAttachmentForkScope BeginForkCopyScope(Guid forkSessionId)
     {
+        GuildMemoryAccess.DemandOperator();
+
         ForkCopyScope scope = new(this, forkSessionId);
 
         if (!_forkCopyScopes.TryAdd(forkSessionId, scope))
@@ -344,6 +356,8 @@ internal sealed partial class SessionAttachmentStore
         IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         ArgumentNullException.ThrowIfNull(plans);
 
         if (plans.Count == 0)
@@ -437,6 +451,8 @@ internal sealed partial class SessionAttachmentStore
         IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         ArgumentNullException.ThrowIfNull(plans);
 
         if (_db.Database.CurrentTransaction is null)
@@ -621,6 +637,8 @@ internal sealed partial class SessionAttachmentStore
         CancellationToken cancellationToken = default)
 
     {
+        GuildMemoryAccess.DemandOperator();
+
         IReadOnlyList<SessionAttachmentRecord> rows = await ListBoundAsync(sessionId, cancellationToken)
 
             .ConfigureAwait(false);
@@ -866,6 +884,8 @@ internal sealed partial class SessionAttachmentStore
         SessionAttachmentRecord created,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         ArgumentNullException.ThrowIfNull(created);
 
         return await DeleteSweptRowAsync(

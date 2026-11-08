@@ -17,10 +17,119 @@ using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
+using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 public sealed partial class GrimoireRepository : IGrimoireRepository
 {
+    private static Task<T> ReadOperatorTranscriptAsync<T>(Func<Task<T>> read)
+    {
+        GuildMemoryAccess.DemandOperator();
+
+        return read();
+    }
+
+    private async Task<List<Entry>> LoadRecentEntriesAsync(Guid sessionId, int limit, CancellationToken cancellationToken)
+    {
+        if (!GuildMemoryAccess.IsGuildInvocation)
+        {
+            return await EntryTemporalQueries.LoadRecentDescendingAsync(_db, sessionId, limit, cancellationToken).ConfigureAwait(false);
+        }
+
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(_db, "SELECT 1", cancellationToken).ConfigureAwait(false);
+
+        string scope = GuildMemoryAccess.SqlSession(command, GuildMemoryStore.Transcript,
+            GuildMemoryOperation.Read, "guild_entry.SessionId");
+
+        command.CommandText = $"""
+            SELECT {GrimoireEntitySql.EntryColumns} FROM Entries guild_entry
+            WHERE guild_entry.SessionId=$session AND ({scope}) AND {GuildEntryEligible("guild_entry")}
+            ORDER BY guild_entry.Sequence DESC LIMIT $limit
+            """;
+
+        command.Parameters.AddWithValue("$session", GrimoireEntitySql.Format(sessionId));
+
+        command.Parameters.AddWithValue("$limit", limit);
+
+        List<Entry> entries = [];
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            entries.Add(GrimoireEntitySql.ReadEntry(reader));
+        }
+
+        return entries;
+    }
+
+    private static string GuildEntryEligible(string entry) => !GuildMemoryAccess.IsGuildInvocation ? "1=1" : $"""
+        NOT EXISTS(SELECT 1 FROM artifact_sensitivity guild_transcript_label
+          WHERE guild_transcript_label.ArtifactKindCode=1
+            AND lower(replace(guild_transcript_label.ArtifactId, '-', ''))=lower(replace({entry}.Id, '-', '')))
+        """;
+
+    private static string GuildSessionHeaderEligible(string session) => $"""
+        ({GuildHeaderFieldEligible(session, "Title", "session_title_state", "session_title_artifacts", 5)})
+        AND ({GuildHeaderFieldEligible(session, "Summary", "session_summary_state", "session_summary_artifacts", 3)})
+        """;
+
+    private static string GuildHeaderFieldEligible(string session, string column, string stateTable, string artifactTable, int artifactKind) => $"""
+        (length(COALESCE({session}."{column}", ''))=0 OR EXISTS(
+          SELECT 1 FROM {stateTable} guild_header_state
+          JOIN {artifactTable} guild_header_artifact
+            ON guild_header_artifact.ArtifactId=guild_header_state.CurrentArtifactId
+              AND guild_header_artifact.SessionId=guild_header_state.SessionId
+              AND guild_header_artifact.Revision=guild_header_state.Revision
+          WHERE guild_header_state.SessionId={session}.Id COLLATE NOCASE
+            AND guild_header_artifact.SensitivityCode=0
+            AND NOT EXISTS(SELECT 1 FROM artifact_sensitivity guild_header_label
+              WHERE guild_header_label.ArtifactKindCode={artifactKind}
+                AND lower(replace(guild_header_label.ArtifactId, '-', ''))=lower(replace(guild_header_artifact.ArtifactId, '-', '')))))
+        """;
+
+    private static string GuildHeaderDigestProjection(string session, string stateTable, string artifactTable) => $"""
+        (SELECT CASE WHEN typeof(guild_digest_artifact.ContentDigest)='blob'
+            AND length(guild_digest_artifact.ContentDigest)=32 THEN guild_digest_artifact.ContentDigest END
+          FROM {stateTable} guild_digest_state
+          JOIN {artifactTable} guild_digest_artifact
+            ON guild_digest_artifact.ArtifactId=guild_digest_state.CurrentArtifactId
+              AND guild_digest_artifact.SessionId=guild_digest_state.SessionId
+              AND guild_digest_artifact.Revision=guild_digest_state.Revision
+          WHERE guild_digest_state.SessionId={session}.Id COLLATE NOCASE)
+        """;
+
+    private static bool GuildHeaderDigestMatches(SqliteDataReader reader, string projection, string? content)
+    {
+        int ordinal = reader.GetOrdinal(projection);
+
+        return reader.IsDBNull(ordinal)
+            ? string.IsNullOrEmpty(content)
+            : reader.GetFieldValue<byte[]>(ordinal).AsSpan().SequenceEqual(DerivedArtifactContentDigest.ForText(content).Bytes);
+    }
+
+    private async Task<bool> CanReadGuildSessionAsync(Guid sessionId, CancellationToken cancellationToken)
+    {
+        if (!GuildMemoryAccess.IsGuildInvocation)
+        {
+            return true;
+        }
+
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(_db,
+            "SELECT 1", cancellationToken).ConfigureAwait(false);
+
+        string allowed = GuildMemoryAccess.SqlSession(command, GuildMemoryStore.Transcript,
+            GuildMemoryOperation.Read, "transcript_owner.Id");
+
+        command.CommandText = $"SELECT EXISTS(SELECT 1 FROM Sessions transcript_owner WHERE lower(replace(transcript_owner.Id, '-', '')) = lower(replace(@guildSessionId, '-', '')) AND ({allowed}))";
+
+        command.Parameters.AddWithValue("@guildSessionId", sessionId.ToString("D").ToUpperInvariant());
+
+        return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) == 1;
+    }
+
     private readonly IMemoryDelegationMutationBarrier? _memoryDelegation;
 
     private const int MaxLegacyBackfillPerSweep = 200;
@@ -563,10 +672,21 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         }
     }
 
-    public async Task<Session?> GetSessionAsync(
+    public Task<Session?> GetSessionAsync(
+        Guid id,
+        CancellationToken cancellationToken = default) =>
+        GuildMemoryAccess.RunAsync(GuildMemoryStore.Transcript, GuildMemoryOperation.Read,
+            token => GetSessionCoreAsync(id, token), cancellationToken);
+
+    private async Task<Session?> GetSessionCoreAsync(
         Guid id,
         CancellationToken cancellationToken = default)
     {
+        if (!await CanReadGuildSessionAsync(id, cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
         Session? session = await ReadSessionAsync(id, cancellationToken).ConfigureAwait(false);
 
         if (session is null)
@@ -595,8 +715,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             hasWatermark: watermark is not null,
             afterWatermarkCount: afterWatermarkCount);
 
-        List<Entry> recent = await EntryTemporalQueries
-            .LoadRecentDescendingAsync(_db, id, take, cancellationToken)
+        List<Entry> recent = await LoadRecentEntriesAsync(id, take, cancellationToken)
             .ConfigureAwait(false);
 
         recent.Reverse();
@@ -606,15 +725,29 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         return session;
     }
 
-    public async Task<Session?> GetSessionHeaderAsync(
+    public Task<Session?> GetSessionHeaderAsync(
         Guid id,
         CancellationToken cancellationToken = default) =>
-        await ReadSessionAsync(id, cancellationToken).ConfigureAwait(false);
+        GuildMemoryAccess.RunAsync(GuildMemoryStore.Transcript, GuildMemoryOperation.Read, async token =>
+            await CanReadGuildSessionAsync(id, token).ConfigureAwait(false)
+                ? await ReadSessionAsync(id, token).ConfigureAwait(false)
+                : null, cancellationToken);
 
-    public async Task<List<GrimoireEntryDto>?> GetSessionEntriesAsync(
+    public Task<List<GrimoireEntryDto>?> GetSessionEntriesAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken = default) =>
+        GuildMemoryAccess.RunAsync(GuildMemoryStore.Transcript, GuildMemoryOperation.Read,
+            token => GetSessionEntriesCoreAsync(sessionId, token), cancellationToken);
+
+    private async Task<List<GrimoireEntryDto>?> GetSessionEntriesCoreAsync(
         Guid sessionId,
         CancellationToken cancellationToken = default)
     {
+        if (!await CanReadGuildSessionAsync(sessionId, cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
         bool exists = await SessionExistsCoreAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
         if (!exists)
@@ -629,8 +762,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             EntryWindowPolicy.EntryWindowKind.MaxMessagesOnly,
             maxMessages);
 
-        List<Entry> recent = await EntryTemporalQueries
-            .LoadRecentDescendingAsync(_db, sessionId, take, cancellationToken)
+        List<Entry> recent = await LoadRecentEntriesAsync(sessionId, take, cancellationToken)
             .ConfigureAwait(false);
 
         recent.Reverse();
@@ -640,11 +772,23 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             .ToList();
     }
 
-    public async Task<List<GrimoireEntryDto>?> GetRecentSessionEntriesAsync(
+    public Task<List<GrimoireEntryDto>?> GetRecentSessionEntriesAsync(
+        Guid sessionId,
+        int takeLast,
+        CancellationToken cancellationToken = default) =>
+        GuildMemoryAccess.RunAsync(GuildMemoryStore.Transcript, GuildMemoryOperation.Read,
+            token => GetRecentSessionEntriesCoreAsync(sessionId, takeLast, token), cancellationToken);
+
+    private async Task<List<GrimoireEntryDto>?> GetRecentSessionEntriesCoreAsync(
         Guid sessionId,
         int takeLast,
         CancellationToken cancellationToken = default)
     {
+        if (!await CanReadGuildSessionAsync(sessionId, cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
         bool exists = await SessionExistsCoreAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
         if (!exists)
@@ -660,8 +804,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             maxMessages,
             requestedTake: takeLast);
 
-        List<Entry> recent = await EntryTemporalQueries
-            .LoadRecentDescendingAsync(_db, sessionId, clampedTake, cancellationToken)
+        List<Entry> recent = await LoadRecentEntriesAsync(sessionId, clampedTake, cancellationToken)
             .ConfigureAwait(false);
 
         recent.Reverse();
@@ -671,11 +814,23 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             .ToList();
     }
 
-    public async Task<GrimoireEntryDto?> GetEntryByIdAsync(
+    public Task<GrimoireEntryDto?> GetEntryByIdAsync(
+        Guid sessionId,
+        Guid entryId,
+        CancellationToken cancellationToken = default) =>
+        GuildMemoryAccess.RunAsync(GuildMemoryStore.Transcript, GuildMemoryOperation.Read,
+            token => GetEntryByIdCoreAsync(sessionId, entryId, token), cancellationToken);
+
+    private async Task<GrimoireEntryDto?> GetEntryByIdCoreAsync(
         Guid sessionId,
         Guid entryId,
         CancellationToken cancellationToken = default)
     {
+        if (!await CanReadGuildSessionAsync(sessionId, cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
         Entry? entry = await ReadEntryAsync(sessionId, entryId, cancellationToken).ConfigureAwait(false);
 
         return entry is null
@@ -694,6 +849,8 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         Guid entryId,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         using IDisposable entryLock = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
         using IDisposable attachmentGate = await _attachments
@@ -802,6 +959,8 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         bool pinned,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         using IDisposable _ = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
         int updated = await SqliteBusyRetry.ExecuteAsync(
@@ -831,6 +990,8 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         int maxPinnedEntries,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         using IDisposable entryLock = await SessionEntryPersistence.AcquireWriteLockAsync(sessionId, cancellationToken).ConfigureAwait(false);
         await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -882,6 +1043,8 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         Guid sessionId,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(_db,
             """
             SELECT e."ModelUsed",
@@ -914,6 +1077,8 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         Guid sessionId,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
             _db,
             """
@@ -1057,7 +1222,11 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             : null;
     }
 
-    public async Task<Result<string>> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default)
+    public Task<Result<string>> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
+        GuildMemoryAccess.RunAsync(GuildMemoryStore.Transcript, GuildMemoryOperation.Read,
+            token => SearchArchivesCoreAsync(query, maxResults, token), cancellationToken);
+
+    private async Task<Result<string>> SearchArchivesCoreAsync(string query, int maxResults, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -1087,10 +1256,15 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             FROM "Entries_fts"
             INNER JOIN "Entries" AS c ON c."Id" = "Entries_fts"."Id"
             WHERE "Entries_fts" MATCH @query
+                AND /* guild-transcript-scope */ 1 = 1
             ORDER BY rank
             LIMIT @limit
             """,
             cancellationToken).ConfigureAwait(false);
+
+        command.CommandText = command.CommandText.Replace("/* guild-transcript-scope */ 1 = 1",
+            GuildMemoryAccess.SqlSession(command, GuildMemoryStore.Transcript, GuildMemoryOperation.Read, "c.SessionId")
+                + " AND " + GuildEntryEligible("c"), StringComparison.Ordinal);
 
         GrimoireEntitySql.AddParameter(command, "@query", matchQuery);
         GrimoireEntitySql.AddParameter(command, "@limit", limit);
@@ -1178,6 +1352,8 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         DateTime idleCutoff,
         CancellationToken cancellationToken = default)
     {
+        GuildMemoryAccess.DemandOperator();
+
         cancellationToken.ThrowIfCancellationRequested();
 
         // These scalar queries keep filtering and ordering on SQLite's sortable UTC TEXT
@@ -1276,12 +1452,25 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<List<Entry>> GetUnsummarizedEntriesAsync(
+    public Task<List<Entry>> GetUnsummarizedEntriesAsync(
+        Guid sessionId,
+        DateTime watermark,
+        int batchSize,
+        CancellationToken cancellationToken = default) =>
+        ReadOperatorTranscriptAsync(() => GuildMemoryAccess.RunAsync(GuildMemoryStore.Transcript, GuildMemoryOperation.Read,
+            token => GetUnsummarizedEntriesCoreAsync(sessionId, watermark, batchSize, token), cancellationToken));
+
+    private async Task<List<Entry>> GetUnsummarizedEntriesCoreAsync(
         Guid sessionId,
         DateTime watermark,
         int batchSize,
         CancellationToken cancellationToken = default)
     {
+        if (!await CanReadGuildSessionAsync(sessionId, cancellationToken).ConfigureAwait(false))
+        {
+            return [];
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
 
         DateTime watermarkUtc = watermark.Kind switch
@@ -1329,13 +1518,27 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         return entries;
     }
 
-    public async Task<List<Entry>> GetSagaExtractionEntriesAsync(
+    public Task<List<Entry>> GetSagaExtractionEntriesAsync(
+        Guid sessionId,
+        long afterSequence,
+        long throughSequence,
+        int batchSize,
+        CancellationToken cancellationToken = default) =>
+        ReadOperatorTranscriptAsync(() => GuildMemoryAccess.RunAsync(GuildMemoryStore.Transcript, GuildMemoryOperation.Read,
+            token => GetSagaExtractionEntriesCoreAsync(sessionId, afterSequence, throughSequence, batchSize, token), cancellationToken));
+
+    private async Task<List<Entry>> GetSagaExtractionEntriesCoreAsync(
         Guid sessionId,
         long afterSequence,
         long throughSequence,
         int batchSize,
         CancellationToken cancellationToken = default)
     {
+        if (!await CanReadGuildSessionAsync(sessionId, cancellationToken).ConfigureAwait(false))
+        {
+            return [];
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
 
         if (throughSequence <= afterSequence)
@@ -1813,6 +2016,15 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             commandText,
             cancellationToken).ConfigureAwait(false);
 
+        if (GuildMemoryAccess.IsGuildInvocation)
+        {
+            string scope = GuildMemoryAccess.SqlSession(command, GuildMemoryStore.Transcript,
+                GuildMemoryOperation.Read, "\"Entries\".\"SessionId\"");
+
+            command.CommandText = command.CommandText.Replace("LIMIT 1;",
+                $"AND ({scope}) AND {GuildEntryEligible("\"Entries\"")} LIMIT 1;", StringComparison.Ordinal);
+        }
+
         if (sessionId is { } boundSessionId)
         {
             GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(boundSessionId));
@@ -1837,14 +2049,42 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             $"SELECT {GrimoireEntitySql.SessionColumns} FROM \"Sessions\" WHERE \"Id\" = $sessionId LIMIT 1;",
             cancellationToken).ConfigureAwait(false);
 
+        if (GuildMemoryAccess.IsGuildInvocation)
+        {
+            string scope = GuildMemoryAccess.SqlSession(command, GuildMemoryStore.Transcript,
+                GuildMemoryOperation.Read, "\"Sessions\".\"Id\"");
+
+            string header = GuildSessionHeaderEligible("\"Sessions\"");
+
+            string titleDigest = GuildHeaderDigestProjection("\"Sessions\"", "session_title_state", "session_title_artifacts");
+
+            string summaryDigest = GuildHeaderDigestProjection("\"Sessions\"", "session_summary_state", "session_summary_artifacts");
+
+            command.CommandText = command.CommandText
+                .Replace(" FROM \"Sessions\" ", $", {titleDigest} AS GuildTitleDigest, {summaryDigest} AS GuildSummaryDigest FROM \"Sessions\" ", StringComparison.Ordinal)
+                .Replace("LIMIT 1;", $"AND ({scope}) AND ({header}) LIMIT 1;", StringComparison.Ordinal);
+        }
+
         GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(sessionId));
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-            ? GrimoireEntitySql.ReadSession(reader)
-            : null;
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        Session session = GrimoireEntitySql.ReadSession(reader);
+
+        if (GuildMemoryAccess.IsGuildInvocation
+            && (!GuildHeaderDigestMatches(reader, "GuildTitleDigest", session.Title)
+                || !GuildHeaderDigestMatches(reader, "GuildSummaryDigest", session.Summary)))
+        {
+            return null;
+        }
+
+        return session;
     }
 
     private async Task<DateTime?> ReadSessionWatermarkAsync(
@@ -1985,6 +2225,26 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         DateTimeOffset afterExclusive,
         CancellationToken cancellationToken)
     {
+        if (GuildMemoryAccess.IsGuildInvocation)
+        {
+            await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(_db, "SELECT 1", cancellationToken).ConfigureAwait(false);
+
+            string scope = GuildMemoryAccess.SqlSession(command, GuildMemoryStore.Transcript,
+                GuildMemoryOperation.Read, "guild_entry.SessionId");
+
+            command.CommandText = $"""
+                SELECT COUNT(*) FROM Entries guild_entry
+                WHERE guild_entry.SessionId=$session AND guild_entry.CreatedAt>$after
+                  AND ({scope}) AND {GuildEntryEligible("guild_entry")}
+                """;
+
+            command.Parameters.AddWithValue("$session", GrimoireEntitySql.Format(sessionId));
+
+            command.Parameters.AddWithValue("$after", GrimoireEntitySql.Format(afterExclusive.ToUniversalTime()));
+
+            return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
+        }
+
         return await EntryTemporalQueries
             .CountAfterAsync(_db, sessionId, afterExclusive, cancellationToken)
             .ConfigureAwait(false);

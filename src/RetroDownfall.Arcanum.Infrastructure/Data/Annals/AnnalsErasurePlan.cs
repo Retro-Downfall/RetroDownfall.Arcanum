@@ -1,3 +1,4 @@
+using System.Data.Common;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
@@ -8,7 +9,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 /// <summary>
 /// One table an Annals erasure clears, and the rows of it that erasure owns.
 /// </summary>
-internal sealed record AnnalsErasureStep(string Table, string Predicate, int? RequiredFromCoreVersion = null, AnnalsReceiptSelection? Receipts = null);
+internal sealed record AnnalsErasureStep(string Table, string Predicate, int? RequiredFromCoreVersion = null, AnnalsReceiptSelection? Receipts = null, bool OptionalTable = false);
 
 /// <summary>
 /// The ordered statements every Annals erasure runs, stated once.
@@ -30,6 +31,26 @@ internal sealed record AnnalsErasureStep(string Table, string Predicate, int? Re
 /// </remarks>
 internal static class AnnalsErasurePlan
 {
+    internal static async Task<bool> IsTableInstalledAsync(DbConnection connection, DbTransaction? transaction,
+        string table, CancellationToken cancellationToken)
+    {
+        await using DbCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = "SELECT 1 FROM sqlite_master WHERE type='table' AND name=@table LIMIT 1";
+
+        DbParameter parameter = command.CreateParameter();
+
+        parameter.ParameterName = "@table";
+
+        parameter.Value = table;
+
+        command.Parameters.Add(parameter);
+
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
+    }
+
     /// <summary>Every claim belonging to one store, leaving the other store's untouched.</summary>
     internal static IReadOnlyList<AnnalsErasureStep> ForStore(AnnalSubjectStore subjectStore) =>
         Build($"SubjectStoreCode = {(int)subjectStore}", (int)subjectStore, sourcePredicate: "1 = 1",
@@ -149,6 +170,10 @@ internal static class AnnalsErasurePlan
             .. subjectStoreCode == (int)AnnalSubjectStore.Saga
                 ? new[] { new AnnalsErasureStep("saga_committed_uses", $"VersionId IN ({versionScope})", RequiredFromCoreVersion: 20) }
                 : [],
+
+            // Optional Guild metadata follows the exact immutable version, never the author's owner.
+            // Explicit removal keeps erasure complete even when foreign-key cascades are disabled.
+            new("guild_memory_attribution", $"StoreCode = {subjectStoreCode} AND ImmutableVersionId IN ({versionScope})", OptionalTable: true),
 
             new("annal_versions", $"ClaimId IN ({claimScope})"),
 

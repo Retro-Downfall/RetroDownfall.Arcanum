@@ -195,6 +195,11 @@ internal sealed partial class LexiconService
         Func<DbConnection, Task<LexiconInspectionResult<T>>> read,
         CancellationToken cancellationToken)
     {
+        if (GuildOperatorRefusal() is { } refusal)
+        {
+            return refusal;
+        }
+
         try
         {
             Require(await ValidateInspectionLeaseAsync(lease, requiredScope, cancellationToken).ConfigureAwait(false));

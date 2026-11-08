@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Core.Guild;
 using System.Data.Common;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -11,6 +13,8 @@ internal sealed partial class TapestryStore
     public Task AppendGraphCheckpointAsync(TapestryGraphCheckpoint checkpoint, CancellationToken cancellationToken) =>
         SqliteBusyRetry.ExecuteAsync(async () =>
         {
+            GuildMemoryAccess.DemandOperator();
+
             ArgumentNullException.ThrowIfNull(checkpoint);
 
             DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -166,6 +170,8 @@ internal sealed partial class TapestryStore
 
     public async Task<IReadOnlyList<string>> GetRootIdsAsync(string generationId, CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbCommand command = connection.CreateCommand();
@@ -192,6 +198,8 @@ internal sealed partial class TapestryStore
 
     public async Task<IReadOnlyList<string>> GetChildIdsAsync(string generationId, IReadOnlyList<string> parentIds, CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -229,6 +237,8 @@ internal sealed partial class TapestryStore
 
     private async Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> ReadClosureAsync(string generationId, IReadOnlyList<string> nodeIds, bool leaves, CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);

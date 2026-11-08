@@ -43,6 +43,11 @@ internal sealed partial class LexiconService
     private async Task<Result<LexiconCurationResult>> ChangeLifecycleAsync(
         LexiconCurationTarget target, CovenantWriteLease? writeLease, LifecycleChange change, CancellationToken cancellationToken)
     {
+        if (GuildOperatorRefusal() is { } refusal)
+        {
+            return refusal;
+        }
+
         await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
 
         if (target is null || target.Validate().IsFailure)

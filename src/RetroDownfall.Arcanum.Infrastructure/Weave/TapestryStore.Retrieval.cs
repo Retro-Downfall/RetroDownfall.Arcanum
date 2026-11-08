@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Core.Guild;
 using System.Data.Common;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -11,6 +13,8 @@ internal sealed partial class TapestryStore
     public Task<Result<TapestryGenerationAccess>> GetRetrievableGenerationAsync(TapestryScope scope, TapestryRetrievalIdentity identity, CancellationToken cancellationToken) =>
         SqliteBusyRetry.ExecuteAsync(async () =>
         {
+            GuildMemoryAccess.DemandOperator();
+
             ArgumentNullException.ThrowIfNull(identity);
 
             DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -53,6 +57,8 @@ internal sealed partial class TapestryStore
     public Task<IReadOnlyList<TapestryRetrievedNode>> HydrateRetrievedNodesAsync(TapestryGenerationAccess access, IReadOnlyList<(string NodeId, float Similarity)> hits, TapestryRetrievalMode mode, CancellationToken cancellationToken) =>
         SqliteBusyRetry.ExecuteAsync<IReadOnlyList<TapestryRetrievedNode>>(async () =>
         {
+            GuildMemoryAccess.DemandOperator();
+
             ArgumentNullException.ThrowIfNull(access);
 
             ArgumentNullException.ThrowIfNull(hits);

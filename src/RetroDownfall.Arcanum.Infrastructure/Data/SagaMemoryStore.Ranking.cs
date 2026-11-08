@@ -4,12 +4,17 @@ using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
+using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed partial class SagaMemoryStore
 {
     public Task<SagaRankingExplanationDto?> ExplainRankingAsync(MemoryScope scope, string? memoryId, float referenceSimilarity, CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         if (!float.IsFinite(referenceSimilarity) || referenceSimilarity is < -1 or > 1)
         {
             throw new ArgumentOutOfRangeException(nameof(referenceSimilarity));
@@ -62,6 +67,8 @@ internal sealed partial class SagaMemoryStore
     public Task<SagaRankingStatusDto?> ReadRankingStatusAsync(MemoryScope scope, Guid? sessionId, CancellationToken cancellationToken) =>
         ReadLongRestSnapshotAsync<SagaRankingStatusDto?>(async (connection, longRest) =>
         {
+            GuildMemoryAccess.DemandOperator();
+
             if (!longRest)
             {
                 return null;
@@ -163,6 +170,8 @@ internal sealed partial class SagaMemoryStore
             INNER JOIN saga_memory_embeddings e ON e.MemoryId = m."Id"
             {SagaRankingReader.Join(longRest)}
             WHERE m."RetiredAtUtc" IS NULL AND {LongRestRecallSql.Eligible("m", longRest)}
+                AND {GuildMemoryAccess.SqlScope(command, GuildMemoryStore.Saga, GuildMemoryOperation.Read, "m.CampaignId", "m.ScopeKindCode")}
+                AND {SagaCleanRecallSql.GuildEligible("m")}
                 AND (@enforced = 0 OR m.ScopeKindCode = 1 OR (m.ScopeKindCode = 2 AND m.CampaignId = @campaign))
             """;
         AddParameter(command, "@enforced", scope.IsEnforced ? 1 : 0);

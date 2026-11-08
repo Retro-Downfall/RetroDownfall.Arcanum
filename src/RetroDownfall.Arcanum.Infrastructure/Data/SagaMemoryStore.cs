@@ -19,6 +19,9 @@ using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
+using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 /// <summary>
@@ -83,7 +86,20 @@ internal sealed partial class SagaMemoryStore(
             cancellationToken);
     }
 
-    private async Task<SagaMemoryWriteOutcome> InsertCoreAsync(
+    private Task<SagaMemoryWriteOutcome> InsertCoreAsync(
+        string id,
+        string content,
+        DateTimeOffset createdAt,
+        Guid? sessionId,
+        string? tags,
+        string? source,
+        float[] embedding,
+        AttachmentMemoryProvenance? provenance,
+        CancellationToken cancellationToken) =>
+        GuildMemoryAccess.RunAsync(GuildMemoryStore.Saga, GuildMemoryOperation.Append,
+            token => InsertAdmittedAsync(id, content, createdAt, sessionId, tags, source, embedding, provenance, token), cancellationToken);
+
+    private async Task<SagaMemoryWriteOutcome> InsertAdmittedAsync(
         string id,
         string content,
         DateTimeOffset createdAt,
@@ -131,6 +147,13 @@ internal sealed partial class SagaMemoryStore(
                         await SagaMemoryScopeClassifier
                             .ResolveForSessionAsync(connection, transaction, sessionId, cancellationToken)
                             .ConfigureAwait(false);
+
+                    await GuildMemoryAccess.ValidateMutationAsync(connection, transaction, GuildMemoryStore.Saga,
+                        GuildMemoryOperation.Append, Guid.TryParse(scopeCampaignId, out Guid campaign) ? campaign : null,
+                        scopeKind == SagaMemoryScopeKind.Global, cancellationToken).ConfigureAwait(false);
+
+                    await GuildMemoryAccess.ValidateSourceProvenanceAsync(connection, transaction, GuildMemoryStore.Saga,
+                        provenance, options.CurrentValue, cancellationToken).ConfigureAwait(false);
 
                     // The one chokepoint every Saga write goes through, so extraction cannot re-add what an
                     // operator just retired and no future writer can reach around the check by calling
@@ -262,7 +285,9 @@ internal sealed partial class SagaMemoryStore(
                             cancellationToken).ConfigureAwait(false);
                     }
 
-                    if (options.CurrentValue.Features.Annals)
+                    string? immutableVersionId = null;
+
+                    if (options.CurrentValue.Features.Annals || GuildMemoryAccess.IsGuildInvocation)
                     {
                         // Inside the memory's own transaction, and reusing the scope the classifier just
                         // derived rather than deriving a second one. Two derivations of one authority
@@ -274,7 +299,7 @@ internal sealed partial class SagaMemoryStore(
                         // to state. The operator's curation verbs append their own OperatorStated versions over
                         // a memory this path already wrote; they never open a claim as an assertion of their
                         // own, which is why this origin stays the only one an insert can record.
-                        _ = await AnnalsClaimWriter.AppendAssertAsync(
+                        immutableVersionId = await AnnalsClaimWriter.AppendAssertAsync(
                             connection,
                             transaction,
                             AnnalSubjectStore.Saga,
@@ -283,11 +308,19 @@ internal sealed partial class SagaMemoryStore(
                             scopeKind,
                             scopeCampaignId,
                             ContentSensitivity.None,
+                            AnnalContentHashFormat.LegacyStoreDigest,
                             AnnalContentDigest.ForSagaMemory(content),
                             createdAt,
                             createdAt,
                             sessionId,
-                            cancellationToken).ConfigureAwait(false);
+                            cancellationToken,
+                            legacySchema: true).ConfigureAwait(false);
+                    }
+
+                    if (immutableVersionId is not null)
+                    {
+                        await GuildMemoryAccess.RecordAttributionAsync(connection, transaction, GuildMemoryStore.Saga,
+                            id, immutableVersionId, cancellationToken).ConfigureAwait(false);
                     }
 
                     byte[] blob = EmbeddingBlobCodec.Encode(embedding);
@@ -313,6 +346,13 @@ internal sealed partial class SagaMemoryStore(
                     await QuantizedEmbeddingStore.UpsertAsync(connection, transaction, "saga_memory_embeddings",
                         id, embedding, cancellationToken).ConfigureAwait(false);
 
+                    await GuildMemoryAccess.ValidateMutationAsync(connection, transaction, GuildMemoryStore.Saga,
+                        GuildMemoryOperation.Append, Guid.TryParse(scopeCampaignId, out Guid commitCampaign) ? commitCampaign : null,
+                        scopeKind == SagaMemoryScopeKind.Global, cancellationToken).ConfigureAwait(false);
+
+                    await GuildMemoryAccess.ValidateSourceProvenanceAsync(connection, transaction, GuildMemoryStore.Saga,
+                        provenance, options.CurrentValue, cancellationToken).ConfigureAwait(false);
+
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                     return SagaMemoryWriteOutcome.Written;
@@ -323,6 +363,8 @@ internal sealed partial class SagaMemoryStore(
 
     public async Task<int> CountAsync(CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -341,6 +383,8 @@ internal sealed partial class SagaMemoryStore(
 
     public async Task<int> CountBySessionAsync(Guid sessionId, CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -370,6 +414,8 @@ internal sealed partial class SagaMemoryStore(
         int offset,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         return await ReadLongRestSnapshotAsync(
             async (connection, longRest) =>
             {
@@ -406,6 +452,8 @@ internal sealed partial class SagaMemoryStore(
         string? query, Guid? sessionId, MemoryScope scope, int limit, int offset,
         SagaMemoryPosition? after, CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         return await ReadLongRestSnapshotAsync(
             async (connection, longRest) =>
             {
@@ -443,6 +491,8 @@ internal sealed partial class SagaMemoryStore(
         int limit,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         // SQLite reads a negative LIMIT as "no limit", so a bad value here would not fail, it would read
         // the whole table into one page.
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
@@ -533,6 +583,8 @@ internal sealed partial class SagaMemoryStore(
                         INNER JOIN "saga_memories" m ON m."Id" = e."MemoryId"
                         WHERE m."RetiredAtUtc" IS NULL
                           AND {LongRestRecallSql.Eligible("m", longRest)}
+                          AND {GuildMemoryAccess.SqlScope(cmd, GuildMemoryStore.Saga, GuildMemoryOperation.Read, "m.CampaignId", "m.ScopeKindCode")}
+                          AND {SagaCleanRecallSql.GuildEligible("m")}
                           AND (@enforced = 0
                                OR m.ScopeKindCode = @globalScopeKind
                                OR (m.ScopeKindCode = @campaignScopeKind AND m.CampaignId = @campaignId)))
@@ -633,7 +685,8 @@ internal sealed partial class SagaMemoryStore(
 
         sql.Append(SagaRankingReader.Join(longRest));
 
-        sql.Append("\nWHERE 1 = 1");
+        sql.Append("\nWHERE 1 = 1 AND ").Append(GuildMemoryAccess.SqlScope(cmd,
+            GuildMemoryStore.Saga, GuildMemoryOperation.Read, "m.CampaignId", "m.ScopeKindCode"));
 
         if (!string.IsNullOrWhiteSpace(query))
         {
@@ -684,34 +737,9 @@ internal sealed partial class SagaMemoryStore(
         {
             // The predicates precede LIMIT and content hydration. Historical label keys are not in
             // the governed GUID spelling family, so all aliases are excluded conservatively.
-            sql.Append(" AND m.\"RetiredAtUtc\" IS NULL AND EXISTS(SELECT 1 FROM saga_memory_embeddings clean_embedding WHERE clean_embedding.MemoryId = m.\"Id\")");
+            sql.Append(" AND ").Append(SagaCleanRecallSql.Eligible("m"));
 
             sql.Append(" AND ").Append(LongRestRecallSql.Eligible("m", longRest));
-
-            sql.Append("""
-                 AND NOT EXISTS(SELECT 1 FROM artifact_sensitivity clean_label WHERE clean_label.ArtifactKindCode = 6
-                     AND lower(replace(clean_label.ArtifactId, '-', '')) = lower(replace(m."Id", '-', '')))
-                 AND NOT EXISTS(
-                     SELECT 1 FROM annal_claims clean_claim
-                     LEFT JOIN annal_heads clean_head ON clean_head.ClaimId = clean_claim.ClaimId AND clean_head.SubjectStoreCode = 1
-                     LEFT JOIN annal_versions clean_version ON clean_version.VersionId = clean_head.CurrentVersionId AND clean_version.ClaimId = clean_claim.ClaimId
-                     WHERE clean_claim.SubjectStoreCode = 1
-                         AND lower(replace(clean_claim.SubjectId, '-', '')) = lower(replace(m."Id", '-', ''))
-                         AND (clean_head.CurrentVersionId IS NULL OR clean_version.VersionId IS NULL OR clean_version.SensitivityCode <> 0
-                             OR clean_head.CurrentOperationCode = 3 OR clean_version.OperationCode = 3
-                             OR clean_version.ScopeKindCode <> m.ScopeKindCode
-                             OR COALESCE(lower(replace(clean_version.CampaignId, '-', '')), '') <> COALESCE(lower(replace(m.CampaignId, '-', '')), '')
-                             OR EXISTS(SELECT 1 FROM owner_deletion_events clean_source_deleted
-                                 WHERE clean_source_deleted.OwnerKindCode = 2
-                                     AND lower(replace(clean_source_deleted.OwnerId, '-', '')) = lower(replace(clean_version.SourceSessionId, '-', '')))))
-                 AND (m.CampaignId IS NULL OR EXISTS(SELECT 1 FROM "Campaigns" clean_campaign WHERE clean_campaign."Id" = m.CampaignId))
-                 AND (m.SessionId IS NULL OR EXISTS(SELECT 1 FROM "Sessions" clean_session WHERE lower(replace(clean_session."Id", '-', '')) = lower(replace(m.SessionId, '-', ''))))
-                 AND NOT EXISTS(SELECT 1 FROM owner_deletion_events clean_deleted
-                     WHERE (clean_deleted.OwnerKindCode = 1 AND lower(replace(clean_deleted.OwnerId, '-', '')) = lower(replace(m.CampaignId, '-', '')))
-                         OR (clean_deleted.OwnerKindCode = 2 AND lower(replace(clean_deleted.OwnerId, '-', '')) = lower(replace(m.SessionId, '-', '')))
-                         OR (clean_deleted.OwnerKindCode = 1 AND EXISTS(SELECT 1 FROM "Sessions" clean_source_session
-                             WHERE lower(replace(clean_source_session."Id", '-', '')) = lower(replace(m.SessionId, '-', '')) AND clean_source_session.CampaignId = clean_deleted.OwnerId)))
-                """);
         }
 
         if (after is not null)
@@ -780,6 +808,8 @@ internal sealed partial class SagaMemoryStore(
                     {SagaRankingReader.Join(longRest)}
                     WHERE m."Id" IN ({string.Join(", ", parameterNames)})
                         AND m."RetiredAtUtc" IS NULL AND {LongRestRecallSql.Eligible("m", longRest)}
+                        AND {GuildMemoryAccess.SqlScope(cmd, GuildMemoryStore.Saga, GuildMemoryOperation.Read, "m.CampaignId", "m.ScopeKindCode")}
+                          AND {SagaCleanRecallSql.GuildEligible("m")}
                     """;
 
                 Dictionary<string, SagaMemoryDto> results = new(ids.Count, StringComparer.Ordinal);
@@ -803,6 +833,8 @@ internal sealed partial class SagaMemoryStore(
 
     public async Task<bool> DeleteAsync(string id, CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
 
         return await SqliteBusyRetry.ExecuteAsync(
@@ -894,6 +926,8 @@ internal sealed partial class SagaMemoryStore(
 
     public async Task DeleteAllAsync(CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
 
         await SqliteBusyRetry.ExecuteAsync(
@@ -976,6 +1010,8 @@ internal sealed partial class SagaMemoryStore(
 
     public async Task<SagaStats> GetStatsAsync(CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -1019,6 +1055,8 @@ internal sealed partial class SagaMemoryStore(
 
     public async Task<DateTimeOffset?> GetWatermarkAsync(Guid sessionId, CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         return await SqliteBusyRetry.ExecuteAsync<DateTimeOffset?>(
             async () =>
             {
@@ -1052,6 +1090,8 @@ internal sealed partial class SagaMemoryStore(
         Guid sessionId,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         return await SqliteBusyRetry.ExecuteAsync<SagaExtractionCursor?>(
             async () =>
             {
@@ -1089,6 +1129,8 @@ internal sealed partial class SagaMemoryStore(
         SagaExtractionCursor cursor,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         ArgumentNullException.ThrowIfNull(cursor);
 
         ArgumentOutOfRangeException.ThrowIfNegative(cursor.EntrySequence);
@@ -1109,6 +1151,8 @@ internal sealed partial class SagaMemoryStore(
 
     public Task SetWatermarkAsync(Guid sessionId, DateTimeOffset lastExtractedEntryCreatedAt, CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -1195,6 +1239,12 @@ internal sealed partial class SagaMemoryStore(
     }
 
     private Task<T> ReadLongRestSnapshotAsync<T>(
+        Func<DbConnection, bool, Task<T>> read,
+        CancellationToken cancellationToken) =>
+        GuildMemoryAccess.RunAsync(GuildMemoryStore.Saga, GuildMemoryOperation.Read,
+            token => ReadLongRestSnapshotCoreAsync(read, token), cancellationToken);
+
+    private Task<T> ReadLongRestSnapshotCoreAsync<T>(
         Func<DbConnection, bool, Task<T>> read,
         CancellationToken cancellationToken) =>
         SqliteBusyRetry.ExecuteAsync(async () =>

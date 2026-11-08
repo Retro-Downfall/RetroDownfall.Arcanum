@@ -8,7 +8,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class MemoryDelegationWriterInventoryTests
 {
     [Theory]
-    [InlineData("Data/SagaMemoryStore.cs", "InsertCoreAsync")]
+    [InlineData("Data/SagaMemoryStore.cs", "InsertAdmittedAsync")]
     [InlineData("Data/SagaMemoryStore.cs", "DeleteAsync")]
     [InlineData("Data/SagaMemoryStore.cs", "DeleteAllAsync")]
     [InlineData("Data/SagaMemoryStore.Curation.cs", "RetireAsync")]
@@ -16,7 +16,7 @@ public sealed class MemoryDelegationWriterInventoryTests
     [InlineData("Data/SagaMemoryStore.Curation.cs", "CorrectAsync")]
     [InlineData("Data/SagaMemoryStore.Curation.cs", "SetPinAsync")]
     [InlineData("Lexicon/LexiconService.cs", "UpsertCoreAsync")]
-    [InlineData("Lexicon/LexiconService.cs", "DeleteByNameAsync")]
+    [InlineData("Lexicon/LexiconService.cs", "DeleteByNameCoreAsync")]
     [InlineData("Lexicon/LexiconService.Lifecycle.cs", "ChangeLifecycleAsync")]
     [InlineData("Lexicon/LexiconService.Correction.cs", "CorrectAsync")]
     [InlineData("Lexicon/LexiconService.MemoryReview.cs", "ApplyAsync")]

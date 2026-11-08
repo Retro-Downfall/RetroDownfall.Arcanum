@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Core.Guild;
 using Microsoft.Extensions.AI;
 
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -41,6 +43,11 @@ public sealed partial class WizardIntelligenceProvider
         CancellationToken cancellationToken)
 
     {
+        if (GuildMemoryAccess.IsGuildInvocation)
+        {
+            return Result<ContextPreviewResult>.Failure(GuildContextUnavailable);
+        }
+
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(invocationContext);

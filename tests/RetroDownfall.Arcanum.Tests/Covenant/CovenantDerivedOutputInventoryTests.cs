@@ -184,6 +184,8 @@ public sealed class CovenantDerivedOutputInventoryTests
 
             Assert.Equal(annals.Select(s => s.RequiredFromCoreVersion), claimed.Select(t => t.RequiredFromCoreVersion));
 
+            Assert.Equal(annals.Select(s => s.OptionalTable), claimed.Select(t => t.OptionalTable));
+
             Assert.DoesNotContain(plan.Projections, t => t.AnnalStore is null && annals.Any(s => s.Table == t.Table));
 
             IReadOnlyList<AnnalsErasureStep> subject = AnnalsErasurePlan.ForSubjectQuery(

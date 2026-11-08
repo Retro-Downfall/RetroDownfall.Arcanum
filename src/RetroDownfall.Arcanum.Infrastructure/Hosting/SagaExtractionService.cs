@@ -20,6 +20,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
@@ -279,6 +280,15 @@ public sealed class SagaExtractionService : BackgroundService
     /// </summary>
     public void EnqueueExtraction(SagaExtractionRequest request)
     {
+        if (GuildMemoryAccess.IsGuildInvocation)
+        {
+            _logger.LogInformation(
+                "Saga extraction skipped for session {SessionId}: the Guild background queue authority boundary is unavailable; optional append was not enqueued.",
+                request.SessionId);
+
+            return;
+        }
+
         if (request.AfterEntrySequenceExclusive < 0
             || request.ThroughEntrySequence <= request.AfterEntrySequenceExclusive)
         {

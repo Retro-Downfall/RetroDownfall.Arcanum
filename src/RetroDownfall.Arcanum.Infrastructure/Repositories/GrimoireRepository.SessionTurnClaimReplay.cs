@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 /// <summary>Proves a native claimed reply clean before reading its body in the same SQL snapshot.</summary>
@@ -19,6 +21,8 @@ public sealed partial class GrimoireRepository : ISessionTurnClaimReplayStore
         SessionTurnClaimLease claimLease,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         ArgumentNullException.ThrowIfNull(claimLease);
 
         if (claimLease.Disposition is not SessionTurnClaimDisposition.Replayed

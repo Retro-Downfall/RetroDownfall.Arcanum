@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Core.Guild;
 using System.Data.Common;
 
 using Microsoft.Data.Sqlite;
@@ -24,6 +26,8 @@ internal sealed partial class TapestryStore
     public Task<Result<TapestryRetrievalGraph>> ReadRetrievalGraphAsync(TapestryGenerationAccess access, CancellationToken cancellationToken) =>
         SqliteBusyRetry.ExecuteAsync(async () =>
         {
+            GuildMemoryAccess.DemandOperator();
+
             DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -151,6 +155,8 @@ internal sealed partial class TapestryStore
         TapestryRetrievalGraph graph, IReadOnlyList<string>? nodeIds, int limit, CancellationToken cancellationToken) =>
         SqliteBusyRetry.ExecuteAsync(async () =>
         {
+            GuildMemoryAccess.DemandOperator();
+
             ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
 
             if (!ValidVector(queryVector, access.Identity.EmbeddingDimension))
@@ -297,6 +303,8 @@ internal sealed partial class TapestryStore
         IReadOnlyList<string> nodeIds, CancellationToken cancellationToken) =>
         SqliteBusyRetry.ExecuteAsync(async () =>
         {
+            GuildMemoryAccess.DemandOperator();
+
             DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);

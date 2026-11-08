@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.MemoryDelegation;
@@ -14,6 +15,11 @@ internal sealed class MemoryDelegationSourceReader(ICovenantConnectionSource con
 
     public async Task<Result<MemoryEvaluationSourceSnapshot>> ReadAsync(MemoryDelegationGrant grant, ArcanumInvocationContext parent, CovenantTurnLease lease, CancellationToken ct)
     {
+        if (GuildMemoryAccess.IsGuildInvocation)
+        {
+            return new Error(ErrorCodes.Guild.AuthorityUnavailable, "Selected memory delegation has no Guild destination and protected-release adapter.");
+        }
+
         if (!MemoryDelegationDigests.IsValid(grant))
         {
             return new Error(ErrorCodes.MemoryDelegation.InvalidGrant, "The memory delegation grant violates policy v1.");
@@ -37,6 +43,11 @@ internal sealed class MemoryDelegationSourceReader(ICovenantConnectionSource con
 
     public async Task<Result> ValidateAsync(MemoryEvaluationSourceSnapshot snapshot, CovenantTurnLease lease, CancellationToken ct)
     {
+        if (GuildMemoryAccess.IsGuildInvocation)
+        {
+            return new Error(ErrorCodes.Guild.AuthorityUnavailable, "Selected memory delegation has no Guild destination and protected-release adapter.");
+        }
+
         Result result = await _proof.ValidateAsync(snapshot, lease, ct).ConfigureAwait(false);
 
         return result.IsFailure ? Translate(result.Error) : result;

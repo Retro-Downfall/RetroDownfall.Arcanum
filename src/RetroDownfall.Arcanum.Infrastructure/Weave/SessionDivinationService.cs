@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 internal sealed class SessionDivinationService(
@@ -27,6 +29,8 @@ internal sealed class SessionDivinationService(
         float similarityThreshold,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         cancellationToken.ThrowIfCancellationRequested();
 
         if (db.Database.GetDbConnection() is not SqliteConnection scopedConnection)

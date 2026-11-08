@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Core.Guild;
 using System.Data;
 
 using System.Data.Common;
@@ -124,6 +126,8 @@ internal sealed class SessionAttachmentIndexRepository(
         int maxAttachments,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         bool comprehensionEnabled = SessionAttachmentComprehensionPolicy.IsEnabled(options.CurrentValue);
 
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -234,6 +238,8 @@ internal sealed class SessionAttachmentIndexRepository(
         int attempt,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         if (attachment.SessionId is not { } sessionId)
         {
             throw new InvalidOperationException("Only bound session attachments can be marked pending.");
@@ -299,6 +305,8 @@ internal sealed class SessionAttachmentIndexRepository(
         DateTimeOffset? extractedAt,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken)
@@ -346,6 +354,8 @@ internal sealed class SessionAttachmentIndexRepository(
         DateTimeOffset extractedAt,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         if (attachment.SessionId is null)
         {
             throw new InvalidOperationException("Only bound session attachments can be indexed.");
@@ -468,6 +478,8 @@ internal sealed class SessionAttachmentIndexRepository(
         DateTimeOffset indexedAt,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         if (attachment.SessionId is null)
         {
             throw new InvalidOperationException("Only bound session attachments can be indexed.");
@@ -617,6 +629,8 @@ internal sealed class SessionAttachmentIndexRepository(
         int attempt,
         CancellationToken cancellationToken)
     {
+        GuildMemoryAccess.DemandOperator();
+
         if (attachment.SessionId is not { } sessionId)
         {
             throw new InvalidOperationException("Only bound session attachments can be indexed.");
@@ -774,99 +788,152 @@ internal sealed class SessionAttachmentIndexRepository(
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    private void AddGuildChunkScope(DbCommand command, string sessionExpression, bool content = false)
+    {
+        if (!GuildMemoryAccess.IsGuildInvocation)
+        {
+            return;
+        }
+
+        string predicate = GuildMemoryAccess.SqlSession(command, GuildMemoryStore.Attachment, GuildMemoryOperation.Read, sessionExpression);
+
+        if (content)
+        {
+            predicate += " AND " + SessionAttachmentGuildReadPolicy.Indexed("session_attachment_chunks");
+
+            if (!SessionAttachmentComprehensionPolicy.IsEnabled(options.CurrentValue))
+            {
+                predicate += $" AND {SessionAttachmentDocumentMimeSql.NormalizedExpression("session_attachment_chunks.MimeType")} NOT IN ({SessionAttachmentDocumentMimeSql.ParameterList})";
+
+                foreach (KeyValuePair<string, string> documentMime in SessionAttachmentDocumentMimeSql.Parameters)
+                {
+                    AddParameter(command, documentMime.Key, documentMime.Value);
+                }
+            }
+        }
+
+        int where = command.CommandText.IndexOf("WHERE ", StringComparison.Ordinal);
+
+        if (where < 0)
+        {
+            throw new InvalidOperationException("An attachment index read has no scoped predicate boundary.");
+        }
+
+        command.CommandText = command.CommandText.Insert(where + 6, $"({predicate}) AND ");
+    }
+
     public async Task<SessionAttachmentIndexState> GetStateAsync(
         Guid attachmentId,
         CancellationToken cancellationToken)
     {
-        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-        await using DbCommand command = connection.CreateCommand();
-
-        command.CommandText =
-            """
-            SELECT AttachmentId, Status, ContentSha256, AttemptCount, FailureReason,
-                   ExtractedAt, IndexedAt, PublishedGenerationId, PendingGenerationId,
-                   NextChunkIndex, PendingEmbeddingDimension, PendingPipelineFingerprint,
-                   PendingExtractedAt, UpdatedAt
-            FROM session_attachment_index_state
-            WHERE AttachmentId = @attachmentId
-            """;
-
-        AddParameter(command, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
-
-        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        return await GuildMemoryAccess.RunAsync<SessionAttachmentIndexState>(GuildMemoryStore.Attachment, GuildMemoryOperation.Read, async guildToken =>
         {
-            throw new InvalidOperationException($"No attachment indexing state exists for '{attachmentId}'.");
-        }
+            DbConnection connection = await OpenConnectionAsync(guildToken).ConfigureAwait(false);
 
-        return ReadState(reader);
+            await using DbCommand command = connection.CreateCommand();
+
+            command.CommandText =
+                """
+                SELECT AttachmentId, Status, ContentSha256, AttemptCount, FailureReason,
+                       ExtractedAt, IndexedAt, PublishedGenerationId, PendingGenerationId,
+                       NextChunkIndex, PendingEmbeddingDimension, PendingPipelineFingerprint,
+                       PendingExtractedAt, UpdatedAt
+                FROM session_attachment_index_state
+                WHERE AttachmentId = @attachmentId
+                """;
+
+            AddParameter(command, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
+
+            AddGuildChunkScope(command, $"(SELECT a.SessionId FROM SessionAttachments a WHERE a.Id = session_attachment_index_state.AttachmentId COLLATE NOCASE AND a.State = 'Bound' AND {SessionAttachmentGuildReadPolicy.Eligible("a")})");
+
+            await using DbDataReader reader = await command.ExecuteReaderAsync(guildToken).ConfigureAwait(false);
+
+            if (!await reader.ReadAsync(guildToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException($"No attachment indexing state exists for '{attachmentId}'.");
+            }
+
+            return ReadState(reader);
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyDictionary<Guid, SessionAttachmentIndexStatus>> GetStatusesAsync(
         IReadOnlyList<Guid> attachmentIds,
         CancellationToken cancellationToken)
     {
-        if (attachmentIds.Count == 0)
+        return await GuildMemoryAccess.RunAsync<IReadOnlyDictionary<Guid, SessionAttachmentIndexStatus>>(GuildMemoryStore.Attachment, GuildMemoryOperation.Read, async guildToken =>
         {
-            return new Dictionary<Guid, SessionAttachmentIndexStatus>();
-        }
+            if (attachmentIds.Count == 0)
+            {
+                return new Dictionary<Guid, SessionAttachmentIndexStatus>();
+            }
 
-        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            DbConnection connection = await OpenConnectionAsync(guildToken).ConfigureAwait(false);
 
-        await using DbCommand command = connection.CreateCommand();
+            await using DbCommand command = connection.CreateCommand();
 
-        // Rendered here rather than left to BuildInCommand's Guid branch. That branch is a funnel every
-        // list-valued predicate in this file shares, and uppercasing inside it would convert whatever a
-        // later caller happens to pass - including the chunk columns that hold a Session identity in the
-        // minority form on purpose. The conversion belongs to the column, so it is made where the column
-        // is known.
-        string[] canonicalAttachmentIds =
-            [.. attachmentIds.Select(static id => id.ToString().ToUpperInvariant())];
+            // Rendered here rather than left to BuildInCommand's Guid branch. That branch is a funnel every
+            // list-valued predicate in this file shares, and uppercasing inside it would convert whatever a
+            // later caller happens to pass - including the chunk columns that hold a Session identity in the
+            // minority form on purpose. The conversion belongs to the column, so it is made where the column
+            // is known.
+            string[] canonicalAttachmentIds =
+                [.. attachmentIds.Select(static id => id.ToString().ToUpperInvariant())];
 
-        command.CommandText = BuildInCommand(
-            "SELECT AttachmentId, Status FROM session_attachment_index_state WHERE AttachmentId IN (",
-            canonicalAttachmentIds,
-            command,
-            ")");
+            command.CommandText = BuildInCommand(
+                "SELECT AttachmentId, Status FROM session_attachment_index_state WHERE AttachmentId IN (",
+                canonicalAttachmentIds,
+                command,
+                ")");
 
-        Dictionary<Guid, SessionAttachmentIndexStatus> statuses = [];
+            Dictionary<Guid, SessionAttachmentIndexStatus> statuses = [];
 
-        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            AddGuildChunkScope(command, $"(SELECT a.SessionId FROM SessionAttachments a WHERE a.Id = session_attachment_index_state.AttachmentId COLLATE NOCASE AND a.State = 'Bound' AND {SessionAttachmentGuildReadPolicy.Eligible("a")})");
 
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            statuses[Guid.Parse(reader.GetString(0))] = Enum.Parse<SessionAttachmentIndexStatus>(
-                reader.GetString(1),
-                ignoreCase: false);
-        }
+            await using DbDataReader reader = await command.ExecuteReaderAsync(guildToken).ConfigureAwait(false);
 
-        return statuses;
+            while (await reader.ReadAsync(guildToken).ConfigureAwait(false))
+            {
+                statuses[Guid.Parse(reader.GetString(0))] = Enum.Parse<SessionAttachmentIndexStatus>(
+                    reader.GetString(1),
+                    ignoreCase: false);
+            }
+
+            return statuses;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<SessionAttachmentIndexedChunk[]> GetChunksForAttachmentAsync(
         Guid attachmentId,
         CancellationToken cancellationToken)
     {
-        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        return await GuildMemoryAccess.RunAsync<SessionAttachmentIndexedChunk[]>(GuildMemoryStore.Attachment, GuildMemoryOperation.Read, async guildToken =>
+        {
+            DbConnection connection = await OpenConnectionAsync(guildToken).ConfigureAwait(false);
 
-        await using DbCommand command = connection.CreateCommand();
+            await using DbCommand command = connection.CreateCommand();
 
-        command.CommandText =
-            """
-            SELECT ChunkId, SessionId, AttachmentId, LogicalKey, Version, OriginalFileName,
-                   MimeType, ContentSha256, ChunkIndex, CharacterStart, CharacterEnd,
-                   StartLine, EndLine, Content, EmbeddingDimension, ExtractedAt, IndexedAt,
-                   RetrievalScope
-            FROM session_attachment_chunks
-            WHERE AttachmentId = @attachmentId
-            ORDER BY ChunkIndex
-            """;
+            command.CommandText =
+                """
+                SELECT ChunkId, SessionId, AttachmentId, LogicalKey, Version, OriginalFileName,
+                       MimeType, ContentSha256, ChunkIndex, CharacterStart, CharacterEnd,
+                       StartLine, EndLine, Content, EmbeddingDimension, ExtractedAt, IndexedAt,
+                       RetrievalScope
+                FROM session_attachment_chunks
+                WHERE AttachmentId = @attachmentId
+                ORDER BY ChunkIndex
+                """;
 
-        AddParameter(command, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
+            AddParameter(command, "@attachmentId", attachmentId.ToString().ToUpperInvariant());
 
-        return await ReadChunksAsync(command, cancellationToken).ConfigureAwait(false);
+            AddGuildChunkScope(command, "session_attachment_chunks.SessionId", content: true);
+
+            SessionAttachmentIndexedChunk[] chunks = await ReadChunksAsync(command, guildToken).ConfigureAwait(false);
+
+            return !GuildMemoryAccess.IsGuildInvocation || SessionAttachmentComprehensionPolicy.IsEnabled(options.CurrentValue)
+                ? chunks
+                : chunks.Where(static chunk => !SessionAttachmentComprehensionPolicy.TryGetFormat(chunk.MimeType, out _)).ToArray();
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<SessionAttachmentRetrievedChunk[]> GetRetrievedChunksAsync(
@@ -874,63 +941,72 @@ internal sealed class SessionAttachmentIndexRepository(
         IReadOnlyList<DivinationResult> hits,
         CancellationToken cancellationToken)
     {
-        if (hits.Count == 0)
+        return await GuildMemoryAccess.RunAsync<SessionAttachmentRetrievedChunk[]>(GuildMemoryStore.Attachment, GuildMemoryOperation.Read, async guildToken =>
         {
-            return [];
-        }
+            if (hits.Count == 0)
+            {
+                return [];
+            }
 
-        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            DbConnection connection = await OpenConnectionAsync(guildToken).ConfigureAwait(false);
 
-        await using DbCommand command = connection.CreateCommand();
+            await using DbCommand command = connection.CreateCommand();
 
-        List<string> ids = [.. hits.Select(static hit => hit.Id)];
+            List<string> ids = [.. hits.Select(static hit => hit.Id)];
 
-        string suffix = ") AND SessionId = @sessionId";
+            string suffix = ") AND SessionId = @sessionId";
 
-        command.CommandText = BuildInCommand(
-            """
-            SELECT ChunkId, SessionId, AttachmentId, LogicalKey, Version, OriginalFileName,
-                   MimeType, ContentSha256, ChunkIndex, CharacterStart, CharacterEnd,
-                   StartLine, EndLine, Content
-            FROM session_attachment_chunks
-            WHERE ChunkId IN (
-            """,
-            ids,
-            command,
-            suffix);
+            command.CommandText = BuildInCommand(
+                """
+                SELECT ChunkId, SessionId, AttachmentId, LogicalKey, Version, OriginalFileName,
+                       MimeType, ContentSha256, ChunkIndex, CharacterStart, CharacterEnd,
+                       StartLine, EndLine, Content
+                FROM session_attachment_chunks
+                WHERE ChunkId IN (
+                """,
+                ids,
+                command,
+                suffix);
 
-        AddParameter(command, "@sessionId", sessionId.ToString());
+            AddParameter(command, "@sessionId", sessionId.ToString());
 
-        Dictionary<string, SessionAttachmentRetrievedChunk> byId = new(StringComparer.Ordinal);
+            Dictionary<string, SessionAttachmentRetrievedChunk> byId = new(StringComparer.Ordinal);
 
-        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            AddGuildChunkScope(command, "session_attachment_chunks.SessionId", content: true);
 
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            string chunkId = reader.GetString(0);
+            await using DbDataReader reader = await command.ExecuteReaderAsync(guildToken).ConfigureAwait(false);
 
-            byId[chunkId] = new SessionAttachmentRetrievedChunk(
-                chunkId,
-                Guid.Parse(reader.GetString(1)),
-                Guid.Parse(reader.GetString(2)),
-                reader.GetString(3),
-                reader.GetInt32(4),
-                reader.GetString(5),
-                reader.GetString(6),
-                reader.GetString(7),
-                reader.GetInt32(8),
-                reader.GetInt32(9),
-                reader.GetInt32(10),
-                reader.GetInt32(11),
-                reader.GetInt32(12),
-                reader.GetString(13),
-                Similarity: 0f);
-        }
+            while (await reader.ReadAsync(guildToken).ConfigureAwait(false))
+            {
+                string chunkId = reader.GetString(0);
 
-        return hits
-            .Where(hit => byId.ContainsKey(hit.Id))
-            .Select(hit => byId[hit.Id] with { Similarity = hit.Similarity })
-            .ToArray();
+                byId[chunkId] = new SessionAttachmentRetrievedChunk(
+                    chunkId,
+                    Guid.Parse(reader.GetString(1)),
+                    Guid.Parse(reader.GetString(2)),
+                    reader.GetString(3),
+                    reader.GetInt32(4),
+                    reader.GetString(5),
+                    reader.GetString(6),
+                    reader.GetString(7),
+                    reader.GetInt32(8),
+                    reader.GetInt32(9),
+                    reader.GetInt32(10),
+                    reader.GetInt32(11),
+                    reader.GetInt32(12),
+                    reader.GetString(13),
+                    Similarity: 0f);
+            }
+
+            SessionAttachmentRetrievedChunk[] chunks = hits
+                .Where(hit => byId.ContainsKey(hit.Id))
+                .Select(hit => byId[hit.Id] with { Similarity = hit.Similarity })
+                .ToArray();
+
+            return !GuildMemoryAccess.IsGuildInvocation || SessionAttachmentComprehensionPolicy.IsEnabled(options.CurrentValue)
+                ? chunks
+                : chunks.Where(static chunk => !SessionAttachmentComprehensionPolicy.TryGetFormat(chunk.MimeType, out _)).ToArray();
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task<string?> GetPublishedGenerationIdAsync(

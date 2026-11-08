@@ -31,6 +31,19 @@ def step(body, name):
 
 
 class CiScopeWorkflowTests(unittest.TestCase):
+    def test_focused_guild_profile_is_explicit_and_does_not_claim_full_authority(self):
+        source = WORKFLOW.read_text()
+        self.assertIn("default: full", source)
+        focused = job("guild-memory")
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.qualification == 'guild-memory'", focused)
+        self.assertIn("run: ./scripts/qualify-guild-memory.sh", focused)
+        self.assertNotIn("continue-on-error", focused)
+        for name in ("build-test", *WORKERS, "hosted-producer-analysis", "windows-suite",
+                     "windows-arm64-suite", "aot-il", "macos-workspace-check"):
+            with self.subTest(job=name):
+                self.assertRegex(job(name), r"(?m)^    if: .*inputs\.qualification != 'guild-memory'")
+        self.assertNotRegex(job("static-analysis"), r"(?m)^    if:")
+
     def test_scope_uses_event_shas_and_full_history_without_shell_interpolation(self):
         body = job("scope")
         self.assertIn("fetch-depth: 0", body)
@@ -61,7 +74,7 @@ class CiScopeWorkflowTests(unittest.TestCase):
         body = job("build-test")
         self.assertIn("name: Build, test, coverage", body)
         self.assertIn("needs: [sdk, scope]", body)
-        self.assertNotRegex(body, r"(?m)^    if:")
+        self.assertIn("if: inputs.qualification != 'guild-memory'", body)
         docs = step(body, "Test documentation contracts")
         self.assertIn("if: needs.scope.outputs.full == 'false'", docs)
         self.assertIn("set -euo pipefail", docs)

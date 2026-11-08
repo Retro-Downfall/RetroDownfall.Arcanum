@@ -878,7 +878,7 @@ Reliable-editing-loop focused filters and platform notes are in [DESIGN §13.6](
 
 ---
 
-CI uses a conservative documentation-only path for pull requests that change only regular, nonexecutable root README/agent guidance or direct Markdown files under `docs/`. `scripts/ci_scope.py` validates the exact checked-out PR merge and both event parents before selecting it. Every other path, invalid comparison, and manual dispatch requires full qualification. The existing build check runs documentation/source contracts and both desktop suites; formatting/lint remains required. Native and producer-worker skips on this path mean those checks are inapplicable to a documentation-only change, not that new native evidence exists. The source-analysis authority requires successful classification, successful documentation validation, and all five workers skipped before accepting that branch. See DESIGN §13.1 for the exact boundary.
+CI uses a conservative documentation-only path for pull requests that change only regular, nonexecutable root README/agent guidance or direct Markdown files under `docs/`. `scripts/ci_scope.py` validates the exact checked-out PR merge and both event parents before selecting it. Every other path and invalid comparison requires full qualification; manual dispatch defaults to full, with the explicitly selected Guild memory profile below providing focused evidence only. The existing build check runs documentation/source contracts and both desktop suites; formatting/lint remains required. Native and producer-worker skips on this path mean those checks are inapplicable to a documentation-only change, not that new native evidence exists. The source-analysis authority requires successful classification, successful documentation validation, and all five workers skipped before accepting that branch. See DESIGN §13.1 for the exact boundary.
 
 Both Windows lanes retain full native test coverage for full qualification. Their warning-free shipping verifier retains its exact apphost for the AppContainer broker smoke, eliminating a separate broker publish. Native diagnostic audits remain separate because they deliberately enable the dependency diagnostics that the ordinary shipping profile suppresses.
 
@@ -915,10 +915,11 @@ The [recorded MEAI qualification run](https://github.com/Retro-Downfall/RetroDow
 
 ### Release-qualification evidence
 
-A release is qualified by the artifacts a CI run leaves behind, not by a reviewer's recollection that the run was green. This is the complete set of artifacts `.github/workflows/ci.yml` uploads during full qualification, and it is the checklist a release qualification is read against. Documentation-only qualification does not produce this complete evidence and cannot stand in for it:
+A release is qualified by the artifacts a CI run leaves behind, not by a reviewer's recollection that the run was green. This is the complete inventory of artifacts `.github/workflows/ci.yml` can upload. Full qualification produces the release evidence below except for `guild-memory-qualification`, which belongs only to the explicit focused Guild memory profile. Documentation-only and focused qualification do not produce the full release evidence and cannot stand in for it:
 
 ```text
 arcanum-coverage-report
+guild-memory-qualification
 hosted-producer-primary-analysis
 hosted-producer-additional-analysis
 hosted-producer-fixture-analysis
@@ -934,6 +935,8 @@ windows-quantized-search-win-arm64
 ```
 
 `arcanum-coverage-report` carries the Cobertura XML plus the rendered HTML report for the run. Each `hosted-producer-*-analysis` bundle is the evidence of one source-analysis partition (its source-SHA-bound selection receipt and TRX), and `hosted-producer-analysis-authority` is the reconciled summary that proves the five partitions together cover the whole universe. `covenant-benchmark-run` carries the measured Covenant benchmark run the gate was evaluated against, so a later comparison can be made against the numbers a specific commit actually produced rather than against a recollection of them; because a recorded baseline is only comparable on the host that recorded it, that artifact is what makes a same-lane comparison possible at all. `prompt-cache-fixture` carries the credential-free Native AOT prompt-cache fixture report and verdict for production construction, SDK wire semantics and invalidation checks; it does not establish live provider cache benefit. `windows-long-rest-win-x64` and `windows-long-rest-win-arm64` carry each Windows lane's native Long Rest TRX and the SDK info it asserted. `DocumentationStructureTests` asserts that this list and the workflow's upload steps are the same set in both directions, so an artifact that stops being produced fails the suite instead of quietly disappearing from a release's evidence, and an artifact added to the workflow has to be written down here before it counts.
+
+The `guild-memory-qualification` bundle carries the focused profile's TRX, SDK information, source commit and worktree status. Its success requires every named Guild memory contract suite and both factory-reset attribution cases to pass; its narrower evidence does not qualify a full release.
 
 The `windows-quantized-search-win-x64` and `windows-quantized-search-win-arm64` bundles carry the native RID's focused exact-search, codec, transaction, lifecycle, allocation and query-plan TRX plus the asserted SDK information. Each lane requires every named fixture to execute with zero failures or skips.
 
@@ -1266,3 +1269,7 @@ Persistent session context is managed with `/context`, `/context pin <kind> <tar
 **Inference flags** (`run`): `--temperature`, `--top-p`, `--max-tokens`, `--seed`, `--stop`, `--response-format` (`json` aliases `json_object`), penalties, `-C`/`--campaign`, `-w`/`--workspace`, and `-s`/`--session`. Scrying: `run --with @path`, or `@path` inside Command Center. Full option ranges, slash commands, context precedence, and exit behavior: [complete command reference](Arcanum.Command.Reference.md).
 
 The [Quest foundation](Arcanum.DESIGN.md#236-admission-dispatch-result-application-and-recovery) advances Guild alone to schema version 3. Real SQLCipher tests exercise concurrent/restarted issue replay and injected faults at generated-owner, content, LRO, Signet, allocation, dispatch-exposure, result/outbox and parent-input/application boundaries. Pure projection tests cover every ledger/evidence pairing, including contradictory terminal claims. Recovery tests cover strict checkpoint versioning, the unique production handler, known-effect observation, maintenance/lease fencing and no redispatch. Focused source fixtures prove the actual handler both on its own and beneath an existing recovery work/effect pair. Barrier tests join a pending observer before maintenance drains, stop further reads after revocation, and preserve caller cancellation when the observer returns a failure. Lifecycle tests cover retained replay denial, protected purge, reset conflicts and cross-family restore integrity. The allocation participant remains mandatory and is faked only in tests; no production no-op or executable coordinator is registered.
+
+## Focused Guild memory qualification
+
+Use `./scripts/qualify-guild-memory.sh` for the Guild memory, source lifecycle and affected retrieval regressions. Manual CI supports the explicit `qualification=guild-memory` profile and uploads commit, SDK and TRX evidence. It does not run the full coverage/source-analysis/native-publish matrix; ordinary CI dispatch still defaults to `full`. Select this narrower evidence only when the delivery scope permits it.

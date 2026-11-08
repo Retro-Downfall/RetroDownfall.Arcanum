@@ -1066,7 +1066,7 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
             "Reads a server-sent stream in the command-line client: a client process, not the process that hosts the roots."),
         (P + "Infrastructure.A2A.ArcanumA2AServer", [P + "Infrastructure.DependencyInjection.ServiceCollectionExtensions.AddArcanumInfrastructure"],
             "The A2A server object the container builds; the SDK's request handler calls its override for an inbound HTTP request."),
-        (P + "Infrastructure.Data.SessionAttachmentStore.AttachmentReadStream", [P + "Infrastructure.Data.SessionAttachmentStore.OpenReadAsync"],
+        (P + "Infrastructure.Data.SessionAttachmentStore.AttachmentReadStream", [P + "Infrastructure.Data.SessionAttachmentStore.OpenReadCoreAsync"],
             "Returned only around the already-open decrypted attachment blob in the classified attachment read. Its incremental reads verify the persisted length/digest and its disposal owns that same inner stream; it opens no new file or connection."),
         (P + "Infrastructure.Hosting.CappedOutputStream", [P + "Infrastructure.Hosting.DaemonProcessRunner.RunAsync", P + "Infrastructure.Hosting.DaemonProcessRunner.RunAsync"],
             "Caps the captured output of a daemon process, built inside the runner that IDaemonRunner.RunScheduledAsync, a classified site, calls."),

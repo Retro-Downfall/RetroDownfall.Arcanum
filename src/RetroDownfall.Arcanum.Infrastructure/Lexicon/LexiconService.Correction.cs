@@ -22,6 +22,11 @@ internal sealed partial class LexiconService
         CovenantWriteLease? writeLease,
         CancellationToken cancellationToken = default)
     {
+        if (GuildOperatorRefusal() is { } refusal)
+        {
+            return refusal;
+        }
+
         await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
 
         if (target is null || target.Validate().IsFailure)

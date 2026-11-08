@@ -31,6 +31,8 @@ internal sealed partial class DataRetentionService
 {
     private static readonly FactoryTablePlan[] FactoryPlanTables =
     [
+        new("guild_memory_attribution", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+
         new("guild_portal_inputs", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_portal_receipts", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_inbox", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
@@ -157,6 +159,8 @@ internal sealed partial class DataRetentionService
 
     private static readonly FactoryTablePlan[] FactoryDeletionTables =
     [
+        new("guild_memory_attribution", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+
         new("guild_portal_inputs", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_portal_receipts", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_inbox", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),

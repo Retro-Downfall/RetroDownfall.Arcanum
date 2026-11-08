@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Core.Guild;
 using NativeModelCallExecutor = RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor;
 using System.Buffers;
 using System.Collections.Concurrent;
@@ -660,6 +662,11 @@ public sealed partial class WizardIntelligenceProvider(
         Func<IntelligenceEvent, CancellationToken, ValueTask>?
             eventSink = null)
     {
+        if (GuildMemoryAccess.IsGuildInvocation)
+        {
+            return Result<PromptTurnResult>.Failure(GuildContextUnavailable);
+        }
+
         MemoryDelegationRootBinding? memoryDelegation = MemoryDelegationRootBinding.TryCapture(request, invocationContext);
 
         string prompt = request.Prompt;
@@ -1053,6 +1060,13 @@ public sealed partial class WizardIntelligenceProvider(
         [EnumeratorCancellation] CancellationToken cancellationToken = default,
         InferenceAuditContext? auditContext = null)
     {
+        if (GuildMemoryAccess.IsGuildInvocation)
+        {
+            yield return ErrorFrame(GuildContextUnavailable);
+
+            yield break;
+        }
+
         string prompt = request.Prompt;
 
         Result guardrailsInput = await FilterGuardrailsInputAsync(request, cancellationToken).ConfigureAwait(false);
@@ -1654,6 +1668,9 @@ public sealed partial class WizardIntelligenceProvider(
         && classification.IsConnectivityFailure
         && !classification.ProviderCommitted
         && streamedLength == 0;
+
+    private static Error GuildContextUnavailable => new(ErrorCodes.Guild.AuthorityUnavailable,
+        "The ordinary context pipeline is unavailable to Guild execution.");
 
     /// <summary>
     /// The one shape of an <c>error</c> frame for a typed failure: the message, with the failure's
