@@ -5,69 +5,49 @@ using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 namespace RetroDownfall.Arcanum.Tests.Build;
 
 /// <summary>
-/// Only <c>README.md</c>, <c>docs/Arcanum.Engineering.md</c>, and <c>docs/Arcanum.OATH.md</c> may
-/// name a tracker issue -- the first two carry the running Covenant status, which is a record of
-/// tracker work by construction. Every other
-/// reference document has to describe the constraint itself, because a reader outside the tracker
-/// cannot resolve <c>#55</c> into anything.
+/// Maintained documentation describes product contracts and verification without depending on
+/// issue identifiers, tracker links, or delivery bookkeeping.
 /// </summary>
-/// <remarks>
-/// <para>An inventory assertion rather than a behavior test: the failure it prevents is a new sentence,
-/// written while the work item is still fresh in the author's head, that becomes unreadable the moment
-/// the tracker is no longer at hand. It found exactly that — four descriptions of one clamp record that
-/// explained themselves purely as "outside issue #55 scope", so the record said what work it was not
-/// part of instead of what the value guarantees.</para>
-/// <para>The document set mirrors <see cref="RetiredServerNamespaceTests"/>: documents whose vocabulary
-/// is a contract, plus the two structured inventories that are read the same way. Machine contracts live in test data; maintained documentation lives directly under docs/.</para>
-/// <para>The pattern accepts the tracker spellings <c>issue #55</c>, <c>issue-55</c>, and
-/// <c>issue 55</c>, plus a bare <c>#55</c> token when whitespace, an opening bracket, or an opening
-/// parenthesis places it in prose, so <c>(#55)</c> and <c>[#55]</c> are caught. It deliberately
-/// does not treat every hash and digit sequence as a tracker reference: Markdown URL fragments,
-/// including the section links whose target opens with <c>](#</c>, repository references such as
-/// <c>dotnet/runtime#119380</c>, and ordinary heading markers remain valid document structure rather
-/// than prose dependencies.</para>
-/// </remarks>
 public sealed class DocumentationIssueReferenceTests
 {
-    /// <summary>Documents that must stand on their own, so neither exempt document appears here.</summary>
-    private static readonly string[] GovernedDocuments =
-    [
-        "docs/Arcanum.DESIGN.md",
+    private static IEnumerable<string> GovernedDocuments(string root)
+    {
+        string[] fixedDocuments =
+        [
+            "README.md",
 
-        "docs/Arcanum.API.md",
+            "AGENTS.md",
 
-        "docs/Arcanum.Command.Reference.md",
+            "tests/RetroDownfall.Arcanum.Tests/TestData/Comprehension/Pdf/README.md",
 
-        "docs/Arcanum.Design.Human.md",
+            "tests/RetroDownfall.Arcanum.Tests/TestData/Contracts/Arcanum.ConstraintInventory.json",
 
-        "docs/Arcanum.DEBUGGING.Human.md",
+            "tests/RetroDownfall.Arcanum.Tests/TestData/Contracts/Arcanum.CommandMap.json",
+        ];
 
-        "docs/Arcanum.CHAT-LOOP.md",
-
-        "docs/ArcanumOATH.Human.md",
-
-        "docs/Compendium.README.md",
-
-        "tests/RetroDownfall.Arcanum.Tests/TestData/Contracts/Arcanum.ConstraintInventory.json",
-
-        "tests/RetroDownfall.Arcanum.Tests/TestData/Contracts/Arcanum.CommandMap.json",
-    ];
+        return fixedDocuments.Concat(Directory.EnumerateFiles(Path.Combine(root, "docs"), "*.md")
+            .Select(path => Path.GetRelativePath(root, path)));
+    }
 
     private static readonly Regex TrackerIssueReference = new(
-        @"(?:\bissues?(?:\s*#\s*|[- ])\d+|(?<=[\s\[]|(?<!\])\()#\d+\b)",
+        @"(?:\bissues?(?:\s*#\s*|[- ])\d+|(?:^|(?<=[\s\[]|(?<!\])\())#\d+\b|\bgithub\.com/[^/\s)]+/[^/\s)]+/(?:issues|pull)/\d+\b|(?<![\w./])[\w.-]+/(?![\w.-]+\.md#)[\w.-]+#\d+\b)",
         RegexOptions.IgnoreCase,
         TimeSpan.FromSeconds(5));
 
     [Theory]
+    [InlineData("#157 completed", true)]
+    [InlineData("See [section](docs/Arcanum.API.md#821-the-proving-grounds).", false)]
+    [InlineData("See [section](../README.md#100).", false)]
     [InlineData("The later work is tracked by #245.", true)]
     [InlineData("The later work is tracked by\t#250.", true)]
     [InlineData("This is issue #55 scope.", true)]
     [InlineData("The later work is tracked separately (#100).", true)]
     [InlineData("The later work is tracked separately [#100].", true)]
-    [InlineData("See [runtime note](https://github.com/dotnet/runtime/issues/820#issuecomment-1).", false)]
+    [InlineData("See [runtime note](https://github.com/dotnet/runtime/issues/820#issuecomment-1).", true)]
+    [InlineData("See [change](https://github.com/example/project/pull/42).", true)]
     [InlineData("See [section](#820-details).", false)]
     [InlineData("See [section](#100).", false)]
-    [InlineData("The upstream fix is dotnet/runtime#119380.", false)]
+    [InlineData("The upstream fix is dotnet/runtime#119380.", true)]
     [InlineData("## 10.20 Covenant lifecycle", false)]
     [InlineData("# 244 Typed lifecycle", false)]
     public void Tracker_reference_predicate_rejects_prose_and_accepts_non_tracker_hashes(
@@ -84,7 +64,7 @@ public sealed class DocumentationIssueReferenceTests
 
         List<string> offenders = [];
 
-        foreach (string relative in GovernedDocuments)
+        foreach (string relative in GovernedDocuments(root))
         {
             string path = Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar));
 
