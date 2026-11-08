@@ -37,13 +37,27 @@ public sealed class DataRetentionLogInventoryTests
 
         using HttpResponseMessage preview = await client.PostAsync("/api/data/factory-reset/plan", JsonContent.Create(new InstallationResetDataPlanRequest(InstallationResetDataScope.Global), ArcanumJsonContext.Default.InstallationResetDataPlanRequest));
 
-        Assert.Equal(HttpStatusCode.OK, preview.StatusCode);
+        Assert.True(preview.StatusCode == HttpStatusCode.OK,
+            $"Plan returned {preview.StatusCode}: {await preview.Content.ReadAsStringAsync()}");
 
         DataRetentionPlan plan = await MemoryErasureRouteDriver.ReadDataAsync(preview, ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
 
-        using HttpResponseMessage response = await client.PostAsync("/api/data/factory-reset", JsonContent.Create(new FactoryResetRequest("factory-reset", plan.PlanId, Guid.NewGuid()), ArcanumJsonContext.Default.FactoryResetRequest));
+        Guid operationId = Guid.NewGuid();
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using HttpResponseMessage response = await client.PostAsync("/api/data/factory-reset", JsonContent.Create(new FactoryResetRequest("factory-reset", plan.PlanId, operationId), ArcanumJsonContext.Default.FactoryResetRequest));
+
+        if (response.StatusCode != HttpStatusCode.OK)
+        {
+            using HttpResponseMessage observed = await client.GetAsync($"/api/operations/{operationId}");
+
+            using HttpResponseMessage after = await client.PostAsync("/api/data/factory-reset/plan", JsonContent.Create(new InstallationResetDataPlanRequest(InstallationResetDataScope.Global), ArcanumJsonContext.Default.InstallationResetDataPlanRequest));
+
+            Assert.Fail(
+                $"Apply returned {response.StatusCode}: {await response.Content.ReadAsStringAsync()}"
+                + $"\nRequested operation {operationId}: {observed.StatusCode}: {await observed.Content.ReadAsStringAsync()}"
+                + $"\nOriginal preview: {await preview.Content.ReadAsStringAsync()}"
+                + $"\nFailure-only preview: {after.StatusCode}: {await after.Content.ReadAsStringAsync()}");
+        }
 
         DataRetentionApplyResult applied = await MemoryErasureRouteDriver.ReadDataAsync(response, ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
 
