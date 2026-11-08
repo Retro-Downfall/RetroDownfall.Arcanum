@@ -1494,6 +1494,8 @@ public static class ServiceCollectionExtensions
         // registered only together with the production code that creates its rows.
         services.AddSingleton<IGuildQuestRecoveryObserver, UnavailableGuildQuestRecoveryObserver>();
 
+        services.AddSingleton<IGuildSignetHostPolicy, UnavailableGuildSignetHostPolicy>();
+
         services.AddScoped<ILongRunningOperationRecoveryHandler, GuildQuestRecoveryHandler>();
 
         services.AddScoped<ILongRunningOperationRecoveryHandler, SubagentRecoveryHandler>();

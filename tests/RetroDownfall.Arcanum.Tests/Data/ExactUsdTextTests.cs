@@ -17,9 +17,14 @@ public sealed class ExactUsdTextTests
             "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSessionImporter.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/BatchAccountingRecoveryStore.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetAlertRepository.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetReservationService.GuildTransactions.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetReservationService.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireEntitySql.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/TurnRunWriter.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildBudgetLedger.Effects.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildBudgetLedger.Reads.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildBudgetLedger.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildBudgetPhysicalAccounting.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/ProtectedArtifactTransferStore.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionRepository.cs",
@@ -111,6 +116,9 @@ public sealed class ExactUsdTextTests
     [InlineData("NaN")]
     [InlineData("Infinity")]
     [InlineData("0x10")]
+    [InlineData("0.00000000000000000000000000001")]
+    [InlineData("1.00000000000000000000000000001")]
+    [InlineData("79228162514264337593543950335.1")]
     public void Unsupported_authoritative_money_text_is_refused(string stored)
     {
         FormatException error = Assert.Throws<FormatException>(() => ExactUsdText.Parse(stored));

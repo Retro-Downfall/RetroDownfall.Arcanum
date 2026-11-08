@@ -234,7 +234,8 @@ internal static class GuildMemoryAccess
             throw new GuildMemoryAccessException(new(ErrorCodes.Guild.MemoryNotGranted, "The canonical memory target is not granted."));
         }
 
-        Result<GuildGrant> current = await admission.Revalidate(connection, transaction, ct).ConfigureAwait(false);
+        Result<GuildGrant> current = await admission.Invocation.Authority.RevalidateMemoryAsync(
+            admission.Invocation, connection, transaction, ct).ConfigureAwait(false);
 
         admission.Check();
 
@@ -334,7 +335,8 @@ internal static class GuildMemoryAccess
             throw new GuildMemoryAccessException(new(ErrorCodes.Guild.MemoryNotGranted, "The attachment source is not a live materialization of this Guild invocation."));
         }
 
-        Result<GuildGrant> live = await admission.Revalidate(connection, transaction, ct).ConfigureAwait(false);
+        Result<GuildGrant> live = await admission.Invocation.Authority.RevalidateMemoryAsync(
+            admission.Invocation, connection, transaction, ct).ConfigureAwait(false);
 
         admission.Check();
 
@@ -375,12 +377,12 @@ internal static class GuildMemoryAccess
     }
 
     internal static async Task<T> WithinAsync<T>(GuildMemoryStore store, GuildMemoryOperation operation,
-        GuildGrant grant, Guid? campaignId, Guid? sessionId, Func<DbConnection, DbTransaction?, CancellationToken, Task<Result<GuildGrant>>> revalidate,
+        GuildGrant grant, Guid? campaignId, Guid? sessionId,
         Func<CancellationToken, Task<T>> action, CancellationToken ct)
     {
         GuildMemoryInvocationContext invocation = GuildMemoryInvocationAmbient.Current ?? throw Unavailable();
 
-        Admission admission = new(invocation, store, operation, grant, campaignId, sessionId, revalidate);
+        Admission admission = new(invocation, store, operation, grant, campaignId, sessionId);
 
         Admission? previous = Current.Value;
 
@@ -436,8 +438,7 @@ internal static class GuildMemoryAccess
         "This memory path requires a live host-owned Guild memory admission."));
 
     private sealed class Admission(GuildMemoryInvocationContext invocation, GuildMemoryStore store,
-        GuildMemoryOperation operation, GuildGrant grant, Guid? campaignId, Guid? sessionId,
-        Func<DbConnection, DbTransaction?, CancellationToken, Task<Result<GuildGrant>>> revalidate)
+        GuildMemoryOperation operation, GuildGrant grant, Guid? campaignId, Guid? sessionId)
     {
         private readonly object _sync = new();
 
@@ -458,8 +459,6 @@ internal static class GuildMemoryAccess
         internal Guid? SessionId => sessionId;
 
         internal IEnumerable<GuildMemoryGrant> Grants => grant.Memory.Where(value => value.Store == store && value.Operation == operation);
-
-        internal Func<DbConnection, DbTransaction?, CancellationToken, Task<Result<GuildGrant>>> Revalidate => revalidate;
 
         internal DbConnection? ValidatedConnection { get; set; }
 

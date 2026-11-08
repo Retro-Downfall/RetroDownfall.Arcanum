@@ -156,7 +156,7 @@ internal static class GrimoireSchemaVersionChains
     /// </remarks>
     internal const int CoreSchemaVersion = 38;
 
-    internal const int GuildCanonicalSchemaVersion = 6;
+    internal const int GuildCanonicalSchemaVersion = 7;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -196,6 +196,8 @@ internal static class GrimoireSchemaVersionChains
     private static readonly IReadOnlyDictionary<(GrimoireSchemaTransactionTier Tier, int ToVersion), string> SourcePins =
         new Dictionary<(GrimoireSchemaTransactionTier, int), string>
         {
+            [(GrimoireSchemaTransactionTier.GuildCanonical, 7)] = "F279AFB9498980F2978EA34BAB37FEA66AB1911F48A1C0CC4CA54648B5E077AC",
+
             [(GrimoireSchemaTransactionTier.GuildCanonical, 6)] = "04BE1E40E126642B0C235CB3FDF96A09A2C78B79B454E3CF389BFB8B19AF77C2",
 
             [(GrimoireSchemaTransactionTier.GuildCanonical, 5)] = "F8E37B0D79D43F4A93276C21A3297F509DBB75306B9DC75656219C1EF4379918",

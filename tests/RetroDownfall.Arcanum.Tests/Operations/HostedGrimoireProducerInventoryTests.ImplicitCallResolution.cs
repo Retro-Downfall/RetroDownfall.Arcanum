@@ -644,14 +644,14 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Contains(EnumerationDiscover(compilation).Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == "Microsoft.Extensions.AI.AITool.ToString");
     }
 
-    // The base constructor an authored stream chains to, written (`: base(...)`) or implicit, is the framework stream
-    // constructor, a file-system site: it is reported under the frontiers live where the creation runs it, and the
-    // creation of a stream that chains to nothing of the framework is not.
+    // A physical framework stream base constructor is reported under the frontiers live where creation runs it.
+    // The exact framework Stream protected parameterless constructor only initializes in-memory state, so chaining
+    // to it does not create a file-system site. Authored constructor bodies are traversed independently.
     [Theory]
     [InlineData("_ = new Reader(default!);", "sealed class Reader : System.IO.FileStream { public Reader(Microsoft.Win32.SafeHandles.SafeFileHandle handle) : base(handle, System.IO.FileAccess.Read) { } }", "System.IO.FileStream..ctor", true)]
-    [InlineData("_ = new Plain();", "sealed class Plain : System.IO.Stream { public override bool CanRead => false; public override bool CanSeek => false; public override bool CanWrite => false; public override long Length => 0; public override long Position { get => 0; set { } } public override void Flush() { } public override int Read(byte[] buffer, int offset, int count) => 0; public override long Seek(long offset, System.IO.SeekOrigin origin) => 0; public override void SetLength(long value) { } public override void Write(byte[] buffer, int offset, int count) { } }", "System.IO.Stream..ctor", true)]
+    [InlineData("_ = new Plain();", "sealed class Plain : System.IO.Stream { public override bool CanRead => false; public override bool CanSeek => false; public override bool CanWrite => false; public override long Length => 0; public override long Position { get => 0; set { } } public override void Flush() { } public override int Read(byte[] buffer, int offset, int count) => 0; public override long Seek(long offset, System.IO.SeekOrigin origin) => 0; public override void SetLength(long value) { } public override void Write(byte[] buffer, int offset, int count) { } }", "System.IO.Stream..ctor", false)]
     [InlineData("_ = new Quiet();", "sealed class Quiet { }", "", false)]
-    public void AuthoredStreamBaseConstructorIsAFileSystemSite(string statement, string helpers, string callee, bool reported)
+    public void AuthoredStreamBaseConstructionReportsOnlyPhysicalFrameworkConstructors(string statement, string helpers, string callee, bool reported)
     {
         HostedProducerDiscovery<HostedProducerSite> admitted = EnumerationDiscover(CensusCompileSource(statement, helpers));
 

@@ -1,0 +1,14 @@
+CREATE TABLE IF NOT EXISTS guild_budget_accounts (
+    AccountId TEXT NOT NULL PRIMARY KEY CHECK(AccountId=upper(AccountId) AND length(AccountId)=36 AND substr(AccountId,9,1)='-' AND substr(AccountId,14,1)='-' AND substr(AccountId,19,1)='-' AND substr(AccountId,24,1)='-' AND length(replace(AccountId,'-',''))=32 AND replace(AccountId,'-','') NOT GLOB '*[^0-9A-F]*' AND AccountId<>'00000000-0000-0000-0000-000000000000'),
+    OwnerKindCode INTEGER NOT NULL CHECK(typeof(OwnerKindCode)='integer' AND OwnerKindCode IN(0,1)),
+    OwnerId TEXT NOT NULL CHECK(OwnerId=upper(OwnerId) AND length(OwnerId)=36 AND substr(OwnerId,9,1)='-' AND substr(OwnerId,14,1)='-' AND substr(OwnerId,19,1)='-' AND substr(OwnerId,24,1)='-' AND length(replace(OwnerId,'-',''))=32 AND replace(OwnerId,'-','') NOT GLOB '*[^0-9A-F]*' AND OwnerId<>'00000000-0000-0000-0000-000000000000'),
+    RootAccountId TEXT NOT NULL REFERENCES guild_budget_accounts(AccountId) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED CHECK(RootAccountId=upper(RootAccountId) AND length(RootAccountId)=36 AND substr(RootAccountId,9,1)='-' AND substr(RootAccountId,14,1)='-' AND substr(RootAccountId,19,1)='-' AND substr(RootAccountId,24,1)='-' AND length(replace(RootAccountId,'-',''))=32 AND replace(RootAccountId,'-','') NOT GLOB '*[^0-9A-F]*' AND RootAccountId<>'00000000-0000-0000-0000-000000000000'),
+    ParentAccountId TEXT NULL REFERENCES guild_budget_accounts(AccountId) ON DELETE RESTRICT CHECK(ParentAccountId IS NULL OR (ParentAccountId=upper(ParentAccountId) AND length(ParentAccountId)=36 AND substr(ParentAccountId,9,1)='-' AND substr(ParentAccountId,14,1)='-' AND substr(ParentAccountId,19,1)='-' AND substr(ParentAccountId,24,1)='-' AND length(replace(ParentAccountId,'-',''))=32 AND replace(ParentAccountId,'-','') NOT GLOB '*[^0-9A-F]*' AND ParentAccountId<>'00000000-0000-0000-0000-000000000000')),
+    UsdLimit TEXT NULL CHECK(UsdLimit IS NULL OR typeof(UsdLimit)='text'),
+    TokenLimit INTEGER NULL CHECK(TokenLimit IS NULL OR (typeof(TokenLimit)='integer' AND TokenLimit>=0)),
+    Closed INTEGER NOT NULL DEFAULT 0 CHECK(typeof(Closed)='integer' AND Closed IN(0,1)),
+    SettlementReceiptId TEXT NULL CHECK(SettlementReceiptId IS NULL OR (SettlementReceiptId=upper(SettlementReceiptId) AND length(SettlementReceiptId)=36 AND substr(SettlementReceiptId,9,1)='-' AND substr(SettlementReceiptId,14,1)='-' AND substr(SettlementReceiptId,19,1)='-' AND substr(SettlementReceiptId,24,1)='-' AND length(replace(SettlementReceiptId,'-',''))=32 AND replace(SettlementReceiptId,'-','') NOT GLOB '*[^0-9A-F]*' AND SettlementReceiptId<>'00000000-0000-0000-0000-000000000000')),
+    Revision INTEGER NOT NULL CHECK(typeof(Revision)='integer' AND Revision>=1),
+    UNIQUE(OwnerKindCode,OwnerId),
+    CHECK((ParentAccountId IS NULL AND RootAccountId=AccountId) OR (ParentAccountId IS NOT NULL AND RootAccountId<>AccountId AND ParentAccountId<>AccountId))
+);

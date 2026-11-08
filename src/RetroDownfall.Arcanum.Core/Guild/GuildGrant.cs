@@ -38,6 +38,7 @@ public sealed record GuildBudgetGrant(
 
 public sealed record GuildUsdBudget(
     [property: JsonRequired] GuildBudgetMode Mode,
+    [property: JsonConverter(typeof(ExactNullableDecimalJsonConverter))]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] decimal? Value = null);
 
 public sealed record GuildTokenBudget(

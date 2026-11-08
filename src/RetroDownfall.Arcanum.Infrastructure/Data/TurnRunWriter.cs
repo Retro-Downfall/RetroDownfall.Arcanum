@@ -107,40 +107,58 @@ internal sealed class TurnRunWriter(ArcanumDbContext db) : ITurnRunWriter
             {
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-                await using DbCommand cmd = connection.CreateCommand();
-
-                cmd.CommandText =
-                    """
-                    INSERT INTO "BillableOperations"
-                        ("Id", "RunId", "OperationType", "Provider", "Model", "Purpose", "StartedAt", "CompletedAt",
-                         "InputTokens", "OutputTokens", "ReasoningTokens", "CachedTokens", "PricingSnapshotJson", "ActualCostUsd", "Status", "ProviderRequestId")
-                    VALUES
-                        (@id, @runId, @opType, @provider, @model, @purpose, @startedAt, @completedAt,
-                         @input, @output, @reasoning, @cached, @pricing, @cost, @status, @providerRequestId)
-                    """;
-
-                AddParameter(cmd, "@id", id.ToString("N"));
-                AddParameter(cmd, "@runId", operation.RunId.ToString("N"));
-                AddParameter(cmd, "@opType", (int)operation.OperationType);
-                AddParameter(cmd, "@provider", operation.Provider);
-                AddParameter(cmd, "@model", operation.Model);
-                AddParameter(cmd, "@purpose", operation.Purpose);
-                AddParameter(cmd, "@startedAt", UtcInstantText.Format(operation.StartedAt));
-                AddParameter(cmd, "@completedAt", UtcInstantText.Format(operation.CompletedAt));
-                AddParameter(cmd, "@input", operation.InputTokens);
-                AddParameter(cmd, "@output", operation.OutputTokens);
-                AddParameter(cmd, "@reasoning", operation.ReasoningTokens);
-                AddParameter(cmd, "@cached", operation.CachedTokens);
-                AddParameter(cmd, "@pricing", operation.PricingSnapshotJson);
-                _ = ExactUsdText.AddParameter(cmd, "@cost", operation.ActualCostUsd);
-                AddParameter(cmd, "@status", (int)operation.Status);
-                AddParameter(cmd, "@providerRequestId", (object?)operation.ProviderRequestId ?? DBNull.Value);
-
-                _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-                return id;
+                return await InsertBillableOperationAsync(connection, null, id, operation, cancellationToken).ConfigureAwait(false);
             },
             cancellationToken);
+    }
+
+    /// <summary>Writes the one physical bill under a pre-minted identity in the caller's admitted transaction.</summary>
+    internal static Task<Guid> RecordBillableOperationWithinAsync(DbConnection connection, DbTransaction transaction,
+        Guid operationId, BillableOperationRecord operation, CancellationToken cancellationToken)
+    {
+        if (!ReferenceEquals(transaction.Connection, connection) || operationId == Guid.Empty || operation.RunId == Guid.Empty)
+            throw new ArgumentException("The physical bill requires its exact admitted transaction and nonempty identities.");
+
+        return InsertBillableOperationAsync(connection, transaction, operationId, operation, cancellationToken);
+    }
+
+    private static async Task<Guid> InsertBillableOperationAsync(DbConnection connection, DbTransaction? transaction,
+        Guid id, BillableOperationRecord operation, CancellationToken cancellationToken)
+    {
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.Transaction = transaction;
+
+        cmd.CommandText =
+            """
+            INSERT INTO "BillableOperations"
+                ("Id", "RunId", "OperationType", "Provider", "Model", "Purpose", "StartedAt", "CompletedAt",
+                 "InputTokens", "OutputTokens", "ReasoningTokens", "CachedTokens", "PricingSnapshotJson", "ActualCostUsd", "Status", "ProviderRequestId")
+            VALUES
+                (@id, @runId, @opType, @provider, @model, @purpose, @startedAt, @completedAt,
+                 @input, @output, @reasoning, @cached, @pricing, @cost, @status, @providerRequestId)
+            """;
+
+        AddParameter(cmd, "@id", id.ToString("N"));
+        AddParameter(cmd, "@runId", operation.RunId.ToString("N"));
+        AddParameter(cmd, "@opType", (int)operation.OperationType);
+        AddParameter(cmd, "@provider", operation.Provider);
+        AddParameter(cmd, "@model", operation.Model);
+        AddParameter(cmd, "@purpose", operation.Purpose);
+        AddParameter(cmd, "@startedAt", UtcInstantText.Format(operation.StartedAt));
+        AddParameter(cmd, "@completedAt", UtcInstantText.Format(operation.CompletedAt));
+        AddParameter(cmd, "@input", operation.InputTokens);
+        AddParameter(cmd, "@output", operation.OutputTokens);
+        AddParameter(cmd, "@reasoning", operation.ReasoningTokens);
+        AddParameter(cmd, "@cached", operation.CachedTokens);
+        AddParameter(cmd, "@pricing", operation.PricingSnapshotJson);
+        _ = ExactUsdText.AddParameter(cmd, "@cost", operation.ActualCostUsd);
+        AddParameter(cmd, "@status", (int)operation.Status);
+        AddParameter(cmd, "@providerRequestId", (object?)operation.ProviderRequestId ?? DBNull.Value);
+
+        _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        return id;
     }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)

@@ -6,6 +6,12 @@ internal static class GuildQuestRetentionPins
     // Every caller binds its Quest as c. Missing proof is an obligation, never measured zero.
     internal const string ExecutionUnresolved = """
         (c.AccountingStateCode<>0
+         OR EXISTS(SELECT 1 FROM guild_quest_budget binding JOIN guild_budget_accounts account ON account.AccountId=binding.AccountId
+             WHERE binding.QuestId=c.Id AND account.Closed=0)
+         OR EXISTS(SELECT 1 FROM guild_budget_effects effect WHERE effect.QuestId=c.Id
+             AND (effect.StateCode IN(0,1) OR effect.UnknownUsd=1 OR effect.UnknownTokens=1
+                 OR NOT EXISTS(SELECT 1 FROM guild_budget_evidence receipt
+                     WHERE receipt.EffectId=effect.EffectId AND receipt.AppliedRevision=effect.Revision)))
          OR NOT EXISTS(SELECT 1 FROM LongRunningOperations operation WHERE operation.Id=c.OperationId AND operation.State IN(4,5,6))
          OR NOT EXISTS(SELECT 1 FROM guild_result_receipts terminal WHERE terminal.QuestId=c.Id
              AND (terminal.NoDispatchProven=1 OR terminal.WorkStoppedProven=1))

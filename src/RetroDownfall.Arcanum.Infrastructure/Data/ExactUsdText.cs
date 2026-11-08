@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Numerics;
 
 using Microsoft.Data.Sqlite;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -17,16 +18,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </remarks>
 internal static class ExactUsdText
 {
-    private const NumberStyles ParseStyles =
-        NumberStyles.AllowLeadingSign
-        | NumberStyles.AllowDecimalPoint
-        | NumberStyles.AllowExponent;
-
     internal static string Format(decimal value) => value.ToString(CultureInfo.InvariantCulture);
 
     internal static decimal Parse(string stored)
     {
-        if (!decimal.TryParse(stored, ParseStyles, CultureInfo.InvariantCulture, out decimal value))
+        if (!ExactDecimalText.TryParse(stored, out decimal value))
         {
             throw new FormatException("Stored authoritative USD amount is not a supported decimal value.");
         }

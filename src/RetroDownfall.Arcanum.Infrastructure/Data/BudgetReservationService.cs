@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// <summary>
 /// Atomic budget reservations over an exact daily ledger snapshot in <c>BEGIN IMMEDIATE</c> transactions.
 /// </summary>
-internal sealed class BudgetReservationService(
+internal sealed partial class BudgetReservationService(
     ArcanumDbContext db,
     IOptionsMonitor<ArcanumSettings> settings) : IBudgetReservationService
 {
@@ -941,7 +941,9 @@ internal sealed class BudgetReservationService(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            decimal outstanding = checked(ExactUsdText.Read(reader, 0) - ExactUsdText.Read(reader, 1));
+            // Measured partial usage can exceed the conservative estimate after a provider overrun.
+            // It remains real spend and uncertain work remains uncertain, but a hold never becomes credit.
+            decimal outstanding = Math.Max(0m, checked(ExactUsdText.Read(reader, 0) - ExactUsdText.Read(reader, 1)));
 
             total = ExactUsdText.CheckedAdd(total, outstanding);
         }

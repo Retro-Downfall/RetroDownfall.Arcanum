@@ -17,8 +17,16 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         string actual = CSharpSyntaxTree.ParseText(File.ReadAllText(path)).GetRoot()
             .DescendantNodes().OfType<ClassDeclarationSyntax>().Single().ToFullString();
 
+        string parserPath = Path.Combine(TestRepositoryPaths.RepositoryRoot(),
+            "src/RetroDownfall.Arcanum.Core/Primitives/ExactDecimalText.cs");
+
+        string parser = CSharpSyntaxTree.ParseText(File.ReadAllText(parserPath)).GetRoot()
+            .DescendantNodes().OfType<ClassDeclarationSyntax>().Single().ToFullString();
+
         string helper = "namespace RetroDownfall.Arcanum.Infrastructure.Data { using System; using System.Data; "
-            + "using System.Data.Common; using System.Globalization; using System.Numerics; using Microsoft.Data.Sqlite; " + actual + " }";
+            + "using System.Data.Common; using System.Globalization; using System.Numerics; using Microsoft.Data.Sqlite; "
+            + "using RetroDownfall.Arcanum.Core.Primitives; " + actual + " } "
+            + "namespace RetroDownfall.Arcanum.Core.Primitives { using System; using System.Globalization; " + parser + " }";
 
         CSharpCompilation compilation = CompileWithProductionReferencePack(
             R2Source("_ = RetroDownfall.Arcanum.Infrastructure.Data.ExactUsdText.CheckedAdd(1m, 0.00000001m); await Task.CompletedTask;", helper),

@@ -1965,7 +1965,20 @@ internal static partial class HostedGrimoireProducerInventory
 
         HostedProducerSite[] matches = sites.Where(candidate => candidate.RootType == site.RootType && candidate.AuthorityOperationId == site.AuthorityOperationId && candidate.CapsuleId == frontierId && candidate.Kind == HostedProducerSiteKind.EffectFrontier && isFrontierCallee(candidate.Callee)).ToArray();
 
-        if (matches.Length != 1)
+        // A work acquisition replaces incoming Work with its own capsule while retaining the caller's Effect. Its self-reference
+        // therefore resolves its exact contextual row, provided every alias differs only by that inherited Effect. No consumer or
+        // group reference gets this exception, and conflicting admission facts cannot hide behind the physical capsule identity.
+        bool contextualWorkSelfReference = matches.Length > 1
+            && frontierKind == "work"
+            && site.Kind == HostedProducerSiteKind.EffectFrontier
+            && IsWorkFrontierCallee(site.Callee)
+            && site.CapsuleId == frontierId
+            && site.WorkFrontierCapsuleId == frontierId
+            && site.AdmittedWorkKind.HasValue
+            && matches.Count(candidate => candidate == site) == 1
+            && matches.All(candidate => (candidate with { EffectFrontierCapsuleId = site.EffectFrontierCapsuleId }) == site);
+
+        if (matches.Length != 1 && !contextualWorkSelfReference)
         {
             diagnostics.Add(new("HOSTED_MANIFEST_FRONTIER_UNRESOLVED", StableSiteIdentity(site), $"The exact same-operation {frontierKind} frontier capsule must resolve once; found {matches.Length}."));
         }
@@ -26564,6 +26577,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedRuntimeCleanup(method)
                 || IsReviewedFloatVectorMember(method, node, model, context)
                 || IsReviewedExactInMemoryConstruction(method)
+                || IsExactFrameworkStreamBaseConstructor(method)
                 || IsReviewedAsyncStateMachineMember(method)
                 || IsReviewedExactFrameworkScalarOperator(method, node, model, context)
                 || IsReviewedExactInt128AccountingOperation(method, node, model, context)
@@ -54331,6 +54345,13 @@ internal static partial class HostedGrimoireProducerInventory
         {
             string type = TypeKey(method.ContainingType);
 
+            if (IsExactFrameworkStreamBaseConstructor(method))
+            {
+                kind = default;
+
+                return false;
+            }
+
             if (IsDatabaseOperation(method))
             {
                 kind = HostedProducerSiteKind.DatabaseAccess;
@@ -54626,7 +54647,8 @@ internal static partial class HostedGrimoireProducerInventory
         {
             string type = TypeKey(property.ContainingType);
 
-            return IsExactSqliteTimeoutSetting(property, mutation)
+            return IsExactParameterCollectionCount(property, mutation)
+                || IsExactSqliteTimeoutSetting(property, mutation)
                 || IsExactSqliteConnectionStringRead(property, mutation)
                 || type == "Microsoft.Data.Sqlite.SqliteCommand"
                     && property.Name is "CommandText" or "Connection" or "Parameters" or "Transaction"

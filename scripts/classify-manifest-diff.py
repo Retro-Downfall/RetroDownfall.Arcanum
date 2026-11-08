@@ -51,8 +51,10 @@ row that an edit and a rule could both explain is credited to the edit and a row
 The rules (see RULES; each names the DESIGN paragraph that states its lane)
   interceptor-and-state-handler-callbacks   an authored EF interceptor callback, the state handler it subscribes or the drain it
                                             reaches, entered at the EF operation that raises it
-  base-constructor-initializers             the `: base(...)` constructor of an authored FileStream or Stream subclass, at a
+  base-constructor-initializers             the `: base(...)` constructor of an authored FileStream subclass, at a
                                             member the table below lists, whose source declares the subclass
+  in-memory-stream-base-constructor         the six reviewed Stream base constructor removals, pinned to exact base sources and
+                                            absent from old-source parity; authored derived bodies still participate
   runtime-type-dispatch                     a call through an interface or abstract slot entering the implementation of the
                                             receiver's runtime type (the reviewed CredentialMirror set included)
   lease-receiver-proof                      an Effect withdrawn from a site whose Work is unchanged, and the group site whose
@@ -332,7 +334,7 @@ SLOT_DISPATCH_TYPES = frozenset(
 
 @dataclasses.dataclass(frozen=True)
 class BaseConstructorSite:
-    """A member that builds an authored FileStream or Stream subclass, whose `: base(...)` initializer is a site the census lists."""
+    """A member that builds an authored FileStream subclass, whose `: base(...)` initializer is a site the census lists."""
 
     source_path: str
     member: str
@@ -341,7 +343,7 @@ class BaseConstructorSite:
     base: str  # FileStream or Stream
 
 
-# The base constructor an authored FileStream or Stream subclass runs from its `: base(...)` initializer. No operation of the
+# The base constructor an authored FileStream subclass runs from its `: base(...)` initializer. No operation of the
 # constructor body binds it, so it is a site only because the census lists it, at the member that builds the subclass. Each entry
 # is checked against the source: the member's file names the subclass, and the subclass is declared as deriving from the base.
 # A direct `new FileStream(...)` is no entry: it is a call the census always listed, so a row for one is not this rule's.
@@ -360,13 +362,42 @@ BASE_CONSTRUCTOR_SITES = (
         "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFilePrimitives.cs",
         "FileStream",
     ),
-    BaseConstructorSite(
+)
+
+# The protected zero-argument framework Stream ctor initializes only its own in-memory bookkeeping. The authored
+# CappedOutputStream body remains traversed; a FileStream base ctor remains a physical operation. This historical correction
+# is reviewed only for the two CappedOutputStream constructions under the three installation-reset roots. Full rows and exact
+# base-source bytes fail closed on a different call, frame, counterfeit declaration or changed source; this is not a Stream
+# allowlist. Old-source parity must independently show all six rows disappearing under the changed checker.
+IN_MEMORY_STREAM_BASE_SOURCES = {
+    "src/RetroDownfall.Arcanum.Infrastructure/Hosting/DaemonProcessRunner.cs":
+        "0E6DE141A736C0CC8E07D09D7AAE6E01F06CD654AE2084B22C1368BC19097E5B",
+    "src/RetroDownfall.Arcanum.Infrastructure/Hosting/CappedOutputStream.cs":
+        "F4CC545CC3835532D24A2EF6FA86A49DC571119E1DD6DB0B2094219003A5B656",
+}
+
+IN_MEMORY_STREAM_BASE_CONSTRUCTOR_REMOVALS = frozenset(
+    Row(
+        "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService",
+        "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService." + operation,
         "src/RetroDownfall.Arcanum.Infrastructure/Hosting/DaemonProcessRunner.cs",
+        "RetroDownfall.Arcanum.Infrastructure.Hosting.DaemonProcessRunner",
         "RunAsync",
-        "CappedOutputStream",
-        "src/RetroDownfall.Arcanum.Infrastructure/Hosting/CappedOutputStream.cs",
-        "Stream",
-    ),
+        "M:RetroDownfall.Arcanum.Infrastructure.Hosting.DaemonProcessRunner.RunAsync(System.String,"
+        "System.Collections.Generic.IReadOnlyList{System.String},System.Threading.CancellationToken)",
+        "FileSystemEffect",
+        "System.IO.Stream..ctor",
+        "0",
+        fingerprint,
+        "-",
+        "-",
+        "-",
+    )
+    for operation in ("ApplyFreshUnderMaintenanceLockAsync", "ApplyFullUnderMaintenanceLockAsync", "ApplyUnderMaintenanceLockAsync")
+    for fingerprint in (
+        "DD349F0045B48E682FB72171817FC2B726E1BCC35B6B7A71739D8E850B938FB8",
+        "864367D2B53B1054E33900908E1A6691CBC6139B8FE327758E3F928BE580FCC4",
+    )
 )
 
 STREAM_DISPOSE = "System.IO.Stream.Dispose"
@@ -451,6 +482,25 @@ def is_base_constructor(row: Row, side: str, context: Context) -> bool:
     return False
 
 
+def is_in_memory_stream_base_constructor(row: Row, side: str, context: Context) -> bool:
+    """Only the exact reviewed old-source rows, removed by checker parity over the pinned source declarations."""
+    if (
+        row not in IN_MEMORY_STREAM_BASE_CONSTRUCTOR_REMOVALS
+        or context.parity is None
+        or context.sources is None
+        or context.same_site(context.parity, row)
+    ):
+        return False
+
+    for path, digest in IN_MEMORY_STREAM_BASE_SOURCES.items():
+        text = context.sources.base(path)
+
+        if text is None or hashlib.sha256(text.encode("utf-8")).hexdigest().upper() != digest:
+            return False
+
+    return True
+
+
 def withdraws_effect(row: Row, side: str, context: Context) -> bool:
     """The checker keeps the site and its Work and takes the Effect away, or drops the group site whose Effect it would grant."""
     if side == "-":
@@ -503,9 +553,17 @@ RULES: tuple[Rule, ...] = (
         "base-constructor-initializers",
         "Implicit Call Census (constructor initializers)",
         "+",
-        "the `: base(...)` constructor of an authored FileStream or Stream subclass is a site the census lists, at the member that "
+        "the `: base(...)` constructor of an authored FileStream subclass is a site the census lists, at the member that "
         "builds the subclass",
         is_base_constructor,
+    ),
+    Rule(
+        "in-memory-stream-base-constructor",
+        "Implicit Call Census (constructor initializers); in-memory Stream base initialization",
+        "-",
+        "the exact protected zero-argument System.IO.Stream base constructor initializes in-memory support; the six reviewed "
+        "CappedOutputStream base rows disappear in old-source parity while authored bodies remain traversed",
+        is_in_memory_stream_base_constructor,
     ),
     Rule(
         "runtime-type-dispatch",
@@ -652,7 +710,69 @@ RESTORE_SECRET_REASON = (
 )
 
 
+GUILD_MEMORY_READ_CALLER = "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildMemoryAccess.cs"
+
+GUILD_MEMORY_READ_MARKER = "await invocation.Authority.AdmitMemoryAsync(invocation.Execution, store, operation,"
+
+# Loremaster reads transcript headers/unsummarized entries through GrimoireRepository. Attachment indexing reaches
+# SessionAttachmentStore.GetByIdAsync/OpenReadAsync through its processor. Both now wrap those reads in GuildMemoryAccess.RunAsync,
+# whose introduced AdmitMemoryAsync call reaches SignetAuthority.ReadLiveAsync -> GuildSignetStore.ExecuteAsync; the store
+# invokes its callback into SignetAuthority.LiveAsync.
+# ExecuteAsync opens and disposes a fresh ordinary lease, starts/commits its transaction and checks Guild storage;
+# CheckAsync invokes the catalog/index inspector, and LiveAsync reads the Signet, epoch, lineage and canonical owners.
+# Only the attachment root gains the unedited lease CloseAsync row: Loremaster already held that exact row in the old manifest.
+GUILD_MEMORY_READ_REACHES = tuple(
+    Reach(
+        root,
+        operation,
+        "src/RetroDownfall.Arcanum.Infrastructure/" + source,
+        member,
+        callee,
+        "+",
+        GUILD_MEMORY_READ_CALLER,
+        GUILD_MEMORY_READ_MARKER,
+        "the transcript/attachment read wrapper now enters GuildMemoryAccess.RunAsync and SignetAuthority.AdmitMemoryAsync; "
+        "ReadLiveAsync opens a fresh GuildSignetStore transaction, proves Guild schema health, reads Signet lineage/epoch/owners, "
+        "then commits and disposes its ordinary lease",
+    )
+    for root, operation in (
+        ("Loremaster", "RetroDownfall.Arcanum.Infrastructure.Hosting.Loremaster.ExecuteAsync"),
+        ("SessionAttachmentIndexingService", "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.ExecuteAsync"),
+    )
+    for source, member, callee in (
+        ("Data/Schema/GrimoireSchemaManifestInspector.cs", "ReadCatalogAsync", "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync"),
+        ("Data/Schema/GrimoireSchemaManifestInspector.cs", "ReadCatalogAsync", "System.Data.Common.DbDataReader.ReadAsync"),
+        ("Data/Schema/GrimoireSchemaManifestInspector.cs", "ReadIndexColumnsAsync", "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync"),
+        ("Data/Schema/GrimoireSchemaManifestInspector.cs", "ReadIndexColumnsAsync", "System.Data.Common.DbDataReader.ReadAsync"),
+        ("Data/Schema/GrimoireSchemaManifestInspector.cs", "ReadIndexListAsync", "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync"),
+        ("Data/Schema/GrimoireSchemaManifestInspector.cs", "ReadIndexListAsync", "System.Data.Common.DbDataReader.ReadAsync"),
+        ("Guild/GuildSignetStore.cs", "EpochAsync", "System.Data.Common.DbCommand.ExecuteScalarAsync"),
+        ("Guild/GuildSignetStore.cs", "ExecuteAsync", "Microsoft.Data.Sqlite.SqliteConnection.BeginTransaction"),
+        ("Guild/GuildSignetStore.cs", "ExecuteAsync", "System.Data.Common.DbTransaction.CommitAsync"),
+        ("Guild/GuildSignetStore.cs", "ExecuteAsync", "RetroDownfall.Arcanum.Infrastructure.Data.GrimoireOrdinaryConnectionFactory.OpenFreshAsync"),
+        ("Guild/GuildSignetStore.cs", "ReadAsync", "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync"),
+        ("Guild/GuildSignetStore.cs", "ReadAsync", "System.Data.Common.DbDataReader.ReadAsync"),
+        ("Guild/GuildStorageAvailability.cs", "CheckAsync", "System.Data.Common.DbCommand.ExecuteScalarAsync"),
+        ("Guild/GuildStore.cs", "RequireOwnerWithinAsync", "System.Data.Common.DbCommand.ExecuteScalarAsync"),
+    )
+) + (
+    Reach(
+        "SessionAttachmentIndexingService",
+        "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.ExecuteAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireOrdinaryConnectionFactory.cs",
+        "DisposeAsync",
+        "System.Data.Common.DbConnection.CloseAsync",
+        "+",
+        GUILD_MEMORY_READ_CALLER,
+        GUILD_MEMORY_READ_MARKER,
+        "attachment reads enter the new Guild memory admission; GuildSignetStore.ExecuteAsync awaits disposal of the fresh "
+        "ordinary connection lease, whose owning DisposeAsync closes its physical connection",
+    ),
+)
+
+
 REACHED_THROUGH = (
+    *GUILD_MEMORY_READ_REACHES,
     Reach(
         "GrimoireDatabaseHostedService",
         "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StartAsync",

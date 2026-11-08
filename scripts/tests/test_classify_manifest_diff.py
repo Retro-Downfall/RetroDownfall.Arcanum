@@ -648,7 +648,7 @@ class ClassifyManifestDiffTests(unittest.TestCase):
     def test_every_rule_has_a_unique_name_a_lane_a_side_and_a_summary(self) -> None:
         names = [rule.name for rule in CLASSIFIER.RULES]
 
-        self.assertEqual(5, len(names))
+        self.assertEqual(6, len(names))
 
         self.assertEqual(len(names), len(set(names)))
 
@@ -757,6 +757,79 @@ class ClassifyManifestDiffTests(unittest.TestCase):
             sources = FakeSources(head={entry.source_path: builds + " " + declaration})
 
             self.assertFalse(rule.matches(base, "+", CLASSIFIER.Context(manifest(), manifest(), None, sources)), declaration)
+
+    def test_the_in_memory_stream_base_constructor_rule_matches_only_the_six_reviewed_removals(self) -> None:
+        rule = rule_named("in-memory-stream-base-constructor")
+
+        rows = CLASSIFIER.IN_MEMORY_STREAM_BASE_CONSTRUCTOR_REMOVALS
+
+        self.assertEqual(6, len(rows))
+
+        sources = FakeSources(base={path: (REPOSITORY / path).read_text(encoding="utf-8") for path in CLASSIFIER.IN_MEMORY_STREAM_BASE_SOURCES})
+
+        for row in rows:
+            with self.subTest(root=row.authority_operation_id, fingerprint=row.syntax_sha256):
+                context = CLASSIFIER.Context(manifest(row), manifest(), manifest(), sources)
+
+                self.assertTrue(rule.matches(row, "-", context))
+
+                self.assertFalse(rule.matches(row, "+", context))
+
+                self.assertEqual("c", classify(manifest(row), manifest(), parity=manifest(), sources=sources)[("-", row)].label)
+
+                for field, value in (
+                    ("root_type", "OtherRoot"),
+                    ("authority_operation_id", "OtherRoot.Run"),
+                    ("source_path", "src/Other.cs"),
+                    ("enclosing_type", "Other.DaemonProcessRunner"),
+                    ("member", "Other"),
+                    ("member_identity", "M:Other.RunAsync"),
+                    ("kind", "FileSystemRead"),
+                    ("callee", "System.IO.FileStream..ctor"),
+                    ("syntax_ordinal", "1"),
+                    ("syntax_sha256", "0" * 64),
+                    ("work", "a" * 64),
+                    ("effect", "b" * 64),
+                    ("admitted_work_kind", "BatchProcessing"),
+                ):
+                    self.assertFalse(rule.matches(row._replace(**{field: value}), "-", context), field)
+
+    def test_the_in_memory_stream_base_constructor_rule_requires_old_source_parity_and_pinned_base_sources(self) -> None:
+        rule = rule_named("in-memory-stream-base-constructor")
+
+        row = next(iter(CLASSIFIER.IN_MEMORY_STREAM_BASE_CONSTRUCTOR_REMOVALS))
+
+        texts = {path: (REPOSITORY / path).read_text(encoding="utf-8") for path in CLASSIFIER.IN_MEMORY_STREAM_BASE_SOURCES}
+
+        sources = FakeSources(base=texts, head=texts)
+
+        self.assertFalse(rule.matches(row, "-", CLASSIFIER.Context(manifest(row), manifest(), None, sources)))
+
+        self.assertFalse(rule.matches(row, "-", CLASSIFIER.Context(manifest(row), manifest(), manifest(row), sources)))
+
+        self.assertFalse(rule.matches(row, "-", CLASSIFIER.Context(manifest(row), manifest(), manifest())))
+
+        self.assertFalse(rule.matches(row, "-", CLASSIFIER.Context(manifest(row), manifest(), manifest(), FakeSources(head=texts))))
+
+        for path in texts:
+            altered = dict(texts)
+
+            altered[path] = altered[path].replace("Stream", "FileStream")
+
+            self.assertFalse(rule.matches(row, "-", CLASSIFIER.Context(manifest(row), manifest(), manifest(), FakeSources(base=altered))), path)
+
+        declaring = next(path for path in texts if path.endswith("/CappedOutputStream.cs"))
+
+        for counterfeit in (
+            "using Stream = Counterfeit.Stream;\n" + texts[declaring],
+            texts[declaring].replace(": Stream", ": Stream(42)"),
+            "internal class CappedOutputStream { void RunAsync() { var stream = new System.IO.Stream(); } }",
+        ):
+            altered = dict(texts)
+
+            altered[declaring] = counterfeit
+
+            self.assertFalse(rule.matches(row, "-", CLASSIFIER.Context(manifest(row), manifest(), manifest(), FakeSources(base=altered))))
 
     def test_the_dispatch_rule_matches_the_reviewed_types_on_the_added_side_only(self) -> None:
         context = CLASSIFIER.Context(manifest(), manifest(), None)
@@ -933,6 +1006,36 @@ class ClassifyManifestDiffTests(unittest.TestCase):
                 ),
                 f"{entry.root_type}|{entry.operation}|{entry.member}|{entry.callee} is no row of the committed manifest",
             )
+
+    def test_the_guild_memory_read_reaches_require_the_introduced_call_and_exact_root_site(self) -> None:
+        entries = CLASSIFIER.GUILD_MEMORY_READ_REACHES
+
+        self.assertEqual(29, len(entries))
+
+        self.assertEqual(14, sum(entry.root_type == "Loremaster" for entry in entries))
+
+        self.assertEqual(15, sum(entry.root_type == "SessionAttachmentIndexingService" for entry in entries))
+
+        for entry in entries:
+            with self.subTest(root=entry.root_type, member=entry.member, callee=entry.callee):
+                row = site(entry.source_path, callee=entry.callee, member=entry.member,
+                    root=entry.root_type, operation=entry.operation)
+
+                def label(candidate=row, base="", head=entry.marker):
+                    result = classify(manifest(), manifest(candidate), edited=[entry.caller], parity=manifest(),
+                        sources=FakeSources(base={entry.caller: base}, head={entry.caller: head}))
+
+                    return result[("+", candidate)].label
+
+                self.assertEqual("r", label())
+
+                self.assertEqual("d", label(head=""))
+
+                self.assertEqual("d", label(base=entry.marker))
+
+                for field, value in (("root_type", "Other"), ("authority_operation_id", "Other.Run"),
+                    ("source_path", "src/Other.cs"), ("member", "Other"), ("callee", "Other.Call")):
+                    self.assertEqual("d", label(row._replace(**{field: value})), field)
 
     def test_every_reviewed_call_chain_names_one_side_a_marker_and_a_reason(self) -> None:
         keys = [(e.root_type, e.operation, e.source_path, e.member, e.callee, e.side) for e in CLASSIFIER.REACHED_THROUGH]

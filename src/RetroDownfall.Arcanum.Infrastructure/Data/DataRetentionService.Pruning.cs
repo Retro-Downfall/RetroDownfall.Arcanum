@@ -184,12 +184,25 @@ internal sealed partial class DataRetentionService
             return [];
         }
 
-        return await ReadConflictsAsync(
+        List<DataRetentionConflict> conflicts = [.. await ReadConflictsAsync(
             "SELECT Id FROM InferenceRuns WHERE Status = @status",
             ErrorCodes.Data.InferenceRunActive,
             "An active inference run protects its inputs and accounting chain.",
             cancellationToken,
-            ("@status", (int)InferenceRunStatus.Running)).ConfigureAwait(false);
+            ("@status", (int)InferenceRunStatus.Running)).ConfigureAwait(false)];
+
+        string guildPin = await GuildPhysicalAccountingPinAsync("run.Id", cancellationToken).ConfigureAwait(false);
+
+        if (guildPin != "0")
+        {
+            conflicts.AddRange(await ReadConflictsAsync(
+                $"SELECT run.Id FROM InferenceRuns run WHERE {guildPin}",
+                ErrorCodes.Guild.ReconciliationRequired,
+                "An unresolved Guild physical effect protects its authoritative inference and billing evidence.",
+                cancellationToken).ConfigureAwait(false));
+        }
+
+        return [.. conflicts];
     }
 
     private async Task<DataRetentionConflict[]> ReadActiveIdempotencyConflictsAsync(
@@ -2635,10 +2648,12 @@ internal sealed partial class DataRetentionService
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
+        string guildPin = await GuildPhysicalAccountingPinAsync("run.Id", cancellationToken).ConfigureAwait(false);
+
         await using (DbCommand blockedCommand = connection.CreateCommand())
         {
             blockedCommand.CommandText =
-                """
+                $"""
                 SELECT run.Id,
                        run.Status,
                        EXISTS(
@@ -2650,7 +2665,8 @@ internal sealed partial class DataRetentionService
                            FROM BudgetReservations reservation
                            WHERE lower(replace(reservation.RunId, '-', '')) = lower(replace(run.Id, '-', ''))
                              AND reservation.Status IN (@reserved, @uncertainPaid)),
-                       run.SessionId
+                       run.SessionId,
+                       {guildPin}
                 FROM InferenceRuns run
                 WHERE julianday(COALESCE(run.CompletedAt, run.StartedAt)) <= julianday(@cutoff)
                   AND (
@@ -2663,7 +2679,8 @@ internal sealed partial class DataRetentionService
                           SELECT 1
                           FROM BudgetReservations reservation
                           WHERE lower(replace(reservation.RunId, '-', '')) = lower(replace(run.Id, '-', ''))
-                            AND reservation.Status IN (@reserved, @uncertainPaid)))
+                            AND reservation.Status IN (@reserved, @uncertainPaid))
+                      OR {guildPin})
                 ORDER BY COALESCE(run.CompletedAt, run.StartedAt), run.Id
                 LIMIT @limit
                 """;
@@ -2695,13 +2712,17 @@ internal sealed partial class DataRetentionService
 
                 bool reserved = blockedReader.GetInt64(3) != 0;
 
-                bool active = status == InferenceRunStatus.Running || reserved;
+                bool guildUnresolved = blockedReader.GetInt64(5) != 0;
+
+                bool active = status == InferenceRunStatus.Running || reserved || guildUnresolved;
 
                 string code = status == InferenceRunStatus.Running
                     ? ErrorCodes.Data.InferenceRunActive
                     : reserved
                         ? ErrorCodes.Data.BudgetReservationOutstanding
-                        : ErrorCodes.Data.SessionAccountingAuthority;
+                        : guildUnresolved
+                            ? ErrorCodes.Guild.ReconciliationRequired
+                            : ErrorCodes.Data.SessionAccountingAuthority;
 
                 AddDiagnosticForSession(blockers,
                     new DataRetentionBlocker(
@@ -2726,7 +2747,7 @@ internal sealed partial class DataRetentionService
         await using DbCommand command = connection.CreateCommand();
 
         command.CommandText =
-            """
+            $"""
             WITH billable_counts AS (
                 SELECT lower(replace(RunId, '-', '')) AS RunKey, COUNT(*) AS Rows
                 FROM BillableOperations
@@ -2768,6 +2789,7 @@ internal sealed partial class DataRetentionService
                   FROM Sessions session
                   WHERE lower(replace(session.Id, '-', '')) = lower(replace(run.SessionId, '-', '')))
               AND COALESCE(reservation_counts.HasOutstanding, 0) = 0
+              AND NOT ({guildPin})
             ORDER BY COALESCE(run.CompletedAt, run.StartedAt), run.Id
             LIMIT @limit
             """;
@@ -7133,6 +7155,8 @@ internal sealed partial class DataRetentionService
             return CandidateDeleteResult.Empty;
         }
 
+        string guildPin = await GuildPhysicalAccountingPinAsync("run.Id", cancellationToken).ConfigureAwait(false);
+
         await using DbTransaction transaction = await BeginMutationTransactionAsync(
             connection,
             cancellationToken).ConfigureAwait(false);
@@ -7147,6 +7171,23 @@ internal sealed partial class DataRetentionService
 
         try
         {
+            await using (DbCommand guildObligation = connection.CreateCommand())
+            {
+                guildObligation.Transaction = transaction;
+
+                guildObligation.CommandText = $"SELECT EXISTS(SELECT 1 FROM InferenceRuns run WHERE lower(replace(run.Id,'-',''))=@id AND {guildPin})";
+
+                Add(guildObligation, "@id", runId.ToString("N"));
+
+                if (Convert.ToInt32(await guildObligation.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+                    CultureInfo.InvariantCulture) != 0)
+                {
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                    return CandidateDeleteResult.Empty;
+                }
+            }
+
             adjustments = await ExecuteAsync(
                 connection,
                 transaction,

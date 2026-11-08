@@ -33,7 +33,7 @@ internal sealed record GuildSignetAdmissionEvidence(GuildSignetOwnerBinding Owne
 /// <summary>
 /// Authentication and coordinator participant boundary. An implementation must recognize host-issued
 /// admission/recovery claims, canonical ownership and current peer/config policy; ids alone never qualify.
-/// No production implementation is installed until the coordinator delivery slice.
+/// Production installs only an unavailable policy until the coordinator delivery slice supplies authenticated authority.
 /// </summary>
 internal interface IGuildSignetHostPolicy
 {

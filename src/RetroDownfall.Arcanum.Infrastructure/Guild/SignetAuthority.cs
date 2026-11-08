@@ -10,7 +10,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 /// <summary>
 /// Dormant host authority participant. The private policy recognizes authenticated coordinator
-/// claims; no policy, execution activation or effect adapters are registered by this slice.
+/// claims; no authorizing policy, execution activation or effect adapters are registered by this slice.
 /// </summary>
 internal sealed partial class SignetAuthority(GuildSignetStore store, IGrimoireConnectionAdmissionGate gate,
     IGuildSignetHostPolicy policy, TimeProvider time) : ISignetAuthority, IGuildToolAuthority, IDisposable

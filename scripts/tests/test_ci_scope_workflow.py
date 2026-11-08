@@ -44,6 +44,24 @@ class CiScopeWorkflowTests(unittest.TestCase):
                 self.assertRegex(job(name), r"(?m)^    if: .*inputs\.qualification != 'guild-memory'")
         self.assertNotRegex(job("static-analysis"), r"(?m)^    if:")
 
+    def test_focused_guild_budget_profile_executes_billing_and_schema_contracts(self):
+        source = WORKFLOW.read_text()
+        self.assertIn("          - guild-budget", source)
+        focused = job("guild-budget")
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.qualification == 'guild-budget'", focused)
+        self.assertIn("run: ./scripts/qualify-guild-budget.sh", focused)
+        self.assertNotIn("continue-on-error", focused)
+        for name in ("build-test", *WORKERS, "hosted-producer-analysis", "windows-suite",
+                     "windows-arm64-suite", "aot-il", "macos-workspace-check"):
+            with self.subTest(job=name):
+                self.assertRegex(job(name), r"(?m)^    if: .*inputs\.qualification != 'guild-budget'")
+        harness = (ROOT / "scripts/qualify-guild-budget.sh").read_text()
+        for name in ("GuildBudget", "BudgetReservation", "TurnAccounting", "DelegatedManaTracker",
+                     "InferenceAccounting", "DataRetention", "GuildQuest", "ExactUsd"):
+            self.assertIn(name, harness)
+        self.assertIn("Missing, skipped or failed required Guild budget contract", harness)
+        self.assertNotIn("continue-on-error", harness)
+
     def test_scope_uses_event_shas_and_full_history_without_shell_interpolation(self):
         body = job("scope")
         self.assertIn("fetch-depth: 0", body)

@@ -64,6 +64,24 @@ internal static class GuildAotSmoke
 
         Exercise(SampleGuildBudgetGrant(), GuildJsonContext.Default.GuildBudgetGrant);
 
+        Exercise(new GuildUsdBudget(GuildBudgetMode.Finite, decimal.MaxValue), GuildJsonContext.Default.GuildUsdBudget);
+
+        Exercise(new GuildUsdBudget(GuildBudgetMode.Finite, 0.0000000000000000000000000001m), GuildJsonContext.Default.GuildUsdBudget);
+
+        foreach (string amount in new[] { "0.00000000000000000000000000001", "1.00000000000000000000000000001", "79228162514264337593543950335.1" })
+        {
+            try
+            {
+                _ = JsonSerializer.Deserialize("{\"mode\":\"finite\",\"value\":" + amount + "}", GuildJsonContext.Default.GuildUsdBudget);
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
+            throw new InvalidOperationException("Unrepresentable Guild USD authority was rounded by Native AOT JSON.");
+        }
+
         Exercise(SampleGuildCancelQuestRequest(), GuildJsonContext.Default.GuildCancelQuestRequest);
 
         Exercise(SampleGuildCancellationDto(), GuildJsonContext.Default.GuildCancellationDto);

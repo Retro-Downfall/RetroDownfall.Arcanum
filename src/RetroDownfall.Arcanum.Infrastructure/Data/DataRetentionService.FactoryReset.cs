@@ -31,6 +31,10 @@ internal sealed partial class DataRetentionService
 {
     private static readonly FactoryTablePlan[] FactoryPlanTables =
     [
+        new("guild_budget_evidence", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_budget_effects", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_quest_budget", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_budget_accounts", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_memory_attribution", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
 
         new("guild_portal_inputs", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
@@ -159,6 +163,10 @@ internal sealed partial class DataRetentionService
 
     private static readonly FactoryTablePlan[] FactoryDeletionTables =
     [
+        new("guild_budget_evidence", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_budget_effects", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_quest_budget", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_budget_accounts", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_memory_attribution", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
 
         new("guild_portal_inputs", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
@@ -1248,6 +1256,37 @@ internal sealed partial class DataRetentionService
                 transaction,
                 predicate: null,
                 cancellationToken).ConfigureAwait(false);
+        }
+
+        if (string.Equals(table.Table, "guild_budget_accounts", StringComparison.Ordinal))
+        {
+            // Restrictive root and parent links require descendants to be removed before their
+            // funding account. Bound the sweep by the original population so a reinserting trigger
+            // cannot turn reconciliation into an unending loop.
+            long rounds = await CountInTransactionAsync(connection, transaction, table.Table, null,
+                cancellationToken).ConfigureAwait(false);
+
+            int totalDeleted = 0;
+
+            while (rounds-- > 0)
+            {
+                int deleted = await ExecuteAsync(connection, transaction, """
+                    DELETE FROM guild_budget_accounts
+                    WHERE NOT EXISTS(SELECT 1 FROM guild_budget_accounts child
+                        WHERE child.AccountId<>guild_budget_accounts.AccountId
+                          AND (child.ParentAccountId=guild_budget_accounts.AccountId
+                               OR child.RootAccountId=guild_budget_accounts.AccountId))
+                    """, cancellationToken).ConfigureAwait(false);
+
+                totalDeleted = checked(totalDeleted + deleted);
+
+                if (deleted == 0)
+                {
+                    break;
+                }
+            }
+
+            return totalDeleted;
         }
 
         using CovenantSqliteAuthorizationScope? retention =

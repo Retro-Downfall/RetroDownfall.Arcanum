@@ -89,4 +89,16 @@ public sealed class GuildGrantSerializationTests
         Assert.Throws<JsonException>(() => JsonSerializer.Deserialize(
             RootJson.Replace("\"value\":0", "\"value\":0.1", StringComparison.Ordinal), GuildJsonContext.Default.GuildGrant));
     }
+
+    [Theory]
+    [InlineData("0.00000000000000000000000000001")]
+    [InlineData("1.00000000000000000000000000001")]
+    [InlineData("79228162514264337593543950335.1")]
+    public void Nonrepresentable_usd_authority_is_rejected_instead_of_rounded(string number)
+    {
+        string json = RootJson.Replace("\"usd\":{\"mode\":\"unlimited\"}",
+            "\"usd\":{\"mode\":\"finite\",\"value\":" + number + "}", StringComparison.Ordinal);
+
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize(json, GuildJsonContext.Default.GuildGrant));
+    }
 }

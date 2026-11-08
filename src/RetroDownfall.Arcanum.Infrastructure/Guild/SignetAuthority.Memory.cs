@@ -1,6 +1,7 @@
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
 using Microsoft.Data.Sqlite;
+using System.Data.Common;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
@@ -37,12 +38,7 @@ internal sealed partial class SignetAuthority
             try
             {
                 T result = await GuildMemoryAccess.WithinAsync(memoryStore, operation, live.Value.Effective,
-                    live.Value.Lineage[0].Owners.CampaignId, live.Value.Lineage[0].Owners.SessionId, async (connection, transaction, token) =>
-                    {
-                        Result<Verified> current = await LiveAsync((SqliteConnection)connection, (SqliteTransaction)transaction!, execution, token).ConfigureAwait(false);
-
-                        return current.IsSuccess ? current.Value.Effective : Result<GuildGrant>.Failure(current.Error);
-                    }, action, ct).ConfigureAwait(false);
+                    live.Value.Lineage[0].Owners.CampaignId, live.Value.Lineage[0].Owners.SessionId, action, ct).ConfigureAwait(false);
 
                 if (operation == GuildMemoryOperation.Read)
                 {
@@ -67,5 +63,23 @@ internal sealed partial class SignetAuthority
                 return Result<T>.Failure(ex.Error);
             }
         }, cancellationToken);
+    }
+
+    internal async Task<Result<GuildGrant>> RevalidateMemoryAsync(GuildMemoryInvocationContext invocation,
+        DbConnection connection, DbTransaction? transaction, CancellationToken cancellationToken)
+    {
+        if (!GuildMemoryInvocationAmbient.IsActive || !ReferenceEquals(GuildMemoryInvocationAmbient.Current, invocation)
+            || !ReferenceEquals(invocation.Authority, this)
+            || connection is not SqliteConnection sqlite
+            || transaction is not null && (transaction is not SqliteTransaction sqliteTransaction
+                || !ReferenceEquals(sqliteTransaction.Connection, sqlite)))
+        {
+            return Mismatch;
+        }
+
+        // Lexicon's connection-owned BEGIN IMMEDIATE has no managed transaction wrapper.
+        Result<Verified> current = await LiveAsync(sqlite, (SqliteTransaction)transaction!, invocation.Execution, cancellationToken).ConfigureAwait(false);
+
+        return current.IsSuccess ? current.Value.Effective : Result<GuildGrant>.Failure(current.Error);
     }
 }

@@ -1,0 +1,4 @@
+CREATE TABLE IF NOT EXISTS guild_quest_budget (
+    QuestId TEXT NOT NULL PRIMARY KEY REFERENCES guild_quests(Id) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED CHECK(QuestId=upper(QuestId) AND length(QuestId)=36 AND substr(QuestId,9,1)='-' AND substr(QuestId,14,1)='-' AND substr(QuestId,19,1)='-' AND substr(QuestId,24,1)='-' AND length(replace(QuestId,'-',''))=32 AND replace(QuestId,'-','') NOT GLOB '*[^0-9A-F]*' AND QuestId<>'00000000-0000-0000-0000-000000000000'),
+    AccountId TEXT NOT NULL UNIQUE REFERENCES guild_budget_accounts(AccountId) ON DELETE RESTRICT CHECK(AccountId=upper(AccountId) AND length(AccountId)=36 AND substr(AccountId,9,1)='-' AND substr(AccountId,14,1)='-' AND substr(AccountId,19,1)='-' AND substr(AccountId,24,1)='-' AND length(replace(AccountId,'-',''))=32 AND replace(AccountId,'-','') NOT GLOB '*[^0-9A-F]*' AND AccountId<>'00000000-0000-0000-0000-000000000000')
+);

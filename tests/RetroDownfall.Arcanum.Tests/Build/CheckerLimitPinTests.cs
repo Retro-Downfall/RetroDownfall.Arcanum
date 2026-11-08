@@ -864,6 +864,7 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
                 "RetroDownfall.Arcanum.Core.Configuration.ModelEntryJsonConverter",
                 "RetroDownfall.Arcanum.Core.Guild.GuildHostHandleJsonConverter`1",
                 "RetroDownfall.Arcanum.Core.Guild.GuildRequestedGrantJsonConverter",
+                "RetroDownfall.Arcanum.Core.Serialization.ExactNullableDecimalJsonConverter",
                 "RetroDownfall.Arcanum.Core.Serialization.StringOnlyJsonStringEnumConverter`1",
             ],
             converters);

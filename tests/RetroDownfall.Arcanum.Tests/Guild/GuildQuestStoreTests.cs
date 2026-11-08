@@ -145,7 +145,17 @@ public sealed partial class GuildQuestStoreTests
             return new(file);
         }
 
-        private GuildQuestStore NewStore() => new(new(Connections, Gate, TimeProvider.System), Authority, Host, Budget, TimeProvider.System);
+        private IGuildQuestAllocationParticipant? _allocationParticipant;
+
+        internal void UseBudgetParticipant(IGuildQuestAllocationParticipant participant)
+        {
+            _allocationParticipant = participant;
+
+            Store = NewStore();
+        }
+
+        private GuildQuestStore NewStore() => new(new(Connections, Gate, TimeProvider.System), Authority, Host,
+            _allocationParticipant ?? Budget, TimeProvider.System);
 
         internal void Restart()
         {
@@ -228,7 +238,7 @@ public sealed partial class GuildQuestStoreTests
 
     private sealed class HostPolicy : IGuildQuestHostPolicy, IGuildSignetHostPolicy
     {
-        internal GuildGrant Grant { get; } = new([], [], [], new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited)), [GuildDelegationKind.Local], null);
+        internal GuildGrant Grant { get; set; } = new([], [], [], new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited)), [GuildDelegationKind.Local], null);
 
         public Guid InstallationGeneration { get; } = Guid.NewGuid();
 
