@@ -348,6 +348,8 @@ public sealed class ContinuousIntegrationWorkflowTests
         [
             "GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_delete_durably_succeeds_after_publication",
             "GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_read_fails_closed_when_the_published_file_acl_is_weakened",
+            "GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_owner_only_application_accepts_an_enumerated_modify_only_read_handle",
+            "GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_owner_only_application_refuses_a_weakened_same_file_without_changing_its_acl",
             "Cli.FullInstallationResetAttestationFileReaderTests.Reader_rejects_a_file_not_controlled_only_by_the_current_owner",
             "Mcp.WorkspacePathPolicySymlinkTests.IsPathUnderWorkspace_OnWindows_IgnoresDirectoryNameCase",
             "Platform.ProcessResourceLimiterTests.Apply_returns_assign_after_start_on_windows",
