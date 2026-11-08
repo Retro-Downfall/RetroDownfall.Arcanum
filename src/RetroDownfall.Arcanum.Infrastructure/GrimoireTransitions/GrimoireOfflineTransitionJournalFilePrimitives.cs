@@ -619,10 +619,36 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             return RecoveryRequired();
         }
 
+        SafeFileHandle? permissionHandle = null;
+
         try
         {
+            if (OperatingSystem.IsWindows())
+            {
+                // Enumeration retains a read capability, not WRITE_DAC/WRITE_OWNER. Reopen only
+                // this exact file through the retained parent before changing its security.
+                SecureFileOpenStatus permissionStatus = OpenChild(
+                    relativeLeaf,
+                    createExclusive: false,
+                    writable: true,
+                    out permissionHandle);
+
+                if (permissionStatus is not SecureFileOpenStatus.Success || permissionHandle is null
+                    || !FileHandleIdentityInterop.TryGetHandleMetadata(
+                        permissionHandle,
+                        out FileHandleMetadata permissionMetadata)
+                    || permissionMetadata.Kind is not FileSystemObjectKind.RegularFile
+                    || permissionMetadata.HardLinkCount != 1
+                    || !FileHandleIdentity.IdentitiesMatch(
+                        expected.Metadata.Identity,
+                        permissionMetadata.Identity))
+                {
+                    return RecoveryRequired();
+                }
+            }
+
             bool applied = OperatingSystem.IsWindows()
-                ? ApplyWindowsOwnerOnly(expected.Handle)
+                ? ApplyWindowsOwnerOnly(permissionHandle!)
                 : Fchmod(expected.Handle.DangerousGetHandle().ToInt32(), OwnerOnlyUnixMode) == 0;
 
             bool capturedOwnerOnly = OperatingSystem.IsWindows()
@@ -686,6 +712,10 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 or System.Security.SecurityException)
         {
             return RecoveryRequired();
+        }
+        finally
+        {
+            permissionHandle?.Dispose();
         }
     }
 

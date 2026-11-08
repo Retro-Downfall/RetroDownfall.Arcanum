@@ -60,13 +60,16 @@ class CiScopeWorkflowTests(unittest.TestCase):
         for method in ("Publication_bounds_the_number_of_directory_enumerations_per_revision",
                        "Deletion_does_not_repeat_the_absence_proof_without_an_intervening_state_change",
                        "Resume_reports_recovery_required_when_enumeration_fails_with_an_io_exception",
-                       "Secure_reread_returns_the_exact_published_identity_and_bytes"):
+                       "Secure_reread_returns_the_exact_published_identity_and_bytes",
+                       "Owner_only_application_accepts_an_enumerated_read_handle",
+                       "Owner_only_application_refuses_a_replaced_named_file_without_changing_its_permissions"):
             with self.subTest(required_journal_case=method):
                 self.assertIn("--required-case " + journal_file_class + "." + method, harness)
         for suffix, methods in (
             ("Intelligence.WizardIntelligenceProviderTests", (
                 "Guild_wizard_entry_refuses_unknown_binding_without_ambient",
-                "Guild_ordinary_context_path_is_unavailable_before_provider_or_embedding_effects")),
+                "Guild_ordinary_context_path_is_unavailable_before_provider_or_embedding_effects",
+                "Spell_parent_pivot_during_hydration_never_discloses_external_content_to_provider")),
             ("Guild.GuildWorkspaceLeaseBrokerTests", (
                 "Expiry_does_not_steal_admitted_writer_and_copied_permit_cannot_release_it",
                 "Terminal_acquire_replay_survives_file_replaced_by_directory_on_every_shipping_platform")),
@@ -83,6 +86,11 @@ class CiScopeWorkflowTests(unittest.TestCase):
         self.assertIn("FullyQualifiedName~Guild", harness)
         self.assertIn("FullyQualifiedName~WizardIntelligenceProviderTests", harness)
         self.assertIn("FullyQualifiedName~WorkspaceLease", harness)
+        for method in ("Authored_overrides_of_framework_virtual_members_that_reach_a_site_are_exactly_the_reviewed_types",
+                       "Authored_disposals_that_reach_a_site_and_belong_to_the_container_are_exactly_the_reviewed_types"):
+            with self.subTest(required_limit_pin=method):
+                self.assertIn("|FullyQualifiedName~" + method, harness)
+                self.assertIn("--required-case RetroDownfall.Arcanum.Tests.Build.CheckerLimitPinTests." + method, harness)
         for method in ("Completed_task_pruning_requires_exact_observation_and_final_drain",
                        "In_memory_json_writer_requires_closed_backend_encoder_and_lifetime",
                        "Workspace_lease_dispatch_requires_complete_census_and_preserves_effect_frontiers",

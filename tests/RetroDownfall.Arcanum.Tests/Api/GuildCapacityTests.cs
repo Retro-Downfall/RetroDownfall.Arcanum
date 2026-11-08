@@ -76,7 +76,9 @@ public sealed partial class GuildCapacityTests
 
         Guid id = accepted.RootElement.GetProperty("data").GetProperty("id").GetGuid();
 
-        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
+        // Bound a stalled integration test, without imposing a 20-second latency contract on
+        // five physical calls and their durable child/parent accounting on hosted Windows.
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(60));
 
         try
         {
@@ -140,15 +142,27 @@ public sealed partial class GuildCapacityTests
 
         transport.AllowChildReturn.TrySetResult();
 
-        while (true)
+        try
         {
-            using HttpResponseMessage result = await client.GetAsync($"/api/guild/quests/{id:D}/result", deadline.Token);
+            while (true)
+            {
+                using HttpResponseMessage result = await client.GetAsync($"/api/guild/quests/{id:D}/result", deadline.Token);
 
-            if (result.StatusCode == HttpStatusCode.OK) break;
+                if (result.StatusCode == HttpStatusCode.OK) break;
 
-            Assert.True(result.StatusCode == HttpStatusCode.NotFound, await result.Content.ReadAsStringAsync(deadline.Token));
+                Assert.True(result.StatusCode == HttpStatusCode.NotFound, await result.Content.ReadAsStringAsync(deadline.Token));
 
-            await Task.Delay(25, deadline.Token);
+                await Task.Delay(25, deadline.Token);
+            }
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+        {
+            string snapshot = await CapacitySnapshotAsync(factory, id);
+
+            Assert.Fail($"Child reached its provider and was released, but the parent result did not arrive. Calls={transport.Calls}; "
+                + $"runtime={transport.RuntimeDiagnostic}; toolResult={transport.ToolResultDiagnostic}; {snapshot}; "
+                + string.Join("\n", logs.Entries.Where(entry => entry.Category.Contains("Guild", StringComparison.Ordinal)
+                    || entry.Category.Contains("ModelCall", StringComparison.Ordinal)).Select(entry => entry.Message + " " + entry.Exception)));
         }
 
         using HttpResponseMessage content = await client.GetAsync($"/api/guild/quests/{id:D}/result/content", deadline.Token);
@@ -194,6 +208,45 @@ public sealed partial class GuildCapacityTests
     }
 
     private static StringContent Json(string body) => new(body, Encoding.UTF8, "application/json");
+
+    private static async Task<string> CapacitySnapshotAsync(ArcanumWebApplicationFactory factory, Guid rootId)
+    {
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            await using AsyncServiceScope scope = factory.Services.CreateAsyncScope();
+
+            var opened = await scope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()
+                .OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, deadline.Token);
+
+            if (opened.IsFailure) return $"snapshot={opened.Error.Code}";
+
+            await using var connection = opened.Value;
+
+            await using var command = connection.Connection.CreateCommand();
+
+            command.CommandTimeout = 2;
+
+            command.CommandText = """
+                SELECT 'operations=' || coalesce((
+                    SELECT group_concat(o.State || ':' || coalesce(o.TerminalErrorCode,'none'))
+                    FROM guild_quests q JOIN LongRunningOperations o ON o.Id=q.OperationId
+                    WHERE q.Id=$root OR q.ParentQuestId=$root), 'none')
+                    || ';bills=' || (SELECT count(*) FROM BillableOperations)
+                    || ';receipts=' || (SELECT count(*) FROM guild_result_receipts)
+                    || ';applications=' || (SELECT count(*) FROM guild_result_applications)
+                """;
+
+            command.Parameters.AddWithValue("$root", rootId.ToString("D").ToUpperInvariant());
+
+            return Convert.ToString(await command.ExecuteScalarAsync(deadline.Token)) ?? "snapshot=empty";
+        }
+        catch (Exception error)
+        {
+            return $"snapshot={error.GetType().Name}";
+        }
+    }
 
     private sealed class RecordingRuntime(WizardIntelligenceProvider wizard, DelegatingTransport transport) : IGuildLocalInferenceRuntime
     {

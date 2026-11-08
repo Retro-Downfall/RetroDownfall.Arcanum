@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -47,18 +48,65 @@ public sealed partial class WizardIntelligenceProviderTests
 
         bool pivoted = false;
 
+        void PivotParent()
+        {
+            Directory.Move(directory, directory + "-original");
+
+            if (OperatingSystem.IsWindows())
+            {
+                // A junction exercises the real reparse-point escape without requiring symlink privilege.
+                using System.Diagnostics.Process junction = System.Diagnostics.Process.Start(new ProcessStartInfo(
+                    Path.Combine(System.Environment.SystemDirectory, "cmd.exe"),
+                    $"/d /c mklink /J \"{directory}\" \"{external}\"")
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                })!;
+
+                if (!junction.WaitForExit(30000))
+                {
+                    junction.Kill(entireProcessTree: true);
+
+                    Assert.Fail("The directory-junction setup did not finish.");
+                }
+
+                Assert.True(junction.ExitCode == 0, junction.StandardError.ReadToEnd());
+            }
+            else
+            {
+                Directory.CreateSymbolicLink(directory, external);
+            }
+
+            pivoted = true;
+        }
+
         SecureFileReader.AfterRegularFileOpenedForTests = path =>
         {
             // Named routing first reads metadata; explicit path routing goes straight to hydration.
-            if (path == spellPath && ++bodyOpens == (explicitPath ? 1 : 2))
+            if (path == spellPath && ++bodyOpens == (explicitPath ? 1 : 2)
+                && !OperatingSystem.IsWindows())
             {
-                Directory.Move(directory, directory + "-original");
-
-                Directory.CreateSymbolicLink(directory, external);
-
-                pivoted = true;
+                PivotParent();
             }
         };
+
+        int containmentChecks = 0;
+
+        if (OperatingSystem.IsWindows())
+        {
+            // Windows can prevent renaming a directory once a child handle is open. Pivot at the
+            // hydration containment check instead: after explicit-path validation or named metadata.
+            WorkspacePathPolicy.ContainmentCheckObserverForTests = path =>
+            {
+                if (!pivoted && path == spellPath
+                    && (explicitPath ? ++containmentChecks == 2 : bodyOpens > 0))
+                {
+                    PivotParent();
+                }
+            };
+        }
 
         SecureFileReader.AfterOpenForTests = path =>
         {
@@ -83,6 +131,18 @@ public sealed partial class WizardIntelligenceProviderTests
                 CancellationToken.None);
 
             Assert.True(pivoted);
+
+            FileSystemInfo? target = Directory.ResolveLinkTarget(directory, returnFinalTarget: true);
+
+            Assert.NotNull(target);
+
+            Assert.True(FileHandleIdentityInterop.TryGetPathIdentity(external, out FileHandleIdentity expectedTarget));
+
+            Assert.True(FileHandleIdentityInterop.TryGetPathIdentity(target.FullName, out FileHandleIdentity resolvedTarget));
+
+            Assert.Equal(expectedTarget, resolvedTarget);
+
+            Assert.False(WorkspacePathPolicy.IsPathUnderWorkspace(_workspace.Root, target.FullName));
 
             if (explicitPath)
             {
@@ -111,6 +171,8 @@ public sealed partial class WizardIntelligenceProviderTests
         finally
         {
             SecureFileReader.AfterRegularFileOpenedForTests = null;
+
+            WorkspacePathPolicy.ContainmentCheckObserverForTests = null;
 
             SecureFileReader.AfterOpenForTests = null;
 

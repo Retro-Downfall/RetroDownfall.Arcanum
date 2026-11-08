@@ -35,6 +35,7 @@ filter+='|FullyQualifiedName~Empty_unused_enclosing_admission_entries_do_not_spl
 filter+='|FullyQualifiedName~Owner_bound_ambient_recovery_identity_preserves_semantic_distinctions'
 filter+='|FullyQualifiedName~Self_admitted_task_handoff_uses_its_unique_declared_catalog_owner|FullyQualifiedName~Host_owned_task_handoff_uses_its_unique_declared_catalog_owner'
 filter+='|FullyQualifiedName~ManifestNullEffectWorkOnlyConsumersResolveOneExactAcquisitionContext|FullyQualifiedName~ManifestNullEffectWorkOnlyConsumersPreserveStrictFrontierBoundaries'
+filter+='|FullyQualifiedName~Authored_overrides_of_framework_virtual_members_that_reach_a_site_are_exactly_the_reviewed_types|FullyQualifiedName~Authored_disposals_that_reach_a_site_and_belong_to_the_container_are_exactly_the_reviewed_types'
 dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
   -c Release --filter "$filter" --blame-hang-timeout 15m --blame-hang-dump-type none \
   --logger 'trx;LogFileName=guild-execution.trx' --logger 'console;verbosity=normal' --results-directory "$results"
@@ -63,6 +64,7 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.t
   RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceMutationFenceWriterTests \
   --required-case RetroDownfall.Arcanum.Tests.Intelligence.WizardIntelligenceProviderTests.Guild_wizard_entry_refuses_unknown_binding_without_ambient \
   --required-case RetroDownfall.Arcanum.Tests.Intelligence.WizardIntelligenceProviderTests.Guild_ordinary_context_path_is_unavailable_before_provider_or_embedding_effects \
+  --required-case RetroDownfall.Arcanum.Tests.Intelligence.WizardIntelligenceProviderTests.Spell_parent_pivot_during_hydration_never_discloses_external_content_to_provider \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildWorkspaceLeaseBrokerTests.Expiry_does_not_steal_admitted_writer_and_copied_permit_cannot_release_it \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildWorkspaceLeaseBrokerTests.Terminal_acquire_replay_survives_file_replaced_by_directory_on_every_shipping_platform \
   --required-case RetroDownfall.Arcanum.Tests.Guild.WorkspaceLeaseIdentityTests.Parent_and_root_replacement_invalidate_evidence \
@@ -71,6 +73,8 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.t
   --required-case RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Deletion_does_not_repeat_the_absence_proof_without_an_intervening_state_change \
   --required-case RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Resume_reports_recovery_required_when_enumeration_fails_with_an_io_exception \
   --required-case RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Secure_reread_returns_the_exact_published_identity_and_bytes \
+  --required-case RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Owner_only_application_accepts_an_enumerated_read_handle \
+  --required-case RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Owner_only_application_refuses_a_replaced_named_file_without_changing_its_permissions \
   --required-case RetroDownfall.Arcanum.Tests.Api.GuildEndpointTests.Native_operator_executes_through_real_scheduler_engine_HTTP_adapter_and_durable_result \
   --required-case RetroDownfall.Arcanum.Tests.Api.GuildEndpointTests.Native_parked_question_remains_discoverable_only_at_the_proven_input_frontier \
   --required-case RetroDownfall.Arcanum.Tests.Api.GuildCapacityTests.Native_blocking_delegation_releases_shared_capacity_and_resumes_parent_at_capacity_one \
@@ -112,5 +116,7 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.t
   --required-case RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Host_owned_task_handoff_uses_its_unique_declared_catalog_owner \
   --required-case RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ManifestNullEffectWorkOnlyConsumersResolveOneExactAcquisitionContext \
   --required-case RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ManifestNullEffectWorkOnlyConsumersPreserveStrictFrontierBoundaries \
+  --required-case RetroDownfall.Arcanum.Tests.Build.CheckerLimitPinTests.Authored_overrides_of_framework_virtual_members_that_reach_a_site_are_exactly_the_reviewed_types \
+  --required-case RetroDownfall.Arcanum.Tests.Build.CheckerLimitPinTests.Authored_disposals_that_reach_a_site_and_belong_to_the_container_are_exactly_the_reviewed_types \
   --required-case RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceMutationFenceProcessTests.Sdk_transport_refuses_before_connect_even_without_Guild_ambient \
   --required-case RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceMutationFenceProcessTests.Installed_fence_refuses_workspace_check_before_jail_probe

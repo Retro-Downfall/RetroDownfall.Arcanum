@@ -1288,6 +1288,8 @@ Use `./scripts/qualify-guild-execution.sh` for the local execution, provider/too
 
 The same profile runs the affected Compendium setting descriptors, generic settings editor, preservation and change-notification tests. Its separate `compendium-execution.trx` and `compendium-evidence-summary.json` require the Guild opt-in test to execute and pass, including preservation of independent settings. These files travel in the same platform artifact as the execution evidence.
 
+Journal permission application through an enumerated read handle, refusal to change a replacement file's permissions, and every Spell parent-pivot containment variant are mandatory evidence. Windows exercises a real directory junction before the hydration open; Unix retains the post-open symlink pivot. The profile also requires the exact reviewed framework-override and container-disposal inventory pins for the Guild runtime types.
+
 Backup coverage is limited to real clean-machine restore and current-head replacement restore. Required Guild cases separately prove V8-to-V9 migration, restored-inert local bindings and rejection of orphaned local execution evidence during reset. The profile retains the affected retention suite because schema inventory, payload eligibility, reset deletion ordering and reconciliation share those paths.
 
 Both hot-enable effect-admission cases are mandatory: successful physical installation must retain its own effect group, and maintenance refusal at that physical boundary must leave the installation lock absent.

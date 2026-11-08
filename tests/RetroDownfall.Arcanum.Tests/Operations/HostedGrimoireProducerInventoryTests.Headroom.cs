@@ -98,17 +98,19 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     // the actual compiled parser, exact root ownership and generated-catalog validation before its guarded manifest update.
     // Those arrangements reported zero diagnostics and identical canonical sites over all 84 primary and 31 additional roots.
     // Ordinary MCP bootstrap was the sole count difference: 492, 246 and 246 states.
-    // After the local-child interruption query refinement, fresh three-worker discovery measured all 84 primary and 31 additional
-    // roots over source inventory 1d57450035951d00e396b712a381a65f1bc40845e13c9d21e80cb92acc7bc6d2 and the unchanged checker.
-    // Every fresh count equals its historical three-worker count. The earlier one- and two-worker captures remain historical;
-    // they are not additional current-source arrangements. Actual compiled headroom validation accepts both fresh partitions.
-    // Fresh primary discovery, parser, exact root ownership and generated-catalog validation report zero diagnostics.
+    // Current qualification after the Windows journal ACL capability repair is fresh three-worker discovery over all 84 primary
+    // and 31 additional roots, source inventory 75c4d2cb2755f1ba3620037048243e1263d088750459e94fb9c0ed8b6bd70a90,
+    // and the unchanged checker. Earlier one- and two-worker captures remain historical, not current-source arrangements.
+    // Compared with the preceding child-frontier capture, StartAsync grew by four states (two root entries), five other primary
+    // journal roots and four additional journal roots grew by two each, and the other 105 root counts were unchanged.
+    // Actual compiled headroom validation accepts every current count against the retained ceilings without recalibration.
+    // Current primary discovery, parser, exact root ownership and generated-catalog validation report zero diagnostics;
+    // additional discovery also reports zero diagnostics. Both canonical manifests are byte-identical to the preceding capture.
     // Primary manifest: 9,263 site rows, SHA-256 f388100f3317ddae9c9815da2461184d4d283a97aaacb273f55640914dc5b4c4.
-    // Its only change from the historical manifest is the two local-child query lambda identities; ownership and frontiers agree.
-    // Additional manifest remains 1,963 site rows, SHA-256 a3ccdb46698b0143b339f80fbb884e6320d76d7071d862c6c22e396afa1e0dfe.
-    // This post-capture edit changes evidence comments only; numerical ceilings and hard/model/effect limits are unchanged.
-    // Every ceiling is prescribed by its largest historical measured count. The greatest maximum is 6,965 with a ceiling of 7,320,
-    // below the unchanged 7,372 bound of the 8,192-state cap. Changed rows name their reviewed source/proof closure.
+    // Additional manifest: 1,963 site rows, SHA-256 a3ccdb46698b0143b339f80fbb884e6320d76d7071d862c6c22e396afa1e0dfe.
+    // This post-capture edit changes evidence comments only; numerical ceilings, helper semantics and limits are unchanged.
+    // The greatest current count is 6,967, below its retained ceiling of 7,320 and the unchanged 7,372 bound of the 8,192-state cap.
+    // Historical worker triples prescribe the retained ceilings; changed rows name their reviewed source/proof closure.
     private static readonly HeadroomCeiling[] ProductionRootCeilings =
     [
         new("A2ASendingLeaseRenewer", "RetroDownfall.Arcanum.Infrastructure.A2A.A2ASendingLeaseRenewer.ExecuteAsync", 224), // measured 208, 208, 208 under one, two and three workers; reviewed short-ledger timeout and command-cleanup closure

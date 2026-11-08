@@ -1075,6 +1075,8 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
             "Reads a range of a log file for the log endpoints and the command line: not run by a hosted root."),
         (P + "Infrastructure.Logging.SecureSerilogFileHooks", [P + "Infrastructure.Logging.HostLockSerilogFileSink.Activate"],
             "The file sink's open hook, built when the logger is activated, before any hosted service runs."),
+        (P + "Infrastructure.Mcp.GuildToolInvocationContext.BoundFunction", [P + "Infrastructure.Mcp.GuildToolInvocationContext.Bind"],
+            "The SDK's function-invocation loop calls InvokeCoreAsync inside the classified model call. The wrapper dispatches through its captured Guild context and current eligibility checks; it supplies no independent hosted producer root."),
         (P + "Infrastructure.Mcp.McpHttpResponseBoundHandler.BoundedContent", [P + "Infrastructure.Mcp.McpHttpResponseBoundHandler.SendAsync"],
             "Bounds the body of an MCP HTTP response inside the handler's send, which is an MCP client call the inventory classifies."),
         (P + "Infrastructure.Mcp.McpHttpResponseBoundHandler.BoundedReadStream", [P + "Infrastructure.Mcp.McpHttpResponseBoundHandler.BoundedContent.CreateContentReadStreamAsync"],
@@ -1185,6 +1187,8 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
     /// <summary>The singleton registrations whose disposal reaches a site: the type, and why disposing it with the root provider is outside the claim.</summary>
     private static readonly (string Type, string Reason)[] ReviewedContainerDisposals =
     [
+        (P + "Infrastructure.Guild.GuildLocalHostReadiness",
+            "The singleton host-lifetime owner revokes its fence registration and disposes the retained workspace broker and host lock. StopAsync already follows this disposal; a later root-provider disposal exchanges the installation to null and performs no new execution."),
         (P + "Infrastructure.Hosting.GrimoireDatabaseHostedService",
             "Releases the installation maintenance lock it holds, under its own lifecycle gate, as the last step of host shutdown. It writes no Grimoire data and makes no provider, network or workspace call."),
     ];
