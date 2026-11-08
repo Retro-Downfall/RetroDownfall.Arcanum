@@ -1007,6 +1007,9 @@ public sealed class A2AParkedSendingTests
 
     private sealed class FakeApprentices : IApprenticeRepository
     {
+        public Task<RetroDownfall.Arcanum.Core.Primitives.Result<bool>> IsGuildBoundAsync(Guid id, CancellationToken cancellationToken = default) =>
+            Task.FromResult(RetroDownfall.Arcanum.Core.Primitives.Result<bool>.Success(false));
+
         public Apprentice? Item { get; set; }
 
         public Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>

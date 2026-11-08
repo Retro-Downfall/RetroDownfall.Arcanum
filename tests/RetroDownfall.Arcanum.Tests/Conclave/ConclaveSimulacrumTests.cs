@@ -190,6 +190,9 @@ public sealed class ConclaveSimulacrumTests
 
     private sealed class FakeApprenticeRepository : IApprenticeRepository
     {
+        public Task<RetroDownfall.Arcanum.Core.Primitives.Result<bool>> IsGuildBoundAsync(Guid id, CancellationToken cancellationToken = default) =>
+            Task.FromResult(RetroDownfall.Arcanum.Core.Primitives.Result<bool>.Success(false));
+
         public List<Apprentice> Items { get; } = [];
 
         public Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>

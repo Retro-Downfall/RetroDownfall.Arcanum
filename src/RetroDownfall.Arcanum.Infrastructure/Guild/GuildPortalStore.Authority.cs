@@ -215,7 +215,7 @@ internal sealed partial class GuildPortalStore
                 CASE WHEN typeof(Body)='blob' AND length(Body)<=65536 THEN Body ELSE NULL END,
                 CASE WHEN (SessionId IS NULL OR (typeof(SessionId)='text' AND length(CAST(SessionId AS BLOB))=36))
                     AND (CampaignId IS NULL OR (typeof(CampaignId)='text' AND length(CAST(CampaignId AS BLOB))=36))
-                    AND typeof(ContentKindCode)='integer' AND ContentKindCode BETWEEN 0 AND 8
+                    AND typeof(ContentKindCode)='integer' AND ContentKindCode BETWEEN 0 AND 10
                     AND typeof(Revision)='integer' AND Revision>=1
                     AND typeof(Digest)='blob' AND length(Digest)=32
                     AND typeof(MimeType)='text' AND length(CAST(MimeType AS BLOB)) BETWEEN 1 AND 65536

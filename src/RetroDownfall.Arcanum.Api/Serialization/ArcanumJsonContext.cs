@@ -33,6 +33,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Core.Conclave;
+using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Wards;
@@ -941,4 +942,13 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ApiResponse<SessionCampaignBindingStatusPageDto>))]
 [JsonSerializable(typeof(ApiResponse<SessionCampaignBindingPlanDto>))]
 [JsonSerializable(typeof(ApiResponse<SessionCampaignBindingResultDto>))]
+[JsonSerializable(typeof(GuildIssueRootRequest))]
+[JsonSerializable(typeof(GuildCancelQuestRequest))]
+[JsonSerializable(typeof(GuildContinueRequest))]
+[JsonSerializable(typeof(ApiResponse<GuildStatusDto>))]
+[JsonSerializable(typeof(ApiResponse<GuildQuestDto>))]
+[JsonSerializable(typeof(ApiResponse<GuildQuestInputDto>))]
+[JsonSerializable(typeof(ApiResponse<GuildCancellationDto>))]
+[JsonSerializable(typeof(ApiResponse<GuildResultReceipt>))]
+[JsonSerializable(typeof(ApiResponse<GuildContentDto>))]
 public partial class ArcanumJsonContext : JsonSerializerContext;

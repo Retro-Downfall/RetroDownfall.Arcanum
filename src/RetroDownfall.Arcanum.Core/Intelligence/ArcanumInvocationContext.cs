@@ -24,6 +24,11 @@ namespace RetroDownfall.Arcanum.Core.Intelligence;
 /// </remarks>
 public sealed class ArcanumInvocationContext
 {
+    internal IGuildInvocationBinding? GuildBinding { get; private init; }
+
+    internal static ArcanumInvocationContext ForGuild(IGuildInvocationBinding binding) => new(
+        ArcanumExecutionSurface.InternalBackground, null, InvocationAttendance.Unattended,
+        CovenantContextPolicy.None, ToolPolicy.NoTools, null) { GuildBinding = binding };
 
     private ArcanumInvocationContext(
         ArcanumExecutionSurface surface,
@@ -33,7 +38,6 @@ public sealed class ArcanumInvocationContext
         ToolPolicy toolPolicy,
         CovenantReadAuthorityEpoch? readAuthorityEpoch)
     {
-
         Surface = surface;
 
         Campaign = campaign;
@@ -45,7 +49,6 @@ public sealed class ArcanumInvocationContext
         ToolPolicy = toolPolicy;
 
         ReadAuthorityEpoch = readAuthorityEpoch;
-
     }
 
     /// <summary>
@@ -140,7 +143,6 @@ public sealed class ArcanumInvocationContext
         ToolPolicy toolPolicy,
         CovenantReadAuthorityEpoch? readAuthorityEpoch)
     {
-
         if (!Enum.IsDefined(surface))
         {
             return Result<ArcanumInvocationContext>.Failure(
@@ -165,12 +167,13 @@ public sealed class ArcanumInvocationContext
                 contextPolicy,
                 toolPolicy,
                 readAuthorityEpoch));
-
     }
 
     private static bool IsOperatorSurfaceCode(ArcanumExecutionSurface surface) =>
         surface is ArcanumExecutionSurface.SessionBackedOperatorTurn
             or ArcanumExecutionSurface.StatelessOperatorTurn
             or ArcanumExecutionSurface.ContextInspection;
-
 }
+
+/// <summary>Nonwire host-only binding; only the API physical provider owner interprets it.</summary>
+internal interface IGuildInvocationBinding;

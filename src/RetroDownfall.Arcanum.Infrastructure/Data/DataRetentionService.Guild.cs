@@ -25,7 +25,7 @@ internal sealed partial class DataRetentionService
             retention, cancellationToken).ConfigureAwait(false);
 
         await AddCompositeDatabaseStatusAsync(items, RetentionDataClass.GuildEvidence,
-            ["guild_workspace_lease_mutations", "guild_workspace_leases", "guild_workspace_authority_state", "guild_budget_evidence", "guild_budget_effects", "guild_quest_budget", "guild_budget_accounts", "guild_memory_attribution", "guild_portal_inputs", "guild_portal_receipts", "guild_inbox", "guild_portal_outbox", "guild_events", "guild_portal_cursors", "guild_envelopes", "guild_portal_streams", "guild_event_streams", "guild_continuations", "guild_result_inputs", "guild_result_applications", "guild_result_outbox", "guild_result_receipts", "guild_dispatches", "guild_quest_start_intents", "guild_quests", "guild_signets", "guild_signet_revocations", "guild_signet_authority_state", "guild_content_erasure_receipts", "guild_owner_cleanup", "guild_roster_refreshes", "guild_roster_cursors", "guild_declared_source_claims", "guild_declared_roots"],
+            ["guild_workspace_lease_mutations", "guild_workspace_leases", "guild_workspace_authority_state", "guild_budget_evidence", "guild_budget_effects", "guild_quest_budget", "guild_budget_accounts", "guild_memory_attribution", "guild_portal_inputs", "guild_portal_receipts", "guild_inbox", "guild_portal_outbox", "guild_events", "guild_portal_cursors", "guild_envelopes", "guild_portal_streams", "guild_event_streams", "guild_continuations", "guild_result_inputs", "guild_result_applications", "guild_result_outbox", "guild_result_receipts", "guild_dispatches", "guild_quest_cancellations", "guild_local_wait_checkpoints", "guild_local_executions", "guild_quest_start_intents", "guild_quests", "guild_signets", "guild_signet_revocations", "guild_signet_authority_state", "guild_content_erasure_receipts", "guild_owner_cleanup", "guild_roster_refreshes", "guild_roster_cursors", "guild_declared_source_claims", "guild_declared_roots"],
             "Content-free Guild budget, physical spend, erasure and owner cleanup evidence; never aged out on a timer.",
             retention, cancellationToken).ConfigureAwait(false);
     }
@@ -68,6 +68,20 @@ internal sealed partial class DataRetentionService
                 + " UNION SELECT operation.Id,0 FROM LongRunningOperations operation WHERE operation.Kind='guild-quest'"
                 + " AND NOT EXISTS(SELECT 1 FROM guild_quests c WHERE c.OperationId=operation.Id)"
             : "SELECT Id,0 FROM LongRunningOperations WHERE Kind='guild-quest'";
+
+        if (await TableExistsAsync("guild_local_executions", cancellationToken).ConfigureAwait(false))
+        {
+            command.CommandText += quests
+                ? $" UNION SELECT b.QuestId,0 FROM guild_local_executions b WHERE NOT ({GuildLocalExecutionStore.BindingProof})"
+                : " UNION SELECT QuestId,0 FROM guild_local_executions";
+        }
+
+        if (await TableExistsAsync("guild_local_wait_checkpoints", cancellationToken).ConfigureAwait(false))
+        {
+            command.CommandText += quests
+                ? $" UNION SELECT w.QuestId,0 FROM guild_local_wait_checkpoints w WHERE NOT ({GuildQuestStore.WaitCheckpointProof})"
+                : " UNION SELECT QuestId,0 FROM guild_local_wait_checkpoints";
+        }
 
         if (await TableExistsAsync("guild_inbox", cancellationToken).ConfigureAwait(false))
         {
@@ -123,9 +137,11 @@ internal sealed partial class DataRetentionService
                 LEFT JOIN guild_quests c ON c.Id=input.RecipientQuestId
                 WHERE envelope.ContentId=content.ContentId AND (c.Id IS NULL OR {GuildQuestRetentionPins.ExecutionUnresolved}))
             AND ((content.ContentKindCode=0 AND NOT EXISTS(SELECT 1 FROM guild_agent_cards card WHERE card.ContentId=content.ContentId))
-              OR (content.ContentKindCode IN(1,2) AND EXISTS(
+              OR (content.ContentKindCode IN(1,2,9,10) AND EXISTS(
                 SELECT 1 FROM guild_quests c WHERE
-                  ((content.ContentKindCode=1 AND c.GoalContentId=content.ContentId)
+                  ((content.ContentKindCode=9 AND EXISTS(SELECT 1 FROM guild_local_executions local WHERE local.QuestId=c.Id AND local.InputContentId=content.ContentId))
+                   OR (content.ContentKindCode=10 AND EXISTS(SELECT 1 FROM guild_local_wait_checkpoints checkpoint WHERE checkpoint.QuestId=c.Id AND checkpoint.ContentId=content.ContentId))
+                   OR (content.ContentKindCode=1 AND c.GoalContentId=content.ContentId)
                    OR (content.ContentKindCode=2 AND EXISTS(SELECT 1 FROM guild_result_receipts result WHERE result.QuestId=c.Id AND result.ContentId=content.ContentId)))
                   AND NOT {GuildQuestRetentionPins.Unresolved}
                   AND NOT EXISTS(SELECT 1 FROM guild_quests child WHERE child.ParentQuestId=c.Id)

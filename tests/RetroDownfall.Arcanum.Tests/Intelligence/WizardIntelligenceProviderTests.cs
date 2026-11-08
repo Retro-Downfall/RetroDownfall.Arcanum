@@ -9932,7 +9932,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         ICovenantAuthoritySnapshotProvider? tapestryAuthority = null,
         ICanonicalCampaignContextResolver? tapestryResolver = null,
         IServiceProvider? diagnosticsHost = null,
-        IModelCallExecutor? executor = null)
+        IModelCallExecutor? executor = null,
+        RetroDownfall.Arcanum.Infrastructure.Guild.IGuildLocalChildToolDispatcher? guildChildren = null)
     {
         settings ??= DefaultSettings();
 
@@ -9988,6 +9989,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         sessionAttachmentStore ??= new NoOpSessionAttachmentStore();
 
         ServiceCollection ordinaryServices = new();
+
+        if (guildChildren is not null) ordinaryServices.AddSingleton(guildChildren);
 
         if (diagnosticsHost?.GetService<WizardIntelligenceProvider.CompatibilityDiagnostics>() is { } diagnostics)
         {

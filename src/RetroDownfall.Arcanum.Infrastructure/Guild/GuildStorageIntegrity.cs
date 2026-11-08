@@ -114,6 +114,18 @@ internal static class GuildStorageIntegrity
             await ValidateMemoryAttributionAsync(connection, transaction, ct).ConfigureAwait(false);
         }
 
+        if (declaredSchemaVersion >= 9)
+        {
+            command.CommandText = $"""
+                SELECT EXISTS(SELECT 1 FROM guild_local_executions b WHERE NOT ({GuildLocalExecutionStore.BindingProof}))
+                    OR EXISTS(SELECT 1 FROM guild_local_wait_checkpoints w WHERE NOT ({GuildQuestStore.WaitCheckpointProof}))
+                    OR EXISTS(SELECT 1 FROM guild_quest_cancellations receipt LEFT JOIN guild_quests quest ON quest.Id=receipt.QuestId
+                        WHERE quest.Id IS NULL OR quest.CancellationRequested<>1 OR receipt.AcceptedRevision>quest.Revision)
+                """;
+
+            if (!Equals(0L, await command.ExecuteScalarAsync(ct).ConfigureAwait(false))) throw new GuildStorageIntegrityException();
+        }
+
         if (declaredSchemaVersion >= 8)
         {
             await ValidateWorkspaceLeasesAsync(connection, transaction, ct).ConfigureAwait(false);

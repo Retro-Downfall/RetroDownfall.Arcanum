@@ -65,6 +65,8 @@ public static class ErrorCodes
 
         public const string ReconciliationRequired = "Guild.ReconciliationRequired";
 
+        public const string LocalExecutionInterrupted = "Guild.LocalExecutionInterrupted";
+
         public const string AwaitingInput = "Guild.AwaitingInput";
 
         public const string UnsupportedTransportState = "Guild.UnsupportedTransportState";

@@ -1,4 +1,6 @@
 using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
+using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using System.Buffers;
 
 using System.Globalization;
@@ -1362,17 +1364,24 @@ public sealed class ToolExecutionPipeline(
         {
             AIFunction? function = ResolveRegisteredFunction(chatOptions, fcc.Name);
 
-            // A caller cannot promote a name-only/native special lane into a Guild capability.
-            // This dormant slice has no resource adapters, so every actual effect remains unavailable.
             string denial = GuildToolInvocationContext.Format(GuildToolInvocationContext.Unavailable);
 
             if (function is not null)
             {
                 using IDisposable guildScope = GuildToolInvocationAmbient.Begin(guildContext);
 
-                // Only host-bound wrappers may perform exact live checks. An unbound function is
-                // refused here rather than invoked merely because its display name was registered.
-                denial = await guildContext.RefuseFunctionAsync(function, cancellationToken).ConfigureAwait(false);
+                object? result = await guildContext.InvokeBoundAsync(function,
+                    fcc.Arguments is { Count: > 0 } ? new AIFunctionArguments(fcc.Arguments) : [], cancellationToken).ConfigureAwait(false);
+
+                if (result is GuildLocalChildToolResult child)
+                {
+                    string body = GuildPromptBuilder.Build(GuildAuthorityKind.Child, GuildEnvelopeKind.Result,
+                        child.Quest.ResultReceiptId ?? child.Quest.Id, child.Summary ?? $"Child Quest {child.Quest.Id:N}: {child.Quest.State}.");
+
+                    return new WardedToolExecutionResult(body, BufferedWardEventsOrEmpty(wardEvents)) { Sensitivity = child.Sensitivity };
+                }
+
+                denial = result as string ?? denial;
             }
 
             return new WardedToolExecutionResult(denial, BufferedWardEventsOrEmpty(wardEvents), Denied: true);

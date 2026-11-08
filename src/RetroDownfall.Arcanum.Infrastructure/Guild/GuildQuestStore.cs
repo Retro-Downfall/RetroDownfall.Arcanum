@@ -9,13 +9,19 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
-/// <summary>Dormant transaction owner. No public/runtime admission path is registered by this slice.</summary>
+/// <summary>Transactional Quest state, replay and admitted effect ownership for the local host.</summary>
 internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority authority,
-    IGuildQuestHostPolicy policy, IGuildQuestAllocationParticipant allocations, TimeProvider time)
+    IGuildQuestHostPolicy policy, IGuildQuestAllocationParticipant allocations, TimeProvider time,
+    IGuildLocalExecutionAdmission? localExecution = null, IGuildLocalHostReadiness? readiness = null)
 {
+    private Result RequireLocalExecutionReady() => readiness?.RequireExecutionReady() ?? GuildLocalHostReadiness.Unavailable;
+
+    internal bool HasLocalExecutionAdmission => localExecution is not null;
+
     internal Task<Result<GuildQuestStored>> IssueAsync(GuildCallerContext caller, GuildIssuanceIdentity issuance,
         GuildIssueRootRequest request, CancellationToken ct) => IssueAsync(caller, issuance, request, null, null, ct);
 
@@ -23,9 +29,12 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
         Guid parent, GuildIssueChildRequest request, CancellationToken ct) => IssueAsync(caller, issuance, null, parent, request, ct);
 
     private Task<Result<GuildQuestStored>> IssueAsync(GuildCallerContext caller, GuildIssuanceIdentity issuance,
-        GuildIssueRootRequest? root, Guid? parentId, GuildIssueChildRequest? child, CancellationToken ct)
+        GuildIssueRootRequest? root, Guid? parentId, GuildIssueChildRequest? child, CancellationToken ct,
+        GuildChildToolAdmission? toolAdmission = null)
     {
-        Result<string> digest = root is not null ? GuildQuestIntent.Compute(root) : GuildQuestIntent.Compute(parentId.GetValueOrDefault(), child!);
+        Result<string> digest = root is not null ? GuildQuestIntent.Compute(root)
+            : toolAdmission is not null ? ToolIssueIntent(parentId.GetValueOrDefault(), child!)
+            : GuildQuestIntent.Compute(parentId.GetValueOrDefault(), child!);
 
         if (digest.IsFailure) return Task.FromResult(Result<GuildQuestStored>.Failure(digest.Error));
 
@@ -57,6 +66,16 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
                 if (live.IsFailure) return live.Error;
             }
 
+            if (toolAdmission is not null)
+            {
+                if (root is not null || child is null) return InvalidReceipt;
+
+                Result source = await ValidateToolIssueWithinAsync(connection, transaction, signets, caller,
+                    digest.Value, toolAdmission, token).ConfigureAwait(false);
+
+                if (source.IsFailure) return source.Error;
+            }
+
             Guid? existing = await FindIssueAsync(connection, transaction, issuance, token).ConfigureAwait(false);
 
             if (existing is { } acceptedId)
@@ -69,7 +88,16 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
                 if (visible.IsFailure) return visible.Error;
 
-                return accepted.Value.IntentDigest != digest.Value ? Conflict : Replay(accepted.Value);
+                if (accepted.Value.IntentDigest != digest.Value) return Conflict;
+
+                if (toolAdmission is not null)
+                {
+                    Result mode = await ValidateToolChildWithinAsync(connection, transaction, accepted.Value, toolAdmission, token).ConfigureAwait(false);
+
+                    if (mode.IsFailure) return mode.Error;
+                }
+
+                return Replay(accepted.Value);
             }
 
             GuildQuestStored? parent = null;
@@ -90,23 +118,35 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
                 if (parent.Quest.RootQuestId != rootId || await HasClosedAncestorAsync(connection, transaction, issuer, token).ConfigureAwait(false))
                     return new Error(ErrorCodes.Guild.Forbidden, "The issuing Quest is closed to new descendants.");
+
+                if (toolAdmission is not null)
+                {
+                    Result<GuildIssueChildRequest> resolved = await ResolveToolBudgetWithinAsync(connection, transaction,
+                        parent, child, token).ConfigureAwait(false);
+
+                    if (resolved.IsFailure) return resolved.Error;
+
+                    child = resolved.Value;
+                }
             }
 
             Guid session = root?.SessionId ?? Guid.NewGuid();
 
-            Guid? campaign = parent?.Quest.CampaignId ?? root?.CampaignId;
+            Guid? campaign = parent?.Quest.CampaignId ?? root?.CampaignId ?? root?.WorkspaceId;
 
             Guid? workspace = parent?.Quest.WorkspaceId ?? root?.WorkspaceId;
 
             if (root is { SessionId: { } suppliedSession, CampaignId: null })
             {
-                await using SqliteCommand sessionOwner = Command(connection, transaction, "SELECT CampaignId FROM Sessions WHERE Id=$session");
+                await using SqliteCommand sessionOwner = Command(connection, transaction, "SELECT CampaignId FROM session_campaign_bindings WHERE SessionId=$session AND BindingKindCode IN(1,2)");
 
                 Add(sessionOwner, "$session", Id(suppliedSession));
 
                 campaign = await sessionOwner.ExecuteScalarAsync(token).ConfigureAwait(false) is string storedCampaign
                     ? Guid.Parse(storedCampaign) : null;
             }
+
+            if (workspace is not null && campaign != workspace) return OwnerUnavailable;
 
             Result owner = await GuildStore.RequireOwnerWithinAsync(connection, transaction, root?.SessionId, campaign, token).ConfigureAwait(false);
 
@@ -121,6 +161,8 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
             if (resolution.IsFailure) return resolution.Error;
 
             GuildQuestAdmissionPlan plan = resolution.Value;
+
+            using IDisposable? admissionScope = plan.Lifetime;
 
             if (!ReferenceEquals(plan.Admission.Caller, caller) || plan.Admission.Mutation != mutation
                 || plan.Owners.SessionId != session || plan.Owners.CampaignId != campaign || plan.Owners.WorkspaceId != workspace
@@ -148,6 +190,15 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
                 Add(create, "$campaign", Id(campaign));
 
                 Add(create, "$now", UtcInstantText.Format(now));
+
+                _ = await create.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+
+                create.CommandText = "INSERT INTO session_campaign_bindings(SessionId,BindingKindCode,CampaignId,BoundAtUtc) VALUES($id,$kind,$campaign,$now)";
+
+                Add(create, "$kind", campaign is null ? 1 : 2);
+
+                using CovenantSqliteAuthorizationScope bindingAuthorization = CovenantSqliteConnectionInitializer.Instance
+                    .Authorize(connection, CovenantSqliteAuthorizationKind.SessionBindingWrite);
 
                 _ = await create.ExecuteNonQueryAsync(token).ConfigureAwait(false);
             }
@@ -193,7 +244,31 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
             if (projected.IsFailure) return projected.Error;
 
-            return await ReadWithinAsync(connection, transaction, id, token).ConfigureAwait(false);
+            Result<GuildQuestStored> created = await ReadWithinAsync(connection, transaction, id, token).ConfigureAwait(false);
+
+            if (created.IsFailure) return created;
+
+            if (localExecution is null) return toolAdmission is null ? created : GuildLocalToolRegistry.Unavailable;
+
+            Result<GuildLocalExecutionInput> input = toolAdmission is null
+                ? await localExecution.ResolveWithinAsync(caller, created.Value, connection, transaction, token).ConfigureAwait(false)
+                : await localExecution.ResolveToolWithinAsync(caller, created.Value, connection, transaction, toolAdmission, token).ConfigureAwait(false);
+
+            if (input.IsFailure) return input.Error;
+
+            Result<GuildLocalExecutionBinding> local = await GuildLocalExecutionStore.CreateWithinAsync(
+                connection, transaction, created.Value, input.Value, plan.SourceLabel, now, token).ConfigureAwait(false);
+
+            if (local.IsFailure) return local.Error;
+
+            if (toolAdmission is not null)
+            {
+                Result mode = await ValidateToolChildWithinAsync(connection, transaction, created.Value, toolAdmission, token).ConfigureAwait(false);
+
+                if (mode.IsFailure) return mode.Error;
+            }
+
+            return created;
         }, ct);
     }
 

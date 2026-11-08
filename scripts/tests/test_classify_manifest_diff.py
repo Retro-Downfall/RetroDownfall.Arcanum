@@ -648,7 +648,7 @@ class ClassifyManifestDiffTests(unittest.TestCase):
     def test_every_rule_has_a_unique_name_a_lane_a_side_and_a_summary(self) -> None:
         names = [rule.name for rule in CLASSIFIER.RULES]
 
-        self.assertEqual(6, len(names))
+        self.assertEqual(8, len(names))
 
         self.assertEqual(len(names), len(set(names)))
 
@@ -1037,6 +1037,182 @@ class ClassifyManifestDiffTests(unittest.TestCase):
                     ("source_path", "src/Other.cs"), ("member", "Other"), ("callee", "Other.Call")):
                     self.assertEqual("d", label(row._replace(**{field: value})), field)
 
+    def test_historical_ledger_addition_requires_exact_baseline_and_parity_rows(self) -> None:
+        retained = site("src/Retained.cs")
+        added = site("src/Preexisting.cs")
+
+        result = CLASSIFIER.classify(manifest(retained), manifest(retained, added), frozenset(),
+            manifest(retained, added), None, manifest(retained, added))
+
+        item = next(item for item in result if item.row == added)
+
+        self.assertEqual(("l", "baseline-ledger"), (item.label, item.stage))
+
+        for parity, baseline in ((None, manifest(added)), (manifest(added), None),
+            (manifest(), manifest(added)), (manifest(added), manifest()),
+            (manifest(added._replace(syntax_sha256="A" * 64)), manifest(added)),
+            (manifest(added), manifest(added._replace(effect="B" * 64)))):
+            result = CLASSIFIER.classify(manifest(retained), manifest(retained, added), frozenset(), parity, None, baseline)
+
+            self.assertNotEqual("l", next(item for item in result if item.row == added).label)
+
+        removed = CLASSIFIER.classify(manifest(retained, added), manifest(retained), frozenset(),
+            manifest(retained, added), None, manifest(retained, added))
+
+        self.assertNotEqual("l", removed[0].label)
+
+        self.assertEqual("d", classify(manifest(retained), manifest(retained, added), parity=manifest(added))[("+", added)].label)
+
+    def test_cli_baseline_observation_reports_historical_rows_without_qualifying_baseline(self) -> None:
+        retained = site("src/Retained.cs")
+        added = site("src/Preexisting.cs")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            for name, rows in (("committed", [retained]), ("regenerated", [retained, added]),
+                ("parity", [retained, added]), ("baseline", [retained, added])):
+                write_manifest(root / (name + ".tsv"), rows)
+
+            (root / "edited.txt").write_text("")
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                status = CLASSIFIER.main(["--committed", str(root / "committed.tsv"),
+                    "--regenerated", str(root / "regenerated.tsv"), "--parity", str(root / "parity.tsv"),
+                    "--baseline-observation", str(root / "baseline.tsv"), "--edited-sources", str(root / "edited.txt"),
+                    "--report", str(root / "report.tsv")])
+
+            self.assertEqual(0, status)
+
+            self.assertIn("l\t\tbaseline-ledger\t+", (root / "report.tsv").read_text())
+
+    def test_reviewed_workspace_lease_closures_need_exact_observations_and_source(self) -> None:
+        rows = sorted(CLASSIFIER.WORKSPACE_LEASE_REVIEWED_ROWS)
+
+        self.assertEqual(92, len(rows))
+
+        texts = {path: (REPOSITORY / path).read_text() for path in CLASSIFIER.WORKSPACE_LEASE_BASE_SOURCE_SHA256}
+        source_hashes = {path: hashlib.sha256(text.encode()).hexdigest() for path, text in texts.items()}
+        sources = FakeSources(base=texts, head=texts)
+        # Exercise the source guard with this test's current authored fixture corpus. The final observation wrapper separately
+        # validates the real pinned baseline hashes from the contract against the verified exact baseline snapshot.
+        reviewed = CLASSIFIER.parse_manifest(MANIFEST_PATH.read_text(), "reviewed")
+
+        with patched("WORKSPACE_LEASE_BASE_SOURCE_SHA256", source_hashes):
+            for row in rows:
+                retained = site("src/Retained.cs", root=row.root_type, operation=row.authority_operation_id)
+                references = [candidate for candidate in rows if candidate.capsule_id in row.references]
+                # Some contexts reference acquisitions outside the reviewed terminal footprint. Use the actual final ledger's
+                # exact acquisitions so the test does not pass through the unresolved-reference refusal first.
+                references += [candidate for candidate in reviewed.rows if candidate.capsule_id in row.references]
+                references = [candidate for candidate in dict.fromkeys(references) if candidate != row]
+                old = manifest(retained, *references)
+                new = manifest(retained, *references, row)
+                parity = new
+                result = CLASSIFIER.classify(old, new, frozenset(), parity, sources, old)
+                item = next(item for item in result if item.row == row)
+
+                self.assertEqual("c", item.label, (row.root, row.member, row.callee))
+
+                expected_rule = "retained-workspace-pin-cleanup-origin" if row.source_path.endswith("/RetainedExclusiveFileLock.cs") else "workspace-lease-closed-dispatch"
+
+                self.assertEqual(expected_rule, item.rule)
+
+                if row == rows[0]:
+                    chain = "src/RetroDownfall.Arcanum.Infrastructure/Workspaces/WorkspaceMutationPlan.cs"
+                    drift = FakeSources(base={**texts, chain: "changed call-chain source"}, head=texts)
+                    result = CLASSIFIER.classify(old, new, frozenset(), parity, drift, old)
+
+                    self.assertNotEqual("c", next(item for item in result if item.row == row).label)
+
+                for changed in (row._replace(member="Other"), row._replace(syntax_ordinal="999"),
+                    row._replace(syntax_sha256="A" * 64), row._replace(effect="B" * 64),
+                    row._replace(root_type="Other")):
+                    result = CLASSIFIER.classify(old, manifest(retained, *references, changed), frozenset(),
+                        manifest(retained, *references, changed), sources, old)
+
+                    self.assertNotEqual("c", next(item for item in result if item.row == changed).label)
+
+                for p, b in ((None, old), (parity, None), (old, old), (parity, new)):
+                    result = CLASSIFIER.classify(old, new, frozenset(), p, sources, b)
+
+                    self.assertNotEqual("c", next(item for item in result if item.row == row).label)
+
+                drift = FakeSources(base={**texts, row.source_path: "changed source"}, head=texts)
+                result = CLASSIFIER.classify(old, new, frozenset(), parity, drift, old)
+
+                self.assertNotEqual("c", next(item for item in result if item.row == row).label)
+
+                drift = FakeSources(base=texts, head={**texts, row.source_path: "changed source"})
+                result = CLASSIFIER.classify(old, new, frozenset(), parity, drift, old)
+
+                self.assertNotEqual("c", next(item for item in result if item.row == row).label)
+
+                removed = CLASSIFIER.classify(new, old, frozenset(), parity, sources, old)
+
+                self.assertNotEqual("c", next(item for item in removed if item.row == row).label)
+
+    def test_legacy_guild_ownership_reads_require_the_exact_introduced_repository_call(self) -> None:
+        caller = "src/RetroDownfall.Arcanum.Infrastructure/Repositories/ApprenticeRepository.Guild.cs"
+        inspector = "await inspector.InspectAsync(command.Connection!, command.Transaction, core, cancellationToken)"
+        availability = "await GuildStorageAvailability.CheckAsync(command.Connection!, command.Transaction, cancellationToken)"
+
+        for operation in ("ContinueAsync", "InterveneAsync", "InterveneOperatorAsync", "ResumeAsync", "ReweaveAsync", "StartAsync"):
+            for member in ("ReadCatalogAsync", "ReadIndexColumnsAsync", "ReadIndexListAsync"):
+                for callee in ("Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync", "System.Data.Common.DbDataReader.ReadAsync"):
+                    row = site("src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GrimoireSchemaManifestInspector.cs",
+                        callee=callee, member=member, root="ApprenticeService",
+                        operation="RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService." + operation)
+
+                    self._assert_exact_introduced_source_reach(row, caller, inspector)
+
+            row = site("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStorageAvailability.cs",
+                callee="System.Data.Common.DbCommand.ExecuteScalarAsync", member="CheckAsync", root="ApprenticeService",
+                operation="RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService." + operation)
+
+            self._assert_exact_introduced_source_reach(row, caller, availability)
+
+    def test_guild_host_identity_reads_require_the_exact_introduced_physical_identity_call(self) -> None:
+        caller = "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalHostPolicy.Canonical.cs"
+        marker = "opener.IdentifyExact(root)"
+
+        for root, operation in (
+            ("Loremaster", "RetroDownfall.Arcanum.Infrastructure.Hosting.Loremaster.ExecuteAsync"),
+            ("SagaExtractionService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SagaExtractionService.ExecuteAsync"),
+            ("SessionAttachmentIndexingService", "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.ExecuteAsync"),
+        ):
+            for member, callee in (
+                ("TryGetUnixPathMetadataNoFollow", "RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.lstat"),
+                ("TryGetWindowsFileIdInfo", "RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFileInformationByHandleEx"),
+                ("TryGetWindowsHandleMetadata", "RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFileInformationByHandle"),
+                ("TryGetWindowsPathMetadataNoFollow", "RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.CreateFile"),
+            ):
+                row = site("src/RetroDownfall.Arcanum.Infrastructure/Security/FileHandleIdentity.cs", kind="FileSystemRead",
+                    callee=callee, member=member, root=root, operation=operation)
+
+                self._assert_exact_introduced_source_reach(row, caller, marker)
+
+    def _assert_exact_introduced_source_reach(self, row, caller, marker):
+        def label(candidate=row, base="", head=marker, edited=(caller,)):
+            retained = site("src/Retained.cs", root=candidate.root_type, operation=candidate.authority_operation_id)
+
+            result = classify(manifest(retained), manifest(retained, candidate), edited=edited, parity=manifest(retained),
+                sources=FakeSources(base={caller: base}, head={caller: head}))
+
+            return result[("+", candidate)].label
+
+        self.assertEqual("r", label(), (row.root, row.member, row.callee))
+
+        self.assertEqual("d", label(head=""))
+
+        self.assertEqual("d", label(base=marker))
+
+        self.assertEqual("d", label(edited=()))
+
+        for field, value in (("root_type", "Other"), ("authority_operation_id", "Other.Run"),
+            ("source_path", "src/Other.cs"), ("member", "Other"), ("callee", "Other.Call")):
+            self.assertEqual("d", label(row._replace(**{field: value})), field)
+
     def test_every_reviewed_call_chain_names_one_side_a_marker_and_a_reason(self) -> None:
         keys = [(e.root_type, e.operation, e.source_path, e.member, e.callee, e.side) for e in CLASSIFIER.REACHED_THROUGH]
 
@@ -1346,6 +1522,24 @@ class ClassifyManifestDiffTests(unittest.TestCase):
 
         for entry in CLASSIFIER.NEW_ROOTS:
             self.assertTrue(entry.reason.strip(), entry.operation)
+
+    def test_guild_execution_new_roots_are_exact_catalog_operations_without_mixed_task_owners(self) -> None:
+        expected = {
+            ("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ExecuteGuildAsync"),
+            *(("GuildLocalHostReadiness", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalHostReadiness." + member)
+                for member in ("RequireExecutionReady", "StartAsync", "StopAsync")),
+            *(("GuildLocalQuestScheduler", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler." + member)
+                for member in ("ExecuteAsync", "RunAdmittedAsync", "RunCommittedAsync", "Schedule", "StartAsync")),
+        }
+
+        actual = {(entry.root_type, entry.operation) for entry in CLASSIFIER.NEW_ROOTS
+            if entry.root_type in ("GuildLocalHostReadiness", "GuildLocalQuestScheduler")
+                or entry.operation.endswith(".ExecuteGuildAsync")}
+
+        self.assertEqual(expected, actual)
+
+        self.assertNotIn(("GuildLocalQuestScheduler",
+            "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync"), actual)
 
     def test_every_reviewed_new_root_is_a_root_of_the_committed_manifest(self) -> None:
         reviewed = CLASSIFIER.parse_manifest(MANIFEST_PATH.read_text(encoding="utf-8"), "reviewed")

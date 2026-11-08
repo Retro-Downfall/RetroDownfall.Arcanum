@@ -325,6 +325,9 @@ public sealed class ApprenticeCheckpointDelegationChainTests
 
     private sealed class RecordingApprenticeRepository : IApprenticeRepository
     {
+        public Task<RetroDownfall.Arcanum.Core.Primitives.Result<bool>> IsGuildBoundAsync(Guid id, CancellationToken cancellationToken = default) =>
+            Task.FromResult(RetroDownfall.Arcanum.Core.Primitives.Result<bool>.Success(false));
+
         private readonly Dictionary<Guid, Apprentice> _store = new();
 
         public RecordingApprenticeRepository(params Apprentice[] apprentices)

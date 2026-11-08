@@ -8,6 +8,44 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 internal sealed partial class SignetAuthority
 {
     /// <summary>
+    /// Commits one fresh effect admission before its synchronous handoff. The root ordering gate
+    /// ends after handoff; installation work and effect admission remain held until the effect settles.
+    /// A replay is observation only and cannot invoke the effect again.
+    /// </summary>
+    internal Task<Result<T>> AdmitQuestEffectAsync<T>(Guid root,
+        Func<SqliteConnection, SqliteTransaction, QuestTransaction, CancellationToken, Task<Result<bool>>> admission,
+        Func<CancellationToken, Task<Result<T>>> effect, CancellationToken cancellationToken)
+    {
+        if (admission is null || effect is null)
+        {
+            return Task.FromResult(Result<T>.Failure(Mismatch));
+        }
+
+        return WithInstallationAsync<T>(true, async token =>
+        {
+            Result<Task<Result<T>>> handedOff = await GuildSignetRootGate.RunAsync<Task<Result<T>>>(gate, root,
+                async rootToken =>
+                {
+                    Result<bool> committed = await ExecuteQuestTransactionAsync(root, admission, rootToken).ConfigureAwait(false);
+
+                    if (committed.IsFailure) return committed.Error;
+
+                    if (!committed.Value)
+                    {
+                        return new Error(ErrorCodes.Guild.ReconciliationRequired,
+                            "The recorded effect must be observed; replay cannot authorize another dispatch.");
+                    }
+
+                    rootToken.ThrowIfCancellationRequested();
+
+                    return Result<Task<Result<T>>>.Success(effect(rootToken));
+                }, token).ConfigureAwait(false);
+
+            return handedOff.IsFailure ? handedOff.Error : await handedOff.Value.ConfigureAwait(false);
+        }, cancellationToken);
+    }
+
+    /// <summary>
     /// Holds installation admission and the exact root gate through one domain write transaction.
     /// The trusted callback only reads and writes that transaction; it must not commit it or perform external effects.
     /// </summary>
@@ -20,51 +58,55 @@ internal sealed partial class SignetAuthority
             return Task.FromResult(Result<T>.Failure(Mismatch));
         }
 
-        return UnderRootAsync(root, true, async ct =>
+        return UnderRootAsync(root, true, token => ExecuteQuestTransactionAsync(root, action, token), cancellationToken);
+    }
+
+    private async Task<Result<T>> ExecuteQuestTransactionAsync<T>(Guid root,
+        Func<SqliteConnection, SqliteTransaction, QuestTransaction, CancellationToken, Task<Result<T>>> action,
+        CancellationToken cancellationToken)
+    {
+        QuestTransaction? scope = null;
+
+        object completionOwner = new();
+
+        try
         {
-            QuestTransaction? scope = null;
-
-            object completionOwner = new();
-
-            try
+            Result<T> committed = await store.ExecuteAsync<T>(true, async (connection, transaction, token) =>
             {
-                Result<T> committed = await store.ExecuteAsync<T>(true, async (connection, transaction, token) =>
+                scope = new QuestTransaction(this, root, connection, transaction, token, completionOwner);
+
+                Result<T> result;
+
+                bool closed;
+
+                try
                 {
-                    scope = new QuestTransaction(this, root, connection, transaction, token, completionOwner);
-
-                    Result<T> result;
-
-                    bool closed;
-
-                    try
-                    {
-                        result = await action(connection, transaction, scope, token).ConfigureAwait(false);
-                    }
-                    finally
-                    {
-                        closed = await scope.CloseAsync(completionOwner).ConfigureAwait(false);
-                    }
-
-                    return closed ? result : Result<T>.Failure(GuildSignetStore.Unavailable);
-                }, ct).ConfigureAwait(false);
-
-                if (committed.IsSuccess && scope is not null)
+                    result = await action(connection, transaction, scope, token).ConfigureAwait(false);
+                }
+                finally
                 {
-                    Result registered = scope.RegisterCommitted(completionOwner);
-
-                    if (registered.IsFailure)
-                    {
-                        return Result<T>.Failure(registered.Error);
-                    }
+                    closed = await scope.CloseAsync(completionOwner).ConfigureAwait(false);
                 }
 
-                return committed;
-            }
-            finally
+                return closed ? result : Result<T>.Failure(GuildSignetStore.Unavailable);
+            }, cancellationToken).ConfigureAwait(false);
+
+            if (committed.IsSuccess && scope is not null)
             {
-                scope?.DisposePending(completionOwner);
+                Result registered = scope.RegisterCommitted(completionOwner);
+
+                if (registered.IsFailure)
+                {
+                    return Result<T>.Failure(registered.Error);
+                }
             }
-        }, cancellationToken);
+
+            return committed;
+        }
+        finally
+        {
+            scope?.DisposePending(completionOwner);
+        }
     }
 
     /// <summary>One callback's authority participant, fenced to its root and exact live transaction.</summary>

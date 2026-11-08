@@ -14,6 +14,10 @@ internal sealed partial class GuildQuestStore
 {
     internal Task<Result<GuildQuestStored>> WaitForInputAsync(GuildQuestDriver driver,
         Guid questionId, Guid continuationId, CancellationToken ct)
+        => WaitForInputCoreAsync(driver, questionId, continuationId, null, ct);
+
+    private Task<Result<GuildQuestStored>> WaitForInputCoreAsync(GuildQuestDriver driver,
+        Guid questionId, Guid continuationId, GuildLocalWaitCheckpointWrite? checkpoint, CancellationToken ct)
     {
         if (!DriverShape(driver) || questionId == Guid.Empty || continuationId == Guid.Empty)
         {
@@ -40,6 +44,15 @@ internal sealed partial class GuildQuestStore
 
                     if (visible.Value.Operation.State == LongRunningOperationState.Waiting && row.Quest.State == QuestState.InputRequired)
                     {
+                        if (checkpoint is not null)
+                        {
+                            await reader.DisposeAsync().ConfigureAwait(false);
+
+                            Result replay = await VerifyWaitReplayWithinAsync(connection, transaction, row, questionId, continuationId, checkpoint, token).ConfigureAwait(false);
+
+                            return replay.IsSuccess ? row : replay.Error;
+                        }
+
                         return !reader.IsDBNull(0) && !reader.IsDBNull(1) && reader.GetString(0) == Id(questionId)
                             && reader.GetString(1) == Id(continuationId) ? row : Conflict;
                     }
@@ -67,6 +80,13 @@ internal sealed partial class GuildQuestStore
                 if (Equals(1L, await evidence.ExecuteScalarAsync(token).ConfigureAwait(false))) return UncertainDispatch;
 
                 DateTimeOffset now = time.GetUtcNow();
+
+                if (checkpoint is not null)
+                {
+                    Result written = await WriteWaitCheckpointWithinAsync(connection, transaction, row, questionId, continuationId, checkpoint, now, token).ConfigureAwait(false);
+
+                    if (written.IsFailure) return written.Error;
+                }
 
                 if (!await LongRunningOperationStore.TryTransitionWithinAsync(connection, transaction, row.Quest.OperationId,
                     driver.OperationRevision, driver.LeaseOwner, LongRunningOperationState.Waiting, now, null, token).ConfigureAwait(false)) return RevisionConflict;

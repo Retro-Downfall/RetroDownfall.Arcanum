@@ -185,6 +185,8 @@ public sealed class ChatClientFactory(
     {
         string key = resolvedApiKey ?? KeylessOpenAiPlaceholder;
 
+        provider = PromptCacheClientIdentity.Freeze(provider);
+
         var credential = new ApiKeyCredential(key);
 
         HttpClient http = httpClientFactory.CreateClient(OpenAiCompatibleHttpClientName);
@@ -213,9 +215,15 @@ public sealed class ChatClientFactory(
             options.AddPolicy(dispatchPolicy, PipelinePosition.BeforeTransport);
         }
 
+        GuildProviderWirePolicy guildPolicy = new(provider, resolvedModel);
+
+        options.AddPolicy(guildPolicy, PipelinePosition.BeforeTransport);
+
         var chatClient = new ChatClient(resolvedModel, credential, options);
 
         IChatClient meAi = chatClient.AsIChatClient();
+
+        guildPolicy.Bind(meAi);
 
         PromptCacheClientIdentity? identity = configurationStamp is not null
             ? new(meAi, provider, resolvedModel, configurationStamp, credentialStamp, dispatchPolicy)

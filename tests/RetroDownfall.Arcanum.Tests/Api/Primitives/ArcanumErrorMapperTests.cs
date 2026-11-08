@@ -11,6 +11,23 @@ namespace RetroDownfall.Arcanum.Tests.Api.Primitives;
 public sealed class ArcanumErrorMapperTests
 {
     [Theory]
+    [InlineData(ErrorCodes.Guild.GrantWidening, StatusCodes.Status403Forbidden)]
+    [InlineData(ErrorCodes.Guild.OwnerUnavailable, StatusCodes.Status404NotFound)]
+    [InlineData(ErrorCodes.Guild.ResultConflict, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Guild.GrantExceeded, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Guild.PriceUnavailable, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Guild.BudgetCapabilityUnavailable, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Guild.SequenceExhausted, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Guild.SourceConflict, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Guild.LocalExecutionInterrupted, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Guild.ContentErased, StatusCodes.Status410Gone)]
+    [InlineData(ErrorCodes.Guild.PayloadTooLarge, StatusCodes.Status413PayloadTooLarge)]
+    public void Native_Guild_execution_errors_preserve_the_exact_contract(string code, int expected)
+    {
+        Assert.Equal(expected, ArcanumErrorMapper.ResolveStatusCode(code));
+    }
+
+    [Theory]
     [InlineData("Validation.PromptTooLong", StatusCodes.Status400BadRequest)]
     [InlineData("Validation.AdditionalSystemPromptTooLong", StatusCodes.Status400BadRequest)]
     [InlineData("Validation.TooManyStatelessMessages", StatusCodes.Status400BadRequest)]

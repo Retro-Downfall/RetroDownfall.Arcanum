@@ -14,6 +14,7 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Guild.InvalidRequest or ErrorCodes.Guild.CursorInvalid => StatusCodes.Status400BadRequest,
 
             ErrorCodes.Guild.Forbidden
+                or ErrorCodes.Guild.GrantWidening
                 or ErrorCodes.Guild.AuthorityUnavailable
                 or ErrorCodes.Guild.AuthorityRevoked
                 or ErrorCodes.Guild.AuthorityExpired
@@ -21,16 +22,29 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Guild.ToolBoundaryUnavailable
                 or ErrorCodes.Guild.LeaseNotHeld => StatusCodes.Status403Forbidden,
 
-            ErrorCodes.Guild.NotFound => StatusCodes.Status404NotFound,
+            ErrorCodes.Guild.NotFound
+                or ErrorCodes.Guild.OwnerUnavailable => StatusCodes.Status404NotFound,
 
             ErrorCodes.Guild.RevisionConflict
                 or ErrorCodes.Guild.IdempotencyConflict
+                or ErrorCodes.Guild.ResultConflict
+                or ErrorCodes.Guild.GrantExceeded
+                or ErrorCodes.Guild.PriceUnavailable
+                or ErrorCodes.Guild.BudgetCapabilityUnavailable
+                or ErrorCodes.Guild.SequenceExhausted
+                or ErrorCodes.Guild.SourceConflict
                 or ErrorCodes.Guild.ReconciliationRequired
+                or ErrorCodes.Guild.LocalExecutionInterrupted
                 or ErrorCodes.Guild.LeaseConflict
                 or ErrorCodes.Guild.LeaseLapsed
                 or ErrorCodes.Guild.WorkspaceIdentityUnavailable => StatusCodes.Status409Conflict,
 
-            ErrorCodes.Guild.StoragePressure
+            ErrorCodes.Guild.ContentErased => StatusCodes.Status410Gone,
+
+            ErrorCodes.Guild.PayloadTooLarge => StatusCodes.Status413PayloadTooLarge,
+
+            ErrorCodes.Guild.Unavailable
+                or ErrorCodes.Guild.StoragePressure
                 or ErrorCodes.Guild.MaintenanceDeferred => StatusCodes.Status503ServiceUnavailable,
 
             ErrorCodes.Grimoire.AdmissionLifecycleConflict => StatusCodes.Status409Conflict,

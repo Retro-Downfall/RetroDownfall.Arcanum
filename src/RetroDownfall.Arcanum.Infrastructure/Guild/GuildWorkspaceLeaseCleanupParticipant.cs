@@ -35,8 +35,8 @@ internal sealed class GuildWorkspaceLeaseCleanupParticipant(IGrimoireOrdinaryCon
         return available.IsFailure ? available : await SettledAsync(owner, held.Connection, null, cancellationToken).ConfigureAwait(false);
     }
 
-    public ValueTask<Result> DeleteAsync(GuildCleanupOwner owner, SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken) =>
-        new(SettledAsync(owner, connection, transaction, cancellationToken));
+    public async ValueTask<Result> DeleteAsync(GuildCleanupOwner owner, SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken) =>
+        await SettledAsync(owner, connection, transaction, cancellationToken).ConfigureAwait(false);
 
     private static async Task<Result> SettledAsync(GuildCleanupOwner owner, SqliteConnection connection, SqliteTransaction? transaction, CancellationToken ct)
     {

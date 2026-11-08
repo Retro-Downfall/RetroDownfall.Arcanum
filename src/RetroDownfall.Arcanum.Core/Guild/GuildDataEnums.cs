@@ -122,6 +122,12 @@ public enum GuildContentKind
 
     [JsonStringEnumMemberName("cohortLedgerEntry")]
     CohortLedgerEntry = 8,
+
+    [JsonStringEnumMemberName("executionInput")]
+    ExecutionInput = 9,
+
+    [JsonStringEnumMemberName("executionCheckpoint")]
+    ExecutionCheckpoint = 10,
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<GuildMessageKind>))]

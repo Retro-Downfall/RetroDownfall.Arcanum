@@ -9,8 +9,10 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
@@ -1231,6 +1233,19 @@ internal sealed partial class ArcanumInternalToolServer
 
             if (GuildToolInvocationAmbient.Current is { } guildContext)
             {
+                if (boundGuildContext is not null && guildIdentityMatches && requestReservation?.Frame is { } frame)
+                {
+                    object? dispatched = await guildContext.DispatchMcpAsync(frame, call.Name, call.Arguments,
+                        toolScope.Token).ConfigureAwait(false);
+
+                    McpToolsCallResultWire qualified = dispatched is GuildLocalChildToolResult accepted
+                        ? new() { Content = [new McpToolContentTextWire
+                            { Text = JsonSerializer.Serialize(accepted.Quest, GuildJsonContext.Default.GuildQuestDto) }] }
+                        : ToolError(dispatched as string ?? GuildToolInvocationContext.Format(GuildToolInvocationContext.Unavailable));
+
+                    return BuildToolsCallResponse(rpcId, qualified);
+                }
+
                 Error denial = boundGuildContext is not null && !guildIdentityMatches
                     ? new(ErrorCodes.Guild.AuthorityMismatch, "The private Guild request binding does not match this call.")
                     : await guildContext.RefuseDispatchAsync(

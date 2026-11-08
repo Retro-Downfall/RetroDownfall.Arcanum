@@ -21,7 +21,7 @@ public sealed class GuildWorkspaceLeaseSchemaTests
 
         Assert.True(installed.GuildCanonical.IsHealthy, installed.GuildCanonical.ToString());
 
-        Assert.Equal(8, installed.GuildCanonical.SchemaVersion);
+        Assert.Equal(9, installed.GuildCanonical.SchemaVersion);
 
         Assert.Equal(other, await ScalarAsync(upgraded, "SELECT group_concat(SourceDefinitionFingerprint || InstalledCatalogFingerprint) FROM grimoire_feature_schemas WHERE FamilyCode<>2"));
 

@@ -194,7 +194,7 @@ public sealed class LongRestReplayDocumentationTests
                 "the hosted-producer checker",
                 DocumentSection(
                     design,
-                    "**Authored hosted-producer inventory (24 services).**",
+                    "**Authored hosted-producer inventory (28 services).**",
                     "Closed-period ledger cleanup preserves")),
             (
                 "the testing contract (13.1)",
@@ -267,14 +267,14 @@ public sealed class LongRestReplayDocumentationTests
         ];
 
         // Steps carry a name too, at a deeper indent; a job's name sits directly under its id.
-        Assert.Equal(18, jobNames.Length);
+        Assert.Equal(19, jobNames.Length);
 
         string design = DocumentSection(
             ReadDocument("Arcanum.DESIGN.md"),
             "### 13.1 Commands and coverage authority",
             "### 13.2 Test data, ownership, and parallel collections");
 
-        Assert.Contains("`ci.yml` defines eighteen jobs (the focused Guild memory, budget and workspace jobs are opt-in):", design, StringComparison.Ordinal);
+        Assert.Contains("`ci.yml` defines nineteen jobs (the focused Guild memory, budget, workspace and execution jobs are opt-in):", design, StringComparison.Ordinal);
 
         foreach (string name in jobNames)
         {

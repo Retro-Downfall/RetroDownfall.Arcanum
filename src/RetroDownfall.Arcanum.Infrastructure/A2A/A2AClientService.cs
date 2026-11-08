@@ -144,6 +144,10 @@ public sealed class A2AClientService : IA2AClientService
         A2ADispatchMode mode = A2ADispatchMode.Blocking,
         A2ASendingOptions? options = null)
     {
+        if (_options.CurrentValue.Features.Guild)
+            return Task.FromResult(Result<A2ADispatchResult>.Failure(new(ErrorCodes.Guild.LegacyRunUnavailable,
+                "Guild remote execution requires its qualified Quest transport; legacy Sendings are unavailable.")));
+
         if (string.IsNullOrWhiteSpace(goal))
         {
             return Task.FromResult(Result<A2ADispatchResult>.Failure(
@@ -177,6 +181,10 @@ public sealed class A2AClientService : IA2AClientService
         A2ADispatchMode mode = A2ADispatchMode.Blocking,
         A2ASendingOptions? options = null)
     {
+        if (_options.CurrentValue.Features.Guild)
+            return Task.FromResult(Result<A2ADispatchResult>.Failure(new(ErrorCodes.Guild.LegacyRunUnavailable,
+                "Guild remote execution requires its qualified Quest transport; legacy Sendings are unavailable.")));
+
         if (string.IsNullOrWhiteSpace(taskId))
         {
             return Task.FromResult(Result<A2ADispatchResult>.Failure(
@@ -600,6 +608,10 @@ public sealed class A2AClientService : IA2AClientService
                 AcceptedOutputModes = [.. modality.AcceptedOutputModes],
             },
         };
+
+        if (_options.CurrentValue.Features.Guild)
+            return new Error(ErrorCodes.Guild.LegacyRunUnavailable,
+                "Guild remote execution requires its qualified Quest transport; legacy Sendings are unavailable.");
 
         SendMessageResponse response;
 

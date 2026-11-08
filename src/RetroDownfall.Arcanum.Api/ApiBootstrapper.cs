@@ -39,6 +39,7 @@ using RetroDownfall.Arcanum.Api.Telemetry;
 using RetroDownfall.Arcanum.Api.Workspaces;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -676,6 +677,8 @@ public static class ApiBootstrapper
         services.AddScoped<ITurnExecutionFacade>(static sp => sp.GetRequiredService<TurnExecutionCoordinator>());
 
         services.AddScoped<IArcanumIntelligenceProvider>(static sp => sp.GetRequiredService<WizardIntelligenceProvider>());
+
+        services.AddScoped<IGuildLocalInferenceRuntime>(static sp => sp.GetRequiredService<WizardIntelligenceProvider>());
 
         services.AddScoped<IContextPreviewService>(static sp => sp.GetRequiredService<WizardIntelligenceProvider>());
 
@@ -1535,6 +1538,8 @@ public static class ApiBootstrapper
         apiGroup.MapPromptEndpoints();
 
         apiGroup.MapApprenticeEndpoints();
+
+        apiGroup.MapGuildEndpoints();
 
         ArcanumSettings startupSettings = app.Services.GetRequiredService<IOptionsMonitor<ArcanumSettings>>().CurrentValue;
 

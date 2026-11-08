@@ -38,7 +38,7 @@ public sealed class GuildBudgetSchemaTests
 
         Assert.True(result.GuildCanonical.IsHealthy, result.GuildCanonical.ToString());
 
-        Assert.Equal(8, result.GuildCanonical.SchemaVersion);
+        Assert.Equal(9, result.GuildCanonical.SchemaVersion);
 
         Assert.Equal(otherFamilies, await ScalarAsync(upgraded, "SELECT group_concat(SourceDefinitionFingerprint || InstalledCatalogFingerprint) FROM grimoire_feature_schemas WHERE FamilyCode<>2"));
 

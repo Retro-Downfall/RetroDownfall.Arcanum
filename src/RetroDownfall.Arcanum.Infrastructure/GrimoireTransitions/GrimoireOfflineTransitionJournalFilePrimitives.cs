@@ -157,7 +157,7 @@ internal interface IGrimoireOfflineTransitionJournalFilePrimitives : IDisposable
         string relativeLeaf);
 
     Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
-        IReadOnlyList<string> exactLeaves);
+        string[] exactLeaves);
 
     Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file);
 
@@ -796,11 +796,11 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     }
 
     public Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
-        IReadOnlyList<string> exactLeaves)
+        string[] exactLeaves)
     {
         ArgumentNullException.ThrowIfNull(exactLeaves);
 
-        if (!ValidateParent() || exactLeaves.Count == 0 || exactLeaves.Any(leaf => !ValidLeaf(leaf)))
+        if (!ValidateParent() || exactLeaves.Length == 0 || exactLeaves.Any(leaf => !ValidLeaf(leaf)))
         {
             return Unavailable<GrimoireOfflineTransitionJournalChildEnumeration>();
         }

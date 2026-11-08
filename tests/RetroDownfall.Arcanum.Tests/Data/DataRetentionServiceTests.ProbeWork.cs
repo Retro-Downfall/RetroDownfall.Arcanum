@@ -258,7 +258,9 @@ public sealed partial class DataRetentionServiceTests
 
         if (apply && family == "sessions")
         {
-            Assert.True(catalogSteps - outsideSteps < 400_000,
+            // Guild V9 adds fourteen catalog rows. Identical query shapes/counts measured
+            // 396,675 -> 400,587 steps; retain a small margin without caching across writers.
+            Assert.True(catalogSteps - outsideSteps < 405_000,
                 $"Session writer metadata used {catalogSteps - outsideSteps:N0} native VM steps.");
         }
     }

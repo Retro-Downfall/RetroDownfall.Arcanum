@@ -2722,7 +2722,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             string relativeLeaf) => inner.CompareUnlink(expected, relativeLeaf);
 
         public Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
-            IReadOnlyList<string> exactLeaves) => inner.EnumerateExactChildren(exactLeaves);
+            string[] exactLeaves) => inner.EnumerateExactChildren(exactLeaves);
 
         public Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file) =>
             inner.FlushWorking(file);
@@ -2785,7 +2785,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             string relativeLeaf) => inner.CompareUnlink(expected, relativeLeaf);
 
         public Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
-            IReadOnlyList<string> exactLeaves)
+            string[] exactLeaves)
         {
             EnumerateExactChildrenCallCount++;
 
@@ -2857,7 +2857,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             string relativeLeaf) => inner.CompareUnlink(expected, relativeLeaf);
 
         public Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
-            IReadOnlyList<string> exactLeaves) => inner.EnumerateExactChildren(exactLeaves);
+            string[] exactLeaves) => inner.EnumerateExactChildren(exactLeaves);
 
         public Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file) =>
             inner.FlushWorking(file);
@@ -2896,7 +2896,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             string relativeLeaf) => inner.CompareUnlink(expected, relativeLeaf);
 
         public Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
-            IReadOnlyList<string> exactLeaves) =>
+            string[] exactLeaves) =>
             throw new IOException("synthetic enumeration failure for catch-breadth pinning");
 
         public Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file) =>

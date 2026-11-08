@@ -77,6 +77,7 @@ public static class SettingDescriptors
         new("features.enterpriseTelemetry", ConfigSection.Features, "Send usage statistics", "Share anonymous usage data to help improve the software.", SettingKind.Bool),
         new("features.scalarUi", ConfigSection.Features, "Enable API documentation", "Show interactive API documentation interface.", SettingKind.Bool),
         new("features.conclave", ConfigSection.Features, "Multi-agent collaboration", "Allow multiple AI assistants to work together on tasks.", SettingKind.Bool),
+        new("features.guild", ConfigSection.Features, "Local Guild Quests", "Run local delegated tasks with explicit permissions and budgets. Requires AI assistants and a supported HTTP provider. Remote execution and new legacy tasks are unavailable while enabled.", SettingKind.Bool),
         new("features.a2AServer", ConfigSection.Features, "Accept external AI requests", "Let other AI systems send tasks to this Arcanum instance.", SettingKind.Bool),
         new("features.a2AClient", ConfigSection.Features, "Send tasks to external AI", "Allow this Arcanum to delegate tasks to other AI systems.", SettingKind.Bool),
         new("features.apprentices", ConfigSection.Features, "AI assistants", "Enable the AI assistant system that can perform tasks autonomously.", SettingKind.Bool),

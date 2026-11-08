@@ -4,6 +4,10 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 public interface IApprenticeRepository
 {
+    /// <summary>Durable Guild association, independent of feature state; uncertainty never permits legacy execution.</summary>
+    Task<Result<bool>> IsGuildBoundAsync(Guid id, CancellationToken cancellationToken = default) =>
+        Task.FromResult(Result<bool>.Failure(new(ErrorCodes.Guild.Unavailable, "Guild execution ownership is unavailable.")));
+
     Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
 
     Task<ListPageResult<Apprentice>> ListAsync(

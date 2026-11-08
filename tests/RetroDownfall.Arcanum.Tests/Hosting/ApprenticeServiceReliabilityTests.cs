@@ -2160,7 +2160,7 @@ public sealed partial class ApprenticeServiceReliabilityTests
             new FailingPlanIntelligence(),
             new NotImplementedGrimoireRepository());
 
-        Assert.True(GetConcurrencyGate(service).TryAcquire(1, out IDisposable? holder));
+        Assert.True(GetConcurrencyGate(service).TryAcquire(1, out AdmissionGate.Lease? holder));
 
         Assert.NotNull(holder);
 
@@ -4398,11 +4398,11 @@ public sealed partial class ApprenticeServiceReliabilityTests
     {
         private readonly Lock _gate = new();
 
-        private int _running;
+        private readonly AdmissionGate _capacity = new();
 
         private bool _armConcurrentWinner;
 
-        private bool _winnerHeld;
+        private AdmissionGate.Lease? _winner;
 
         internal bool WinnerHeld
         {
@@ -4410,21 +4410,12 @@ public sealed partial class ApprenticeServiceReliabilityTests
             {
                 lock (_gate)
                 {
-                    return _winnerHeld;
+                    return _winner is not null;
                 }
             }
         }
 
-        public int RunningCount
-        {
-            get
-            {
-                lock (_gate)
-                {
-                    return _running;
-                }
-            }
-        }
+        public int RunningCount => _capacity.CurrentCount;
 
         internal void ArmConcurrentWinner()
         {
@@ -4438,17 +4429,13 @@ public sealed partial class ApprenticeServiceReliabilityTests
         {
             lock (_gate)
             {
-                if (!_winnerHeld)
-                {
-                    return;
-                }
-                _winnerHeld = false;
+                _winner?.Dispose();
 
-                _running--;
+                _winner = null;
             }
         }
 
-        public bool TryAcquire(int maxConcurrent, out IDisposable? lease)
+        public bool TryAcquire(int maxConcurrent, out AdmissionGate.Lease? lease)
         {
             lock (_gate)
             {
@@ -4456,47 +4443,17 @@ public sealed partial class ApprenticeServiceReliabilityTests
                 {
                     _armConcurrentWinner = false;
 
-                    if (_running < maxConcurrent)
+                    if (_capacity.TryEnterOwned(maxConcurrent, out AdmissionGate.Lease? winner))
                     {
-                        _running++;
-
-                        _winnerHeld = true;
+                        _winner = winner;
                     }
+
                     lease = null;
 
                     return false;
                 }
 
-                if (_running >= maxConcurrent)
-                {
-                    lease = null;
-
-                    return false;
-                }
-                _running++;
-
-                lease = new CapacityLease(this);
-
-                return true;
-            }
-        }
-
-        private sealed class CapacityLease(
-            ConcurrentWinnerExecutionCapacity owner) : IDisposable
-        {
-            private int _disposed;
-
-            public void Dispose()
-            {
-                if (Interlocked.Exchange(ref _disposed, 1) != 0)
-                {
-                    return;
-                }
-
-                lock (owner._gate)
-                {
-                    owner._running--;
-                }
+                return _capacity.TryEnterOwned(maxConcurrent, out lease);
             }
         }
     }
@@ -4513,9 +4470,9 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         public int RunningCount => _gate.RunningCount;
 
-        public bool TryAcquire(int maxConcurrent, out IDisposable? lease)
+        public bool TryAcquire(int maxConcurrent, out AdmissionGate.Lease? lease)
         {
-            if (_gate.TryAcquire(maxConcurrent, out lease))
+            if (_gate.TryAcquireOwned(maxConcurrent, out lease))
             {
                 return true;
             }
@@ -4758,6 +4715,9 @@ public sealed partial class ApprenticeServiceReliabilityTests
     /// </summary>
     private class InMemoryApprenticeRepository : IApprenticeRepository
     {
+        public virtual Task<RetroDownfall.Arcanum.Core.Primitives.Result<bool>> IsGuildBoundAsync(Guid id, CancellationToken cancellationToken = default) =>
+            Task.FromResult(RetroDownfall.Arcanum.Core.Primitives.Result<bool>.Success(false));
+
         private readonly Dictionary<Guid, Apprentice> _store = new();
 
         private readonly Lock _sync = new();

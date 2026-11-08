@@ -52,6 +52,13 @@ internal sealed partial class GuildQuestStore
 
                 if (proof.IsFailure) return proof.Error;
 
+                Result run = await FinishProviderRunWithinAsync(connection, transaction, row,
+                    result.Receipt.Outcome == QuestState.Completed ? InferenceRunStatus.Completed
+                        : result.Receipt.Outcome == QuestState.Canceled ? InferenceRunStatus.Abandoned : InferenceRunStatus.Failed,
+                    token).ConfigureAwait(false);
+
+                if (run.IsFailure) return run.Error;
+
                 GuildResultReceipt receipt = result.Receipt;
 
                 DateTimeOffset now = time.GetUtcNow();
@@ -293,7 +300,7 @@ internal sealed partial class GuildQuestStore
         long attempts, confirmed;
 
         await using (SqliteCommand evidence = Command(connection, transaction, """
-            SELECT COALESCE(SUM(CASE WHEN EvidenceCode IN(2,3) OR LocalChildId IS NOT NULL OR RemoteTaskId IS NOT NULL OR RemoteContextId IS NOT NULL THEN 1 ELSE 0 END),0),
+            SELECT COALESCE(SUM(CASE WHEN EvidenceCode IN(2,3) OR RemoteTaskId IS NOT NULL OR RemoteContextId IS NOT NULL THEN 1 ELSE 0 END),0),
                 COALESCE(SUM(CASE WHEN EvidenceCode=3 THEN 1 ELSE 0 END),0)
             FROM guild_dispatches WHERE QuestId=$id
             """))

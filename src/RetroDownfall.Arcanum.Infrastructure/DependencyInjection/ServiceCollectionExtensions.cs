@@ -1330,6 +1330,8 @@ public static class ServiceCollectionExtensions
         // until the first write; an uncertain inventory fails closed before secure storage opens.
         services.AddInstallationResetRecoveryAwareHostedService<FileEncryptionKeyBootstrapHostedService>();
 
+        services.AddGuildLocalExecution();
+
         // Must run after the encrypted Grimoire is migrated and before durable workloads below
         // begin accepting potentially conflicting work.
         services.AddInstallationResetRecoveryAwareHostedService<LongRunningOperationStartupHostedService>();
@@ -1493,8 +1495,6 @@ public static class ServiceCollectionExtensions
         // operation reaches explicit recovery instead of falling through to "handler missing". A kind is
         // registered only together with the production code that creates its rows.
         services.AddSingleton<IGuildQuestRecoveryObserver, UnavailableGuildQuestRecoveryObserver>();
-
-        services.AddSingleton<IGuildSignetHostPolicy, UnavailableGuildSignetHostPolicy>();
 
         services.AddScoped<ILongRunningOperationRecoveryHandler, GuildQuestRecoveryHandler>();
 
@@ -1669,7 +1669,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ICampaignRepository, CampaignRepository>();
         services.AddScoped<IPromptRepository, PromptRepository>();
         services.AddScoped<IApprenticeRepository, ApprenticeRepository>();
-        services.AddScoped<IConclaveArchmage, ConclaveArchmage>();
+        services.AddScoped<IConclaveArchmage>(static sp => sp.GetRequiredService<ConclaveArchmage>());
         services.TryAddSingleton<IDnsResolver, SystemDnsResolver>();
         // A Sending blocks until the remote agent reaches a terminal state, and remote work can run far
         // longer than HttpClient's 100-second default. Per issue #55 the bound is on establishing the
@@ -1733,6 +1733,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ApprenticeService>();
         services.AddSingleton<IApprenticeRuntime>(static sp => sp.GetRequiredService<ApprenticeService>());
         services.AddInstallationResetRecoveryAwareHostedService<ApprenticeService>();
+
+        services.AddInstallationResetRecoveryAwareHostedService<GuildLocalQuestScheduler>();
         services.AddSingleton<IWorkspaceScanner, PhysicalWorkspaceScanner>();
         services.AddSingleton<IUnseenServantPacer, UnseenServantPacer>();
         services.AddSingleton<InMemoryEventBus>();

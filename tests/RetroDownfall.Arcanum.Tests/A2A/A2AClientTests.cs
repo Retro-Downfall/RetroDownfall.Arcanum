@@ -23,7 +23,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.A2A;
 
 [Collection(ProcessEnvironmentCollectionName.Value)]
-public sealed class A2AClientTests
+public sealed partial class A2AClientTests
 {
     private const string FakeAgentHost = "fake-agent.example.test";
 

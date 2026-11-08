@@ -222,7 +222,7 @@ public sealed class LongRunningOperationReconciler
             // at. An offline transition stops renewing for the length of its closed period, so its row
             // looks abandoned to anything deciding by the lease alone — and starting a second recovery
             // beside a transition that is still erasing is the one outcome that cannot be undone.
-            if (_ownership.IsClaimed(operation.Id))
+            if (!_ownership.TryClaim(operation.Id, out Guid processClaim))
             {
                 Interlocked.Increment(ref skipped);
 
@@ -231,90 +231,97 @@ public sealed class LongRunningOperationReconciler
                 return;
             }
 
-            DateTimeOffset leaseTakenAt = _timeProvider.GetUtcNow();
-
-            classified ??= _classifiedLeaseAcquisition;
-
-            if (classified is null)
+            try
             {
-                throw new InvalidOperationException(
-                    "Recovery requires the classified compare-exchange store alias.");
-            }
+                DateTimeOffset leaseTakenAt = _timeProvider.GetUtcNow();
 
-            LongRunningOperationLeaseResult lease = await classified
-                .TryAcquireClassifiedRecoveryLeaseAsync(
-                    new LongRunningOperationRecoveryFingerprint(
-                        operation.Id,
-                        operation.Kind,
-                        operation.CheckpointVersion,
-                        operation.Revision),
-                    ownerId,
-                    leaseTakenAt,
-                    leaseTakenAt.Add(RecoveryLease),
-                    ct).ConfigureAwait(false);
+                classified ??= _classifiedLeaseAcquisition;
 
-            if (!lease.Acquired)
-            {
-                Interlocked.Increment(ref skipped);
+                if (classified is null)
+                {
+                    throw new InvalidOperationException(
+                        "Recovery requires the classified compare-exchange store alias.");
+                }
 
-                RecordOutcome(operation.Kind, "lease_lost");
-
-                return;
-            }
-
-            LongRunningRecoveryAdmissionDecision claimedAdmission =
-                LongRunningOperationRecoveryAdmission.Classify(
-                    lease.Operation,
-                    ownerEvidence: null);
-
-            if (lease.Operation.Id != operation.Id
-                || !string.Equals(lease.Operation.Kind, operation.Kind, StringComparison.Ordinal)
-                || lease.Operation.CheckpointVersion != operation.CheckpointVersion
-                || lease.Operation.Revision != operation.Revision + 1
-                || claimedAdmission != admission)
-            {
-                Interlocked.Increment(ref skipped);
-
-                RecordOutcome(operation.Kind, "classification_drift");
-
-                return;
-            }
-
-            Interlocked.Increment(ref claimed);
-
-            LongRunningOperationSettlementOutcome outcome =
-                admission.Kind is LongRunningRecoveryAdmissionKind.UnsupportedCheckpointVersion
-                    ? await SettleResultAsync(
-                        operationStore,
-                        lease.Operation,
+                LongRunningOperationLeaseResult lease = await classified
+                    .TryAcquireClassifiedRecoveryLeaseAsync(
+                        new LongRunningOperationRecoveryFingerprint(
+                            operation.Id,
+                            operation.Kind,
+                            operation.CheckpointVersion,
+                            operation.Revision),
                         ownerId,
-                        LongRunningOperationRecoveryResult.RequiresAttention(
-                            LongRunningOperationErrorCodes.UnsupportedCheckpointVersion))
-                        .ConfigureAwait(false)
-                    : await SettleLeasedAsync(
-                        operationStore,
-                        operationHandlers,
-                        lease.Operation,
-                        ownerId,
+                        leaseTakenAt,
+                        leaseTakenAt.Add(RecoveryLease),
                         ct).ConfigureAwait(false);
 
-            switch (outcome)
-            {
-                case LongRunningOperationSettlementOutcome.Completed:
-                    Interlocked.Increment(ref completed);
-                    break;
-                case LongRunningOperationSettlementOutcome.Failed:
-                    Interlocked.Increment(ref failed);
-                    break;
-                case LongRunningOperationSettlementOutcome.Abandoned:
-                    Interlocked.Increment(ref abandoned);
-                    break;
-                case LongRunningOperationSettlementOutcome.ConcurrencyLost:
+                if (!lease.Acquired)
+                {
                     Interlocked.Increment(ref skipped);
-                    break;
-                default:
-                    Interlocked.Increment(ref attention);
-                    break;
+
+                    RecordOutcome(operation.Kind, "lease_lost");
+
+                    return;
+                }
+
+                LongRunningRecoveryAdmissionDecision claimedAdmission =
+                    LongRunningOperationRecoveryAdmission.Classify(
+                        lease.Operation,
+                        ownerEvidence: null);
+
+                if (lease.Operation.Id != operation.Id
+                    || !string.Equals(lease.Operation.Kind, operation.Kind, StringComparison.Ordinal)
+                    || lease.Operation.CheckpointVersion != operation.CheckpointVersion
+                    || lease.Operation.Revision != operation.Revision + 1
+                    || claimedAdmission != admission)
+                {
+                    Interlocked.Increment(ref skipped);
+
+                    RecordOutcome(operation.Kind, "classification_drift");
+
+                    return;
+                }
+
+                Interlocked.Increment(ref claimed);
+
+                LongRunningOperationSettlementOutcome outcome =
+                    admission.Kind is LongRunningRecoveryAdmissionKind.UnsupportedCheckpointVersion
+                        ? await SettleResultAsync(
+                            operationStore,
+                            lease.Operation,
+                            ownerId,
+                            LongRunningOperationRecoveryResult.RequiresAttention(
+                                LongRunningOperationErrorCodes.UnsupportedCheckpointVersion))
+                            .ConfigureAwait(false)
+                        : await SettleLeasedAsync(
+                            operationStore,
+                            operationHandlers,
+                            lease.Operation,
+                            ownerId,
+                            ct).ConfigureAwait(false);
+
+                switch (outcome)
+                {
+                    case LongRunningOperationSettlementOutcome.Completed:
+                        Interlocked.Increment(ref completed);
+                        break;
+                    case LongRunningOperationSettlementOutcome.Failed:
+                        Interlocked.Increment(ref failed);
+                        break;
+                    case LongRunningOperationSettlementOutcome.Abandoned:
+                        Interlocked.Increment(ref abandoned);
+                        break;
+                    case LongRunningOperationSettlementOutcome.ConcurrencyLost:
+                        Interlocked.Increment(ref skipped);
+                        break;
+                    default:
+                        Interlocked.Increment(ref attention);
+                        break;
+                }
+            }
+            finally
+            {
+                _ownership.Release(operation.Id, processClaim);
             }
         }
 
@@ -448,31 +455,38 @@ public sealed class LongRunningOperationReconciler
         // The same skip the generic pass makes, for the same reason: an operation this process is
         // already running must not be recovered beside itself. It is checked after the read here only
         // so the metric can carry the row's real kind, which an identity alone does not name.
-        if (_ownership.IsClaimed(operationId))
+        if (!_ownership.TryClaim(operationId, out Guid processClaim))
         {
             RecordOutcome(leased.Kind, "owned_in_process");
 
             return LongRunningOperationSettlementOutcome.OwnedInProcess;
         }
 
-        LongRunningOperationRecoveryFingerprint expected = ownerEvidence.ExpectedOperation;
-        LongRunningRecoveryAdmissionDecision decision =
-            LongRunningOperationRecoveryAdmission.Classify(leased, ownerEvidence);
-
-        if (leased.Id != expected.OperationId
-            || !string.Equals(leased.Kind, expected.Kind, StringComparison.Ordinal)
-            || leased.CheckpointVersion != expected.CheckpointVersion
-            || leased.Revision != expected.Revision + 1
-            || !string.Equals(leased.LeaseOwner, ownerId, StringComparison.Ordinal)
-            || decision.Kind is not LongRunningRecoveryAdmissionKind.OwnerBoundOffline)
+        try
         {
-            RecordOutcome(leased.Kind, "owner_evidence_refused");
+            LongRunningOperationRecoveryFingerprint expected = ownerEvidence.ExpectedOperation;
+            LongRunningRecoveryAdmissionDecision decision =
+                LongRunningOperationRecoveryAdmission.Classify(leased, ownerEvidence);
 
-            return LongRunningOperationSettlementOutcome.RequiresAttention;
+            if (leased.Id != expected.OperationId
+                || !string.Equals(leased.Kind, expected.Kind, StringComparison.Ordinal)
+                || leased.CheckpointVersion != expected.CheckpointVersion
+                || leased.Revision != expected.Revision + 1
+                || !string.Equals(leased.LeaseOwner, ownerId, StringComparison.Ordinal)
+                || decision.Kind is not LongRunningRecoveryAdmissionKind.OwnerBoundOffline)
+            {
+                RecordOutcome(leased.Kind, "owner_evidence_refused");
+
+                return LongRunningOperationSettlementOutcome.RequiresAttention;
+            }
+
+            return await SettleLeasedAsync(_store, _handlers, leased, ownerId, cancellationToken)
+                .ConfigureAwait(false);
         }
-
-        return await SettleLeasedAsync(_store, _handlers, leased, ownerId, cancellationToken)
-            .ConfigureAwait(false);
+        finally
+        {
+            _ownership.Release(operationId, processClaim);
+        }
     }
 
     /// <summary>
@@ -497,72 +511,79 @@ public sealed class LongRunningOperationReconciler
             return LongRunningOperationSettlementOutcome.ConcurrencyLost;
         }
 
-        if (_ownership.IsClaimed(discovered.Id))
+        if (!_ownership.TryClaim(discovered.Id, out Guid processClaim))
         {
             RecordOutcome(discovered.Kind, "owned_in_process");
 
             return LongRunningOperationSettlementOutcome.OwnedInProcess;
         }
 
-        if (_classifiedLeaseAcquisition is not { } acquisition)
+        try
         {
-            throw new InvalidOperationException(
-                "Runtime recovery requires the classified compare-exchange store alias.");
-        }
+            if (_classifiedLeaseAcquisition is not { } acquisition)
+            {
+                throw new InvalidOperationException(
+                    "Runtime recovery requires the classified compare-exchange store alias.");
+            }
 
-        DateTimeOffset leaseTakenAt = _timeProvider.GetUtcNow();
-        LongRunningOperationLeaseResult lease = await acquisition
-            .TryAcquireClassifiedRecoveryLeaseAsync(
-                new LongRunningOperationRecoveryFingerprint(
-                    discovered.Id,
-                    discovered.Kind,
-                    discovered.CheckpointVersion,
-                    discovered.Revision),
-                ownerId,
-                leaseTakenAt,
-                leaseTakenAt.Add(RecoveryLease),
-                cancellationToken)
-            .ConfigureAwait(false);
+            DateTimeOffset leaseTakenAt = _timeProvider.GetUtcNow();
+            LongRunningOperationLeaseResult lease = await acquisition
+                .TryAcquireClassifiedRecoveryLeaseAsync(
+                    new LongRunningOperationRecoveryFingerprint(
+                        discovered.Id,
+                        discovered.Kind,
+                        discovered.CheckpointVersion,
+                        discovered.Revision),
+                    ownerId,
+                    leaseTakenAt,
+                    leaseTakenAt.Add(RecoveryLease),
+                    cancellationToken)
+                .ConfigureAwait(false);
 
-        if (!lease.Acquired)
-        {
-            RecordOutcome(discovered.Kind, "classification_drift");
+            if (!lease.Acquired)
+            {
+                RecordOutcome(discovered.Kind, "classification_drift");
 
-            return LongRunningOperationSettlementOutcome.ConcurrencyLost;
-        }
+                return LongRunningOperationSettlementOutcome.ConcurrencyLost;
+            }
 
-        LongRunningOperation claimed = lease.Operation;
-        LongRunningRecoveryAdmissionDecision after =
-            LongRunningOperationRecoveryAdmission.Classify(claimed, ownerEvidence: null);
+            LongRunningOperation claimed = lease.Operation;
+            LongRunningRecoveryAdmissionDecision after =
+                LongRunningOperationRecoveryAdmission.Classify(claimed, ownerEvidence: null);
 
-        if (claimed.Id != discovered.Id
-            || !string.Equals(claimed.Kind, discovered.Kind, StringComparison.Ordinal)
-            || claimed.CheckpointVersion != discovered.CheckpointVersion
-            || claimed.Revision != discovered.Revision + 1
-            || after != before)
-        {
-            RecordOutcome(discovered.Kind, "classification_drift");
+            if (claimed.Id != discovered.Id
+                || !string.Equals(claimed.Kind, discovered.Kind, StringComparison.Ordinal)
+                || claimed.CheckpointVersion != discovered.CheckpointVersion
+                || claimed.Revision != discovered.Revision + 1
+                || after != before)
+            {
+                RecordOutcome(discovered.Kind, "classification_drift");
 
-            return LongRunningOperationSettlementOutcome.ConcurrencyLost;
-        }
+                return LongRunningOperationSettlementOutcome.ConcurrencyLost;
+            }
 
-        if (after.Kind is LongRunningRecoveryAdmissionKind.UnsupportedCheckpointVersion)
-        {
-            return await SettleResultAsync(
+            if (after.Kind is LongRunningRecoveryAdmissionKind.UnsupportedCheckpointVersion)
+            {
+                return await SettleResultAsync(
+                    _store,
+                    claimed,
+                    ownerId,
+                    LongRunningOperationRecoveryResult.RequiresAttention(
+                        LongRunningOperationErrorCodes.UnsupportedCheckpointVersion))
+                    .ConfigureAwait(false);
+            }
+
+            return await SettleLeasedAsync(
                 _store,
+                _handlers,
                 claimed,
                 ownerId,
-                LongRunningOperationRecoveryResult.RequiresAttention(
-                    LongRunningOperationErrorCodes.UnsupportedCheckpointVersion))
-                .ConfigureAwait(false);
+                cancellationToken).ConfigureAwait(false);
         }
-
-        return await SettleLeasedAsync(
-            _store,
-            _handlers,
-            claimed,
-            ownerId,
-            cancellationToken).ConfigureAwait(false);
+        finally
+        {
+            _ownership.Release(discovered.Id, processClaim);
+        }
     }
 
     /// <summary>

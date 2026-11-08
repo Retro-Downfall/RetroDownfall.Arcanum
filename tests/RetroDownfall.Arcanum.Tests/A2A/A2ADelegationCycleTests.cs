@@ -320,6 +320,9 @@ public sealed class A2ADelegationCycleTests
 
     private sealed class RecordingApprenticeRepository : IApprenticeRepository
     {
+        public Task<RetroDownfall.Arcanum.Core.Primitives.Result<bool>> IsGuildBoundAsync(Guid id, CancellationToken cancellationToken = default) =>
+            Task.FromResult(RetroDownfall.Arcanum.Core.Primitives.Result<bool>.Success(false));
+
         public List<Apprentice> Added { get; } = [];
 
         public Task<Apprentice> AddAsync(Apprentice apprentice, CancellationToken cancellationToken = default)

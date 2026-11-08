@@ -21,6 +21,8 @@ public sealed class HostedRuntimeRegistrationTests
         "SessionAttachmentPendingGcHostedService",
         "CovenantMaintenanceHostedService",
         "GuildMaintenanceHostedService",
+        "GuildLocalHostReadiness",
+        "GuildLocalQuestScheduler",
         "GrimoireSchemaTransitionHostedService",
         "EntryWeavingService",
         "SessionAttachmentIndexingService",

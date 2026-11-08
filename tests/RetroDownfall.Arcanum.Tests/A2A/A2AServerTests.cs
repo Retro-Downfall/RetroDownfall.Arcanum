@@ -20,7 +20,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.A2A;
 
-public sealed class A2AServerTests
+public sealed partial class A2AServerTests
 {
     private static ArcanumSettings EnabledSettings() => new()
     {
@@ -685,6 +685,9 @@ public sealed class A2AServerTests
 
     private sealed class FakeApprenticeRepository : IApprenticeRepository
     {
+        public Task<RetroDownfall.Arcanum.Core.Primitives.Result<bool>> IsGuildBoundAsync(Guid id, CancellationToken cancellationToken = default) =>
+            Task.FromResult(RetroDownfall.Arcanum.Core.Primitives.Result<bool>.Success(false));
+
         public Apprentice? Item { get; set; }
 
         public Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>

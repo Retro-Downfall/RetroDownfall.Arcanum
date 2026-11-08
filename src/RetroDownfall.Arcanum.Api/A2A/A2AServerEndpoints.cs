@@ -113,7 +113,8 @@ internal static class A2AServerEndpoints
         return new AgentCard
         {
             Name = string.IsNullOrWhiteSpace(a2a.AgentCardName) ? "Arcanum" : a2a.AgentCardName,
-            Description = string.IsNullOrWhiteSpace(a2a.AgentCardDescription)
+            Description = settings.Features.Guild ? "Remote Guild execution is unavailable on this host."
+                : string.IsNullOrWhiteSpace(a2a.AgentCardDescription)
                 ? "Arcanum: an autonomous Apprentice orchestration engine, exposed here via the A2A protocol. Sending a message spawns a headless Apprentice that plans and executes the delegated goal inside a sandboxed workspace."
                 : a2a.AgentCardDescription,
             Version = version,
@@ -128,16 +129,16 @@ internal static class A2AServerEndpoints
             ],
             Capabilities = new AgentCapabilities
             {
-                Streaming = true,
+                Streaming = !settings.Features.Guild,
 
                 // Advertised only when the surface is genuinely enabled: a card that promises push
                 // notifications an operator never turned on is a peer waiting forever (issue #67).
-                PushNotifications = a2a.PushNotificationsEnabled,
+                PushNotifications = !settings.Features.Guild && a2a.PushNotificationsEnabled,
             },
             // Operator-declared when configured, otherwise the single historical skill and text/plain in
             // and out — so a default card stays byte-identical to the pre-#63 one and existing peers are
             // unaffected.
-            Skills = [.. A2AAgentCardPolicy.ResolveSkills(a2a)],
+            Skills = settings.Features.Guild ? [] : [.. A2AAgentCardPolicy.ResolveSkills(a2a)],
             DefaultInputModes = [.. A2AAgentCardPolicy.ResolveInputModes(a2a)],
             DefaultOutputModes = [.. A2AAgentCardPolicy.ResolveOutputModes(a2a)],
             SecuritySchemes = new Dictionary<string, SecurityScheme>

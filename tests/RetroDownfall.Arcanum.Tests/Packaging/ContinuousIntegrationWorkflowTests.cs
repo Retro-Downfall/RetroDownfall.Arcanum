@@ -435,7 +435,6 @@ public sealed class ContinuousIntegrationWorkflowTests
         Assert.Contains("ARCANUM_PUBLISHED_EXECUTABLE=", shipping, StringComparison.Ordinal);
 
         Assert.True(Array.IndexOf(steps, shipping) < Array.IndexOf(steps, suite));
-
     }
 
     [Theory]
@@ -1837,7 +1836,7 @@ public sealed class ContinuousIntegrationWorkflowTests
             }
         }
 
-        Assert.Equal(15, setups);
+        Assert.Equal(16, setups);
 
         Assert.Equal(1, pairedSetups);
 
@@ -2126,7 +2125,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     private static bool IsFullQualificationOnly(WorkflowJob job) =>
         job.IsConditional && Regex.IsMatch(job.Body,
-            @"(?m)^    if: needs\.scope\.outputs\.full == 'true'(?: && inputs\.qualification != '(?:guild-memory|guild-budget|guild-workspace)')*\r?$");
+            @"(?m)^    if: needs\.scope\.outputs\.full == 'true'(?: && inputs\.qualification != '(?:guild-memory|guild-budget|guild-workspace|guild-execution)')*\r?$");
 
     private static IReadOnlyList<string> WorkflowFiles(string repositoryRoot)
     {

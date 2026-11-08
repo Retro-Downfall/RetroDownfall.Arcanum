@@ -34,6 +34,30 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     private int _activeGenerationWaiters;
 
+    private readonly AsyncLocal<WorkMarker?> _currentWork = new();
+
+    internal bool HasActiveWorkLease
+    {
+        get
+        {
+            for (WorkMarker? marker = _currentWork.Value; marker is not null; marker = marker.Previous)
+                if (marker.Active) return true;
+
+            return false;
+        }
+    }
+
+    internal bool HasActiveEffectGroup
+    {
+        get
+        {
+            for (WorkMarker? marker = _currentWork.Value; marker is not null; marker = marker.Previous)
+                if (marker.Active && Volatile.Read(ref marker.ActiveEffects) > 0) return true;
+
+            return false;
+        }
+    }
+
     internal IReadOnlyList<GrimoireWorkKind> RequestedWorkKinds
     {
         get
@@ -193,7 +217,15 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
             return false;
         }
 
-        RecordingWorkLease issued = new(this, admitted!);
+        WorkMarker? previous = _currentWork.Value;
+
+        while (previous is { Active: false }) previous = previous.Previous;
+
+        WorkMarker marker = new(previous);
+
+        RecordingWorkLease issued = new(this, admitted!, marker);
+
+        _currentWork.Value = marker;
 
         lock (_observationsGate)
         {
@@ -277,7 +309,7 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     private sealed class RecordingWorkLease(
         RecordingGrimoireWorkAdmissionGate gate,
-        IGrimoireWorkLease inner) : IGrimoireWorkLease
+        IGrimoireWorkLease inner, WorkMarker marker) : IGrimoireWorkLease
     {
         internal RecordingGrimoireWorkAdmissionGate Owner => gate;
 
@@ -310,7 +342,9 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
                 return false;
             }
 
-            effectGroup = new RecordingExternalEffectGroup(gate, admitted!);
+            Interlocked.Increment(ref marker.ActiveEffects);
+
+            effectGroup = new RecordingExternalEffectGroup(gate, admitted!, marker);
 
             return true;
         }
@@ -323,14 +357,30 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
             }
             finally
             {
-                await inner.DisposeAsync();
+                try
+                {
+                    await inner.DisposeAsync();
+                }
+                finally
+                {
+                    marker.Active = false;
+                }
             }
         }
     }
 
+    private sealed class WorkMarker(WorkMarker? previous)
+    {
+        internal WorkMarker? Previous { get; } = previous;
+
+        internal volatile bool Active = true;
+
+        internal int ActiveEffects;
+    }
+
     private sealed class RecordingExternalEffectGroup(
         RecordingGrimoireWorkAdmissionGate gate,
-        IGrimoireExternalEffectGroup inner) : IGrimoireExternalEffectGroup
+        IGrimoireExternalEffectGroup inner, WorkMarker marker) : IGrimoireExternalEffectGroup
     {
         public async ValueTask DisposeAsync()
         {
@@ -340,7 +390,14 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
             }
             finally
             {
-                await inner.DisposeAsync();
+                try
+                {
+                    await inner.DisposeAsync();
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref marker.ActiveEffects);
+                }
             }
         }
     }

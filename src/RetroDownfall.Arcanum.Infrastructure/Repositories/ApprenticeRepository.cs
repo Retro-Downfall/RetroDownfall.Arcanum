@@ -11,7 +11,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
-public sealed class ApprenticeRepository : IApprenticeRepository
+public sealed partial class ApprenticeRepository : IApprenticeRepository
 {
     private const int DefaultListLimit = 100;
 

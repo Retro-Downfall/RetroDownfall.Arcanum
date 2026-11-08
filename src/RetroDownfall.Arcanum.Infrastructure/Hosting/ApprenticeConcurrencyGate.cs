@@ -6,16 +6,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// </summary>
 public sealed class ApprenticeConcurrencyGate
 {
-
     private readonly AdmissionGate _gate = new();
 
     public int RunningCount => _gate.CurrentCount;
 
+    internal bool TryAcquireOwned(int maxConcurrent, out AdmissionGate.Lease? lease) =>
+        _gate.TryEnterOwned(maxConcurrent, out lease);
+
     public bool TryAcquire(int maxConcurrent, out IDisposable? lease)
     {
-
         return _gate.TryEnter(maxConcurrent, out lease);
-
     }
-
 }

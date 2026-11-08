@@ -6,7 +6,7 @@ discovery with ARCANUM_UPDATE_HOSTED_PRODUCER_CAPSULES=1. A regeneration is revi
 must be explained, and this script labels each one.
 
   python3 scripts/classify-manifest-diff.py --committed OLD.tsv --regenerated NEW.tsv --git-base b15d6960 [--git-head HEAD] [--repo .]
-                            [--edited-sources FILE] [--parity PARITY.tsv] [--report OUT.tsv] [--json OUT.json]
+                            [--edited-sources FILE] [--parity PARITY.tsv] [--baseline-observation BASELINE.tsv] [--report OUT.tsv] [--json OUT.json]
 
 Input
   --committed     the manifest before the regeneration
@@ -16,8 +16,13 @@ Input
                   reads the same list from a file, one path per line. --git-base also lets the script read a source file at
                   the two revisions, which the class r and the rules that read the source need; without it they explain nothing.
   --parity        optional. The manifest the same checker renders over the BASE source (the Old-Source Parity run: the
-                  candidate checker with src/ swapped back to the base). With it, the cause of every delta row is known by
-                  construction (see "Stages") instead of being inferred.
+                  candidate checker with src/ swapped back to the base). It establishes the source/checker comparison stage
+                  (see "Stages"); an exact baseline observation distinguishes historical ledger omissions from checker additions.
+
+  --baseline-observation
+                  optional exact baseline-checker/baseline-source manifest. Together with --parity, exact added rows already
+                  discovered by that baseline are historical ledger omissions, not checker-caused changes. Its diagnostic report
+                  is retained separately; supplying it never establishes a passing baseline qualification.
 
 A row is one site seen from one root: (root_type, authority_operation_id) is the root, the next eight columns are the site, and
 the last three are the site's frame (its Work capsule, its Effect capsule and the admitted work kind). A frame column holds the
@@ -27,6 +32,8 @@ share their site.
 
 Classes (the first that applies; the order is the order below)
   b-format  the added and the removed row are equal once the "@lease:<origin>" marker an Effect id carries is normalised away
+  l         an added complete row absent from the committed ledger appears exactly in both --baseline-observation and --parity:
+            pre-existing discovery omitted from that ledger, not a checker-caused change or a qualified baseline
   n         the row belongs to a root the committed manifest did not have and NEW_ROOTS names: every row of a reviewed new root
             is that root's, whichever source it comes from, so the root is what is reviewed and not its rows one by one
   a         the row's own site is in an edited source
@@ -43,12 +50,16 @@ Classes (the first that applies; the order is the order below)
   d         UNEXPLAINED. The review requires zero.
 
 Stages (only with --parity). P is the manifest of the new checker over the base source, C the committed manifest and N the
-regenerated one. P and C share a source, so a row in P and not in C is the checker's; N and P share a checker, so a row in N and
-not in P is the source's. An added row is the checker's if it is in P and the source's if it is not; a removed row is the checker's
-if it is not in P and the source's if it is. Without --parity the classes a, b and c are tried in that order on every row, so a
+regenerated one. N and P share a checker, so a row in N and not in P is source-derived. P and C share a source, but C may omit
+pre-existing baseline discovery: additions in P enter the checker comparison stage until an exact baseline observation B
+separates those omissions. An added complete row already in both B and P is labelled l with stage baseline-ledger before
+source/checker attribution. Other added rows in P remain in the checker stage; additions outside P are source-derived. Removed
+rows absent from P enter the checker stage and other removals the source stage. Without --parity the classes a, b and c are tried in that order on every row, so a
 row that an edit and a rule could both explain is credited to the edit and a row only an edit on the call chain explains is d.
 
 The rules (see RULES; each names the DESIGN paragraph that states its lane)
+  workspace-lease-closed-dispatch           exact reviewed workspace lease validation/recovery and downstream store/read closure
+  retained-workspace-pin-cleanup-origin     exact captured admission-callback cleanup through the retained MutationPin owner
   interceptor-and-state-handler-callbacks   an authored EF interceptor callback, the state handler it subscribes or the drain it
                                             reaches, entered at the EF operation that raises it
   base-constructor-initializers             the `: base(...)` constructor of an authored FileStream subclass, at a
@@ -298,6 +309,22 @@ def member_bodies(text: str, member: str) -> list[str]:
 # with the mechanism that makes it explain the rows it matches (the Old-Source Parity traversal compared with the delivery
 # traversal shows it: the first call edge that is new, and the tag of it); a row that no rule matches stays unexplained.
 
+WORKSPACE_LEASE_CONTRACT_DIRECTORY = Path(__file__).resolve().parents[1] / "tests/RetroDownfall.Arcanum.Tests/TestData/Contracts"
+
+WORKSPACE_LEASE_CONTRACT = json.loads((WORKSPACE_LEASE_CONTRACT_DIRECTORY / "hosted-producer-workspace-lease-footprint-v1.json").read_text())
+
+WORKSPACE_LEASE_FOOTPRINT_PATH = WORKSPACE_LEASE_CONTRACT_DIRECTORY / "hosted-producer-workspace-lease-footprint-v1.tsv"
+
+if hashlib.sha256(WORKSPACE_LEASE_FOOTPRINT_PATH.read_bytes()).hexdigest() != WORKSPACE_LEASE_CONTRACT["footprint_sha256"]:
+    raise ManifestError("Reviewed workspace lease footprint digest mismatch")
+
+WORKSPACE_LEASE_REVIEWED_ROWS = frozenset(read_manifest(str(WORKSPACE_LEASE_FOOTPRINT_PATH), "workspace lease footprint").rows)
+
+WORKSPACE_LEASE_BASE_SOURCE_SHA256 = WORKSPACE_LEASE_CONTRACT["base_source_sha256"]
+
+WORKSPACE_LEASE_TERMINAL_SOURCE_SHA256 = WORKSPACE_LEASE_CONTRACT["unchanged_terminal_source_sha256"]
+
+
 COVENANT_DATA = "RetroDownfall.Arcanum.Infrastructure.Data.Covenant."
 
 SECURITY = "RetroDownfall.Arcanum.Infrastructure.Security."
@@ -425,11 +452,14 @@ class Context:
         regenerated: Manifest,
         parity: Manifest | None,
         sources: SourceTexts | None = None,
+        baseline_observation: Manifest | None = None,
     ) -> None:
         self.committed = committed
         self.regenerated = regenerated
         self.parity = parity
         self.sources = sources
+        self.baseline_observation = baseline_observation
+        self.workspace_source_guards_valid: bool | None = None
 
     @staticmethod
     def same_site(manifest: Manifest | None, row: Row) -> list[Row]:
@@ -446,6 +476,43 @@ class Rule:
 
     def matches(self, row: Row, side: str, context: Context) -> bool:
         return side in self.side and self.predicate(row, side, context)
+
+
+def workspace_source_guards_match(context: Context) -> bool:
+    if context.workspace_source_guards_valid is not None:
+        return context.workspace_source_guards_valid
+
+    sources = context.sources
+
+    def matches(text: str | None, expected: str) -> bool:
+        return text is not None and hashlib.sha256(text.encode("utf-8")).hexdigest() == expected
+
+    valid = sources is not None and all(
+        matches(sources.base(path), digest) for path, digest in WORKSPACE_LEASE_BASE_SOURCE_SHA256.items()
+    ) and all(
+        matches(sources.head(path), digest) and matches(sources.base(path), digest)
+        for path, digest in WORKSPACE_LEASE_TERMINAL_SOURCE_SHA256.items()
+    )
+
+    context.workspace_source_guards_valid = valid
+
+    return valid
+
+
+def is_reviewed_workspace_lease_closure(row: Row, side: str, context: Context, pin_cleanup: bool) -> bool:
+    # Observation membership establishes a checker addition, not a passing baseline qualification. The exact reviewed footprint
+    # and source guards bind its mechanism; no diagnostic, source prefix, or missing frontier grants an explanation.
+    return (
+        side == "+"
+        and context.parity is not None
+        and context.baseline_observation is not None
+        and row in context.parity.counter
+        and row not in context.baseline_observation.counter
+        and row not in context.committed.counter
+        and row in WORKSPACE_LEASE_REVIEWED_ROWS
+        and (row.source_path.endswith("/Coordination/RetainedExclusiveFileLock.cs")) == pin_cleanup
+        and workspace_source_guards_match(context)
+    )
 
 
 def is_interceptor_callback(row: Row, side: str, context: Context) -> bool:
@@ -541,6 +608,22 @@ def is_stream_disposal_by_origin(row: Row, side: str, context: Context) -> bool:
 
 
 RULES: tuple[Rule, ...] = (
+    Rule(
+        "workspace-lease-closed-dispatch",
+        "Reviewed Closed Override Sets; Workspace lease validation and recovery ownership",
+        "+",
+        "the exact two-implementation workspace lease census enters CompositeLease and Guild Lease validation/recovery bodies, "
+        "including their unchanged Signet, workspace-store and availability read closure",
+        lambda row, side, context: is_reviewed_workspace_lease_closure(row, side, context, pin_cleanup=False),
+    ),
+    Rule(
+        "retained-workspace-pin-cleanup-origin",
+        "Implicit Call Census (using disposals); exact constructor and captured cleanup provenance",
+        "+",
+        "the captured admission callback cleanup origin follows the exact retained MutationPin owner through Dispose, "
+        "ReleasePin and ReleaseWhenDrained to RetainedExclusiveFileLock.Dispose after workspace lease resolution",
+        lambda row, side, context: is_reviewed_workspace_lease_closure(row, side, context, pin_cleanup=True),
+    ),
     Rule(
         "interceptor-and-state-handler-callbacks",
         "Interceptor and Logger Lane; Connection State Handlers; Effect on the Shipped Graph",
@@ -771,8 +854,69 @@ GUILD_MEMORY_READ_REACHES = tuple(
 )
 
 
+APPRENTICE_GUILD_OWNERSHIP_CALLER = "src/RetroDownfall.Arcanum.Infrastructure/Repositories/ApprenticeRepository.Guild.cs"
+
+# Each legacy request now refuses an execution whose durable ownership belongs to Guild. The new repository probe
+# checks the Core manifest when Guild is absent and Guild availability when registered, before reading execution ownership.
+APPRENTICE_GUILD_OWNERSHIP_REACHES = tuple(
+    Reach(
+        "ApprenticeService",
+        "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService." + operation,
+        "src/RetroDownfall.Arcanum.Infrastructure/" + source,
+        member,
+        callee,
+        "+",
+        APPRENTICE_GUILD_OWNERSHIP_CALLER,
+        marker,
+        "the legacy Apprentice request now proves durable Guild execution ownership through IsGuildBoundAsync; "
+        "IsGuildBoundWithinAsync validates the Core schema when Guild is absent and Guild storage availability when registered",
+    )
+    for operation in ("ContinueAsync", "InterveneAsync", "InterveneOperatorAsync", "ResumeAsync", "ReweaveAsync", "StartAsync")
+    for source, member, callee, marker in (
+        *(
+            ("Data/Schema/GrimoireSchemaManifestInspector.cs", member, callee,
+                "await inspector.InspectAsync(command.Connection!, command.Transaction, core, cancellationToken)")
+            for member in ("ReadCatalogAsync", "ReadIndexColumnsAsync", "ReadIndexListAsync")
+            for callee in ("Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync", "System.Data.Common.DbDataReader.ReadAsync")
+        ),
+        ("Guild/GuildStorageAvailability.cs", "CheckAsync", "System.Data.Common.DbCommand.ExecuteScalarAsync",
+            "await GuildStorageAvailability.CheckAsync(command.Connection!, command.Transaction, cancellationToken)"),
+    )
+)
+
+# Live Signet workspace revalidation now has a concrete local host-evidence implementation. Its registration proof
+# compares the stored digest with an exact physical root, whose platform paths perform the four metadata reads below.
+GUILD_HOST_IDENTITY_REACHES = tuple(
+    Reach(
+        root,
+        operation,
+        "src/RetroDownfall.Arcanum.Infrastructure/Security/FileHandleIdentity.cs",
+        member,
+        callee,
+        "+",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalHostPolicy.Canonical.cs",
+        "opener.IdentifyExact(root)",
+        "live Guild memory admission and revalidation resolve workspace host evidence through the new local host policy; "
+        "RegistrationAsync compares the registered digest with PhysicalCampaignRootOpener.IdentifyExact, which reads platform file identity",
+    )
+    for root, operation in (
+        ("Loremaster", "RetroDownfall.Arcanum.Infrastructure.Hosting.Loremaster.ExecuteAsync"),
+        ("SagaExtractionService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SagaExtractionService.ExecuteAsync"),
+        ("SessionAttachmentIndexingService", "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.ExecuteAsync"),
+    )
+    for member, callee in (
+        ("TryGetUnixPathMetadataNoFollow", "RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.lstat"),
+        ("TryGetWindowsFileIdInfo", "RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFileInformationByHandleEx"),
+        ("TryGetWindowsHandleMetadata", "RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFileInformationByHandle"),
+        ("TryGetWindowsPathMetadataNoFollow", "RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.CreateFile"),
+    )
+)
+
+
 REACHED_THROUGH = (
     *GUILD_MEMORY_READ_REACHES,
+    *APPRENTICE_GUILD_OWNERSHIP_REACHES,
+    *GUILD_HOST_IDENTITY_REACHES,
     Reach(
         "GrimoireDatabaseHostedService",
         "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StartAsync",
@@ -1171,10 +1315,11 @@ def prove_reach(row: Row, side: str, edited: frozenset[str], sources: SourceText
 
 # --- Classification -------------------------------------------------------------------------------------------------------------
 
-CLASS_ORDER = ("b-format", "n", "a", "b", "r", "c", "d")
+CLASS_ORDER = ("b-format", "l", "n", "a", "b", "r", "c", "d")
 
 CLASS_TITLES = {
     "b-format": "the Effect id differs only by its @lease: marker",
+    "l": "pre-existing discovery omitted from the committed ledger (exact baseline observation and parity)",
     "n": "row of a root the reviewed catalog added (NEW_ROOTS)",
     "a": "own site in an edited source",
     "b": "Work or Effect capsule names an edited acquisition, group or formal site",
@@ -1212,6 +1357,7 @@ def classify(
     edited: frozenset[str],
     parity: Manifest | None = None,
     sources: SourceTexts | None = None,
+    baseline_observation: Manifest | None = None,
 ) -> list[Labelled]:
     added = list((regenerated.counter - committed.counter).elements())
     removed = list((committed.counter - regenerated.counter).elements())
@@ -1236,7 +1382,7 @@ def classify(
 
     labelled: list[Labelled] = []
 
-    context = Context(committed, regenerated, parity, sources)
+    context = Context(committed, regenerated, parity, sources, baseline_observation)
 
     committed_roots = {row.root for row in committed.rows}
 
@@ -1267,6 +1413,18 @@ def classify(
 
         if unresolved:
             labelled.append(Labelled(side, row, "d", stage=stage, detail="unresolved frontier capsule " + unresolved[0][:12]))
+            continue
+
+        if (
+            side == "+"
+            and baseline_observation is not None
+            and parity is not None
+            and row not in committed.counter
+            and row in baseline_observation.counter
+            and row in parity.counter
+        ):
+            labelled.append(Labelled(side, row, "l", stage="baseline-ledger",
+                detail="The exact baseline checker/source observation already discovers this complete row; the committed ledger omitted it."))
             continue
 
         # A row of a reviewed new root is the root's: the committed manifest has no row of it to compare with.
@@ -1383,6 +1541,51 @@ NEW_ROOTS = (
         "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.InterveneOperatorAsync",
         "the finite native operator guidance request verifies the host-owned target context and awaits checkpoint persistence "
         "under the caller's existing admission; provenance creates no execution authority",
+    ),
+    NewRoot(
+        "ApprenticeService",
+        "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ExecuteGuildAsync",
+        "the native local Apprentice adapter runs only from committed Guild execution, owns GuildStorage admission, and joins its tracked execution before releasing its lifetime",
+    ),
+    NewRoot(
+        "GuildLocalHostReadiness",
+        "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalHostReadiness.RequireExecutionReady",
+        "one bounded request verifies the retained mutation lock and exact committed installation identity before native local execution",
+    ),
+    NewRoot(
+        "GuildLocalHostReadiness",
+        "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalHostReadiness.StartAsync",
+        "host startup awaits durable installation identity and retained mutation-lock installation before producer readiness",
+    ),
+    NewRoot(
+        "GuildLocalHostReadiness",
+        "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalHostReadiness.StopAsync",
+        "stopped-host shutdown retires the installed mutation fence after scheduler draining while physical pins retain its lock",
+    ),
+    NewRoot(
+        "GuildLocalQuestScheduler",
+        "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.ExecuteAsync",
+        "the tracked background scheduler discovers committed local Quests under GuildStorage admission and joins each dispatch scope",
+    ),
+    NewRoot(
+        "GuildLocalQuestScheduler",
+        "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.RunAdmittedAsync",
+        "the declared dispatch handoff accepts the exact retained GuildStorage lease and awaits local adapter work within that admission",
+    ),
+    NewRoot(
+        "GuildLocalQuestScheduler",
+        "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.RunCommittedAsync",
+        "one tracked committed Quest dispatch acquires GuildStorage admission and awaits the declared admitted dispatch handoff",
+    ),
+    NewRoot(
+        "GuildLocalQuestScheduler",
+        "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.Schedule",
+        "one bounded wake publishes an already committed Quest identity to the tracked independently admitted scheduler",
+    ),
+    NewRoot(
+        "GuildLocalQuestScheduler",
+        "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.StartAsync",
+        "host startup awaits the physical fence and local-adapter readiness inventory before the scheduler producer starts",
     ),
 )
 
@@ -1693,6 +1896,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--git-head", default="HEAD")
     parser.add_argument("--repo", default=".")
     parser.add_argument("--parity", help="manifest of the same checker over the base source")
+    parser.add_argument("--baseline-observation", help="optional exact baseline-checker/baseline-source observation; preserves diagnostics separately")
     parser.add_argument("--report", help="write every labelled row to this TSV")
     parser.add_argument("--json", dest="json_path", help="write the summary to this JSON file")
     arguments = parser.parse_args(argv)
@@ -1701,6 +1905,7 @@ def main(argv: list[str] | None = None) -> int:
         committed = read_manifest(arguments.committed, "committed")
         regenerated = read_manifest(arguments.regenerated, "regenerated")
         parity = read_manifest(arguments.parity, "parity") if arguments.parity else None
+        baseline_observation = read_manifest(arguments.baseline_observation, "baseline observation") if arguments.baseline_observation else None
 
         if arguments.edited_sources:
             edited = frozenset(
@@ -1719,7 +1924,7 @@ def main(argv: list[str] | None = None) -> int:
 
         return 2
 
-    labelled = classify(committed, regenerated, edited, parity, sources)
+    labelled = classify(committed, regenerated, edited, parity, sources, baseline_observation)
     summary = summarise(labelled)
     invariants = check_invariants(committed, regenerated, labelled)
 

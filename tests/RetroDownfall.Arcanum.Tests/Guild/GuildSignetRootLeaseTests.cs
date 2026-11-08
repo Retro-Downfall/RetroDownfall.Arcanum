@@ -6,6 +6,67 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 
 public sealed class GuildSignetRootLeaseTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Captured_context_can_acquire_a_root_after_its_original_scope_releases(bool imperative)
+    {
+        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
+
+        Guid root = Guid.NewGuid();
+
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<Result<int>>? continuation = null;
+
+        TaskCompletionSource captured = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<Result<int>> Capture() => Task.Run(async () =>
+        {
+            Assert.True((await GuildSignetRootGate.RunAsync<int>(gate, root,
+                _ => Task.FromResult(Result<int>.Success(1)), default)).IsFailure);
+
+            captured.TrySetResult();
+
+            await release.Task;
+
+            return await GuildSignetRootGate.RunAsync<int>(gate, root,
+                _ => Task.FromResult(Result<int>.Success(2)), default);
+        });
+
+        if (imperative)
+        {
+            using GuildSignetRootGate.RootLease lease = await AcquireAsync(gate, root, default);
+
+            Assert.True(lease.Enter());
+
+            continuation = Capture();
+
+            await captured.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        else
+        {
+            Assert.True((await GuildSignetRootGate.RunAsync<int>(gate, root, async _ =>
+            {
+                continuation = Capture();
+
+                await captured.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+                return 1;
+            }, default)).IsSuccess);
+        }
+
+        release.TrySetResult();
+
+        Result<int> resumed = await continuation!.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(resumed.IsSuccess, resumed.Error.Message);
+
+        Assert.Equal(2, resumed.Value);
+
+        Assert.Equal(0, GuildSignetRootGate.RetainedRootCount(gate));
+    }
+
     [Fact]
     public async Task Imperative_root_scope_refuses_nested_roots_and_reclaims_after_idempotent_disposal()
     {

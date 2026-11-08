@@ -205,8 +205,14 @@ internal sealed partial class GuildPortalStore
     {
         Result<GuildSignetRecord> signet = await GuildSignetStore.ReadAsync(connection, transaction, driver.Execution.SignetId, false, ct).ConfigureAwait(false);
 
-        return signet.IsFailure ? signet.Error : new GuildCallerContext(GuildCallerKind.Run, signet.Value.Binding.OriginPrincipalId,
+        if (signet.IsFailure) return signet.Error;
+
+        GuildCallerContext caller = driver.Caller ?? new(GuildCallerKind.Run, signet.Value.Binding.OriginPrincipalId,
             driver.Execution.RunId, policy.InstallationGeneration, driver.Execution);
+
+        return caller.Kind == GuildCallerKind.Run && ReferenceEquals(caller.Execution, driver.Execution)
+            && caller.PrincipalId == signet.Value.Binding.OriginPrincipalId && caller.InstallationGeneration == policy.InstallationGeneration
+            ? caller : Forbidden;
     }
 
     private static async Task<Result> RequireClaimWithinAsync(SqliteConnection connection, SqliteTransaction transaction,

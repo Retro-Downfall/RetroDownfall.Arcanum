@@ -83,8 +83,8 @@ internal sealed class GuildWorkspaceMutationFence(GuildWorkspaceLeaseBroker brok
                 : await owner.Broker.ValidateCommitAsync(permit, cancellationToken).ConfigureAwait(false);
         }
 
-        public ValueTask<Result> RetainRecoveryAsync(string reasonCode, CancellationToken cancellationToken) =>
-            new(owner.Broker.RetainRecoveryAsync(permit, reasonCode, cancellationToken));
+        public async ValueTask<Result> RetainRecoveryAsync(string reasonCode, CancellationToken cancellationToken) =>
+            await owner.Broker.RetainRecoveryAsync(permit, reasonCode, cancellationToken).ConfigureAwait(false);
 
         public ValueTask<Result> ValidateDirectoryCreationAsync(WorkspaceLeaseDirectoryCreation preparation, bool rollback, CancellationToken cancellationToken) =>
             CanUse(rollback) ? new(owner.Broker.ValidateDirectoryCreationAsync(permit, preparation, rollback, cancellationToken)) : ValueTask.FromResult(Result.Failure(Forbidden));

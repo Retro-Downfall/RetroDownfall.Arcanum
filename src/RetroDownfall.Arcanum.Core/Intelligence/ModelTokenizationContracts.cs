@@ -326,6 +326,8 @@ public sealed record ModelCallContext(
     SystemPromptAttributionMap? SystemPromptAttribution = null,
     IProtectedProviderCallBinding? ProtectedBinding = null)
 {
+    internal IGuildInvocationBinding? GuildBinding { get; init; }
+
     [JsonIgnore]
     public ITapestryRetrievalObservation? TapestryObservation { get; init; }
 }

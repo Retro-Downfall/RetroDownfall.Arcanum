@@ -147,6 +147,15 @@ public sealed partial class GuildQuestStoreTests
 
         private IGuildQuestAllocationParticipant? _allocationParticipant;
 
+        private IGuildLocalExecutionAdmission? _localAdmission;
+
+        internal void UseLocalAdmission(IGuildLocalExecutionAdmission participant)
+        {
+            _localAdmission = participant;
+
+            Store = NewStore();
+        }
+
         internal void UseBudgetParticipant(IGuildQuestAllocationParticipant participant)
         {
             _allocationParticipant = participant;
@@ -155,7 +164,7 @@ public sealed partial class GuildQuestStoreTests
         }
 
         private GuildQuestStore NewStore() => new(new(Connections, Gate, TimeProvider.System), Authority, Host,
-            _allocationParticipant ?? Budget, TimeProvider.System);
+            _allocationParticipant ?? Budget, TimeProvider.System, _localAdmission, new TestGuildLocalHostReadiness());
 
         internal void Restart()
         {

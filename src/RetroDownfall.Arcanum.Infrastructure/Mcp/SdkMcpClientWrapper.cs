@@ -346,7 +346,8 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        if (GuildToolInvocationAmbient.Current is not null
+        if ((GuildToolInvocationAmbient.Current is { } guild
+                && (!IsHostOwned || guild.CaptureMcpInvocation(toolName) is null))
             || (!IsHostOwned && WorkspaceMutationFence.IsInstalled))
         {
             cancellationToken.ThrowIfCancellationRequested();

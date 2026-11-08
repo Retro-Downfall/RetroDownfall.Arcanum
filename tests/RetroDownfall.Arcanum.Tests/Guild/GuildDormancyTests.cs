@@ -8,13 +8,14 @@ using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 namespace RetroDownfall.Arcanum.Tests.Guild;
 
 public sealed class GuildDormancyTests
 {
     [Fact]
-    public void Roster_and_authority_participants_remain_unregistered_and_execution_is_dormant()
+    public void Local_execution_ports_are_registered_while_remote_and_roster_ports_remain_unavailable()
     {
         var assemblies = new[]
         {
@@ -35,33 +36,37 @@ public sealed class GuildDormancyTests
 
         var implementations = concreteTypes.Where(type => ports.Any(port => port.IsAssignableFrom(type))).ToArray();
 
-        Assert.Equal(new[] { typeof(GuildQuestStore), typeof(GuildRoster), typeof(GuildWorkspaceLeaseBroker), typeof(SignetAuthority) }.OrderBy(type => type.FullName),
+        Assert.Equal(new[] { typeof(ConclaveArchmage), typeof(GuildLocalPort), typeof(GuildQuestStore), typeof(GuildRoster), typeof(GuildWorkspaceLeaseBroker), typeof(SignetAuthority) }.OrderBy(type => type.FullName),
             implementations.OrderBy(type => type.FullName));
 
         ServiceCollection services = new();
 
         services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
 
-        Assert.DoesNotContain(services, descriptor => ports.Contains(descriptor.ServiceType)
+        Type[] executable = [typeof(IGuildPort), typeof(IGuildQuestCoordinator), typeof(ISignetAuthority), typeof(IGuildToolAuthority)];
+
+        Assert.All(executable, port => Assert.Contains(services, descriptor => descriptor.ServiceType == port));
+
+        Assert.DoesNotContain(services, descriptor => ports.Contains(descriptor.ServiceType) && !executable.Contains(descriptor.ServiceType)
             || descriptor.ServiceType == typeof(GuildRosterContext));
     }
 
     [Fact]
-    public void Guild_data_is_not_registered_on_the_HTTP_or_configuration_contexts()
+    public void Native_HTTP_records_are_generated_without_registering_host_authority_or_remote_surfaces()
     {
+        Type[] native = [typeof(GuildIssueRootRequest), typeof(GuildCancelQuestRequest), typeof(GuildContinueRequest),
+            typeof(GuildQuestDto), typeof(GuildQuestInputDto), typeof(GuildStatusDto), typeof(GuildCancellationDto), typeof(GuildResultReceipt), typeof(GuildContentDto)];
+
+        Assert.All(native, type => Assert.NotNull(ArcanumJsonContext.Default.GetTypeInfo(type)));
+
+        Type[] privateAuthority = [typeof(GuildCallerContext), typeof(GuildExecutionHandle), typeof(GuildRecoveryContext),
+            typeof(GuildAdmissionContext), typeof(CohortDto), typeof(GuildCircleInboxItem)];
+
+        Assert.All(privateAuthority, type => Assert.Null(ArcanumJsonContext.Default.GetTypeInfo(type)));
+
         foreach (var type in typeof(IGuildPort).Assembly.GetExportedTypes().Where(type =>
             type.Namespace == typeof(IGuildPort).Namespace && !type.ContainsGenericParameters))
         {
-            // Apprentice checkpoint provenance exposes this shared enum without activating Guild transport.
-            if (type == typeof(GuildAuthorityKind))
-            {
-                Assert.NotNull(ArcanumJsonContext.Default.GetTypeInfo(type));
-            }
-            else
-            {
-                Assert.Null(ArcanumJsonContext.Default.GetTypeInfo(type));
-            }
-
             Assert.Null(ConfigurationJsonContext.Default.GetTypeInfo(type));
         }
     }

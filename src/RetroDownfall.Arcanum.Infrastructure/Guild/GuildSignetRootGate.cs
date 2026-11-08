@@ -9,7 +9,7 @@ internal static class GuildSignetRootGate
 {
     private static readonly ConditionalWeakTable<IGrimoireConnectionAdmissionGate, RootGates> Gates = new();
 
-    private static readonly AsyncLocal<object?> HeldRoot = new();
+    private static readonly AsyncLocal<RootMarker?> HeldRoot = new();
 
     internal static int RetainedRootCount(IGrimoireConnectionAdmissionGate installationGate) =>
         Gates.TryGetValue(installationGate, out RootGates? roots) ? roots.Count : 0;
@@ -18,7 +18,7 @@ internal static class GuildSignetRootGate
     internal static async Task<Result<RootLease>> AcquireAsync(IGrimoireConnectionAdmissionGate installationGate,
         Guid root, CancellationToken ct)
     {
-        if (root == Guid.Empty || HeldRoot.Value is not null)
+        if (root == Guid.Empty || HeldRoot.Value?.IsActive == true)
             return GuildSignetStore.Unavailable;
 
         RootGates roots = Gates.GetValue(installationGate, static _ => new());
@@ -57,13 +57,13 @@ internal static class GuildSignetRootGate
 
     internal sealed class RootLease(Guid root, RootGates roots, RootEntry entry) : IDisposable
     {
-        private readonly object _marker = new();
+        private readonly RootMarker _marker = new();
 
         private int _disposed;
 
         internal bool Enter()
         {
-            if (Volatile.Read(ref _disposed) != 0 || HeldRoot.Value is not null)
+            if (Volatile.Read(ref _disposed) != 0 || HeldRoot.Value?.IsActive == true)
                 return false;
 
             HeldRoot.Value = _marker;
@@ -73,8 +73,10 @@ internal static class GuildSignetRootGate
 
         public void Dispose()
         {
-            // A helper can release the resource in a child execution context. Every caller still
-            // clears its own exact marker; a stale lease can never clear a later scope's marker.
+            // Captured execution contexts share the marker's lifetime. Resetting only this
+            // AsyncLocal would leave descendants believing a released gate was still held.
+            _marker.Release();
+
             if (ReferenceEquals(HeldRoot.Value, _marker))
                 HeldRoot.Value = null;
 
@@ -90,7 +92,7 @@ internal static class GuildSignetRootGate
     internal static async Task<Result<T>> RunAsync<T>(IGrimoireConnectionAdmissionGate installationGate, Guid root,
         Func<CancellationToken, Task<Result<T>>> action, CancellationToken ct)
     {
-        if (root == Guid.Empty || HeldRoot.Value is not null)
+        if (root == Guid.Empty || HeldRoot.Value?.IsActive == true)
         {
             return GuildSignetStore.Unavailable;
         }
@@ -101,13 +103,15 @@ internal static class GuildSignetRootGate
 
         bool acquired = false;
 
+        RootMarker marker = new();
+
         try
         {
             await entry.Gate.WaitAsync(ct).ConfigureAwait(false);
 
             acquired = true;
 
-            HeldRoot.Value = root;
+            HeldRoot.Value = marker;
 
             ct.ThrowIfCancellationRequested();
 
@@ -117,7 +121,10 @@ internal static class GuildSignetRootGate
         {
             if (acquired)
             {
-                HeldRoot.Value = null;
+                marker.Release();
+
+                if (ReferenceEquals(HeldRoot.Value, marker))
+                    HeldRoot.Value = null;
 
                 entry.Gate.Release();
             }
@@ -126,6 +133,15 @@ internal static class GuildSignetRootGate
             // The last reference disappears only after every holder and waiter has released it.
             roots.Return(root, entry);
         }
+    }
+
+    private sealed class RootMarker
+    {
+        private int _active = 1;
+
+        internal bool IsActive => Volatile.Read(ref _active) != 0;
+
+        internal void Release() => Interlocked.Exchange(ref _active, 0);
     }
 
     internal sealed class RootEntry

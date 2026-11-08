@@ -181,6 +181,7 @@ public sealed partial class GuildQuestStoreTests
                 INSERT INTO Campaigns(Id,Name,NameLower,Path,Type,Settings,CreatedAt,UpdatedAt)
                 VALUES($campaign,'Guild','guild','/guild-fixture',0,'{}',$now,$now);
                 INSERT INTO Sessions(Id,CampaignId,CreatedAt,UpdatedAt) VALUES($session,$campaign,$now,$now);
+                INSERT INTO session_campaign_bindings(SessionId,BindingKindCode,CampaignId,BoundAtUtc) VALUES($session,2,$campaign,$now);
                 """;
 
             command.Parameters.AddWithValue("$campaign", campaign.ToString("D").ToUpperInvariant());
@@ -188,6 +189,9 @@ public sealed partial class GuildQuestStoreTests
             command.Parameters.AddWithValue("$session", session.ToString("D").ToUpperInvariant());
 
             command.Parameters.AddWithValue("$now", UtcInstantText.Format(DateTimeOffset.UtcNow));
+
+            using CovenantSqliteAuthorizationScope bindingAuthorization = CovenantSqliteConnectionInitializer.Instance
+                .Authorize(connection, CovenantSqliteAuthorizationKind.SessionBindingWrite);
 
             _ = await command.ExecuteNonQueryAsync();
         }

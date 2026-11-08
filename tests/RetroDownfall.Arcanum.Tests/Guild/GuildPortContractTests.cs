@@ -54,7 +54,7 @@ public sealed class GuildPortContractTests
             "PeerGrantRequired", "LeaseNotHeld", "NotFound", "OwnerUnavailable", "RevisionConflict",
             "IdempotencyConflict", "ResultConflict", "GrantExceeded", "PriceUnavailable",
             "BudgetCapabilityUnavailable", "DelegationCycle", "LegacyRunUnavailable", "LegacyToolName",
-            "ReconciliationRequired", "AwaitingInput", "UnsupportedTransportState", "SequenceExhausted", "MembershipConflict",
+            "ReconciliationRequired", "LocalExecutionInterrupted", "AwaitingInput", "UnsupportedTransportState", "SequenceExhausted", "MembershipConflict",
             "CohortClosed", "NoEligibleBidder", "BidConflict", "OfferClosed", "DestinationChanged",
             "LeaseConflict", "LeaseLapsed", "WorkspaceIdentityUnavailable", "LeaseReconciliationRequired",
             "SourceConflict", "ContentErased", "CursorGone", "PayloadTooLarge", "Unavailable",

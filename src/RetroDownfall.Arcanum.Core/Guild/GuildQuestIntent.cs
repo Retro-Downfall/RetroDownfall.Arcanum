@@ -18,6 +18,41 @@ public static class GuildQuestIntent
     public static string NormalizeGoal(string goal) =>
         goal.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Normalize(NormalizationForm.FormC);
 
+    public static Result<string> Compute(Guid questId, GuildCancelQuestRequest request) => ComputeCanonical(writer =>
+    {
+        if (questId == Guid.Empty || request is null || request.ExpectedRevision < 1)
+            throw new InvalidIntentException();
+
+        writer.WriteString("kind", "cancel");
+
+        writer.WriteString("questId", questId);
+
+        writer.WriteNumber("expectedRevision", request.ExpectedRevision);
+
+        writer.WritePropertyName("reason");
+
+        WriteEnum(writer, request.ReasonCode);
+    });
+
+    public static Result<string> Compute(Guid questId, GuildContinueRequest request) => ComputeCanonical(writer =>
+    {
+        if (questId == Guid.Empty || request is null || request.ExpectedRevision < 1 || request.ContinuationId == Guid.Empty
+            || request.Body is null || request.MimeType is not ("text/plain" or "application/json"))
+            throw new InvalidIntentException();
+
+        writer.WriteString("kind", "continue");
+
+        writer.WriteString("questId", questId);
+
+        writer.WriteNumber("expectedRevision", request.ExpectedRevision);
+
+        writer.WriteString("continuationId", request.ContinuationId);
+
+        writer.WriteString("mimeType", request.MimeType);
+
+        WriteText(writer, "body", request.Body);
+    });
+
     public static Result<string> Compute(GuildIssueRootRequest request) => ComputeCanonical(writer =>
     {
         if (request is null || request.Goal is null || request.Grant is null)

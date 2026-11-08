@@ -349,8 +349,22 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
             {
                 if (observation is not null) observation.Stage = FailureOrigin.ModelInvocation;
 
-                response = await chatClient.GetResponseAsync(
-                    providerPayload.Messages, providerPayload.Options, providerToken).ConfigureAwait(false);
+                if (context?.GuildBinding is GuildProviderCallBinding guild)
+                {
+                    Result<ChatResponse> dispatched = await guild.SendAsync(chatClient, providerPayload.Messages,
+                        providerPayload.Options, context, providerToken).ConfigureAwait(false);
+
+                    if (dispatched.IsFailure)
+                        return ModelCallOutcome.Failed(new ModelCallFailure(purpose, modelCallId, dispatched.Error, Cause: null)
+                        { HasUncertainProviderEffect = guild.PossiblyDispatched });
+
+                    response = dispatched.Value;
+                }
+                else
+                {
+                    response = await chatClient.GetResponseAsync(
+                        providerPayload.Messages, providerPayload.Options, providerToken).ConfigureAwait(false);
+                }
             }
             catch (AggregateException ex) when (retrievalScope.IsTerminalRefusal(ex) || dispatchScope?.IsTerminalRefusal(ex) == true)
             {
@@ -423,6 +437,7 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
                 IsConnectivityFailure = context?.ProtectedBinding is MemoryDelegationProtection protection
                     && !protection.Revocation.IsCancellationRequested
                     && ProviderFailureClassifier.IsConnectivityFailure(ex, cancellationToken),
+                HasUncertainProviderEffect = context?.GuildBinding is GuildProviderCallBinding { PossiblyDispatched: true },
             });
         }
     }
@@ -440,6 +455,14 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         ArgumentNullException.ThrowIfNull(messages);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(budget);
+
+        if (context?.GuildBinding is not null)
+        {
+            yield return new ModelCallFailureUpdate(purpose, string.Empty,
+                new Error(ErrorCodes.Guild.AuthorityUnavailable, "Guild streaming requires a qualified streaming effect adapter."));
+
+            yield break;
+        }
 
         context = SuppressSensitiveCachePlan(context);
 
@@ -857,6 +880,13 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         ChatOptions options, ModelCallContext? context, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+
+        if (context?.GuildBinding is not null and not GuildProviderCallBinding
+            || context?.GuildBinding is GuildProviderCallBinding guild && !guild.Matches(context)
+            || RetroDownfall.Arcanum.Infrastructure.Guild.GuildMemoryAccess.IsGuildInvocation
+                && context?.GuildBinding is not GuildProviderCallBinding)
+            return (new Error(ErrorCodes.Guild.AuthorityUnavailable,
+                "Guild provider calls require an explicit live host binding."), ModelCallRetryDirective.None);
 
         Result retrieval = await ValidateTapestryRetrievalAsync(context, ct).ConfigureAwait(false);
 

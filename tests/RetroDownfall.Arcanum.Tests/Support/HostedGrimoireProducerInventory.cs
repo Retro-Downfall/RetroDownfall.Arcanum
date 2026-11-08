@@ -1660,6 +1660,26 @@ internal static partial class HostedGrimoireProducerInventory
     private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> ReviewedClosedDispatchTargets =
         new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
         {
+            ["RetroDownfall.Arcanum.Infrastructure.Guild.IGuildWorkspaceLeaseHostEvidence.Authenticates"] = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalHostPolicy",
+                "RetroDownfall.Arcanum.Infrastructure.Guild.UnavailableGuildWorkspaceLeaseHostEvidence",
+            },
+            ["RetroDownfall.Arcanum.Infrastructure.Guild.IGuildWorkspaceLeaseHostEvidence.ResolveAsync"] = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalHostPolicy",
+                "RetroDownfall.Arcanum.Infrastructure.Guild.UnavailableGuildWorkspaceLeaseHostEvidence",
+            },
+            ["RetroDownfall.Arcanum.Infrastructure.Workspaces.IWorkspaceMutationLease.ValidateAsync"] = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "RetroDownfall.Arcanum.Infrastructure.Workspaces.WorkspaceMutationFence.CompositeLease",
+                "RetroDownfall.Arcanum.Infrastructure.Guild.GuildWorkspaceMutationFence.Lease",
+            },
+            ["RetroDownfall.Arcanum.Infrastructure.Workspaces.IWorkspaceMutationLease.RetainRecoveryAsync"] = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "RetroDownfall.Arcanum.Infrastructure.Workspaces.WorkspaceMutationFence.CompositeLease",
+                "RetroDownfall.Arcanum.Infrastructure.Guild.GuildWorkspaceMutationFence.Lease",
+            },
             ["RetroDownfall.Arcanum.Core.Backup.IBackupRestoreEffectDigestCalculator.Compute"] = new HashSet<string>(StringComparer.Ordinal)
             {
                 "RetroDownfall.Arcanum.Core.Backup.BackupRestoreEffectDigestCalculator",
@@ -1752,6 +1772,28 @@ internal static partial class HostedGrimoireProducerInventory
         Lifecycle("Hosting", "SessionAttachmentPendingGcHostedService", HostedProducerAuthorityKind.PreReadinessStartup, "pending-file and row reconciliation awaited by Generic Host", HostedProducerAuthorityKind.EffectFree, "completed task only"),
         Ordinary("Covenant", "CovenantMaintenanceHostedService", GrimoireWorkKind.CovenantMaintenance),
         Ordinary("Guild", "GuildMaintenanceHostedService", GrimoireWorkKind.GuildMaintenance),
+        new("GuildLocalHostReadiness",
+        [
+            Operation("Guild", "GuildLocalHostReadiness", "StartAsync", HostedProducerAuthorityKind.PreReadinessStartup, null,
+                "awaited durable installation identity and retained mutation lock installation before MCP bootstrap"),
+            Operation("Guild", "GuildLocalHostReadiness", "RequireExecutionReady", HostedProducerAuthorityKind.FiniteRequest, null,
+                "one bounded native request check reads the retained lock and exact committed installation identity"),
+            Operation("Guild", "GuildLocalHostReadiness", "StopAsync", HostedProducerAuthorityKind.StoppedHost, null,
+                "host shutdown retires the installed mutation fence after the scheduler drains; physical pins retain the lock"),
+        ]),
+        new("GuildLocalQuestScheduler",
+        [
+            Operation("Guild", "GuildLocalQuestScheduler", "StartAsync", HostedProducerAuthorityKind.PreReadinessStartup, null,
+                "awaited physical fence and local adapter readiness inventory before the background producer starts"),
+            Operation("Guild", "GuildLocalQuestScheduler", "ExecuteAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.GuildStorage),
+            Operation("Guild", "GuildLocalQuestScheduler", "RunCommittedAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.GuildStorage),
+            Handoff(Operation("Guild", "GuildLocalQuestScheduler", "RunAdmittedAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
+                GrimoireWorkKind.GuildStorage), "work"),
+            Operation("Guild", "GuildLocalQuestScheduler", "Schedule", HostedProducerAuthorityKind.FiniteRequest, null,
+                "one wake publishes an existing committed Quest identity to its tracked self-admitted worker"),
+            Operation("Guild", "GuildLocalQuestScheduler", "StopAsync", HostedProducerAuthorityKind.EffectFree, null,
+                "stops wake admission and cancels and joins all tracked committed dispatch scopes"),
+        ]),
         Ordinary("Covenant", "GrimoireSchemaTransitionHostedService", GrimoireWorkKind.GrimoireSchemaTransition),
         Ordinary("Hosting", "EntryWeavingService", GrimoireWorkKind.EntryWeaving),
         Ordinary("Weave", "SessionAttachmentIndexingService", GrimoireWorkKind.SessionAttachmentIndexing),
@@ -1779,6 +1821,8 @@ internal static partial class HostedGrimoireProducerInventory
         new("ApprenticeService",
         [
             Operation("Hosting", "ApprenticeService", "ExecuteAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.ApprenticeExecution),
+            Operation("Hosting", "ApprenticeService", "ExecuteGuildAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
+                GrimoireWorkKind.GuildStorage, sourceFile: "ApprenticeService.Guild.cs"),
             Operation("Hosting", "ApprenticeService", "RunApprenticeAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.ApprenticeExecution),
             Operation("Hosting", "ApprenticeService", "StopAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.ApprenticeExecution),
             Operation("Hosting", "ApprenticeService", "StartAsync", HostedProducerAuthorityKind.FiniteRequest, null, "bounded request starts one tracked self-admitted execution"),
@@ -1982,7 +2026,21 @@ internal static partial class HostedGrimoireProducerInventory
             && matches.Count(candidate => candidate == site) == 1
             && matches.All(candidate => (candidate with { EffectFrontierCapsuleId = site.EffectFrontierCapsuleId }) == site);
 
-        if (matches.Length != 1 && !contextualWorkSelfReference)
+        // A Work-only read with no Effect can select one exact no-Effect acquisition context.
+        // Every other acquisition fact remains identical, and effect/group/handoff references stay strict.
+        bool contextualWorkOnlyReference = matches.Length > 1
+            && frontierKind == "work"
+            && (site.Kind is HostedProducerSiteKind.DatabaseAccess
+                or HostedProducerSiteKind.FileSystemRead
+                or HostedProducerSiteKind.OrdinaryConnectionRoute)
+            && site.EffectFrontierCapsuleId is null
+            && matches[0].WorkFrontierCapsuleId == frontierId
+            && matches[0].AdmittedWorkKind.HasValue
+            && matches.All(candidate =>
+                (candidate with { EffectFrontierCapsuleId = matches[0].EffectFrontierCapsuleId }) == matches[0])
+            && matches.Count(candidate => candidate.EffectFrontierCapsuleId is null) == 1;
+
+        if (matches.Length != 1 && !contextualWorkSelfReference && !contextualWorkOnlyReference)
         {
             diagnostics.Add(new("HOSTED_MANIFEST_FRONTIER_UNRESOLVED", StableSiteIdentity(site), $"The exact same-operation {frontierKind} frontier capsule must resolve once; found {matches.Length}."));
         }
@@ -3182,6 +3240,8 @@ internal static partial class HostedGrimoireProducerInventory
 
         private HostedProducerOperationEntry[] declaredOperations = [];
 
+        private readonly Dictionary<string, string?> catalogOperationOwners = new(StringComparer.Ordinal);
+
         private readonly Dictionary<GraphMemberIdentity, AdmissionSyntaxPlan>
             admissionSyntaxPlans = [];
 
@@ -3743,11 +3803,13 @@ internal static partial class HostedGrimoireProducerInventory
 
         private static string RecoveryBindingIdentity(AuthoredMember member) =>
             (member.RecoveryContext is { } context
-                ? context.Kind
-                    + ":"
-                    + context.CheckpointVersion
-                    + ":"
-                    + context.Disposition
+                ? context.Disposition == RecoveryDisposition.OwnerBound
+                    ? OwnerBoundRecoveryContextIdentity
+                    : context.Kind
+                        + ":"
+                        + context.CheckpointVersion
+                        + ":"
+                        + context.Disposition
                 : "unbound")
             + "|"
             + (member.RecoveryBindings is null || member.RecoveryBindings.Count == 0
@@ -3942,8 +4004,8 @@ internal static partial class HostedGrimoireProducerInventory
                             member), StringComparer.Ordinal)
                         ?? Enumerable.Empty<KeyValuePair<ISymbol, AuthoredMember>>())
                 {
-                    AuthoredMember normalizedTarget =
-                        NormalizeEvaluationCallableTarget(target);
+                    AuthoredMember normalizedTarget = NormalizeEmptyCapturedAdmissionIdentity(
+                        NormalizeEvaluationCallableTarget(target));
 
                     EvaluationEnvironmentCacheIdentity? targetIdentity =
                         EvaluationEnvironmentCacheIdentityFor(
@@ -4185,8 +4247,8 @@ internal static partial class HostedGrimoireProducerInventory
                             member), StringComparer.Ordinal)
                         ?? Enumerable.Empty<KeyValuePair<ISymbol, AuthoredMember>>())
                 {
-                    AuthoredMember normalizedTarget =
-                        NormalizeEvaluationCallableTarget(target);
+                    AuthoredMember normalizedTarget = NormalizeEmptyCapturedAdmissionIdentity(
+                        NormalizeEvaluationCallableTarget(target));
 
                     int? targetId = TryRegisterEvaluationEnvironmentToken(
                         normalizedTarget,
@@ -4447,6 +4509,27 @@ internal static partial class HostedGrimoireProducerInventory
 
                 AppendIdentitySection(
                     value,
+                    "constructor-contexts",
+                    member.ConstructorContexts?.Count ?? 0);
+
+                foreach (IMethodSymbol constructor in
+                    member.ConstructorContexts?
+                        .OrderBy(
+                            constructor => BindingSymbolIdentity(
+                                constructor,
+                                member),
+                            StringComparer.Ordinal)
+                        ?? Enumerable.Empty<IMethodSymbol>())
+                {
+                    AppendIdentitySegment(value, "constructor");
+
+                    AppendIdentitySegment(
+                        value,
+                        BindingSymbolIdentity(constructor, member));
+                }
+
+                AppendIdentitySection(
+                    value,
                     "admission-bindings",
                     member.AdmissionBindings?.Count ?? 0);
 
@@ -4501,7 +4584,7 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     AppendIdentitySegment(value, "recovery-context");
 
-                    AppendRecoveryTuple(value, recoveryContext);
+                    AppendRecoveryContextIdentity(value, recoveryContext);
                 }
                 else
                 {
@@ -4550,8 +4633,8 @@ internal static partial class HostedGrimoireProducerInventory
                         .OrderBy(pair => BindingSymbolIdentity(pair.Key, member), StringComparer.Ordinal)
                         ?? Enumerable.Empty<KeyValuePair<ISymbol, AuthoredMember>>())
                 {
-                    AuthoredMember normalizedTarget =
-                        NormalizeEvaluationCallableTarget(target);
+                    AuthoredMember normalizedTarget = NormalizeEmptyCapturedAdmissionIdentity(
+                        NormalizeEvaluationCallableTarget(target));
 
                     EvaluationEnvironmentFingerprint targetEnvironment =
                         EvaluationEnvironmentIdentity(
@@ -4714,7 +4797,7 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 AppendIdentitySegment(value, "recovery-context");
 
-                AppendRecoveryTuple(value, recoveryContext);
+                AppendRecoveryContextIdentity(value, recoveryContext);
             }
             else
             {
@@ -4840,7 +4923,7 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 AppendIdentitySegment(value, "recovery-context");
 
-                AppendRecoveryTuple(value, recoveryContext);
+                AppendRecoveryContextIdentity(value, recoveryContext);
             }
             else
             {
@@ -6026,6 +6109,22 @@ internal static partial class HostedGrimoireProducerInventory
             AppendIdentitySegment(value, tuple.Disposition.ToString());
         }
 
+        private const string OwnerBoundRecoveryContextIdentity = "owner-bound-context";
+
+        private static void AppendRecoveryContextIdentity(StringBuilder value, RecoveryTuple context)
+        {
+            // Owner-bound ambient labels supply no recovery tuple; exact RecoveryBindings do.
+            // Presence still forbids ordinary handoff, while DB-only labels remain diagnostic inputs.
+            if (context.Disposition == RecoveryDisposition.OwnerBound)
+            {
+                AppendIdentitySegment(value, OwnerBoundRecoveryContextIdentity);
+
+                return;
+            }
+
+            AppendRecoveryTuple(value, context);
+        }
+
         private static string CompactIdentity(string value) =>
             Convert.ToHexString(
                 System.Security.Cryptography.SHA256.HashData(
@@ -6659,6 +6758,19 @@ internal static partial class HostedGrimoireProducerInventory
             HostedProducerOperationEntry[] declared = [.. catalog.SelectMany(static service => service.Operations), .. nonHostedCatalog.Select(static chain => new HostedProducerOperationEntry(chain.ChainId, chain.SourcePath, chain.EnclosingType, chain.Member, chain.Authority, null, chain.Proof, chain.Sites))];
 
             declaredOperations = declared;
+
+            catalogOperationOwners.Clear();
+
+            foreach (HostedProducerServiceEntry service in catalog)
+            {
+                foreach (HostedProducerOperationEntry operation in service.Operations)
+                {
+                    if (!catalogOperationOwners.TryAdd(operation.OperationId, service.ServiceType))
+                    {
+                        catalogOperationOwners[operation.OperationId] = null;
+                    }
+                }
+            }
 
             List<(HostedProducerOperationEntry Operation, AuthoredMember Member, SyntaxNode Selection)> resolvedRoots = [];
 
@@ -21141,7 +21253,7 @@ internal static partial class HostedGrimoireProducerInventory
                                 // A host-owned task transfers to an independently admitted root, never its caller's handles.
                                 emittedEvidence = MergeEvidence(emittedEvidence, Traverse(
                                     handoff.Target,
-                                    rootType,
+                                    handoff.RootType,
                                     handoff.Root.OperationId,
                                     active,
                                     lifecycle,
@@ -21152,7 +21264,7 @@ internal static partial class HostedGrimoireProducerInventory
 
                             if (TrySelfAdmittedTaskHandoff(member, callbackCall) is { } selfAdmitted)
                             {
-                                emittedEvidence = MergeEvidence(emittedEvidence, Traverse(selfAdmitted.Target, rootType, selfAdmitted.Root.OperationId, active, lifecycle));
+                                emittedEvidence = MergeEvidence(emittedEvidence, Traverse(selfAdmitted.Target, selfAdmitted.RootType, selfAdmitted.Root.OperationId, active, lifecycle));
 
                                 continue;
                             }
@@ -22713,9 +22825,9 @@ internal static partial class HostedGrimoireProducerInventory
                     || IsExplicitlyUnknownDisposable(member, initializer));
         }
 
-        private sealed record HostHandoffProof(AuthoredMember Target, HostedProducerOperationEntry Root, SyntaxNode Selection, IFieldSymbol TaskField, string DispatchAnchor, string JoinAnchor);
+        private sealed record HostHandoffProof(AuthoredMember Target, HostedProducerOperationEntry Root, string RootType, SyntaxNode Selection, IFieldSymbol TaskField, string DispatchAnchor, string JoinAnchor);
 
-        private sealed record SelfAdmittedTaskHandoffProof(AuthoredMember Target, HostedProducerOperationEntry Root);
+        private sealed record SelfAdmittedTaskHandoffProof(AuthoredMember Target, HostedProducerOperationEntry Root, string RootType);
 
         private bool IsReviewedOwnedCompletionTransfer(
             AuthoredMember caller,
@@ -23350,7 +23462,11 @@ internal static partial class HostedGrimoireProducerInventory
 
             HostedProducerOperationEntry[] roots = declaredOperations.Where(entry => entry.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork && entry.WorkKind == GrimoireWorkKind.ApprenticeExecution && entry.SourcePath == target.Syntax.SyntaxTree.FilePath && entry.EnclosingType == TypeKey(target.Symbol.ContainingType) && entry.Member == target.Symbol.Name && entry.OperationId == entry.EnclosingType + "." + entry.Member).ToArray();
 
-            return roots.Length == 1 ? new(target, roots[0]) : null;
+            return roots.Length == 1
+                && catalogOperationOwners.TryGetValue(roots[0].OperationId, out string? rootType)
+                && rootType is not null
+                    ? new(target, roots[0], rootType)
+                    : null;
         }
 
         private HostHandoffProof? TryHostHandoff(AuthoredMember caller, InvocationExpressionSyntax dispatch)
@@ -23455,7 +23571,9 @@ internal static partial class HostedGrimoireProducerInventory
                 .Select(static candidate => (candidate.Root, candidate.Selection!))
                 .ToArray();
 
-            if (roots.Length != 1)
+            if (roots.Length != 1
+                || !catalogOperationOwners.TryGetValue(roots[0].Root.OperationId, out string? rootType)
+                || rootType is null)
             {
                 return null;
             }
@@ -23580,6 +23698,7 @@ internal static partial class HostedGrimoireProducerInventory
                 ? new(
                     target,
                     roots[0].Root,
+                    rootType,
                     roots[0].Selection,
                     field,
                     Location(dispatch),
@@ -26581,6 +26700,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedRuntimeCleanup(method)
                 || IsReviewedFloatVectorMember(method, node, model, context)
                 || IsReviewedExactInMemoryConstruction(method)
+                || IsReviewedInMemoryJsonMember(method, node, model, context)
                 || IsExactFrameworkStreamBaseConstructor(method)
                 || IsReviewedAsyncStateMachineMember(method)
                 || IsReviewedExactFrameworkScalarOperator(method, node, model, context)
@@ -29461,6 +29581,8 @@ internal static partial class HostedGrimoireProducerInventory
             IPropertySymbol property,
             bool mutation) =>
             ReviewedIntrinsicExternalTypes.Contains(TypeKey(property.ContainingType))
+            || IsReviewedInMemoryJsonProperty(property, mutation)
+            || IsReviewedReferenceComparerProperty(property, mutation)
             || !mutation && IsReviewedFloatVectorProperty(property)
             || IsReviewedExactGeneratedEmbeddingRead(property, mutation)
             || IsReviewedExactStoredExternalProperty(property, mutation)
@@ -38203,6 +38325,11 @@ internal static partial class HostedGrimoireProducerInventory
                 return aggregateCompletion;
             }
 
+            if (ExactPrunedTaskCollectionCompletion(member, call, uses) is { } prunedCollectionCompletion)
+            {
+                return prunedCollectionCompletion;
+            }
+
             if (ExactTaskCollectionWhenAllCompletion(
                     member,
                     call,
@@ -42358,6 +42485,8 @@ internal static partial class HostedGrimoireProducerInventory
             out ExternalCleanupResolution? external)
         {
             external = null;
+
+            if (IsReviewedInMemoryJsonMember(cleanup, resource, member.Model, member)) return true;
 
             if (cleanup.Locations.Any(static location => location.IsInSource)
                 || AuthoredCompilationIdentity(
@@ -54211,6 +54340,8 @@ internal static partial class HostedGrimoireProducerInventory
         {
             SemanticModel model = member.Model;
 
+            if (IsReviewedInMemoryJsonMember(method, node, model, member)) return null;
+
             if (callee.StartsWith("<ambiguous:", StringComparison.Ordinal))
             {
                 RefuseTraversalCompletion();
@@ -54770,9 +54901,14 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 effectGroup = null;
 
-                RefuseTraversalCompletion();
+                // Read-side Work remains independently valid. The unrelated group grants
+                // no Effect here; a physical send must still prove its exact paired owner.
+                if (RequiresExternalEffect(kind, callee))
+                {
+                    RefuseTraversalCompletion();
 
-                diagnostics.Add(EffectLeaseMismatch(operationId, node, callee));
+                    diagnostics.Add(EffectLeaseMismatch(operationId, node, callee));
+                }
             }
 
             // CK-3: a group is the Effect of its own site only when its receiver is a must-alias of the lease whose Work is live.

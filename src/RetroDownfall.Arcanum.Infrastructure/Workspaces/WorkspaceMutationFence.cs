@@ -87,7 +87,7 @@ internal static class WorkspaceMutationFence
         }
     }
 
-    internal static IDisposable Install(IWorkspaceMutationFence participant)
+    internal static Registration Install(IWorkspaceMutationFence participant)
     {
         ArgumentNullException.ThrowIfNull(participant);
 

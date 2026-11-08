@@ -11,6 +11,8 @@ public sealed record GuildDataRef(Guid ContentId, GuildContentKind Kind, long Re
 
 public sealed record GuildContentDto(GuildDataRef Reference, string Body);
 
+public sealed record GuildQuestInputDto(Guid QuestId, long Revision, GuildQuestInputEvidence AwaitingInput, string Question);
+
 public sealed record GuildIssueRootRequest(Guid IdempotencyKey, Guid? AgentId, string? Name, string Goal, GuildGrant Grant, Guid? SessionId = null, Guid? CampaignId = null, Guid? WorkspaceId = null, Guid? PredecessorQuestId = null);
 
 public sealed record GuildIssueChildData(Guid? AgentId, string? Name, string Goal, GuildRequestedGrant? RequestedGrant);
@@ -56,7 +58,8 @@ public sealed record GuildQuestDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     long EventWatermark,
-    GuildMutationReceiptDto? Receipt = null);
+    GuildMutationReceiptDto? Receipt = null,
+    GuildQuestInputEvidence? AwaitingInput = null);
 
 public sealed record GuildCancellationDto(Guid QuestId, Guid RootQuestId, long Revision, bool CancellationRequested, bool CancellationConverged, long PendingExecutionCount, long UnresolvedExternalEffectCount, GuildAccountingState AccountingState, long EventWatermark, GuildMutationReceiptDto? Receipt = null);
 

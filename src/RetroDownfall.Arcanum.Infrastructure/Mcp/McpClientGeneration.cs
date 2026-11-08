@@ -11,6 +11,8 @@ internal sealed class McpClientGeneration(
 {
     public bool IsHostOwned => inner.IsHostOwned;
 
+    internal bool IsGuildHostTransport => inner is SdkMcpClientWrapper { IsHostOwned: true };
+
     private readonly object _gate = new();
 
     private readonly TaskCompletionSource _drained =
@@ -133,5 +135,4 @@ internal sealed class McpClientGeneration(
             }
         }
     }
-
 }

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "footprint_sha256": "c4807e6cde6ff9c92dd9914431fe640c11a4924aafc8fdd05fec9adf758666fe",
+  "rows": 92,
+  "dispatch_rows": 88,
+  "pin_cleanup_rows": 4,
+  "base_source_sha256": {
+    "src/RetroDownfall.Arcanum.Infrastructure/Coordination/RetainedExclusiveFileLock.cs": "7f5b7fe16dc51dc3a4f899f2312e93c393486b475618ad62e0e72b60be6de822",
+    "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetStore.cs": "8db18b35f5808ead271b385589bd862cd479bd143d6519ce68e3e9defbd71d76",
+    "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStorageAvailability.cs": "3d8069394baef0ce98d91af370cb6293aad0e6894d27ed7e65dc0413c7ff23dc",
+    "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.cs": "0c62262cbbf48756109a691c3752ae8aef9eea2f36073c616ec6384b1445bc5a",
+    "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildWorkspaceLeaseBroker.Writers.cs": "0ad25167bd069b8bd0189bb7a4d110db5498a0378c1f40a56be6ab86ef0441ca",
+    "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildWorkspaceLeaseBroker.cs": "d09fc6904d566f597e6b7515ab4ea764c22ed3ddd0c814f2b67ccf5491b71193",
+    "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildWorkspaceLeaseHostLock.cs": "a05829ebc66a3a483d8f28787b292a22a71bc653594a5378d1948a14cea8ad4c",
+    "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildWorkspaceLeaseSignetPolicy.cs": "33ebea4ce7d8a814819c1d9d0f8c9c291d7b157ecfec62cf76083d64fe78354d",
+    "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildWorkspaceLeaseStore.cs": "fcf6d5bf8976be5b1b8900e3cb86a3b2edb813dc744d455546d998c54b55ab34",
+    "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildWorkspaceMutationFence.cs": "31e0418dda7481288f9920ad12f46866f5411662377d64aeab582e336c47a97c",
+    "src/RetroDownfall.Arcanum.Infrastructure/Guild/SignetAuthority.Workspace.cs": "9948b5ef1e9bd608c2be539da44db938398b598bf94e1f25a2ec407e09de63bf",
+    "src/RetroDownfall.Arcanum.Infrastructure/Guild/SignetAuthority.cs": "5659351236171eebad9bd4615947edadca33cc6c8ace4c61506674cb0a789a43",
+    "src/RetroDownfall.Arcanum.Infrastructure/Workspaces/WorkspaceMutationFence.cs": "89bca51cf8651a5f34408f5cea37409ccddfee0f4b921612701a2aeeacf0584e",
+    "src/RetroDownfall.Arcanum.Infrastructure/Workspaces/WorkspaceMutationPlan.cs": "95b307719e5520616d87512acadb28d8f22bf885159e644fc1697a9c8b14eb9f"
+  },
+  "unchanged_terminal_source_sha256": {
+    "src/RetroDownfall.Arcanum.Infrastructure/Coordination/RetainedExclusiveFileLock.cs": "7f5b7fe16dc51dc3a4f899f2312e93c393486b475618ad62e0e72b60be6de822",
+    "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetStore.cs": "8db18b35f5808ead271b385589bd862cd479bd143d6519ce68e3e9defbd71d76",
+    "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStorageAvailability.cs": "3d8069394baef0ce98d91af370cb6293aad0e6894d27ed7e65dc0413c7ff23dc",
+    "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.cs": "0c62262cbbf48756109a691c3752ae8aef9eea2f36073c616ec6384b1445bc5a",
+    "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildWorkspaceLeaseStore.cs": "fcf6d5bf8976be5b1b8900e3cb86a3b2edb813dc744d455546d998c54b55ab34",
+    "src/RetroDownfall.Arcanum.Infrastructure/Guild/SignetAuthority.cs": "5659351236171eebad9bd4615947edadca33cc6c8ace4c61506674cb0a789a43"
+  }
+}

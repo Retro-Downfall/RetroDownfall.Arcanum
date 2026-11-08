@@ -146,14 +146,45 @@ internal sealed partial class GuildQuestStore
         GuildQuestProjectedState projection = GuildQuestProjection.Project(operation,
             new(id, dto.OperationId, last, dto.WaitReason, question, result, noDispatch, stopped,
                 operation.State == LongRunningOperationState.Abandoned && result?.Outcome == QuestState.Failed, dto.CancellationRequested, convergence));
+
+        // A stopped input wait remains reconciliation work, but its proven question can still
+        // be read and answered. Never infer this permission from a generic attention state.
+        bool parkedQuestion = operation.State == LongRunningOperationState.ReconciliationRequired
+            && operation.TerminalErrorCode == ErrorCodes.Guild.AwaitingInput
+            && last == QuestState.InputRequired && dto.WaitReason == GuildWaitReason.Input
+            && question is not null && result is null && !projection.CancellationRequested && !retired
+            && !await HasClosedAncestorAsync(connection, transaction, id, ct).ConfigureAwait(false)
+            && (await RequireWaitFrontierWithinAsync(connection, transaction, id, ct).ConfigureAwait(false)).IsSuccess
+            && await HasParkedInputCheckpointWithinAsync(connection, transaction, id, question, ct).ConfigureAwait(false);
+
         dto = dto with
         {
             GoalRef = goalRef.Value, ResultRef = result?.Content, ResultReceiptId = result?.ResultId, ResolvedGrant = signet.Value.Binding.Grant,
             SignetRevision = signet.Value.Revision, State = projection.State, WaitReason = projection.WaitReason,
             CancellationRequested = projection.CancellationRequested, CancellationConverged = projection.CancellationConverged,
-            ReconciliationRequired = projection.ReconciliationRequired, DeliveryState = delivery
+            ReconciliationRequired = projection.ReconciliationRequired, DeliveryState = delivery,
+            AwaitingInput = projection.State == QuestState.InputRequired && (!projection.ReconciliationRequired || parkedQuestion) ? question : null
         };
         return new GuildQuestStored(dto, issuance, mutation, intent, resolution, account, retired);
+    }
+
+    private static async Task<bool> HasParkedInputCheckpointWithinAsync(SqliteConnection connection,
+        SqliteTransaction transaction, Guid questId, GuildQuestInputEvidence question, CancellationToken ct)
+    {
+        await using SqliteCommand checkpoint = Command(connection, transaction, $"""
+            SELECT EXISTS(SELECT 1 FROM guild_local_wait_checkpoints w
+                JOIN guild_local_executions b ON b.QuestId=w.QuestId
+                WHERE w.QuestId=$quest AND w.QuestionId=$question AND w.ContinuationId=$continuation
+                    AND {WaitCheckpointProof} AND {GuildLocalExecutionStore.BindingProof})
+            """);
+
+        Add(checkpoint, "$quest", Id(questId));
+
+        Add(checkpoint, "$question", Id(question.QuestionId));
+
+        Add(checkpoint, "$continuation", Id(question.ContinuationId));
+
+        return Equals(1L, await checkpoint.ExecuteScalarAsync(ct).ConfigureAwait(false));
     }
 
     internal static async Task<Result> RequireBoundedReadWithinAsync(SqliteConnection connection, SqliteTransaction transaction,

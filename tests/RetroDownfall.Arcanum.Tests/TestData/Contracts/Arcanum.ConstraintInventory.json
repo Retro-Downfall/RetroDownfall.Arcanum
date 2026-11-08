@@ -9870,7 +9870,9 @@
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetGrantJson.cs#MaximumBytes",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.SourceClaims.cs#ObserveDeclaredSourceAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildRosterRefreshStore.cs#FindWithinAsync",
-        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Admission.cs#PublishWithinAsync"
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Admission.cs#PublishWithinAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalExecutionStore.cs#CreateWithinAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalWaitCheckpoint.cs#WriteWaitCheckpointWithinAsync"
       ],
       "coveredSymbols": [
         "GuildStore.MaximumContentBytes",
@@ -9900,7 +9902,9 @@
         "GuildSignetAuthorityTests.Stored_oversize_grant_is_refused_before_its_json_is_materialized",
         "GuildDeclaredSourceStateTests",
         "GuildRosterRefreshStoreTests",
-        "GuildPortalStoreTests"
+        "GuildPortalStoreTests",
+        "GuildLocalExecutionSchemaTests",
+        "GuildQuestStoreTests"
       ]
     },
     {
@@ -9911,21 +9915,24 @@
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildDeclaredAgentSourceReader.cs#ReadPageAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOwnerCleanupCoordinator.cs#RunBatchAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Reads.cs#PortalPageBytes",
-        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Outbox.cs#DrainOutboxAsync"
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Outbox.cs#DrainOutboxAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalQuestScheduler.cs#ReadPendingIdsAsync"
       ],
       "coveredSymbols": [
         "GuildStore.ListAsync",
         "GuildDeclaredAgentSourceReader.ReadPageAsync",
         "GuildOwnerCleanupCoordinator.RunBatchAsync",
         "GuildPortalStore.PortalPageBytes",
-        "GuildPortalStore.DrainOutboxAsync"
+        "GuildPortalStore.DrainOutboxAsync",
+        "GuildLocalQuestScheduler.ReadPendingIdsAsync"
       ],
       "symbolValues": {
         "GuildStore.ListAsync": "Up to 100 records and a 1 MiB materialization budget per page",
         "GuildDeclaredAgentSourceReader.ReadPageAsync": "Up to 100 direct files per page; each file uses the effective Spell byte limit; at most one more directory entry name than the page size is retained",
         "GuildOwnerCleanupCoordinator.RunBatchAsync": "Caller-supplied event and orphan batch sizes; hosted cleanup requests 64 events and 64 orphans per turn, with protected content paged by the shared purger target limit",
         "GuildPortalStore.PortalPageBytes": "1,048,576 encoded bytes and at most 100 scanned rows per Portal page",
-        "GuildPortalStore.DrainOutboxAsync": "At most 100 pending source receipts per admitted turn; remaining work stays durable"
+        "GuildPortalStore.DrainOutboxAsync": "At most 100 pending source receipts per admitted turn; remaining work stays durable",
+        "GuildLocalQuestScheduler.ReadPendingIdsAsync": "At most 100 pending identities per keyset page; discovery continues through every page and queued identities coalesce"
       },
       "currentValue": "Card and Portal lists: up to 100 records and 1 MiB per page. Portal source delivery: up to 100 receipts per turn. Declared sources: up to 100 files, each bounded by the effective Spell byte limit. Hosted cleanup: 64 events and 64 orphans per turn.",
       "owner": "host",
@@ -9941,7 +9948,166 @@
         "GuildRosterTests",
         "GuildDeclaredAgentSourceTests",
         "DataRetentionServiceTests",
-        "GuildPortalStoreTests"
+        "GuildPortalStoreTests",
+        "GuildLocalHostPolicyTests.Local_scheduler_recovers_committed_start_and_coalesces_wakes_before_rebinding_live_work"
+      ]
+    },
+    {
+      "id": "boundary.guild-local-poll-cadence",
+      "subsystem": "Guild local execution coordination",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Infrastructure/Hosting/ApprenticeService.GuildCapacity.cs#EnsureCapacityAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Hosting/ConclaveArchmage.GuildTools.cs#DispatchAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalPort.Completion.cs#CompleteAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalPort.cs#WaitAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalQuestScheduler.cs#DiscoverAsync"
+      ],
+      "coveredSymbols": [
+        "ApprenticeService.GuildEngineFrame.EnsureCapacityAsync",
+        "ConclaveArchmage.DispatchAsync",
+        "GuildLocalPort.CompleteAsync",
+        "GuildLocalPort.WaitAsync",
+        "GuildLocalQuestScheduler.DiscoverAsync"
+      ],
+      "symbolValues": {
+        "ApprenticeService.GuildEngineFrame.EnsureCapacityAsync": "50 milliseconds between cancellable shared-capacity acquisition attempts",
+        "ConclaveArchmage.DispatchAsync": "250 milliseconds between durable blocking-child result checks",
+        "GuildLocalPort.CompleteAsync": "250 milliseconds between stopped-descendant frontier checks",
+        "GuildLocalPort.WaitAsync": "250 milliseconds between accepted-answer checks",
+        "GuildLocalQuestScheduler.DiscoverAsync": "1 second between pending-work discovery passes"
+      },
+      "currentValue": "Cooperative polling: 50 ms for capacity, 250 ms for child/frontier/answer state and 1 second for pending discovery; no total wait or iteration ceiling",
+      "owner": "host",
+      "enforcementPoint": "Awaited cancellation-aware coordination loops outside the short Signet root gate",
+      "userVisibleBehavior": "Waiting work continues until the durable condition, explicit cancellation, revoked admission or unavailable evidence ends it; these delays do not expire a Quest.",
+      "originalRationale": "Yield CPU and database ownership between coordination checks without imposing a product deadline on unfinished work.",
+      "threatOrFailureModel": "Busy loops could monopolize CPU or repeatedly contend on SQLite while an independent child, human answer or shared capacity is pending.",
+      "classification": "Required physical resource protection",
+      "action": "retain",
+      "replacementOrContinuation": "Continue polling under the same owned execution and cancellation token; capacity is reacquired before a parent resumes provider work, and all started scopes drain on shutdown.",
+      "tests": [
+        "GuildCapacityTests",
+        "GuildLocalHostPolicyTests",
+        "GuildQuestStoreTests"
+      ]
+    },
+    {
+      "id": "boundary.guild-local-ownership-renewal",
+      "subsystem": "Guild local execution ownership",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalPort.cs#DispatchCoreAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalPort.cs#PulseAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.LocalLifecycle.cs#RefreshLocalExecutionAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.ProviderEffects.cs#ExecuteProviderEffectAsync"
+      ],
+      "coveredSymbols": [
+        "GuildLocalPort.DispatchCoreAsync",
+        "GuildLocalPort.PulseAsync",
+        "GuildQuestStore.RefreshLocalExecutionAsync",
+        "GuildQuestStore.ExecuteProviderEffectAsync"
+      ],
+      "symbolValues": {
+        "GuildLocalPort.DispatchCoreAsync": "Initial LRO ownership expires after 2 minutes without renewal",
+        "GuildLocalPort.PulseAsync": "Renew and revalidate every 10 seconds while the awaited run owns its operation",
+        "GuildQuestStore.RefreshLocalExecutionAsync": "Each successful pulse extends current ownership to 2 minutes from the current clock",
+        "GuildQuestStore.ExecuteProviderEffectAsync": "1-hour daily preparation lease; exposed paid uncertainty is retained beyond that expiry"
+      },
+      "currentValue": "Renewable 2-minute LRO ownership with a 10-second pulse; 1-hour unexposed daily preparation lease; exposed uncertainty has no automatic expiry",
+      "owner": "host",
+      "enforcementPoint": "Exact LRO revision/lease refresh and transactional physical-budget preparation/exposure",
+      "userVisibleBehavior": "A live execution renews its ownership for continued work. Lost ownership prevents further effects; an already exposed provider call retains its unresolved spend hold until known evidence settles it.",
+      "originalRationale": "Recover abandoned ownership and unexposed reservations without using a clock as proof that physical work stopped or paid exposure disappeared.",
+      "threatOrFailureModel": "A stale host must not keep dispatching through an expired lease, and long-running or crashed provider calls must not release a paid budget hold merely because preparation time elapsed.",
+      "classification": "Required data-integrity or protocol invariant",
+      "action": "retain",
+      "replacementOrContinuation": "Renew exact live ownership or recover it through authenticated durable reconciliation; these lease durations are not work-duration deadlines.",
+      "tests": [
+        "GuildLocalHostPolicyTests.Local_port_commits_once_or_retains_uncertain_work_without_replay",
+        "GuildQuestStoreTests.Provider_effect_timeout_keeps_real_daily_hold_past_expiry_and_refuses_another_identity"
+      ]
+    },
+    {
+      "id": "boundary.guild-local-physical-call-serialization",
+      "subsystem": "Guild local physical accounting",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalInferenceRuntime.cs#AcquirePhysicalCallAsync",
+        "src/RetroDownfall.Arcanum.Api/Intelligence/GuildProviderCallBinding.cs#SendAsync"
+      ],
+      "coveredSymbols": [
+        "GuildLocalInferenceExecution.AcquirePhysicalCallAsync",
+        "GuildProviderCallBinding.SendAsync"
+      ],
+      "symbolValues": {
+        "GuildLocalInferenceExecution.AcquirePhysicalCallAsync": "One physical provider call at a time for the exact shared live execution object",
+        "GuildProviderCallBinding.SendAsync": "Serialization spans preparation, HTTP, bill and effect settlement, and ends before tool processing or child waiting"
+      },
+      "currentValue": "One in-flight physical provider call per exact live execution through settlement; no total call, unit or round limit",
+      "owner": "host",
+      "enforcementPoint": "Cancellable execution-local semaphore surrounding the physical call and its known-evidence settlement",
+      "userVisibleBehavior": "Parallel units remain schedulable while their actual provider sends settle in sequence. A parent releases this scope before waiting for a delegated child.",
+      "originalRationale": "A healthy sibling call must not be mistaken for orphaned uncertain spend, while durable unknown effects must continue refusing new identities.",
+      "threatOrFailureModel": "Concurrent physical calls under the same execution can otherwise race an unresolved-effect guard before known usage settles; holding serialization across delegation would deadlock shared capacity.",
+      "classification": "Required data-integrity or protocol invariant",
+      "action": "retain",
+      "replacementOrContinuation": "Wait cancellably for the current physical call to settle, then admit the next exact call independently; genuine orphaned uncertainty still requires reconciliation.",
+      "tests": [
+        "GuildCapacityTests",
+        "GuildQuestStoreTests.Provider_effect_timeout_keeps_real_daily_hold_past_expiry_and_refuses_another_identity"
+      ]
+    },
+    {
+      "id": "boundary.guild-local-provider-proof",
+      "subsystem": "Guild local provider execution",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Api/Intelligence/GuildProviderWirePolicy.cs#PreparedCall",
+        "src/RetroDownfall.Arcanum.Api/Intelligence/GuildProviderCallBinding.cs#SendAsync",
+        "src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.Guild.cs#ExecuteGuildPromptCoreAsync",
+        "src/RetroDownfall.Arcanum.Core/Configuration/ArcanumRuntimeDefaults.cs#ResolveIntelligence"
+      ],
+      "coveredSymbols": [
+        "GuildProviderWirePolicy.PreparedCall"
+      ],
+      "symbolValues": {
+        "GuildProviderWirePolicy.PreparedCall": "Pinned gpt-5.4-mini-2026-03-17 at https://api.openai.com/v1: 400,000 input tokens plus at most 128,000 output tokens per actual call; default service tier; snapshot price floors 0.75 input, 0.075 cached input and 4.50 output/reasoning USD per million tokens"
+      },
+      "currentValue": "Each finite provider effect reserves a code-proved bound on its frozen actual request; the qualified snapshot has 400,000 input tokens and at most 128,000 output tokens, with default-tier price floors. An unspecified output uses the resolved configured local answer reservation (default 1024 tokens), not the external model ceiling. Unqualified transports have no finite admission proof.",
+      "owner": "provider and host",
+      "enforcementPoint": "Physical request preparation and exact SDK payload sealing before the transactional budget handoff",
+      "userVisibleBehavior": "Requested output above the pinned model maximum uses that maximum. A finite token or USD grant refuses a provider without a qualified bound before sending; every actual tool-loop round receives its own reservation and bill.",
+      "originalRationale": "A point estimate or configurable context window cannot prove a finite physical spend boundary.",
+      "threatOrFailureModel": "Payload mutation, SDK defaults, retries or additional tool rounds could otherwise spend outside a finite accepted grant.",
+      "classification": "Provider/model constraint",
+      "action": "retain",
+      "replacementOrContinuation": "Use a qualified provider snapshot or an explicitly unlimited grant; continuing work uses another independently admitted physical call without a host-imposed round or elapsed-work ceiling.",
+      "tests": [
+        "GuildQuestStoreTests.Qualified_finite_provider_binds_actual_wire_and_catalogue_price_floor",
+        "GuildQuestStoreTests.Qualified_provider_wire_seal_refuses_changed_or_repeated_payload",
+        "GuildLocalHostPolicyTests.Qualified_provider_tool_loop_uses_closed_registry_and_one_bill_per_actual_round"
+      ]
+    },
+    {
+      "id": "boundary.guild-local-tool-json-depth",
+      "subsystem": "Guild local tool protocol",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalToolRegistry.cs#WriteValue"
+      ],
+      "coveredSymbols": [
+        "GuildLocalToolRegistry.WriteValue"
+      ],
+      "symbolValues": {
+        "GuildLocalToolRegistry.WriteValue": "64 nested JSON levels before refusing a tool argument representation"
+      },
+      "currentValue": "64 nested JSON levels for the closed tool argument serializer",
+      "owner": "host",
+      "enforcementPoint": "Freeze and canonicalize each provider tool call before issuing its host-only admission reference",
+      "userVisibleBehavior": "Unsupported or excessively nested tool arguments refuse without issuing a child Quest.",
+      "originalRationale": "The bounded parser-depth protocol must apply before recursive argument materialization and digest computation.",
+      "threatOrFailureModel": "Untrusted provider arguments could recursively exhaust the host stack or carry opaque CLR values into the authority-bearing tool path.",
+      "classification": "Required data-integrity or protocol invariant",
+      "action": "retain",
+      "replacementOrContinuation": "Represent the same argument within the supported JSON shape and depth; total Quest count and work duration remain unrestricted by this parser boundary.",
+      "tests": [
+        "GuildLocalHostPolicyTests.Qualified_child_tool_rechecks_retained_host_boundaries"
       ]
     },
     {

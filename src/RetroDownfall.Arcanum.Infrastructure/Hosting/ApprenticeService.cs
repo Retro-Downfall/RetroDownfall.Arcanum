@@ -22,7 +22,7 @@ using RetroDownfall.Arcanum.Infrastructure.Repositories;
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 [ExcludeFromCodeCoverage] // Reason: IHostedService + IApprenticeRuntime long-running orchestration
-internal sealed class ApprenticeService(
+internal sealed partial class ApprenticeService(
     IServiceScopeFactory scopeFactory,
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
     ChronicleHub chronicleHub,
@@ -47,7 +47,7 @@ internal sealed class ApprenticeService(
     private readonly IApprenticeExecutionCapacity _concurrencyGate =
         executionCapacity ?? new DefaultApprenticeExecutionCapacity();
 
-    private readonly ConcurrentDictionary<Guid, IDisposable> _executionLeases = new();
+    private readonly ConcurrentDictionary<Guid, AdmissionGate.Lease> _executionLeases = new();
 
     private readonly Dictionary<Guid, ExecutionReservation> _executionReservations = [];
 
@@ -177,6 +177,8 @@ internal sealed class ApprenticeService(
 
     public async Task<Result<string>> StartAsync(Guid apprenticeId, CancellationToken cancellationToken = default)
     {
+        if (optionsMonitor.CurrentValue.Features.Guild) return GuildLegacyUnavailable;
+
         ApprenticeSettings settings = GetApprenticeSettings();
 
         if (!settings.Enabled)
@@ -187,6 +189,10 @@ internal sealed class ApprenticeService(
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         IApprenticeRepository repo = scope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
+
+        Result legacy = await RequireLegacyAdmissionAsync(repo, apprenticeId, cancellationToken).ConfigureAwait(false);
+
+        if (legacy.IsFailure) return legacy.Error;
 
         Apprentice? apprentice = await repo.GetByIdAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
 
@@ -396,9 +402,15 @@ internal sealed class ApprenticeService(
 
     public async Task<Result<string>> ResumeAsync(Guid apprenticeId, CancellationToken cancellationToken = default)
     {
+        if (optionsMonitor.CurrentValue.Features.Guild) return GuildLegacyUnavailable;
+
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         IApprenticeRepository repo = scope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
+
+        Result legacy = await RequireLegacyAdmissionAsync(repo, apprenticeId, cancellationToken).ConfigureAwait(false);
+
+        if (legacy.IsFailure) return legacy.Error;
 
         Apprentice? apprentice = await repo.GetByIdAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
 
@@ -565,6 +577,8 @@ internal sealed class ApprenticeService(
         IReadOnlyList<PlanStep> steps,
         CancellationToken cancellationToken = default)
     {
+        if (optionsMonitor.CurrentValue.Features.Guild) return GuildLegacyUnavailable;
+
         List<PlanStep>? stableSteps = steps is null ? null : [.. steps];
 
         Result<List<PlanStep>> validated = ApprenticeExecutionPolicy.ValidateReweaveSteps(stableSteps);
@@ -577,6 +591,10 @@ internal sealed class ApprenticeService(
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         IApprenticeRepository repo = scope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
+
+        Result legacy = await RequireLegacyAdmissionAsync(repo, apprenticeId, cancellationToken).ConfigureAwait(false);
+
+        if (legacy.IsFailure) return legacy.Error;
 
         Apprentice? apprentice = await repo.GetByIdAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
 
@@ -664,6 +682,8 @@ internal sealed class ApprenticeService(
         bool operatorApproved,
         CancellationToken cancellationToken)
     {
+        if (optionsMonitor.CurrentValue.Features.Guild) return GuildLegacyUnavailable;
+
         if (string.IsNullOrWhiteSpace(guidance))
         {
             return Result<string>.Failure(
@@ -673,6 +693,10 @@ internal sealed class ApprenticeService(
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         IApprenticeRepository repo = scope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
+
+        Result legacy = await RequireLegacyAdmissionAsync(repo, apprenticeId, cancellationToken).ConfigureAwait(false);
+
+        if (legacy.IsFailure) return legacy.Error;
 
         Apprentice? apprentice = await repo.GetByIdAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
 
@@ -806,6 +830,8 @@ internal sealed class ApprenticeService(
 
     private async Task ResumeCrashRecoveryAsync(CancellationToken stoppingToken)
     {
+        if (optionsMonitor.CurrentValue.Features.Guild) return;
+
         IGrimoireWorkLease? admitted;
 
         while (true)
@@ -850,6 +876,15 @@ internal sealed class ApprenticeService(
                 if (stoppingToken.IsCancellationRequested)
                 {
                     break;
+                }
+
+                Result legacy = await RequireLegacyAdmissionAsync(repo, apprentice.Id, stoppingToken).ConfigureAwait(false);
+
+                if (legacy.IsFailure)
+                {
+                    logger.LogWarning("Apprentice {ApprenticeId} remains outside legacy recovery ({Code}).", apprentice.Id, legacy.Error.Code);
+
+                    continue;
                 }
 
                 if (!TryAcquireExecutionSlot(apprentice.Id, queueOnCapacity: true, out bool recoveryQueued, out Result<string>? recoveryFailure))
@@ -981,7 +1016,7 @@ internal sealed class ApprenticeService(
                 return false;
             }
 
-            if (_concurrencyGate.TryAcquire(maxConcurrent, out IDisposable? lease))
+            if (_concurrencyGate.TryAcquire(maxConcurrent, out AdmissionGate.Lease? lease))
             {
                 long generation = _executionGenerations.AddOrUpdate(
                     apprenticeId,
@@ -1024,7 +1059,7 @@ internal sealed class ApprenticeService(
     /// </summary>
     private void ReleaseAcquiredExecutionSlot(Guid apprenticeId)
     {
-        IDisposable? concurrencyLease = null;
+        AdmissionGate.Lease? concurrencyLease = null;
 
         ExecutionLease? execution = null;
 
@@ -1125,7 +1160,7 @@ internal sealed class ApprenticeService(
     {
         ExecutionLease? execution = null;
 
-        IDisposable? concurrencyLease = null;
+        AdmissionGate.Lease? concurrencyLease = null;
 
         ExecutionReservation? reservation = null;
 
@@ -1706,8 +1741,7 @@ internal sealed class ApprenticeService(
                     Goal = isResumeAfterRestart ? null : apprentice.Goal,
                 });
             }
-            IArcanumIntelligenceProvider intelligence = services
-                .GetRequiredService<IArcanumIntelligenceProvider>();
+            IArcanumIntelligenceProvider intelligence = ResolveUnitIntelligence(services, apprenticeId);
 
             string planPrompt = ApprenticePromptBuilder.BuildPlanGenerationPrompt(apprentice);
 
@@ -1719,7 +1753,8 @@ internal sealed class ApprenticeService(
                 WorkingDirectory: apprentice.WorkspacePath,
                 UnattendedMode: true,
                 SkipSpellRouting: true,
-                CampaignId: apprentice.CampaignId);
+                CampaignId: apprentice.CampaignId,
+                DisableAllTools: IsGuildExecution(apprenticeId));
 
             Result<PromptTurnResult> planResult = await intelligence
                 .ExecutePromptAsync(
@@ -1919,8 +1954,7 @@ internal sealed class ApprenticeService(
                 stepIndex,
                 checkpoint);
 
-            IArcanumIntelligenceProvider intelligence = services
-                .GetRequiredService<IArcanumIntelligenceProvider>();
+            IArcanumIntelligenceProvider intelligence = ResolveUnitIntelligence(services, apprenticeId);
 
             StepExecutionOutcome outcome = await ExecuteStepStreamAsync(
                 intelligence,
@@ -2157,8 +2191,7 @@ internal sealed class ApprenticeService(
         // existing branch semaphore and never claim independent effect groups.
         try
         {
-            IArcanumIntelligenceProvider intelligence = services
-                .GetRequiredService<IArcanumIntelligenceProvider>();
+            IArcanumIntelligenceProvider intelligence = ResolveUnitIntelligence(services, apprenticeId);
 
             bool advanced = await ExecuteSimulacrumGroupAsync(
                 repo,
@@ -2317,10 +2350,10 @@ internal sealed class ApprenticeService(
         long generation,
         Exception exception)
     {
-        logger.LogError(
-            exception,
-            "Apprentice {ApprenticeId} failed with an unhandled exception.",
-            apprenticeId);
+        if (!IsGuildExecution(apprenticeId))
+        {
+            logger.LogError(exception, "Apprentice {ApprenticeId} failed with an unhandled exception.", apprenticeId);
+        }
 
         if (!OwnsExecutionGeneration(apprenticeId, generation))
         {
@@ -2341,7 +2374,7 @@ internal sealed class ApprenticeService(
             await FailApprenticeAsync(
                 repo,
                 apprentice,
-                exception.Message,
+                IsGuildExecution(apprenticeId) ? "The qualified Guild unit stopped." : exception.Message,
                 apprenticeId,
                 CancellationToken.None).ConfigureAwait(false);
         }
@@ -2523,7 +2556,7 @@ internal sealed class ApprenticeService(
             Error = sanitized,
         });
 
-        if (!alreadyAlerted)
+        if (!alreadyAlerted && !IsGuildExecution(apprenticeId))
         {
             using CancellationTokenSource alertBudget = new(
                 TimeSpan.FromSeconds(ArcanumRuntimeDefaults.DaemonShutdownDrainTimeoutSeconds));
@@ -2595,7 +2628,8 @@ internal sealed class ApprenticeService(
                 WorkingDirectory: apprentice.WorkspacePath,
                 UnattendedMode: true,
                 SkipSpellRouting: true,
-                CampaignId: apprentice.CampaignId);
+                CampaignId: apprentice.CampaignId,
+                DisableAllTools: IsGuildExecution(apprenticeId));
 
             Result<PromptTurnResult> weaveResult = await intelligence
                 .ExecutePromptAsync(weaveRequest, ArcanumInvocationContext.None, cancellationToken)
@@ -2666,7 +2700,7 @@ internal sealed class ApprenticeService(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Shifting Fate evaluation threw for Apprentice {ApprenticeId}.", apprenticeId);
+            if (!IsGuildExecution(apprenticeId)) logger.LogWarning(ex, "Shifting Fate evaluation threw for Apprentice {ApprenticeId}.", apprenticeId);
 
             return plan;
         }
@@ -3204,7 +3238,7 @@ internal sealed class ApprenticeService(
             await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
             IArcanumIntelligenceProvider branchIntelligence =
-                scope.ServiceProvider.GetRequiredService<IArcanumIntelligenceProvider>();
+                ResolveUnitIntelligence(scope.ServiceProvider, apprenticeId);
 
             return await RunStepAttemptsAsync(
                 branchIntelligence,
@@ -3883,8 +3917,10 @@ internal sealed class ApprenticeService(
         }
     }
 
-    private void Publish(Guid apprenticeId, ApprenticeEvent @event) =>
-        chronicleHub.Publish(apprenticeId, @event);
+    private void Publish(Guid apprenticeId, ApprenticeEvent @event)
+    {
+        if (!IsGuildExecution(apprenticeId)) chronicleHub.Publish(apprenticeId, @event);
+    }
 
     private ApprenticeSettings GetApprenticeSettings() =>
         optionsMonitor.CurrentValue.ResolveApprentices();
@@ -3935,7 +3971,7 @@ internal interface IApprenticeExecutionCapacity
 {
     int RunningCount { get; }
 
-    bool TryAcquire(int maxConcurrent, out IDisposable? lease);
+    bool TryAcquire(int maxConcurrent, out AdmissionGate.Lease? lease);
 }
 internal sealed class DefaultApprenticeExecutionCapacity : IApprenticeExecutionCapacity
 {
@@ -3943,6 +3979,6 @@ internal sealed class DefaultApprenticeExecutionCapacity : IApprenticeExecutionC
 
     public int RunningCount => _gate.RunningCount;
 
-    public bool TryAcquire(int maxConcurrent, out IDisposable? lease) =>
-        _gate.TryAcquire(maxConcurrent, out lease);
+    public bool TryAcquire(int maxConcurrent, out AdmissionGate.Lease? lease) =>
+        _gate.TryAcquireOwned(maxConcurrent, out lease);
 }

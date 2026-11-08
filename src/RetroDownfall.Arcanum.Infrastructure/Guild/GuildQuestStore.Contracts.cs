@@ -12,7 +12,7 @@ internal sealed record GuildQuestProposal(Guid QuestId, Guid RunId, Guid Session
 
 internal sealed record GuildQuestAdmissionPlan(GuildAdmissionContext Admission, GuildGrant Grant,
     GuildSignetOwnerBinding Owners, Guid OriginPrincipalId, GuildStoredAgentCardPayload? GeneratedCard,
-    ArtifactSensitivityLabel? SourceLabel = null);
+    ArtifactSensitivityLabel? SourceLabel = null, IDisposable? Lifetime = null);
 
 /// <summary>Authentication/visibility and immutable policy facts come from host composition, never serialized claims.</summary>
 internal interface IGuildQuestHostPolicy
@@ -43,7 +43,8 @@ internal sealed record GuildQuestStored(GuildQuestDto Quest, GuildIssuanceIdenti
     Guid MutationId, string IntentDigest, string ResolutionDigest, Guid AllocationAccountId, bool Retired);
 
 /// <summary>A live driver needs both the host credential and its exact current ledger lease.</summary>
-internal sealed record GuildQuestDriver(GuildExecutionHandle Execution, string LeaseOwner, long OperationRevision);
+internal sealed record GuildQuestDriver(GuildExecutionHandle Execution, string LeaseOwner, long OperationRevision,
+    GuildCallerContext? Caller = null);
 
 internal sealed record GuildQuestResult(GuildResultReceipt Receipt, byte[]? Body,
     ArtifactSensitivityLabel? SourceLabel = null, bool NoDispatchProven = false, bool WorkStoppedProven = false);

@@ -58,7 +58,7 @@ public sealed class GuildPortalSchemaTests
 
         Assert.True(installed.GuildCanonical.IsHealthy, installed.GuildCanonical.ToString());
 
-        Assert.Equal(8, installed.GuildCanonical.SchemaVersion);
+        Assert.Equal(9, installed.GuildCanonical.SchemaVersion);
 
         await using SqliteConnection fresh = await OpenAsync();
 

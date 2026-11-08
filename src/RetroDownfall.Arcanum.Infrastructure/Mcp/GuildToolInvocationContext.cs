@@ -3,18 +3,66 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 /// <summary>
-/// Dormant host-only tool binding. The host eligibility probe must intersect current availability,
-/// attunement, edition and invocation policy. No effect adapter is installed by this delivery slice.
+/// Host-only closed tool binding. The host eligibility probe intersects current availability,
+/// attunement, edition and invocation policy. Unsupported resource/effect routes remain unavailable.
 /// </summary>
 internal sealed class GuildToolInvocationContext(
     GuildExecutionHandle execution,
     IGuildToolAuthority authority,
-    Func<GuildToolGrant, bool> currentEligibility)
+    Func<GuildToolGrant, bool> currentEligibility, GuildLocalToolRegistry? registry = null)
 {
+    internal GuildLocalToolRegistry? Registry => registry;
+
+    internal ValueTask<object?> InvokeBoundAsync(AIFunction function, AIFunctionArguments arguments, CancellationToken ct) =>
+        function is BoundFunction bound && ReferenceEquals(bound.Context, this)
+            ? InvokeAsync(bound.Tool, arguments, ct) : ValueTask.FromResult<object?>(Format(Unavailable));
+
+    private ValueTask<object?> InvokeAsync(GuildToolGrant tool, AIFunctionArguments arguments, CancellationToken ct)
+    {
+        if (!currentEligibility(tool)) return ValueTask.FromResult<object?>(Format(new(ErrorCodes.Guild.ToolNotGranted, "The tool is unavailable under the current host policy.")));
+
+        return registry is not null && registry.Matches(execution, authority) && registry.Supports(tool)
+            ? registry.DispatchAsync(tool, arguments, currentEligibility, ct) : RefuseBoundAsync(tool, ct);
+    }
+
+    private async ValueTask<object?> RefuseBoundAsync(GuildToolGrant tool, CancellationToken ct) => Format(await RefuseDispatchAsync(tool, ct).ConfigureAwait(false));
+
+    internal GuildLocalToolRegistry.Invocation? CaptureMcpInvocation(string name)
+    {
+        GuildToolGrant tool = new(GuildToolSourceKind.InternalMcp, "arcanum", name);
+
+        return registry is not null && registry.Matches(execution, authority) && currentEligibility(tool)
+            ? registry.CaptureInvocation(tool) : null;
+    }
+
+    internal ValueTask<object?> DispatchMcpAsync(GuildLocalToolRegistry.Invocation frame, string name,
+        JsonElement arguments, CancellationToken ct)
+    {
+        GuildToolGrant tool = new(GuildToolSourceKind.InternalMcp, "arcanum", name);
+
+        if (registry is null || !registry.Matches(execution, authority) || !ReferenceEquals(frame.Registry, registry)
+            || frame.Tool != tool || !frame.IsActive || !currentEligibility(tool))
+            return ValueTask.FromResult<object?>(Format(Unavailable));
+
+        if (arguments.ValueKind != JsonValueKind.Object)
+            return ValueTask.FromResult<object?>(Format(new(ErrorCodes.Guild.InvalidRequest, "Tool arguments must be a JSON object.")));
+
+        AIFunctionArguments values = new();
+
+        foreach (JsonProperty property in arguments.EnumerateObject())
+        {
+            if (!values.TryAdd(property.Name, property.Value.Clone()))
+                return ValueTask.FromResult<object?>(Format(new(ErrorCodes.Guild.InvalidRequest, "Tool argument names must be unique.")));
+        }
+
+        return registry.DispatchTransferredAsync(frame, tool, values, currentEligibility, ct);
+    }
+
     internal AIFunction Bind(AIFunction function, GuildToolGrant tool)
     {
         ArgumentNullException.ThrowIfNull(function);
@@ -26,7 +74,7 @@ internal sealed class GuildToolInvocationContext(
             throw new ArgumentException("A Guild tool binding must name the exact function.", nameof(tool));
         }
 
-        return function is McpBridgeTool bridge
+        return function is McpBridgeTool bridge && (registry is null || !registry.Supports(tool))
             ? bridge.WithGuildAuthority(this, tool)
             : new BoundFunction(function, this, tool);
     }
@@ -38,6 +86,13 @@ internal sealed class GuildToolInvocationContext(
         if (!currentEligibility(tool))
         {
             return null;
+        }
+
+        if (registry is not null && registry.Matches(execution, authority) && registry.Supports(tool))
+        {
+            Result qualified = await registry.AuthorizeAsync(tool, currentEligibility, cancellationToken).ConfigureAwait(false);
+
+            return qualified.IsSuccess ? Bind(function, tool) : null;
         }
 
         Result result = await authority.VerifyToolAsync(execution, tool, boundaryAvailable: false, cancellationToken).ConfigureAwait(false);
@@ -112,8 +167,8 @@ internal sealed class GuildToolInvocationContext(
 
         public override JsonElement JsonSchema => function.JsonSchema;
 
-        protected override async ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken) =>
-            Format(await context.RefuseDispatchAsync(tool, cancellationToken).ConfigureAwait(false));
+        protected override ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken) =>
+            context.InvokeAsync(tool, arguments, cancellationToken);
     }
 }
 
@@ -157,7 +212,7 @@ internal static class GuildToolInvocationAmbient
 internal static class GuildToolInvocationBinding
 {
     internal sealed record Reservation(GuildToolInvocationContext? Context, string? Name,
-        GuildToolRequestBindingNonce Nonce, bool Claimed = false);
+        GuildToolRequestBindingNonce Nonce, bool Claimed = false, GuildLocalToolRegistry.Invocation? Frame = null);
 
     private static readonly ConcurrentDictionary<(string Connection, string Request), Reservation> Bindings = new();
 
@@ -169,7 +224,7 @@ internal static class GuildToolInvocationBinding
         // to an ordinary call that is still queued or executing on this connection.
         if (string.IsNullOrWhiteSpace(connection) || string.IsNullOrWhiteSpace(request)
             || (context is not null && string.IsNullOrWhiteSpace(name))
-            || !Bindings.TryAdd((connection, request), new(context, name, nonce)))
+            || !Bindings.TryAdd((connection, request), new(context, name, nonce, Frame: name is null ? null : context?.CaptureMcpInvocation(name))))
         {
             throw new InvalidOperationException("The private tool request identity is unavailable.");
         }

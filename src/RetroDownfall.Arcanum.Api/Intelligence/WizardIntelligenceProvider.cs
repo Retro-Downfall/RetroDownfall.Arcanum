@@ -662,7 +662,10 @@ public sealed partial class WizardIntelligenceProvider(
         Func<IntelligenceEvent, CancellationToken, ValueTask>?
             eventSink = null)
     {
-        if (GuildMemoryAccess.IsGuildInvocation)
+        if (invocationContext.GuildBinding is GuildProviderCallBinding guild)
+            return await ExecuteGuildPromptCoreAsync(guild, request, cancellationToken).ConfigureAwait(false);
+
+        if (invocationContext.GuildBinding is not null || GuildMemoryAccess.IsGuildInvocation)
         {
             return Result<PromptTurnResult>.Failure(GuildContextUnavailable);
         }
@@ -1060,7 +1063,7 @@ public sealed partial class WizardIntelligenceProvider(
         [EnumeratorCancellation] CancellationToken cancellationToken = default,
         InferenceAuditContext? auditContext = null)
     {
-        if (GuildMemoryAccess.IsGuildInvocation)
+        if (invocationContext.GuildBinding is not null || GuildMemoryAccess.IsGuildInvocation)
         {
             yield return ErrorFrame(GuildContextUnavailable);
 

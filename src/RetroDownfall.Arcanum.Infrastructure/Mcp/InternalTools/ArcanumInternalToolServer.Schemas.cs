@@ -789,7 +789,7 @@ internal sealed partial class ArcanumInternalToolServer
         });
     }
 
-    private static JsonElement BuildCastSendingSchema()
+    internal static JsonElement BuildCastSendingSchema()
     {
         return BuildSchema(static w =>
         {

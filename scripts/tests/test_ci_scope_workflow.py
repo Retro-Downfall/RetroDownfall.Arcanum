@@ -31,6 +31,112 @@ def step(body, name):
 
 
 class CiScopeWorkflowTests(unittest.TestCase):
+    def test_focused_execution_profile_requires_both_hosts_and_execution_evidence(self):
+        focused = job("guild-execution")
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.qualification == 'guild-execution'", focused)
+        self.assertIn("os: [macos-26, windows-latest]", focused)
+        self.assertIn("run: ./scripts/qualify-guild-execution.sh", focused)
+        self.assertNotIn("continue-on-error", focused)
+        for name in ("build-test", *WORKERS, "hosted-producer-analysis", "windows-suite",
+                     "windows-arm64-suite", "aot-il", "macos-workspace-check"):
+            with self.subTest(job=name):
+                self.assertRegex(job(name), r"(?m)^    if: .*inputs\.qualification != 'guild-execution'")
+        harness = (ROOT / "scripts/qualify-guild-execution.sh").read_text()
+        for name in ("GuildLocalHostPolicyTests", "GuildQuestStoreTests", "GuildLocalExecutionSchemaTests",
+                     "LongRunningOperationRecoveryOwnershipTests", "ApprenticeServiceReliabilityTests",
+                     "WizardIntelligenceProviderTests", "BudgetReservation", "DataRetention", "AiReflection",
+                     "GrimoireOfflineTransitionJournalFileStoreTests", "GrimoireOfflineTransitionJournalStoreTests"):
+            self.assertIn(name, harness)
+        self.assertIn("validate_guild_workspace_evidence.py", harness)
+        self.assertIn("--required-case", harness)
+        journal_file_class = "RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests"
+        journal_store_class = "RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalStoreTests"
+        for name in ("GrimoireOfflineTransitionJournalFileStoreTests", "GrimoireOfflineTransitionJournalStoreTests"):
+            self.assertIn("FullyQualifiedName~" + name, harness)
+        # File-store platform cases legitimately skip on the other host; require
+        # executed cross-platform witnesses without requiring those skips to pass.
+        self.assertNotRegex(harness, r"(?m)^\s*" + re.escape(journal_file_class) + r"\s*\\?\s*$")
+        self.assertRegex(harness, r"(?m)^\s*" + re.escape(journal_store_class) + r"\s*\\\s*$")
+        for method in ("Publication_bounds_the_number_of_directory_enumerations_per_revision",
+                       "Deletion_does_not_repeat_the_absence_proof_without_an_intervening_state_change",
+                       "Resume_reports_recovery_required_when_enumeration_fails_with_an_io_exception",
+                       "Secure_reread_returns_the_exact_published_identity_and_bytes"):
+            with self.subTest(required_journal_case=method):
+                self.assertIn("--required-case " + journal_file_class + "." + method, harness)
+        for suffix, methods in (
+            ("Intelligence.WizardIntelligenceProviderTests", (
+                "Guild_wizard_entry_refuses_unknown_binding_without_ambient",
+                "Guild_ordinary_context_path_is_unavailable_before_provider_or_embedding_effects")),
+            ("Guild.GuildWorkspaceLeaseBrokerTests", (
+                "Expiry_does_not_steal_admitted_writer_and_copied_permit_cannot_release_it",
+                "Terminal_acquire_replay_survives_file_replaced_by_directory_on_every_shipping_platform")),
+            ("Guild.WorkspaceLeaseIdentityTests", (
+                "Parent_and_root_replacement_invalidate_evidence",
+                "Durable_evidence_round_trips_and_malformed_ancestry_is_refused")),
+        ):
+            required_class = "RetroDownfall.Arcanum.Tests." + suffix
+            with self.subTest(platform_skippable_class=required_class):
+                self.assertNotRegex(harness, r"(?m)^\s*" + re.escape(required_class) + r"\s*\\?\s*$")
+            for method in methods:
+                with self.subTest(required_cross_platform_case=method):
+                    self.assertIn("--required-case " + required_class + "." + method, harness)
+        self.assertIn("FullyQualifiedName~Guild", harness)
+        self.assertIn("FullyQualifiedName~WizardIntelligenceProviderTests", harness)
+        self.assertIn("FullyQualifiedName~WorkspaceLease", harness)
+        for method in ("Completed_task_pruning_requires_exact_observation_and_final_drain",
+                       "In_memory_json_writer_requires_closed_backend_encoder_and_lifetime",
+                       "Workspace_lease_dispatch_requires_complete_census_and_preserves_effect_frontiers",
+                       "Reference_comparer_singleton_requires_exact_framework_getter_identity",
+                       "Nested_read_work_does_not_borrow_an_unrelated_outer_effect",
+                       "Nested_owned_admission_pairs_the_inner_work_and_effect",
+                       "Conditional_effect_guard_remains_unproved_despite_a_constant_true_argument",
+                       "Engine_wait_dispatch_preserves_held_port_body_and_refuses_implementation_drift",
+                       "Actual_workspace_recovery_adapter_joins_its_broker_before_returning",
+                       "Workspace_host_evidence_dispatch_traverses_both_bodies_and_refuses_census_drift",
+                       "Empty_unused_enclosing_admission_entries_do_not_split_parent_callable_identity",
+                       "Owner_bound_ambient_recovery_identity_preserves_semantic_distinctions",
+                       "Self_admitted_task_handoff_uses_its_unique_declared_catalog_owner",
+                       "Host_owned_task_handoff_uses_its_unique_declared_catalog_owner",
+                       "ManifestNullEffectWorkOnlyConsumersResolveOneExactAcquisitionContext",
+                       "ManifestNullEffectWorkOnlyConsumersPreserveStrictFrontierBoundaries"):
+            with self.subTest(required_source_proof=method):
+                self.assertIn("|FullyQualifiedName~" + method, harness)
+                self.assertIn("--required-case RetroDownfall.Arcanum.Tests.Operations."
+                              "HostedGrimoireProducerInventoryTests." + method, harness)
+        self.assertIn("tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj", harness)
+        self.assertIn("compendium-execution.trx", harness)
+        self.assertIn("compendium-evidence-summary.json", harness)
+        self.assertIn("--required-case RetroDownfall.Compendium.Ux.Tests.Compendium.GenericSettingsPreservationTests."
+                      "Editing_guild_gate_publishes_the_opt_in_without_changing_other_settings", harness)
+        for name in (
+            "Api.GuildEndpointTests.Native_operator_executes_through_real_scheduler_engine_HTTP_adapter_and_durable_result",
+            "Api.GuildEndpointTests.Native_parked_question_remains_discoverable_only_at_the_proven_input_frontier",
+            "Api.GuildCapacityTests.Native_blocking_delegation_releases_shared_capacity_and_resumes_parent_at_capacity_one",
+            "Api.GuildCapacityTests.Native_parallel_units_wait_for_owned_physical_call_settlement_without_canceling_a_live_sibling",
+            "Guild.GuildLocalHostPolicyTests.Run_bound_Mcp_cast_uses_one_child_coordinator_and_replays_exact_identity",
+            "Guild.GuildLocalHostPolicyTests.Queued_Mcp_cast_rechecks_exact_live_host_frame_before_creating_work",
+            "Guild.GuildLocalHostPolicyTests.Local_scheduler_protects_every_physical_readiness_probe_with_work_admission",
+            "Guild.GuildLocalHostPolicyTests.Local_scheduler_hot_enable_requires_effect_admission_before_installing_physical_protection",
+            "Guild.GuildLocalHostPolicyTests.Guild_host_readiness_physical_stage_refuses_closed_effect_admission_after_identity_commit",
+            "Guild.GuildLocalHostPolicyTests.Local_scheduler_discovery_fault_cancels_and_joins_its_waiting_pump",
+            "Guild.GuildLocalHostPolicyTests.Local_port_paid_completion_closes_account_and_preserves_unknown_price",
+            "Guild.GuildQuestStoreTests.Provider_effect_timeout_keeps_real_daily_hold_past_expiry_and_refuses_another_identity",
+            "Guild.GuildQuestStoreTests.Guild_shared_engine_admits_each_unit_with_its_own_Guild_work_and_effect_lease",
+            "Guild.GuildQuestStoreTests.Local_child_frontier_separates_explicit_interruption_from_resumable_or_live_descendants",
+            "Guild.GuildQuestStoreTests.Local_child_frontier_does_not_count_its_own_interruption_as_a_descendant",
+            "Operations.LongRunningOperationRecoveryOwnershipTests.Generic_recovery_claims_process_ownership_before_lease_acquisition_and_releases_after_settlement",
+            "Hosting.ApprenticeServiceReliabilityTests.Guild_cutover_never_resumes_legacy_crash_recovery_into_execution_capacity",
+            "Backup.BackupRestoreServiceTests.A_full_archive_restores_onto_a_clean_machine_without_the_source_credential_store",
+            "Backup.BackupRestoreStagedDrainTests.An_archive_already_at_head_needs_no_drain",
+            "Data.DataRetentionServiceTests.Factory_reset_refuses_local_execution_evidence_whose_quest_link_is_missing",
+            "Guild.GuildLocalExecutionSchemaTests.V8_upgrade_preserves_content_and_erasure_evidence_and_converges_with_fresh_schema",
+            "Guild.GuildQuestStoreTests.Local_binding_restore_preserves_identity_but_refuses_execution_input",
+        ):
+            with self.subTest(required_execution_case=name):
+                self.assertIn("--required-case RetroDownfall.Arcanum.Tests." + name, harness)
+
+        self.assertNotIn("FullyQualifiedName~BackupRestore", harness)
+
     def test_focused_guild_profile_is_explicit_and_does_not_claim_full_authority(self):
         source = WORKFLOW.read_text()
         self.assertIn("default: full", source)

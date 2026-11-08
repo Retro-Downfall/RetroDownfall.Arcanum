@@ -3,6 +3,8 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
@@ -11,14 +13,22 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// cross-Apprentice delegation (Cast Sending). Persists lineage in the child's checkpoint JSON so
 /// no schema change is required.
 /// </summary>
-internal sealed class ConclaveArchmage(
+internal sealed partial class ConclaveArchmage(
     IApprenticeRepository repository,
-    IOptionsMonitor<ArcanumSettings> settings) : IConclaveArchmage
+    IOptionsMonitor<ArcanumSettings> settings,
+    GuildQuestStore? quests = null,
+    IGuildLocalQuestScheduler? guildScheduler = null) : IConclaveArchmage, IGuildQuestCoordinator
 {
     public async Task<Result<Apprentice>> CastAsync(
         ConclaveCastRequest request,
         CancellationToken cancellationToken = default)
     {
+        if (settings.CurrentValue.Features.Guild)
+        {
+            return Result<Apprentice>.Failure(new(ErrorCodes.Guild.Unavailable,
+                "Guild creation requires an authenticated Quest request with explicit authority."));
+        }
+
         if (!settings.CurrentValue.ResolveConclave().Enabled)
         {
             return Result<Apprentice>.Failure(

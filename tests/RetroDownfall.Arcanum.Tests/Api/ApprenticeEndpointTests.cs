@@ -16,7 +16,7 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 namespace RetroDownfall.Arcanum.Tests.Api;
 
 [Collection("ApiHost")]
-public sealed class ApprenticeEndpointTests
+public sealed partial class ApprenticeEndpointTests
 {
     private readonly ArcanumWebApplicationFactory _factory;
 

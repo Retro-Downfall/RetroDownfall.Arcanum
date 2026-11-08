@@ -99,6 +99,17 @@ internal sealed class McpBridgeTool : AIFunction
 
         if (_guildContext is { } guild && _guildTool is { } identity)
         {
+            if (identity.SourceKind == GuildToolSourceKind.InternalMcp && identity.SourceRegistrationId == "arcanum"
+                && (_client is SdkMcpClientWrapper { IsHostOwned: true } or McpClientGeneration { IsGuildHostTransport: true })
+                && guild.CaptureMcpInvocation(_name) is not null)
+            {
+                using IDisposable scope = GuildToolInvocationAmbient.Begin(guild);
+
+                // A qualified Guild route has one exact host transport and no fallback dispatch.
+                return await CallAndFormatAsync(_client, arguments, trustStructuredResult: false,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             return GuildToolInvocationContext.Format(
                 await guild.RefuseDispatchAsync(identity, cancellationToken).ConfigureAwait(false));
         }

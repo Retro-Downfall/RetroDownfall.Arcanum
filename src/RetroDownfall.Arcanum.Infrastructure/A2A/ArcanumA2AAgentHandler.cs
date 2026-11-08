@@ -35,7 +35,6 @@ public sealed class ArcanumA2AAgentHandler(
     A2APushNotificationRegistry? pushNotifications = null,
     A2APushNotificationDispatcher? pushDispatcher = null) : IAgentHandler, IAsyncDisposable
 {
-
     /// <summary>
     /// How many parked continuations this process keeps on the fast path.
     /// </summary>
@@ -71,45 +70,45 @@ public sealed class ArcanumA2AAgentHandler(
 
     public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
     {
-
         TaskUpdater updater = new(eventQueue, context.TaskId, context.ContextId);
 
         ArcanumSettings settings = options.CurrentValue;
+
+        if (settings.Features.Guild)
+        {
+            await RejectAsync(updater, "Guild remote execution requires its qualified Quest transport; legacy inbound Sendings are unavailable.", cancellationToken).ConfigureAwait(false);
+
+            return;
+        }
 
         ConclaveA2ASettings a2a = settings.ResolveA2A();
 
         if (!settings.ResolveConclave().Enabled || !a2a.Enabled || !a2a.ServerEnabled)
         {
-
             await RejectAsync(updater, "A2A is disabled on this Arcanum instance.", cancellationToken).ConfigureAwait(false);
 
             return;
-
         }
 
         string goal = context.UserText?.Trim() ?? string.Empty;
 
         if (string.IsNullOrWhiteSpace(goal))
         {
-
             await RejectAsync(updater, "A non-empty message is required to spawn an Apprentice.", cancellationToken).ConfigureAwait(false);
 
             return;
-
         }
 
         Result<string> modality = A2AAgentCardPolicy.ValidateRequestedModes(settings, context.Configuration?.AcceptedOutputModes);
 
         if (modality.IsFailure)
         {
-
             // An unsupported modality is refused by name rather than silently answered as text: a peer
             // that asked for audio and received prose has no way to tell that it was downgraded
             // (issue #63).
             await RejectAsync(updater, modality.Error.Message, cancellationToken).ConfigureAwait(false);
 
             return;
-
         }
 
         // A callback the peer supplied on the send itself, rather than through tasks/pushNotificationConfig.
@@ -126,19 +125,16 @@ public sealed class ArcanumA2AAgentHandler(
 
         if (parked is { } awaiting)
         {
-
             await ContinueApprenticeAsync(context, updater, awaiting, goal, cancellationToken)
                 .ConfigureAwait(false);
 
             return;
-
         }
 
         string[] inboundChain = ConclaveDelegationChain.Read(context.Message?.Metadata);
 
         if (ConclaveDelegationChain.ContainsSelf(inboundChain))
         {
-
             logger.LogWarning(
                 "A2A: refusing task {TaskId} because its delegation chain already passed through this instance.",
                 context.TaskId);
@@ -149,18 +145,15 @@ public sealed class ArcanumA2AAgentHandler(
                 cancellationToken).ConfigureAwait(false);
 
             return;
-
         }
 
         Result<string> workspaceResult = ResolveWorkspace(settings, a2a);
 
         if (workspaceResult.IsFailure)
         {
-
             await RejectAsync(updater, $"No usable workspace is configured: {workspaceResult.Error.Message}", cancellationToken).ConfigureAwait(false);
 
             return;
-
         }
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
@@ -178,11 +171,9 @@ public sealed class ArcanumA2AAgentHandler(
 
         if (castResult.IsFailure)
         {
-
             await RejectAsync(updater, $"Could not spawn an Apprentice: {castResult.Error.Message}", cancellationToken).ConfigureAwait(false);
 
             return;
-
         }
 
         Apprentice apprentice = castResult.Value;
@@ -213,17 +204,14 @@ public sealed class ArcanumA2AAgentHandler(
 
         try
         {
-
             Result<string> startResult = await runtime.StartAsync(apprentice.Id, cancellationToken).ConfigureAwait(false);
 
             if (startResult.IsFailure)
             {
-
                 await FailAsync(updater, $"Apprentice '{apprentice.Id}' was created but could not be started: {startResult.Error.Message}", cancellationToken)
                     .ConfigureAwait(false);
 
                 return;
-
             }
 
             await updater.StartWorkAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -239,25 +227,19 @@ public sealed class ArcanumA2AAgentHandler(
                     updater,
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
         finally
         {
-
             _taskToApprentice.TryRemove(context.TaskId, out _);
 
             // A task parked awaiting continuation is still in flight, so its durable record stays open.
             if (!_awaitingContinuation.ContainsKey(context.TaskId))
             {
-
                 await ReleaseInboundAsync(scope.ServiceProvider, ledgerEntry).ConfigureAwait(false);
-
             }
 
             await chronicle.DisposeAsync().ConfigureAwait(false);
-
         }
-
     }
 
     /// <summary>
@@ -272,19 +254,15 @@ public sealed class ArcanumA2AAgentHandler(
     /// </remarks>
     private void EvictSurplusParks()
     {
-
         while (_awaitingContinuation.Count > MaxParkedContinuations)
         {
-
             KeyValuePair<string, ParkedContinuation> oldest = _awaitingContinuation
                 .OrderBy(static entry => entry.Value.Sequence)
                 .FirstOrDefault();
 
             if (oldest.Key is null || !_awaitingContinuation.TryRemove(oldest.Key, out _))
             {
-
                 return;
-
             }
 
             logger.LogInformation(
@@ -292,9 +270,7 @@ public sealed class ArcanumA2AAgentHandler(
                 + "ceiling; an answer for it now resolves through its durable Sending record.",
                 oldest.Key,
                 MaxParkedContinuations);
-
         }
-
     }
 
     /// <summary>
@@ -306,33 +282,25 @@ public sealed class ArcanumA2AAgentHandler(
     /// </remarks>
     private async Task<A2AParkedSending?> TryRecoverParkedAsync(string taskId, CancellationToken cancellationToken)
     {
-
         try
         {
-
             await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
             if (A2ASendingLedgerScope.Resolve(scope.ServiceProvider) is not { } ledger)
             {
-
                 return null;
-
             }
 
             return await ledger
                 .FindParkedInboundAsync(taskId, takeLease: true, cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             logger.LogWarning(ex, "A2A: could not look up a parked Sending for task {TaskId}.", taskId);
 
             return null;
-
         }
-
     }
 
     /// <summary>
@@ -345,44 +313,32 @@ public sealed class ArcanumA2AAgentHandler(
         string taskId,
         Guid apprenticeId)
     {
-
         try
         {
-
             IA2ASendingLedger? ledger = A2ASendingLedgerScope.Resolve(services);
 
             return ledger is null
                 ? default
                 : await ledger.RegisterInboundAsync(taskId, apprenticeId, CancellationToken.None).ConfigureAwait(false);
-
         }
         catch (Exception)
         {
-
             // Best-effort; see remarks. A2A stays usable without the durable record.
             return default;
-
         }
-
     }
 
     private static async Task ReleaseInboundAsync(IServiceProvider services, A2ASendingLedgerEntry entry)
     {
-
         if (!entry.IsRecorded)
         {
-
             return;
-
         }
 
         if (A2ASendingLedgerScope.Resolve(services) is { } ledger)
         {
-
             await ledger.ReleaseAsync(entry, CancellationToken.None).ConfigureAwait(false);
-
         }
-
     }
 
     /// <summary>
@@ -398,32 +354,22 @@ public sealed class ArcanumA2AAgentHandler(
         A2ASendingLedgerEntry entry,
         string? contextId)
     {
-
         if (!entry.IsRecorded)
         {
-
             return;
-
         }
 
         try
         {
-
             if (A2ASendingLedgerScope.Resolve(services) is { } ledger)
             {
-
                 await ledger.MarkParkedAsync(entry, contextId, CancellationToken.None).ConfigureAwait(false);
-
             }
-
         }
         catch (Exception)
         {
-
             // Best-effort; see remarks.
-
         }
-
     }
 
     /// <summary>
@@ -437,7 +383,6 @@ public sealed class ArcanumA2AAgentHandler(
         string guidance,
         CancellationToken cancellationToken)
     {
-
         Guid apprenticeId = parked.ApprenticeId;
 
         // Publish the live mapping before retiring the park, never the other way round: CancelAsync reads
@@ -461,21 +406,18 @@ public sealed class ArcanumA2AAgentHandler(
 
         try
         {
-
             Result<string> intervened = await runtime
                 .ContinueAsync(apprenticeId, guidance, resume: true, cancellationToken)
                 .ConfigureAwait(false);
 
             if (intervened.IsFailure)
             {
-
                 await FailAsync(
                     updater,
                     $"The Apprentice could not be resumed with the supplied answer: {intervened.Error.Message}",
                     cancellationToken).ConfigureAwait(false);
 
                 return;
-
             }
 
             // Submit before Work even though the task already exists: the SDK opens this request's
@@ -496,31 +438,24 @@ public sealed class ArcanumA2AAgentHandler(
                     updater,
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
         finally
         {
-
             _taskToApprentice.TryRemove(context.TaskId, out _);
 
             // The record opened by the original ExecuteAsync stayed open across the park; close it now
             // unless this continuation parked the task again.
             if (!_awaitingContinuation.ContainsKey(context.TaskId))
             {
-
                 await ReleaseInboundAsync(scope.ServiceProvider, parked.Ledger).ConfigureAwait(false);
-
             }
 
             await chronicle.DisposeAsync().ConfigureAwait(false);
-
         }
-
     }
 
     public async Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
     {
-
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         // A task parked at input-required is still ours to stop: the peer giving up on the question must
@@ -537,9 +472,7 @@ public sealed class ArcanumA2AAgentHandler(
 
         if (needsTerminalTransition)
         {
-
             await ReleaseInboundAsync(scope.ServiceProvider, parked.Sending.Ledger).ConfigureAwait(false);
-
         }
 
         // Only the live index means an ExecuteAsync relay is still enumerating this Apprentice's Chronicle
@@ -549,7 +482,6 @@ public sealed class ArcanumA2AAgentHandler(
 
         if (!live && !needsTerminalTransition)
         {
-
             // The in-memory index dies with the process, but the durable record does not: a peer that
             // cancels after a restart must stop the resumed Apprentice, not merely be told "Canceled"
             // while the work keeps running (issue #62).
@@ -559,18 +491,14 @@ public sealed class ArcanumA2AAgentHandler(
 
             if (recorded is { } recoveredId)
             {
-
                 apprenticeId = recoveredId;
 
                 needsTerminalTransition = true;
-
             }
-
         }
 
         if (!live && !needsTerminalTransition)
         {
-
             // Overriding IAgentHandler.CancelAsync replaces the SDK's own Canceled transition, so returning
             // silently would leave the peer's task with no terminal state at all. Nothing local claims this
             // task — no live mapping and no durable record — but the peer is still owed an answer.
@@ -585,7 +513,6 @@ public sealed class ArcanumA2AAgentHandler(
             await NotifyPeerAsync(context.TaskId, "canceled", cancellationToken).ConfigureAwait(false);
 
             return;
-
         }
 
         IApprenticeRuntime runtime = scope.ServiceProvider.GetRequiredService<IApprenticeRuntime>();
@@ -599,18 +526,15 @@ public sealed class ArcanumA2AAgentHandler(
 
         if (cancelResult.IsFailure)
         {
-
             logger.LogInformation(
                 "A2A CancelAsync: Apprentice {ApprenticeId} for task {TaskId} could not be cancelled: {Message}",
                 apprenticeId,
                 context.TaskId,
                 cancelResult.Error.Message);
-
         }
 
         if (needsTerminalTransition)
         {
-
             // Parked at input-required, or recovered from the durable record after a restart: either way
             // no ExecuteAsync relay is running for this task, so nothing else will ever drive its terminal
             // transition. The peer would wait forever otherwise.
@@ -619,9 +543,7 @@ public sealed class ArcanumA2AAgentHandler(
                 cancellationToken).ConfigureAwait(false);
 
             await NotifyPeerAsync(context.TaskId, "canceled", cancellationToken).ConfigureAwait(false);
-
         }
-
     }
 
     private async Task ForwardChronicleToTaskAsync(
@@ -635,7 +557,6 @@ public sealed class ArcanumA2AAgentHandler(
         TaskUpdater updater,
         CancellationToken cancellationToken)
     {
-
         bool hasEvent = await firstEvent.ConfigureAwait(false);
 
         // Peer-visible usage, accumulated from provider-authoritative frames. A2A has no usage field, so
@@ -647,19 +568,15 @@ public sealed class ArcanumA2AAgentHandler(
 
         while (hasEvent)
         {
-
             ApprenticeEvent @event = chronicle.Current;
 
             if (@event.WizardEvent?.Usage is { } usage)
             {
-
                 reportedTokens += Math.Max(0, usage.TotalTokens);
-
             }
 
             switch (@event.Type)
             {
-
                 case ApprenticeEventType.ApprenticeEscalated:
 
                     // The task is parked, not finished: the peer can answer it and resume this very
@@ -715,19 +632,15 @@ public sealed class ArcanumA2AAgentHandler(
                     if (DescribeProgress(@event) is { } label
                         && !string.Equals(label, lastProgressLabel, StringComparison.Ordinal))
                     {
-
                         lastProgressLabel = label;
 
                         await RelayProgressAsync(updater, label, cancellationToken).ConfigureAwait(false);
-
                     }
 
                     break;
-
             }
 
             hasEvent = await chronicle.MoveNextAsync().ConfigureAwait(false);
-
         }
 
         // The Chronicle ended without a terminal Apprentice event — the peer is owed a definite answer
@@ -736,7 +649,6 @@ public sealed class ArcanumA2AAgentHandler(
             updater,
             "The Apprentice's Chronicle ended without a terminal result; the Sending cannot be completed.",
             cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -779,12 +691,9 @@ public sealed class ArcanumA2AAgentHandler(
     /// </remarks>
     private static Message? BuildCompletionMessage(long reportedTokens)
     {
-
         if (reportedTokens <= 0)
         {
-
             return null;
-
         }
 
         Message message = BuildAgentMessage("The Apprentice completed the delegated goal.");
@@ -794,12 +703,10 @@ public sealed class ArcanumA2AAgentHandler(
         A2ASendingUsageMetadata.Write(message.Metadata, reportedTokens, costUsd: null);
 
         return message;
-
     }
 
     private async Task<string> ExtractFinalTextAsync(Guid apprenticeId, CancellationToken cancellationToken)
     {
-
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         IApprenticeRepository apprenticeRepo = scope.ServiceProvider.GetRequiredService<IApprenticeRepository>();
@@ -808,9 +715,7 @@ public sealed class ArcanumA2AAgentHandler(
 
         if (apprentice?.SessionId is not { } sessionId)
         {
-
             return "(The Apprentice completed without a recorded session.)";
-
         }
 
         ISessionRepository sessionRepo = scope.ServiceProvider.GetRequiredService<ISessionRepository>();
@@ -820,7 +725,6 @@ public sealed class ArcanumA2AAgentHandler(
         Entry? lastAssistantEntry = entries.LastOrDefault(static e => e.Role == MessageRole.Assistant && !string.IsNullOrWhiteSpace(e.Content));
 
         return lastAssistantEntry?.Content ?? "(The Apprentice completed without a textual final message.)";
-
     }
 
     /// <summary>
@@ -834,27 +738,21 @@ public sealed class ArcanumA2AAgentHandler(
     /// </remarks>
     public static Result<string> ResolveWorkspace(ArcanumSettings settings, ConclaveA2ASettings a2a)
     {
-
         if (!string.IsNullOrWhiteSpace(a2a.DefaultWorkspace))
         {
-
             return CampaignPathPolicy.ValidateAndNormalizePath(a2a.DefaultWorkspace, settings);
-
         }
 
         string? defaultWorkspace = settings.ResolveDefaultWorkspace();
 
         if (!string.IsNullOrWhiteSpace(defaultWorkspace))
         {
-
             return CampaignPathPolicy.ValidateAndNormalizePath(
                 defaultWorkspace,
                 settings);
-
         }
 
         return CampaignPathPolicy.ValidateAndNormalizePath(Directory.GetCurrentDirectory(), settings);
-
     }
 
     /// <summary>
@@ -867,14 +765,11 @@ public sealed class ArcanumA2AAgentHandler(
     /// </remarks>
     private async Task TryRegisterPushCallbackAsync(RequestContext context, CancellationToken cancellationToken)
     {
-
         if (pushNotifications is null
             || context.Configuration?.PushNotificationConfig is not { } supplied
             || !pushNotifications.Enabled)
         {
-
             return;
-
         }
 
         Result<PushNotificationConfig> registered = await pushNotifications
@@ -883,15 +778,12 @@ public sealed class ArcanumA2AAgentHandler(
 
         if (registered.IsFailure)
         {
-
             logger.LogWarning(
                 "A2A: task {TaskId} supplied a push-notification callback that was refused ({Reason}); "
                 + "the Sending continues without notifications.",
                 context.TaskId,
                 registered.Error.Message);
-
         }
-
     }
 
     /// <summary>
@@ -904,32 +796,25 @@ public sealed class ArcanumA2AAgentHandler(
     /// </remarks>
     private async Task NotifyPeerAsync(string taskId, string state, CancellationToken cancellationToken)
     {
-
         if (pushNotifications is null
             || pushDispatcher is null
             || !pushNotifications.Enabled
             || pushNotifications.Resolve(taskId) is not { } config)
         {
-
             return;
-
         }
 
         await pushDispatcher.NotifyAsync(config, taskId, state, cancellationToken).ConfigureAwait(false);
 
         if (state is not "input-required")
         {
-
             // A settled task has nothing further to report, so the callback is forgotten with it.
             pushNotifications.Remove(taskId);
-
         }
-
     }
 
     private async Task RejectAsync(TaskUpdater updater, string reason, CancellationToken cancellationToken)
     {
-
         await RunTerminalTransitionAsync(
                 async ct =>
                 {
@@ -941,27 +826,22 @@ public sealed class ArcanumA2AAgentHandler(
             .ConfigureAwait(false);
 
         await NotifyPeerAsync(updater.TaskId, "rejected", cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task FailAsync(TaskUpdater updater, string reason, CancellationToken cancellationToken)
     {
-
         await RunTerminalTransitionAsync(ct => updater.FailAsync(BuildAgentMessage(reason), ct).AsTask(), cancellationToken)
             .ConfigureAwait(false);
 
         await NotifyPeerAsync(updater.TaskId, "failed", cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task RequireInputAsync(TaskUpdater updater, string reason, CancellationToken cancellationToken)
     {
-
         await RunTerminalTransitionAsync(ct => updater.RequireInputAsync(BuildAgentMessage(reason), ct).AsTask(), cancellationToken)
             .ConfigureAwait(false);
 
         await NotifyPeerAsync(updater.TaskId, "input-required", cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -972,26 +852,18 @@ public sealed class ArcanumA2AAgentHandler(
     /// </summary>
     private static async Task RunTerminalTransitionAsync(Func<CancellationToken, Task> transition, CancellationToken cancellationToken)
     {
-
         try
         {
-
             await transition(cancellationToken).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
         catch (Exception)
         {
-
             // Best-effort terminal transition; see remarks above.
-
         }
-
     }
 
     private static Message BuildAgentMessage(string text) => new()
@@ -1003,13 +875,10 @@ public sealed class ArcanumA2AAgentHandler(
 
     public ValueTask DisposeAsync()
     {
-
         _taskToApprentice.Clear();
 
         _awaitingContinuation.Clear();
 
         return ValueTask.CompletedTask;
-
     }
-
 }

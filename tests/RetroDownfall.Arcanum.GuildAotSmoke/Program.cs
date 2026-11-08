@@ -110,6 +110,10 @@ internal static class GuildAotSmoke
 
         Exercise(SampleGuildQuestDto(), GuildJsonContext.Default.GuildQuestDto);
 
+        Exercise(SampleGuildQuestDto() with { State = QuestState.InputRequired, AwaitingInput = new(Id, Id) }, GuildJsonContext.Default.GuildQuestDto);
+
+        Exercise(new GuildQuestInputDto(Id, 17L, new(Id, Id), "Choose an option"), GuildJsonContext.Default.GuildQuestInputDto);
+
         Exercise(SampleGuildQuestPageDto(), GuildJsonContext.Default.GuildQuestPageDto);
 
         Exercise(new GuildQuestInputEvidence(Id, Id), GuildJsonContext.Default.GuildQuestInputEvidence);

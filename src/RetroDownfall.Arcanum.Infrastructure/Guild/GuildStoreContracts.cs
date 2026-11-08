@@ -20,6 +20,8 @@ internal sealed record GuildCardReadScope(Guid? WorkspaceId, Guid? SessionId, Gu
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(GuildStoredAgentCardPayload))]
+[JsonSerializable(typeof(GuildLocalExecutionInput))]
+[JsonSerializable(typeof(GuildLocalWaitSnapshot))]
 internal sealed partial class GuildStorageJsonContext : JsonSerializerContext;
 
 internal sealed record GuildContentWrite(Guid ContentId, Guid SourceRecordId, GuildContentKind Kind, long Revision,

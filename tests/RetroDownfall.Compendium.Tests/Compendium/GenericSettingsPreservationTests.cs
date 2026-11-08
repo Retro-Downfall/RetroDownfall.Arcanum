@@ -54,6 +54,77 @@ public sealed class GenericSettingsPreservationTests : IDisposable
     }
 
     [Fact]
+    public async Task Editing_guild_gate_publishes_the_opt_in_without_changing_other_settings()
+    {
+        ArcanumSettings original = new()
+        {
+            Host = new HostSettings { Port = 5100 },
+            Features = new FeatureSettings
+            {
+                Apprentices = false,
+                WebBrowsing = true,
+            },
+            Execution = new ExecutionSettings { MaxConcurrentApprentices = 7 },
+        };
+
+        Assert.False(original.Features.Guild);
+
+        await SeedAsync(original);
+
+        ConfigurationViewModel vm = CreateViewModel();
+
+        await WaitForLoadAsync(vm);
+
+        GenericSettingFieldViewModel gate = Field(vm, ConfigSection.Features, "features.guild");
+
+        Assert.Equal(ConfigSection.Features, gate.Descriptor.Section);
+
+        Assert.Equal(SettingKind.Bool, gate.Descriptor.Kind);
+
+        Assert.False(gate.BoolValue);
+
+        Assert.False(vm.BuildSettings().Features.Guild);
+
+        gate.BoolValue = true;
+
+        ArcanumSettings enabled = vm.BuildSettings();
+
+        Assert.True(enabled.Features.Guild);
+
+        Assert.False(enabled.Features.Apprentices);
+
+        Assert.True(enabled.Features.WebBrowsing);
+
+        Assert.Equal(5100, enabled.Host.Port);
+
+        Assert.Equal(7, enabled.Execution.MaxConcurrentApprentices);
+
+        using JsonDocument published = JsonDocument.Parse(JsonSerializer.Serialize(
+            enabled, ConfigurationJsonContext.Default.ArcanumSettings));
+
+        Assert.True(published.RootElement.GetProperty("features").GetProperty("guild").GetBoolean());
+
+        gate.BoolValue = false;
+
+        ArcanumSettings disabled = vm.BuildSettings();
+
+        Assert.False(disabled.Features.Guild);
+
+        Assert.False(disabled.Features.Apprentices);
+
+        Assert.True(disabled.Features.WebBrowsing);
+
+        Assert.Equal(5100, disabled.Host.Port);
+
+        Assert.Equal(7, disabled.Execution.MaxConcurrentApprentices);
+
+        using JsonDocument unpublished = JsonDocument.Parse(JsonSerializer.Serialize(
+            disabled, ConfigurationJsonContext.Default.ArcanumSettings));
+
+        Assert.False(unpublished.RootElement.GetProperty("features").GetProperty("guild").GetBoolean());
+    }
+
+    [Fact]
     public async Task Editing_long_rest_gate_preserves_its_independent_opt_in()
     {
         await SeedAsync(new ArcanumSettings());

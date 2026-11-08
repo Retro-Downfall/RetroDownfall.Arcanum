@@ -93,6 +93,15 @@ internal static class ApprenticeEndpoints
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
+                if (settings.Value.Features.Guild)
+                {
+                    return Results.Json(ApiResponse<ApprenticeDetailDto>.FromResult(
+                        Result<ApprenticeDetailDto>.Failure(new(ErrorCodes.Guild.Unavailable,
+                            "Guild execution requires an authenticated Quest request with an explicit grant.")), traceId),
+                        ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
+                        statusCode: StatusCodes.Status503ServiceUnavailable);
+                }
+
                 if (request is null)
                 {
                     return Results.BadRequest(

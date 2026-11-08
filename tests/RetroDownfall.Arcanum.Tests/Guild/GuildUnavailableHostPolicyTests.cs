@@ -11,7 +11,7 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 public sealed class GuildUnavailableHostPolicyTests
 {
     [Fact]
-    public async Task Dormant_composition_resolves_a_policy_that_refuses_every_authority_operation()
+    public async Task Disabled_composition_refuses_unbound_authority_without_initializing_identity()
     {
         ServiceCollection services = new();
 
@@ -22,6 +22,8 @@ public sealed class GuildUnavailableHostPolicyTests
         IGuildSignetHostPolicy? policy = provider.GetService<IGuildSignetHostPolicy>();
 
         Assert.NotNull(policy);
+
+        Assert.IsType<GuildLocalHostPolicy>(policy);
 
         Assert.Equal(Guid.Empty, policy.InstallationGeneration);
 
@@ -42,10 +44,14 @@ public sealed class GuildUnavailableHostPolicyTests
         Assert.True(recovery.IsFailure);
 
         Assert.All(new[] { admission.Error, current.Error, revocation.Error, recovery.Error },
-            static error => Assert.Equal(ErrorCodes.Guild.AuthorityUnavailable, error.Code));
+            static error => Assert.Equal(ErrorCodes.Guild.Forbidden, error.Code));
 
-        Assert.DoesNotContain(services, static descriptor => descriptor.ServiceType == typeof(SignetAuthority)
-            || descriptor.ServiceType == typeof(ISignetAuthority) || descriptor.ServiceType == typeof(IQuestStore)
-            || descriptor.ServiceType == typeof(IGuildQuestCoordinator));
+        Assert.Equal(Guid.Empty, policy.InstallationGeneration);
+
+        Assert.Same(provider.GetRequiredService<GuildLocalHostPolicy>(), policy);
+
+        Assert.Same(provider.GetRequiredService<SignetAuthority>(), provider.GetRequiredService<ISignetAuthority>());
+
+        Assert.False(provider.GetRequiredService<IGuildLocalHostReadiness>().RequireExecutionReady().IsSuccess);
     }
 }

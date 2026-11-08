@@ -83,6 +83,8 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
 
     public override string Name => ArcanumBuiltInToolNames.DelegateTask;
 
+    internal static JsonElement GuildSchema => SchemaDocument.RootElement;
+
     public override string Description =>
         "Runs a self-contained task in one isolated child agent with an explicit token or cost budget and returns only its final summary.";
 
@@ -135,9 +137,7 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
 
         if (fileResult == FileReadResult.ParentPolicyDenied)
         {
-
             return "Subagent task failed: Explicit files were not delegated by the parent attachment policy.";
-
         }
 
         if (fileResult != FileReadResult.Success)
@@ -263,24 +263,18 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
 
             if (hasAttachmentId)
             {
-
                 if (attachmentIdElement.ValueKind != JsonValueKind.String
                     || !Guid.TryParse(attachmentIdElement.GetString(), out Guid attachmentId)
                     || !AttachmentMemoryGateAmbient.TryResolve(attachmentId, out _))
                 {
-
                     return FileReadResult.ParentPolicyDenied;
-
                 }
 
                 parsedAttachmentId = attachmentId;
-
             }
             else if (AttachmentMemoryGateAmbient.HasMaterializedAttachmentContent)
             {
-
                 return FileReadResult.ParentPolicyDenied;
-
             }
 
             parsed.Add(new AttachedFileDto(path, content));
@@ -297,13 +291,11 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
 
     private enum FileReadResult
     {
-
         Success,
 
         Invalid,
 
         ParentPolicyDenied,
-
     }
 
     private static bool TryReadString(

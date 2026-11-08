@@ -50,10 +50,22 @@ internal sealed partial class GuildQuestStore
 
                 DateTimeOffset now = time.GetUtcNow();
 
+                Guid? localChild = null;
+
+                if (localExecution is not null)
+                {
+                    Result<GuildLocalExecutionBinding> binding = await GuildLocalExecutionStore.ReadWithinAsync(
+                        connection, transaction, row.Quest.Id, token).ConfigureAwait(false);
+
+                    if (binding.IsFailure) return binding.Error;
+
+                    localChild = binding.Value.ApprenticeId;
+                }
+
                 await using SqliteCommand insert = Command(connection, transaction, """
                     INSERT INTO guild_dispatches(DispatchId,QuestId,InvocationDigest,IsContinuation,AccountingAssociationId,
-                        EvidenceCode,Revision,CreatedAtUtc,UpdatedAtUtc)
-                    VALUES($id,$quest,$digest,$continuation,$accounting,1,1,$now,$now)
+                        EvidenceCode,LocalChildId,Revision,CreatedAtUtc,UpdatedAtUtc)
+                    VALUES($id,$quest,$digest,$continuation,$accounting,1,$child,1,$now,$now)
                     """);
 
                 Add(insert, "$id", Id(dispatchId));
@@ -61,6 +73,7 @@ internal sealed partial class GuildQuestStore
                 Add(insert, "$digest", Convert.FromHexString(invocationDigest));
                 Add(insert, "$continuation", isContinuation ? 1 : 0);
                 Add(insert, "$accounting", Id(accountingAssociationId));
+                Add(insert, "$child", Id(localChild));
                 Add(insert, "$now", UtcInstantText.Format(now));
 
                 _ = await insert.ExecuteNonQueryAsync(token).ConfigureAwait(false);
@@ -71,7 +84,7 @@ internal sealed partial class GuildQuestStore
                 if (projected.IsFailure) return projected.Error;
 
                 return new GuildQuestDispatchRecord(dispatchId, row.Quest.Id, invocationDigest, accountingAssociationId,
-                    isContinuation, GuildDispatchEvidence.Prepared, null, null, null, 1);
+                    isContinuation, GuildDispatchEvidence.Prepared, localChild, null, null, 1);
             }, ct);
     }
 
@@ -82,8 +95,14 @@ internal sealed partial class GuildQuestStore
             return Task.FromResult(Result<GuildQuestDispatchAdmission>.Failure(InvalidReceipt));
 
         return authority.InQuestTransactionAsync<GuildQuestDispatchAdmission>(driver.Execution.RootQuestId,
-            async (connection, transaction, signets, token) =>
-            {
+            (connection, transaction, signets, token) => MarkPossiblyDispatchedWithinAsync(connection, transaction,
+                signets, driver, dispatchId, expectedDispatchRevision, token), ct);
+    }
+
+    private async Task<Result<GuildQuestDispatchAdmission>> MarkPossiblyDispatchedWithinAsync(
+        SqliteConnection connection, SqliteTransaction transaction, SignetAuthority.QuestTransaction signets,
+        GuildQuestDriver driver, Guid dispatchId, long expectedDispatchRevision, CancellationToken token)
+    {
                 Result<(GuildQuestStored Row, LongRunningOperation Operation)> admitted = await RequireDriverWithinAsync(
                     connection, transaction, signets, driver, true, false, token).ConfigureAwait(false);
 
@@ -134,7 +153,6 @@ internal sealed partial class GuildQuestStore
                 if (projected.IsFailure) return projected.Error;
 
                 return new GuildQuestDispatchAdmission(dispatch with { Evidence = GuildDispatchEvidence.PossiblyDispatched, Revision = dispatch.Revision + 1 }, true);
-            }, ct);
     }
 
     internal Task<Result<GuildQuestDispatchRecord>> RecordDispatchEvidenceAsync(GuildQuestDriver driver,
@@ -173,7 +191,7 @@ internal sealed partial class GuildQuestStore
                 if (evidence.Evidence == GuildDispatchEvidence.Confirmed
                     ? dispatch.Evidence is not (GuildDispatchEvidence.PossiblyDispatched or GuildDispatchEvidence.Confirmed) || evidence.LocalChildId is null && evidence.RemoteTaskId is null
                     : !evidence.NoDispatchProven || dispatch.Evidence is not (GuildDispatchEvidence.Prepared or GuildDispatchEvidence.PossiblyDispatched)
-                        || evidence.LocalChildId is not null || evidence.RemoteTaskId is not null || evidence.RemoteContextId is not null)
+                        || evidence.LocalChildId != dispatch.LocalChildId || evidence.RemoteTaskId is not null || evidence.RemoteContextId is not null)
                     return UncertainDispatch;
 
                 if (dispatch.Revision == long.MaxValue) return ExhaustedReceipt;
@@ -224,8 +242,12 @@ internal sealed partial class GuildQuestStore
 
         if (signet.IsFailure) return signet.Error;
 
-        GuildCallerContext caller = new(GuildCallerKind.Run, signet.Value.Binding.OriginPrincipalId, driver.Execution.RunId,
+        GuildCallerContext caller = driver.Caller ?? new(GuildCallerKind.Run, signet.Value.Binding.OriginPrincipalId, driver.Execution.RunId,
             policy.InstallationGeneration, driver.Execution);
+
+        if (caller.Kind != GuildCallerKind.Run || !ReferenceEquals(caller.Execution, driver.Execution)
+            || caller.PrincipalId != signet.Value.Binding.OriginPrincipalId || caller.InstallationGeneration != policy.InstallationGeneration)
+            return new Error(ErrorCodes.Guild.AuthorityMismatch, "The driver does not bind its authenticated Run caller.");
 
         Result visible = await RequireVisibleAsync(connection, transaction, caller, row, ct).ConfigureAwait(false);
 
@@ -238,6 +260,9 @@ internal sealed partial class GuildQuestStore
         if (requireLease && row.Quest.ReconciliationRequired) return UncertainDispatch;
 
         if (requireLease && row.Quest.ResultReceiptId is not null) return ClosedDispatch;
+
+        if (requireLease && !allowCancelling
+            && await HasClosedAncestorAsync(connection, transaction, row.Quest.Id, ct).ConfigureAwait(false)) return ClosedDispatch;
 
         LongRunningOperation? operation = await LongRunningOperationStore.ReadWithinAsync(connection, transaction, row.Quest.OperationId, ct).ConfigureAwait(false);
 

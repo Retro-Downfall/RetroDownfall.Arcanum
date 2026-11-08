@@ -16,6 +16,9 @@ public sealed record FeatureSettings
 
     public bool ScalarUi { get; set; }
 
+    /// <summary>Opt-in local Guild execution. Defaults off.</summary>
+    public bool Guild { get; set; }
+
     public bool Conclave { get; set; }
 
     public bool A2AServer { get; set; }
