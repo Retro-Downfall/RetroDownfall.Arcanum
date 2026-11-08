@@ -35,6 +35,10 @@ internal static class BackupRestoreGuildSignetSanitation
 
         _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
+        command.CommandText = "UPDATE guild_workspace_leases SET StateCode=4,ReasonCode='restored-ownership',Revision=Revision+1 WHERE StateCode<>3;";
+
+        _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
         Result verified = await VerifyWithinAsync(connection, transaction, ct).ConfigureAwait(false);
 
         if (verified.IsFailure)
@@ -92,6 +96,10 @@ internal static class BackupRestoreGuildSignetSanitation
         command.CommandText = "SELECT EXISTS(SELECT 1 FROM guild_signets WHERE RestoredInert<>1 OR AuthorityEpoch=$epoch)";
 
         command.Parameters.AddWithValue("$epoch", text);
+
+        if (!Equals(0L, await command.ExecuteScalarAsync(ct).ConfigureAwait(false))) return Unknown();
+
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM guild_workspace_leases WHERE StateCode IN(1,2))";
 
         return Equals(0L, await command.ExecuteScalarAsync(ct).ConfigureAwait(false)) ? Result.Success() : Unknown();
     }

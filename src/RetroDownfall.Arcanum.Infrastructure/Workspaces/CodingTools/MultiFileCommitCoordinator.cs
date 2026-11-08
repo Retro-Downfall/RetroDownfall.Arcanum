@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 using Microsoft.Win32.SafeHandles;
 
@@ -39,7 +41,8 @@ internal sealed record WorkspaceCommitResult(
     WorkspaceCommitStatus Status,
     WorkspaceCommitFailure Failure,
     ReversibleWorkspaceCommit? Transaction,
-    WorkspaceCommitRecovery? Recovery);
+    WorkspaceCommitRecovery? Recovery,
+    Error? Error = null);
 
 internal sealed record WorkspaceArtifactCleanupResult(
     bool Complete,
@@ -162,6 +165,14 @@ internal sealed class MultiFileCommitCoordinator
 
         List<CreatedDirectory> createdDirectories = [];
 
+        WorkspaceMutationPlan? mutationPlan = null;
+
+        IWorkspaceMutationLease? mutationLease = null;
+
+        IDisposable? mutationBinding = null;
+
+        bool transferred = false;
+
         try
         {
             ValidateAndResolveOperations(operations, staged);
@@ -171,6 +182,19 @@ internal sealed class MultiFileCommitCoordinator
             await ValidateExpectedFingerprintsAsync(staged, cancellationToken).ConfigureAwait(false);
 
             cancellationToken.ThrowIfCancellationRequested();
+
+            mutationPlan = CreateMutationPlan(staged);
+
+            Result<IWorkspaceMutationLease> admitted = await mutationPlan.AdmitAsync(cancellationToken).ConfigureAwait(false);
+
+            if (admitted.IsFailure)
+            {
+                return new(WorkspaceCommitStatus.Failed, WorkspaceCommitFailure.Validation, null, null, admitted.Error);
+            }
+
+            mutationLease = admitted.Value;
+
+            mutationBinding = mutationPlan.Enter(mutationLease);
 
             CreateRequiredDirectories(
                 staged,
@@ -238,7 +262,11 @@ internal sealed class MultiFileCommitCoordinator
                 _workspaceRoot,
                 staged,
                 createdDirectories,
-                _options);
+                _options,
+                mutationPlan,
+                mutationLease);
+
+            transferred = true;
 
             return new WorkspaceCommitResult(
                 WorkspaceCommitStatus.Committed,
@@ -251,6 +279,11 @@ internal sealed class MultiFileCommitCoordinator
             WorkspaceRollbackResult rollback = await RollbackWithIndependentDeadlineAsync(
                 staged,
                 createdDirectories).ConfigureAwait(false);
+
+            if (!rollback.Complete)
+            {
+                WorkspaceMutationPlan.RetainRecovery("rollback_incomplete");
+            }
 
             if (rollback.Recovery is not null)
             {
@@ -271,14 +304,68 @@ internal sealed class MultiFileCommitCoordinator
                 staged,
                 createdDirectories).ConfigureAwait(false);
 
+            if (!rollback.Complete)
+            {
+                WorkspaceMutationPlan.RetainRecovery("rollback_incomplete");
+            }
+
             return new WorkspaceCommitResult(
                 rollback.Complete
                     ? WorkspaceCommitStatus.Failed
                     : WorkspaceCommitStatus.RollbackIncomplete,
                 failure,
                 Transaction: null,
-                rollback.Recovery);
+                rollback.Recovery,
+                exception is WorkspaceMutationFenceException denied ? denied.Error : null);
         }
+        finally
+        {
+            mutationBinding?.Dispose();
+
+            if (!transferred && mutationLease is not null)
+            {
+                await mutationLease.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    private WorkspaceMutationPlan CreateMutationPlan(IReadOnlyList<StagedOperation> staged)
+    {
+        WorkspaceMutationPlan plan = new(_workspaceRoot);
+
+        HashSet<string> missingDirectories = new(StringComparer.Ordinal);
+
+        foreach (StagedOperation operation in staged)
+        {
+            plan.Add(operation.AbsolutePath);
+
+            foreach (string purpose in new[] { "tmp", "bak", "deleted", "rollback" })
+            {
+                string artifact = plan.Artifact(operation.AbsolutePath, purpose);
+
+                plan.Artifact(artifact, "cleanup");
+            }
+
+            for (string? parent = Path.GetDirectoryName(operation.AbsolutePath); parent is not null
+                && !string.Equals(parent, _workspaceRoot, StringComparison.Ordinal)
+                && !Directory.Exists(parent); parent = Path.GetDirectoryName(parent))
+            {
+                missingDirectories.Add(parent);
+            }
+        }
+
+        foreach (string directory in missingDirectories)
+        {
+            plan.Add(directory, GuildPathScopeKind.Subtree);
+
+            string staging = plan.Artifact(directory, "directory-stage", GuildPathScopeKind.Subtree, ".arcanum-dir-");
+
+            plan.Artifact(directory, "directory-cleanup", GuildPathScopeKind.Subtree);
+
+            plan.Artifact(staging, "directory-cleanup", GuildPathScopeKind.Subtree);
+        }
+
+        return plan;
     }
 
     private void CaptureDestinationParentIdentities(
@@ -507,11 +594,13 @@ internal sealed class MultiFileCommitCoordinator
                 "A required destination parent could not be identity-bound.");
         }
 
-        string stagingPath = Path.Combine(
+        string stagingPath = WorkspaceMutationPlan.ArtifactPath(directory, "directory-stage", () => Path.Combine(
             parent,
-            $".arcanum-dir-{Guid.NewGuid():N}");
+            $".arcanum-dir-{Guid.NewGuid():N}"));
 
-        Directory.CreateDirectory(stagingPath);
+        WorkspaceMutationPlan.Demand(stagingPath);
+
+        WorkspaceMutationPlan.CreateDirectoryChain(stagingPath);
 
         CreatedDirectory stagingDirectory = new(
             WorkspaceRelativePath.FromAbsolute(
@@ -568,7 +657,11 @@ internal sealed class MultiFileCommitCoordinator
                     "A required destination directory appeared or its parent changed.");
             }
 
-            Directory.Move(stagingPath, directory);
+            WorkspaceMutationPlan.Demand(stagingPath);
+
+            WorkspaceMutationPlan.Demand(directory);
+
+            WorkspaceMutationPlan.MoveDirectory(stagingPath, directory, stagingLease);
 
             moved = true;
 
@@ -603,7 +696,9 @@ internal sealed class MultiFileCommitCoordinator
             {
                 try
                 {
-                    Directory.Delete(stagingPath, recursive: false);
+                    WorkspaceMutationPlan.Demand(stagingPath, rollback: true);
+
+                    WorkspaceMutationPlan.DeleteDirectory(stagingPath, recursive: false, stagingDirectory.IdentityLease);
                 }
                 catch (Exception exception) when (
                     exception is IOException or UnauthorizedAccessException)
@@ -654,6 +749,8 @@ internal sealed class MultiFileCommitCoordinator
                     out string backupRelative);
 
                 operation.BackupRelativePath = backupRelative;
+
+                WorkspaceMutationPlan.Demand(operation.BackupAbsolutePath);
 
                 File.Copy(
                     operation.AbsolutePath,
@@ -730,6 +827,8 @@ internal sealed class MultiFileCommitCoordinator
         // A new file with no stated mode (no `new file mode` header) has no destination to protect:
         // it is created with the process default (0666 masked by the umask) and keeps it, instead of
         // the owner-only 0600 an unconditional create mode used to leave behind.
+
+        WorkspaceMutationPlan.Demand(operation.TempAbsolutePath!);
 
         await using (FileStream stream = new(
             operation.TempAbsolutePath!,
@@ -871,6 +970,10 @@ internal sealed class MultiFileCommitCoordinator
 
             _options.BeforeFileRemovalRename?.Invoke(operation.RelativePath);
 
+            WorkspaceMutationPlan.Demand(operation.AbsolutePath);
+
+            WorkspaceMutationPlan.Demand(operation.DeleteArtifactAbsolutePath);
+
             File.Move(
                 operation.AbsolutePath,
                 operation.DeleteArtifactAbsolutePath,
@@ -947,6 +1050,10 @@ internal sealed class MultiFileCommitCoordinator
         // identity/content handle is therefore held for the strongest available verification,
         // released only because Windows cannot rename over an open destination, and the path is
         // revalidated immediately before this atomic rename. New files always use no-overwrite.
+        WorkspaceMutationPlan.Demand(operation.TempAbsolutePath!);
+
+        WorkspaceMutationPlan.Demand(operation.AbsolutePath);
+
         File.Move(
             operation.TempAbsolutePath!,
             operation.AbsolutePath,
@@ -1084,9 +1191,9 @@ internal sealed class MultiFileCommitCoordinator
     {
         for (int attempt = 0; attempt < 16; attempt++)
         {
-            string candidate = Path.Combine(
+            string candidate = WorkspaceMutationPlan.ArtifactPath(Path.Combine(directory, fileName), extension, () => Path.Combine(
                 directory,
-                $".{fileName}.arcanum-{Guid.NewGuid():N}.{extension}");
+                $".{fileName}.arcanum-{Guid.NewGuid():N}.{extension}"));
 
             if (File.Exists(candidate) || Directory.Exists(candidate))
             {
@@ -1127,6 +1234,8 @@ internal sealed class MultiFileCommitCoordinator
         IReadOnlyList<CreatedDirectory> createdDirectories)
     {
         using CancellationTokenSource cleanupDeadline = new(_options.CleanupTimeout);
+
+        using IDisposable rollback = WorkspaceMutationPlan.BeginRollback();
 
         try
         {
@@ -1174,6 +1283,8 @@ internal sealed class MultiFileCommitCoordinator
     {
         if (!OperatingSystem.IsWindows() && mode is not null)
         {
+            WorkspaceMutationPlan.Demand(path);
+
             File.SetUnixFileMode(path, mode.Value);
         }
     }
@@ -1341,6 +1452,10 @@ internal sealed class ReversibleWorkspaceCommit
 
     private readonly MultiFileCommitCoordinatorOptions _options;
 
+    private readonly WorkspaceMutationPlan _mutationPlan;
+
+    private readonly IWorkspaceMutationLease _mutationLease;
+
     private readonly SemaphoreSlim _stateGate = new(1, 1);
 
     private TransactionState _state;
@@ -1351,8 +1466,14 @@ internal sealed class ReversibleWorkspaceCommit
         string workspaceRoot,
         IReadOnlyList<MultiFileCommitCoordinator.StagedOperation> staged,
         IReadOnlyList<MultiFileCommitCoordinator.CreatedDirectory> createdDirectories,
-        MultiFileCommitCoordinatorOptions options)
+        MultiFileCommitCoordinatorOptions options,
+        WorkspaceMutationPlan mutationPlan,
+        IWorkspaceMutationLease mutationLease)
     {
+        _mutationPlan = mutationPlan;
+
+        _mutationLease = mutationLease;
+
         _workspaceRoot = workspaceRoot;
 
         _staged = staged;
@@ -1382,6 +1503,8 @@ internal sealed class ReversibleWorkspaceCommit
                 return new WorkspaceRollbackResult(Complete: true, Recovery: null);
             }
 
+            using IDisposable mutationBinding = _mutationPlan.Enter(_mutationLease, rollback: true);
+
             using CancellationTokenSource cleanupDeadline = new(_options.CleanupTimeout);
 
             WorkspaceRollbackResult result;
@@ -1404,11 +1527,18 @@ internal sealed class ReversibleWorkspaceCommit
                         _staged));
             }
 
+            if (!result.Complete)
+            {
+                WorkspaceMutationPlan.RetainRecovery("rollback_incomplete");
+            }
+
             if (result.Complete)
             {
                 _state = TransactionState.RolledBack;
 
                 DisposeCreatedDirectoryLeases();
+
+                await _mutationLease.DisposeAsync().ConfigureAwait(false);
             }
 
             callerCancelled |= cancellationToken.IsCancellationRequested;
@@ -1454,6 +1584,8 @@ internal sealed class ReversibleWorkspaceCommit
                 return _irreversibleCleanupResult
                     ?? new WorkspaceArtifactCleanupResult(Complete: false, []);
             }
+
+            using IDisposable mutationBinding = _mutationPlan.Enter(_mutationLease, rollback: true);
 
             using CancellationTokenSource cleanupDeadline = new(_options.CleanupTimeout);
 
@@ -1509,11 +1641,18 @@ internal sealed class ReversibleWorkspaceCommit
                 retained.Count == 0,
                 retained.AsReadOnly());
 
+            if (!cleanupResult.Complete)
+            {
+                WorkspaceMutationPlan.RetainRecovery("cleanup_incomplete");
+            }
+
             _irreversibleCleanupResult = cleanupResult;
 
             _state = TransactionState.Irreversible;
 
             DisposeCreatedDirectoryLeases();
+
+            await _mutationLease.DisposeAsync().ConfigureAwait(false);
 
             callerCancelled |= cancellationToken.IsCancellationRequested;
 
@@ -1558,8 +1697,15 @@ internal sealed class ReversibleWorkspaceCommit
                 return;
             }
 
+            using IDisposable mutationBinding = _mutationPlan.Enter(_mutationLease, rollback: true);
+
+            WorkspaceMutationPlan.RetainRecovery("receipt_abandoned");
+
             _state = TransactionState.Abandoned;
+
             DisposeCreatedDirectoryLeases();
+
+            await _mutationLease.DisposeAsync().ConfigureAwait(false);
         }
         finally
         {
@@ -1768,6 +1914,10 @@ internal sealed class ReversibleWorkspaceCommit
                     return false;
                 }
 
+                WorkspaceMutationPlan.Demand(operation.DeleteArtifactAbsolutePath);
+
+                WorkspaceMutationPlan.Demand(operation.AbsolutePath);
+
                 File.Move(
                     operation.DeleteArtifactAbsolutePath,
                     operation.AbsolutePath,
@@ -1790,6 +1940,10 @@ internal sealed class ReversibleWorkspaceCommit
             {
                 return false;
             }
+
+            WorkspaceMutationPlan.Demand(operation.AbsolutePath);
+
+            WorkspaceMutationPlan.Demand(operation.RollbackArtifactAbsolutePath!);
 
             File.Move(
                 operation.AbsolutePath,
@@ -1858,6 +2012,10 @@ internal sealed class ReversibleWorkspaceCommit
                 return false;
             }
 
+            WorkspaceMutationPlan.Demand(operation.BackupAbsolutePath);
+
+            WorkspaceMutationPlan.Demand(operation.AbsolutePath);
+
             File.Move(
                 operation.BackupAbsolutePath,
                 operation.AbsolutePath,
@@ -1907,9 +2065,9 @@ internal sealed class ReversibleWorkspaceCommit
 
         for (int attempt = 0; attempt < 16; attempt++)
         {
-            string candidate = Path.Combine(
+            string candidate = WorkspaceMutationPlan.ArtifactPath(operation.AbsolutePath, "rollback", () => Path.Combine(
                 directory,
-                $".{fileName}.arcanum-{Guid.NewGuid():N}.rollback");
+                $".{fileName}.arcanum-{Guid.NewGuid():N}.rollback"));
 
             if (File.Exists(candidate)
                 || Directory.Exists(candidate)
@@ -1942,6 +2100,10 @@ internal sealed class ReversibleWorkspaceCommit
                 return false;
             }
 
+            WorkspaceMutationPlan.Demand(artifactAbsolutePath);
+
+            WorkspaceMutationPlan.Demand(originalAbsolutePath);
+
             File.Move(
                 artifactAbsolutePath,
                 originalAbsolutePath,
@@ -1970,7 +2132,11 @@ internal sealed class ReversibleWorkspaceCommit
                 return false;
             }
 
-            Directory.Move(artifactAbsolutePath, originalAbsolutePath);
+            WorkspaceMutationPlan.Demand(artifactAbsolutePath);
+
+            WorkspaceMutationPlan.Demand(originalAbsolutePath);
+
+            WorkspaceMutationPlan.MoveDirectory(artifactAbsolutePath, originalAbsolutePath);
 
             return true;
         }
@@ -2004,9 +2170,9 @@ internal sealed class ReversibleWorkspaceCommit
 
         for (int attempt = 0; attempt < 16; attempt++)
         {
-            string candidate = Path.Combine(
+            string candidate = WorkspaceMutationPlan.ArtifactPath(originalAbsolutePath, extension, () => Path.Combine(
                 directory,
-                $".{fileName}.arcanum-{Guid.NewGuid():N}.{extension}");
+                $".{fileName}.arcanum-{Guid.NewGuid():N}.{extension}"));
 
             if (File.Exists(candidate)
                 || Directory.Exists(candidate)
@@ -2135,6 +2301,10 @@ internal sealed class ReversibleWorkspaceCommit
 
             options.BeforeFileRemovalRename?.Invoke(relativePath);
 
+            WorkspaceMutationPlan.Demand(absolutePath);
+
+            WorkspaceMutationPlan.Demand(removalAbsolutePath!);
+
             File.Move(
                 absolutePath,
                 removalAbsolutePath!,
@@ -2207,6 +2377,8 @@ internal sealed class ReversibleWorkspaceCommit
 
                 return;
             }
+
+            WorkspaceMutationPlan.Demand(removalAbsolutePath!, rollback: true);
 
             File.Delete(removalAbsolutePath!);
 
@@ -2298,9 +2470,14 @@ internal sealed class ReversibleWorkspaceCommit
 
                 options.BeforeDirectoryRemovalRename?.Invoke(directory.RelativePath);
 
-                Directory.Move(
+                WorkspaceMutationPlan.Demand(directory.AbsolutePath);
+
+                WorkspaceMutationPlan.Demand(removalAbsolutePath!);
+
+                WorkspaceMutationPlan.MoveDirectory(
                     directory.AbsolutePath,
-                    removalAbsolutePath!);
+                    removalAbsolutePath!,
+                    directoryLease);
 
                 retained.Add(removalRelativePath!);
 
@@ -2352,7 +2529,9 @@ internal sealed class ReversibleWorkspaceCommit
                     continue;
                 }
 
-                Directory.Delete(removalAbsolutePath!, recursive: false);
+                WorkspaceMutationPlan.Demand(removalAbsolutePath!, rollback: true);
+
+                WorkspaceMutationPlan.DeleteDirectory(removalAbsolutePath!, recursive: false, directoryLease);
 
                 if (!Directory.Exists(removalAbsolutePath))
                 {

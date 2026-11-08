@@ -300,6 +300,7 @@ public sealed class ContinuousIntegrationWorkflowTests
             "Intelligence.Spells.SpellDirectoryTests",
             "Repositories.SpellRepositoryTests",
             "Workspaces.SpellScannerTests",
+            "Guild.GuildWorkspaceLeaseHostLockTests",
         ];
 
         string[] methods =
@@ -1795,7 +1796,7 @@ public sealed class ContinuousIntegrationWorkflowTests
             }
         }
 
-        Assert.Equal(14, setups);
+        Assert.Equal(15, setups);
 
         Assert.Equal(1, pairedSetups);
 
@@ -2084,7 +2085,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     private static bool IsFullQualificationOnly(WorkflowJob job) =>
         job.IsConditional && Regex.IsMatch(job.Body,
-            @"(?m)^    if: needs\.scope\.outputs\.full == 'true'(?: && inputs\.qualification != '(?:guild-memory|guild-budget)')*\r?$");
+            @"(?m)^    if: needs\.scope\.outputs\.full == 'true'(?: && inputs\.qualification != '(?:guild-memory|guild-budget|guild-workspace)')*\r?$");
 
     private static IReadOnlyList<string> WorkflowFiles(string repositoryRoot)
     {

@@ -12,6 +12,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </summary>
 internal interface IMcpClient : IAsyncDisposable
 {
+    /// <summary>Code-owned in-process server identity; remote annotations never establish this capability.</summary>
+    bool IsHostOwned => false;
+
     /// <summary>
     /// Connects the underlying transport and performs the MCP <c>initialize</c> handshake. Must be
     /// called exactly once before <see cref="GetToolsAsync"/> or <see cref="CallToolAsync"/>.

@@ -62,6 +62,27 @@ class CiScopeWorkflowTests(unittest.TestCase):
         self.assertIn("Missing, skipped or failed required Guild budget contract", harness)
         self.assertNotIn("continue-on-error", harness)
 
+    def test_focused_workspace_profile_requires_both_native_platforms_and_executed_cases(self):
+        focused = job("guild-workspace")
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.qualification == 'guild-workspace'", focused)
+        self.assertIn("os: [macos-26, windows-latest]", focused)
+        self.assertNotIn("continue-on-error", focused)
+        for name in ("build-test", *WORKERS, "hosted-producer-analysis", "windows-suite",
+                     "windows-arm64-suite", "aot-il", "macos-workspace-check"):
+            with self.subTest(job=name):
+                self.assertRegex(job(name), r"(?m)^    if: .*inputs\.qualification != 'guild-workspace'")
+        harness = (ROOT / "scripts/qualify-guild-workspace.sh").read_text()
+        for name in ("GuildWorkspaceLeaseSignetPolicyTests", "WorkspaceMutationFenceWriterTests",
+                     "WorkspaceMutationFenceProcessTests", "WorkspaceLeaseDirectoryCreationTests",
+                     "WorkspaceLeaseDirectoryRemovalTests", "SdkMcpClientWrapperTests", "FamiliarProcessRunner",
+                     "CappedChildProcess", "CampaignBackedWorkspaceRegistry", "ArcanumErrorMapper"):
+            self.assertIn(name, harness)
+        for name in ("Windows_retained_no_delete_sharing_prevents_lock_leaf_replacement",
+                     "Replaced_lock_file_or_reparse_path_revokes_admission"):
+            self.assertIn("--required-case", harness)
+            self.assertIn(name, harness)
+        self.assertNotIn("continue-on-error", harness)
+
     def test_scope_uses_event_shas_and_full_history_without_shell_interpolation(self):
         body = job("scope")
         self.assertIn("fetch-depth: 0", body)

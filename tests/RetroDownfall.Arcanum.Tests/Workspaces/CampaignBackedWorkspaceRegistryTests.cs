@@ -1,4 +1,7 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using System.Collections.Immutable;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Core.Guild;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -58,6 +61,68 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
         {
             Directory.Delete(_workspaceRoot, recursive: true);
         }
+    }
+
+    [SkippableFact]
+    public async Task RegisterAsync_conflict_precedes_marker_creation_and_campaign_persistence()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ArcanumSettings settings = new()
+        {
+            Security = new SecuritySettings { CampaignRoots = [_workspaceRoot] },
+        };
+
+        GrimoireDbReadiness readiness = new();
+
+        readiness.MarkReady();
+
+        CampaignBackedWorkspaceRegistry registry = new(new CampaignRepositoryScopeFactory(_db!, settings),
+            readiness, new TestOptionsMonitor<ArcanumSettings>(settings));
+
+        using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
+
+        using IDisposable registration = WorkspaceMutationFence.Install(new MarkerFence(_workspaceRoot));
+
+        Result<WorkspaceInfo> result = await registry.RegisterAsync(
+            new CreateWorkspaceRequest("Blocked", _workspaceRoot, WorkspaceType.Campaign), CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Guild.LeaseConflict, result.Error.Code);
+
+        Assert.False(Directory.Exists(Path.Combine(_workspaceRoot, ".arcanum")));
+
+        Assert.Empty(await registry.GetAllAsync(CancellationToken.None));
+    }
+
+    private sealed class MarkerFence(string root) : IWorkspaceMutationFence
+    {
+        public ValueTask<Result<IWorkspaceMutationLease>> AdmitAsync(string workspaceRoot, ImmutableArray<GuildPathScope> scopes, CancellationToken cancellationToken) =>
+            ValueTask.FromResult<Result<IWorkspaceMutationLease>>(workspaceRoot == root
+                ? Result<IWorkspaceMutationLease>.Failure(new(ErrorCodes.Guild.LeaseConflict, "Protected workspace."))
+                : Result<IWorkspaceMutationLease>.Success(new UnprotectedLease()));
+    }
+
+    private sealed class UnprotectedLease : IWorkspaceMutationLease, IDisposable
+    {
+        public ValueTask<Result> ValidateDirectoryCreationAsync(WorkspaceLeaseDirectoryCreation preparation, bool rollback, CancellationToken cancellationToken) => ValueTask.FromResult(Result.Success());
+
+        public ValueTask<Result> AdoptCreatedDirectoryAsync(WorkspaceLeaseCreatedDirectory proof, bool rollback, CancellationToken cancellationToken) => ValueTask.FromResult(Result.Success());
+
+        public ValueTask<Result> ValidateDirectoryRemovalAsync(WorkspaceLeaseDirectoryRemoval preparation, bool rollback, CancellationToken cancellationToken) => ValueTask.FromResult(Result.Success());
+
+        public ValueTask<Result> AdoptRemovedDirectoryAsync(WorkspaceLeaseRemovedDirectory proof, bool rollback, CancellationToken cancellationToken) => ValueTask.FromResult(Result.Success());
+
+        public ValueTask<Result> ValidateAsync(bool rollback, CancellationToken cancellationToken) => ValueTask.FromResult(Result.Success());
+
+        public ValueTask<Result> RetainRecoveryAsync(string reasonCode, CancellationToken cancellationToken) => ValueTask.FromResult(Result.Success());
+
+        public IDisposable Enter() => this;
+
+        public void Dispose() { }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     [SkippableFact]

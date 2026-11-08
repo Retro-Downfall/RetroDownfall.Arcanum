@@ -388,6 +388,10 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
         switch (runResult.Outcome)
         {
+            case CappedChildProcessOutcome.PreStartValidationFailed:
+
+                return runResult.PreStartValidationError ?? WorkspaceProcessBoundary.Message;
+
             case CappedChildProcessOutcome.FilesystemSandboxUnavailable:
 
             case CappedChildProcessOutcome.FilesystemSandboxDeniedByWindowsSanctum:

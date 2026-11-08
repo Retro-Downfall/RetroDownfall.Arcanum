@@ -25,4 +25,7 @@ UNION ALL SELECT 'guild_portal_receipts' AS TableName, 'CreatedAtUtc' AS ColumnN
 UNION ALL SELECT 'guild_portal_inputs' AS TableName, 'CreatedAtUtc' AS ColumnName
 UNION ALL SELECT 'guild_events' AS TableName, 'CreatedAtUtc' AS ColumnName
 UNION ALL SELECT 'guild_portal_cursors' AS TableName, 'CreatedAtUtc' AS ColumnName
-UNION ALL SELECT 'guild_portal_outbox' AS TableName, 'CreatedAtUtc' AS ColumnName;
+UNION ALL SELECT 'guild_portal_outbox' AS TableName, 'CreatedAtUtc' AS ColumnName
+UNION ALL SELECT 'guild_workspace_leases' AS TableName, 'HeartbeatAtUtc' AS ColumnName
+UNION ALL SELECT 'guild_workspace_leases' AS TableName, 'ExpiresAtUtc' AS ColumnName
+UNION ALL SELECT 'guild_workspace_lease_mutations' AS TableName, 'AcceptedAtUtc' AS ColumnName;

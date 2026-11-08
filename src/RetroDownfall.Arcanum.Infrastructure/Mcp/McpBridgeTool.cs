@@ -8,6 +8,8 @@ using ModelContextProtocol.Protocol;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -156,9 +158,22 @@ internal sealed class McpBridgeTool : AIFunction
         bool trustStructuredResult,
         CancellationToken cancellationToken)
     {
+        WorkspaceMutationFence.OpaqueEffect? effect = null;
+
+        if (!client.IsHostOwned && !WorkspaceProcessBoundary.TryBeginOpaqueEffect(out effect))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return WorkspaceProcessBoundary.Message;
+        }
+
+        using WorkspaceMutationFence.OpaqueEffect? opaqueEffect = effect;
+
         TimeSpan? callTimeout = RunsUntilCallerCancellation(_name)
             ? Timeout.InfiniteTimeSpan
             : _requestTimeout;
+
+        opaqueEffect?.MarkDispatched();
 
         CallToolResult result = await client
             .CallToolAsync(_name, arguments, callTimeout, cancellationToken)

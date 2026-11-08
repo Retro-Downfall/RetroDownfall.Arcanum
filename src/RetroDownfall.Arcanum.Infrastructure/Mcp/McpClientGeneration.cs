@@ -9,6 +9,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 internal sealed class McpClientGeneration(
     IMcpClient inner) : IMcpClient
 {
+    public bool IsHostOwned => inner.IsHostOwned;
+
     private readonly object _gate = new();
 
     private readonly TaskCompletionSource _drained =

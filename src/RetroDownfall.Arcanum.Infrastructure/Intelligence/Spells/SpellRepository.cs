@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
@@ -83,6 +84,39 @@ internal sealed partial class SpellRepository : ISpellRepository
 
     private int GetMaxSpellDeclaredTools() =>
         ArcanumSettingClamps.MaxDeclaredTools(ArcanumRuntimeDefaults.Spells.MaxDeclaredTools);
+
+    private static WorkspaceMutationPlan PrepareSpellCreation(string workspaceRoot, string spellsRoot, string spellDirectory)
+    {
+        WorkspaceMutationPlan plan = new(workspaceRoot);
+
+        plan.Add(spellDirectory, GuildPathScopeKind.Subtree);
+
+        plan.ArtifactChild(spellsRoot, "spell-stage", GuildPathScopeKind.Subtree, ".staging-");
+
+        return plan;
+    }
+
+    private static WorkspaceMutationPlan PrepareSpellFiles(string workspaceRoot, string directory, IReadOnlyList<string> files)
+    {
+        WorkspaceMutationPlan plan = new(workspaceRoot);
+
+        foreach (string file in files)
+        {
+            plan.Add(file);
+
+            if (OperatingSystem.IsWindows())
+            {
+                plan.Artifact(file, "spell-temp");
+            }
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            plan.ArtifactChild(directory, "spell-stage", GuildPathScopeKind.Subtree, ".staging-");
+        }
+
+        return plan;
+    }
 
     private sealed class MetadataMutation(string workspaceRoot) : IDisposable
     {
@@ -228,6 +262,19 @@ internal sealed partial class SpellRepository : ISpellRepository
             content = SpellFileParser.FormatCreate(trimmedName, request);
         }
 
+        WorkspaceMutationPlan physicalPlan = PrepareSpellCreation(workspaceRoot, spellsRoot, spellDir);
+
+        Result<IWorkspaceMutationLease> physicalAdmission = await physicalPlan.AdmitAsync(ct).ConfigureAwait(false);
+
+        if (physicalAdmission.IsFailure)
+        {
+            return physicalAdmission.Error;
+        }
+
+        await using IWorkspaceMutationLease physicalLease = physicalAdmission.Value;
+
+        using IDisposable physicalBinding = physicalPlan.Enter(physicalLease);
+
         try
         {
             using SpellDirectory parent = SpellDirectory.Open(workspaceRoot, spellsRoot, create: true);
@@ -262,7 +309,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         {
             _logger.LogError(ex, "Failed to create spell {SpellName} at {SpellPath}", trimmedName, spellFile);
 
-            return Result.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
+            return Result.Failure(ex is WorkspaceMutationFenceException fenceFailure ? fenceFailure.Error : new Error("Spell.WriteFailed", WriteFailedMessage));
         }
     }
 
@@ -322,6 +369,22 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string content = SpellFileParser.FormatUpdate(workspaceSpell, request);
 
+        WorkspaceMutationPlan physicalPlan = PrepareSpellFiles(workspaceRoot, workspaceSpell.DirectoryPath,
+            SkillJsonIO.HasStructuredFields(request) || workspaceSpell.SkillMetadata is not null
+                ? [workspaceSpell.FilePath, Path.Combine(workspaceSpell.DirectoryPath, SkillJsonIO.CanonicalFileName)]
+                : [workspaceSpell.FilePath]);
+
+        Result<IWorkspaceMutationLease> physicalAdmission = await physicalPlan.AdmitAsync(ct).ConfigureAwait(false);
+
+        if (physicalAdmission.IsFailure)
+        {
+            return physicalAdmission.Error;
+        }
+
+        await using IWorkspaceMutationLease physicalLease = physicalAdmission.Value;
+
+        using IDisposable physicalBinding = physicalPlan.Enter(physicalLease);
+
         bool specReplaced = false;
 
         SpellDirectory? directory = null;
@@ -362,7 +425,7 @@ internal sealed partial class SpellRepository : ISpellRepository
                 await RestoreSpellFileAsync(directory!, Path.GetFileName(workspaceSpell.FilePath), workspaceSpell.FullContent).ConfigureAwait(false);
             }
 
-            return Result.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
+            return Result.Failure(ex is WorkspaceMutationFenceException fenceFailure ? fenceFailure.Error : new Error("Spell.WriteFailed", WriteFailedMessage));
         }
         finally
         {
@@ -411,6 +474,21 @@ internal sealed partial class SpellRepository : ISpellRepository
                 return Result.Failure(deleteError);
             }
 
+            WorkspaceMutationPlan physicalPlan = new(workspaceRoot);
+
+            physicalPlan.Add(spellDirectory, GuildPathScopeKind.Subtree);
+
+            Result<IWorkspaceMutationLease> physicalAdmission = await physicalPlan.AdmitAsync(ct).ConfigureAwait(false);
+
+            if (physicalAdmission.IsFailure)
+            {
+                return physicalAdmission.Error;
+            }
+
+            await using IWorkspaceMutationLease physicalLease = physicalAdmission.Value;
+
+            using IDisposable physicalBinding = physicalPlan.Enter(physicalLease);
+
             using SpellDirectory directory = SpellDirectory.Open(workspaceRoot, spellDirectory);
 
             BeforeFirstSpellWriteForTests?.Invoke();
@@ -427,7 +505,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         {
             _logger.LogError(ex, "Failed to delete spell {SpellName} at {SpellPath}", trimmedName, workspaceSpell.FilePath);
 
-            return Result.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
+            return Result.Failure(ex is WorkspaceMutationFenceException fenceFailure ? fenceFailure.Error : new Error("Spell.WriteFailed", WriteFailedMessage));
         }
     }
 
@@ -1027,6 +1105,19 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string content = SpellFileParser.FormatRenamed(source, trimmedNewName);
 
+        WorkspaceMutationPlan physicalPlan = PrepareSpellCreation(workspaceRoot, spellsRoot, spellDir);
+
+        Result<IWorkspaceMutationLease> physicalAdmission = await physicalPlan.AdmitAsync(ct).ConfigureAwait(false);
+
+        if (physicalAdmission.IsFailure)
+        {
+            return physicalAdmission.Error;
+        }
+
+        await using IWorkspaceMutationLease physicalLease = physicalAdmission.Value;
+
+        using IDisposable physicalBinding = physicalPlan.Enter(physicalLease);
+
         try
         {
             using SpellDirectory parent = SpellDirectory.Open(workspaceRoot, spellsRoot, create: true);
@@ -1065,7 +1156,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         {
             _logger.LogError(ex, "Failed to clone spell {SourceName} to {NewName} in {Workspace}", name, trimmedNewName, workspaceRoot);
 
-            return Result<SpellSummary>.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
+            return Result<SpellSummary>.Failure(ex is WorkspaceMutationFenceException fenceFailure ? fenceFailure.Error : new Error("Spell.WriteFailed", WriteFailedMessage));
         }
     }
 
@@ -1108,6 +1199,19 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string versionPath = Path.Combine(workspaceSpell.DirectoryPath, SpellVersionPathPolicy.BuildVersionFileName(label));
 
+        WorkspaceMutationPlan physicalPlan = PrepareSpellFiles(workspaceRoot, workspaceSpell.DirectoryPath, [versionPath]);
+
+        Result<IWorkspaceMutationLease> physicalAdmission = await physicalPlan.AdmitAsync(ct).ConfigureAwait(false);
+
+        if (physicalAdmission.IsFailure)
+        {
+            return physicalAdmission.Error;
+        }
+
+        await using IWorkspaceMutationLease physicalLease = physicalAdmission.Value;
+
+        using IDisposable physicalBinding = physicalPlan.Enter(physicalLease);
+
         try
         {
             using SpellDirectory directory = SpellDirectory.Open(workspaceRoot, workspaceSpell.DirectoryPath);
@@ -1136,7 +1240,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         {
             _logger.LogError(ex, "Failed to create version {Version} for spell {SpellName} at {VersionPath}", label, trimmedName, versionPath);
 
-            return Result<SpellVersionDto>.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
+            return Result<SpellVersionDto>.Failure(ex is WorkspaceMutationFenceException fenceFailure ? fenceFailure.Error : new Error("Spell.WriteFailed", WriteFailedMessage));
         }
     }
 
@@ -1179,6 +1283,19 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string versionPath = Path.Combine(workspaceSpell.DirectoryPath, SpellVersionPathPolicy.BuildVersionFileName(label));
 
+        WorkspaceMutationPlan physicalPlan = PrepareSpellFiles(workspaceRoot, workspaceSpell.DirectoryPath, [versionPath]);
+
+        Result<IWorkspaceMutationLease> physicalAdmission = await physicalPlan.AdmitAsync(ct).ConfigureAwait(false);
+
+        if (physicalAdmission.IsFailure)
+        {
+            return physicalAdmission.Error;
+        }
+
+        await using IWorkspaceMutationLease physicalLease = physicalAdmission.Value;
+
+        using IDisposable physicalBinding = physicalPlan.Enter(physicalLease);
+
         try
         {
             using SpellDirectory directory = SpellDirectory.Open(workspaceRoot, workspaceSpell.DirectoryPath);
@@ -1207,7 +1324,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         {
             _logger.LogError(ex, "Failed to update version {Version} for spell {SpellName} at {VersionPath}", label, trimmedName, versionPath);
 
-            return Result<SpellVersionDto>.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
+            return Result<SpellVersionDto>.Failure(ex is WorkspaceMutationFenceException fenceFailure ? fenceFailure.Error : new Error("Spell.WriteFailed", WriteFailedMessage));
         }
     }
 
@@ -1348,6 +1465,38 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string versionPath = Path.Combine(workspaceSpell.DirectoryPath, SpellVersionPathPolicy.BuildVersionFileName(label));
 
+        string? recordedActiveVersion = workspaceSpell.SkillMetadata?.ActiveVersion;
+
+        string previousLabel = recordedActiveVersion
+            ?? (File.Exists(Path.Combine(workspaceSpell.DirectoryPath, SpellVersionPathPolicy.BuildVersionFileName("0")))
+                ? DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmss", System.Globalization.CultureInfo.InvariantCulture)
+                : "0");
+
+        string previousBackupPath = Path.Combine(workspaceSpell.DirectoryPath, SpellVersionPathPolicy.BuildVersionFileName(previousLabel));
+
+        // Re-activating the already-active label aliases the backup path onto the requested
+        // version file. Writing the backup first would replace the archived snapshot with the
+        // (possibly drifted) working copy and destroy it irrecoverably, so skip the backup and
+        // report no previous label — the version -> SPELL.md copy still runs, because
+        // `spell version update` deliberately leaves activeVersion pointing at an edited label.
+        bool backupAliasesRequestedVersion = PathsReferToSameFile(previousBackupPath, versionPath);
+
+        WorkspaceMutationPlan physicalPlan = PrepareSpellFiles(workspaceRoot, workspaceSpell.DirectoryPath,
+            backupAliasesRequestedVersion
+                ? [workspaceSpell.FilePath, Path.Combine(workspaceSpell.DirectoryPath, SkillJsonIO.CanonicalFileName)]
+                : [workspaceSpell.FilePath, Path.Combine(workspaceSpell.DirectoryPath, SkillJsonIO.CanonicalFileName), previousBackupPath]);
+
+        Result<IWorkspaceMutationLease> physicalAdmission = await physicalPlan.AdmitAsync(ct).ConfigureAwait(false);
+
+        if (physicalAdmission.IsFailure)
+        {
+            return physicalAdmission.Error;
+        }
+
+        await using IWorkspaceMutationLease physicalLease = physicalAdmission.Value;
+
+        using IDisposable physicalBinding = physicalPlan.Enter(physicalLease);
+
         // What a failure part-way through has to undo: the prior-content backup this call created (one that
         // already existed is the archived snapshot of that label and is never removed) and SPELL.md once it holds
         // the activated version.
@@ -1400,22 +1549,6 @@ internal sealed partial class SpellRepository : ISpellRepository
                     new Error(ErrorCodes.Spell.NotFound, $"Version \"{label}\" of spell \"{trimmedName}\" {refusal}."));
             }
 
-            string? recordedActiveVersion = workspaceSpell.SkillMetadata?.ActiveVersion;
-
-            string previousLabel = recordedActiveVersion
-                ?? (File.Exists(Path.Combine(workspaceSpell.DirectoryPath, SpellVersionPathPolicy.BuildVersionFileName("0")))
-                    ? DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmss", System.Globalization.CultureInfo.InvariantCulture)
-                    : "0");
-
-            string previousBackupPath = Path.Combine(workspaceSpell.DirectoryPath, SpellVersionPathPolicy.BuildVersionFileName(previousLabel));
-
-            // Re-activating the already-active label aliases the backup path onto the requested
-            // version file. Writing the backup first would replace the archived snapshot with the
-            // (possibly drifted) working copy and destroy it irrecoverably, so skip the backup and
-            // report no previous label — the version -> SPELL.md copy still runs, because
-            // `spell version update` deliberately leaves activeVersion pointing at an edited label.
-            bool backupAliasesRequestedVersion = PathsReferToSameFile(previousBackupPath, versionPath);
-
             if (!backupAliasesRequestedVersion)
             {
                 bool backupExisted = File.Exists(previousBackupPath);
@@ -1460,7 +1593,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             TryDeleteCreatedBackup(directory, createdBackupPath);
 
-            return Result<SpellVersionDto>.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
+            return Result<SpellVersionDto>.Failure(ex is WorkspaceMutationFenceException fenceFailure ? fenceFailure.Error : new Error("Spell.WriteFailed", WriteFailedMessage));
         }
         finally
         {
@@ -1476,12 +1609,16 @@ internal sealed partial class SpellRepository : ISpellRepository
     /// </summary>
     private async Task RestoreSpellFileAsync(SpellDirectory directory, string spellFileName, string originalContent)
     {
+        using IDisposable rollback = WorkspaceMutationPlan.BeginRollback();
+
         try
         {
-            await directory.WriteTextAsync(spellFileName, originalContent, CancellationToken.None).ConfigureAwait(false);
+            await directory.RestoreWrittenTextAsync(spellFileName, originalContent, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
+            WorkspaceMutationPlan.RetainRecovery("rollback_incomplete");
+
             _logger.LogError(
                 ex,
                 "Could not restore {SpellPath} after a failed spell write; it is left holding the new content while its sidecar still describes the old.",
@@ -1491,6 +1628,8 @@ internal sealed partial class SpellRepository : ISpellRepository
 
     private void TryDeleteCreatedBackup(SpellDirectory? directory, string? backupPath)
     {
+        using IDisposable rollback = WorkspaceMutationPlan.BeginRollback();
+
         if (backupPath is null)
         {
             return;
@@ -1498,10 +1637,15 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         try
         {
-            directory?.DeleteFile(Path.GetFileName(backupPath));
+            if (directory is null || !directory.DeleteFile(Path.GetFileName(backupPath)))
+            {
+                WorkspaceMutationPlan.RetainRecovery("cleanup_incomplete");
+            }
         }
         catch (Exception ex)
         {
+            WorkspaceMutationPlan.RetainRecovery("cleanup_incomplete");
+
             _logger.LogWarning(ex, "Could not remove the backup {BackupPath} a failed version activation wrote.", backupPath);
         }
     }
@@ -1670,6 +1814,19 @@ internal sealed partial class SpellRepository : ISpellRepository
             content = SpellFileParser.FormatCreate(trimmedName, create);
         }
 
+        WorkspaceMutationPlan physicalPlan = PrepareSpellCreation(workspaceRoot, spellsRoot, spellDir);
+
+        Result<IWorkspaceMutationLease> physicalAdmission = await physicalPlan.AdmitAsync(ct).ConfigureAwait(false);
+
+        if (physicalAdmission.IsFailure)
+        {
+            return physicalAdmission.Error;
+        }
+
+        await using IWorkspaceMutationLease physicalLease = physicalAdmission.Value;
+
+        using IDisposable physicalBinding = physicalPlan.Enter(physicalLease);
+
         try
         {
             using SpellDirectory parent = SpellDirectory.Open(workspaceRoot, spellsRoot, create: true);
@@ -1740,7 +1897,7 @@ internal sealed partial class SpellRepository : ISpellRepository
         {
             _logger.LogError(ex, "Failed to import spell {SpellName} into {Workspace}", trimmedName, workspaceRoot);
 
-            return Result<SpellSummary>.Failure(new Error("Spell.WriteFailed", WriteFailedMessage));
+            return Result<SpellSummary>.Failure(ex is WorkspaceMutationFenceException fenceFailure ? fenceFailure.Error : new Error("Spell.WriteFailed", WriteFailedMessage));
         }
     }
 

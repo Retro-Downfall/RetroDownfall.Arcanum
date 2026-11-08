@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Familiars;
 
@@ -52,9 +53,20 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        if (!WorkspaceProcessBoundary.TryBeginOpaqueEffect(out WorkspaceMutationFence.OpaqueEffect? effect))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            throw new FamiliarProcessException(FamiliarProcessFailure.StartFailed, WorkspaceProcessBoundary.Message);
+        }
+
+        using WorkspaceMutationFence.OpaqueEffect? opaqueEffect = effect;
+
         using Process process = CreateProcess(request);
 
         using CancellationTokenSource deadline = _createDeadline(request, cancellationToken);
+
+        opaqueEffect!.MarkDispatched();
 
         Start(process, request);
 
@@ -198,6 +210,15 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        if (!WorkspaceProcessBoundary.TryBeginOpaqueEffect(out WorkspaceMutationFence.OpaqueEffect? effect))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return new FamiliarProcessOutput(FamiliarProcessFailure.StartFailed, 0, string.Empty, WorkspaceProcessBoundary.Message);
+        }
+
+        using WorkspaceMutationFence.OpaqueEffect? opaqueEffect = effect;
+
         Process created;
 
         try
@@ -217,6 +238,8 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
         try
         {
+            opaqueEffect!.MarkDispatched();
+
             Start(process, request);
         }
         catch (FamiliarProcessException ex)
@@ -388,6 +411,11 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
     private void Start(Process process, FamiliarProcessRequest request)
     {
+        if (WorkspaceProcessBoundary.RequiresContainment)
+        {
+            throw new FamiliarProcessException(FamiliarProcessFailure.StartFailed, WorkspaceProcessBoundary.Message);
+        }
+
         try
         {
             _ = process.Start();

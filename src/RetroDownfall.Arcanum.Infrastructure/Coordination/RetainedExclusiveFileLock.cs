@@ -279,6 +279,83 @@ internal sealed class RetainedExclusiveFileLock : IDisposable
 
     }
 
+    /// <summary>
+    /// Revalidates the retained leaf against its current authoritative name. Windows prevents leaf
+    /// replacement with the retained no-delete sharing mode, so its current kernel name is checked
+    /// against a freshly opened, no-follow parent; Unix additionally compares the named inode.
+    /// Existing lock consumers remain unchanged unless they opt into this stronger validation.
+    /// </summary>
+    internal bool ValidateCurrentIdentity(FileHandleIdentity? expectedIdentity, out FileHandleIdentity identity)
+    {
+        identity = default;
+
+        FileStream? stream = _stream;
+
+        try
+        {
+            if (stream is null
+                || !FileHandleIdentityInterop.TryGetHandleMetadata(stream.SafeFileHandle, out FileHandleMetadata opened)
+                || opened.Kind != FileSystemObjectKind.RegularFile || opened.HardLinkCount != 1
+                || expectedIdentity is { } expected && opened.Identity != expected)
+            {
+                return false;
+            }
+
+            string canonicalSpelling = NoFollowPathTopology.NormalizeMacOsSystemAlias(Path);
+
+            if (!OperatingSystem.IsWindows())
+            {
+                Result<NoFollowPathTopologyKind> topology = NoFollowPathTopology.Classify(canonicalSpelling);
+
+                if (topology.IsFailure || topology.Value != NoFollowPathTopologyKind.RegularFile
+                    || !FileHandleIdentityInterop.TryGetPathMetadataNoFollow(canonicalSpelling, out FileHandleMetadata named)
+                    || named.Kind != FileSystemObjectKind.RegularFile || named.HardLinkCount != 1
+                    || named.Identity != opened.Identity)
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                string? parentPath = System.IO.Path.GetDirectoryName(canonicalSpelling);
+
+                if (parentPath is null)
+                {
+                    return false;
+                }
+
+                Result<NoFollowPathTopologyKind> topology = NoFollowPathTopology.Classify(parentPath);
+
+                if (topology.IsFailure || topology.Value != NoFollowPathTopologyKind.Directory
+                    || !FileHandleIdentityInterop.TryOpenDirectoryMetadata(parentPath, out var parent, out _))
+                {
+                    return false;
+                }
+
+                using (parent)
+                {
+                    if (!FileHandleIdentityInterop.TryGetHandleKernelPath(parent, out string? actualParent)
+                        || !FileHandleIdentityInterop.TryGetHandleKernelPath(stream.SafeFileHandle, out string? actualLeaf)
+                        || !string.Equals(System.IO.Path.GetDirectoryName(actualLeaf), actualParent, StringComparison.Ordinal)
+                        || !FileHandleIdentityInterop.TryGetDirectoryCaseSensitivity(parent, out bool sensitive)
+                        || !string.Equals(System.IO.Path.GetFileName(actualLeaf), System.IO.Path.GetFileName(canonicalSpelling),
+                            sensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            identity = opened.Identity;
+
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ObjectDisposedException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
     public void Dispose()
     {
 

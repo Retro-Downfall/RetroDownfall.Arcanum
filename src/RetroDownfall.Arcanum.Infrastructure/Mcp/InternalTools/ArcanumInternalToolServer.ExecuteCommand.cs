@@ -194,6 +194,10 @@ internal sealed partial class ArcanumInternalToolServer
 
         switch (runResult.Outcome)
         {
+            case CappedChildProcessOutcome.PreStartValidationFailed:
+
+                return ToolError(runResult.PreStartValidationError ?? WorkspaceProcessBoundary.Message);
+
             case CappedChildProcessOutcome.FilesystemSandboxUnavailable:
 
             case CappedChildProcessOutcome.FilesystemSandboxDeniedByWindowsSanctum:

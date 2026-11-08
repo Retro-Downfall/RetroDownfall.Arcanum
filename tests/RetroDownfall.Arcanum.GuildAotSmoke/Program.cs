@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 return GuildAotSmoke.Run();
 
@@ -341,6 +342,10 @@ internal static class GuildAotSmoke
 
         ExerciseLiteralsAndBoundaries();
 
+        ExerciseWorkspaceLeaseInfrastructure();
+
+        ExerciseWorkspaceLeaseKernelAsync().GetAwaiter().GetResult();
+
         byte[] checkpoint = GuildQuestCheckpoint.Encode(Id);
 
         var restoredCheckpoint = GuildQuestCheckpoint.Decode(1, checkpoint);
@@ -362,6 +367,149 @@ internal static class GuildAotSmoke
         Console.WriteLine("Guild Native AOT graph smoke passed.");
 
         return 0;
+    }
+
+    private static async Task ExerciseWorkspaceLeaseKernelAsync()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "guild-native-lease-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            var locked = GuildWorkspaceLeaseHostLock.TryAcquire(Path.Combine(root, "host.lock"));
+
+            Require(locked.IsSuccess, "Native workspace host lock was unavailable.");
+
+            using var host = locked.Value;
+
+            Require(host.Validate().IsSuccess, "Native workspace host lock could not prove its identity.");
+
+            WorkspaceLeaseIdentityResolver resolver = new();
+
+            var before = await resolver.ResolveAsync(root, [new("child", GuildPathScopeKind.Subtree)], default);
+
+            Require(before.IsSuccess, "Native workspace identity could not be resolved.");
+
+            var prepared = WorkspaceLeaseDirectoryCreation.Prepare(Path.Combine(root, "child"));
+
+            Require(prepared.IsSuccess, "Native directory creation could not be prepared.");
+
+            WorkspaceLeaseIdentitySet createdIdentity;
+
+            using (var preparation = prepared.Value)
+            {
+                Require((await resolver.ValidateDirectoryCreationAsync(before.Value, preparation, default)).IsSuccess,
+                    "Native directory creation was not covered by the admitted scope.");
+
+                var created = preparation.CreateExclusive(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+                Require(created.IsSuccess, "Native exclusive directory creation failed.");
+
+                using var proof = created.Value;
+
+                var adopted = await resolver.AdoptCreatedDirectoryAsync(before.Value, proof, default);
+
+                Require(adopted.IsSuccess, "Native directory creation could not be adopted.");
+
+                createdIdentity = adopted.Value;
+            }
+
+            var removal = WorkspaceLeaseDirectoryRemoval.Prepare(Path.Combine(root, "child"));
+
+            Require(removal.IsSuccess, "Native directory removal could not be prepared.");
+
+            using var preparedRemoval = removal.Value;
+
+            Require((await resolver.ValidateDirectoryRemovalAsync(createdIdentity, preparedRemoval, default)).IsSuccess,
+                "Native directory removal was not covered by the admitted scope.");
+
+            Directory.Delete(Path.Combine(root, "child"));
+
+            var removed = preparedRemoval.Complete();
+
+            Require(removed.IsSuccess, "Native directory removal could not prove absence.");
+
+            using var removedProof = removed.Value;
+
+            var final = await resolver.AdoptRemovedDirectoryAsync(createdIdentity, removedProof, default);
+
+            Require(final.IsSuccess && (await resolver.ValidateAsync(final.Value, default)).IsSuccess,
+                "Native workspace directory identity did not converge after removal.");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static void ExerciseWorkspaceLeaseInfrastructure()
+    {
+        GuildWorkspaceLeaseOwner owner = new(GuildWorkspaceLeaseOwnerKind.Operator, Id, null, null, null, null, Id, Id);
+
+        string cursor = GuildWorkspaceLeaseCursor.Encode(owner, null, GuildWorkspaceLeaseState.Held, Id);
+
+        Require(GuildWorkspaceLeaseCursor.TryDecode(cursor, owner, null, GuildWorkspaceLeaseState.Held, out Guid? afterId)
+            && afterId == Id, "The workspace lease continuation failed its native round trip.");
+
+        Require(!GuildWorkspaceLeaseCursor.TryDecode(cursor, owner, null, GuildWorkspaceLeaseState.Released, out _),
+            "The workspace lease continuation accepted a different filter under Native AOT.");
+
+        GuildWorkspaceLeaseMutationSnapshot snapshot = new(Id, 1, 1, GuildWorkspaceLeaseState.Held,
+            Instant, Instant.AddMinutes(15), 0, null);
+
+        RoundTrip(snapshot, GuildWorkspaceLeaseMutationJsonContext.Default.GuildWorkspaceLeaseMutationSnapshot);
+
+        RoundTrip(snapshot with { State = GuildWorkspaceLeaseState.ReconciliationRequired, InFlightMutationCount = 1,
+            ReasonCode = "Guild.ReconciliationRequired" }, GuildWorkspaceLeaseMutationJsonContext.Default.GuildWorkspaceLeaseMutationSnapshot);
+
+        string serialized = JsonSerializer.Serialize(snapshot, GuildWorkspaceLeaseMutationJsonContext.Default.GuildWorkspaceLeaseMutationSnapshot);
+
+        foreach (string missing in new[] { "heartbeatAt", "inFlightMutationCount" })
+        {
+            using JsonDocument document = JsonDocument.Parse(serialized);
+
+            using MemoryStream incomplete = new();
+
+            using (Utf8JsonWriter writer = new(incomplete))
+            {
+                writer.WriteStartObject();
+
+                foreach (JsonProperty property in document.RootElement.EnumerateObject())
+                {
+                    if (property.Name != missing) property.WriteTo(writer);
+                }
+
+                writer.WriteEndObject();
+            }
+
+            bool refused = false;
+
+            try
+            {
+                _ = JsonSerializer.Deserialize(incomplete.ToArray(), GuildWorkspaceLeaseMutationJsonContext.Default.GuildWorkspaceLeaseMutationSnapshot);
+            }
+            catch (JsonException)
+            {
+                refused = true;
+            }
+
+            Require(refused, "A persisted workspace mutation snapshot accepted a missing member under Native AOT.");
+        }
+
+        string root = Path.GetPathRoot(Environment.CurrentDirectory)!;
+
+        FileHandleIdentity physicalRoot = new(7, 11);
+
+        WorkspaceLeaseIdentitySet identity = new(root, physicalRoot,
+            [new("probe.txt", GuildPathScopeKind.File, ["probe.txt"], [new(root, physicalRoot, true, 0)], null, false)]);
+
+        RoundTrip(identity, WorkspaceLeaseIdentityJsonContext.Default.WorkspaceLeaseIdentitySet);
+
+        var restored = WorkspaceLeaseIdentitySet.FromJson(identity.ToJson());
+
+        Require(restored.IsSuccess && restored.Value.Digest == identity.Digest && restored.Value.Covers(identity)
+            && identity.Covers(restored.Value), "Physical workspace lease identity failed its generated native round trip.");
     }
 
     private static void Exercise<T>(T value, JsonTypeInfo<T> metadata)

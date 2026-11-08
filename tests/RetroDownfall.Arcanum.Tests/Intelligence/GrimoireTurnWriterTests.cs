@@ -24,6 +24,7 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 using RetroDownfall.Arcanum.Tests.Support;
 using RetroDownfall.Arcanum.Core.Tower;
@@ -1219,11 +1220,19 @@ public sealed class GrimoireTurnWriterTests
                 0,
                 0,
                 ToolRiskClassifier.ApplyPatchToolName));
+        WorkspaceMutationPlan mutationPlan = new(Path.GetTempPath());
+
+        Result<IWorkspaceMutationLease> mutationLease = await mutationPlan.AdmitAsync(CancellationToken.None);
+
+        Assert.True(mutationLease.IsSuccess);
+
         ReversibleWorkspaceCommit transaction = new(
             Path.GetTempPath(),
             [],
             [],
-            new MultiFileCommitCoordinatorOptions());
+            new MultiFileCommitCoordinatorOptions(),
+            mutationPlan,
+            mutationLease.Value);
         PendingApplyPatchReceipt pending = new(
             sessionId,
             receipt,

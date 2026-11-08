@@ -4,6 +4,7 @@ using System.Text;
 using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -220,6 +221,10 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         {
             return new Error(ErrorCodes.Workspace.AccessDenied, AccessDeniedMessage);
         }
+        catch (WorkspaceMutationFenceException exception)
+        {
+            return exception.Error;
+        }
         catch (IOException)
         {
             return new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage);
@@ -271,7 +276,75 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         return new TextBlockReplaceResult(entryRelativePath, occurrences, outputBytes.LongLength, GetLastWriteTimeUtcSafe(resolvedPath));
     }
 
-    public Task<Result<FileDeleteResult>> DeleteAsync(
+    public async Task<Result<FileDeleteResult>> DeleteAsync(WorkspaceInfo workspace, string relativePath, bool recursive, CancellationToken ct)
+    {
+        Result<string> resolved = WorkspacePathResolver.ResolveRelativePath(workspace, relativePath);
+
+        if (resolved.IsFailure)
+        {
+            return resolved.Error;
+        }
+
+        WorkspaceMutationPlan plan = new(workspace.Path);
+
+        plan.Add(resolved.Value, Directory.Exists(resolved.Value) ? GuildPathScopeKind.Subtree : GuildPathScopeKind.File);
+
+        Result<IWorkspaceMutationLease> admitted = await plan.AdmitAsync(ct).ConfigureAwait(false);
+
+        if (admitted.IsFailure)
+        {
+            return admitted.Error;
+        }
+
+        await using IWorkspaceMutationLease lease = admitted.Value;
+
+        using IDisposable binding = plan.Enter(lease);
+
+        try
+        {
+            return await DeleteCoreAsync(workspace, relativePath, recursive, ct).ConfigureAwait(false);
+        }
+        catch (WorkspaceMutationFenceException exception)
+        {
+            return exception.Error;
+        }
+    }
+
+    public async Task<Result<DirectoryCreateResult>> CreateDirectoryAsync(WorkspaceInfo workspace, string relativePath, CancellationToken ct)
+    {
+        Result<string> resolved = WorkspacePathResolver.ResolveRelativePath(workspace, relativePath);
+
+        if (resolved.IsFailure)
+        {
+            return resolved.Error;
+        }
+
+        WorkspaceMutationPlan plan = new(workspace.Path);
+
+        plan.Add(resolved.Value, GuildPathScopeKind.Subtree);
+
+        Result<IWorkspaceMutationLease> admitted = await plan.AdmitAsync(ct).ConfigureAwait(false);
+
+        if (admitted.IsFailure)
+        {
+            return admitted.Error;
+        }
+
+        await using IWorkspaceMutationLease lease = admitted.Value;
+
+        using IDisposable binding = plan.Enter(lease);
+
+        try
+        {
+            return await CreateDirectoryCoreAsync(workspace, relativePath, ct).ConfigureAwait(false);
+        }
+        catch (WorkspaceMutationFenceException exception)
+        {
+            return exception.Error;
+        }
+    }
+
+    private Task<Result<FileDeleteResult>> DeleteCoreAsync(
         WorkspaceInfo workspace,
         string relativePath,
         bool recursive,
@@ -334,6 +407,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         {
             if (isFile)
             {
+                WorkspaceMutationPlan.Demand(resolvedPath);
+
                 File.Delete(resolvedPath);
             }
             else if (!recursive)
@@ -344,7 +419,9 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                         new Error(ErrorCodes.Workspace.DirectoryNotEmpty, DirectoryNotEmptyMessage));
                 }
 
-                Directory.Delete(resolvedPath, recursive: false);
+                WorkspaceMutationPlan.Demand(resolvedPath);
+
+                WorkspaceMutationPlan.DeleteDirectory(resolvedPath, recursive: false);
             }
             else
             {
@@ -384,6 +461,10 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             return Task.FromResult<Result<FileDeleteResult>>(
                 new Error(ErrorCodes.Workspace.AccessDenied, AccessDeniedMessage));
         }
+        catch (WorkspaceMutationFenceException)
+        {
+            throw;
+        }
         catch (IOException)
         {
             return Task.FromResult<Result<FileDeleteResult>>(
@@ -396,7 +477,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             new FileDeleteResult(entryRelativePath, isDirectory, DateTimeOffset.UtcNow));
     }
 
-    public Task<Result<DirectoryCreateResult>> CreateDirectoryAsync(
+    private Task<Result<DirectoryCreateResult>> CreateDirectoryCoreAsync(
         WorkspaceInfo workspace,
         string relativePath,
         CancellationToken ct)
@@ -440,12 +521,18 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         try
         {
-            Directory.CreateDirectory(resolvedPath);
+            WorkspaceMutationPlan.Demand(resolvedPath);
+
+            WorkspaceMutationPlan.CreateDirectoryChain(resolvedPath);
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or SecurityException)
         {
             return Task.FromResult<Result<DirectoryCreateResult>>(
                 new Error(ErrorCodes.Workspace.AccessDenied, AccessDeniedMessage));
+        }
+        catch (WorkspaceMutationFenceException)
+        {
+            throw;
         }
         catch (IOException)
         {
@@ -533,7 +620,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     /// containment before the parent directories are created (mkdir follows symlinks in the path prefix, so a
     /// symlinked ancestor would otherwise let a rejected write leave directories outside the root), again
     /// immediately before the temp file is created, and again (via post-move handle identity) after the atomic
-    /// rename, closing the window between path resolution and the actual write.
+    /// rename. These checks detect identity drift; pathname-based publication still has a race with
+    /// independent OS writers. Installed Guild permits exclude participating mutations throughout the effect.
     /// </summary>
     private static async Task<Result> WriteAtomicallyAsync(
         string workspaceRoot,
@@ -549,15 +637,41 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         string? parentDir = Path.GetDirectoryName(absolutePath);
 
+        string tempPath = Path.Combine(parentDir ?? workspaceRoot, $".arcanum-{Guid.NewGuid():N}.tmp");
+
+        WorkspaceMutationPlan plan = new(workspaceRoot);
+
+        plan.AddAtomicFile(absolutePath, tempPath);
+
+        Result<IWorkspaceMutationLease> admitted = await plan.AdmitAsync(ct).ConfigureAwait(false);
+
+        if (admitted.IsFailure)
+        {
+            return admitted.Error;
+        }
+
+        await using IWorkspaceMutationLease lease = admitted.Value;
+
+        using IDisposable binding = plan.Enter(lease);
+
         if (!string.IsNullOrEmpty(parentDir))
         {
             try
             {
-                Directory.CreateDirectory(parentDir);
+                if (!Directory.Exists(parentDir))
+                {
+                    WorkspaceMutationPlan.Demand(parentDir);
+
+                    WorkspaceMutationPlan.CreateDirectoryChain(parentDir);
+                }
             }
             catch (Exception ex) when (ex is UnauthorizedAccessException or SecurityException)
             {
                 return new Error(ErrorCodes.Workspace.AccessDenied, AccessDeniedMessage);
+            }
+            catch (WorkspaceMutationFenceException exception)
+            {
+                return exception.Error;
             }
             catch (IOException)
             {
@@ -569,10 +683,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         {
             return new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage);
         }
-
-        string directory = parentDir ?? workspaceRoot;
-
-        string tempPath = Path.Combine(directory, $".arcanum-{Guid.NewGuid():N}.tmp");
 
         FileHandleIdentity expectedIdentity = default;
 
@@ -598,6 +708,10 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         catch (Exception ex) when (ex is UnauthorizedAccessException or SecurityException)
         {
             return new Error(ErrorCodes.Workspace.AccessDenied, AccessDeniedMessage);
+        }
+        catch (WorkspaceMutationFenceException exception)
+        {
+            return exception.Error;
         }
         catch (IOException)
         {
@@ -772,6 +886,10 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         {
             return (null, new Error(ErrorCodes.Workspace.AccessDenied, AccessDeniedMessage));
         }
+        catch (WorkspaceMutationFenceException)
+        {
+            throw;
+        }
         catch (IOException)
         {
             return (null, new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage));
@@ -893,7 +1011,9 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
             if (isSymlink)
             {
-                Directory.Delete(path, recursive: false);
+                WorkspaceMutationPlan.Demand(path);
+
+                WorkspaceMutationPlan.DeleteDirectory(path, recursive: false);
 
                 return;
             }
@@ -903,13 +1023,17 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                 DeleteRecursive(workspaceRoot, child, ct);
             }
 
-            Directory.Delete(path, recursive: false);
+            WorkspaceMutationPlan.Demand(path);
+
+            WorkspaceMutationPlan.DeleteDirectory(path, recursive: false);
 
             return;
         }
 
         if (File.Exists(path))
         {
+            WorkspaceMutationPlan.Demand(path);
+
             File.Delete(path);
         }
     }

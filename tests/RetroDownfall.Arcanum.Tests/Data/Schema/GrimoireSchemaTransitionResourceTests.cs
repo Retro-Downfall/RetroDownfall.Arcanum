@@ -151,6 +151,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
                         (GrimoireSchemaTransactionTier.GuildCanonical, 5),
                         (GrimoireSchemaTransactionTier.GuildCanonical, 6),
                         (GrimoireSchemaTransactionTier.GuildCanonical, 7),
+                        (GrimoireSchemaTransactionTier.GuildCanonical, 8),
                     ]);
             });
 
@@ -756,6 +757,20 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "guild_quest_budget_guard_update",
                 "guild_budget_effects_guard_update",
                 "guild_budget_evidence_guard_update",
+                "guild_workspace_authority_state",
+                "guild_workspace_leases",
+                "ux_guild_workspace_lease_replay",
+                "idx_guild_workspace_leases_owner",
+                "guild_workspace_leases_guard_update",
+                "guild_workspace_authority_state_guard_update",
+                "guild_workspace_lease_mutations",
+                "ux_guild_workspace_lease_mutations_replay",
+                "guild_workspace_lease_mutations_guard_update",
+                "guild_workspace_leases_guard_delete",
+                "guild_workspace_leases_guard_insert",
+                "guild_workspace_lease_mutations_guard_insert",
+                "guild_utc_instant_columns_drop",
+                "guild_utc_instant_columns",
             ],
             GrimoireSchemaCatalog.TransitionStatements.Select(static statement => statement.Name));
     }

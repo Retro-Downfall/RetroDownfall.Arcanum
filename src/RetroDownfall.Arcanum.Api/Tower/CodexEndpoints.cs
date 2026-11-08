@@ -140,7 +140,7 @@ internal static class CodexEndpoints
                         statusCode: StatusCodes.Status404NotFound);
                 }
 
-                return DeleteCodex(campaign.Path, Path.Combine(campaign.Path, "CODEX.md"), traceId);
+                return await DeleteCodexAsync(campaign.Path, Path.Combine(campaign.Path, "CODEX.md"), traceId).ConfigureAwait(false);
             })
         .WithName("DeleteCampaignCodex");
 
@@ -204,14 +204,14 @@ internal static class CodexEndpoints
 
         apiGroup.MapDelete(
             "/codex",
-            (HttpContext ctx) =>
+            async (HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                return DeleteCodex(
+                return await DeleteCodexAsync(
                     ArcanumPaths.GrimoireDirectory,
                     Path.Combine(ArcanumPaths.GrimoireDirectory, "CODEX.md"),
-                    traceId);
+                    traceId).ConfigureAwait(false);
             })
         .WithName("DeleteGlobalCodex");
 
@@ -297,7 +297,10 @@ internal static class CodexEndpoints
     /// directory the entry lives in must still resolve under <paramref name="containmentRoot"/>, because
     /// unlinking through a linked directory removes a file somewhere else.
     /// </summary>
-    internal static IResult DeleteCodex(string containmentRoot, string path, string traceId)
+    internal static IResult DeleteCodex(string containmentRoot, string path, string traceId) =>
+        DeleteCodexAsync(containmentRoot, path, traceId).GetAwaiter().GetResult();
+
+    internal static async Task<IResult> DeleteCodexAsync(string containmentRoot, string path, string traceId)
     {
         string fullPath = Path.GetFullPath(path);
 
@@ -308,11 +311,32 @@ internal static class CodexEndpoints
             return CodexFailure(CodexPathNotContained, traceId);
         }
 
+        WorkspaceMutationPlan plan = new(containmentRoot);
+
+        plan.Add(fullPath);
+
+        Result<IWorkspaceMutationLease> admitted = await plan.AdmitAsync(CancellationToken.None).ConfigureAwait(false);
+
+        if (admitted.IsFailure)
+        {
+            return CodexFailure(admitted.Error, traceId);
+        }
+
+        await using IWorkspaceMutationLease lease = admitted.Value;
+
+        using IDisposable binding = plan.Enter(lease);
+
         try
         {
+            WorkspaceMutationPlan.Demand(fullPath);
+
             // File.Delete is a no-op for an absent entry and removes a link without touching its target; the
             // File.Exists pre-check this replaces answered false for a dangling link and so left it in place.
             File.Delete(fullPath);
+        }
+        catch (WorkspaceMutationFenceException exception)
+        {
+            return CodexFailure(exception.Error, traceId);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -376,17 +400,37 @@ internal static class CodexEndpoints
         // A request that is already gone may stop here; once the write begins it runs to the end.
         cancellationToken.ThrowIfCancellationRequested();
 
+        string tempPath = Path.Combine(directory, $".arcanum-{Guid.NewGuid():N}.tmp");
+
+        WorkspaceMutationPlan plan = new(containmentRoot);
+
+        plan.AddAtomicFile(fullPath, tempPath);
+
+        Result<IWorkspaceMutationLease> admitted = await plan.AdmitAsync(cancellationToken).ConfigureAwait(false);
+
+        if (admitted.IsFailure)
+        {
+            return CodexFailure(admitted.Error, traceId);
+        }
+
+        await using IWorkspaceMutationLease lease = admitted.Value;
+
+        using IDisposable binding = plan.Enter(lease);
+
         try
         {
-            Directory.CreateDirectory(directory);
+            if (!Directory.Exists(directory))
+            {
+                WorkspaceMutationPlan.Demand(directory);
+
+                WorkspaceMutationPlan.CreateDirectoryChain(directory);
+            }
 
             // Same-directory temporary file, then an atomic replace. Writing the destination in place on the
             // request's token truncated it before the first byte and left a half-written codex when the
             // client went away; the destination is now either the old file or the new one. The replace takes
             // no token for the same reason: after the first byte is written the work is not the caller's to
             // abandon.
-            string tempPath = Path.Combine(directory, $".arcanum-{Guid.NewGuid():N}.tmp");
-
             AtomicReplaceStatus status = await AtomicFile.ReplaceAsync(
                     fullPath,
                     tempPath,
@@ -412,6 +456,10 @@ internal static class CodexEndpoints
                     new Error(ErrorCodes.Workspace.WriteFailed, "The CODEX.md could not be written."),
                     traceId),
             };
+        }
+        catch (WorkspaceMutationFenceException exception)
+        {
+            return CodexFailure(exception.Error, traceId);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

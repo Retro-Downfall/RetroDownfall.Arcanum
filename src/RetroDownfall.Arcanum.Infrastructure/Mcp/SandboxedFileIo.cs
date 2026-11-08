@@ -7,8 +7,8 @@ using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Storage;
-
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -152,17 +152,43 @@ internal static class SandboxedFileIo
 
         string? parentDir = Path.GetDirectoryName(absolutePath);
 
+        string plannedTemporary = Path.Combine(parentDir ?? workspaceRoot, $".arcanum-{Guid.NewGuid():N}.tmp");
+
+        WorkspaceMutationPlan plan = new(workspaceRoot);
+
+        plan.AddAtomicFile(absolutePath, plannedTemporary);
+
+        Result<IWorkspaceMutationLease> admitted = await plan.AdmitAsync(cancellationToken).ConfigureAwait(false);
+
+        if (admitted.IsFailure)
+        {
+            return (false, ToolError($"{admitted.Error.Code}: {admitted.Error.Message}"));
+        }
+
+        await using IWorkspaceMutationLease lease = admitted.Value;
+
+        using IDisposable binding = plan.Enter(lease);
+
         if (!string.IsNullOrEmpty(parentDir))
         {
             try
             {
-                Directory.CreateDirectory(parentDir);
+                if (!Directory.Exists(parentDir))
+                {
+                    WorkspaceMutationPlan.Demand(parentDir);
+
+                    WorkspaceMutationPlan.CreateDirectoryChain(parentDir);
+                }
 
                 AfterCreateParentDirectoryForTests?.Invoke(parentDir);
             }
             catch (UnauthorizedAccessException)
             {
                 return (false, ToolError("Access denied creating directory."));
+            }
+            catch (WorkspaceMutationFenceException exception)
+            {
+                return (false, ToolError($"{exception.Error.Code}: {exception.Error.Message}"));
             }
             catch (IOException)
             {
@@ -182,7 +208,7 @@ internal static class SandboxedFileIo
 
         string directory = parentDir ?? workspaceRoot;
 
-        string tempPath = Path.Combine(directory, $".arcanum-{Guid.NewGuid():N}.tmp");
+        string tempPath = plannedTemporary;
 
         // StreamWriter's implicit encoding is UTF8NoBOM, and the read side
         // (SecureFileReader.ReadUtf8TextAsync) strips the preamble before the model ever sees the
@@ -259,6 +285,10 @@ internal static class SandboxedFileIo
         catch (UnauthorizedAccessException)
         {
             return (false, ToolError("Access denied writing."));
+        }
+        catch (WorkspaceMutationFenceException exception)
+        {
+            return (false, ToolError($"{exception.Error.Code}: {exception.Error.Message}"));
         }
         catch (IOException)
         {

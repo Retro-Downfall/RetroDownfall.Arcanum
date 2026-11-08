@@ -155,7 +155,7 @@ public sealed partial class McpConnectionManager
         };
     }
 
-    private SdkMcpClientWrapper CreateSdkMcpClientWrapper(IClientTransport clientTransport)
+    private SdkMcpClientWrapper CreateSdkMcpClientWrapper(IClientTransport clientTransport, ArcanumInternalToolServer? internalServer = null)
     {
         // One sink per connection: the handler built into the options and the wrapper that enters
         // each tool call share it, which is how a server-initiated request finds its turn.
@@ -167,7 +167,8 @@ public sealed partial class McpConnectionManager
             GetClampedMcpInitializationTimeout(),
             GetClampedToolOutputCapBytes(),
             GetClampedMcpMaxToolsTotalBytes(),
-            elicitationSink);
+            elicitationSink,
+            internalServer: internalServer);
     }
 
     /// <summary>

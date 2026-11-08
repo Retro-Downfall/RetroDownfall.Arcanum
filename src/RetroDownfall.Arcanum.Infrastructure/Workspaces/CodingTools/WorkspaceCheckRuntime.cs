@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -124,6 +125,13 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
 
     public WorkspaceCheckExecutionStatus GetStatus(string workspaceRoot)
     {
+        if (!WorkspaceProcessBoundary.TryBeginOpaqueEffect(out WorkspaceMutationFence.OpaqueEffect? effect))
+        {
+            return new WorkspaceCheckExecutionStatus(false, true, WorkspaceProcessBoundary.Message);
+        }
+
+        using WorkspaceMutationFence.OpaqueEffect? opaqueEffect = effect;
+
         if (_currentSettingsProvider is not null
             && !string.Equals(
                 _settingsFingerprint,
@@ -197,6 +205,13 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
     {
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
+
+        if (!WorkspaceProcessBoundary.TryBeginOpaqueEffect(out WorkspaceMutationFence.OpaqueEffect? effect))
+        {
+            return Outcome("unavailable", ErrorCodes.Guild.ToolBoundaryUnavailable, WorkspaceProcessBoundary.Message, request.ProfileId);
+        }
+
+        using WorkspaceMutationFence.OpaqueEffect? opaqueEffect = effect;
 
         WorkspaceCheckExecutionStatus status = GetStatus(
             request.WorkspaceRoot);

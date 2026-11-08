@@ -28,6 +28,9 @@ internal sealed class ChannelClientTransport(
         ? Guid.NewGuid().ToString("N")
         : ambientConnectionKey;
 
+    internal bool IsBoundTo(ArcanumInternalToolServer server) =>
+        string.Equals(_ambientConnectionKey, server.AmbientConnectionKey, StringComparison.Ordinal);
+
     /// <inheritdoc />
     public string Name => "arcanum-internal (in-process)";
 

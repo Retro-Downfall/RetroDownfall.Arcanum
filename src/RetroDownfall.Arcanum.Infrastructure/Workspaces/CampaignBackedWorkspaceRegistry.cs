@@ -156,7 +156,13 @@ public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
 
         try
         {
-            Directory.CreateDirectory(Path.Combine(normalizedPath, ".arcanum"));
+            Result marker = await WorkspaceMutationPlan.CreateDirectoryAsync(normalizedPath,
+                Path.Combine(normalizedPath, ".arcanum"), ct).ConfigureAwait(false);
+
+            if (marker.IsFailure)
+            {
+                return marker.Error;
+            }
         }
         catch (UnauthorizedAccessException)
         {

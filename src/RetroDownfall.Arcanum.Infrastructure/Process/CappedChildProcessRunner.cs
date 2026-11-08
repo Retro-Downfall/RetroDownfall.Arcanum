@@ -7,6 +7,8 @@ using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
@@ -235,6 +237,19 @@ internal static class CappedChildProcessRunner
         bool rawStandardOutput = false,
         long? maxFileSizeBytes = null)
     {
+        WorkspaceMutationFence.OpaqueEffect? effect = null;
+
+        if (GuildToolInvocationAmbient.Current is not null
+            || (!WorkspaceProcessBoundary.IsReadOnlyJail(filesystemSandbox)
+                && !WorkspaceProcessBoundary.TryBeginOpaqueEffect(out effect)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return WorkspaceProcessBoundary.RefusedRun();
+        }
+
+        using WorkspaceMutationFence.OpaqueEffect? opaqueEffect = effect;
+
         ChildProcessEnvironmentScrubber.ApplyProfile(
             startInfo,
             environmentProfile,
@@ -450,6 +465,8 @@ internal static class CappedChildProcessRunner
 
             try
             {
+                opaqueEffect?.MarkDispatched();
+
                 if (!process.Start())
                 {
                     return new CappedChildProcessRunResult

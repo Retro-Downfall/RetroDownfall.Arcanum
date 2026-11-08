@@ -748,7 +748,7 @@ public sealed partial class McpConnectionManager
         {
             client = new McpClientGeneration(
                 CreateSdkMcpClientWrapper(
-                    clientTransport));
+                    clientTransport, server));
 
             await client.InitializeAsync(cancellationToken).ConfigureAwait(false);
 

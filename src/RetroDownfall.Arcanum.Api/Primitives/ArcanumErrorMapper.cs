@@ -11,6 +11,28 @@ internal static class ArcanumErrorMapper
     public static int ResolveStatusCode(string errorCode) =>
         errorCode switch
         {
+            ErrorCodes.Guild.InvalidRequest or ErrorCodes.Guild.CursorInvalid => StatusCodes.Status400BadRequest,
+
+            ErrorCodes.Guild.Forbidden
+                or ErrorCodes.Guild.AuthorityUnavailable
+                or ErrorCodes.Guild.AuthorityRevoked
+                or ErrorCodes.Guild.AuthorityExpired
+                or ErrorCodes.Guild.AuthorityMismatch
+                or ErrorCodes.Guild.ToolBoundaryUnavailable
+                or ErrorCodes.Guild.LeaseNotHeld => StatusCodes.Status403Forbidden,
+
+            ErrorCodes.Guild.NotFound => StatusCodes.Status404NotFound,
+
+            ErrorCodes.Guild.RevisionConflict
+                or ErrorCodes.Guild.IdempotencyConflict
+                or ErrorCodes.Guild.ReconciliationRequired
+                or ErrorCodes.Guild.LeaseConflict
+                or ErrorCodes.Guild.LeaseLapsed
+                or ErrorCodes.Guild.WorkspaceIdentityUnavailable => StatusCodes.Status409Conflict,
+
+            ErrorCodes.Guild.StoragePressure
+                or ErrorCodes.Guild.MaintenanceDeferred => StatusCodes.Status503ServiceUnavailable,
+
             ErrorCodes.Grimoire.AdmissionLifecycleConflict => StatusCodes.Status409Conflict,
 
             ErrorCodes.Grimoire.OpeningTimeout or ErrorCodes.Grimoire.StaleOpenGeneration => StatusCodes.Status503ServiceUnavailable,

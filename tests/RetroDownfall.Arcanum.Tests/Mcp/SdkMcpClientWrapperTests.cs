@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Tests.Support;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Tests.Workspaces;
 using RetroDownfall.Arcanum.Tests.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -24,8 +26,11 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 /// <see cref="ChannelClientTransport"/> carrying a real SDK <see cref="McpClient"/> session against the
 /// unmodified <see cref="ArcanumInternalToolServer"/>, bridged through <see cref="SdkMcpClientWrapper"/>.
 /// </summary>
+[Collection("WorkspacePathPolicy")]
 public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
 {
+    private readonly IDisposable _history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
+
     private TempWorkspace _workspace = null!;
 
     public async Task InitializeAsync()
@@ -40,6 +45,41 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         await _workspace.DisposeAsync();
+
+        _history.Dispose();
+    }
+
+    [Fact]
+    public async Task Existing_external_sdk_session_prevents_fence_installation()
+    {
+        using CancellationTokenSource lifetime = new();
+
+        PagingToolsListServer server = new(10, 1);
+
+        await using SdkMcpClientWrapper client = await CreatePagingClientAsync(server, 65536, lifetime.Token);
+
+        InvalidOperationException refusal = Assert.Throws<InvalidOperationException>(() =>
+        {
+            using IDisposable installed = WorkspaceMutationFence.Install(new WorkspaceMutationFenceProcessTests.ProtectedFence());
+        });
+
+        Assert.Contains(ErrorCodes.Guild.ToolBoundaryUnavailable, refusal.Message);
+
+        Assert.Equal(0, server.CallsServed);
+
+        lifetime.Cancel();
+    }
+
+    [Fact]
+    public async Task Installed_fence_keeps_host_owned_internal_read_tools_available()
+    {
+        using IDisposable installed = WorkspaceMutationFence.Install(new WorkspaceMutationFenceProcessTests.ProtectedFence());
+
+        await using SdkMcpClientWrapper client = await CreateInitializedClientAsync();
+
+        CallToolResult result = await client.CallToolAsync("list_directory", new Dictionary<string, object?>());
+
+        Assert.DoesNotContain(ErrorCodes.Guild.ToolBoundaryUnavailable, McpToolResultFormatter.FormatContentText(result));
     }
 
     [Fact]
@@ -563,7 +603,7 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
             scopeFactory,
             NullLogger<UnseenServantPacer>.Instance);
 
-        (ChannelClientTransport clientTransport, _) = CreateChannelClientTransport(
+        (ChannelClientTransport clientTransport, ArcanumInternalToolServer server) = CreateChannelClientTransport(
             humanPrompts,
             scopeFactory,
             pacer,
@@ -579,7 +619,8 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
             initializationTimeout: TimeSpan.FromSeconds(10),
             toolOutputCapBytes: 65536,
             maxToolsTotalBytes: 1_048_576,
-            elicitationSink: new McpElicitationSink());
+            elicitationSink: new McpElicitationSink(),
+            internalServer: server);
 
         await client.InitializeAsync();
 

@@ -4,6 +4,8 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using SdkMcpClient = ModelContextProtocol.Client.McpClient;
 
@@ -22,6 +24,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 internal sealed class SdkMcpClientWrapper : IMcpClient
 {
     private readonly IClientTransport _clientTransport;
+
+    private WorkspaceMutationFence.OpaqueEffect? _opaqueEffect;
+
+    public bool IsHostOwned { get; }
 
     private readonly McpClientOptions _clientOptions;
 
@@ -75,7 +81,8 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
         long toolOutputCapBytes,
         int maxToolsTotalBytes,
         McpElicitationSink elicitationSink,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null,
+        ArcanumInternalToolServer? internalServer = null)
     {
         ArgumentNullException.ThrowIfNull(clientTransport);
 
@@ -96,6 +103,14 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
         if (toolOutputCapBytes < 1L)
         {
             throw new ArgumentOutOfRangeException(nameof(toolOutputCapBytes));
+        }
+
+        IsHostOwned = internalServer is not null
+            && clientTransport is ChannelClientTransport channel && channel.IsBoundTo(internalServer);
+
+        if (internalServer is not null && !IsHostOwned)
+        {
+            throw new ArgumentException("The internal MCP server must own the exact in-process transport.", nameof(internalServer));
         }
 
         _clientTransport = clientTransport;
@@ -127,6 +142,13 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
                 throw new InvalidOperationException("SdkMcpClientWrapper is already initialized.");
             }
 
+            if (!IsHostOwned && !WorkspaceProcessBoundary.TryBeginOpaqueEffect(out _opaqueEffect))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                throw new InvalidOperationException(WorkspaceProcessBoundary.Message);
+            }
+
             using CancellationTokenSource initialization =
                 CancellationTokenSource.CreateLinkedTokenSource(
                     cancellationToken);
@@ -135,6 +157,8 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
 
             try
             {
+                _opaqueEffect?.MarkDispatched();
+
                 _sdkClient = await SdkMcpClient
                     .CreateAsync(
                         _clientTransport,
@@ -164,6 +188,17 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
             _initialized = true;
 
             _ = ObserveCompletionAsync(_sdkClient);
+        }
+        catch
+        {
+            if (!_initialized)
+            {
+                _opaqueEffect?.Dispose();
+
+                _opaqueEffect = null;
+            }
+
+            throw;
         }
         finally
         {
@@ -311,7 +346,8 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        if (GuildToolInvocationAmbient.Current is not null)
+        if (GuildToolInvocationAmbient.Current is not null
+            || (!IsHostOwned && WorkspaceMutationFence.IsInstalled))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -390,9 +426,16 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
         {
         }
 
-        if (_sdkClient is not null)
+        try
         {
-            await _sdkClient.DisposeAsync().ConfigureAwait(false);
+            if (_sdkClient is not null)
+            {
+                await _sdkClient.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _opaqueEffect?.Dispose();
         }
 
         _completionCts.Dispose();

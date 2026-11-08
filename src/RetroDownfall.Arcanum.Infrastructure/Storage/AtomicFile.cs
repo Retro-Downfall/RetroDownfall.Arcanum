@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Storage;
 
@@ -138,6 +139,8 @@ internal static class AtomicFile
                 return AtomicReplaceStatus.Aborted;
             }
 
+            WorkspaceMutationPlan.Demand(tempPath);
+
             await using (FileStream stream = new(
                 tempPath,
                 FileMode.CreateNew,
@@ -192,9 +195,11 @@ internal static class AtomicFile
 
             if (File.Exists(destinationPath))
             {
-                backupPath = Path.Combine(
+                backupPath = WorkspaceMutationPlan.ArtifactPath(destinationPath, "atomic-backup", () => Path.Combine(
                     Path.GetDirectoryName(destinationPath) ?? string.Empty,
-                    $"{BackupPrefix}{Guid.NewGuid():N}");
+                    $"{BackupPrefix}{Guid.NewGuid():N}"));
+
+                WorkspaceMutationPlan.Demand(backupPath);
 
                 FileStreamOptions backupOptions = new()
                 {
@@ -304,6 +309,10 @@ internal static class AtomicFile
 
             beforeMove?.Invoke();
 
+            WorkspaceMutationPlan.Demand(destinationPath);
+
+            WorkspaceMutationPlan.Demand(tempPath);
+
             File.Move(
                 tempPath,
                 destinationPath,
@@ -339,6 +348,8 @@ internal static class AtomicFile
 
                 backupPath = null;
 
+                WorkspaceMutationPlan.RetainRecovery("replaced_unverified");
+
                 return AtomicReplaceStatus.ReplacedButUnverified;
             }
 
@@ -361,6 +372,8 @@ internal static class AtomicFile
 
                 // Keep the backup file for operator recovery; do not delete it in finally.
                 backupPath = null;
+
+                WorkspaceMutationPlan.RetainRecovery("replaced_unverified");
 
                 return AtomicReplaceStatus.ReplacedButUnverified;
             }
@@ -386,6 +399,8 @@ internal static class AtomicFile
 
                 backupPath = null;
 
+                WorkspaceMutationPlan.RetainRecovery("replaced_unverified");
+
                 return AtomicReplaceStatus.ReplacedButUnverified;
             }
 
@@ -393,17 +408,23 @@ internal static class AtomicFile
         }
         finally
         {
+            using IDisposable rollback = WorkspaceMutationPlan.BeginRollback();
+
             if (!replaced && tempArtifactCaptured)
             {
-                _ = IdentityOwnedFileSystemCleanup.TryDelete(
-                    tempArtifact);
+                if (!IdentityOwnedFileSystemCleanup.TryDelete(tempArtifact))
+                {
+                    WorkspaceMutationPlan.RetainRecovery("cleanup_incomplete");
+                }
             }
 
             if (backupPath is not null
                 && backupArtifactCaptured)
             {
-                _ = IdentityOwnedFileSystemCleanup.TryDelete(
-                    backupArtifact);
+                if (!IdentityOwnedFileSystemCleanup.TryDelete(backupArtifact))
+                {
+                    WorkspaceMutationPlan.RetainRecovery("cleanup_incomplete");
+                }
             }
         }
     }
@@ -476,9 +497,15 @@ internal static class AtomicFile
 
         try
         {
+            WorkspaceMutationPlan.Demand(tempPath);
+
             File.SetUnixFileMode(tempPath, unixMode.Value);
 
             return true;
+        }
+        catch (WorkspaceMutationFenceException)
+        {
+            throw;
         }
         catch (Exception exception) when (
             exception is IOException
@@ -506,6 +533,8 @@ internal static class AtomicFile
         Func<string, bool> flushParent)
     {
         bool moved = false;
+
+        using IDisposable rollback = WorkspaceMutationPlan.BeginRollback();
 
         try
         {
@@ -552,12 +581,16 @@ internal static class AtomicFile
             return false;
         }
 
-        string quarantinePath = Path.Combine(
+        string quarantinePath = WorkspaceMutationPlan.ArtifactPath(destinationPath, "atomic-quarantine", () => Path.Combine(
             Path.GetDirectoryName(destinationPath) ?? string.Empty,
-            $"{QuarantinePrefix}{Guid.NewGuid():N}");
+            $"{QuarantinePrefix}{Guid.NewGuid():N}"));
 
         try
         {
+            WorkspaceMutationPlan.Demand(destinationPath, rollback: true);
+
+            WorkspaceMutationPlan.Demand(quarantinePath, rollback: true);
+
             File.Move(destinationPath, quarantinePath, overwrite: false);
 
             moved = true;
@@ -593,6 +626,10 @@ internal static class AtomicFile
                 return false;
             }
 
+            WorkspaceMutationPlan.Demand(backupPath, rollback: true);
+
+            WorkspaceMutationPlan.Demand(destinationPath, rollback: true);
+
             File.Move(backupPath, destinationPath, overwrite: false);
 
             moved = true;
@@ -606,10 +643,11 @@ internal static class AtomicFile
 
             if (!retainQuarantine)
             {
-                _ = IdentityOwnedFileSystemCleanup.TryDelete(
-                    new IdentityOwnedFileSystemArtifact(
-                        Path.GetFullPath(quarantinePath),
-                        quarantinedMetadata));
+                if (!IdentityOwnedFileSystemCleanup.TryDelete(new IdentityOwnedFileSystemArtifact(
+                        Path.GetFullPath(quarantinePath), quarantinedMetadata)))
+                {
+                    WorkspaceMutationPlan.RetainRecovery("cleanup_incomplete");
+                }
             }
 
             return true;

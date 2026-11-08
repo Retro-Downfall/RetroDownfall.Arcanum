@@ -267,14 +267,14 @@ public sealed class LongRestReplayDocumentationTests
         ];
 
         // Steps carry a name too, at a deeper indent; a job's name sits directly under its id.
-        Assert.Equal(17, jobNames.Length);
+        Assert.Equal(18, jobNames.Length);
 
         string design = DocumentSection(
             ReadDocument("Arcanum.DESIGN.md"),
             "### 13.1 Commands and coverage authority",
             "### 13.2 Test data, ownership, and parallel collections");
 
-        Assert.Contains("`ci.yml` defines seventeen jobs (the focused Guild memory and budget jobs are opt-in):", design, StringComparison.Ordinal);
+        Assert.Contains("`ci.yml` defines eighteen jobs (the focused Guild memory, budget and workspace jobs are opt-in):", design, StringComparison.Ordinal);
 
         foreach (string name in jobNames)
         {

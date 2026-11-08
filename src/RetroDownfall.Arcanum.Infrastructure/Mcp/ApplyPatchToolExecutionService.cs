@@ -591,10 +591,10 @@ internal sealed class ApplyPatchToolExecutionService
 
         return result with
         {
-            Code = code,
-            Message = commit.Status == WorkspaceCommitStatus.RollbackIncomplete
+            Code = commit.Error?.Code ?? code,
+            Message = commit.Error?.Message ?? (commit.Status == WorkspaceCommitStatus.RollbackIncomplete
                 ? "Rollback could not safely restore every affected path; operator recovery is required."
-                : "The workspace changed or commit validation failed before the transaction could complete.",
+                : "The workspace changed or commit validation failed before the transaction could complete."),
             AffectedPaths = affectedPaths,
             TotalAffectedPathCount = affectedPaths.Length,
             RecoveryArtifactPaths = artifactPaths,

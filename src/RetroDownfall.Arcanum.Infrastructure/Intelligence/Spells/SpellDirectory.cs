@@ -1,9 +1,12 @@
 using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Security.Cryptography;
 using Microsoft.Win32.SafeHandles;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 
@@ -31,6 +34,8 @@ internal sealed partial class SpellDirectory : IDisposable
     private readonly FileHandleIdentity _identity;
 
     private readonly Dictionary<string, FileHandleIdentity> _writtenFiles = new(StringComparer.Ordinal);
+
+    private readonly Dictionary<string, FileContentBaseline> _writtenContents = new(StringComparer.Ordinal);
 
     private bool _published;
 
@@ -104,7 +109,9 @@ internal sealed partial class SpellDirectory : IDisposable
 
     internal SpellDirectory CreateStaging()
     {
-        SpellDirectory child = OpenChild($".staging-{Guid.NewGuid():N}", create: true, ownsParent: false, exclusive: true);
+        string stagingPath = WorkspaceMutationPlan.ArtifactPath(Path, "spell-stage", () => System.IO.Path.Combine(Path, $".staging-{Guid.NewGuid():N}"));
+
+        SpellDirectory child = OpenChild(System.IO.Path.GetFileName(stagingPath), create: true, ownsParent: false, exclusive: true);
 
         child._cleanup = true;
 
@@ -118,6 +125,24 @@ internal sealed partial class SpellDirectory : IDisposable
         ValidateLeaf(leaf);
 
         Validate();
+
+        string childPath = System.IO.Path.Combine(Path, leaf);
+
+        if (create && (!Directory.Exists(childPath) || exclusive))
+        {
+            WorkspaceMutationPlan.DemandBound(childPath);
+        }
+        else
+        {
+            create = false;
+        }
+
+        using WorkspaceLeaseDirectoryCreation? creation = create ? WorkspaceMutationPlan.PrepareDirectoryCreation(childPath, actualParent: _handle) : null;
+
+        if (creation is not null)
+        {
+            exclusive = true;
+        }
 
         SafeFileHandle handle;
 
@@ -143,6 +168,8 @@ internal sealed partial class SpellDirectory : IDisposable
 
         try
         {
+            WorkspaceMutationPlan.AdoptCreatedDirectory(creation, handle);
+
             child.Validate();
 
             return child;
@@ -171,7 +198,8 @@ internal sealed partial class SpellDirectory : IDisposable
     internal Task WriteTextAsync(string leaf, string content, CancellationToken cancellationToken) =>
         WriteBytesAsync(leaf, Encoding.UTF8.GetBytes(content), cancellationToken);
 
-    internal async Task WriteBytesAsync(string leaf, ReadOnlyMemory<byte> bytes, CancellationToken cancellationToken)
+    internal async Task WriteBytesAsync(string leaf, ReadOnlyMemory<byte> bytes, CancellationToken cancellationToken,
+        FileContentBaseline? expectedExistingContent = null, FileHandleIdentity? expectedExistingIdentity = null)
     {
         ValidateLeaf(leaf);
 
@@ -179,9 +207,19 @@ internal sealed partial class SpellDirectory : IDisposable
 
         Validate();
 
+        WorkspaceMutationPlan.DemandBound(System.IO.Path.Combine(Path, leaf));
+
         FileHandleIdentity? destinationIdentity = GetFileIdentityOrAbsence(leaf);
 
-        string temporary = $".{leaf}.{Guid.NewGuid():N}.tmp";
+        if (expectedExistingIdentity is not null && destinationIdentity != expectedExistingIdentity)
+        {
+            throw new IOException("The written spell file no longer belongs to this mutation.");
+        }
+
+        string temporary = OperatingSystem.IsWindows()
+            ? System.IO.Path.GetFileName(WorkspaceMutationPlan.ArtifactPath(System.IO.Path.Combine(Path, leaf), "spell-temp",
+                () => System.IO.Path.Combine(Path, $".{leaf}.{Guid.NewGuid():N}.tmp")))
+            : $".{leaf}.{Guid.NewGuid():N}.tmp";
 
         // Unix rename/unlink target names, so keep staging in an owner-only directory.
         // Windows publication and deletion instead operate on the validated file handle.
@@ -212,7 +250,10 @@ internal sealed partial class SpellDirectory : IDisposable
                 Validate();
 
                 if (GetFileIdentityOrAbsence(leaf) != destinationIdentity
-                    || writer.GetFileIdentityOrAbsence(temporary) != owned.Identity)
+                    || writer.GetFileIdentityOrAbsence(temporary) != owned.Identity
+                    || expectedExistingContent is FileContentBaseline expected
+                        && (expectedExistingIdentity is not FileHandleIdentity expectedIdentity
+                            || !MatchesWrittenContent(leaf, expectedIdentity, expected)))
                 {
                     throw new IOException("The spell file changed before publication.");
                 }
@@ -220,13 +261,90 @@ internal sealed partial class SpellDirectory : IDisposable
                 writer.Rename(temporary, leaf, replace: true, directory: false, owned.Identity, this);
 
                 _writtenFiles[leaf] = owned.Identity;
+
+                _writtenContents[leaf] = FileContentBaseline.Of(bytes.Span);
             }
 
             _ = DurableDirectoryFlush.TryFlush(_handle);
         }
         finally
         {
-            writer.DeleteOwnedLeaf(temporary, owned.Identity, directory: false);
+            using IDisposable rollback = WorkspaceMutationPlan.BeginRollback();
+
+            if (FileHandleIdentityInterop.TryGetPathMetadataNoFollow(System.IO.Path.Combine(writer.Path, temporary), out _)
+                && !writer.DeleteOwnedLeaf(temporary, owned.Identity, directory: false))
+            {
+                WorkspaceMutationPlan.RetainRecovery("cleanup_incomplete");
+            }
+        }
+    }
+
+    internal async Task RestoreWrittenTextAsync(string leaf, string originalContent, CancellationToken cancellationToken)
+    {
+        if (!_writtenFiles.TryGetValue(leaf, out FileHandleIdentity identity)
+            || !_writtenContents.TryGetValue(leaf, out FileContentBaseline content))
+        {
+            throw new IOException("The original mutation has no owned spell-file fingerprint.");
+        }
+
+        await WriteBytesAsync(leaf, Encoding.UTF8.GetBytes(originalContent), cancellationToken,
+            content, identity).ConfigureAwait(false);
+    }
+
+    private bool MatchesWrittenContent(string leaf, FileHandleIdentity expectedIdentity, FileContentBaseline expectedContent)
+    {
+        try
+        {
+            if (FileHandleIdentityInterop.TryOpenReadOnlyNoFollowRelative(_handle, leaf, out SafeFileHandle? file)
+                != SecureFileOpenStatus.Success || file is null)
+            {
+                file?.Dispose();
+
+                return false;
+            }
+
+            using (file)
+            {
+                if (!SecureFileReader.TryValidateRegularFileHandle(file, expectedIdentity, out _))
+                {
+                    return false;
+                }
+
+                using FileStream stream = new(file, FileAccess.Read, 4096, isAsync: false);
+
+                if (stream.Length != expectedContent.Length)
+                {
+                    return false;
+                }
+
+                using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+                Span<byte> buffer = stackalloc byte[8192];
+
+                long remaining = expectedContent.Length;
+
+                while (remaining > 0)
+                {
+                    int read = stream.Read(buffer[..(int)Math.Min(buffer.Length, remaining)]);
+
+                    if (read == 0)
+                    {
+                        return false;
+                    }
+
+                    hash.AppendData(buffer[..read]);
+
+                    remaining -= read;
+                }
+
+                return stream.ReadByte() == -1
+                    && expectedContent.Matches(expectedContent.Length, Convert.ToHexString(hash.GetHashAndReset()))
+                    && GetFileIdentityOrAbsence(leaf) == expectedIdentity;
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 
@@ -247,6 +365,8 @@ internal sealed partial class SpellDirectory : IDisposable
 
     private SafeFileHandle CreateFileExclusive(string leaf)
     {
+        WorkspaceMutationPlan.DemandBound(System.IO.Path.Combine(Path, leaf));
+
         if (OperatingSystem.IsWindows())
         {
             return OpenWindows(_handle, leaf, directory: false, disposition: 2);
@@ -265,6 +385,10 @@ internal sealed partial class SpellDirectory : IDisposable
     {
         BeforeRenameForTests?.Invoke(System.IO.Path.Combine(Path, source));
 
+        WorkspaceMutationPlan.DemandBound(System.IO.Path.Combine(Path, source));
+
+        WorkspaceMutationPlan.DemandBound(System.IO.Path.Combine(destination?.Path ?? Path, target));
+
         SpellDirectory targetDirectory = destination ?? this;
 
         Validate();
@@ -278,6 +402,10 @@ internal sealed partial class SpellDirectory : IDisposable
         {
             throw new IOException("The staged spell artifact changed before publication.");
         }
+
+        using WorkspaceLeaseDirectoryCreation? creation = directory
+            ? WorkspaceMutationPlan.PrepareDirectoryCreation(System.IO.Path.Combine(targetDirectory.Path, target), sourceHandle, targetDirectory._handle)
+            : null;
 
         bool renamed;
 
@@ -327,6 +455,8 @@ internal sealed partial class SpellDirectory : IDisposable
         {
             throw new IOException("The spell artifact could not be published.");
         }
+
+        WorkspaceMutationPlan.AdoptCreatedDirectory(creation, sourceHandle);
     }
 
     private SafeFileHandle OpenRenameSource(string leaf, bool directory)
@@ -347,8 +477,10 @@ internal sealed partial class SpellDirectory : IDisposable
             : throw new IOException("The staged spell artifact could not be opened without following links.");
     }
 
-    private bool DeleteOwnedLeaf(string leaf, FileHandleIdentity expected, bool directory)
+    private bool DeleteOwnedLeaf(string leaf, FileHandleIdentity expected, bool directory, SafeFileHandle? retainedDirectory = null)
     {
+        WorkspaceMutationPlan.DemandBound(System.IO.Path.Combine(Path, leaf));
+
         SafeFileHandle? child = null;
 
         try
@@ -376,14 +508,26 @@ internal sealed partial class SpellDirectory : IDisposable
                 return false;
             }
 
-            if (OperatingSystem.IsWindows())
+            using WorkspaceLeaseDirectoryRemoval? removal = directory
+                ? WorkspaceMutationPlan.PrepareDirectoryRemoval(System.IO.Path.Combine(Path, leaf), child, _handle)
+                : null;
+
+            bool removed = OperatingSystem.IsWindows()
+                ? SetWindowsInformation(child, [1], 13)
+                : UnlinkAt(Descriptor(_handle), leaf, directory ? (OperatingSystem.IsMacOS() ? 0x80 : 0x200) : 0) == 0;
+
+            if (removed && directory)
             {
-                return SetWindowsInformation(child, [1], 13);
+                child.Dispose();
+
+                child = null;
+
+                retainedDirectory?.Dispose();
+
+                WorkspaceMutationPlan.AdoptRemovedDirectory(removal);
             }
-            else
-            {
-                return UnlinkAt(Descriptor(_handle), leaf, directory ? (OperatingSystem.IsMacOS() ? 0x80 : 0x200) : 0) == 0;
-            }
+
+            return removed;
         }
         catch (IOException)
         {
@@ -416,24 +560,21 @@ internal sealed partial class SpellDirectory : IDisposable
         }
     }
 
-    internal void DeleteFile(string leaf)
+    internal bool DeleteFile(string leaf)
     {
         ValidateLeaf(leaf);
 
         Validate();
 
-        if (FileHandleIdentityInterop.TryOpenReadOnlyNoFollowRelative(_handle, leaf, out SafeFileHandle? file)
-            == SecureFileOpenStatus.Success && file is not null)
+        if (GetFileIdentityOrAbsence(leaf) is null)
         {
-            using (file)
-            {
-                if (_writtenFiles.TryGetValue(leaf, out FileHandleIdentity owned)
-                    && SecureFileReader.TryValidateRegularFileHandle(file, owned, out FileHandleMetadata metadata))
-                {
-                    DeleteOwnedLeaf(leaf, metadata.Identity, directory: false);
-                }
-            }
+            return true;
         }
+
+        return _writtenFiles.TryGetValue(leaf, out FileHandleIdentity owned)
+            && _writtenContents.TryGetValue(leaf, out FileContentBaseline content)
+            && MatchesWrittenContent(leaf, owned, content)
+            && DeleteOwnedLeaf(leaf, owned, directory: false);
     }
 
     internal void Delete()
@@ -441,7 +582,7 @@ internal sealed partial class SpellDirectory : IDisposable
         Validate();
 
         if (_parent is null || !DeleteContents()
-            || !_parent.DeleteOwnedLeaf(System.IO.Path.GetFileName(Path), _identity, directory: true))
+            || !_parent.DeleteOwnedLeaf(System.IO.Path.GetFileName(Path), _identity, directory: true, retainedDirectory: _handle))
         {
             throw new IOException("The admitted spell directory could not be deleted.");
         }
@@ -472,7 +613,7 @@ internal sealed partial class SpellDirectory : IDisposable
                 using SpellDirectory nested = new(System.IO.Path.Combine(Path, leaf), child, this, false);
 
                 deleted &= nested.DeleteContents()
-                    && DeleteOwnedLeaf(leaf, metadata.Identity, directory: true);
+                    && DeleteOwnedLeaf(leaf, metadata.Identity, directory: true, retainedDirectory: nested._handle);
             }
             else
             {
@@ -485,14 +626,18 @@ internal sealed partial class SpellDirectory : IDisposable
 
     public void Dispose()
     {
+        using IDisposable rollback = WorkspaceMutationPlan.BeginRollback();
+
         try
         {
             if (_cleanup && !_published)
             {
                 // Cleanup follows retained directory identities, never the potentially replaced pathname.
-                DeleteContents();
-
-                _parent!.DeleteOwnedLeaf(System.IO.Path.GetFileName(Path), _identity, directory: true);
+                if (!DeleteContents()
+                    || !_parent!.DeleteOwnedLeaf(System.IO.Path.GetFileName(Path), _identity, directory: true, retainedDirectory: _handle))
+                {
+                    WorkspaceMutationPlan.RetainRecovery("cleanup_incomplete");
+                }
             }
         }
         finally

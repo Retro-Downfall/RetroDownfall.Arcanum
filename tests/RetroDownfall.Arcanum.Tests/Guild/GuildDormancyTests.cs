@@ -35,7 +35,7 @@ public sealed class GuildDormancyTests
 
         var implementations = concreteTypes.Where(type => ports.Any(port => port.IsAssignableFrom(type))).ToArray();
 
-        Assert.Equal(new[] { typeof(GuildQuestStore), typeof(GuildRoster), typeof(SignetAuthority) }.OrderBy(type => type.FullName),
+        Assert.Equal(new[] { typeof(GuildQuestStore), typeof(GuildRoster), typeof(GuildWorkspaceLeaseBroker), typeof(SignetAuthority) }.OrderBy(type => type.FullName),
             implementations.OrderBy(type => type.FullName));
 
         ServiceCollection services = new();

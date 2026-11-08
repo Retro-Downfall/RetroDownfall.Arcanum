@@ -1,4 +1,5 @@
 using Microsoft.Win32.SafeHandles;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -155,6 +156,7 @@ internal static class IdentityOwnedFileSystemCleanup
         }
 
         if (!TryCreatePrivateQuarantineDirectory(
+                artifact.Path,
                 parentPath,
                 quarantineDirectoryPrefix,
                 out IdentityOwnedFileSystemArtifact
@@ -169,6 +171,10 @@ internal static class IdentityOwnedFileSystemCleanup
 
         try
         {
+            WorkspaceMutationPlan.Demand(artifact.Path, rollback: true);
+
+            WorkspaceMutationPlan.Demand(quarantinePath, rollback: true);
+
             MoveWithoutOverwrite(
                 artifact.Path,
                 quarantinePath,
@@ -248,11 +254,15 @@ internal static class IdentityOwnedFileSystemCleanup
             if (quarantined.Kind
                 == FileSystemObjectKind.RegularFile)
             {
+                WorkspaceMutationPlan.Demand(quarantine.Quarantined.Path, rollback: true);
+
                 File.Delete(quarantine.Quarantined.Path);
             }
             else
             {
-                Directory.Delete(
+                WorkspaceMutationPlan.Demand(quarantine.Quarantined.Path, rollback: true);
+
+                WorkspaceMutationPlan.DeleteDirectory(
                     quarantine.Quarantined.Path,
                     recursive: true);
             }
@@ -346,9 +356,13 @@ internal static class IdentityOwnedFileSystemCleanup
         string destinationPath,
         FileSystemObjectKind kind)
     {
+        WorkspaceMutationPlan.Demand(sourcePath, rollback: true);
+
+        WorkspaceMutationPlan.Demand(destinationPath, rollback: true);
+
         if (kind == FileSystemObjectKind.Directory)
         {
-            Directory.Move(
+            WorkspaceMutationPlan.MoveDirectory(
                 sourcePath,
                 destinationPath);
 
@@ -361,21 +375,30 @@ internal static class IdentityOwnedFileSystemCleanup
     }
 
     private static bool TryCreatePrivateQuarantineDirectory(
+        string sourcePath,
         string parentPath,
         string quarantineDirectoryPrefix,
         out IdentityOwnedFileSystemArtifact artifact)
     {
         artifact = default;
 
-        string quarantinePath = Path.Combine(
+        string quarantinePath = WorkspaceMutationPlan.ArtifactPath(sourcePath, "identity-cleanup", () => Path.Combine(
             parentPath,
-            quarantineDirectoryPrefix + Guid.NewGuid().ToString("N"));
+            quarantineDirectoryPrefix + Guid.NewGuid().ToString("N")));
+
+        WorkspaceMutationPlan.Demand(quarantinePath, rollback: true);
 
         try
         {
-            SecureFilePermissions
-                .CreateOwnerOnlyDirectoryAtPath(
-                    quarantinePath);
+            if (WorkspaceMutationFence.IsInstalled)
+            {
+                WorkspaceMutationPlan.CreateDirectoryChain(quarantinePath,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+            else
+            {
+                SecureFilePermissions.CreateOwnerOnlyDirectoryAtPath(quarantinePath);
+            }
         }
         catch (IOException)
         {
@@ -432,9 +455,7 @@ internal static class IdentityOwnedFileSystemCleanup
 
         try
         {
-            Directory.Delete(
-                quarantinePath,
-                recursive: false);
+            WorkspaceMutationPlan.DeleteDirectory(quarantinePath, recursive: false);
         }
         catch (IOException)
         {
@@ -471,9 +492,7 @@ internal static class IdentityOwnedFileSystemCleanup
 
         try
         {
-            Directory.Delete(
-                artifact.Path,
-                recursive: false);
+            WorkspaceMutationPlan.DeleteDirectory(artifact.Path, recursive: false);
 
             return !FileHandleIdentityInterop
                 .TryGetPathMetadataNoFollow(

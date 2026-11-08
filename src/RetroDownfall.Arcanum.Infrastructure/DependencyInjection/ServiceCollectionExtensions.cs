@@ -2485,6 +2485,10 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<IGuildOwnerCleanupParticipant, GuildQuestCleanupParticipant>();
 
+        services.AddScoped<GuildWorkspaceLeaseStore>();
+
+        services.AddScoped<IGuildOwnerCleanupParticipant, GuildWorkspaceLeaseCleanupParticipant>();
+
         services.AddScoped(static sp => new GuildOwnerCleanupCoordinator(
             sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
             sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),

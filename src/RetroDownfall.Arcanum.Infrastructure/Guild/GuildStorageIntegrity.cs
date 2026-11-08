@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
@@ -112,6 +113,47 @@ internal static class GuildStorageIntegrity
         {
             await ValidateMemoryAttributionAsync(connection, transaction, ct).ConfigureAwait(false);
         }
+
+        if (declaredSchemaVersion >= 8)
+        {
+            await ValidateWorkspaceLeasesAsync(connection, transaction, ct).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task ValidateWorkspaceLeasesAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken ct)
+    {
+        var decoded = await GuildWorkspaceLeaseStore.VisitAllWithinAsync(connection, transaction,
+            static (_, _) => Task.FromResult(Result.Success()), ct).ConfigureAwait(false);
+
+        if (decoded.IsFailure) throw new GuildStorageIntegrityException();
+
+        Result receipts = await GuildWorkspaceLeaseStore.ValidateMutationReceiptsWithinAsync(connection, transaction, ct).ConfigureAwait(false);
+
+        if (receipts.IsFailure) throw new GuildStorageIntegrityException();
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            SELECT EXISTS(SELECT 1 FROM guild_workspace_leases lease
+                LEFT JOIN guild_quests quest ON quest.Id=lease.QuestId
+                WHERE lease.OwnerKindCode=1 AND (lease.StateCode IS NOT 3 OR lease.InFlightMutationCount IS NOT 0) AND (quest.Id IS NULL
+                    OR quest.RootQuestId IS NOT lease.RootQuestId OR quest.SessionId IS NOT lease.SessionId
+                    OR quest.CampaignId IS NOT lease.CampaignId OR quest.WorkspaceId IS NOT lease.WorkspaceId
+                    OR quest.InstallationGeneration IS NOT lease.InstallationGeneration))
+                OR EXISTS(SELECT 1 FROM guild_workspace_leases lease WHERE lease.OwnerKindCode=2
+                    AND (lease.StateCode IS NOT 3 OR lease.InFlightMutationCount IS NOT 0)
+                    AND NOT EXISTS(SELECT 1 FROM guild_workspace_authority_state state WHERE state.StateKey=1
+                        AND state.InstallationGeneration=lease.InstallationGeneration
+                        AND state.NativeOperatorPrincipalId=lease.PrincipalId))
+                OR EXISTS(SELECT 1 FROM guild_workspace_leases lease WHERE NOT EXISTS(
+                    SELECT 1 FROM guild_workspace_lease_mutations accepted WHERE accepted.LeaseId=lease.Id
+                        AND accepted.ActionCode=3 AND accepted.PrincipalId=lease.PrincipalId AND accepted.QuestId IS lease.QuestId
+                        AND accepted.IdempotencyKey=lease.IdempotencyKey AND accepted.RequestDigest=lease.RequestDigest));
+            """;
+
+        if (!Equals(0L, await command.ExecuteScalarAsync(ct).ConfigureAwait(false))) throw new GuildStorageIntegrityException();
     }
 
     private static async Task ValidateMemoryAttributionAsync(SqliteConnection connection, SqliteTransaction transaction,

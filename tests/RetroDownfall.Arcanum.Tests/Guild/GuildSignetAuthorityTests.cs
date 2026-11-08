@@ -1078,6 +1078,8 @@ public sealed partial class GuildSignetAuthorityTests
 
         internal GuildGrant HostGrant { get; set; } = grant;
 
+        internal GuildGrantScopeEvidence ScopeEvidence { get; set; } = new([], []);
+
         internal GuildCallerContext? Operator { get; set; }
 
         internal HashSet<GuildAdmissionContext> Admissions { get; } = [];
@@ -1098,7 +1100,7 @@ public sealed partial class GuildSignetAuthorityTests
                 : Result<GuildSignetAdmissionEvidence>.Failure(new(ErrorCodes.Guild.Forbidden, "Unrecognized host admission.")));
 
         public Task<Result<GuildSignetPolicyEvidence>> ResolveCurrentAsync(ImmutableArray<GuildSignetRecord> lineage, CancellationToken cancellationToken) =>
-            Task.FromResult(Result<GuildSignetPolicyEvidence>.Success(new(HostGrant, new([], []))));
+            Task.FromResult(Result<GuildSignetPolicyEvidence>.Success(new(HostGrant, ScopeEvidence)));
 
         public async Task<Result> AuthorizeRevocationAsync(GuildCallerContext caller, GuildSignetRecord target, CancellationToken cancellationToken)
         {
