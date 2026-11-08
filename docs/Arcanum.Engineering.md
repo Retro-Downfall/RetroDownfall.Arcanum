@@ -1292,6 +1292,8 @@ Journal permission application through an enumerated read handle, refusal to cha
 
 Backup coverage is limited to real clean-machine restore and current-head replacement restore. Required Guild cases separately prove V8-to-V9 migration, restored-inert local bindings and rejection of orphaned local execution evidence during reset. The profile retains the affected retention suite because schema inventory, payload eligibility, reset deletion ordering and reconciliation share those paths.
 
+Log-reset success fixtures initialize the real Guild operator identity before preview so startup cannot change their confirmed evidence. A separate controlled case initializes that authority after preview and requires `Data.PlanChanged` with the log intact; settling the fixture never bypasses stale-plan refusal.
+
 Both hot-enable effect-admission cases are mandatory: successful physical installation must retain its own effect group, and maintenance refusal at that physical boundary must leave the installation lock absent.
 
 The shared-engine admission cases are also mandatory: every Guild unit uses its own `GuildStorage` lease, each effect group belongs to the exact issued effectful unit's lease, and both lifetimes drain before the public result. They cover the shared planner/step/review path and the sterile child's single inference call; the final read-only completion unit does not open an effect group.
