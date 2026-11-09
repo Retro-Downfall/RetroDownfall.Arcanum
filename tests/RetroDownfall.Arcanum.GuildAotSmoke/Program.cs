@@ -360,6 +360,10 @@ internal static class GuildAotSmoke
         RoundTrip(new GuildStoredAgentCardPayload(SampleGuildAgentCard(), "Bounded guidance: λ", ["read_file"]),
             GuildStorageJsonContext.Default.GuildStoredAgentCardPayload);
 
+        RoundTrip(new GuildQuestTreePage(new(1, 1, 0, 0, 1),
+            [new(Id, Id, null, 1, 1, QuestState.Working, null, false, false, false, GuildAccountingState.Pending, false)],
+            null, 1), GuildTreeJsonContext.Default.GuildQuestTreePage);
+
         var parsed = GuildDeclaredAgentParser.Parse("---\nname: Auditor\ndescription: Reviews source\nskills: [review]\n---\nKeep evidence.");
 
         Require(parsed.IsSuccess && parsed.Value.Name == "Auditor" && parsed.Value.Skills.SequenceEqual(["review"])

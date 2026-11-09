@@ -214,11 +214,12 @@ public sealed class GuildQuestLifecycleTests
     {
         internal SqliteConnection Connection => connection;
 
-        internal static async Task<Fixture> CreateAsync(Guid? sessionId = null, bool protectedGoal = false, Guid? campaignId = null)
+        internal static async Task<Fixture> CreateAsync(Guid? sessionId = null, bool protectedGoal = false, Guid? campaignId = null,
+            GrimoireSchemaVersionChainSet? chains = null)
         {
             SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync("Data Source=:memory:", CancellationToken.None);
 
-            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, 768, CancellationToken.None);
+            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, chains ?? GrimoireSchemaVersionChains.Default, 768, CancellationToken.None);
 
             Fixture fixture = new(connection);
 

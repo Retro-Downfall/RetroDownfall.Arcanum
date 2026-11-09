@@ -15,7 +15,7 @@ public sealed class GuildSignetSchemaTests
 
         Assert.Equal(38, installed.Core.SchemaVersion);
 
-        Assert.Equal(9, installed.GuildCanonical.SchemaVersion);
+        Assert.Equal(10, installed.GuildCanonical.SchemaVersion);
 
         await using SqliteCommand command = connection.CreateCommand();
 
@@ -69,7 +69,7 @@ public sealed class GuildSignetSchemaTests
 
         Assert.True(upgraded.GuildCanonical.IsHealthy);
 
-        Assert.Equal(9, upgraded.GuildCanonical.SchemaVersion);
+        Assert.Equal(10, upgraded.GuildCanonical.SchemaVersion);
 
         await using SqliteCommand command = connection.CreateCommand();
 

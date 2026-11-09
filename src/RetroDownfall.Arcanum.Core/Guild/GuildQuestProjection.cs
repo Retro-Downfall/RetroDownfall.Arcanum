@@ -74,6 +74,7 @@ public static class GuildQuestProjection
                 new(QuestState.Completed, null, cancellationRequested, Converged(evidence), false, null),
             LongRunningOperationState.Completed when operation.TerminalErrorCode == LongRunningOperationRecoveryOutcomes.Cancelled
                 && evidence.WorkStoppedProven
+                && Converged(evidence)
                 && receipt is { Outcome: QuestState.Canceled, ReasonCode: LongRunningOperationRecoveryOutcomes.Cancelled } =>
                 new(QuestState.Canceled, null, true, true, false, LongRunningOperationRecoveryOutcomes.Cancelled),
             LongRunningOperationState.Failed when operation.TerminalErrorCode == ErrorCodes.Guild.Rejected

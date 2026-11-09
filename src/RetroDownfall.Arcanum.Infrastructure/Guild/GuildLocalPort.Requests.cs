@@ -66,10 +66,14 @@ internal sealed partial class GuildLocalPort
 
         GuildLocalPortState before = state.Value;
 
+        bool stoppedWaitRequired = before.HadPhysicalDispatch
+            || before.Operation.State == LongRunningOperationState.ReconciliationRequired
+                && before.Operation.TerminalErrorCode == ErrorCodes.Guild.AwaitingInput;
+
         if (before.Dispatch is null && dispatchId != questId)
             return new Error(ErrorCodes.Guild.InvalidRequest, "The cancellation dispatch is not committed.");
 
-        if (before.Quest.Quest.ResultReceiptId is not null || before.HadPhysicalDispatch)
+        if (before.Quest.Quest.ResultReceiptId is not null)
             return Observation(before, dispatchId);
 
         var frontier = await quests.LocalChildrenStoppedAsync(driver, cancellationToken).ConfigureAwait(false);
@@ -98,6 +102,15 @@ internal sealed partial class GuildLocalPort
             if (before.Operation.LeaseOwner is not null && before.Operation.LeaseExpiresAt > now)
                 return Observation(before, dispatchId);
 
+            if (stoppedWaitRequired)
+            {
+                var stoppedWait = await quests.PrepareStoppedLocalWaitCancellationAsync(driver, false, cancellationToken).ConfigureAwait(false);
+
+                if (stoppedWait.IsFailure) return stoppedWait.Error;
+
+                if (!stoppedWait.Value) return Observation(before, dispatchId);
+            }
+
             string leaseOwner = "guild-cancel-" + claim.ToString("N");
 
             var lease = await operations.TryAcquireLeaseAsync(before.Operation.Id, leaseOwner, now,
@@ -118,14 +131,22 @@ internal sealed partial class GuildLocalPort
 
             if (state.IsFailure) return state.Error;
 
-            if (state.Value.HadPhysicalDispatch) return Observation(state.Value, dispatchId);
+            if (state.Value.HadPhysicalDispatch || stoppedWaitRequired)
+            {
+                var stoppedWait = await quests.PrepareStoppedLocalWaitCancellationAsync(driver, true, cancellationToken).ConfigureAwait(false);
+
+                if (stoppedWait.IsFailure) return stoppedWait.Error;
+
+                if (!stoppedWait.Value) return Observation(state.Value, dispatchId);
+            }
 
             Guid resultId = Guid.NewGuid();
 
             string digest = Convert.ToHexString(SHA256.HashData([]));
 
             GuildQuestResult result = new(new(questId, resultId, digest, null, QuestState.Canceled,
-                LongRunningOperationRecoveryOutcomes.Cancelled), null, NoDispatchProven: true, WorkStoppedProven: true);
+                LongRunningOperationRecoveryOutcomes.Cancelled), null,
+                NoDispatchProven: !state.Value.HadPhysicalDispatch, WorkStoppedProven: true);
 
             var committed = await quests.CommitResultAsync(driver, new(resultId, digest), state.Value.Quest.Quest.Revision,
                 result, cancellationToken).ConfigureAwait(false);

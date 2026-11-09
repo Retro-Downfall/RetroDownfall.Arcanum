@@ -153,6 +153,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
                         (GrimoireSchemaTransactionTier.GuildCanonical, 7),
                         (GrimoireSchemaTransactionTier.GuildCanonical, 8),
                         (GrimoireSchemaTransactionTier.GuildCanonical, 9),
+                        (GrimoireSchemaTransactionTier.GuildCanonical, 10),
                     ]);
             });
 
@@ -793,6 +794,9 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "guild_local_wait_checkpoints_guard_update",
                 "guild_utc_instant_columns_drop",
                 "guild_utc_instant_columns",
+                "idx_guild_budget_effects_quest",
+                "idx_guild_workspace_leases_quest",
+                "idx_guild_quests_cancellation",
             ],
             GrimoireSchemaCatalog.TransitionStatements.Select(static statement => statement.Name));
     }

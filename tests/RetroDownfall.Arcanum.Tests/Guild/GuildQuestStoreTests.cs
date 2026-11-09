@@ -249,7 +249,7 @@ public sealed partial class GuildQuestStoreTests
     {
         internal GuildGrant Grant { get; set; } = new([], [], [], new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited)), [GuildDelegationKind.Local], null);
 
-        public Guid InstallationGeneration { get; } = Guid.NewGuid();
+        public Guid InstallationGeneration { get; set; } = Guid.NewGuid();
 
         internal GuildCallerContext Caller = null!;
 
@@ -257,21 +257,31 @@ public sealed partial class GuildQuestStoreTests
 
         internal int Resolutions;
 
+        internal Func<GuildCallerContext, Guid?, CancellationToken, Task>? BeforeLocate;
+
+        internal Func<GuildCallerContext, CancellationToken, Task>? BeforeResolve;
+
         private readonly Dictionary<GuildAdmissionContext, GuildSignetOwnerBinding> _admissions = [];
 
-        public Task<Result> AuthorizeLocateAsync(GuildCallerContext caller, SqliteConnection connection, SqliteTransaction transaction,
-            Guid? questId, Guid? sessionId, Guid? campaignId, CancellationToken cancellationToken) =>
-            Task.FromResult(ReferenceEquals(caller, Caller) || caller.Execution is not null
-                ? Result.Success() : Result.Failure(new(ErrorCodes.Guild.Forbidden, "Unrecognized caller.")));
+        public async Task<Result> AuthorizeLocateAsync(GuildCallerContext caller, SqliteConnection connection, SqliteTransaction transaction,
+            Guid? questId, Guid? sessionId, Guid? campaignId, CancellationToken cancellationToken)
+        {
+            if (BeforeLocate is { } before) await before(caller, questId, cancellationToken);
 
-        public Task<Result<GuildQuestAdmissionPlan>> ResolveAsync(GuildCallerContext caller, GuildQuestProposal proposal,
+            return ReferenceEquals(caller, Caller) || caller.Execution is not null
+                ? Result.Success() : Result.Failure(new(ErrorCodes.Guild.Forbidden, "Unrecognized caller."));
+        }
+
+        public async Task<Result<GuildQuestAdmissionPlan>> ResolveAsync(GuildCallerContext caller, GuildQuestProposal proposal,
             SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
         {
             Resolutions++;
 
+            if (BeforeResolve is { } before) await before(caller, cancellationToken);
+
             if (RefuseResolution)
             {
-                return Task.FromResult(Result<GuildQuestAdmissionPlan>.Failure(new(ErrorCodes.Guild.RevisionConflict, "Resolution changed.")));
+                return Result<GuildQuestAdmissionPlan>.Failure(new(ErrorCodes.Guild.RevisionConflict, "Resolution changed."));
             }
 
             GuildAdmissionContext admission = new(caller, Guid.NewGuid(), proposal.Mutation);
@@ -283,8 +293,8 @@ public sealed partial class GuildQuestStoreTests
             GuildAgentCard card = new(Guid.Empty, Guid.Empty, 0, "Derived", "Host template", "1", [], ["text/plain"], ["text/plain"],
                 new(false, false, false), new(GuildAgentSourceKind.Derived, null, null, true, null));
 
-            return Task.FromResult(Result<GuildQuestAdmissionPlan>.Success(new(admission, Grant, owners,
-                Caller.PrincipalId!.Value, new(card, "", []))));
+            return Result<GuildQuestAdmissionPlan>.Success(new(admission, Grant, owners,
+                Caller.PrincipalId!.Value, new(card, "", [])));
         }
 
         public Task<Result<GuildSignetAdmissionEvidence>> AuthorizeAdmissionAsync(GuildAdmissionContext admission, GuildSignetBinding binding, CancellationToken cancellationToken) =>

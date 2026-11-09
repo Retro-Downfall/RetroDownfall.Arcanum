@@ -152,15 +152,17 @@ internal sealed partial class GuildQuestStore
     {
         if (!row.Quest.CancellationRequested) return Unavailable;
 
-        await using SqliteCommand counts = Command(connection, transaction, """
+        await using SqliteCommand counts = Command(connection, transaction, $"""
             WITH RECURSIVE descendants(Id) AS (
                 SELECT Id FROM guild_quests WHERE Id=$quest
                 UNION SELECT q.Id FROM guild_quests q JOIN descendants d ON q.ParentQuestId=d.Id
             ) SELECT
-                (SELECT count(*) FROM descendants d WHERE NOT EXISTS(SELECT 1 FROM guild_result_receipts r WHERE r.QuestId=d.Id)),
-                (SELECT count(*) FROM guild_budget_effects e JOIN descendants d ON d.Id=e.QuestId WHERE e.StateCode=1)
+                (SELECT count(*) FROM descendants d JOIN guild_quests c ON c.Id=d.Id WHERE {GuildQuestRetentionPins.StoppedExecutionUnresolved}),
+                (SELECT count(*) FROM guild_budget_effects e JOIN descendants d ON d.Id=e.QuestId WHERE e.StateCode IN(0,1))
                 + (SELECT count(*) FROM guild_dispatches p JOIN descendants d ON d.Id=p.QuestId WHERE p.EvidenceCode=2
                     AND NOT EXISTS(SELECT 1 FROM guild_budget_effects e WHERE e.DispatchId=p.DispatchId))
+                + (SELECT count(*) FROM guild_workspace_leases lease JOIN descendants d ON d.Id=lease.QuestId
+                    WHERE lease.StateCode IS NOT 3 OR lease.InFlightMutationCount IS NOT 0)
             """);
 
         Add(counts, "$quest", Id(row.Quest.Id));

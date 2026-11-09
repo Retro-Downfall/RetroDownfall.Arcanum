@@ -9916,7 +9916,9 @@
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOwnerCleanupCoordinator.cs#RunBatchAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Reads.cs#PortalPageBytes",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Outbox.cs#DrainOutboxAsync",
-        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalQuestScheduler.cs#ReadPendingIdsAsync"
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalQuestScheduler.cs#ReadPendingIdsAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.CancellationWork.cs#ReadCancellationWorkPageAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Tree.cs#GetTreeAsync"
       ],
       "coveredSymbols": [
         "GuildStore.ListAsync",
@@ -9924,7 +9926,9 @@
         "GuildOwnerCleanupCoordinator.RunBatchAsync",
         "GuildPortalStore.PortalPageBytes",
         "GuildPortalStore.DrainOutboxAsync",
-        "GuildLocalQuestScheduler.ReadPendingIdsAsync"
+        "GuildLocalQuestScheduler.ReadPendingIdsAsync",
+        "GuildQuestStore.ReadCancellationWorkPageAsync",
+        "GuildQuestStore.GetTreeAsync"
       ],
       "symbolValues": {
         "GuildStore.ListAsync": "Up to 100 records and a 1 MiB materialization budget per page",
@@ -9932,12 +9936,14 @@
         "GuildOwnerCleanupCoordinator.RunBatchAsync": "Caller-supplied event and orphan batch sizes; hosted cleanup requests 64 events and 64 orphans per turn, with protected content paged by the shared purger target limit",
         "GuildPortalStore.PortalPageBytes": "1,048,576 encoded bytes and at most 100 scanned rows per Portal page",
         "GuildPortalStore.DrainOutboxAsync": "At most 100 pending source receipts per admitted turn; remaining work stays durable",
-        "GuildLocalQuestScheduler.ReadPendingIdsAsync": "At most 100 pending identities per keyset page; discovery continues through every page and queued identities coalesce"
+        "GuildLocalQuestScheduler.ReadPendingIdsAsync": "At most 100 pending identities per keyset page; discovery continues through every page and queued identities coalesce",
+        "GuildQuestStore.ReadCancellationWorkPageAsync": "At most 100 descendant cancellation identities per indexed keyset page; durable frontiers remain discoverable until drained",
+        "GuildQuestStore.GetTreeAsync": "At most 100 content-free tree members and 1,048,576 encoded bytes per stable-membership page; state is live per page"
       },
-      "currentValue": "Card and Portal lists: up to 100 records and 1 MiB per page. Portal source delivery: up to 100 receipts per turn. Declared sources: up to 100 files, each bounded by the effective Spell byte limit. Hosted cleanup: 64 events and 64 orphans per turn.",
+      "currentValue": "Card and Portal lists: up to 100 records and 1 MiB per page. Portal source delivery: up to 100 receipts per turn. Declared sources: up to 100 files, each bounded by the effective Spell byte limit. Hosted cleanup: 64 events and 64 orphans per turn. Quest tree pages: up to 100 members and 1 MiB; descendant cancellation: up to 100 identities per work page.",
       "owner": "host",
       "enforcementPoint": "Admitted keyset pages, bounded retained directory names and owner cleanup turns",
-      "userVisibleBehavior": "Every page advances or completes; remaining agents and owner work remain reachable through continuation.",
+      "userVisibleBehavior": "Every page advances or completes; remaining agents, tree members and owner work remain reachable through continuation. Cancellation intent stays durable until execution converges or reconciliation remains visibly required.",
       "originalRationale": "Bound response memory and writer occupancy while keeping total corpus and lifetime work unrestricted.",
       "threatOrFailureModel": "A large installation must not require one allocation or writer transaction proportional to every agent or owner.",
       "classification": "Required physical resource protection",
@@ -9949,7 +9955,9 @@
         "GuildDeclaredAgentSourceTests",
         "DataRetentionServiceTests",
         "GuildPortalStoreTests",
-        "GuildLocalHostPolicyTests.Local_scheduler_recovers_committed_start_and_coalesces_wakes_before_rebinding_live_work"
+        "GuildLocalHostPolicyTests.Local_scheduler_recovers_committed_start_and_coalesces_wakes_before_rebinding_live_work",
+        "GuildQuestStoreTests.Tree_pages_capture_exact_subtree_without_siblings_or_later_children",
+        "GuildQuestStoreTests.Cancellation_work_page_tracks_exact_subtree_after_restart_and_skips_terminal_nodes"
       ]
     },
     {
@@ -9960,7 +9968,8 @@
         "src/RetroDownfall.Arcanum.Infrastructure/Hosting/ConclaveArchmage.GuildTools.cs#DispatchAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalPort.Completion.cs#CompleteAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalPort.cs#WaitAsync",
-        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalQuestScheduler.cs#DiscoverAsync"
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalQuestScheduler.cs#DiscoverAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalPort.cs#ParkAsync"
       ],
       "coveredSymbols": [
         "ApprenticeService.GuildEngineFrame.EnsureCapacityAsync",
@@ -9988,7 +9997,8 @@
       "tests": [
         "GuildCapacityTests",
         "GuildLocalHostPolicyTests",
-        "GuildQuestStoreTests"
+        "GuildQuestStoreTests",
+        "GuildLocalHostPolicyTests.Canceled_live_parent_retains_ownership_until_its_child_has_stopped"
       ]
     },
     {
@@ -9998,21 +10008,24 @@
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalPort.cs#DispatchCoreAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalPort.cs#PulseAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.LocalLifecycle.cs#RefreshLocalExecutionAsync",
-        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.ProviderEffects.cs#ExecuteProviderEffectAsync"
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.ProviderEffects.cs#ExecuteProviderEffectAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalPort.cs#ParkAsync"
       ],
       "coveredSymbols": [
         "GuildLocalPort.DispatchCoreAsync",
         "GuildLocalPort.PulseAsync",
         "GuildQuestStore.RefreshLocalExecutionAsync",
-        "GuildQuestStore.ExecuteProviderEffectAsync"
+        "GuildQuestStore.ExecuteProviderEffectAsync",
+        "GuildLocalPort.ParkAsync"
       ],
       "symbolValues": {
         "GuildLocalPort.DispatchCoreAsync": "Initial LRO ownership expires after 2 minutes without renewal",
         "GuildLocalPort.PulseAsync": "Renew and revalidate every 10 seconds while the awaited run owns its operation",
         "GuildQuestStore.RefreshLocalExecutionAsync": "Each successful pulse extends current ownership to 2 minutes from the current clock",
-        "GuildQuestStore.ExecuteProviderEffectAsync": "1-hour daily preparation lease; exposed paid uncertainty is retained beyond that expiry"
+        "GuildQuestStore.ExecuteProviderEffectAsync": "1-hour daily preparation lease; exposed paid uncertainty is retained beyond that expiry",
+        "GuildLocalPort.ParkAsync": "Renew current 2-minute ownership every 30 seconds while canceled descendants drain; check the stop frontier every 250 milliseconds with no total wait ceiling"
       },
-      "currentValue": "Renewable 2-minute LRO ownership with a 10-second pulse; 1-hour unexposed daily preparation lease; exposed uncertainty has no automatic expiry",
+      "currentValue": "Renewable 2-minute LRO ownership with a 10-second execution pulse or 30-second cancellation-drain renewal; 1-hour unexposed daily preparation lease; exposed uncertainty has no automatic expiry",
       "owner": "host",
       "enforcementPoint": "Exact LRO revision/lease refresh and transactional physical-budget preparation/exposure",
       "userVisibleBehavior": "A live execution renews its ownership for continued work. Lost ownership prevents further effects; an already exposed provider call retains its unresolved spend hold until known evidence settles it.",
@@ -10023,7 +10036,8 @@
       "replacementOrContinuation": "Renew exact live ownership or recover it through authenticated durable reconciliation; these lease durations are not work-duration deadlines.",
       "tests": [
         "GuildLocalHostPolicyTests.Local_port_commits_once_or_retains_uncertain_work_without_replay",
-        "GuildQuestStoreTests.Provider_effect_timeout_keeps_real_daily_hold_past_expiry_and_refuses_another_identity"
+        "GuildQuestStoreTests.Provider_effect_timeout_keeps_real_daily_hold_past_expiry_and_refuses_another_identity",
+        "GuildLocalHostPolicyTests.Canceled_live_parent_retains_ownership_until_its_child_has_stopped"
       ]
     },
     {

@@ -13,16 +13,17 @@ internal sealed partial class GuildQuestStore
 
                 if (admitted.IsFailure) return admitted.Error;
 
-                await using SqliteCommand frontier = Command(connection, transaction, """
+                await using SqliteCommand frontier = Command(connection, transaction, $"""
                     WITH RECURSIVE tree(Id,OperationId) AS (
                         SELECT Id,OperationId FROM guild_quests WHERE Id=$quest
                         UNION SELECT c.Id,c.OperationId FROM guild_quests c JOIN tree p ON c.ParentQuestId=p.Id)
                     SELECT CASE WHEN EXISTS(SELECT 1 FROM tree c JOIN LongRunningOperations o ON o.Id=c.OperationId
                             WHERE c.Id<>$quest AND o.State=7 AND o.TerminalErrorCode=$interrupted)
                         THEN -1
-                        ELSE NOT EXISTS(SELECT 1 FROM tree c JOIN LongRunningOperations o ON o.Id=c.OperationId
-                                WHERE c.Id<>$quest AND o.State NOT IN(4,5,6))
-                            AND NOT EXISTS(SELECT 1 FROM tree c JOIN guild_dispatches d ON d.QuestId=c.Id WHERE d.EvidenceCode=2)
+                        ELSE NOT EXISTS(SELECT 1 FROM tree t JOIN guild_quests c ON c.Id=t.Id
+                                WHERE c.Id<>$quest AND {GuildQuestRetentionPins.StoppedExecutionUnresolved})
+                            AND NOT EXISTS(SELECT 1 FROM tree t JOIN guild_quests c ON c.Id=t.Id
+                                WHERE {GuildQuestRetentionPins.ExternalWorkUnresolved})
                         END
                     """);
 

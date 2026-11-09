@@ -125,7 +125,7 @@ public sealed partial class GuildQuestStoreTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Read_convergence_requires_current_settled_obligations_and_preserves_a_surviving_child_outcome(bool uncertainAccounting)
+    public async Task Read_execution_convergence_preserves_a_surviving_child_outcome_despite_unsettled_accounting(bool uncertainAccounting)
     {
         await using Fixture f = await Fixture.CreateAsync();
 
@@ -181,7 +181,10 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.True(after.Value.Quest.CancellationRequested);
 
-        Assert.Equal(!uncertainAccounting, after.Value.Quest.CancellationConverged);
+        Assert.True(after.Value.Quest.CancellationConverged);
+
+        Assert.Equal(uncertainAccounting ? GuildAccountingState.Uncertain : GuildAccountingState.Settled,
+            after.Value.Quest.AccountingState);
 
         Assert.NotEqual(parent.Quest.SessionId, after.Value.Quest.SessionId);
     }

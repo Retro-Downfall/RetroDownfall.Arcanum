@@ -61,6 +61,7 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.t
   RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests \
   RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests \
   RetroDownfall.Arcanum.Tests.Guild.GuildLocalExecutionSchemaTests \
+  RetroDownfall.Arcanum.Tests.Data.Schema.GuildCancellationSchemaTests \
   RetroDownfall.Arcanum.Tests.Api.GuildEndpointTests \
   RetroDownfall.Arcanum.Tests.Api.GuildCapacityTests \
   RetroDownfall.Arcanum.Tests.Operations.LongRunningOperationRecoveryOwnershipTests \
@@ -99,6 +100,33 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.t
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Guild_shared_engine_admits_each_unit_with_its_own_Guild_work_and_effect_lease \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Local_child_frontier_separates_explicit_interruption_from_resumable_or_live_descendants \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Local_child_frontier_does_not_count_its_own_interruption_as_a_descendant \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Failed_parent_commits_its_outcome_and_durable_descendant_cancellation_frontier \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Failed_frontier_persists_convergence_without_rewriting_outcome_or_unknown_accounting \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Cancellation_work_resumes_beyond_one_page_and_deep_lineage_without_releasing_budget \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Running_cancellation_frontier_requires_the_exact_self_execution_and_current_authority \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Proven_never_dispatched_result_returns_the_prepared_hold_atomically \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Persisted_paid_input_wait_cancels_after_restart_only_at_the_exact_stopped_frontier \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Cancellation_work_page_tracks_exact_subtree_after_restart_and_skips_terminal_nodes \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestProjectionTests.Canceled_receipt_does_not_override_unresolved_subtree_execution \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Cancellation_and_child_issue_serialize_at_the_admitted_transaction_without_touching_siblings \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Cancellation_and_result_commit_preserve_the_winning_receipt_and_revision \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Cancellation_receipt_counts_physical_obligations_without_counting_unknown_spend_as_running \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Canceled_live_parent_retains_ownership_until_its_child_has_stopped \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Remote_cancellation_recovery_distinguishes_request_outcomes_from_durable_stop_after_restart \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Tree_deep_and_wide_pages_have_no_depth_limit_and_use_the_lineage_indexes \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Tree_cursor_authenticates_retired_generation_and_rejects_forged_retirement \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Tree_refuses_corrupt_child_evidence_without_materializing_retained_payloads \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Tree_convergence_rechecks_descendant_physical_ownership_separately_from_paid_unknowns \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Cancellation_convergence_rechecks_descendant_physical_ownership_after_restart \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Stopped_cancellation_with_uncertain_child_accounting_retains_cleanup_evidence_after_replay \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Tree_pages_capture_exact_subtree_without_siblings_or_later_children \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Tree_cursor_is_bound_to_scope_filter_count_and_caller \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Tree_state_filter_is_live_and_summary_preserves_other_active_members \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Tree_uses_current_stopped_subtree_proof_before_the_convergence_marker_is_refreshed \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Tree_state_projection_preserves_the_authoritative_uncertainty_rules \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Tree_refuses_non_guid_identity_text_without_throwing_or_inventing_a_state \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests.Tree_retains_erased_member_tombstone_but_erased_cursor_owner_is_gone \
+  --required-case RetroDownfall.Arcanum.Tests.Data.DataRetentionServiceTests.Interrupted_canceled_owner_cleanup_preserves_intent_receipts_and_unsettled_reset_obligations \
   --required-case RetroDownfall.Arcanum.Tests.Operations.LongRunningOperationRecoveryOwnershipTests.Generic_recovery_claims_process_ownership_before_lease_acquisition_and_releases_after_settlement \
   --required-case RetroDownfall.Arcanum.Tests.Hosting.ApprenticeServiceReliabilityTests.Guild_cutover_never_resumes_legacy_crash_recovery_into_execution_capacity \
   "${platform_required_cases[@]}" \

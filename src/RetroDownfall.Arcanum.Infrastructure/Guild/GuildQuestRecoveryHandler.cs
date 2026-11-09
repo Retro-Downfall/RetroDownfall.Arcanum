@@ -195,10 +195,29 @@ internal sealed class GuildQuestRecoveryHandler(IGrimoireOrdinaryConnectionFacto
             receipt is not null && reader.GetBoolean(16), receipt is not null && reader.GetBoolean(17),
             current.State == LongRunningOperationState.Abandoned && receipt?.Outcome == QuestState.Failed, reader.GetBoolean(9));
 
-        RecoverySnapshot snapshot = new(current, evidence, Guid.Parse(reader.GetString(2)), Guid.Parse(reader.GetString(3)),
-            Guid.Parse(reader.GetString(11)), reader.GetInt64(4), outboxMatches, null, reader.GetBoolean(20));
+        Guid root = Guid.Parse(reader.GetString(2));
+
+        Guid installationGeneration = Guid.Parse(reader.GetString(3));
+
+        Guid epoch = Guid.Parse(reader.GetString(11));
+
+        long questRevision = reader.GetInt64(4);
+
+        bool possiblyDispatched = reader.GetBoolean(20);
 
         await reader.DisposeAsync().ConfigureAwait(false);
+
+        if (evidence.CancellationRequested || current.TerminalErrorCode == LongRunningOperationRecoveryOutcomes.Cancelled)
+        {
+            evidence = evidence with
+            {
+                CancellationConverged = await GuildQuestStore.ConvergenceSettledWithinAsync(
+                    lease.Connection, transaction, questId, ct).ConfigureAwait(false)
+            };
+        }
+
+        RecoverySnapshot snapshot = new(current, evidence, root, installationGeneration,
+            epoch, questRevision, outboxMatches, null, possiblyDispatched);
 
         await using SqliteCommand dispatch = lease.Connection.CreateCommand();
 

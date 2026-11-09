@@ -20,6 +20,15 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
     ILogger<GuildLocalQuestScheduler> logger, IGuildLocalHostReadiness readiness,
     IGrimoireConnectionAdmissionGate admission) : BackgroundService, IGuildLocalQuestScheduler
 {
+    internal const string CancellationFrontierQuery = """
+        SELECT CASE WHEN typeof(quest.Id)='text' AND length(CAST(quest.Id AS BLOB))=36 THEN quest.Id END
+        FROM guild_quests quest JOIN guild_quest_start_intents intent ON quest.Id=intent.QuestId
+            JOIN guild_local_executions binding ON binding.QuestId=quest.Id
+        WHERE quest.CancellationRequested=1 AND quest.CancellationConverged=0 AND quest.Retired=0 AND quest.Id>$after
+            AND NOT EXISTS(SELECT 1 FROM guild_quests parent WHERE parent.Id=quest.ParentQuestId AND parent.CancellationRequested=1)
+        ORDER BY quest.Id LIMIT 100
+        """;
+
     private readonly Channel<Guid> _wakes = Channel.CreateUnbounded<Guid>(new() { SingleReader = true, AllowSynchronousContinuations = false });
 
     private readonly ConcurrentDictionary<Guid, object> _pending = new();
@@ -179,6 +188,10 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
         try
         {
+            // Cascade discovery is independent of the live execution task. A parent waiting
+            // for its descendants cannot suppress the durable stop work that lets it finish.
+            await DiscoverCancellationFrontiersAsync(lifetime.Token).ConfigureAwait(false);
+
             Guid? after = null;
 
             while (true)
@@ -201,6 +214,67 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
         catch (OperationCanceledException) when (!ct.IsCancellationRequested && work.MaintenanceRevocation.IsCancellationRequested)
         {
             Volatile.Write(ref _ready, 0);
+        }
+    }
+
+    private async Task DiscoverCancellationFrontiersAsync(CancellationToken ct)
+    {
+        await using AsyncServiceScope scope = scopes.CreateAsyncScope();
+
+        GuildLocalHostPolicy policy = scope.ServiceProvider.GetRequiredService<GuildLocalHostPolicy>();
+
+        GuildQuestStore store = scope.ServiceProvider.GetRequiredService<GuildQuestStore>();
+
+        var caller = await policy.CreateNativeOperatorAsync(Guid.NewGuid(), ct).ConfigureAwait(false);
+
+        if (caller.IsFailure) return;
+
+        Guid? after = null;
+
+        while (IsAvailable)
+        {
+            var roots = await ReadPendingIdsWithinAsync(after, ct, cancellationFrontiers: true).ConfigureAwait(false);
+
+            if (roots.IsFailure || roots.Value.IsEmpty) return;
+
+            foreach (Guid root in roots.Value)
+            {
+                long sequence = 0;
+
+                while (IsAvailable)
+                {
+                    var page = await store.ReadCancellationWorkPageAsync(caller.Value, root, sequence, ct).ConfigureAwait(false);
+
+                    if (page.IsFailure) break;
+
+                    if (page.Value.IsEmpty)
+                    {
+                        _ = await store.RefreshCancellationConvergenceAsync(caller.Value, root, ct).ConfigureAwait(false);
+
+                        break;
+                    }
+
+                    foreach (GuildCancellationWork child in page.Value)
+                    {
+                        GuildCancelQuestRequest request = new(Guid.NewGuid(), child.Revision, GuildCancellationReason.OperatorRequested);
+
+                        var digest = GuildQuestIntent.Compute(child.QuestId, request);
+
+                        if (digest.IsFailure) continue;
+
+                        // Persist the ordinary receipt before any port call. Revision races are
+                        // retried by the next scan; accepted children disappear from work pages.
+                        var accepted = await store.RequestCancellationAsync(caller.Value,
+                            new(request.IdempotencyKey, digest.Value), child.QuestId, request, ct).ConfigureAwait(false);
+
+                        if (accepted.IsSuccess) Enqueue(child.QuestId);
+                    }
+
+                    sequence = page.Value[^1].IssuedSequence;
+                }
+            }
+
+            after = roots.Value[^1];
         }
     }
 
@@ -546,7 +620,7 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
         }
     }
 
-    private async Task<Result<ImmutableArray<Guid>>> ReadPendingIdsWithinAsync(Guid? after, CancellationToken ct)
+    private async Task<Result<ImmutableArray<Guid>>> ReadPendingIdsWithinAsync(Guid? after, CancellationToken ct, bool cancellationFrontiers = false)
     {
         var opened = await connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, ct).ConfigureAwait(false);
 
@@ -564,7 +638,7 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
         command.Transaction = transaction;
 
-        command.CommandText = """
+        command.CommandText = cancellationFrontiers ? CancellationFrontierQuery : """
             SELECT CASE WHEN typeof(quest.Id)='text' AND length(CAST(quest.Id AS BLOB))=36 THEN quest.Id END
             FROM guild_quest_start_intents intent JOIN guild_quests quest ON quest.Id=intent.QuestId
                 JOIN guild_local_executions binding ON binding.QuestId=quest.Id

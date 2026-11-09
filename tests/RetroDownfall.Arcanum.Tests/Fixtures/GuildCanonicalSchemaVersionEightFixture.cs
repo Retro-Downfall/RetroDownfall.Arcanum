@@ -6,7 +6,7 @@ internal static class GuildCanonicalSchemaVersionEightFixture
 {
     internal const string PublishedFingerprint = "3DD0FE6EC88B44D5F4AE0395D082281E74155CB429E4B3B53A9D6AE147CC9432";
 
-    internal static IReadOnlyList<GrimoireSchemaObject> Objects { get; } = [.. GrimoireSchemaCatalog.GuildCanonicalObjects
+    internal static IReadOnlyList<GrimoireSchemaObject> Objects { get; } = [.. GuildCanonicalSchemaVersionNineFixture.Objects
         .Where(item => !item.Name.Contains("guild_local_executions", StringComparison.Ordinal)
             && !item.Name.Contains("guild_quest_cancellations", StringComparison.Ordinal)
             && !item.Name.Contains("guild_local_wait_checkpoints", StringComparison.Ordinal))

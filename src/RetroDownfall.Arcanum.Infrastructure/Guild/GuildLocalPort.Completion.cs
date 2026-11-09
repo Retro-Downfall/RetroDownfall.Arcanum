@@ -40,15 +40,15 @@ internal sealed partial class GuildLocalPort
 
                 var refreshed = await quests.RefreshLocalExecutionAsync(invocation, time.GetUtcNow(), false, ct).ConfigureAwait(false);
 
-                if (refreshed.IsFailure || refreshed.Value) return await ParkAsync(invocation, request.DispatchId).ConfigureAwait(false);
+                if (refreshed.IsFailure || refreshed.Value) return await ParkAsync(invocation, request.DispatchId, ct).ConfigureAwait(false);
 
                 var resolved = await quests.ResolveLocalDispatchAsync(invocation.Driver, invocation.Dispatch.DispatchId, ct).ConfigureAwait(false);
 
-                if (resolved.IsFailure) return await ParkAsync(invocation, request.DispatchId).ConfigureAwait(false);
+                if (resolved.IsFailure) return await ParkAsync(invocation, request.DispatchId, ct).ConfigureAwait(false);
 
                 var stopped = await quests.LocalChildrenStoppedAsync(invocation.Driver, ct).ConfigureAwait(false);
 
-                if (stopped.IsFailure) return await ParkAsync(invocation, request.DispatchId).ConfigureAwait(false);
+                if (stopped.IsFailure) return await ParkAsync(invocation, request.DispatchId, ct).ConfigureAwait(false);
 
                 if (stopped.Value)
                 {
@@ -66,7 +66,7 @@ internal sealed partial class GuildLocalPort
                         return await ObserveAsync(invocation.Driver.Execution, request.QuestId, request.DispatchId, ct).ConfigureAwait(false);
 
                     if (committed.Error.Code != ErrorCodes.Guild.RevisionConflict)
-                        return await ParkAsync(invocation, request.DispatchId).ConfigureAwait(false);
+                        return await ParkAsync(invocation, request.DispatchId, ct).ConfigureAwait(false);
                 }
             }
             finally
@@ -81,34 +81,29 @@ internal sealed partial class GuildLocalPort
     private async Task<Result<GuildDispatchObservation>> CompleteRefusalAsync(LocalRun running,
         GuildDispatchRequest request, Error error, CancellationToken ct)
     {
-        // Only known preflight decisions can become a failed result. An arbitrary adapter error
-        // or exception remains reconciliation work even if the current dispatch looks unexposed.
-        if (error.Code is not (ErrorCodes.Guild.Unavailable or ErrorCodes.Guild.PriceUnavailable
-            or ErrorCodes.Guild.BudgetCapabilityUnavailable or ErrorCodes.Guild.GrantExceeded
-            or ErrorCodes.Hub.ContextBudgetExceeded
-            or ErrorCodes.Guardrails.Blocked or ErrorCodes.Guardrails.PiiDetected))
-            return await ParkAsync(running.Execution, request.DispatchId).ConfigureAwait(false);
-
         await running.Serial.WaitAsync(ct).ConfigureAwait(false);
 
         try
         {
             GuildLocalInferenceExecution execution = running.Execution;
 
+            // Only known preflight decisions can become a failed result. An arbitrary adapter
+            // error remains reconciliation work unless durable cancellation can prove a stop.
+            if (error.Code is not (ErrorCodes.Guild.Unavailable or ErrorCodes.Guild.PriceUnavailable
+                or ErrorCodes.Guild.BudgetCapabilityUnavailable or ErrorCodes.Guild.GrantExceeded
+                or ErrorCodes.Hub.ContextBudgetExceeded
+                or ErrorCodes.Guardrails.Blocked or ErrorCodes.Guardrails.PiiDetected))
+                return await ParkAsync(execution, request.DispatchId, ct).ConfigureAwait(false);
+
             var state = await quests.ReadLocalPortAsync(execution.Driver, request.DispatchId, ct).ConfigureAwait(false);
 
             if (state.IsFailure || state.Value.HadPhysicalDispatch || state.Value.Quest.Quest.CancellationRequested)
-                return await ParkAsync(execution, request.DispatchId).ConfigureAwait(false);
+                return await ParkAsync(execution, request.DispatchId, ct).ConfigureAwait(false);
 
             var resolved = await quests.ResolveLocalDispatchAsync(execution.Driver, request.DispatchId, ct).ConfigureAwait(false);
 
             if (resolved.IsFailure || resolved.Value.Evidence != GuildDispatchEvidence.ResolvedNoDispatch)
-                return await ParkAsync(execution, request.DispatchId).ConfigureAwait(false);
-
-            var stopped = await quests.LocalChildrenStoppedAsync(execution.Driver, ct).ConfigureAwait(false);
-
-            if (stopped.IsFailure || !stopped.Value)
-                return await ParkAsync(execution, request.DispatchId).ConfigureAwait(false);
+                return await ParkAsync(execution, request.DispatchId, ct).ConfigureAwait(false);
 
             Guid resultId = Guid.NewGuid();
 
@@ -122,7 +117,7 @@ internal sealed partial class GuildLocalPort
 
             return committed.IsSuccess
                 ? await ObserveAsync(execution.Driver.Execution, request.QuestId, request.DispatchId, ct).ConfigureAwait(false)
-                : await ParkAsync(execution, request.DispatchId).ConfigureAwait(false);
+                : await ParkAsync(execution, request.DispatchId, ct).ConfigureAwait(false);
         }
         finally
         {

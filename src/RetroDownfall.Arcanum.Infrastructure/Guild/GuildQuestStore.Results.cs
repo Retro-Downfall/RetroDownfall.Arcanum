@@ -129,6 +129,7 @@ internal sealed partial class GuildQuestStore
 
                 await using SqliteCommand update = Command(connection, transaction, """
                     UPDATE guild_quests SET AccountingStateCode=$accounting,CancellationConverged=$converged,
+                        CancellationRequested=CASE WHEN $failed=1 THEN 1 ELSE CancellationRequested END,
                         Revision=Revision+1,UpdatedAtUtc=$now WHERE Id=$quest AND Revision=$revision
                     """);
 
@@ -136,6 +137,7 @@ internal sealed partial class GuildQuestStore
                 Add(update, "$revision", expectedQuestRevision);
                 Add(update, "$accounting", (int)settled.Value);
                 Add(update, "$converged", receipt.Outcome == QuestState.Canceled ? 1 : 0);
+                Add(update, "$failed", receipt.Outcome == QuestState.Failed ? 1 : 0);
                 Add(update, "$now", UtcInstantText.Format(now));
 
                 if (await update.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 1) return RevisionConflict;
@@ -328,15 +330,27 @@ internal sealed partial class GuildQuestStore
 
         if (result.WorkStoppedProven || outcome is QuestState.Rejected or QuestState.Canceled)
         {
-            await using SqliteCommand unresolved = Command(connection, transaction, """
+            await using SqliteCommand unresolved = Command(connection, transaction, $"""
                 WITH RECURSIVE tree(Id,OperationId) AS (
                     SELECT Id,OperationId FROM guild_quests WHERE Id=$id
                     UNION SELECT c.Id,c.OperationId FROM guild_quests c JOIN tree p ON c.ParentQuestId=p.Id)
-                SELECT EXISTS(SELECT 1 FROM tree c JOIN LongRunningOperations o ON o.Id=c.OperationId WHERE c.Id<>$id AND o.State NOT IN(4,5,6))
-                    OR EXISTS(SELECT 1 FROM tree c JOIN guild_dispatches d ON d.QuestId=c.Id WHERE d.EvidenceCode=2)
+                SELECT ($subtree=1 AND EXISTS(SELECT 1 FROM tree t JOIN guild_quests c ON c.Id=t.Id
+                        WHERE c.Id<>$id AND {GuildQuestRetentionPins.StoppedExecutionUnresolved}))
+                    OR EXISTS(SELECT 1 FROM tree t JOIN guild_quests c ON c.Id=t.Id
+                        WHERE (c.Id=$id OR $subtree=1) AND {GuildQuestRetentionPins.PhysicalWorkUnresolved})
+                    OR EXISTS(SELECT 1 FROM guild_budget_effects effect WHERE effect.QuestId=$id
+                        AND (effect.StateCode=1 OR (effect.StateCode=0 AND $noDispatch=0)))
                 """);
 
             Add(unresolved, "$id", Id(row.Quest.Id));
+
+            // Failure records this execution's stopped outcome immediately and leaves its
+            // descendants behind the durable frontier; cancellation requires the whole subtree.
+            Add(unresolved, "$subtree", outcome == QuestState.Failed ? 0 : 1);
+
+            // The result transaction settles its own prepared, never-sent holds atomically.
+            // Possible dispatch still requires explicit effect completion evidence.
+            Add(unresolved, "$noDispatch", result.NoDispatchProven ? 1 : 0);
 
             if (Equals(1L, await unresolved.ExecuteScalarAsync(ct).ConfigureAwait(false))) return UncertainDispatch;
         }

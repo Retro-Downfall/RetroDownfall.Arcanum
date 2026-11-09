@@ -3,6 +3,26 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 /// <summary>Evidence predicates only; execution remains owned by the existing operation ledger.</summary>
 internal static class GuildQuestRetentionPins
 {
+    // A stop receipt cannot erase an unresolved external operation or retained physical writer.
+    // Unknown paid usage on a completed effect belongs to accounting, not execution liveness.
+    internal const string PhysicalWorkUnresolved = """
+        (EXISTS(SELECT 1 FROM guild_dispatches dispatch WHERE dispatch.QuestId=c.Id AND dispatch.EvidenceCode=2)
+         OR EXISTS(SELECT 1 FROM guild_workspace_leases lease WHERE lease.QuestId=c.Id
+             AND (lease.StateCode IS NOT 3 OR lease.InFlightMutationCount IS NOT 0)))
+        """;
+
+    internal const string ExternalWorkUnresolved = "(" + PhysicalWorkUnresolved + """
+         OR EXISTS(SELECT 1 FROM guild_budget_effects effect WHERE effect.QuestId=c.Id AND effect.StateCode IN(0,1)))
+        """;
+
+    internal const string StoppedExecutionUnresolved = "(" + ExternalWorkUnresolved + """
+         OR NOT EXISTS(SELECT 1 FROM LongRunningOperations operation WHERE operation.Id=c.OperationId AND operation.State IN(4,5,6))
+         OR NOT EXISTS(SELECT 1 FROM guild_result_receipts terminal WHERE terminal.QuestId=c.Id
+             AND (terminal.NoDispatchProven=1 OR terminal.WorkStoppedProven=1))
+         OR EXISTS(SELECT 1 FROM guild_dispatches dispatch WHERE dispatch.QuestId=c.Id AND dispatch.EvidenceCode=3
+             AND NOT EXISTS(SELECT 1 FROM guild_result_receipts stopped WHERE stopped.QuestId=c.Id AND stopped.WorkStoppedProven=1)))
+        """;
+
     // Every caller binds its Quest as c. Missing proof is an obligation, never measured zero.
     internal const string ExecutionUnresolved = """
         (c.AccountingStateCode<>0
@@ -12,12 +32,8 @@ internal static class GuildQuestRetentionPins
              AND (effect.StateCode IN(0,1) OR effect.UnknownUsd=1 OR effect.UnknownTokens=1
                  OR NOT EXISTS(SELECT 1 FROM guild_budget_evidence receipt
                      WHERE receipt.EffectId=effect.EffectId AND receipt.AppliedRevision=effect.Revision)))
-         OR NOT EXISTS(SELECT 1 FROM LongRunningOperations operation WHERE operation.Id=c.OperationId AND operation.State IN(4,5,6))
-         OR NOT EXISTS(SELECT 1 FROM guild_result_receipts terminal WHERE terminal.QuestId=c.Id
-             AND (terminal.NoDispatchProven=1 OR terminal.WorkStoppedProven=1))
-         OR EXISTS(SELECT 1 FROM guild_dispatches dispatch WHERE dispatch.QuestId=c.Id
-             AND (dispatch.EvidenceCode=2 OR (dispatch.EvidenceCode=3 AND NOT EXISTS(
-                 SELECT 1 FROM guild_result_receipts stopped WHERE stopped.QuestId=c.Id AND stopped.WorkStoppedProven=1))))
+         OR
+        """ + StoppedExecutionUnresolved + """
          OR EXISTS(SELECT 1 FROM guild_result_outbox delivery WHERE delivery.QuestId=c.Id AND delivery.DeliveryStateCode=1))
         """;
 

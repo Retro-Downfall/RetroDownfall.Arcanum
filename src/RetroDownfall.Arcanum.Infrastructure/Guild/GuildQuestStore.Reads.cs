@@ -140,7 +140,8 @@ internal sealed partial class GuildQuestStore
             if (await outbox.ExecuteScalarAsync(ct).ConfigureAwait(false) is long value) delivery = (GuildDeliveryState)value;
         }
 
-        bool convergence = dto.CancellationConverged && dto.CancellationRequested
+        bool convergence = (dto.CancellationRequested || operation.State == LongRunningOperationState.Cancelling
+                || operation.TerminalErrorCode == LongRunningOperationRecoveryOutcomes.Cancelled)
             && await ConvergenceSettledWithinAsync(connection, transaction, id, ct).ConfigureAwait(false);
 
         GuildQuestProjectedState projection = GuildQuestProjection.Project(operation,
@@ -274,7 +275,7 @@ internal sealed partial class GuildQuestStore
             : Equals(valid, 1L) ? Result.Success() : Unavailable;
     }
 
-    private static async Task<bool> ConvergenceSettledWithinAsync(SqliteConnection connection, SqliteTransaction transaction, Guid id, CancellationToken ct)
+    internal static async Task<bool> ConvergenceSettledWithinAsync(SqliteConnection connection, SqliteTransaction transaction, Guid id, CancellationToken ct)
     {
         await using SqliteCommand command = Command(connection, transaction, """
             WITH RECURSIVE subtree(Id) AS (
@@ -282,7 +283,7 @@ internal sealed partial class GuildQuestStore
                 UNION
                 SELECT child.Id FROM guild_quests child JOIN subtree parent ON child.ParentQuestId=parent.Id)
             """ + " SELECT NOT EXISTS(SELECT 1 FROM guild_quests c WHERE c.Id IN(SELECT Id FROM subtree) AND "
-                + GuildQuestRetentionPins.ExecutionUnresolved + ")");
+                + GuildQuestRetentionPins.StoppedExecutionUnresolved + ")");
 
         Add(command, "$id", Id(id));
 

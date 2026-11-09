@@ -128,7 +128,8 @@ public sealed class GuildQuestProjectionTests
         var projected = GuildQuestProjection.Project(Operation(LongRunningOperationState.Completed, "operation.cancelled"), Evidence(QuestState.Working) with
         {
             ResultReceipt = Receipt(QuestState.Canceled, "operation.cancelled"),
-            WorkStoppedProven = true
+            WorkStoppedProven = true,
+            CancellationConverged = true
         });
 
         Assert.Equal(QuestState.Canceled, projected.State);
@@ -138,6 +139,22 @@ public sealed class GuildQuestProjectionTests
         Assert.True(projected.CancellationConverged);
 
         Assert.False(projected.ReconciliationRequired);
+    }
+
+    [Fact]
+    public void Canceled_receipt_does_not_override_unresolved_subtree_execution()
+    {
+        var projected = GuildQuestProjection.Project(Operation(LongRunningOperationState.Completed, "operation.cancelled"), Evidence(QuestState.Working) with
+        {
+            ResultReceipt = Receipt(QuestState.Canceled, "operation.cancelled"),
+            WorkStoppedProven = true,
+            CancellationRequested = true,
+            CancellationConverged = false
+        });
+
+        AssertUncertain(projected, QuestState.Working);
+
+        Assert.True(projected.CancellationRequested);
     }
 
     [Fact]

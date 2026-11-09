@@ -136,7 +136,7 @@ internal sealed partial class GuildLocalPort(GuildQuestStore quests, GuildLocalH
         }
         catch (Exception) when (running is not null)
         {
-            return await ParkAsync(running.Execution, request.DispatchId).ConfigureAwait(false);
+            return await ParkAsync(running.Execution, request.DispatchId, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -166,42 +166,93 @@ internal sealed partial class GuildLocalPort(GuildQuestStore quests, GuildLocalH
             state.Quest.Quest.State, state.Quest.Quest.ReconciliationRequired, state.Operation.TerminalErrorCode,
             state.Binding.ApprenticeId, null, null);
 
-    private async Task<Result<GuildDispatchObservation>> ParkAsync(GuildLocalInferenceExecution execution, Guid observedDispatch)
+    private async Task<Result<GuildDispatchObservation>> ParkAsync(GuildLocalInferenceExecution execution,
+        Guid observedDispatch, CancellationToken drainCancellation)
     {
-        var current = await quests.ReadLocalPortAsync(execution.Driver, execution.Dispatch.DispatchId, CancellationToken.None).ConfigureAwait(false);
+        // The engine has returned and its owned in-process work has joined. Keep that known
+        // stop in this live scope while descendants drain; interruption never fabricates proof.
+        DateTimeOffset renewAt = time.GetUtcNow();
 
-        if (current.IsSuccess && current.Value.Quest.Quest.CancellationRequested)
+        try
         {
-            // This path is reached only after the awaited engine and all its in-process work
-            // have stopped. The store separately proves the durable effect and child frontier.
-            var fresh = await quests.RefreshLocalExecutionAsync(execution, time.GetUtcNow(), false, CancellationToken.None).ConfigureAwait(false);
-
-            if (fresh.IsSuccess)
+            while (true)
             {
+                var current = await quests.ReadLocalPortAsync(execution.Driver, execution.Dispatch.DispatchId, CancellationToken.None).ConfigureAwait(false);
+
+                if (current.IsFailure) break;
+
+                if (!current.Value.Quest.Quest.CancellationRequested)
+                {
+                    if (drainCancellation.IsCancellationRequested || execution.Driver.Caller is not { } caller) break;
+
+                    var frontier = await quests.ReadLocalCancellationFrontierAsync(caller, execution.Driver.Execution.QuestId,
+                        drainCancellation).ConfigureAwait(false);
+
+                    if (frontier.IsFailure || !frontier.Value.AncestorCanceled) break;
+
+                    GuildCancelQuestRequest request = new(Guid.NewGuid(), frontier.Value.Quest.Quest.Revision,
+                        GuildCancellationReason.OperatorRequested);
+
+                    var intent = GuildQuestIntent.Compute(execution.Driver.Execution.QuestId, request);
+
+                    if (intent.IsFailure) break;
+
+                    var accepted = await quests.RequestCancellationAsync(caller, new(request.IdempotencyKey, intent.Value),
+                        execution.Driver.Execution.QuestId, request, drainCancellation).ConfigureAwait(false);
+
+                    if (accepted.IsFailure && accepted.Error.Code != ErrorCodes.Guild.RevisionConflict) break;
+
+                    continue;
+                }
+
+                DateTimeOffset now = time.GetUtcNow();
+
+                bool renew = now >= renewAt && !drainCancellation.IsCancellationRequested;
+
+                var fresh = await quests.RefreshLocalExecutionAsync(execution, now, renew, CancellationToken.None).ConfigureAwait(false);
+
+                if (fresh.IsFailure) break;
+
+                if (renew) renewAt = now.AddSeconds(30);
+
                 var resolved = await quests.ResolveLocalDispatchAsync(execution.Driver, execution.Dispatch.DispatchId, CancellationToken.None).ConfigureAwait(false);
 
-                if (resolved.IsSuccess)
+                if (resolved.IsFailure) break;
+
+                var children = await quests.LocalChildrenStoppedAsync(execution.Driver, CancellationToken.None).ConfigureAwait(false);
+
+                if (children.IsFailure) break;
+
+                if (children.Value)
                 {
                     current = await quests.ReadLocalPortAsync(execution.Driver, execution.Dispatch.DispatchId, CancellationToken.None).ConfigureAwait(false);
 
-                    if (current.IsSuccess)
-                    {
-                        Guid resultId = Guid.NewGuid();
+                    if (current.IsFailure) break;
 
-                        string digest = Convert.ToHexString(SHA256.HashData([]));
+                    Guid resultId = Guid.NewGuid();
 
-                        GuildQuestResult canceled = new(new(execution.Driver.Execution.QuestId, resultId, digest, null,
-                            QuestState.Canceled, LongRunningOperationRecoveryOutcomes.Cancelled), null,
-                            NoDispatchProven: !current.Value.HadPhysicalDispatch, WorkStoppedProven: true);
+                    string digest = Convert.ToHexString(SHA256.HashData([]));
 
-                        var committed = await quests.CommitResultAsync(execution.Driver, new(resultId, digest),
-                            current.Value.Quest.Quest.Revision, canceled, CancellationToken.None).ConfigureAwait(false);
+                    GuildQuestResult canceled = new(new(execution.Driver.Execution.QuestId, resultId, digest, null,
+                        QuestState.Canceled, LongRunningOperationRecoveryOutcomes.Cancelled), null,
+                        NoDispatchProven: !current.Value.HadPhysicalDispatch, WorkStoppedProven: true);
 
-                        if (committed.IsSuccess)
-                            return await ObserveAsync(execution.Driver.Execution, execution.Driver.Execution.QuestId, observedDispatch, CancellationToken.None).ConfigureAwait(false);
-                    }
+                    var committed = await quests.CommitResultAsync(execution.Driver, new(resultId, digest),
+                        current.Value.Quest.Quest.Revision, canceled, CancellationToken.None).ConfigureAwait(false);
+
+                    if (committed.IsSuccess)
+                        return await ObserveAsync(execution.Driver.Execution, execution.Driver.Execution.QuestId, observedDispatch, CancellationToken.None).ConfigureAwait(false);
+
+                    if (committed.Error.Code != ErrorCodes.Guild.RevisionConflict) break;
                 }
+
+                if (drainCancellation.IsCancellationRequested) break;
+
+                await Task.Delay(TimeSpan.FromMilliseconds(250), time, drainCancellation).ConfigureAwait(false);
             }
+        }
+        catch (OperationCanceledException) when (drainCancellation.IsCancellationRequested)
+        {
         }
 
         var parked = await quests.ParkLocalExecutionAsync(execution.Driver, CancellationToken.None).ConfigureAwait(false);
