@@ -23,18 +23,31 @@ runs:
         SDK_VERSION: ${{ inputs.sdk-version }}
         PYTHON_COMMAND: ${{ runner.os == 'Windows' && 'python' || 'python3' }}
       run: '"$PYTHON_COMMAND" scripts/resolve_dotnet_sdk.py --validate-version "$SDK_VERSION"'
-    - name: Install the selected SDK
+    - name: Resolve the target framework runtime SDK
+      id: runtime
+      shell: bash
+      env:
+        SDK_VERSION: ${{ inputs.sdk-version }}
+        PYTHON_COMMAND: ${{ runner.os == 'Windows' && 'python' || 'python3' }}
+      run: |
+        set -euo pipefail
+        runtime_sdk=$("$PYTHON_COMMAND" scripts/resolve_dotnet_sdk.py --runtime-sdk-version "$SDK_VERSION")
+        echo "sdk-version=$runtime_sdk" >> "$GITHUB_OUTPUT"
+    - name: Install the selected SDK and target framework runtimes
       uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
       env:
         DOTNET_INSTALL_DIR: ${{ runner.temp }}/arcanum-dotnet
       with:
-        dotnet-version: ${{ inputs.sdk-version }}
+        dotnet-version: |
+          ${{ steps.runtime.outputs.sdk-version }}
+          ${{ inputs.sdk-version }}
         cache: ${{ inputs.cache }}
         cache-dependency-path: ${{ inputs.cache-dependency-path }}
-    - name: Verify and record actual SDK selection
+    - name: Verify and record actual SDK selection and target runtimes
       shell: bash
       env:
         SDK_VERSION: ${{ inputs.sdk-version }}
+        PYTHON_COMMAND: ${{ runner.os == 'Windows' && 'python' || 'python3' }}
       run: |
         set -euo pipefail
         actual=$(dotnet --version)
@@ -42,5 +55,6 @@ runs:
           echo "error: SDK selection mismatch: resolved $SDK_VERSION, actual $actual" >&2
           exit 1
         fi
+        "$PYTHON_COMMAND" scripts/resolve_dotnet_sdk.py --verify-runtimes | tee -a "$GITHUB_STEP_SUMMARY"
         echo "Selected stable .NET SDK: $actual"
         echo "Selected stable .NET SDK: $actual" >> "$GITHUB_STEP_SUMMARY"

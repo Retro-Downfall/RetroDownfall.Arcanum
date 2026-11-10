@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 import re
 import sys
+import subprocess
 import urllib.request
+import xml.etree.ElementTree as ET
 
 INDEX_URL = "https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json"
 MAX_BYTES = 1024 * 1024
@@ -74,19 +76,62 @@ def resolve(metadata, minimum):
     return max(candidates)[1]
 
 
+def target_runtime(build_props):
+    """Read the shared literal target framework instead of inferring it from the build SDK."""
+    try:
+        root = ET.parse(build_props).getroot()
+    except ET.ParseError as error:
+        raise ValueError("Invalid target framework policy XML") from error
+    frameworks = root.findall("./PropertyGroup/TargetFramework")
+    if len(frameworks) != 1 or root.findall("./PropertyGroup/TargetFrameworks"):
+        raise ValueError("A single literal target framework is required")
+    match = re.fullmatch(r"net([1-9][0-9]*)\.([0-9]+)", (frameworks[0].text or "").strip())
+    if match is None:
+        raise ValueError("A literal net<major>.<minor> target framework is required")
+    return tuple(int(part) for part in match.groups())
+
+
+def verify_runtimes(required):
+    result = subprocess.run(["dotnet", "--list-runtimes"], text=True, capture_output=True, check=True)
+    installed = set()
+    for line in result.stdout.splitlines():
+        match = re.match(r"^(Microsoft\.(?:NETCore|AspNetCore)\.App) ([0-9]+)\.([0-9]+)\.[0-9]+ \[", line)
+        if match and tuple(int(part) for part in match.groups()[1:]) == required:
+            installed.add(match.group(1))
+    frameworks = ("Microsoft.NETCore.App", "Microsoft.AspNetCore.App")
+    missing = [framework for framework in frameworks if framework not in installed]
+    version = ".".join(str(part) for part in required)
+    if missing:
+        raise ValueError("Missing target framework runtime(s): " + ", ".join(f"{name} {version}" for name in missing)
+                         + f". Install the {version}.x SDK in the isolated dotnet root.")
+    print("Verified target framework runtimes: " + ", ".join(f"{name} {version}" for name in frameworks))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--global-json", type=Path, default=Path(__file__).resolve().parents[1] / "global.json")
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--metadata-file", type=Path, help="Resolve an archived official-format release index")
     source.add_argument("--validate-version", help="Validate a version inherited from this workflow run")
+    source.add_argument("--runtime-sdk-version", help="Select the target-runtime SDK alongside this exact build SDK")
+    source.add_argument("--verify-runtimes", action="store_true", help="Verify both shared target-framework runtimes")
+    parser.add_argument("--build-props", type=Path, default=Path(__file__).resolve().parents[1] / "Directory.Build.props")
     args = parser.parse_args()
     try:
         policy = json.loads(args.global_json.read_text(encoding="utf-8"))["sdk"]
         minimum = stable_version(policy["version"])
         if policy.get("rollForward") != "latestMajor" or policy.get("allowPrerelease") is not False:
             raise ValueError("SDK policy must use latestMajor and allowPrerelease:false")
-        if args.validate_version is not None:
+        if args.runtime_sdk_version is not None:
+            parsed = stable_version(args.runtime_sdk_version)
+            if parsed < minimum:
+                raise ValueError("SDK version is below the repository minimum")
+            required = target_runtime(args.build_props)
+            selected = args.runtime_sdk_version if parsed[:2] == required else ".".join(str(part) for part in required) + ".x"
+        elif args.verify_runtimes:
+            verify_runtimes(target_runtime(args.build_props))
+            return 0
+        elif args.validate_version is not None:
             if stable_version(args.validate_version) < minimum:
                 raise ValueError("SDK version is below the repository minimum")
             selected = args.validate_version
@@ -97,7 +142,7 @@ def main():
             selected = resolve(fetch_metadata(), minimum)
         print(selected)
         return 0
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         print(f"SDK resolution failed (release metadata/policy): {error}", file=sys.stderr)
         return 1
 

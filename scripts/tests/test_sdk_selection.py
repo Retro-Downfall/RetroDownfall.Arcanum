@@ -80,6 +80,37 @@ class SdkSelectionTests(unittest.TestCase):
             self.assertIn("SDK", result.stderr)
 
 
+class TargetRuntimeSelectionTests(unittest.TestCase):
+    def run_runtime_selection(self, selected, framework="net10.0"):
+        with tempfile.TemporaryDirectory() as directory:
+            props = Path(directory) / "Directory.Build.props"
+            props.write_text(f"<Project><PropertyGroup><TargetFramework>{framework}</TargetFramework></PropertyGroup></Project>")
+            return subprocess.run([sys.executable, str(SCRIPT), "--runtime-sdk-version", selected,
+                                   "--build-props", str(props)], cwd=ROOT, text=True, capture_output=True)
+
+    def test_newer_stable_sdk_also_installs_the_target_framework_sdk_channel(self):
+        result = self.run_runtime_selection("11.0.100")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "10.0.x")
+
+    def test_same_framework_preserves_the_exact_selected_sdk(self):
+        result = self.run_runtime_selection("10.0.401")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "10.0.401")
+
+    def test_runtime_channel_follows_the_declared_target_framework(self):
+        result = self.run_runtime_selection("13.0.100", "net12.0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "12.0.x")
+
+    def test_ambiguous_or_nonliteral_framework_is_refused(self):
+        for framework in ("$(RuntimeTarget)", "net10.0;net11.0", "net10.0-windows"):
+            with self.subTest(framework=framework):
+                result = self.run_runtime_selection("11.0.100", framework)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("target framework", result.stderr.lower())
+
+
 class SdkTransportTests(unittest.TestCase):
     def test_download_refuses_oversized_response_before_parsing(self):
         with self.assertRaisesRegex(ValueError, "exceeds 1 MiB"):
@@ -110,6 +141,38 @@ class SdkTransportTests(unittest.TestCase):
 
 
 class SdkInstallerTests(unittest.TestCase):
+    def test_installer_requires_both_target_framework_runtimes_with_a_newer_sdk(self):
+        action = (ROOT / ".github/actions/setup-dotnet/action.yml").read_text()
+        script = "\n".join(line[8:] for line in action.rsplit("      run: |\n", 1)[1].splitlines())
+        base = "Microsoft.NETCore.App 11.0.0 [/isolated/shared/Microsoft.NETCore.App]\nMicrosoft.AspNetCore.App 11.0.0 [/isolated/shared/Microsoft.AspNetCore.App]\n"
+        for runtimes, missing in (
+            (base + "Microsoft.NETCore.App 10.0.15 [/isolated/shared/Microsoft.NETCore.App]\n", "Microsoft.AspNetCore.App"),
+            (base + "Microsoft.AspNetCore.App 10.0.15 [/isolated/shared/Microsoft.AspNetCore.App]\n", "Microsoft.NETCore.App"),
+            (base + "Microsoft.NETCore.App 10.0.15 [/isolated/shared/Microsoft.NETCore.App]\nMicrosoft.AspNetCore.App 10.0.15 [/isolated/shared/Microsoft.AspNetCore.App]\n", None),
+        ):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                executable = Path(directory) / "dotnet"
+                executable.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then echo 11.0.100; else printf "%s" "$TEST_RUNTIMES"; fi\n')
+                executable.chmod(0o755)
+                summary = Path(directory) / "summary"
+                environment = dict(os.environ, PATH=directory + os.pathsep + os.environ["PATH"],
+                                   SDK_VERSION="11.0.100", PYTHON_COMMAND=sys.executable,
+                                   GITHUB_STEP_SUMMARY=str(summary), TEST_RUNTIMES=runtimes)
+                result = subprocess.run(["bash", "-c", script], cwd=ROOT, env=environment, text=True, capture_output=True)
+                self.assertEqual(result.returncode == 0, missing is None, result.stdout + result.stderr)
+                if missing:
+                    self.assertIn(missing + " 10.0", result.stderr)
+                else:
+                    self.assertIn("Selected stable .NET SDK: 11.0.100", summary.read_text())
+
+    def test_installer_provisions_the_derived_compatibility_sdk_before_verifying_runtimes(self):
+        action = (ROOT / ".github/actions/setup-dotnet/action.yml").read_text()
+        self.assertIn("--runtime-sdk-version", action)
+        self.assertIn("--verify-runtimes", action)
+        self.assertIn("${{ steps.runtime.outputs.sdk-version }}", action)
+        self.assertIn("${{ inputs.sdk-version }}", action)
+        self.assertNotIn("DOTNET_ROLL_FORWARD", action)
+
     def test_installer_records_actual_selection_and_refuses_runner_substitution(self):
         action = (ROOT / ".github/actions/setup-dotnet/action.yml").read_text()
         # Execute the real composite action's final shell block against a controlled dotnet boundary.
@@ -118,10 +181,10 @@ class SdkInstallerTests(unittest.TestCase):
         for actual, expected_status in (("10.0.402", 0), ("11.0.100", 1), ("10.0.401", 1)):
             with self.subTest(actual=actual), tempfile.TemporaryDirectory() as directory:
                 executable = Path(directory) / "dotnet"
-                executable.write_text("#!/bin/sh\necho " + actual + "\n")
+                executable.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then echo ' + actual + '; else printf "Microsoft.NETCore.App 10.0.15 [/isolated/shared/Microsoft.NETCore.App]\\nMicrosoft.AspNetCore.App 10.0.15 [/isolated/shared/Microsoft.AspNetCore.App]\\n"; fi\n')
                 executable.chmod(0o755)
                 summary = Path(directory) / "summary"
-                environment = dict(os.environ, PATH=directory + os.pathsep + os.environ["PATH"], SDK_VERSION="10.0.402", GITHUB_STEP_SUMMARY=str(summary))
+                environment = dict(os.environ, PATH=directory + os.pathsep + os.environ["PATH"], SDK_VERSION="10.0.402", PYTHON_COMMAND=sys.executable, GITHUB_STEP_SUMMARY=str(summary))
                 result = subprocess.run(["bash", "-c", script], env=environment, text=True, capture_output=True)
                 self.assertEqual(result.returncode, expected_status, result.stderr)
                 if expected_status == 0:

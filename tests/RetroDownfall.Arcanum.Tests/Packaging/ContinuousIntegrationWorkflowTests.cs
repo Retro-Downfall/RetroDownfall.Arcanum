@@ -1844,7 +1844,15 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         string action = File.ReadAllText(Path.Combine(repositoryRoot, ".github/actions/setup-dotnet/action.yml"));
 
-        Assert.Contains("dotnet-version: ${{ inputs.sdk-version }}", action, StringComparison.Ordinal);
+        Assert.Contains("dotnet-version: |", action, StringComparison.Ordinal);
+
+        Assert.Contains("${{ steps.runtime.outputs.sdk-version }}", action, StringComparison.Ordinal);
+
+        Assert.Contains("${{ inputs.sdk-version }}", action, StringComparison.Ordinal);
+
+        Assert.Contains("--runtime-sdk-version", action, StringComparison.Ordinal);
+
+        Assert.Contains("--verify-runtimes", action, StringComparison.Ordinal);
 
         Assert.DoesNotContain("global-json-file:", action, StringComparison.Ordinal);
 
