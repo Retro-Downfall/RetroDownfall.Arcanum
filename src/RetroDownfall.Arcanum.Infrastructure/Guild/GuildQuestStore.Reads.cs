@@ -172,6 +172,9 @@ internal sealed partial class GuildQuestStore
     private static async Task<bool> HasParkedInputCheckpointWithinAsync(SqliteConnection connection,
         SqliteTransaction transaction, Guid questId, GuildQuestInputEvidence question, CancellationToken ct)
     {
+        if (await IsRemoteWithinAsync(connection, transaction, questId, ct).ConfigureAwait(false))
+            return await HasRemoteParkedQuestionWithinAsync(connection, transaction, questId, question, ct).ConfigureAwait(false);
+
         await using SqliteCommand checkpoint = Command(connection, transaction, $"""
             SELECT EXISTS(SELECT 1 FROM guild_local_wait_checkpoints w
                 JOIN guild_local_executions b ON b.QuestId=w.QuestId

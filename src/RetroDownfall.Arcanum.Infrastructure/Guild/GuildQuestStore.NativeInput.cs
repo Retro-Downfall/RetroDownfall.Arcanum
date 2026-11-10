@@ -41,6 +41,9 @@ internal sealed partial class GuildQuestStore
                 if (quest.State != QuestState.InputRequired || quest.AwaitingInput is not { } input)
                     return new Error(ErrorCodes.Guild.NotFound, "The Quest has no current input question.");
 
+                if (await IsRemoteWithinAsync(connection, transaction, questId, token).ConfigureAwait(false))
+                    return await ReadRemoteQuestionWithinAsync(connection, transaction, quest, input, token).ConfigureAwait(false);
+
                 Result<GuildLocalExecutionBinding> binding = await GuildLocalExecutionStore.ReadWithinAsync(connection, transaction, questId, token).ConfigureAwait(false);
 
                 if (binding.IsFailure) return binding.Error;

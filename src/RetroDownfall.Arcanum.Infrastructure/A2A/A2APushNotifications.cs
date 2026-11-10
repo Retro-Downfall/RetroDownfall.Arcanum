@@ -196,6 +196,10 @@ public sealed class A2APushNotificationRegistry(
     }
 }
 
+/// <summary>Host-owned final authority admission at the synchronous HTTP handoff.</summary>
+public delegate Task<Result<HttpResponseMessage>> A2APushNotificationAdmission(
+    Func<CancellationToken, Task<HttpResponseMessage>> dispatch, CancellationToken cancellationToken);
+
 /// <summary>
 /// Posts an inbound task's state transitions to the callback its peer registered.
 /// </summary>
@@ -217,7 +221,8 @@ public sealed class A2APushNotificationDispatcher(
         PushNotificationConfig config,
         string taskId,
         string state,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        A2APushNotificationAdmission? admission = null)
     {
         ArgumentNullException.ThrowIfNull(config);
 
@@ -278,9 +283,13 @@ public sealed class A2APushNotificationDispatcher(
             // Only the status line is read. Headers-only completion means a callback that answers and then
             // streams or stalls its body is neither buffered into memory nor waited on, and disposing the
             // response below drops the connection's remaining body.
-            using HttpResponseMessage response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token)
-                .ConfigureAwait(false);
+            Result<HttpResponseMessage> delivered = admission is null
+                ? Result<HttpResponseMessage>.Success(await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false))
+                : await admission(token => client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token), deadline.Token).ConfigureAwait(false);
+
+            if (delivered.IsFailure) return;
+
+            using HttpResponseMessage response = delivered.Value;
 
             if (!response.IsSuccessStatusCode)
             {

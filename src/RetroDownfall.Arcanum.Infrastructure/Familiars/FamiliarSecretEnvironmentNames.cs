@@ -65,6 +65,14 @@ public static class FamiliarSecretEnvironmentNames
             _ = names.Add(outbound.Trim());
         }
 
+        foreach (A2AInboundPeerSettings? peer in settings.Integrations?.A2A?.InboundPeers ?? [])
+        {
+            if (!string.IsNullOrWhiteSpace(peer?.CredentialEnvironmentVariable))
+            {
+                _ = names.Add(peer.CredentialEnvironmentVariable.Trim());
+            }
+        }
+
         return [.. names];
 
     }

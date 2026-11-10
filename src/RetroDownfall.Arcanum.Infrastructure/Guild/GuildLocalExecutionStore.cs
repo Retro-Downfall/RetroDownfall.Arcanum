@@ -107,7 +107,13 @@ internal static partial class GuildLocalExecutionStore
 
         Guid apprenticeId = Guid.NewGuid();
 
-        ApprenticeCheckpoint checkpoint = new() { ParentApprenticeId = parentApprentice, LaunchRequested = true, Timestamp = now };
+        ApprenticeCheckpoint checkpoint = new()
+        {
+            ParentApprenticeId = parentApprentice,
+            LaunchRequested = true,
+            DelegationChain = input.DelegationChain is { } chain ? [.. chain] : null,
+            Timestamp = now,
+        };
 
         // This insert deliberately shares the Quest's admitted writer transaction. The skeleton carries
         // no goal, selected files, provider output or reasoning; the engine loads the protected references.
@@ -164,7 +170,9 @@ internal static partial class GuildLocalExecutionStore
         && Enum.IsDefined(input.Mode) && input.Goal.Kind == GuildContentKind.QuestGoal
         && !string.IsNullOrWhiteSpace(input.Provider) && !string.IsNullOrWhiteSpace(input.Model)
         && !input.Files.IsDefault && input.Files.All(file => file is not null && !string.IsNullOrWhiteSpace(file.Name) && file.Content is not null)
-        && input.MaxOutputTokens is null or > 0;
+        && input.MaxOutputTokens is null or > 0
+        && (input.DelegationChain is null || !input.DelegationChain.Value.IsDefault
+            && input.DelegationChain.Value.All(hop => !string.IsNullOrWhiteSpace(hop)));
 
     private static async Task<Result> RequireCanonicalAsync(SqliteConnection connection, SqliteTransaction transaction,
         GuildQuestStored supplied, CancellationToken ct)

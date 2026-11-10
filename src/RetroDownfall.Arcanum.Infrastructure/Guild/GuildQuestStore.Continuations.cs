@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
@@ -119,9 +120,10 @@ internal sealed partial class GuildQuestStore
     }
 
     internal async Task<Result<GuildQuestStored>> AcceptContinuationAsync(GuildCallerContext caller,
-        Guid questId, GuildContinueRequest request, CancellationToken ct, ArtifactSensitivityLabel? sourceLabel = null)
+        Guid questId, GuildContinueRequest request, CancellationToken ct, ArtifactSensitivityLabel? sourceLabel = null,
+        GuildChildToolAdmission? toolAdmission = null)
     {
-        if (caller is null || caller.Kind is not (GuildCallerKind.Operator or GuildCallerKind.Run) || questId == Guid.Empty || request is null || request.IdempotencyKey == Guid.Empty
+        if (caller is null || caller.Kind is not (GuildCallerKind.Operator or GuildCallerKind.Run or GuildCallerKind.Peer) || questId == Guid.Empty || request is null || request.IdempotencyKey == Guid.Empty
             || request.ContinuationId == Guid.Empty || request.ExpectedRevision < 1 || request.Body is null
             || request.MimeType is not ("text/plain" or "application/json")) return InvalidReceipt;
 
@@ -141,6 +143,18 @@ internal sealed partial class GuildQuestStore
             return InvalidReceipt;
         }
 
+        Result<string> validOptions = GuildQuestIntent.Compute(questId, request);
+
+        if (validOptions.IsFailure) return validOptions.Error;
+
+        string? remoteOptionsJson = request.RemoteOptions is null ? null
+            : JsonSerializer.Serialize(request.RemoteOptions, GuildJsonContext.Default.GuildRemoteInvocationOptions);
+
+        if ((remoteOptionsJson is null ? 0L : Encoding.UTF8.GetByteCount(remoteOptionsJson))
+            + Encoding.UTF8.GetByteCount(caller.PeerId ?? string.Empty)
+            + Encoding.UTF8.GetByteCount(caller.PeerGrantRevision ?? string.Empty) > GuildStore.MaximumContentBytes)
+            return new Error(ErrorCodes.Guild.PayloadTooLarge, "The continuation metadata exceeds its record boundary.");
+
         string intent = ContinuationIntent(request, body);
 
         Result<GuildQuestStored> located = await GetAsync(caller, questId, ct).ConfigureAwait(false);
@@ -155,6 +169,25 @@ internal sealed partial class GuildQuestStore
                 if (found.IsFailure) return found.Error;
 
                 GuildQuestStored row = found.Value;
+
+                if (toolAdmission is not null)
+                {
+                    Result source = await ValidateToolContinuationWithinAsync(connection, transaction, signets, caller,
+                        row, toolAdmission, validOptions.Value, token).ConfigureAwait(false);
+
+                    if (source.IsFailure) return source.Error;
+                }
+
+                if (request.RemoteOptions is not null)
+                {
+                    await using SqliteCommand remote = Command(connection, transaction,
+                        "SELECT EXISTS(SELECT 1 FROM guild_remote_executions WHERE QuestId=$quest)");
+
+                    Add(remote, "$quest", Id(questId));
+
+                    if (!Equals(1L, await remote.ExecuteScalarAsync(token).ConfigureAwait(false)))
+                        return new Error(ErrorCodes.Guild.InvalidRequest, "Remote continuation options require a remote Quest.");
+                }
 
                 Result visible = await RequireVisibleAsync(connection, transaction, caller, row, token).ConfigureAwait(false);
 
@@ -172,7 +205,7 @@ internal sealed partial class GuildQuestStore
 
                 GuildAuthorityKind acceptedAuthority = caller.Kind == GuildCallerKind.Operator ? GuildAuthorityKind.Operator : GuildAuthorityKind.Parent;
 
-                GuildProducerIdentity producer = caller.Execution is { } parent
+                GuildProducerIdentity? producer = caller.Kind == GuildCallerKind.Peer ? null : caller.Execution is { } parent
                     ? new(GuildProducerKind.Run, parent.AgentId, parent.RunId, parent.QuestId, null, null, null, null)
                     : new(GuildProducerKind.Operator, null, null, null, Id(caller.PrincipalId!.Value), null, null, null);
 
@@ -181,7 +214,7 @@ internal sealed partial class GuildQuestStore
                 await using SqliteCommand prior = Command(connection, transaction, """
                     WITH candidate AS (
                         SELECT ContinuationId,MutationId,Digest,AcceptedRevision,CreatedAtUtc,AuthorityCode,
-                            ProducerAgentId,ProducerRunId,ProducerQuestId,OperatorPrincipalId,
+                            ProducerAgentId,ProducerRunId,ProducerQuestId,OperatorPrincipalId,PeerId,PeerGrantRevision,
                             CASE WHEN typeof(ContinuationId)='text' AND length(CAST(ContinuationId AS BLOB))=36
                                 AND typeof(MutationId)='text' AND length(CAST(MutationId AS BLOB))=36
                                 AND typeof(Digest)='blob' AND length(Digest)=32
@@ -194,7 +227,9 @@ internal sealed partial class GuildQuestStore
                                 AND (OperatorPrincipalId IS NULL OR (typeof(OperatorPrincipalId)='text' AND length(CAST(OperatorPrincipalId AS BLOB))=36))
                                 AND ((AuthorityCode=0 AND ProducerAgentId IS NULL AND ProducerRunId IS NULL AND ProducerQuestId IS NULL AND OperatorPrincipalId IS NULL)
                                     OR (AuthorityCode=1 AND ProducerAgentId IS NULL AND ProducerRunId IS NULL AND ProducerQuestId IS NULL AND OperatorPrincipalId IS NOT NULL)
-                                    OR (AuthorityCode=2 AND ProducerAgentId IS NOT NULL AND ProducerRunId IS NOT NULL AND ProducerQuestId IS NOT NULL AND OperatorPrincipalId IS NULL))
+                                    OR (AuthorityCode=2 AND OperatorPrincipalId IS NULL AND ((ProducerAgentId IS NOT NULL AND ProducerRunId IS NOT NULL AND ProducerQuestId IS NOT NULL AND PeerId IS NULL AND PeerGrantRevision IS NULL)
+                                        OR (ProducerAgentId IS NULL AND ProducerRunId IS NULL AND ProducerQuestId IS NULL AND typeof(PeerId)='text' AND length(CAST(PeerId AS BLOB)) BETWEEN 1 AND 65536
+                                            AND typeof(PeerGrantRevision)='text' AND length(PeerGrantRevision)=64))))
                                 THEN 1 ELSE 0 END AS Valid
                         FROM guild_continuations WHERE QuestId=$id AND (ContinuationId=$continuation OR MutationId=$mutation)
                     )
@@ -202,7 +237,8 @@ internal sealed partial class GuildQuestStore
                         CASE WHEN Valid=1 THEN Digest END,CASE WHEN Valid=1 THEN AcceptedRevision END,
                         CASE WHEN Valid=1 THEN CreatedAtUtc END,CASE WHEN Valid=1 THEN AuthorityCode END,
                         CASE WHEN Valid=1 THEN ProducerAgentId END,CASE WHEN Valid=1 THEN ProducerRunId END,
-                        CASE WHEN Valid=1 THEN ProducerQuestId END,CASE WHEN Valid=1 THEN OperatorPrincipalId END,Valid
+                        CASE WHEN Valid=1 THEN ProducerQuestId END,CASE WHEN Valid=1 THEN OperatorPrincipalId END,Valid,
+                        CASE WHEN Valid=1 THEN PeerId END,CASE WHEN Valid=1 THEN PeerGrantRevision END
                     FROM candidate
                     """);
 
@@ -224,10 +260,12 @@ internal sealed partial class GuildQuestStore
                         if (reader.GetString(0) != Id(request.ContinuationId) || reader.GetString(1) != Id(request.IdempotencyKey)
                             || Convert.ToHexString((byte[])reader.GetValue(2)) != intent
                             || reader.GetInt32(5) != (int)acceptedAuthority
-                            || (reader.IsDBNull(6) ? null : reader.GetString(6)) != Id(producer.AgentId)
-                            || (reader.IsDBNull(7) ? null : reader.GetString(7)) != Id(producer.RunId)
-                            || (reader.IsDBNull(8) ? null : reader.GetString(8)) != Id(producer.QuestId)
-                            || (reader.IsDBNull(9) ? null : reader.GetString(9)) != producer.OperatorPrincipalId) return Conflict;
+                            || (reader.IsDBNull(6) ? null : reader.GetString(6)) != Id(producer?.AgentId)
+                            || (reader.IsDBNull(7) ? null : reader.GetString(7)) != Id(producer?.RunId)
+                            || (reader.IsDBNull(8) ? null : reader.GetString(8)) != Id(producer?.QuestId)
+                            || (reader.IsDBNull(9) ? null : reader.GetString(9)) != producer?.OperatorPrincipalId
+                            || (reader.IsDBNull(11) ? null : reader.GetString(11)) != caller.PeerId
+                            || (reader.IsDBNull(12) ? null : reader.GetString(12)) != caller.PeerGrantRevision) return Conflict;
 
                         GuildMutationReceiptDto receipt = new(request.ContinuationId, request.IdempotencyKey, true,
                             acceptedAt, reader.GetInt64(3));
@@ -281,21 +319,27 @@ internal sealed partial class GuildQuestStore
 
                 await using SqliteCommand accept = Command(connection, transaction, """
                     INSERT INTO guild_continuations(QuestId,ContinuationId,MutationId,Digest,ContentId,AcceptedRevision,CreatedAtUtc,
-                        AuthorityCode,ProducerAgentId,ProducerRunId,ProducerQuestId,OperatorPrincipalId)
-                    VALUES($id,$continuation,$mutation,$digest,$content,$revision+1,$now,$authority,$agent,$run,$producerQuest,$operator);
+                        AuthorityCode,ProducerAgentId,ProducerRunId,ProducerQuestId,OperatorPrincipalId,PeerId,PeerGrantRevision,RemoteOptionsJson)
+                    VALUES($id,$continuation,$mutation,$digest,$content,$revision+1,$now,$authority,$agent,$run,$producerQuest,$operator,$peer,$peerRevision,$remoteOptions);
                     UPDATE guild_quests SET LastNonterminalStateCode=1,WaitReasonCode=NULL,QuestionId=NULL,ContinuationId=NULL,
                         Revision=Revision+1,UpdatedAtUtc=$now WHERE Id=$id AND Revision=$revision;
                     """);
 
+                Add(accept, "$remoteOptions", remoteOptionsJson);
+
+                Add(accept, "$peer", caller.PeerId);
+
+                Add(accept, "$peerRevision", caller.PeerGrantRevision);
+
                 Add(accept, "$authority", (int)acceptedAuthority);
 
-                Add(accept, "$agent", Id(producer.AgentId));
+                Add(accept, "$agent", Id(producer?.AgentId));
 
-                Add(accept, "$run", Id(producer.RunId));
+                Add(accept, "$run", Id(producer?.RunId));
 
-                Add(accept, "$producerQuest", Id(producer.QuestId));
+                Add(accept, "$producerQuest", Id(producer?.QuestId));
 
-                Add(accept, "$operator", producer.OperatorPrincipalId);
+                Add(accept, "$operator", producer?.OperatorPrincipalId);
 
                 Add(accept, "$id", Id(questId));
 
@@ -333,23 +377,31 @@ internal sealed partial class GuildQuestStore
             }, ct).ConfigureAwait(false);
     }
 
-    private static string ContinuationIntent(GuildContinueRequest request, byte[] body)
+    private static string ContinuationIntent(GuildContinueRequest request, byte[] body) =>
+        ContinuationIntent(request.ContinuationId, request.ExpectedRevision, request.MimeType,
+            Convert.ToHexString(SHA256.HashData(body)), request.RemoteOptions);
+
+    private static string ContinuationIntent(Guid continuationId, long expectedRevision, string mimeType,
+        string bodyDigest, GuildRemoteInvocationOptions? remoteOptions)
     {
         using MemoryStream buffer = new();
 
-        using (Utf8JsonWriter writer = new(buffer))
         {
+            using Utf8JsonWriter writer = new(buffer, default);
+
             writer.WriteStartObject();
 
             writer.WriteNumber("version", 1);
 
-            writer.WriteString("continuationId", request.ContinuationId);
+            writer.WriteString("continuationId", continuationId);
 
-            writer.WriteNumber("expectedRevision", request.ExpectedRevision);
+            writer.WriteNumber("expectedRevision", expectedRevision);
 
-            writer.WriteString("mimeType", request.MimeType);
+            writer.WriteString("mimeType", mimeType);
 
-            writer.WriteString("bodyDigest", Convert.ToHexString(SHA256.HashData(body)));
+            writer.WriteString("bodyDigest", bodyDigest);
+
+            GuildQuestIntent.WriteRemoteOptions(writer, remoteOptions);
 
             writer.WriteEndObject();
         }

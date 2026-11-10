@@ -88,6 +88,9 @@ public sealed record ConclaveA2ASettings
     /// </summary>
     public string[] AllowedRemoteAgents { get; set; } = [];
 
+    /// <summary>Explicit authenticated inbound principals and standing grants. Disabled unless enabled per peer.</summary>
+    public A2AInboundPeerSettings[] InboundPeers { get; set; } = [];
+
     /// <summary>
     /// Fallback workspace path for inbound A2A tasks (server side) when the request carries no workspace or
     /// campaign hint. Empty (default) falls back to <c>Arcanum:Workspaces:DefaultRoot</c>, then the

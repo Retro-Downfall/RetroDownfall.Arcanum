@@ -327,13 +327,16 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 return Unavailable<GrimoireOfflineTransitionJournalFilePrimitives>();
             }
 
-            CovenantDigest physical = BackupRestoreJournalAuthenticator.PhysicalIdentity(
-                metadata.Identity.VolumeId,
-                metadata.Identity.FileId);
-
-            if (expectedParentDigest is CovenantDigest expected && physical != expected)
+            if (expectedParentDigest is { } expected)
             {
-                return RecoveryRequired<GrimoireOfflineTransitionJournalFilePrimitives>();
+                CovenantDigest physical = BackupRestoreJournalAuthenticator.PhysicalIdentity(
+                    metadata.Identity.VolumeId,
+                    metadata.Identity.FileId);
+
+                if (physical != expected)
+                {
+                    return RecoveryRequired<GrimoireOfflineTransitionJournalFilePrimitives>();
+                }
             }
 
             GrimoireOfflineTransitionJournalFilePrimitives capability = new(
@@ -392,7 +395,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                 return RecoveryRequired<GrimoireOfflineTransitionJournalOpenedFile>();
             }
 
-            string displayPath = ChildPath(workingLeaf);
+            string displayPath = Path.Combine(_parentPath, workingLeaf);
 
             bool ownerOnly = OperatingSystem.IsWindows()
                 ? ApplyWindowsOwnerOnly(handle)
@@ -886,7 +889,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
                     leaf,
                     new GrimoireOfflineTransitionJournalOpenedFile(
                         handle,
-                        ChildPath(leaf),
+                        Path.Combine(_parentPath, leaf),
                         metadata));
             }
 
@@ -1010,8 +1013,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
             && ownerUserId == GetEffectiveUserIdUnix();
     }
 
-    private string ChildPath(string leaf) => Path.Combine(_parentPath, leaf);
-
     private static SafeFileHandle? OpenParentNoFollow(string path)
     {
         if (OperatingSystem.IsWindows())
@@ -1057,7 +1058,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
 
         if (OperatingSystem.IsWindows())
         {
-            return OpenWindowsChild(leaf, createExclusive, writable, out handle);
+            return OpenWindowsChild(leaf, createExclusive, writable, out handle, ownerDaclOnly: false);
         }
 
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())

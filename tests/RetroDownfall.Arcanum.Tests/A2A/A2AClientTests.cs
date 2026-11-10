@@ -939,12 +939,13 @@ public sealed partial class A2AClientTests
         HttpMessageHandler handler,
         ArcanumSettings settings,
         TimeSpan? discoveryTimeout = null,
-        ILogger<A2AClientService>? logger = null) =>
+        ILogger<A2AClientService>? logger = null,
+        IDnsResolver? dns = null) =>
         new(
             new FakeHttpClientFactory(handler),
             new TestOptionsMonitor<ArcanumSettings>(settings),
             logger ?? NullLogger<A2AClientService>.Instance,
-            DeterministicDns())
+            dns ?? DeterministicDns())
         {
             DiscoveryTimeout = discoveryTimeout ?? A2AClientService.DefaultDiscoveryTimeout,
         };
@@ -987,6 +988,8 @@ public sealed partial class A2AClientTests
                             new A2AServerOptions { AutoAppendHistory = true });
 
                         endpoints.MapA2A(server, "/agent");
+
+                        endpoints.MapHttpA2A(server, advertised, "/agent-http");
 
                         if (mapWellKnown)
                         {

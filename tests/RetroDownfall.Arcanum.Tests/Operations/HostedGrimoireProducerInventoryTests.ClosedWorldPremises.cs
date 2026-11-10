@@ -1516,13 +1516,33 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.All(observed, static site => Assert.Equal("SessionAttachmentIndexingService", site.RootType));
 
-        Assert.Contains(observed, static site =>
+        HostedProducerSite openRead = Assert.Single(observed, static site =>
             site.Callee == "RetroDownfall.Arcanum.Core.Storage.ISessionAttachmentStore.OpenReadAsync");
 
-        Assert.Contains(observed, static site =>
-            site.SourcePath.EndsWith("/Data/SessionAttachmentStore.cs", StringComparison.Ordinal)
-            && site.Member == "ReadBytesAsync"
-            && site.Callee == "System.IO.Stream.ReadAsync");
+        Assert.NotNull(openRead.WorkFrontierCapsuleId);
+
+        // Guild access retains both physical reads inside the exact ReadBytesAsync callback.
+        const string readIdentity = "M:RetroDownfall.Arcanum.Infrastructure.Data.SessionAttachmentStore.ReadBytesAsync(RetroDownfall.Arcanum.Core.Storage.SessionAttachmentRecord,System.Threading.CancellationToken)/lambda#0~F15223B19FBDCF918147F9EBACCAB1538E12741F5C199DCAFCA58C641FBB15EE";
+
+        HostedProducerSite[] reads = [.. observed.Where(static site =>
+            site.SourcePath == "src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs"
+            && site.MemberIdentity == readIdentity
+            && site.Callee == "System.IO.Stream.ReadAsync")];
+
+        Assert.Equal(2, reads.Length);
+
+        Assert.Equal<string>(
+            ["06F61F341416DD8A46029CA4320529598D131BD2597E18179CB4AC0C9F77C2E7", "5AC3AE8C8F51684422B9FD1CCEB2255667FE7988E26A400870C98090F8A253DE"],
+            reads.Select(static site => site.SyntaxFingerprint).Order(StringComparer.Ordinal));
+
+        Assert.All(reads, site =>
+        {
+            Assert.Equal(HostedProducerSiteKind.FileSystemRead, site.Kind);
+
+            Assert.Equal(openRead.WorkFrontierCapsuleId, site.WorkFrontierCapsuleId);
+
+            Assert.Null(site.EffectFrontierCapsuleId);
+        });
 
         Assert.Contains(observed, static site =>
             site.SourcePath.EndsWith("/Storage/EncryptedBlobStore.cs", StringComparison.Ordinal)

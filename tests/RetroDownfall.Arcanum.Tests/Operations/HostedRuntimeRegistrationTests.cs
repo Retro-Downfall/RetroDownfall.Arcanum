@@ -22,6 +22,7 @@ public sealed class HostedRuntimeRegistrationTests
         "CovenantMaintenanceHostedService",
         "GuildMaintenanceHostedService",
         "GuildLocalHostReadiness",
+        "GuildInboundPeerReloadService",
         "GuildLocalQuestScheduler",
         "GrimoireSchemaTransitionHostedService",
         "EntryWeavingService",

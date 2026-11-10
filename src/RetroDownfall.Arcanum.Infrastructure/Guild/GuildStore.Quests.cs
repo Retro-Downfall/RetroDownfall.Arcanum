@@ -5,6 +5,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 internal sealed partial class GuildStore
 {
+    internal static Task<Result<GuildStoredCard>> ResolveQuestCardWithinAsync(SqliteConnection connection,
+        SqliteTransaction transaction, Guid agentId, Guid? cardId, long? revision, GuildCardReadScope scope, CancellationToken ct) =>
+        ReadCardWithinAsync(connection, transaction, "a.AgentId=$id AND ($card IS NULL OR a.CardId=$card)",
+            Format(agentId), cardId, revision, scope, ct);
+
     /// <summary>Pin visible Card metadata without disclosing its separately protected body.</summary>
     internal static async Task<Result<(Guid AgentId, Guid CardId, long Revision)>> SelectQuestCardWithinAsync(
         SqliteConnection connection, SqliteTransaction transaction, Guid agentId, GuildCardReadScope scope, CancellationToken ct)

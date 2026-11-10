@@ -126,7 +126,7 @@ public sealed class GuildCancellationSchemaTests(ITestOutputHelper output)
 
         Assert.True(installed.GuildCanonical.IsHealthy, installed.GuildCanonical.ToString());
 
-        Assert.Equal(10, installed.GuildCanonical.SchemaVersion);
+        Assert.Equal(GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion, installed.GuildCanonical.SchemaVersion);
 
         Assert.Equal(otherFamilies, await fixture.ScalarAsync("SELECT group_concat(SourceDefinitionFingerprint || InstalledCatalogFingerprint) FROM grimoire_feature_schemas WHERE FamilyCode<>2"));
 

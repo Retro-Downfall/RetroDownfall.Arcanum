@@ -17,7 +17,7 @@ internal sealed partial class ConclaveArchmage(
     IApprenticeRepository repository,
     IOptionsMonitor<ArcanumSettings> settings,
     GuildQuestStore? quests = null,
-    IGuildLocalQuestScheduler? guildScheduler = null) : IConclaveArchmage, IGuildQuestCoordinator
+    IGuildLocalQuestScheduler? guildScheduler = null, GuildConfiguredRemoteResolver? remoteResolver = null) : IConclaveArchmage, IGuildQuestCoordinator
 {
     public async Task<Result<Apprentice>> CastAsync(
         ConclaveCastRequest request,

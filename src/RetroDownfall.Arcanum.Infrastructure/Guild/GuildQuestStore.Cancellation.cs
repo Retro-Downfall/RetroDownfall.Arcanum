@@ -15,7 +15,7 @@ internal sealed partial class GuildQuestStore
 
         if (intent.IsFailure) return intent.Error;
 
-        if (caller is null || caller.Kind is not (GuildCallerKind.Operator or GuildCallerKind.Run)
+        if (caller is null || caller.Kind is not (GuildCallerKind.Operator or GuildCallerKind.Run or GuildCallerKind.Peer)
             || !ReceiptMutationValid(mutation) || mutation.IdempotencyKey != request.IdempotencyKey
             || mutation.CanonicalRequestDigest != intent.Value) return InvalidReceipt;
 

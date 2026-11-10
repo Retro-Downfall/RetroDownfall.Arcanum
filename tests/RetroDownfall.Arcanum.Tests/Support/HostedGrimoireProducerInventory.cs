@@ -1789,10 +1789,25 @@ internal static partial class HostedGrimoireProducerInventory
             Operation("Guild", "GuildLocalQuestScheduler", "RunCommittedAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.GuildStorage),
             Handoff(Operation("Guild", "GuildLocalQuestScheduler", "RunAdmittedAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
                 GrimoireWorkKind.GuildStorage), "work"),
+            Handoff(Operation("Guild", "GuildLocalQuestScheduler", "RunRemoteAdmittedAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
+                GrimoireWorkKind.GuildStorage), "work"),
+            Handoff(Operation("Guild", "GuildLocalQuestScheduler", "DrainCancellationAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
+                GrimoireWorkKind.GuildStorage), "work"),
             Operation("Guild", "GuildLocalQuestScheduler", "Schedule", HostedProducerAuthorityKind.FiniteRequest, null,
                 "one wake publishes an existing committed Quest identity to its tracked self-admitted worker"),
             Operation("Guild", "GuildLocalQuestScheduler", "StopAsync", HostedProducerAuthorityKind.EffectFree, null,
                 "stops wake admission and cancels and joins all tracked committed dispatch scopes"),
+        ]),
+        new("GuildInboundPeerReloadService",
+        [
+            Operation("Guild", "GuildInboundPeerReloadService", "StartAsync", HostedProducerAuthorityKind.PreReadinessStartup, null,
+                "awaited peer epoch reconciliation before the transport accepts peer work"),
+            Operation("Guild", "GuildInboundPeerReloadService", "ExecuteAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.GuildStorage),
+            Operation("Guild", "GuildInboundPeerReloadService", "OnChanged", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.GuildStorage),
+            Operation("Guild", "GuildInboundPeerReloadService", "StopAsync", HostedProducerAuthorityKind.EffectFree, null,
+                "unsubscribe and join tracked peer reconciliation before host shutdown"),
+            Operation("Guild", "GuildInboundPeerReloadService", "Dispose", HostedProducerAuthorityKind.EffectFree, null,
+                "close callback admission and retire the configuration subscription"),
         ]),
         Ordinary("Covenant", "GrimoireSchemaTransitionHostedService", GrimoireWorkKind.GrimoireSchemaTransition),
         Ordinary("Hosting", "EntryWeavingService", GrimoireWorkKind.EntryWeaving),
@@ -21162,7 +21177,7 @@ internal static partial class HostedGrimoireProducerInventory
                                 ? [DelegateReceiver(member, callbackCall)]
                                 : callbackCall.ArgumentList.Arguments.Where(argument => !argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword) && IsDelegateExpression(member.Model, argument.Expression)).Select(static argument => argument.Expression).ToArray();
 
-                            if (method.MethodKind == MethodKind.DelegateInvoke && member.Model.GetSymbolInfo(callbacks[0]).Symbol is { } callable && IsProvenAbsentCallable(callable))
+                            if (method.MethodKind == MethodKind.DelegateInvoke && member.Model.GetSymbolInfo(callbacks[0]).Symbol is { } callable && (IsProvenAbsentCallable(callable) || IsDormantHttpConnectTestCallable(callable)))
                             {
                                 continue;
                             }
@@ -21478,6 +21493,26 @@ internal static partial class HostedGrimoireProducerInventory
 
                         if (kind is not null && !aggregate)
                         {
+                            if (IsExactA2ANetworkMethod(method) && IsLazySequence(method.ReturnType)
+                                && node is InvocationExpressionSyntax sdkStream)
+                            {
+                                SyntaxNode? consumption = LazyCompletionPoint(member, sdkStream);
+
+                                if (consumption is null || !LazyConsumptionPositions(consumption).All(position =>
+                                        WorkAt(member, consumption, operationId, ordinary?.WorkKind, inheritedWork, position) == workAdmitted
+                                        && EffectAt(member, consumption, operationId, inheritedEffect, position) == effectGroup))
+                                {
+                                    RefuseTraversalCompletion();
+
+                                    diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", RootOperation(operationId) + "/call@" + Location(node),
+                                        callee + "; A provider stream must complete enumeration before its retained work and effect admission end."));
+
+                                    workAdmitted = null;
+
+                                    effectGroup = null;
+                                }
+                            }
+
                             if (node is InvocationExpressionSyntax lazyRead && IsLazyDirectoryEnumeration(callee))
                             {
                                 SyntaxNode? consumption = LazyCompletionPoint(member, lazyRead);
@@ -21590,7 +21625,9 @@ internal static partial class HostedGrimoireProducerInventory
                             : ResolveInvocationTarget(method, member, node);
 
                         AuthoredMember[] boundTargets = target is null
-                            ? ResolveBoundImplementations(method, member.Model.Compilation)
+                            ? IsA2ASourceDispatchContract(method, member.Model.Compilation)
+                                ? ResolveA2AAuthoredDispatchTargets(method, member.Model.Compilation)
+                                : ResolveBoundImplementations(method, member.Model.Compilation)
                             : [];
 
                         AuthoredMember[] strategyTargets = ResolveStrategyTargets(method);
@@ -21655,6 +21692,7 @@ internal static partial class HostedGrimoireProducerInventory
 
                         if (kind is null
                             || aggregate
+                            || IsExactA2ANetworkMethod(method)
                             || TransparentProducerBoundaries.Contains(callee))
                         {
                             // A virtual or abstract method of a class the source declares runs the override of the runtime type of
@@ -22019,6 +22057,9 @@ internal static partial class HostedGrimoireProducerInventory
                             && property.Name == "AutoFlush"
                             && propertyMutation
                                 ? HostedProducerSiteKind.FileSystemEffect
+                                : IsA2AHttpProviderProperty(property, propertyMutation, node, member)
+                                    || IsHttpConnectSocketOption(property)
+                                    ? HostedProducerSiteKind.ProviderCall
                                 : IsExactSqliteBaseReaderProperty(property, propertyMutation, node, member)
                                     ? HostedProducerSiteKind.DatabaseAccess
                                     : TryClassifyExternalProducer(
@@ -25826,12 +25867,22 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedInMemoryXmlReaderMember(method, node, model, context)
                 || IsReviewedLongRestHistogramObservation(method, node, model, context)
                 || IsReviewedArcanumTokenHistogramObservation(method, node, model, context)
+                || IsReviewedGuildDurationHistogramObservation(method, node, model, context)
+                || IsReviewedBackgroundServiceBaseCleanup(method, node)
                 || IsReviewedSdkPolicyStorageMember(method)
+                || IsReviewedA2AMethod(method)
+                || IsReviewedGuildMetadataLookup(method, node, context)
+                || IsReviewedA2AAgentCardMetadata(method, node, context)
+                || IsReviewedA2ABuiltinConstruction(method, node, context)
+                || IsReviewedA2ABclStorageMethod(method)
                 || IsReviewedCodeOwnedSdkConstruction(method, node, model, context)
                 || IsReviewedConcreteTokenizerCall(method, node, model, context)
                 || IsReviewedCampaignEncodingMethod(method, node, model, context)
                 || IsReviewedCampaignAclMethod(method, node, model, context)
                 || IsReviewedAbsentHttpClientCleanup(method, node, model, context)
+                || IsReviewedAbsentProgressReport(method, node, context)
+                || IsReviewedNamedHttpFactoryCreation(method, node, context)
+                || IsReviewedHttpConnectStorageMethod(method)
                 || IsReviewedEffectFreeExternalMember(
                     method,
                     node,
@@ -26644,6 +26695,9 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedPrimitiveQueueProperty(property, mutation, node, context)
                 || IsReviewedExactInt128Limit(property, mutation)
                 || IsReviewedExactMeAiDimensionsProperty(property, mutation)
+                || IsReviewedA2AProperty(property, mutation)
+                || IsReviewedA2AHttpStorageProperty(property, mutation)
+                || IsReviewedHttpConnectStorageProperty(property, mutation)
                 || IsExactInfiniteSdkNetworkTimeoutInitializer(property, mutation, node, model)
                 || IsReviewedNonProducerExternalMember(property, mutation)
                 || !mutation && IsReviewedInMemoryXmlReaderMember(property, node, model, context)
@@ -34983,7 +35037,8 @@ internal static partial class HostedGrimoireProducerInventory
                 return false;
             }
 
-            if (RequiresSourceProvenance(parameter.Type) || IsExactSystemClockType(parameter.Type))
+            if (RequiresSourceProvenance(parameter.Type) || IsExactSystemClockType(parameter.Type)
+                || IsExactProgressContract(parameter.Type))
             {
                 return true;
             }
@@ -38150,7 +38205,8 @@ internal static partial class HostedGrimoireProducerInventory
         {
             SyntaxNode expression = CompletionPreservingExpression(call, member.Model);
 
-            bool returnedCompletionOwned = inheritedCompletion || IsLifecycle(member.Symbol);
+            bool returnedCompletionOwned = (inheritedCompletion || IsLifecycle(member.Symbol))
+                && (!httpConnectCertificate || IsAwaitable(member.Symbol.ReturnType));
 
             if (returnedCompletionOwned
                 && ExactCachedTaskReturnCompletion(member, call) is { } cachedReturn)
@@ -42594,6 +42650,8 @@ internal static partial class HostedGrimoireProducerInventory
             ITypeSymbol exactType,
             IMethodSymbol cleanup)
         {
+            if (IsReviewedA2ABuiltinCleanup(exactType, cleanup)) return true;
+
             if (cleanup.Name is not ("Dispose" or "DisposeAsync")
                 || cleanup.Parameters.Length != 0)
             {
@@ -42638,6 +42696,8 @@ internal static partial class HostedGrimoireProducerInventory
             out ExternalCleanupResolution? external)
         {
             external = null;
+
+            if (TryResolveA2AHttpCleanup(member, resource, staticType, name, out external)) return true;
 
             if (name == "Dispose"
                 && (IsExactFrameworkType(staticType, "System.IDisposable", typeof(IDisposable).Assembly.GetName())
@@ -46819,6 +46879,11 @@ internal static partial class HostedGrimoireProducerInventory
             ExpressionSyntax expression,
             CleanupProvenanceContext context)
         {
+            if (IsExactHttpValueOrigin(member.Model.GetSymbolInfo(expression).Symbol))
+            {
+                return new([new(member, expression)], true, false);
+            }
+
             if (context.CollectionIndexerProof)
             {
                 ISymbol? storage = member.Model.GetSymbolInfo(expression).Symbol;
@@ -46917,6 +46982,9 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (expression is ConditionalExpressionSyntax conditional)
             {
+                if (TrySelectDormantHttpConnectConditional(member, conditional, out ExpressionSyntax selected))
+                    return CleanupValueFlowOf(member, selected, context);
+
                 return MergeCleanupValueFlow([
                     CleanupValueFlowOf(member, conditional.WhenTrue, context),
                     CleanupValueFlowOf(member, conditional.WhenFalse, context),
@@ -54340,7 +54408,11 @@ internal static partial class HostedGrimoireProducerInventory
         {
             SemanticModel model = member.Model;
 
-            if (IsReviewedInMemoryJsonMember(method, node, model, member)) return null;
+            if (IsReviewedInMemoryJsonMember(method, node, model, member)
+                || IsReviewedHttpConnectStorageMethod(method)) return null;
+
+            if (IsA2AHttpProviderMethod(method, node, member)
+                || IsReviewedHttpConnectProviderConstruction(method, node, member)) return HostedProducerSiteKind.ProviderCall;
 
             if (callee.StartsWith("<ambiguous:", StringComparison.Ordinal))
             {
@@ -54479,6 +54551,13 @@ internal static partial class HostedGrimoireProducerInventory
             out HostedProducerSiteKind kind)
         {
             string type = TypeKey(method.ContainingType);
+
+            if (IsExactA2ANetworkMethod(method))
+            {
+                kind = HostedProducerSiteKind.ProviderCall;
+
+                return true;
+            }
 
             if (IsExactFrameworkStreamBaseConstructor(method))
             {

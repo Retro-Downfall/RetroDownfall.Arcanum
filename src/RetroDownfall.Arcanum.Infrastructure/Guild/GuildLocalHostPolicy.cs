@@ -16,7 +16,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 /// <summary>Local host authentication and current canonical authority. Issued objects, never copied ids, authenticate callers.</summary>
 internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFactory connections, IGrimoireConnectionAdmissionGate gate,
-    IOptionsMonitor<ArcanumSettings> settings, PhysicalCampaignRootOpener opener, TimeProvider time)
+    IOptionsMonitor<ArcanumSettings> settings, PhysicalCampaignRootOpener opener, TimeProvider time, GuildInboundPeerRegistry? inboundPeers = null)
     : IGuildQuestHostPolicy, IGuildSignetHostPolicy, IGuildWorkspaceLeaseHostEvidence
 {
     private readonly GuildSignetStore _store = new(connections);
@@ -33,13 +33,25 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
 
     internal bool IsExecutionEnabled => settings.CurrentValue.Features.Guild;
 
+    internal bool IsConfiguredRemoteDestination(string destination) => IsExecutionEnabled
+        && settings.CurrentValue.Features.Conclave && settings.CurrentValue.ResolveA2A().ClientEnabled
+        && RetroDownfall.Arcanum.Infrastructure.A2A.A2AClientService.IsConfiguredGuildDestination(destination,
+            settings.CurrentValue.ResolveA2A().AllowedRemoteAgents);
+
     public Guid InstallationGeneration => Volatile.Read(ref _identity)?.Generation ?? Guid.Empty;
 
     public Guid OperatorPrincipalId => Volatile.Read(ref _identity)?.Principal ?? Guid.Empty;
 
-    public bool Authenticates(GuildCallerContext caller) => caller is not null && _callers.TryGetValue(caller, out _)
-        && caller.InstallationGeneration == InstallationGeneration && caller.PrincipalId == OperatorPrincipalId
-        && caller.Kind is GuildCallerKind.Operator or GuildCallerKind.Run;
+    public bool Authenticates(GuildCallerContext caller)
+    {
+        if (caller is null || !_callers.TryGetValue(caller, out object? credential) || caller.InstallationGeneration != InstallationGeneration)
+            return false;
+
+        return caller.Kind == GuildCallerKind.Peer
+            ? settings.CurrentValue.Features.Guild && _inboundPersistenceAvailable && credential is GuildInboundPeer peer && inboundPeers?.Authenticates(peer) == true
+                && caller.PeerId == peer.PeerId && caller.PeerGrantRevision == peer.GrantRevision
+            : caller.PrincipalId == OperatorPrincipalId && caller.Kind is GuildCallerKind.Operator or GuildCallerKind.Run;
+    }
 
     internal async Task<Result<GuildCallerContext>> CreateNativeOperatorAsync(Guid invocationId, CancellationToken ct)
     {
@@ -152,6 +164,9 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
 
         if (questId is { } quest)
         {
+            if (caller.Kind == GuildCallerKind.Peer)
+                return await RequireInboundRootForPeerWithinAsync(connection, transaction, caller, quest, ct).ConfigureAwait(false);
+
             await using SqliteCommand command = Command(connection, transaction, "SELECT OriginPrincipalId FROM guild_signets WHERE QuestId=$quest");
 
             Add(command, "$quest", Id(quest));
@@ -191,13 +206,29 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
 
         bool root = proposal.Root is not null;
 
-        if (root ? caller.Kind != GuildCallerKind.Operator || proposal.ParentQuestId is not null
+        if (root ? caller.Kind is not (GuildCallerKind.Operator or GuildCallerKind.Peer) || proposal.ParentQuestId is not null
             : caller.Kind != GuildCallerKind.Run || caller.Execution?.QuestId != proposal.ParentQuestId || proposal.Child is null) return Forbidden;
 
         Result ownersValid = await ValidateOwnersAsync(connection, transaction, root ? proposal.Root!.SessionId : null,
             proposal.CampaignId, proposal.WorkspaceId, ct).ConfigureAwait(false);
 
         if (ownersValid.IsFailure) return ownersValid.Error;
+
+        GuildInboundPeer? peer = null;
+
+        if (caller.Kind == GuildCallerKind.Peer)
+        {
+            if (!_callers.TryGetValue(caller, out object? peerCredential) || peerCredential is not GuildInboundPeer currentPeer
+                || proposal.Root is not { } peerRoot || peerRoot.CampaignId != currentPeer.CampaignId
+                || peerRoot.SessionId != currentPeer.SessionId || peerRoot.WorkspaceId != currentPeer.WorkspaceId
+                || !SameGrant(peerRoot.Grant, currentPeer.Grant)) return Forbidden;
+
+            peer = currentPeer;
+
+            Result<Guid> epoch = await EnsureInboundPeerWithinAsync(connection, transaction, peer, ct).ConfigureAwait(false);
+
+            if (epoch.IsFailure) return epoch.Error;
+        }
 
         GuildGrant grant;
 
@@ -242,9 +273,45 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
             grant = narrowed.Value;
         }
 
-        if (GuildGrantPolicy.Validate(grant).IsFailure || grant.Workspaces.Any(item => item.WorkspaceId != proposal.WorkspaceId) || grant.Delegation.Any(item => item != GuildDelegationKind.Local)) return Forbidden;
+        if (GuildGrantPolicy.Validate(grant).IsFailure || grant.Workspaces.Any(item => item.WorkspaceId != proposal.WorkspaceId) || grant.Delegation.Any(item => item is not (GuildDelegationKind.Local or GuildDelegationKind.Remote))) return Forbidden;
 
-        GuildSignetOwnerBinding owners = new(proposal.SessionId, proposal.CampaignId, proposal.WorkspaceId);
+        GuildRemoteTransportDescriptor? remote = null;
+
+        if ((proposal.Root?.AgentId ?? proposal.Child?.AgentId) is { } selectedAgent)
+        {
+            var destination = await GuildRemoteExecutionStore.ResolveTransportWithinAsync(connection, transaction,
+                selectedAgent, new(proposal.WorkspaceId, proposal.SessionId, proposal.CampaignId), ct).ConfigureAwait(false);
+
+            if (destination.IsFailure) return destination.Error;
+
+            remote = destination.Value;
+
+            if (remote is not null)
+            {
+                if (grant.Budget.Usd.Mode != GuildBudgetMode.Unlimited || grant.Budget.Tokens.Mode != GuildBudgetMode.Unlimited)
+                    return new Error(ErrorCodes.Guild.BudgetCapabilityUnavailable, "The remote transport cannot enforce a finite Guild spending grant.");
+
+                if (root && !grant.Delegation.Contains(GuildDelegationKind.Remote)) return Forbidden;
+
+                if (!root)
+                {
+                    var parent = await GuildSignetStore.ReadAsync(connection, transaction, proposal.ParentQuestId!.Value, true, ct).ConfigureAwait(false);
+
+                    if (parent.IsFailure || !parent.Value.Binding.Grant.Delegation.Contains(GuildDelegationKind.Remote)) return Forbidden;
+                }
+            }
+        }
+
+        GuildSignetOwnerBinding owners = new(proposal.SessionId, proposal.CampaignId, proposal.WorkspaceId, peer?.PeerId, peer?.GrantRevision);
+
+        if (!root)
+        {
+            Result<GuildSignetRecord> parent = await GuildSignetStore.ReadAsync(connection, transaction, proposal.ParentQuestId!.Value, true, ct).ConfigureAwait(false);
+
+            if (parent.IsFailure) return parent.Error;
+
+            owners = owners with { PeerId = parent.Value.Owners.PeerId, PeerGrantRevision = parent.Value.Owners.PeerGrantRevision };
+        }
 
         if (proposal.WorkspaceId is { } workspace)
         {
@@ -258,7 +325,7 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
 
         GuildAdmissionContext admission = new(caller, Guid.NewGuid(), proposal.Mutation);
 
-        Admission pending = new(this, admission, proposal, grant, owners, connection, transaction);
+        Admission pending = new(this, admission, proposal, grant, owners, connection, transaction, remote);
 
         _admissions.Add(admission, pending);
 
@@ -267,7 +334,8 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
         GuildAgentCard card = new(Guid.Empty, Guid.Empty, 0, proposal.Root?.Name ?? proposal.Child?.Name ?? "Apprentice", "Local Guild Apprentice", "1", [], ["text/plain"], ["text/plain"],
             new(false, false, false), new(GuildAgentSourceKind.Derived, null, null, true, null));
 
-        return new GuildQuestAdmissionPlan(admission, grant, owners, OperatorPrincipalId, new(card, "", []), Lifetime: pending);
+        return new GuildQuestAdmissionPlan(admission, grant, owners, OperatorPrincipalId,
+            remote is null ? new(card, "", []) : null, Lifetime: pending, RemoteTransport: remote);
     }
 
     public async Task<Result<GuildSignetAdmissionEvidence>> AuthorizeAdmissionAsync(GuildAdmissionContext admission,
@@ -283,7 +351,8 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
         Result identity = await CurrentIdentityAsync(scope.Connection, scope.Transaction, ct).ConfigureAwait(false);
 
         return identity.IsFailure ? identity.Error : new GuildSignetAdmissionEvidence(scope.Owners,
-            scope.Proposal.Root is not null ? GuildSignetIssuanceEdge.Root : GuildSignetIssuanceEdge.Local);
+            scope.Proposal.Root is not null ? GuildSignetIssuanceEdge.Root
+                : scope.RemoteTransport is null ? GuildSignetIssuanceEdge.Local : GuildSignetIssuanceEdge.Remote);
     }
 
     public Task<Result<GuildSignetPolicyEvidence>> ResolveCurrentAsync(ImmutableArray<GuildSignetRecord> lineage, CancellationToken ct)
@@ -310,8 +379,16 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
         foreach (GuildSignetRecord row in lineage)
         {
             if (row.InstallationGeneration != InstallationGeneration || row.Binding.OriginPrincipalId != OperatorPrincipalId
-                || row.Owners.PeerId is not null || row.Revoked || row.RestoredInert || row.Retired
+                || row.Revoked || row.RestoredInert || row.Retired
                 || row.Binding.Grant.ExpiresAtUtc is { } expiry && expiry <= time.GetUtcNow()) return Forbidden;
+
+            if (row.Owners.PeerId is { } peerId)
+            {
+                Result peerLive = await RequireInboundRootWithinAsync(connection, transaction, row.Binding.RootQuestId,
+                    peerId, row.Owners.PeerGrantRevision!, ct).ConfigureAwait(false);
+
+                if (peerLive.IsFailure) return peerLive.Error;
+            }
 
             Result owners = await ValidateOwnersAsync(connection, transaction, row.Owners.SessionId, row.Owners.CampaignId, row.Owners.WorkspaceId, ct).ConfigureAwait(false);
 
@@ -388,7 +465,8 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
     private sealed record Identity(Guid Generation, Guid Principal);
 
     private sealed class Admission(GuildLocalHostPolicy owner, GuildAdmissionContext context, GuildQuestProposal proposal,
-        GuildGrant grant, GuildSignetOwnerBinding owners, SqliteConnection connection, SqliteTransaction transaction) : IDisposable
+        GuildGrant grant, GuildSignetOwnerBinding owners, SqliteConnection connection, SqliteTransaction transaction,
+        GuildRemoteTransportDescriptor? remoteTransport) : IDisposable
     {
         internal GuildQuestProposal Proposal { get; } = proposal;
 
@@ -399,6 +477,8 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
         internal SqliteConnection Connection { get; } = connection;
 
         internal SqliteTransaction Transaction { get; } = transaction;
+
+        internal GuildRemoteTransportDescriptor? RemoteTransport { get; } = remoteTransport;
 
         internal int Consumed;
 

@@ -6,7 +6,7 @@ internal static class GuildCanonicalSchemaVersionNineFixture
 {
     internal const string PublishedFingerprint = "D08C0850320EA982D75496C05A873C00F96DF54E9993F092E8959D19172FE796";
 
-    internal static IReadOnlyList<GrimoireSchemaObject> Objects { get; } = [.. GrimoireSchemaCatalog.GuildCanonicalObjects
+    internal static IReadOnlyList<GrimoireSchemaObject> Objects { get; } = [.. GuildCanonicalSchemaVersionTenFixture.Objects
         .Where(item => item.Name is not "idx_guild_budget_effects_quest" and not "idx_guild_workspace_leases_quest"
             and not "idx_guild_quests_cancellation")];
 

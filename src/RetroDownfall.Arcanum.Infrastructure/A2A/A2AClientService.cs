@@ -27,7 +27,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 /// host-capacity policy at first use. Excess work waits behind that admission boundary until a slot
 /// opens or its caller cancels; the capacity is not a total-work rejection rule.
 /// </remarks>
-public sealed class A2AClientService : IA2AClientService
+public sealed partial class A2AClientService : IA2AClientService
 {
     public const string OutboundHttpClientName = "A2AOutbound";
 
@@ -88,7 +88,9 @@ public sealed class A2AClientService : IA2AClientService
 
     private readonly ConcurrentDictionary<string, CachedCard> _cardCache = new(StringComparer.Ordinal);
 
-    private readonly Lazy<SemaphoreSlim> _gate;
+    private readonly Lock _gateLock = new();
+
+    private SemaphoreSlim? _gate;
 
     /// <summary>
     /// Reaches the scoped durable ledger from this singleton. Optional: a host without one (tests, a
@@ -124,14 +126,21 @@ public sealed class A2AClientService : IA2AClientService
         _dnsResolver = dnsResolver;
 
         _scopeFactory = scopeFactory;
+    }
 
-        _gate = new Lazy<SemaphoreSlim>(() =>
+    private SemaphoreSlim GetConcurrencyGate()
+    {
+        lock (_gateLock)
         {
+            if (_gate is not null) return _gate;
+
             int max = ArcanumSettingClamps.MaxConcurrentA2ATasks(
                 _options.CurrentValue.Execution.MaxConcurrentA2ATasks);
 
-            return new SemaphoreSlim(max, max);
-        });
+            _gate = new SemaphoreSlim(max, max);
+
+            return _gate;
+        }
     }
 
     public Task<Result<A2ADispatchResult>> DispatchSendingAsync(
@@ -267,13 +276,16 @@ public sealed class A2AClientService : IA2AClientService
         string agentUrl,
         IReadOnlyList<string>? delegationChain,
         CancellationToken cancellationToken,
-        Func<IA2AClient, AgentCard, string, IReadOnlyList<string>, ConcurrencySlot, CancellationToken, Task<Result<A2ADispatchResult>>> operation)
+        Func<IA2AClient, AgentCard, string, IReadOnlyList<string>, ConcurrencySlot, CancellationToken, Task<Result<A2ADispatchResult>>> operation,
+        IA2AGuildDiscoveryAdmission? discoveryAdmission = null,
+        bool guildDiscovery = false,
+        bool existingGuildTask = false)
     {
         ArcanumSettings settings = _options.CurrentValue;
 
         ConclaveA2ASettings a2a = settings.ResolveA2A();
 
-        if (!settings.ResolveConclave().Enabled || !a2a.Enabled || !a2a.ClientEnabled)
+        if (!existingGuildTask && (!settings.ResolveConclave().Enabled || !a2a.Enabled || !a2a.ClientEnabled))
         {
             return Result<A2ADispatchResult>.Failure(
                 new Error(ErrorCodes.Sending.Disabled, "A2A is disabled; dispatch_sending is not available."));
@@ -295,17 +307,28 @@ public sealed class A2AClientService : IA2AClientService
                 new Error(ErrorCodes.Sending.AgentNotAllowed, $"Remote agent '{trimmedUrl}' is not in the configured AllowedRemoteAgents allowlist."));
         }
 
-        Result discoveryUrlCheck = await OutboundUrlGuard
-            .ValidateUntrustedUrlAsync(trimmedUrl, _dnsResolver, cancellationToken)
-            .ConfigureAwait(false);
+        Result discoveryUrlCheck;
+
+        try
+        {
+            discoveryUrlCheck = await ValidateDiscoveryUrlAsync(trimmedUrl, cancellationToken,
+                guildDiscovery, discoveryAdmission).ConfigureAwait(false);
+        }
+        catch (GuildTransportAdmissionException ex)
+        {
+            return ex.Error;
+        }
 
         if (discoveryUrlCheck.IsFailure)
         {
+            if (guildDiscovery && discoveryUrlCheck.Error.Code == ErrorCodes.Sending.AgentNotAllowed)
+                return discoveryUrlCheck.Error;
+
             return Result<A2ADispatchResult>.Failure(
                 new Error(ErrorCodes.Sending.AgentUnreachable, $"Remote agent URL rejected by outbound URL policy: {discoveryUrlCheck.Error.Message}"));
         }
 
-        SemaphoreSlim gate = _gate.Value;
+        SemaphoreSlim gate = GetConcurrencyGate();
 
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -324,7 +347,7 @@ public sealed class A2AClientService : IA2AClientService
 
                 try
                 {
-                    peer = await ConnectAsync(trimmedUrl, allowlist, discovery.Token).ConfigureAwait(false);
+                    peer = await ConnectAsync(trimmedUrl, allowlist, discovery.Token, guildDiscovery, discoveryAdmission).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
@@ -352,6 +375,10 @@ public sealed class A2AClientService : IA2AClientService
                     slot,
                     cancellationToken)
                 .ConfigureAwait(false);
+        }
+        catch (GuildTransportAdmissionException ex)
+        {
+            return ex.Error;
         }
         finally
         {
@@ -388,13 +415,15 @@ public sealed class A2AClientService : IA2AClientService
     private async Task<Result<ConnectedPeer>> ConnectAsync(
         string discoveryUrl,
         string[] allowlist,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool guildDiscovery,
+        IA2AGuildDiscoveryAdmission? discoveryAdmission)
     {
         AgentCard card;
 
         try
         {
-            card = await ResolveCardAsync(discoveryUrl, allowlist, cancellationToken).ConfigureAwait(false);
+            card = await ResolveCardAsync(discoveryUrl, allowlist, cancellationToken, guildDiscovery, discoveryAdmission).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is HttpRequestException or A2AException or InvalidOperationException or JsonException or FormatException)
         {
@@ -408,6 +437,11 @@ public sealed class A2AClientService : IA2AClientService
                 new Error(ErrorCodes.Sending.AgentCardInvalid, "Could not resolve the remote agent's Agent Card."));
         }
 
+        if (card.SupportedInterfaces?.Any(static item => item is null) == true)
+        {
+            return new Error(ErrorCodes.Sending.AgentCardInvalid, "The remote Agent Card contained an invalid interface.");
+        }
+
         AgentInterface[] interfaces = [.. (card.SupportedInterfaces ?? []).Where(static i => !string.IsNullOrWhiteSpace(i.Url))];
 
         if (interfaces.Length == 0)
@@ -416,8 +450,8 @@ public sealed class A2AClientService : IA2AClientService
                 new Error(ErrorCodes.Sending.AgentCardInvalid, "The remote Agent Card did not advertise a usable interface."));
         }
 
-        // EVERY advertised interface is checked, not just the first: A2AClientFactory selects by protocol
-        // binding preference rather than position, so validating one entry would let a hostile card steer
+        // EVERY advertised interface is checked, not just the selected supported binding, so validating
+        // one entry would let a hostile card steer
         // the connection to an unchecked URL. All of these are remote-controlled values.
         foreach (AgentInterface advertised in interfaces)
         {
@@ -429,12 +463,14 @@ public sealed class A2AClientService : IA2AClientService
                     new Error(ErrorCodes.Sending.AgentNotAllowed, $"Remote agent interface '{interfaceUrl}' is not in the configured AllowedRemoteAgents allowlist."));
             }
 
-            Result interfaceUrlCheck = await OutboundUrlGuard
-                .ValidateUntrustedUrlAsync(interfaceUrl, _dnsResolver, cancellationToken)
-                .ConfigureAwait(false);
+            Result interfaceUrlCheck = await ValidateDiscoveryUrlAsync(interfaceUrl, cancellationToken,
+                guildDiscovery, discoveryAdmission).ConfigureAwait(false);
 
             if (interfaceUrlCheck.IsFailure)
             {
+                if (guildDiscovery && interfaceUrlCheck.Error.Code == ErrorCodes.Sending.AgentNotAllowed)
+                    return interfaceUrlCheck.Error;
+
                 return Result<ConnectedPeer>.Failure(
                     new Error(ErrorCodes.Sending.AgentUnreachable, $"Remote agent interface rejected by outbound URL policy: {interfaceUrlCheck.Error.Message}"));
             }
@@ -449,7 +485,32 @@ public sealed class A2AClientService : IA2AClientService
 
         try
         {
-            client = A2AClientFactory.Create(card, httpClient);
+            // Match the SDK default selection order while keeping construction closed to
+            // its two built-in transports. The general factory executes mutable global
+            // registrations, which cannot inherit this transport's reviewed authority.
+            AgentInterface? selected = null;
+
+            foreach (AgentInterface advertised in interfaces)
+            {
+                if (string.Equals(advertised.ProtocolBinding, "JSONRPC", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(advertised.ProtocolBinding, "HTTP+JSON", StringComparison.OrdinalIgnoreCase))
+                {
+                    selected = advertised;
+
+                    break;
+                }
+            }
+
+            if (selected is null)
+            {
+                throw new A2AException("The remote Agent Card advertises no supported protocol binding.");
+            }
+
+            Uri selectedUri = new(selected.Url!);
+
+            client = string.Equals(selected.ProtocolBinding, "JSONRPC", StringComparison.OrdinalIgnoreCase)
+                ? new A2AClient(selectedUri, httpClient)
+                : new A2AHttpJsonClient(selectedUri, httpClient);
         }
         catch (Exception ex) when (ex is A2AException or ArgumentException or InvalidOperationException)
         {
@@ -592,7 +653,9 @@ public sealed class A2AClientService : IA2AClientService
         A2AOutboundModality modality,
         Guid? budgetReservationId,
         ConcurrencySlot slot,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        GuardedGuildLifecycle? guild = null,
+        bool guildExecution = false)
     {
         // ReturnImmediately hands back the remote task id before the work finishes. That id is what makes
         // local cancellation propagatable — a blocking send abandons the HTTP call without ever learning
@@ -609,9 +672,19 @@ public sealed class A2AClientService : IA2AClientService
             },
         };
 
-        if (_options.CurrentValue.Features.Guild)
+        if (!guildExecution && _options.CurrentValue.Features.Guild)
             return new Error(ErrorCodes.Guild.LegacyRunUnavailable,
                 "Guild remote execution requires its qualified Quest transport; legacy Sendings are unavailable.");
+
+        if (guildExecution)
+        {
+            if (guild is null)
+                return new Error(ErrorCodes.Guild.InvalidRequest, "Guild execution requires its transport lifecycle.");
+
+            if (!_options.CurrentValue.Features.Guild)
+                return new Error(ErrorCodes.Guild.Unavailable, "Guild execution is disabled.");
+
+        }
 
         SendMessageResponse response;
 
@@ -619,7 +692,20 @@ public sealed class A2AClientService : IA2AClientService
 
         try
         {
-            response = await client.SendMessageAsync(sendRequest, cancellationToken).ConfigureAwait(false);
+            if (!guildExecution) response = await client.SendMessageAsync(sendRequest, cancellationToken).ConfigureAwait(false);
+            else
+            {
+                Result<SendMessageResponse> sent = await guild!.AdmitAndSendAsync(
+                    token => client.SendMessageAsync(sendRequest, token), cancellationToken).ConfigureAwait(false);
+
+                if (sent.IsFailure) return sent.Error;
+
+                response = sent.Value;
+            }
+        }
+        catch (GuildTransportAdmissionException ex)
+        {
+            return ex.Error;
         }
         catch (Exception ex) when (ex is HttpRequestException or A2AException or JsonException)
         {
@@ -631,8 +717,23 @@ public sealed class A2AClientService : IA2AClientService
                 new Error(ErrorCodes.Sending.AgentUnreachable, "Failed to send the Sending to the remote agent."));
         }
 
+        if (guildExecution)
+        {
+            Result acceptedBinding = await guild!.AcceptedAsync(response.Task?.Id, response.Task?.ContextId, CancellationToken.None).ConfigureAwait(false);
+
+            if (acceptedBinding.IsFailure) return acceptedBinding.Error;
+        }
+
         if (response.PayloadCase == SendMessageResponseCase.Message)
         {
+            if (guildExecution)
+            {
+                Result observed = await guild!.ObservedAsync(new(null, null, "completed", ExtractText(response.Message!.Parts),
+                    A2ARemoteCost.Unknown, DateTimeOffset.UtcNow), CancellationToken.None).ConfigureAwait(false);
+
+                if (observed.IsFailure) return observed.Error;
+            }
+
             // A stateless reply: no task was created, so there is nothing to poll and no task metadata to
             // read usage from. Unknown cost, not zero.
             return Result<A2ADispatchResult>.Success(new A2ADispatchResult(
@@ -656,7 +757,7 @@ public sealed class A2AClientService : IA2AClientService
             // read the same way, leaving the task and its row for reconciliation.
             bool continuation = !string.IsNullOrWhiteSpace(message.TaskId);
 
-            if (!continuation && response.Task is { Id.Length: > 0 } unusable)
+            if (!guildExecution && !continuation && response.Task is { Id.Length: > 0 } unusable)
             {
                 await TryCancelRemoteTaskAsync(client, unusable.Id).ConfigureAwait(false);
             }
@@ -686,7 +787,7 @@ public sealed class A2AClientService : IA2AClientService
         // that parked it deliberately left one open so the answer could find it. Opening a second row for
         // the same Sending leaves an orphan nothing ever closes, which reconciliation later claims —
         // cancelling a remote task that may still be running, and counting one delegated Sending twice.
-        A2ASendingLedgerEntry ledgerEntry = await RecordOutboundAsync(
+        A2ASendingLedgerEntry ledgerEntry = guildExecution ? default : await RecordOutboundAsync(
                 task.Id,
                 discoveryUrl,
                 budgetReservationId,
@@ -706,7 +807,7 @@ public sealed class A2AClientService : IA2AClientService
             // and left the peer running and the lease renewing for the host's lifetime.
             if (mode == A2ADispatchMode.Callback)
             {
-                callback = await TryRegisterCallbackAsync(client, card, task.Id, ledgerEntry, cancellationToken)
+                callback = await TryRegisterCallbackAsync(client, card, task.Id, ledgerEntry, cancellationToken, guild, guildExecution)
                     .ConfigureAwait(false);
 
                 if (callback is not null)
@@ -716,18 +817,25 @@ public sealed class A2AClientService : IA2AClientService
             }
 
             task = callback is null
-                ? await AwaitSettledAsync(client, card, task, discoveryUrl, progress, transitions, cancellationToken)
+                ? await AwaitSettledAsync(client, card, task, discoveryUrl, progress, transitions, cancellationToken, guildExecution, guild)
                     .ConfigureAwait(false)
-                : await AwaitCallbackAsync(client, task, discoveryUrl, progress, transitions, callback, cancellationToken)
+                : await AwaitCallbackAsync(client, task, discoveryUrl, progress, transitions, callback, cancellationToken, guildExecution, guild)
                     .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-            await TryCancelRemoteTaskAsync(client, task.Id).ConfigureAwait(false);
+            if (!guildExecution)
+            {
+                await TryCancelRemoteTaskAsync(client, task.Id).ConfigureAwait(false);
 
-            await ReleaseLedgerAsync(ledgerEntry).ConfigureAwait(false);
+                await ReleaseLedgerAsync(ledgerEntry).ConfigureAwait(false);
+            }
 
             throw;
+        }
+        catch (GuildTransportAdmissionException ex)
+        {
+            return ex.Error;
         }
         catch (Exception ex) when (ex is HttpRequestException or A2AException)
         {
@@ -774,7 +882,14 @@ public sealed class A2AClientService : IA2AClientService
 
         // Read once, from the settled task: a peer that reports nothing stays explicitly unknown rather
         // than defaulting to a free Sending (issue #60).
-        A2ARemoteCost cost = A2ASendingUsageMetadata.Read(task);
+        A2ARemoteCost cost = A2ASendingUsageMetadata.ReadGuild(task);
+
+        if (guildExecution)
+        {
+            Result observed = await guild!.ObservedAsync(GuildObservation(task), CancellationToken.None).ConfigureAwait(false);
+
+            if (observed.IsFailure) return observed.Error;
+        }
 
         // A settled task needs no reconciliation, whatever state it settled in — except a continuation,
         // which is deliberately left alive and therefore left recorded. Closing the record also stamps
@@ -828,7 +943,7 @@ public sealed class A2AClientService : IA2AClientService
             // Neither state is terminal in A2A, but a blocking Sending has no way to supply the follow-up
             // input or credential, so waiting is an infinite poll that also pins a concurrency slot. End it
             // with a reason the Mage can act on, and point at the continuable mode that can answer it.
-            await TryCancelRemoteTaskAsync(client, task.Id).ConfigureAwait(false);
+            if (!guildExecution) await TryCancelRemoteTaskAsync(client, task.Id).ConfigureAwait(false);
 
             string wanted = need == A2AContinuationNeed.Input
                 ? "asked for more input"
@@ -848,7 +963,7 @@ public sealed class A2AClientService : IA2AClientService
     }
 
     /// <summary>A live outbound Sending's callback registration, and the wake-up it waits on.</summary>
-    private sealed class A2ACallbackSubscription(string configId, SemaphoreSlim signal, IDisposable registration)
+    private sealed class A2ACallbackSubscription(string configId, SemaphoreSlim signal, A2ASendingCallbackRegistry.Registration registration)
         : IDisposable
     {
         public string ConfigId => configId;
@@ -881,7 +996,9 @@ public sealed class A2AClientService : IA2AClientService
         AgentCard card,
         string remoteTaskId,
         A2ASendingLedgerEntry ledgerEntry,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        GuardedGuildLifecycle? guild = null,
+        bool guildExecution = false)
     {
         ConclaveA2ASettings a2a = _options.CurrentValue.ResolveA2A();
 
@@ -906,7 +1023,9 @@ public sealed class A2AClientService : IA2AClientService
 
         try
         {
-            await client
+            await WithGuildObservationAsync(async observationToken =>
+            {
+                await client
                 .CreateTaskPushNotificationConfigAsync(
                     new CreateTaskPushNotificationConfigRequest
                     {
@@ -919,8 +1038,11 @@ public sealed class A2AClientService : IA2AClientService
                             Token = token,
                         },
                     },
-                    cancellationToken)
+                    observationToken)
                 .ConfigureAwait(false);
+
+                return true;
+            }, guild, false, cancellationToken, guildExecution).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is HttpRequestException or A2AException or JsonException)
         {
@@ -938,14 +1060,23 @@ public sealed class A2AClientService : IA2AClientService
 
         // Durable before the slot is released: a callback that arrives in a later process has only this
         // record to recognise it by, and by then the live index is gone.
-        await RecordCallbackAsync(ledgerEntry, configId, A2ACallbackToken.Hash(token)).ConfigureAwait(false);
+        if (guildExecution)
+        {
+            Result recorded = await guild!.CallbackAsync(configId, A2ACallbackToken.Hash(token), CancellationToken.None).ConfigureAwait(false);
+
+            if (recorded.IsFailure) return null;
+        }
+        else
+        {
+            await RecordCallbackAsync(ledgerEntry, configId, A2ACallbackToken.Hash(token)).ConfigureAwait(false);
+        }
 
         SemaphoreSlim signal = new(0);
 
         return new A2ACallbackSubscription(
             configId,
             signal,
-            _callbacks.Register(configId, A2ACallbackToken.Hash(token), signal));
+            _callbacks.RegisterOwned(configId, A2ACallbackToken.Hash(token), signal));
     }
 
     /// <summary>The absolute path peers post outbound-Sending callbacks to.</summary>
@@ -981,16 +1112,18 @@ public sealed class A2AClientService : IA2AClientService
         IProgress<A2ASendingProgress>? progress,
         TransitionFilter transitions,
         A2ACallbackSubscription callback,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool guildExecution = false,
+        GuardedGuildLifecycle? guild = null)
     {
-        task = await ReadTaskAsync(client, task.Id, discoveryUrl, progress, transitions, cancellationToken)
+        task = await ReadTaskAsync(client, task, discoveryUrl, progress, transitions, cancellationToken, guild, guildExecution)
             .ConfigureAwait(false);
 
-        while (!IsSettled(task.Status.State))
+        while (!IsSettled(task.Status.State) && !(guildExecution && UnsupportedGuildState(task.Status.State)))
         {
             await callback.Signal.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-            task = await ReadTaskAsync(client, task.Id, discoveryUrl, progress, transitions, cancellationToken)
+            task = await ReadTaskAsync(client, task, discoveryUrl, progress, transitions, cancellationToken, guild, guildExecution)
                 .ConfigureAwait(false);
         }
 
@@ -1002,15 +1135,18 @@ public sealed class A2AClientService : IA2AClientService
     /// </summary>
     private static async Task<AgentTask> ReadTaskAsync(
         IA2AClient client,
-        string taskId,
+        AgentTask expected,
         string discoveryUrl,
         IProgress<A2ASendingProgress>? progress,
         TransitionFilter transitions,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        GuardedGuildLifecycle? guild = null,
+        bool guildExecution = false)
     {
-        AgentTask task = await client
-            .GetTaskAsync(new GetTaskRequest { Id = taskId }, cancellationToken)
-            .ConfigureAwait(false);
+        AgentTask task = await WithGuildObservationAsync(token => client.GetTaskAsync(new GetTaskRequest { Id = expected.Id }, token),
+            guild, guildExecution, cancellationToken, guildExecution).ConfigureAwait(false);
+
+        RequireGuildTaskIdentity(task, expected.Id, expected.ContextId, guild);
 
         if (transitions.ShouldReport(task.Status))
         {
@@ -1221,26 +1357,46 @@ public sealed class A2AClientService : IA2AClientService
         string discoveryUrl,
         IProgress<A2ASendingProgress>? progress,
         TransitionFilter transitions,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool guildExecution = false,
+        GuardedGuildLifecycle? guild = null)
     {
+        if (guildExecution && UnsupportedGuildState(task.Status.State)) return task;
+
         if (card.Capabilities?.Streaming == true)
         {
-            AgentTask? streamed = await TrySubscribeUntilSettledAsync(
-                    client,
-                    task,
-                    discoveryUrl,
-                    progress,
-                    transitions,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            bool streamed = await WithGuildObservationAsync(token => TrySubscribeUntilSettledAsync(
+                client, task, discoveryUrl, progress, transitions, token, guildExecution, guild), guild, guildExecution,
+                cancellationToken, guildExecution).ConfigureAwait(false);
 
-            if (streamed is not null)
+            if (streamed)
             {
-                return streamed;
+                try
+                {
+                    // The stream and its admission have both closed. The authoritative snapshot
+                    // gets fresh standing authority rather than nesting inside the stream's scope.
+                    AgentTask settled = await WithGuildObservationAsync(token => client.GetTaskAsync(new GetTaskRequest { Id = task.Id }, token),
+                        guild, guildExecution, cancellationToken, guildExecution).ConfigureAwait(false);
+
+                    RequireGuildTaskIdentity(settled, task.Id, task.ContextId, guild);
+
+                    return settled;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex) when (ex is HttpRequestException or A2AException or IOException or InvalidOperationException or JsonException)
+                {
+                    _logger.LogInformation(
+                        "dispatch_sending: could not read the settled task after subscription "
+                        + "({ExceptionType}); falling back to polling.",
+                        ex.GetType().Name);
+                }
             }
         }
 
-        return await PollUntilSettledAsync(client, task, discoveryUrl, progress, transitions, cancellationToken)
+        return await PollUntilSettledAsync(client, task, discoveryUrl, progress, transitions, cancellationToken, guildExecution, guild)
             .ConfigureAwait(false);
     }
 
@@ -1248,11 +1404,12 @@ public sealed class A2AClientService : IA2AClientService
     /// Consumes the peer's <c>tasks/subscribe</c> stream until the task settles.
     /// </summary>
     /// <returns>
-    /// The settled task, or <c>null</c> when the subscription could not carry the Sending to a settled
-    /// state — the caller then falls back to polling.
+    /// <c>true</c> when the stream reports a settled state; <c>false</c> when the caller must fall back
+    /// to polling.
     /// </returns>
     /// <remarks>
-    /// The settled task is re-read once through <c>tasks/get</c>. A status-update frame carries the state
+    /// The caller re-reads the settled task once through <c>tasks/get</c> after this stream and its
+    /// admission have closed. A status-update frame carries the state
     /// but not the task's artifacts or metadata, and those are where the response text and the peer's
     /// usage block live — reading once keeps settle semantics byte-identical to the poll path instead of
     /// making a streamed Sending quietly lose its answer and its cost.
@@ -1262,13 +1419,15 @@ public sealed class A2AClientService : IA2AClientService
     /// whose first read finds the settled task immediately.
     /// </para>
     /// </remarks>
-    private async Task<AgentTask?> TrySubscribeUntilSettledAsync(
+    private async Task<bool> TrySubscribeUntilSettledAsync(
         IA2AClient client,
         AgentTask task,
         string discoveryUrl,
         IProgress<A2ASendingProgress>? progress,
         TransitionFilter transitions,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool guildExecution = false,
+        GuardedGuildLifecycle? guild = null)
     {
         try
         {
@@ -1278,6 +1437,8 @@ public sealed class A2AClientService : IA2AClientService
 
             await foreach (StreamResponse update in stream.WithCancellation(cancellationToken).ConfigureAwait(false))
             {
+                RequireGuildStreamIdentity(update, task, guild);
+
                 if (ReadState(update) is not { } observed)
                 {
                     continue;
@@ -1288,11 +1449,9 @@ public sealed class A2AClientService : IA2AClientService
                     Report(progress, discoveryUrl, task.Id, observed.State, DateTimeOffset.UtcNow);
                 }
 
-                if (IsSettled(observed.State))
+                if (IsSettled(observed.State) || guildExecution && UnsupportedGuildState(observed.State))
                 {
-                    return await client
-                        .GetTaskAsync(new GetTaskRequest { Id = task.Id }, cancellationToken)
-                        .ConfigureAwait(false);
+                    return true;
                 }
             }
 
@@ -1315,7 +1474,7 @@ public sealed class A2AClientService : IA2AClientService
                 ex.GetType().Name);
         }
 
-        return null;
+        return false;
     }
 
     /// <summary>
@@ -1349,11 +1508,13 @@ public sealed class A2AClientService : IA2AClientService
         string discoveryUrl,
         IProgress<A2ASendingProgress>? progress,
         TransitionFilter transitions,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool guildExecution = false,
+        GuardedGuildLifecycle? guild = null)
     {
         TimeSpan delay = InitialPollInterval;
 
-        while (!IsSettled(task.Status.State))
+        while (!IsSettled(task.Status.State) && !(guildExecution && UnsupportedGuildState(task.Status.State)))
         {
             await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
 
@@ -1361,9 +1522,12 @@ public sealed class A2AClientService : IA2AClientService
                 ? TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, MaxPollInterval.Ticks))
                 : MaxPollInterval;
 
-            task = await client
-                .GetTaskAsync(new GetTaskRequest { Id = task.Id }, cancellationToken)
-                .ConfigureAwait(false);
+            AgentTask observed = await WithGuildObservationAsync(token => client.GetTaskAsync(new GetTaskRequest { Id = task.Id }, token),
+                guild, guildExecution, cancellationToken, guildExecution).ConfigureAwait(false);
+
+            RequireGuildTaskIdentity(observed, task.Id, task.ContextId, guild);
+
+            task = observed;
 
             if (transitions.ShouldReport(task.Status))
             {
@@ -1483,9 +1647,8 @@ public sealed class A2AClientService : IA2AClientService
     /// The card is remote-controlled. A hostile peer that advertises an interface on a host it also controls
     /// would otherwise be handed the operator's credential — the SSRF guard and allowlist stop us connecting
     /// to a <em>blocked</em> host, but with the default empty allowlist any public host is reachable. The
-    /// check covers every interface because <c>A2AClientFactory</c> selects one by protocol-binding
-    /// preference rather than position, so a per-interface decision could be made about a URL the SDK does
-    /// not end up using.
+    /// check covers every advertised interface. Transport construction selects the first supported
+    /// binding in Card order, and a shared credential must be safe for every advertised target.
     /// </remarks>
     private static string? CredentialTargetForCard(AgentCard card, string discoveryUrl, string[] allowlist)
     {
@@ -1539,7 +1702,9 @@ public sealed class A2AClientService : IA2AClientService
     private async Task<AgentCard> ResolveCardAsync(
         string discoveryUrl,
         string[] allowlist,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool guildDiscovery,
+        IA2AGuildDiscoveryAdmission? discoveryAdmission)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -1570,7 +1735,7 @@ public sealed class A2AClientService : IA2AClientService
             {
                 // origin + candidate rather than a relative-URI resolve: a path that begins with "//" would
                 // otherwise be read as a network-path reference and name a different host.
-                AgentCard card = await FetchAgentCardAsync(httpClient, new Uri(origin + candidate), cancellationToken)
+                AgentCard card = await FetchAgentCardAsync(httpClient, new Uri(origin + candidate), cancellationToken, guildDiscovery, discoveryAdmission)
                     .ConfigureAwait(false);
 
                 CacheCard(discoveryUrl, card, now);
@@ -1586,6 +1751,29 @@ public sealed class A2AClientService : IA2AClientService
         throw lastFailure ?? new A2AException("The remote agent did not serve an Agent Card.");
     }
 
+    private async Task<Result> ValidateDiscoveryUrlAsync(string url, CancellationToken ct,
+        bool guildDiscovery, IA2AGuildDiscoveryAdmission? admission)
+    {
+        if (guildDiscovery)
+        {
+            if (admission is null) throw new InvalidOperationException("Guild discovery requires physical admission.");
+
+            return await admission.AdmitAsync(token =>
+            {
+                string[] allowed = _options.CurrentValue.ResolveA2A().AllowedRemoteAgents ?? [];
+
+                if (allowed.Length > 0 && !IsAllowedAgent(url, allowed))
+                    return Task.FromResult(Result.Failure(new Error(ErrorCodes.Sending.AgentNotAllowed,
+                        "The remote destination is no longer in the configured AllowedRemoteAgents allowlist.")));
+
+                return OutboundUrlGuard.ValidateUntrustedUrlAsync(url, _dnsResolver, token);
+            }, ct)
+                .ConfigureAwait(false);
+        }
+
+        return await OutboundUrlGuard.ValidateUntrustedUrlAsync(url, _dnsResolver, ct).ConfigureAwait(false);
+    }
+
     /// <summary>
     /// Fetches one Agent Card with the body read under <see cref="MaxAgentCardBytes"/>, so a peer cannot
     /// make this client buffer an unbounded response on its way to a JSON parse.
@@ -1594,11 +1782,24 @@ public sealed class A2AClientService : IA2AClientService
     /// The SDK's card resolver reads the response as a stream with no limit, which is why the cap lives
     /// here rather than on <see cref="HttpClient.MaxResponseContentBufferSize"/> alone.
     /// </remarks>
-    private static async Task<AgentCard> FetchAgentCardAsync(HttpClient httpClient, Uri cardUri, CancellationToken cancellationToken)
+    private static async Task<AgentCard> FetchAgentCardAsync(HttpClient httpClient, Uri cardUri, CancellationToken cancellationToken,
+        bool guildDiscovery, IA2AGuildDiscoveryAdmission? admission)
     {
-        using HttpResponseMessage response = await httpClient
-            .GetAsync(cardUri, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-            .ConfigureAwait(false);
+        if (guildDiscovery)
+        {
+            if (admission is null) throw new InvalidOperationException("Guild discovery requires physical admission.");
+
+            return await admission.AdmitAsync(token => ReadAgentCardAsync(httpClient, cardUri, token), cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return await ReadAgentCardAsync(httpClient, cardUri, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<AgentCard> ReadAgentCardAsync(HttpClient httpClient, Uri cardUri, CancellationToken cancellationToken)
+    {
+        using HttpResponseMessage response = await httpClient.GetAsync(cardUri, HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken).ConfigureAwait(false);
 
         response.EnsureSuccessStatusCode();
 
@@ -1737,7 +1938,7 @@ public sealed class A2AClientService : IA2AClientService
         return httpClient;
     }
 
-    private static bool IsAllowedAgent(string url, string[] allowlist)
+    internal static bool IsAllowedAgent(string url, string[] allowlist)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
         {
@@ -1787,7 +1988,7 @@ public sealed class A2AClientService : IA2AClientService
 
     private static string ExtractTaskText(AgentTask task)
     {
-        Artifact? lastArtifact = task.Artifacts?.LastOrDefault();
+        Artifact? lastArtifact = task.Artifacts is { Count: > 0 } artifacts ? artifacts[^1] : null;
 
         if (lastArtifact is { Parts.Count: > 0 })
         {

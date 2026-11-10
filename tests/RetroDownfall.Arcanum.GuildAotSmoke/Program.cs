@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
@@ -193,6 +194,32 @@ internal static class GuildAotSmoke
         Exercise(SampleGuildRemoteStateProjection(), GuildJsonContext.Default.GuildRemoteStateProjection);
 
         Exercise(SampleGuildRemoteTransportDescriptor(), GuildJsonContext.Default.GuildRemoteTransportDescriptor);
+
+        Exercise(SampleGuildRemoteInterfaceDescriptor(), GuildJsonContext.Default.GuildRemoteInterfaceDescriptor);
+
+        Exercise(SampleGuildRemoteInvocationOptions(), GuildJsonContext.Default.GuildRemoteInvocationOptions);
+
+        Exercise(new GuildResolveRemoteAgentRequest("https://peer.example/agent-card"), GuildJsonContext.Default.GuildResolveRemoteAgentRequest);
+
+        A2AInboundPeerSettings peerSettings = new()
+        {
+            PeerId = "sample-peer",
+            CredentialEnvironmentVariable = "ARCANUM_SAMPLE_PEER_KEY",
+            CampaignId = null,
+            Grant = new()
+            {
+                Workspaces = [],
+                Tools = [],
+                Memory = [],
+                Budget = new() { Usd = new() { Mode = GuildBudgetMode.Unlimited }, Tokens = new() { Mode = GuildBudgetMode.Unlimited } },
+                Delegation = [],
+                ExpiresAtUtc = null,
+            },
+        };
+
+        RoundTrip(peerSettings, ConfigurationJsonContext.Default.A2AInboundPeerSettings);
+
+        RoundTrip(new[] { peerSettings }, ConfigurationJsonContext.Default.A2AInboundPeerSettingsArray);
 
         Exercise(SampleGuildRequestedGrant(), GuildJsonContext.Default.GuildRequestedGrant);
 
@@ -699,7 +726,7 @@ internal static class GuildAotSmoke
 
     private static GuildContentDto SampleGuildContentDto() => new(Reference: SampleGuildDataRef(), Body: "A bounded Guild result.\nSecond line: λ");
 
-    private static GuildContinueRequest SampleGuildContinueRequest() => new(IdempotencyKey: Id, ExpectedRevision: 17L, ContinuationId: Id, MimeType: "text/plain", Body: "A bounded Guild result.\nSecond line: λ");
+    private static GuildContinueRequest SampleGuildContinueRequest() => new(IdempotencyKey: Id, ExpectedRevision: 17L, ContinuationId: Id, MimeType: "text/plain", Body: "A bounded Guild result.\nSecond line: λ", RemoteOptions: SampleGuildRemoteInvocationOptions());
 
     private static GuildConvergencePolicy SampleGuildConvergencePolicy() => new(GuildConvergenceKind.Quorum, 2);
 
@@ -721,9 +748,9 @@ internal static class GuildAotSmoke
 
     private static GuildIssueChildData SampleGuildIssueChildData() => new(AgentId: Id, Name: "sample-Name", Goal: "sample-Goal", RequestedGrant: SampleGuildRequestedGrant());
 
-    private static GuildIssueChildRequest SampleGuildIssueChildRequest() => new(IdempotencyKey: Id, ExpectedRevision: 17L, AgentId: Id, Name: "sample-Name", Goal: "sample-Goal", RequestedGrant: SampleGuildRequestedGrant());
+    private static GuildIssueChildRequest SampleGuildIssueChildRequest() => new(IdempotencyKey: Id, ExpectedRevision: 17L, AgentId: Id, Name: "sample-Name", Goal: "sample-Goal", RequestedGrant: SampleGuildRequestedGrant(), RemoteOptions: SampleGuildRemoteInvocationOptions());
 
-    private static GuildIssueRootRequest SampleGuildIssueRootRequest() => new(IdempotencyKey: Id, AgentId: Id, Name: "sample-Name", Goal: "sample-Goal", Grant: SampleGuildGrant(), SessionId: Id, CampaignId: Id, WorkspaceId: Id, PredecessorQuestId: Id);
+    private static GuildIssueRootRequest SampleGuildIssueRootRequest() => new(IdempotencyKey: Id, AgentId: Id, Name: "sample-Name", Goal: "sample-Goal", Grant: SampleGuildGrant(), SessionId: Id, CampaignId: Id, WorkspaceId: Id, PredecessorQuestId: Id, RemoteOptions: SampleGuildRemoteInvocationOptions());
 
     private static GuildListAgentsQuery SampleGuildListAgentsQuery() => new(Source: GuildAgentSourceKind.DeclaredGlobal, Skill: "sample-Skill", Cursor: "sample-Cursor", PageSize: 3);
 
@@ -763,7 +790,11 @@ internal static class GuildAotSmoke
 
     private static GuildRemoteStateProjection SampleGuildRemoteStateProjection() => GuildRemoteStateProjection.Observe("future-state");
 
-    private static GuildRemoteTransportDescriptor SampleGuildRemoteTransportDescriptor() => new(PeerId: "sample-PeerId", Endpoint: "https://peer.example/a2a", ProtocolVersion: "sample-ProtocolVersion", Interfaces: ["sample-value"], AuthenticationSchemes: ["sample-value"], CredentialReference: "sample-CredentialReference", ProviderLink: "sample-ProviderLink", DocumentationLink: "sample-DocumentationLink");
+    private static GuildRemoteTransportDescriptor SampleGuildRemoteTransportDescriptor() => new(PeerId: "sample-PeerId", Endpoint: "https://peer.example/a2a", ProtocolVersion: "sample-ProtocolVersion", Interfaces: ["sample-value"], AuthenticationSchemes: ["sample-value"], CredentialReference: "sample-CredentialReference", ProviderLink: "sample-ProviderLink", DocumentationLink: "sample-DocumentationLink", InterfaceObservations: [SampleGuildRemoteInterfaceDescriptor()]);
+
+    private static GuildRemoteInterfaceDescriptor SampleGuildRemoteInterfaceDescriptor() => new("https://peer.example/a2a", "JSONRPC", "1.0");
+
+    private static GuildRemoteInvocationOptions SampleGuildRemoteInvocationOptions() => new(GuildRemoteDispatchMode.Continuable, ["text/plain"], "sample-skill");
 
     private static GuildRequestedGrant SampleGuildRequestedGrant() => new(Budget: new(true, SampleGuildBudgetGrant()), ExpiresAtUtc: new(true, Instant));
 

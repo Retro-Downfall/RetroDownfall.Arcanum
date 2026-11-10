@@ -28,7 +28,7 @@ public sealed class SettingDescriptorCoverageTests
     [Fact]
     public void Editable_descriptor_count_matches_the_documented_total()
     {
-        Assert.Equal(179, SettingDescriptors.All.Count);
+        Assert.Equal(202, SettingDescriptors.All.Count);
 
         string documentation = File.ReadAllText(Path.Combine(
             FindRepositoryRoot(),

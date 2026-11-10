@@ -56,6 +56,8 @@ internal static class GuildQuestRetentionPins
         OR EXISTS(SELECT 1 FROM guild_result_receipts retained WHERE retained.ContentId=guild_content_erasure_receipts.ContentId)
         OR EXISTS(SELECT 1 FROM guild_continuations retained WHERE retained.ContentId=guild_content_erasure_receipts.ContentId)
         OR EXISTS(SELECT 1 FROM guild_local_executions retained WHERE retained.InputContentId=guild_content_erasure_receipts.ContentId)
+        OR EXISTS(SELECT 1 FROM guild_remote_executions retained WHERE retained.InputContentId=guild_content_erasure_receipts.ContentId)
+        OR EXISTS(SELECT 1 FROM guild_remote_questions retained WHERE retained.ContentId=guild_content_erasure_receipts.ContentId)
         OR EXISTS(SELECT 1 FROM guild_local_wait_checkpoints retained WHERE retained.ContentId=guild_content_erasure_receipts.ContentId)
         OR EXISTS(SELECT 1 FROM guild_envelopes retained WHERE retained.ContentId=guild_content_erasure_receipts.ContentId)
         """;

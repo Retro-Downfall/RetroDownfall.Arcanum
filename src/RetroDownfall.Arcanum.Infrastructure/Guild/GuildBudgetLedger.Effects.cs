@@ -176,7 +176,34 @@ internal sealed partial class GuildBudgetLedger
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) effects.Add(ParseEffect(reader));
         }
 
-        if (effects.Count == 0) return new Error(ErrorCodes.Guild.ReconciliationRequired, "No qualified physical effect was prepared for this dispatch.");
+        if (effects.Count == 0)
+        {
+            // A continuation advances the same peer task and cumulative source. Its new dispatch
+            // journal is the one-send authority; the open source is neither duplicated nor reset.
+            await using SqliteCommand remote = Command(connection, transaction, EffectColumns + """
+                 WHERE EffectId=$quest AND QuestId=$quest AND KindCode=$external AND SourceId=$quest AND StateCode=1
+                   AND EXISTS(SELECT 1 FROM guild_remote_effects r JOIN guild_dispatches original ON original.DispatchId=r.DispatchId
+                       WHERE r.EffectId=guild_budget_effects.EffectId AND r.QuestId=$quest AND r.SettledAtUtc IS NULL
+                         AND original.EvidenceCode=3 AND original.RemoteTaskId IS NOT NULL)
+                   AND EXISTS(SELECT 1 FROM guild_dispatches d JOIN guild_continuations c ON c.ContinuationId=d.DispatchId
+                       WHERE d.DispatchId=$dispatch AND d.QuestId=$quest AND c.QuestId=$quest AND d.IsContinuation=1
+                         AND d.EvidenceCode=1 AND d.AccountingAssociationId=$association)
+                   AND EXISTS(SELECT 1 FROM guild_budget_evidence e WHERE e.EffectId=guild_budget_effects.EffectId
+                       AND e.AppliedRevision=guild_budget_effects.Revision AND e.Complete=0 AND e.NoDispatchProven=0)
+                """);
+
+            Add(remote, "$quest", Id(questId));
+            Add(remote, "$dispatch", Id(dispatchId));
+            Add(remote, "$association", Id(accountingAssociationId));
+            Add(remote, "$external", (int)GuildBudgetEffectKind.External);
+
+            await using SqliteDataReader reader = await remote.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) effects.Add(ParseEffect(reader));
+
+            if (effects.Count != 1 || daily?.RequiresReservation == true)
+                return new Error(ErrorCodes.Guild.ReconciliationRequired, "No qualified physical effect was prepared for this dispatch.");
+        }
 
         foreach (GuildBudgetEffect effect in effects)
         {

@@ -82,7 +82,7 @@ internal static class A2AServerEndpoints
 
         A2AServer server = ((IEndpointRouteBuilder)apiGroup).ServiceProvider.GetRequiredService<A2AServer>();
 
-        apiGroup.MapA2A(server, relative).WithMetadata(GrimoireStreamRouteMetadata.BillableDrain);
+        apiGroup.MapA2A(server, relative).WithMetadata(GrimoireStreamRouteMetadata.BillableDrain, new A2APeerRouteMetadata(false));
 
         // The A2A SDK's own JsonSerializerOptions already carries a source-generated resolver for AgentCard
         // (A2AJsonUtilities); extracting a concrete JsonTypeInfo<AgentCard> from it keeps this endpoint fully
@@ -97,7 +97,8 @@ internal static class A2AServerEndpoints
 
                 return Results.Json(card, agentCardTypeInfo);
             })
-        .WithName("GetArcanumAgentCard");
+        .WithName("GetArcanumAgentCard")
+        .WithMetadata(new A2APeerRouteMetadata(true));
 
         return apiGroup;
     }
@@ -113,10 +114,9 @@ internal static class A2AServerEndpoints
         return new AgentCard
         {
             Name = string.IsNullOrWhiteSpace(a2a.AgentCardName) ? "Arcanum" : a2a.AgentCardName,
-            Description = settings.Features.Guild ? "Remote Guild execution is unavailable on this host."
-                : string.IsNullOrWhiteSpace(a2a.AgentCardDescription)
-                ? "Arcanum: an autonomous Apprentice orchestration engine, exposed here via the A2A protocol. Sending a message spawns a headless Apprentice that plans and executes the delegated goal inside a sandboxed workspace."
-                : a2a.AgentCardDescription,
+            Description = !string.IsNullOrWhiteSpace(a2a.AgentCardDescription) ? a2a.AgentCardDescription
+                : settings.Features.Guild ? "Arcanum executes delegated Guild Quests within an operator-declared peer grant."
+                : "Arcanum: an autonomous Apprentice orchestration engine, exposed here via the A2A protocol. Sending a message spawns a headless Apprentice that plans and executes the delegated goal inside a sandboxed workspace.",
             Version = version,
             SupportedInterfaces =
             [
@@ -129,16 +129,16 @@ internal static class A2AServerEndpoints
             ],
             Capabilities = new AgentCapabilities
             {
-                Streaming = !settings.Features.Guild,
+                Streaming = true,
 
                 // Advertised only when the surface is genuinely enabled: a card that promises push
                 // notifications an operator never turned on is a peer waiting forever (issue #67).
-                PushNotifications = !settings.Features.Guild && a2a.PushNotificationsEnabled,
+                PushNotifications = a2a.PushNotificationsEnabled,
             },
             // Operator-declared when configured, otherwise the single historical skill and text/plain in
             // and out — so a default card stays byte-identical to the pre-#63 one and existing peers are
             // unaffected.
-            Skills = settings.Features.Guild ? [] : [.. A2AAgentCardPolicy.ResolveSkills(a2a)],
+            Skills = [.. A2AAgentCardPolicy.ResolveSkills(a2a)],
             DefaultInputModes = [.. A2AAgentCardPolicy.ResolveInputModes(a2a)],
             DefaultOutputModes = [.. A2AAgentCardPolicy.ResolveOutputModes(a2a)],
             SecuritySchemes = new Dictionary<string, SecurityScheme>

@@ -710,6 +710,63 @@ class Reach:
         )
 
 
+@dataclasses.dataclass(frozen=True)
+class LeaseHandoffReach(Reach):
+    """One exact old row retained under the newly declared cancellation handoff root."""
+
+    reviewed_row: Row
+
+    def covers(self, row: Row, side: str) -> bool:
+        return side == self.side and row == self.reviewed_row
+
+
+GUILD_CANCELLATION_CALLER = "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalQuestScheduler.cs"
+
+GUILD_CANCELLATION_CATALOG = "tests/RetroDownfall.Arcanum.Tests/Support/HostedGrimoireProducerInventory.cs"
+
+GUILD_CANCELLATION_OLD_CALL = "await DrainCancellationAsync(scope.ServiceProvider, caller.Value, questId, ct).ConfigureAwait(false);"
+
+GUILD_CANCELLATION_NEW_CALL = "await DrainCancellationAsync(work, scope.ServiceProvider, caller.Value, questId, ct).ConfigureAwait(false);"
+
+GUILD_CANCELLATION_DECLARATION = '''Handoff(Operation("Guild", "GuildLocalQuestScheduler", "DrainCancellationAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
+                GrimoireWorkKind.GuildStorage), "work")'''
+
+
+def cancellation_handoff_retains(row: Row, sources: SourceTexts, regenerated: Manifest | None) -> bool:
+    """Require the causal source transition and its exact retained authorization read, not just a vanished call."""
+    if regenerated is None:
+        return False
+
+    retained = row._replace(authority_operation_id="RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.DrainCancellationAsync")
+
+    if regenerated.counter[retained] != 1:
+        return False
+
+    base, head = sources.base(GUILD_CANCELLATION_CALLER), sources.head(GUILD_CANCELLATION_CALLER)
+
+    old_catalog, new_catalog = sources.base(GUILD_CANCELLATION_CATALOG), sources.head(GUILD_CANCELLATION_CATALOG)
+
+    if not all((base, head, old_catalog, new_catalog)):
+        return False
+
+    old_body = "\n".join(member_bodies(base, "RequestDisabledCancellationAsync"))
+
+    new_body = "\n".join(member_bodies(head, "RequestDisabledCancellationAsync"))
+
+    old_signature = "DrainCancellationAsync(IServiceProvider services, GuildCallerContext caller, Guid questId, CancellationToken ct)"
+
+    new_signature = "DrainCancellationAsync(IGrimoireWorkLease work, IServiceProvider services, GuildCallerContext caller, Guid questId, CancellationToken ct)"
+
+    target = "\n".join(member_bodies(head, "DrainCancellationAsync"))
+
+    return (GUILD_CANCELLATION_OLD_CALL in old_body and GUILD_CANCELLATION_OLD_CALL not in new_body
+        and GUILD_CANCELLATION_NEW_CALL in new_body and GUILD_CANCELLATION_NEW_CALL not in old_body
+        and old_signature in base and old_signature not in head and new_signature in head and new_signature not in base
+        and "work.MaintenanceRevocation.ThrowIfCancellationRequested();" in target
+        and "await policy.CreateRecoveryAsync(caller, quest.Id, operationId, quest.SignetRevision, ct)" in target
+        and GUILD_CANCELLATION_DECLARATION in new_catalog and GUILD_CANCELLATION_DECLARATION not in old_catalog)
+
+
 ATTESTED_APPLY_ROOT_TYPE = "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService"
 
 ATTESTED_APPLY_ROOT = ATTESTED_APPLY_ROOT_TYPE + ".ApplyFullUnderMaintenanceLockAsync"
@@ -913,7 +970,69 @@ GUILD_HOST_IDENTITY_REACHES = tuple(
 )
 
 
+# ExecuteAsync formerly traversed disabled cancellation inline. The new work argument and catalog handoff re-root that
+# awaited call under DrainCancellationAsync. CreateRecoveryAsync still reaches these unchanged authorization reads on the
+# unchanged policy Work. Only the three exact old rows qualify, and each needs its exact retained row under the new root.
+GUILD_CANCELLATION_HANDOFF_REACHES = tuple(
+    LeaseHandoffReach(
+        row.root_type, row.authority_operation_id, row.source_path, row.member, row.callee, "-",
+        GUILD_CANCELLATION_CALLER, GUILD_CANCELLATION_OLD_CALL,
+        "the disabled cancellation call now carries its Work into the declared DrainCancellationAsync lease-handoff root; "
+        "the exact CreateRecovery authorization read is retained there with the same policy Work and source identity",
+        row,
+    )
+    for row in (
+        Row(
+            'GuildLocalQuestScheduler',
+            'RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.ExecuteAsync',
+            'src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalHostPolicy.Canonical.cs',
+            'RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalHostPolicy',
+            'OperationMatchesAsync',
+            'M:RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalHostPolicy.OperationMatchesAsync(Microsoft.Data.Sqlite.SqliteConnection,Microsoft.Data.Sqlite.SqliteTransaction,System.Guid,System.Guid,System.Threading.CancellationToken)',
+            'DatabaseAccess',
+            'System.Data.Common.DbCommand.ExecuteScalarAsync',
+            '0',
+            '8FAA042C7137E09C06B26DD33746F64FF464D3DDBF792DAACA4FAA7FAD12B6F2',
+            '9BF6CCE78957077CC7AFED66E4DB844AFF6A1499F1D7D479BCF170A9171BA53C',
+            '-',
+            '-',
+        ),
+        Row(
+            'GuildLocalQuestScheduler',
+            'RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.ExecuteAsync',
+            'src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetStore.cs',
+            'RetroDownfall.Arcanum.Infrastructure.Guild.GuildSignetStore',
+            'ReadAsync',
+            'M:RetroDownfall.Arcanum.Infrastructure.Guild.GuildSignetStore.ReadAsync(Microsoft.Data.Sqlite.SqliteConnection,Microsoft.Data.Sqlite.SqliteTransaction,System.Guid,System.Boolean,System.Threading.CancellationToken)',
+            'DatabaseAccess',
+            'Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync',
+            '0',
+            '885CC089D5C8A0D70513D923924F72E692666546DE423395648201E632DF6912',
+            '9BF6CCE78957077CC7AFED66E4DB844AFF6A1499F1D7D479BCF170A9171BA53C',
+            '-',
+            '-',
+        ),
+        Row(
+            'GuildLocalQuestScheduler',
+            'RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.ExecuteAsync',
+            'src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetStore.cs',
+            'RetroDownfall.Arcanum.Infrastructure.Guild.GuildSignetStore',
+            'ReadAsync',
+            'M:RetroDownfall.Arcanum.Infrastructure.Guild.GuildSignetStore.ReadAsync(Microsoft.Data.Sqlite.SqliteConnection,Microsoft.Data.Sqlite.SqliteTransaction,System.Guid,System.Boolean,System.Threading.CancellationToken)',
+            'DatabaseAccess',
+            'System.Data.Common.DbDataReader.ReadAsync',
+            '0',
+            '3B2939BA3EA89FCFE52B2D385C8FBA1ACAEB53B8728660D32646CDAFF49D1F39',
+            '9BF6CCE78957077CC7AFED66E4DB844AFF6A1499F1D7D479BCF170A9171BA53C',
+            '-',
+            '-',
+        ),
+    )
+)
+
+
 REACHED_THROUGH = (
+    *GUILD_CANCELLATION_HANDOFF_REACHES,
     *GUILD_MEMORY_READ_REACHES,
     *APPRENTICE_GUILD_OWNERSHIP_REACHES,
     *GUILD_HOST_IDENTITY_REACHES,
@@ -1282,7 +1401,8 @@ REACHED_THROUGH = (
 )
 
 
-def prove_reach(row: Row, side: str, edited: frozenset[str], sources: SourceTexts | None) -> tuple[Reach | None, str]:
+def prove_reach(row: Row, side: str, edited: frozenset[str], sources: SourceTexts | None,
+    regenerated: Manifest | None = None) -> tuple[Reach | None, str]:
     """The entry that explains the row as class r, or None and why not."""
     candidates = [entry for entry in REACHED_THROUGH if entry.covers(row, side)]
 
@@ -1297,6 +1417,11 @@ def prove_reach(row: Row, side: str, edited: frozenset[str], sources: SourceText
     for entry in candidates:
         if entry.caller not in edited:
             problems.append(f"{entry.caller} is not an edited source")
+
+            continue
+
+        if isinstance(entry, LeaseHandoffReach) and not cancellation_handoff_retains(row, sources, regenerated):
+            problems.append("the exact cancellation lease-handoff transition and retained authorization read are required")
 
             continue
 
@@ -1454,7 +1579,7 @@ def classify(
             elif reference_edit:
                 labelled.append(Labelled(side, row, "b", stage=stage))
             else:
-                reach, why = prove_reach(row, side, edited, sources)
+                reach, why = prove_reach(row, side, edited, sources, regenerated)
 
                 labelled.append(
                     Labelled(side, row, "r", stage=stage, detail=why)
@@ -1574,6 +1699,18 @@ NEW_ROOTS = (
     ),
     NewRoot(
         "GuildLocalQuestScheduler",
+        "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.RunRemoteAdmittedAsync",
+        "the remote dispatch handoff receives the scheduler's retained GuildStorage lease, awaits the physical A2A lifecycle, "
+        "and joins its lease renewal before releasing admission",
+    ),
+    NewRoot(
+        "GuildLocalQuestScheduler",
+        "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.DrainCancellationAsync",
+        "the cancellation handoff receives the scheduler's retained GuildStorage lease and awaits exact local or remote stop "
+        "evidence while preserving uncertain dispatch and accounting obligations",
+    ),
+    NewRoot(
+        "GuildLocalQuestScheduler",
         "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.RunCommittedAsync",
         "one tracked committed Quest dispatch acquires GuildStorage admission and awaits the declared admitted dispatch handoff",
     ),
@@ -1586,6 +1723,21 @@ NEW_ROOTS = (
         "GuildLocalQuestScheduler",
         "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.StartAsync",
         "host startup awaits the physical fence and local-adapter readiness inventory before the scheduler producer starts",
+    ),
+    NewRoot(
+        "GuildInboundPeerReloadService",
+        "RetroDownfall.Arcanum.Infrastructure.Guild.GuildInboundPeerReloadService.StartAsync",
+        "host startup awaits durable peer epoch reconciliation before inbound peer work can be admitted",
+    ),
+    NewRoot(
+        "GuildInboundPeerReloadService",
+        "RetroDownfall.Arcanum.Infrastructure.Guild.GuildInboundPeerReloadService.ExecuteAsync",
+        "the tracked reload worker reconciles peer revocation under its own GuildStorage admission",
+    ),
+    NewRoot(
+        "GuildInboundPeerReloadService",
+        "RetroDownfall.Arcanum.Infrastructure.Guild.GuildInboundPeerReloadService.OnChanged",
+        "the tracked configuration callback reconciles durable peer denial under GuildStorage admission before publishing authority",
     ),
 )
 

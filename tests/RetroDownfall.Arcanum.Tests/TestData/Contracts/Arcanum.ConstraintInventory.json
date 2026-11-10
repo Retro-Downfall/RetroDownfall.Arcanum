@@ -10173,6 +10173,36 @@
       "tests": [
         "GuildRemoteCardReaderTests"
       ]
+    },
+    {
+      "id": "setting.integrations-a2a-inbound-peer-grant-budgets",
+      "subsystem": "Guild authority",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Core/Configuration/A2AInboundPeerSettings.cs#GuildGrantSettings.ToGrant",
+        "src/RetroDownfall.Arcanum.Core/Guild/GuildGrantPolicy.cs#Validate"
+      ],
+      "coveredSymbols": [
+        "ArcanumSettings.integrations.a2A.inboundPeers[].grant.budget.usd.value",
+        "ArcanumSettings.integrations.a2A.inboundPeers[].grant.budget.tokens.value"
+      ],
+      "symbolValues": {
+        "ArcanumSettings.integrations.a2A.inboundPeers[].grant.budget.usd.value": "Explicit nonnegative finite amount, or null with explicit unlimited mode; no default or clamping",
+        "ArcanumSettings.integrations.a2A.inboundPeers[].grant.budget.tokens.value": "Explicit nonnegative finite amount, or null with explicit unlimited mode; no default or clamping"
+      },
+      "currentValue": "Explicit nonnegative finite USD/token amounts or explicitly unlimited dimensions",
+      "owner": "operator grant",
+      "enforcementPoint": "GuildGrantSettings.ToGrant and GuildGrantPolicy.Validate",
+      "userVisibleBehavior": "Incomplete, negative, unknown or inconsistent budget dimensions refuse peer validation; exact decimals and integers are retained.",
+      "originalRationale": "A standing peer grant must carry explicit spending authority without ambient defaults or silent widening.",
+      "threatOrFailureModel": "Missing axes, invalid modes, precision loss or clamping could authorize unintended spend.",
+      "classification": "Required security boundary",
+      "action": "retain",
+      "replacementOrContinuation": "Author both complete budget dimensions and let qualified runtime admission enforce their remaining authority.",
+      "tests": [
+        "A2AInboundPeerConfigurationTests",
+        "GuildGrantPolicyTests",
+        "GenericSettingsPreservationTests.Inbound_peer_collection_templates_preserve_complete_grants_and_credential_references"
+      ]
     }
   ]
 }

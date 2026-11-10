@@ -8,9 +8,11 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 
 namespace RetroDownfall.Arcanum.Api.A2A;
 
@@ -76,7 +78,7 @@ internal static class A2ACallbackEndpoints
         return app;
     }
 
-    private static async Task<IResult> HandleAsync(
+    internal static async Task<IResult> HandleAsync(
         string configId,
         A2ASendingCallbackRegistry callbacks,
         IOptionsMonitor<ArcanumSettings> settings,
@@ -93,6 +95,30 @@ internal static class A2ACallbackEndpoints
         }
 
         string token = context.Request.Headers[A2APushNotificationHeaders.NotificationToken].ToString();
+
+        // A process-local waiter is only a wake-up hint. The durable Guild binding must admit and
+        // commit the notification before either that waiter or the remote sender receives an ack.
+        await using (AsyncServiceScope scope = scopeFactory.CreateAsyncScope())
+        {
+            if (scope.ServiceProvider.GetService<GuildRemoteCallbackReceiver>() is { } receiver)
+            {
+                Result<bool> received = await receiver.AcceptAsync(configId, token, cancellationToken).ConfigureAwait(false);
+
+                if (received.IsFailure)
+                {
+                    return received.Error.Code is ErrorCodes.Guild.Unavailable or ErrorCodes.Grimoire.MaintenanceUnavailable
+                        ? Results.StatusCode(StatusCodes.Status503ServiceUnavailable)
+                        : Results.NotFound();
+                }
+
+                if (received.Value)
+                {
+                    callbacks.TrySignal(configId, token);
+
+                    return Results.Accepted();
+                }
+            }
+        }
 
         switch (callbacks.TrySignal(configId, token))
         {

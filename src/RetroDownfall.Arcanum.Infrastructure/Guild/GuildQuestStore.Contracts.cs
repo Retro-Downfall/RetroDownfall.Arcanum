@@ -12,7 +12,7 @@ internal sealed record GuildQuestProposal(Guid QuestId, Guid RunId, Guid Session
 
 internal sealed record GuildQuestAdmissionPlan(GuildAdmissionContext Admission, GuildGrant Grant,
     GuildSignetOwnerBinding Owners, Guid OriginPrincipalId, GuildStoredAgentCardPayload? GeneratedCard,
-    ArtifactSensitivityLabel? SourceLabel = null, IDisposable? Lifetime = null);
+    ArtifactSensitivityLabel? SourceLabel = null, IDisposable? Lifetime = null, GuildRemoteTransportDescriptor? RemoteTransport = null);
 
 /// <summary>Authentication/visibility and immutable policy facts come from host composition, never serialized claims.</summary>
 internal interface IGuildQuestHostPolicy
@@ -47,7 +47,7 @@ internal sealed record GuildQuestDriver(GuildExecutionHandle Execution, string L
     GuildCallerContext? Caller = null);
 
 internal sealed record GuildQuestResult(GuildResultReceipt Receipt, byte[]? Body,
-    ArtifactSensitivityLabel? SourceLabel = null, bool NoDispatchProven = false, bool WorkStoppedProven = false);
+    ArtifactSensitivityLabel? SourceLabel = null, bool NoDispatchProven = false, bool WorkStoppedProven = false, GuildRemoteResultEvidence? RemoteEvidence = null);
 
 internal sealed record GuildQuestDispatchRecord(Guid DispatchId, Guid QuestId, string InvocationDigest,
     Guid AccountingAssociationId, bool IsContinuation, GuildDispatchEvidence Evidence, Guid? LocalChildId,

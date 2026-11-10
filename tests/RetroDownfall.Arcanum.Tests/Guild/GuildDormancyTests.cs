@@ -15,7 +15,7 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 public sealed class GuildDormancyTests
 {
     [Fact]
-    public void Local_execution_ports_are_registered_while_remote_and_roster_ports_remain_unavailable()
+    public void Guild_execution_ports_are_registered_while_general_roster_management_remains_unavailable()
     {
         var assemblies = new[]
         {
@@ -36,7 +36,7 @@ public sealed class GuildDormancyTests
 
         var implementations = concreteTypes.Where(type => ports.Any(port => port.IsAssignableFrom(type))).ToArray();
 
-        Assert.Equal(new[] { typeof(ConclaveArchmage), typeof(GuildLocalPort), typeof(GuildQuestStore), typeof(GuildRoster), typeof(GuildWorkspaceLeaseBroker), typeof(SignetAuthority) }.OrderBy(type => type.FullName),
+        Assert.Equal(new[] { typeof(ConclaveArchmage), typeof(GuildLocalPort), typeof(GuildRemotePort), typeof(GuildPortRouter), typeof(GuildQuestStore), typeof(GuildRoster), typeof(GuildWorkspaceLeaseBroker), typeof(SignetAuthority) }.OrderBy(type => type.FullName),
             implementations.OrderBy(type => type.FullName));
 
         ServiceCollection services = new();
@@ -52,10 +52,11 @@ public sealed class GuildDormancyTests
     }
 
     [Fact]
-    public void Native_HTTP_records_are_generated_without_registering_host_authority_or_remote_surfaces()
+    public void Native_HTTP_and_peer_configuration_records_do_not_register_host_authority()
     {
         Type[] native = [typeof(GuildIssueRootRequest), typeof(GuildCancelQuestRequest), typeof(GuildContinueRequest),
-            typeof(GuildQuestDto), typeof(GuildQuestInputDto), typeof(GuildStatusDto), typeof(GuildCancellationDto), typeof(GuildResultReceipt), typeof(GuildContentDto)];
+            typeof(GuildQuestDto), typeof(GuildQuestInputDto), typeof(GuildStatusDto), typeof(GuildCancellationDto), typeof(GuildResultReceipt), typeof(GuildContentDto),
+            typeof(GuildResolveRemoteAgentRequest), typeof(GuildAgentCard), typeof(GuildRemoteInvocationOptions)];
 
         Assert.All(native, type => Assert.NotNull(ArcanumJsonContext.Default.GetTypeInfo(type)));
 
@@ -64,10 +65,14 @@ public sealed class GuildDormancyTests
 
         Assert.All(privateAuthority, type => Assert.Null(ArcanumJsonContext.Default.GetTypeInfo(type)));
 
+        Type[] configuredEnums = [typeof(GuildWorkspaceAccess), typeof(GuildToolSourceKind), typeof(GuildMemoryStore),
+            typeof(GuildMemoryOperation), typeof(GuildMemoryScopeKind), typeof(GuildBudgetMode), typeof(GuildDelegationKind)];
+
         foreach (var type in typeof(IGuildPort).Assembly.GetExportedTypes().Where(type =>
             type.Namespace == typeof(IGuildPort).Namespace && !type.ContainsGenericParameters))
         {
-            Assert.Null(ConfigurationJsonContext.Default.GetTypeInfo(type));
+            if (configuredEnums.Contains(type)) Assert.NotNull(ConfigurationJsonContext.Default.GetTypeInfo(type));
+            else Assert.Null(ConfigurationJsonContext.Default.GetTypeInfo(type));
         }
     }
 

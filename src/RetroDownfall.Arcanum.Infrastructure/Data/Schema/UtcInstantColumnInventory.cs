@@ -27,6 +27,8 @@ internal static class UtcInstantColumnInventory
         new("guild_result_inputs", ["CreatedAtUtc"]),
         new("guild_quest_start_intents", ["CreatedAtUtc"]),
         new("guild_continuations", ["CreatedAtUtc"]),
+        new("guild_remote_effects", ["SettledAtUtc"]),
+        new("guild_remote_callbacks", ["CallbackReceivedAtUtc"]),
         new("guild_envelopes", ["CreatedAtUtc"]),
         new("guild_inbox", ["CreatedAtUtc","AcknowledgedAtUtc"]),
         new("guild_portal_receipts", ["CreatedAtUtc"]),

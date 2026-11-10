@@ -12,6 +12,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 /// </summary>
 internal sealed partial class GuildBudgetLedger(BudgetReservationService? daily = null) : IGuildQuestAllocationParticipant
 {
+    internal bool RequiresDailyReservation => daily?.RequiresReservation == true;
+
     public async Task<Result<Guid>> AllocateAsync(SqliteConnection connection, SqliteTransaction transaction, Guid questId,
         Guid? parentAccountId, GuildGrant grant, CancellationToken cancellationToken)
     {

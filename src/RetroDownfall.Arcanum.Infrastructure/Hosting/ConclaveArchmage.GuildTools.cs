@@ -18,6 +18,9 @@ internal sealed partial class ConclaveArchmage : IGuildLocalChildToolDispatcher
             || call.Kind == GuildLocalChildToolKind.CastSending && !settings.CurrentValue.Features.Conclave)
             return UnavailableGuild();
 
+        if (call.Kind is GuildLocalChildToolKind.DispatchSending or GuildLocalChildToolKind.ContinueSending)
+            return await DispatchRemoteToolAsync(call, cancellationToken).ConfigureAwait(false);
+
         Result<GuildIssueChildRequest> request = ChildToolRequest(call);
 
         if (request.IsFailure) return request.Error;

@@ -76,6 +76,8 @@ internal sealed partial class GuildQuestStore
         authority.InQuestTransactionAsync<GuildLocalAcceptedContinuation?>(driver.Execution.RootQuestId,
             async (connection, transaction, signets, token) =>
             {
+                if (materialize && driver.Caller?.Kind == GuildCallerKind.HostReceipt) return ClosedDispatch;
+
                 var admitted = await RequireDriverWithinAsync(connection, transaction, signets, driver, false, true, token).ConfigureAwait(false);
 
                 if (admitted.IsFailure) return admitted.Error;

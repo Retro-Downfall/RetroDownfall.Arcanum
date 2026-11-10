@@ -355,85 +355,60 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
             return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(unlocked.Error);
         }
 
-        Result<GrimoireOfflineTransitionTerminalSuffixOutcome> terminal;
+        Result<LongRunningRecoveryOwnerEvidence> prepared;
 
-        try
+        await using (GrimoireRecoveryUnlockedCatalog catalog = unlocked.Value)
         {
-            terminal = await _terminalSuffix.FinishAsync(
+            Result<GrimoireOfflineTransitionTerminalSuffixOutcome> terminal = await _terminalSuffix.FinishAsync(
                 heldInstallationLock,
                 guardedDirectory,
-                unlocked.Value.Connection,
+                catalog.Connection,
                 journal,
                 cancellationToken).ConfigureAwait(false);
-        }
-        catch
-        {
-            await unlocked.Value.DisposeAsync().ConfigureAwait(false);
 
-            throw;
-        }
+            if (terminal.IsFailure)
+            {
+                return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(
+                    RefusalUnlessOutage(terminal.Error));
+            }
 
-        if (terminal.IsFailure)
-        {
-            await unlocked.Value.DisposeAsync().ConfigureAwait(false);
+            if (terminal.Value is GrimoireOfflineTransitionTerminalSuffixOutcome.Completed)
+            {
+                return GrimoireOfflineTransitionStartupRecoveryOutcome.Resumed;
+            }
 
-            return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(
-                RefusalUnlessOutage(terminal.Error));
-        }
+            if (marker.IsFailure)
+            {
+                return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(
+                    RefusalUnlessOutage(marker.Error));
+            }
 
-        if (terminal.Value is GrimoireOfflineTransitionTerminalSuffixOutcome.Completed)
-        {
-            await unlocked.Value.DisposeAsync().ConfigureAwait(false);
-
-            return GrimoireOfflineTransitionStartupRecoveryOutcome.Resumed;
-        }
-
-        if (marker.IsFailure)
-        {
-            await unlocked.Value.DisposeAsync().ConfigureAwait(false);
-
-            return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(
-                RefusalUnlessOutage(marker.Error));
-        }
-
-        Result<IHostProcessToolsRuntimePolicy> provisionalHostTools;
-
-        try
-        {
-            provisionalHostTools = await _hostTools
+            Result<IHostProcessToolsRuntimePolicy> provisionalHostTools = await _hostTools
                 .ClassifyAsync(
-                    unlocked.Value.Connection,
+                    catalog.Connection,
                     journal.InstallationId,
                     marker.Value,
                     cancellationToken)
                 .ConfigureAwait(false);
-        }
-        catch
-        {
-            await unlocked.Value.DisposeAsync().ConfigureAwait(false);
 
-            throw;
-        }
+            if (provisionalHostTools.IsFailure)
+            {
+                return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(
+                    RefusalUnlessOutage(provisionalHostTools.Error));
+            }
 
-        if (provisionalHostTools.IsFailure)
-        {
-            await unlocked.Value.DisposeAsync().ConfigureAwait(false);
+            prepared = await PrepareAsync(
+                heldInstallationLock,
+                guardedDirectory,
+                journal,
+                catalog,
+                provisionalHostTools.Value,
+                cancellationToken).ConfigureAwait(false);
 
-            return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(
-                RefusalUnlessOutage(provisionalHostTools.Error));
-        }
-
-        Result<LongRunningRecoveryOwnerEvidence> prepared = await PrepareAsync(
-            heldInstallationLock,
-            guardedDirectory,
-            journal,
-            unlocked.Value,
-            provisionalHostTools.Value,
-            cancellationToken).ConfigureAwait(false);
-
-        if (prepared.IsFailure)
-        {
-            return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(prepared.Error);
+            if (prepared.IsFailure)
+            {
+                return Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(prepared.Error);
+            }
         }
 
         // Physically gone before the handler enters its own maintenance lane. The handler closes the
@@ -459,12 +434,11 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
     }
 
     /// <summary>
-    /// Loads and spends the authority handoff, and closes the probe on every way out.
+    /// Loads and spends the authority handoff within the caller's probe lifetime.
     /// </summary>
     /// <remarks>
-    /// A separate method so the probe's lifetime is a scope rather than a thing each exit has to
-    /// remember. Both of the failing exits below leave the catalog exactly as they found it, which is
-    /// the property that lets a refused start be retried.
+    /// The caller closes the probe on every return or throw before dispatch enters its own lane.
+    /// Both failing exits leave the catalog exactly as they found it, so a refused start can retry.
     /// </remarks>
     private async Task<Result<LongRunningRecoveryOwnerEvidence>> PrepareAsync(
         ArcanumMaintenanceLock heldInstallationLock,
@@ -474,13 +448,11 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
         IHostProcessToolsRuntimePolicy provisionalHostToolsPolicy,
         CancellationToken cancellationToken)
     {
-        await using GrimoireRecoveryUnlockedCatalog owned = catalog;
-
         Result<ICovenantClosedRecoveryHandoff> handoff = await _authority
             .LoadAsync(
                 heldInstallationLock,
                 guardedDirectory,
-                owned.Connection,
+                catalog.Connection,
                 journal,
                 provisionalHostToolsPolicy,
                 cancellationToken)
@@ -492,7 +464,7 @@ internal sealed class GrimoireOfflineTransitionStartupRecovery(
         }
 
         Result consumed = await handoff.Value
-            .ConsumeAsync(heldInstallationLock, guardedDirectory, journal, owned.Connection,
+            .ConsumeAsync(heldInstallationLock, guardedDirectory, journal, catalog.Connection,
                 provisionalHostToolsPolicy, cancellationToken)
             .ConfigureAwait(false);
 

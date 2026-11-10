@@ -184,6 +184,9 @@ public sealed record A2AIntegrationSettings
 
     public string[] AllowedRemoteAgents { get; set; } = [];
 
+    /// <summary>Explicit authenticated inbound principals and standing grants. Disabled unless enabled per peer.</summary>
+    public A2AInboundPeerSettings[] InboundPeers { get; set; } = [];
+
     public string DefaultWorkspace { get; set; } = string.Empty;
 
     /// <summary>

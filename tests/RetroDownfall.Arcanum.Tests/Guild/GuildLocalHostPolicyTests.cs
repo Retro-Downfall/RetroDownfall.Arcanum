@@ -327,11 +327,21 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal readonly GrimoireConnectionAdmissionGate Gate = new(TimeProvider.System);
 
-        internal readonly MutableTestOptionsMonitor<ArcanumSettings> Settings = new(new() { Features = new() { Guild = true } });
+        internal readonly InboundOptionsMonitor Settings = new(new() { Features = new() { Guild = true } });
 
         internal readonly PhysicalCampaignRootOpener Opener = new(new KeySource());
 
         internal readonly FixtureOrdinaryConnectionFactory Connections;
+
+        internal readonly GuildInboundPeerRegistry? InboundPeers;
+
+        internal readonly GuildInboundPeerDenialJournal? DenialJournal;
+
+        internal string DenialPath => Path.Combine(WorkspaceRoot, "peer-denials");
+
+        internal const string PeerCredential = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+        internal string PeerCredentialValue { get; set; } = PeerCredential;
 
         internal readonly GuildLocalHostPolicy Policy;
 
@@ -343,11 +353,35 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal readonly GuildIssueRootRequest Request = new(Guid.NewGuid(), null, "Local", "Compute a result", new([], [], [], new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited)), [GuildDelegationKind.Local], null));
 
-        private Fixture(EvolutionScratchDatabase file, bool localExecution, bool productionOptions)
+        private Fixture(EvolutionScratchDatabase file, bool localExecution, bool productionOptions, bool inboundPeers, bool denialJournal, bool unsafeJournal)
         {
             _file = file;
 
             Connections = new(file.ConnectionString);
+
+            if (denialJournal)
+            {
+                if (unsafeJournal) File.WriteAllText(DenialPath, "operator bytes");
+
+                DenialJournal = new(DenialPath, Gate);
+            }
+
+            if (inboundPeers)
+            {
+                Settings.CurrentValue.Integrations.A2A.InboundPeers = [new()
+                {
+                    PeerId = "alpha", Enabled = true, CredentialEnvironmentVariable = "INBOUND_ALPHA", CampaignId = null,
+                    Grant = new() { Workspaces = [], Tools = [], Memory = [], Budget = new()
+                        { Usd = new() { Mode = GuildBudgetMode.Unlimited }, Tokens = new() { Mode = GuildBudgetMode.Unlimited } },
+                        Delegation = [GuildDelegationKind.Local], ExpiresAtUtc = null }
+                }];
+
+                var cache = new RetroDownfall.Arcanum.Infrastructure.Security.ApiKeyDigestCache(TimeProvider.System);
+
+                cache.StoreDigest(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes("master-test-key")), 300);
+
+                InboundPeers = new(Settings, cache, _ => PeerCredentialValue, DenialJournal);
+            }
 
             Policy = NewPolicy();
 
@@ -367,17 +401,19 @@ public sealed partial class GuildLocalHostPolicyTests
                     "accepted-provider", "accepted-model", [], null)));
         }
 
-        internal GuildLocalHostPolicy NewPolicy() => new(Connections, Gate, Settings, Opener, TimeProvider.System);
+        internal GuildLocalHostPolicy NewPolicy() => new(Connections, Gate, Settings, Opener, TimeProvider.System, InboundPeers);
 
-        internal static async Task<Fixture> CreateAsync(bool localExecution = false, bool productionOptions = false)
+        internal static async Task<Fixture> CreateAsync(bool localExecution = false, bool productionOptions = false, bool inboundPeers = false, bool denialJournal = false, bool unsafeJournal = false)
         {
             EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
             await using SqliteConnection connection = await file.OpenAsync(default);
 
-            _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, 768, default);
+            var installed = await GrimoireSchemaTestInstaller.InstallAsync(connection, 768, default);
 
-            Fixture f = new(file, localExecution, productionOptions);
+            Assert.True(installed.GuildCanonical.IsHealthy, installed.GuildCanonical.ToString());
+
+            Fixture f = new(file, localExecution, productionOptions, inboundPeers, denialJournal, unsafeJournal);
 
             await f.ExecuteAsync($"UPDATE covenant_authority_state SET InstallationIdentity='{f.Generation:D}' WHERE StateKey=1");
 
@@ -456,6 +492,10 @@ public sealed partial class GuildLocalHostPolicyTests
         public ValueTask DisposeAsync()
         {
             Authority.Dispose();
+
+            InboundPeers?.Dispose();
+
+            DenialJournal?.Dispose();
 
             _file.Dispose();
 

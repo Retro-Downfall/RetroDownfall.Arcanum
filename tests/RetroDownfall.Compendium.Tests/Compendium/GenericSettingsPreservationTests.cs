@@ -272,6 +272,106 @@ public sealed class GenericSettingsPreservationTests : IDisposable
     }
 
     [Fact]
+    public void Inbound_peer_collection_templates_preserve_complete_grants_and_credential_references()
+    {
+        const string json = """
+            {"integrations":{"a2A":{"inboundPeers":[{
+              "peerId":"configured-peer","enabled":true,"credentialEnvironmentVariable":"PRIVATE_PEER_TOKEN",
+              "campaignId":null,"grant":{"workspaces":[],"tools":[],"memory":[],
+              "budget":{"usd":{"mode":"finite","value":1.234567890123456789},"tokens":{"mode":"unlimited"}},
+              "delegation":["local"],"expiresAtUtc":null}}]}}}
+            """;
+
+        ArcanumSettings settings = JsonSerializer.Deserialize(json, ConfigurationJsonContext.Default.ArcanumSettings)!;
+
+        string[] keys =
+        [
+            "integrations.a2A.inboundPeers.peerId",
+            "integrations.a2A.inboundPeers.enabled",
+            "integrations.a2A.inboundPeers.credentialEnvironmentVariable",
+            "integrations.a2A.inboundPeers.campaignId",
+            "integrations.a2A.inboundPeers.sessionId",
+            "integrations.a2A.inboundPeers.workspaceId",
+            "integrations.a2A.inboundPeers.grant.workspaces.workspaceId",
+            "integrations.a2A.inboundPeers.grant.workspaces.relativeRoot",
+            "integrations.a2A.inboundPeers.grant.workspaces.access",
+            "integrations.a2A.inboundPeers.grant.tools.sourceKind",
+            "integrations.a2A.inboundPeers.grant.tools.sourceRegistrationId",
+            "integrations.a2A.inboundPeers.grant.tools.name",
+            "integrations.a2A.inboundPeers.grant.memory.store",
+            "integrations.a2A.inboundPeers.grant.memory.operation",
+            "integrations.a2A.inboundPeers.grant.memory.scope.kind",
+            "integrations.a2A.inboundPeers.grant.memory.scope.id",
+            "integrations.a2A.inboundPeers.grant.budget.usd.mode",
+            "integrations.a2A.inboundPeers.grant.budget.usd.value",
+            "integrations.a2A.inboundPeers.grant.budget.tokens.mode",
+            "integrations.a2A.inboundPeers.grant.budget.tokens.value",
+            "integrations.a2A.inboundPeers.grant.delegation",
+            "integrations.a2A.inboundPeers.grant.expiresAtUtc",
+        ];
+
+        List<GenericSettingFieldViewModel> fields = [];
+
+        foreach (string key in keys)
+        {
+            SettingDescriptor descriptor = Assert.IsType<SettingDescriptor>(SettingDescriptors.Find(key));
+
+            GenericSettingFieldViewModel field = new(descriptor, GenericSettingsUpdater.ReadValue(settings, key));
+
+            Assert.True(field.IsCollectionTemplate, key);
+
+            Assert.Equal("integrations.a2A.inboundPeers", field.CollectionTemplatePath);
+
+            if (descriptor.Kind is SettingKind.Float or SettingKind.Long)
+            {
+                field.NumericValue = 0;
+            }
+            else if (descriptor.Kind == SettingKind.Bool)
+            {
+                field.BoolValue = false;
+            }
+            else if (descriptor.Kind == SettingKind.Enum)
+            {
+                field.Value = field.EnumValues[0];
+            }
+            else
+            {
+                field.StringValue = "OVERRIDE";
+            }
+
+            Assert.False(field.HasError);
+
+            fields.Add(field);
+        }
+
+        GenericSettingFieldViewModel unrelated = new(
+            SettingDescriptors.Find("features.webBrowsing")!, settings.Features.WebBrowsing)
+        {
+            BoolValue = true,
+        };
+
+        fields.Add(unrelated);
+
+        ArcanumSettings updated = GenericSettingsUpdater.ApplyFields(settings, fields);
+
+        Assert.True(updated.Features.WebBrowsing);
+
+        A2AInboundPeerSettings peer = Assert.Single(updated.Integrations.A2A.InboundPeers);
+
+        Assert.Equal("configured-peer", peer.PeerId);
+
+        Assert.True(peer.Enabled);
+
+        Assert.Null(peer.CampaignId);
+
+        Assert.Equal("PRIVATE_PEER_TOKEN", peer.CredentialEnvironmentVariable);
+
+        Assert.Equal(1.234567890123456789m, peer.Grant!.Budget!.Usd!.Value);
+
+        Assert.True(new ConfigurationValidator().Validate(updated).IsSuccess);
+    }
+
+    [Fact]
 
     public void Advertised_a2a_skill_keys_are_collection_templates_and_never_overwrite_a_declared_skill()
     {

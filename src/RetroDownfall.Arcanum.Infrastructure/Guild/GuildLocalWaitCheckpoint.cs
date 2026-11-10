@@ -125,6 +125,9 @@ internal sealed partial class GuildQuestStore
     private static async Task<Result> RequireWaitFrontierWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         Guid questId, CancellationToken ct)
     {
+        if (await IsRemoteWithinAsync(connection, transaction, questId, ct).ConfigureAwait(false))
+            return await RequireRemoteWaitFrontierWithinAsync(connection, transaction, questId, ct).ConfigureAwait(false);
+
         await using SqliteCommand command = Command(connection, transaction, """
             SELECT EXISTS(SELECT 1 FROM guild_dispatches WHERE QuestId=$quest AND EvidenceCode=2)
                 OR EXISTS(SELECT 1 FROM guild_budget_effects effect WHERE effect.QuestId=$quest

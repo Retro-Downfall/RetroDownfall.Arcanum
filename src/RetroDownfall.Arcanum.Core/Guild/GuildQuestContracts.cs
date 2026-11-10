@@ -13,11 +13,11 @@ public sealed record GuildContentDto(GuildDataRef Reference, string Body);
 
 public sealed record GuildQuestInputDto(Guid QuestId, long Revision, GuildQuestInputEvidence AwaitingInput, string Question);
 
-public sealed record GuildIssueRootRequest(Guid IdempotencyKey, Guid? AgentId, string? Name, string Goal, GuildGrant Grant, Guid? SessionId = null, Guid? CampaignId = null, Guid? WorkspaceId = null, Guid? PredecessorQuestId = null);
+public sealed record GuildIssueRootRequest(Guid IdempotencyKey, Guid? AgentId, string? Name, string Goal, GuildGrant Grant, Guid? SessionId = null, Guid? CampaignId = null, Guid? WorkspaceId = null, Guid? PredecessorQuestId = null, GuildRemoteInvocationOptions? RemoteOptions = null);
 
 public sealed record GuildIssueChildData(Guid? AgentId, string? Name, string Goal, GuildRequestedGrant? RequestedGrant);
 
-public sealed record GuildIssueChildRequest(Guid IdempotencyKey, long ExpectedRevision, Guid? AgentId, string? Name, string Goal, GuildRequestedGrant? RequestedGrant);
+public sealed record GuildIssueChildRequest(Guid IdempotencyKey, long ExpectedRevision, Guid? AgentId, string? Name, string Goal, GuildRequestedGrant? RequestedGrant, GuildRemoteInvocationOptions? RemoteOptions = null);
 
 public sealed record GuildSendOperatorMessageRequest(Guid IdempotencyKey, long ExpectedRevision, GuildMessageKind Kind, string MimeType, string Body);
 

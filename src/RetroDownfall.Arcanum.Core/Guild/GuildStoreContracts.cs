@@ -104,7 +104,8 @@ public sealed record GuildContinueRequest(
     long ExpectedRevision,
     Guid ContinuationId,
     string MimeType,
-    string Body);
+    string Body,
+    GuildRemoteInvocationOptions? RemoteOptions = null);
 
 public sealed record GuildCircleInboxQuery(Guid RecipientQuestId, string? Cursor, int PageSize = 100);
 

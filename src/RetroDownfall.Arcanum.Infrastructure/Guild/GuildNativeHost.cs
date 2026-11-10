@@ -50,7 +50,7 @@ internal sealed class GuildNativeHost(GuildLocalHostPolicy policy, IGuildLocalHo
 
         bool schemaReady = installed && (await GuildStorageAvailability.CheckAsync(held.Connection, transaction, ct).ConfigureAwait(false)).IsSuccess;
 
-        bool available = GuildLocalExecutionAdmission.IsAvailable(settings.CurrentValue) && schemaReady
+        bool available = (GuildLocalExecutionAdmission.IsAvailable(settings.CurrentValue) || GuildRemotePort.IsAvailable(settings.CurrentValue)) && schemaReady
             && scheduler.IsAvailable && readiness.RequireExecutionReady().IsSuccess;
 
         return new GuildStatusDto(enabled, available, available || !enabled ? [] : [ErrorCodes.Guild.Unavailable],

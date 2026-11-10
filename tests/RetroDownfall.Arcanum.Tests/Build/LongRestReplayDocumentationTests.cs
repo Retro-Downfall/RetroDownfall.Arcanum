@@ -194,7 +194,7 @@ public sealed class LongRestReplayDocumentationTests
                 "the hosted-producer checker",
                 DocumentSection(
                     design,
-                    "**Authored hosted-producer inventory (28 services).**",
+                    "**Authored hosted-producer inventory.**",
                     "Closed-period ledger cleanup preserves")),
             (
                 "the testing contract (13.1)",

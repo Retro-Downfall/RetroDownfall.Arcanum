@@ -100,8 +100,15 @@ internal sealed partial class GuildQuestStore
 
         if (live.IsFailure) return live.Error;
 
-        if (!live.Value.Tools.Contains(tool) || !live.Value.Delegation.Contains(GuildDelegationKind.Local))
+        bool remoteTool = tool.Name is "dispatch_sending" or "continue_sending";
+
+        if (!live.Value.Tools.Contains(tool) || !live.Value.Delegation.Contains(remoteTool ? GuildDelegationKind.Remote : GuildDelegationKind.Local))
             return new Error(ErrorCodes.Guild.ToolNotGranted, "The exact local tool and delegation rights are not granted.");
+
+        if (remoteTool && (live.Value.Budget.Usd.Mode != GuildBudgetMode.Unlimited
+            || live.Value.Budget.Tokens.Mode != GuildBudgetMode.Unlimited
+            || allocations is GuildBudgetLedger { RequiresDailyReservation: true }))
+            return new Error(ErrorCodes.Guild.BudgetCapabilityUnavailable, "General A2A cannot enforce the active finite spending authority.");
 
         var current = await ReadDispatchWithinAsync(connection, transaction, execution.Dispatch.DispatchId, ct).ConfigureAwait(false);
 
@@ -135,7 +142,14 @@ internal sealed partial class GuildQuestStore
         var authorized = await RequireLocalToolWithinAsync(connection, transaction, signets, admission.Registry,
             admission.Tool, admission.Eligibility, ct).ConfigureAwait(false);
 
-        return authorized.IsFailure ? authorized.Error : Result.Success();
+        if (authorized.IsFailure) return authorized.Error;
+
+        if (admission.Kind == GuildLocalChildToolKind.DispatchSending
+            && (policy is not GuildLocalHostPolicy host
+                || !host.IsConfiguredRemoteDestination(admission.Arguments.GetProperty("agent_url").GetString()!)))
+            return new Error(ErrorCodes.Guild.DestinationChanged, "The Sending requires its current configured destination.");
+
+        return Result.Success();
     }
 
     private async Task<Result> ValidateToolChildWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
@@ -144,6 +158,13 @@ internal sealed partial class GuildQuestStore
         if (!admission.Registry.Owns(admission) || policy is not GuildLocalHostPolicy { IsExecutionEnabled: true }
             || RequireLocalExecutionReady().IsFailure)
             return GuildLocalToolRegistry.Unavailable;
+
+        if (admission.Kind == GuildLocalChildToolKind.DispatchSending)
+        {
+            var remote = await GuildRemoteExecutionStore.ReadRecoveryWithinAsync(connection, transaction, child.Quest.Id, ct).ConfigureAwait(false);
+
+            return remote.IsFailure ? remote.Error : Result.Success();
+        }
 
         // This check adopts an immutable child mode, never authorizes another execution. The
         // current parent and every owner/epoch/revocation check still apply after child completion.

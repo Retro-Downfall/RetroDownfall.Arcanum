@@ -13,6 +13,18 @@ internal static class GuildLocalServiceCollectionExtensions
 {
     internal static void AddGuildLocalExecution(this IServiceCollection services)
     {
+        services.AddSingleton(static sp => new GuildInboundPeerDenialJournal(
+            Path.Combine(ArcanumPaths.GrimoireDirectory, "guild-peer-denials"),
+            sp.GetRequiredService<IGrimoireConnectionAdmissionGate>()));
+
+        services.AddSingleton<GuildInboundRequestContext>();
+
+        services.AddScoped<GuildInboundHost>();
+
+        services.AddScoped<GuildConfiguredRemoteResolver>();
+
+        services.AddScoped<GuildRemoteCallbackReceiver>();
+
         services.AddSingleton<GuildLocalHostPolicy>();
 
         services.AddSingleton<IGuildQuestHostPolicy>(static sp => sp.GetRequiredService<GuildLocalHostPolicy>());
@@ -41,6 +53,8 @@ internal static class GuildLocalServiceCollectionExtensions
         // Install physical protection before any hosted component can start opaque process work.
         services.AddInstallationResetRecoveryAwareHostedService<GuildLocalHostReadiness>();
 
+        services.AddInstallationResetRecoveryAwareHostedService<GuildInboundPeerReloadService>();
+
         services.AddScoped(static sp => new GuildBudgetLedger(
             sp.GetRequiredService<IBudgetReservationService>() as BudgetReservationService
                 ?? throw new InvalidOperationException("Guild execution requires the physical daily budget participant.")));
@@ -57,7 +71,11 @@ internal static class GuildLocalServiceCollectionExtensions
 
         services.AddScoped<GuildLocalPort>();
 
-        services.AddScoped<IGuildPort>(static sp => sp.GetRequiredService<GuildLocalPort>());
+        services.AddScoped<GuildRemotePort>();
+
+        services.AddScoped<GuildPortRouter>();
+
+        services.AddScoped<IGuildPort>(static sp => sp.GetRequiredService<GuildPortRouter>());
 
         services.AddScoped<ConclaveArchmage>();
 

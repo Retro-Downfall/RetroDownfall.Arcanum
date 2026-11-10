@@ -38,11 +38,16 @@ public sealed record GuildAgentCapabilitiesDto(bool Streaming, bool PushNotifica
 public sealed record GuildAgentSourceDto(GuildAgentSourceKind Kind, Guid? WorkspaceId, string? PeerId, bool Available, string? ReasonCode);
 
 /// <summary>Untrusted transport metadata, kept separate from Cards and executable authority. CredentialReference is a name, never a secret.</summary>
-public sealed record GuildRemoteTransportDescriptor(string PeerId, string Endpoint, string ProtocolVersion, ImmutableArray<string> Interfaces, ImmutableArray<string> AuthenticationSchemes, string? CredentialReference, string? ProviderLink, string? DocumentationLink);
+public sealed record GuildRemoteTransportDescriptor(string PeerId, string Endpoint, string ProtocolVersion, ImmutableArray<string> Interfaces, ImmutableArray<string> AuthenticationSchemes, string? CredentialReference, string? ProviderLink, string? DocumentationLink,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<GuildRemoteInterfaceDescriptor> InterfaceObservations = default);
+
+public sealed record GuildRemoteInterfaceDescriptor(string Endpoint, string ProtocolBinding, string ProtocolVersion);
 
 public sealed record GuildListAgentsQuery(GuildAgentSourceKind? Source = null, string? Skill = null, string? Cursor = null, int PageSize = 100);
 
 public sealed record GuildRefreshAgentsRequest(Guid IdempotencyKey, Guid? AgentId = null, string? Cursor = null);
+
+public sealed record GuildResolveRemoteAgentRequest(string Agent);
 
 public sealed record GuildRefreshDiagnosticDto(Guid? AgentId, GuildAgentSourceKind SourceKind, string? ReasonCode, bool Available, long? CardRevision);
 

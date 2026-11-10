@@ -157,6 +157,7 @@ public static class ArcanumRuntimeSettings
             AgentCardName = integration.AgentCardName,
             AgentCardDescription = integration.AgentCardDescription,
             AllowedRemoteAgents = integration.AllowedRemoteAgents ?? [],
+            InboundPeers = integration.InboundPeers ?? [],
             DefaultWorkspace = integration.DefaultWorkspace,
             OutboundCredentialEnvironmentVariable = integration.OutboundCredentialEnvironmentVariable,
             OutboundCredentialHeader = string.IsNullOrWhiteSpace(integration.OutboundCredentialHeader)

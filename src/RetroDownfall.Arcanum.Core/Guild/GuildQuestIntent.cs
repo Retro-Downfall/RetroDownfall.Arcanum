@@ -51,6 +51,8 @@ public static class GuildQuestIntent
         writer.WriteString("mimeType", request.MimeType);
 
         WriteText(writer, "body", request.Body);
+
+        WriteRemoteOptions(writer, request.RemoteOptions);
     });
 
     public static Result<string> Compute(GuildIssueRootRequest request) => ComputeCanonical(writer =>
@@ -77,6 +79,8 @@ public static class GuildQuestIntent
         writer.WritePropertyName("grant");
 
         WriteGrant(writer, request.Grant);
+
+        WriteRemoteOptions(writer, request.RemoteOptions);
     });
 
     public static Result<string> Compute(Guid parentQuestId, GuildIssueChildRequest request) => ComputeCanonical(writer =>
@@ -102,7 +106,42 @@ public static class GuildQuestIntent
             writer.WriteNullValue();
         else
             WriteRequestedGrant(writer, request.RequestedGrant);
+
+        WriteRemoteOptions(writer, request.RemoteOptions);
     });
+
+    internal static void WriteRemoteOptions(Utf8JsonWriter writer, GuildRemoteInvocationOptions? options)
+    {
+        // Omitted options retain the existing version-one caller-intent representation.
+        if (options is null) return;
+
+        if (!Enum.IsDefined(options.Mode) || !options.AcceptedOutputModes.IsDefault
+            && options.AcceptedOutputModes.Any(string.IsNullOrWhiteSpace)) throw new InvalidIntentException();
+
+        writer.WritePropertyName("remoteOptions");
+
+        writer.WriteStartObject();
+
+        writer.WritePropertyName("mode");
+
+        WriteEnum(writer, options.Mode);
+
+        writer.WritePropertyName("acceptedOutputModes");
+
+        if (options.AcceptedOutputModes.IsDefault) writer.WriteNullValue();
+        else
+        {
+            writer.WriteStartArray();
+
+            foreach (string mode in options.AcceptedOutputModes) writer.WriteStringValue(mode);
+
+            writer.WriteEndArray();
+        }
+
+        WriteText(writer, "skillId", options.SkillId);
+
+        writer.WriteEndObject();
+    }
 
     private static Result<string> ComputeCanonical(Action<Utf8JsonWriter> write)
     {

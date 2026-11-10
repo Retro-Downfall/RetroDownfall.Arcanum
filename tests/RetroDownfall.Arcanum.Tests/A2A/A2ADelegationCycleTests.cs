@@ -197,7 +197,7 @@ public sealed class A2ADelegationCycleTests
     /// Calls <c>dispatch_sending</c> over the real in-process MCP transport with the Apprentice context
     /// bound the way <c>ApprenticeService</c> binds it, and returns the chain the tool forwarded.
     /// </summary>
-    private static async Task<IReadOnlyList<string>?> DispatchFromApprenticeAsync(
+    internal static async Task<IReadOnlyList<string>?> DispatchFromApprenticeAsync(
         Guid apprenticeId,
         IReadOnlyList<string> inheritedChain)
     {

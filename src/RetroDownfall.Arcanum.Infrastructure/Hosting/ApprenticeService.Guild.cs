@@ -99,7 +99,8 @@ internal sealed partial class ApprenticeService : IGuildLocalExecutionEngine
             ApprenticeCheckpoint checkpoint = new()
             {
                 LaunchRequested = true, ParentApprenticeId = binding.ParentApprenticeId,
-                GoalAuthority = binding.ParentQuestId is null ? GuildAuthorityKind.Operator : GuildAuthorityKind.Parent,
+                GoalAuthority = materialized.Value.GoalAuthority,
+                DelegationChain = input.DelegationChain is { } chain ? [.. chain] : null,
                 Timestamp = DateTimeOffset.UtcNow,
             };
 

@@ -106,13 +106,15 @@ public sealed class SettingDescriptorParityTests
 
     [Fact]
 
-    public void Every_numeric_descriptor_has_a_clamp_name()
+    public void Every_editable_numeric_control_has_a_clamp_name()
     {
         SettingKind[] numericKinds = [SettingKind.Int, SettingKind.Long, SettingKind.Float];
 
         List<string> missing = SettingDescriptors.All
 
-            .Where(d => numericKinds.Contains(d.Kind) && string.IsNullOrEmpty(d.ClampName))
+            .Where(d => numericKinds.Contains(d.Kind)
+                && GenericSettingsUpdater.ResolveCollectionTemplatePath(d.Key) is null
+                && string.IsNullOrEmpty(d.ClampName))
 
             .Select(d => d.Key)
 

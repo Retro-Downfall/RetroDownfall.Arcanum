@@ -20,6 +20,20 @@ internal static class GuildEndpoints
                 ArcanumJsonContext.Default.ApiResponseGuildStatusDto))
             .WithName("GuildGetStatus");
 
+        api.MapPost("/guild/agents/remote/resolve", async (GuildResolveRemoteAgentRequest? request,
+            GuildNativeHost host, GuildConfiguredRemoteResolver resolver, HttpContext context) =>
+        {
+            if (request is null || string.IsNullOrWhiteSpace(request.Agent))
+                return Reply(Result<GuildAgentCard>.Failure(Invalid), context, ArcanumJsonContext.Default.ApiResponseGuildAgentCard);
+
+            Result<GuildCallerContext> caller = await host.CreateCallerAsync(Guid.NewGuid(), context.RequestAborted).ConfigureAwait(false);
+
+            Result<GuildAgentCard> result = caller.IsFailure ? caller.Error
+                : await resolver.ResolveAsync(caller.Value, request.Agent, context.RequestAborted).ConfigureAwait(false);
+
+            return Reply(result, context, ArcanumJsonContext.Default.ApiResponseGuildAgentCard);
+        }).WithName("GuildResolveRemoteAgent");
+
         api.MapPost("/guild/quests", async (GuildIssueRootRequest? request, GuildNativeHost host,
             IGuildQuestCoordinator coordinator, HttpContext context) =>
         {

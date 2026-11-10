@@ -28,9 +28,13 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
     internal Task<Result<GuildQuestStored>> IssueAsync(GuildCallerContext caller, GuildIssuanceIdentity issuance,
         Guid parent, GuildIssueChildRequest request, CancellationToken ct) => IssueAsync(caller, issuance, null, parent, request, ct);
 
+    internal Task<Result<GuildQuestStored>> IssueInboundAsync(GuildCallerContext caller, GuildIssuanceIdentity issuance,
+        GuildIssueRootRequest request, GuildInboundIssue inbound, CancellationToken ct) =>
+        IssueAsync(caller, issuance, request, null, null, ct, inbound: inbound);
+
     private Task<Result<GuildQuestStored>> IssueAsync(GuildCallerContext caller, GuildIssuanceIdentity issuance,
         GuildIssueRootRequest? root, Guid? parentId, GuildIssueChildRequest? child, CancellationToken ct,
-        GuildChildToolAdmission? toolAdmission = null)
+        GuildChildToolAdmission? toolAdmission = null, GuildInboundIssue? inbound = null)
     {
         Result<string> digest = root is not null ? GuildQuestIntent.Compute(root)
             : toolAdmission is not null ? ToolIssueIntent(parentId.GetValueOrDefault(), child!)
@@ -74,6 +78,31 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
                     digest.Value, toolAdmission, token).ConfigureAwait(false);
 
                 if (source.IsFailure) return source.Error;
+            }
+
+            if (inbound is not null)
+            {
+                if (caller.Kind != GuildCallerKind.Peer || policy is not GuildLocalHostPolicy)
+                    return OwnerUnavailable;
+
+                var acceptedInbound = await GuildInboundTaskStore.ReadWithinAsync(connection, transaction,
+                    inbound.Peer.PeerId, null, inbound.MessageId, token).ConfigureAwait(false);
+
+                if (acceptedInbound.IsFailure) return acceptedInbound.Error;
+
+                if (acceptedInbound.Value is { } receipt)
+                {
+                    var acceptedQuest = await ReadWithinAsync(connection, transaction, receipt.QuestId, token).ConfigureAwait(false);
+
+                    if (acceptedQuest.IsFailure) return acceptedQuest.Error;
+
+                    Result visible = await RequireVisibleAsync(connection, transaction, caller, acceptedQuest.Value, token).ConfigureAwait(false);
+
+                    if (visible.IsFailure) return visible.Error;
+
+                    return receipt.RequestDigest == inbound.RequestDigest && acceptedQuest.Value.IntentDigest == digest.Value
+                        ? Replay(acceptedQuest.Value) : Conflict;
+                }
             }
 
             Guid? existing = await FindIssueAsync(connection, transaction, issuance, token).ConfigureAwait(false);
@@ -248,6 +277,40 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
             if (created.IsFailure) return created;
 
+            if (inbound is not null)
+            {
+                Result bound = await GuildInboundTaskStore.CreateWithinAsync(connection, transaction,
+                    (GuildLocalHostPolicy)policy, created.Value, inbound, token).ConfigureAwait(false);
+
+                if (bound.IsFailure) return bound.Error;
+            }
+
+            if (plan.RemoteTransport is { } remoteTransport)
+            {
+                var card = await GuildStore.ResolveQuestCardWithinAsync(connection, transaction, destination.Value.AgentId,
+                    destination.Value.CardId, destination.Value.Revision, new(workspace, session, campaign), token).ConfigureAwait(false);
+
+                if (card.IsFailure) return card.Error;
+
+                if (card.Value.Payload.RemoteTransport is null || card.Value.Payload.DiscoveryEndpoint is not { } discovery
+                    || card.Value.Payload.RemoteTransport.Endpoint != remoteTransport.Endpoint
+                    || card.Value.Payload.Card.Source.Kind != GuildAgentSourceKind.Remote) return Unavailable;
+
+                GuildRemoteInvocationOptions? options = root?.RemoteOptions ?? child?.RemoteOptions;
+
+                var modes = options is { AcceptedOutputModes.IsDefaultOrEmpty: false } ? options.AcceptedOutputModes
+                    : policy is GuildLocalHostPolicy host ? host.RemoteOutputModes : System.Collections.Immutable.ImmutableArray.Create("text/plain");
+
+                var remote = await GuildRemoteExecutionStore.CreateWithinAsync(connection, transaction, created.Value,
+                    new(1, discovery, remoteTransport, (RetroDownfall.Arcanum.Infrastructure.A2A.A2ADispatchMode)(options?.Mode ?? GuildRemoteDispatchMode.Blocking),
+                        modes, options?.SkillId, toolAdmission?.Registry.AcceptedInput.DelegationChain ?? []), plan.SourceLabel, now, token).ConfigureAwait(false);
+
+                return remote.IsFailure ? remote.Error : created;
+            }
+
+            if (root?.RemoteOptions is not null || child?.RemoteOptions is not null)
+                return new Error(ErrorCodes.Guild.InvalidRequest, "Remote invocation options require a remote destination.");
+
             if (localExecution is null) return toolAdmission is null ? created : GuildLocalToolRegistry.Unavailable;
 
             Result<GuildLocalExecutionInput> input = toolAdmission is null
@@ -255,6 +318,9 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
                 : await localExecution.ResolveToolWithinAsync(caller, created.Value, connection, transaction, toolAdmission, token).ConfigureAwait(false);
 
             if (input.IsFailure) return input.Error;
+
+            if (inbound?.DelegationChain is { } inboundChain)
+                input = input.Value with { DelegationChain = inboundChain };
 
             Result<GuildLocalExecutionBinding> local = await GuildLocalExecutionStore.CreateWithinAsync(
                 connection, transaction, created.Value, input.Value, plan.SourceLabel, now, token).ConfigureAwait(false);

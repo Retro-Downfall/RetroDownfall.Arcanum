@@ -481,6 +481,8 @@ public static class ApiBootstrapper
 
         services.AddSingleton<ApiKeyAuthenticator>();
 
+        services.AddSingleton<A2APeerAuthenticator>();
+
         services.AddSingleton<ArcanumProcessCapabilityService>();
 
         services.AddSingleton<ApiKeyEndpointFilter>();
@@ -949,6 +951,8 @@ public static class ApiBootstrapper
 
             if (await authenticator.IsAuthorizedAsync(context).ConfigureAwait(false))
             {
+                using IDisposable? peerScope = A2APeerAuthenticator.EnterScope(context);
+
                 if (!TryAdmitGrimoireRequest(context))
                 {
                     _ = await GrimoireMaintenanceRefusal.TryWriteAsync(context).ConfigureAwait(false);

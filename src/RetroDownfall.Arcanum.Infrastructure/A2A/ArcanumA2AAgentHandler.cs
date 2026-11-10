@@ -28,7 +28,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 /// <see cref="IA2ASendingLedger"/>, so a peer that cancels after a restart still reaches the real
 /// Apprentice (issue #62, docs/Arcanum.DESIGN.md &#167;5.7.1.2).
 /// </remarks>
-public sealed class ArcanumA2AAgentHandler(
+public sealed partial class ArcanumA2AAgentHandler(
     IServiceScopeFactory scopeFactory,
     IOptionsMonitor<ArcanumSettings> options,
     ILogger<ArcanumA2AAgentHandler> logger,
@@ -76,7 +76,15 @@ public sealed class ArcanumA2AAgentHandler(
 
         if (settings.Features.Guild)
         {
-            await RejectAsync(updater, "Guild remote execution requires its qualified Quest transport; legacy inbound Sendings are unavailable.", cancellationToken).ConfigureAwait(false);
+            await ExecuteGuildAsync(context, eventQueue, cancellationToken).ConfigureAwait(false);
+
+            return;
+        }
+
+        if (context.Message?.TaskId is { Length: > 0 } existingTask
+            && await GuildA2AAdapter.IsGuildTaskAsync(scopeFactory, existingTask, cancellationToken).ConfigureAwait(false))
+        {
+            await RejectAsync(updater, "The task is unavailable.", cancellationToken).ConfigureAwait(false);
 
             return;
         }
@@ -456,6 +464,18 @@ public sealed class ArcanumA2AAgentHandler(
 
     public async Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
     {
+        if (options.CurrentValue.Features.Guild)
+        {
+            await CancelGuildAsync(context, eventQueue, cancellationToken).ConfigureAwait(false);
+
+            return;
+        }
+
+        if (await GuildA2AAdapter.IsGuildTaskAsync(scopeFactory, context.TaskId, cancellationToken).ConfigureAwait(false))
+        {
+            throw GuildA2AAdapter.Missing();
+        }
+
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         // A task parked at input-required is still ours to stop: the peer giving up on the question must
@@ -794,7 +814,7 @@ public sealed class ArcanumA2AAgentHandler(
     /// every step-level <c>working</c> update would turn a peer's webhook into the Chronicle firehose the
     /// progress de-duplication in &#167;5.7.1 exists to avoid.
     /// </remarks>
-    private async Task NotifyPeerAsync(string taskId, string state, CancellationToken cancellationToken)
+    private async Task NotifyPeerAsync(string taskId, string state, CancellationToken cancellationToken, A2APushNotificationAdmission? admission = null)
     {
         if (pushNotifications is null
             || pushDispatcher is null
@@ -804,9 +824,15 @@ public sealed class ArcanumA2AAgentHandler(
             return;
         }
 
-        await pushDispatcher.NotifyAsync(config, taskId, state, cancellationToken).ConfigureAwait(false);
+        if (admission is null && (options.CurrentValue.Features.Guild
+            || await GuildA2AAdapter.IsGuildTaskAsync(scopeFactory, taskId, cancellationToken).ConfigureAwait(false)))
+        {
+            return;
+        }
 
-        if (state is not "input-required")
+        await pushDispatcher.NotifyAsync(config, taskId, state, cancellationToken, admission).ConfigureAwait(false);
+
+        if (state is not "input-required" && admission is null)
         {
             // A settled task has nothing further to report, so the callback is forgotten with it.
             pushNotifications.Remove(taskId);
@@ -873,12 +899,12 @@ public sealed class ArcanumA2AAgentHandler(
         Parts = [Part.FromText(text)],
     };
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
+        await _guildCallbacks.DisposeAsync().ConfigureAwait(false);
+
         _taskToApprentice.Clear();
 
         _awaitingContinuation.Clear();
-
-        return ValueTask.CompletedTask;
     }
 }

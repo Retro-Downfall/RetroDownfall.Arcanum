@@ -9,13 +9,15 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
-internal enum GuildLocalChildToolKind { DelegateTask, CastSending }
+internal enum GuildLocalChildToolKind { DelegateTask, CastSending, DispatchSending, ContinueSending }
 
 /// <summary>Host output consumed before generic model-tool stringification.</summary>
 internal sealed record GuildLocalChildToolResult(GuildQuestDto Quest, string? Summary = null, ProviderCallSensitivity? Sensitivity = null);
 
 internal interface IGuildLocalChildToolDispatcher
 {
+    bool SupportsRemote => false;
+
     Task<Result<GuildLocalChildToolResult>> DispatchAsync(GuildLocalChildToolCall call, CancellationToken cancellationToken);
 }
 
@@ -49,7 +51,12 @@ internal sealed class GuildChildToolAdmission(GuildLocalToolRegistry registry, G
     internal GuildToolGrant Tool => Frame.Tool;
 
     internal GuildLocalChildToolKind Kind => Tool.SourceKind == GuildToolSourceKind.BuiltIn
-        ? GuildLocalChildToolKind.DelegateTask : GuildLocalChildToolKind.CastSending;
+        ? GuildLocalChildToolKind.DelegateTask : Tool.Name switch
+        {
+            "dispatch_sending" => GuildLocalChildToolKind.DispatchSending,
+            "continue_sending" => GuildLocalChildToolKind.ContinueSending,
+            _ => GuildLocalChildToolKind.CastSending,
+        };
 
     internal bool BindIntent(string digest)
     {
@@ -95,7 +102,8 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
     private int _closed;
 
     internal static ImmutableArray<GuildToolGrant> SupportedTools { get; } =
-        [new(GuildToolSourceKind.BuiltIn, "arcanum", "delegate_task"), new(GuildToolSourceKind.InternalMcp, "arcanum", "cast_sending")];
+        [new(GuildToolSourceKind.BuiltIn, "arcanum", "delegate_task"), new(GuildToolSourceKind.InternalMcp, "arcanum", "cast_sending"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "dispatch_sending"), new(GuildToolSourceKind.InternalMcp, "arcanum", "continue_sending")];
 
     internal GuildLocalInferenceExecution Parent { get; } = parent;
 
@@ -106,7 +114,8 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
     internal bool IsActive => Volatile.Read(ref _closed) == 0;
 
     internal bool Supports(GuildToolGrant tool) => IsActive && Parent?.Store is not null && Parent.Driver is not null
-        && AcceptedInput is not null && ChildDispatcher is not null && AcceptedInput.Mode == GuildLocalExecutionMode.Apprentice && SupportedTools.Contains(tool);
+        && AcceptedInput is not null && ChildDispatcher is not null && AcceptedInput.Mode == GuildLocalExecutionMode.Apprentice && SupportedTools.Contains(tool)
+        && (tool.Name is not ("dispatch_sending" or "continue_sending") || ChildDispatcher.SupportsRemote);
 
     internal bool Matches(GuildExecutionHandle execution, IGuildToolAuthority authority) =>
         Parent?.Driver is { } driver && Parent.Store is not null && ReferenceEquals(driver.Execution, execution)
@@ -191,8 +200,7 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
 
         if (authorized.IsFailure) return Format(authorized.Error);
 
-        GuildLocalChildToolKind kind = tool.SourceKind == GuildToolSourceKind.BuiltIn
-            ? GuildLocalChildToolKind.DelegateTask : GuildLocalChildToolKind.CastSending;
+        GuildLocalChildToolKind kind = admission.Kind;
 
         Result<GuildLocalChildToolResult> result = await ChildDispatcher!.DispatchAsync(
             new(kind, admission.Arguments, authorized.Value.Quest, admission), linked.Token).ConfigureAwait(false);

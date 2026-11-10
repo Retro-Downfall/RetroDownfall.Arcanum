@@ -29,4 +29,6 @@ UNION ALL SELECT 'guild_portal_outbox' AS TableName, 'CreatedAtUtc' AS ColumnNam
 UNION ALL SELECT 'guild_workspace_leases' AS TableName, 'HeartbeatAtUtc' AS ColumnName
 UNION ALL SELECT 'guild_workspace_leases' AS TableName, 'ExpiresAtUtc' AS ColumnName
 UNION ALL SELECT 'guild_workspace_lease_mutations' AS TableName, 'AcceptedAtUtc' AS ColumnName
-UNION ALL SELECT 'guild_quest_cancellations' AS TableName, 'AcceptedAtUtc' AS ColumnName;
+UNION ALL SELECT 'guild_quest_cancellations' AS TableName, 'AcceptedAtUtc' AS ColumnName
+UNION ALL SELECT 'guild_remote_effects' AS TableName, 'SettledAtUtc' AS ColumnName
+UNION ALL SELECT 'guild_remote_callbacks' AS TableName, 'CallbackReceivedAtUtc' AS ColumnName;

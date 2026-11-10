@@ -1002,7 +1002,7 @@ internal sealed partial class ArcanumInternalToolServer
                 {
                     Name = "continue_sending",
                     Description =
-                        "Answer a Sending that a remote agent parked because it needed more input or authentication, resuming the same remote task instead of re-running the goal. Use the task_id a continuable dispatch_sending returned.",
+                        "Answer a Sending that a remote agent parked because it needed more input or authentication, resuming the same remote task instead of re-running the goal. Use the task_id a continuable dispatch_sending returned; a qualified Guild Sending uses its Guild Quest id.",
                     InputSchema = _continueSendingSchema,
                 });
         }
@@ -1239,8 +1239,11 @@ internal sealed partial class ArcanumInternalToolServer
                         toolScope.Token).ConfigureAwait(false);
 
                     McpToolsCallResultWire qualified = dispatched is GuildLocalChildToolResult accepted
-                        ? new() { Content = [new McpToolContentTextWire
-                            { Text = JsonSerializer.Serialize(accepted.Quest, GuildJsonContext.Default.GuildQuestDto) }] }
+                        ? new() { Content = accepted.Summary is null
+                            ? [new McpToolContentTextWire { Text = JsonSerializer.Serialize(accepted.Quest, GuildJsonContext.Default.GuildQuestDto) }]
+                            : [new McpToolContentTextWire { Text = JsonSerializer.Serialize(accepted.Quest, GuildJsonContext.Default.GuildQuestDto) },
+                                new McpToolContentTextWire { Text = GuildPromptBuilder.Build(GuildAuthorityKind.Child, GuildEnvelopeKind.Result,
+                                    accepted.Quest.ResultReceiptId ?? accepted.Quest.Id, accepted.Summary) }] }
                         : ToolError(dispatched as string ?? GuildToolInvocationContext.Format(GuildToolInvocationContext.Unavailable));
 
                     return BuildToolsCallResponse(rpcId, qualified);

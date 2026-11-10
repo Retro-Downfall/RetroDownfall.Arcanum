@@ -12,7 +12,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 
 /// <summary>
-/// Reads today's delegated spend from the durable outbound Sending records (issue #69).
+/// Reads delegated spend from legacy Sending records and the authoritative physical Guild remote sources.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -128,6 +128,71 @@ internal sealed class A2AExternalSpendLedger(
                                 "A2A: today's delegated-spend figure was computed from the first {Rows} settled "
                                 + "Sendings; anything beyond that is not included in the reported total.",
                                 MaxRowsPerDay);
+                        }
+
+                        await reader.DisposeAsync().ConfigureAwait(false);
+
+                        // One Guild task owns one cumulative external source across its continuations.
+                        // The legacy adapter never writes this source, so combining the lanes cannot duplicate a bill.
+                        await using DbCommand present = connection.CreateCommand();
+
+                        present.CommandText = "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='guild_remote_effects')";
+
+                        if (Equals(1L, await present.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)))
+                        {
+                            await using DbCommand remote = connection.CreateCommand();
+
+                            remote.CommandText = """
+                                SELECT e.KnownUsd,e.KnownTokens,e.UnknownUsd,e.UnknownTokens,
+                                    CASE WHEN typeof(e.KnownUsd)='text' AND typeof(e.KnownTokens)='integer'
+                                        AND typeof(e.UnknownUsd)='integer' AND e.UnknownUsd IN(0,1)
+                                        AND typeof(e.UnknownTokens)='integer' AND e.UnknownTokens IN(0,1) THEN 1 ELSE 0 END
+                                FROM guild_remote_effects r JOIN guild_budget_effects e ON e.EffectId=r.EffectId AND e.QuestId=r.QuestId
+                                JOIN guild_dispatches d ON d.DispatchId=r.DispatchId AND d.QuestId=r.QuestId
+                                WHERE r.SettledAtUtc>=@dayStart AND r.SettledAtUtc<@dayEnd AND e.KindCode=1 AND e.StateCode=2
+                                    AND EXISTS(SELECT 1 FROM guild_budget_evidence b WHERE b.EffectId=e.EffectId AND b.AppliedRevision=e.Revision)
+                                ORDER BY r.EffectId
+                                """;
+
+                            Add(remote, "@dayStart", UtcInstantText.Format(dayStart));
+                            Add(remote, "@dayEnd", UtcInstantText.Format(dayStart.AddDays(1)));
+
+                            await using DbDataReader physical = await remote.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                            while (await physical.ReadAsync(cancellationToken).ConfigureAwait(false))
+                            {
+                                if (physical.GetInt32(4) != 1)
+                                {
+                                    unpriced = checked(unpriced + 1);
+
+                                    continue;
+                                }
+
+                                decimal usd;
+
+                                try { usd = ExactUsdText.Read(physical, 0); }
+                                catch (Exception exception) when (exception is FormatException or InvalidDataException or OverflowException)
+                                {
+                                    unpriced = checked(unpriced + 1);
+
+                                    continue;
+                                }
+
+                                long tokens = physical.GetInt64(1);
+
+                                if (usd < 0m || tokens < 0)
+                                {
+                                    unpriced = checked(unpriced + 1);
+
+                                    continue;
+                                }
+
+                                knownCost = checked(knownCost + usd);
+                                knownTokens = checked(knownTokens + tokens);
+
+                                if (physical.GetBoolean(2) || physical.GetBoolean(3)) unpriced = checked(unpriced + 1);
+                                else priced = checked(priced + 1);
+                            }
                         }
 
                         return new ExternalSpendSummary(knownCost, knownTokens, priced, unpriced);

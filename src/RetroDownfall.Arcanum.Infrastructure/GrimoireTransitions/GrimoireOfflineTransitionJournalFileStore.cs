@@ -164,7 +164,7 @@ internal sealed class GrimoireOfflineTransitionJournalFileStore
             }
 
             Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
-                GrimoireOfflineTransitionJournalFilePrimitives.Open(parent);
+                GrimoireOfflineTransitionJournalFilePrimitives.Open(parent, expectedParentDigest: null);
 
             if (opened.IsFailure)
             {

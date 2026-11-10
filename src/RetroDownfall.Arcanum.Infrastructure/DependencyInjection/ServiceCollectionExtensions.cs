@@ -1330,6 +1330,11 @@ public static class ServiceCollectionExtensions
         // until the first write; an uncertain inventory fails closed before secure storage opens.
         services.AddInstallationResetRecoveryAwareHostedService<FileEncryptionKeyBootstrapHostedService>();
 
+        services.AddSingleton<GuildInboundPeerRegistry>(static sp => new(
+            sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+            sp.GetRequiredService<RetroDownfall.Arcanum.Core.Security.IApiKeyDigestCache>(),
+            journal: sp.GetRequiredService<GuildInboundPeerDenialJournal>()));
+
         services.AddGuildLocalExecution();
 
         // Must run after the encrypted Grimoire is migrated and before durable workloads below
@@ -1690,7 +1695,8 @@ public static class ServiceCollectionExtensions
             .RemoveAllLoggers()
             .ConfigurePrimaryHttpMessageHandler(static () =>
                 OutboundUrlGuard.CreateUntrustedEgressHandler(A2AClientService.OutboundConnectTimeout));
-        services.AddSingleton<IA2AClientService, A2AClientService>();
+        services.AddSingleton<A2AClientService>();
+        services.AddSingleton<IA2AClientService>(static sp => sp.GetRequiredService<A2AClientService>());
         services.AddSingleton<ArcanumA2AAgentHandler>();
         // Durable record of in-flight A2A correspondences, so a restart can cancel an orphaned remote
         // task and a peer's tasks/cancel still reaches the real Apprentice (issue #62).
@@ -1718,11 +1724,14 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<ArcanumA2AAgentHandler>(),
             new ArcanumA2ATaskStore(
                 sp.GetRequiredService<IServiceScopeFactory>(),
-                sp.GetRequiredService<ILogger<ArcanumA2ATaskStore>>()),
+                sp.GetRequiredService<ILogger<ArcanumA2ATaskStore>>(),
+                sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()),
             new ChannelEventNotifier(),
             sp.GetRequiredService<A2APushNotificationRegistry>(),
             sp.GetRequiredService<ILogger<A2AServer>>(),
-            new A2AServerOptions { AutoAppendHistory = true }));
+            new A2AServerOptions { AutoAppendHistory = true },
+            sp.GetRequiredService<IServiceScopeFactory>(),
+            sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()));
         services.AddScoped<IChronosyncEngine, ChronosyncEngine>();
         services.AddSingleton<CampaignLoggerQueue>();
         services.AddSingleton<ICampaignLoggerQueue>(sp => sp.GetRequiredService<CampaignLoggerQueue>());

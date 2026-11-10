@@ -680,7 +680,7 @@ internal sealed class GuildRoster(GuildStore store, GuildRosterRefreshStore refr
         }
 
         Result<GuildStoredCard> written = await store.UpsertCardAsync(new(source, null, null, null,
-            new(observed.Value.Card, string.Empty, []), observed.Value.Digest), token).ConfigureAwait(false);
+            new(observed.Value.Card, string.Empty, [], configured.Transport, configured.DiscoveryEndpoint), observed.Value.Digest), token).ConfigureAwait(false);
 
         return written.IsFailure
             ? await UnavailableAsync(source, GuildAgentSourceKind.Remote, written.Error.Code, token).ConfigureAwait(false)

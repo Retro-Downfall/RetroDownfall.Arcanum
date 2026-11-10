@@ -55,10 +55,14 @@ internal sealed class GuildRemoteCardReader(IDnsResolver dnsResolver)
 
             AgentInterface[] interfaces = [.. card.SupportedInterfaces ?? []];
 
-            if (interfaces.Length == 0 || interfaces.Any(item =>
-                    !ExactEndpoint(item.Url, source.Transport.Endpoint)
-                    || !source.Transport.Interfaces.Contains(item.ProtocolBinding, StringComparer.Ordinal)
-                    || !string.Equals(item.ProtocolVersion, source.Transport.ProtocolVersion, StringComparison.Ordinal)))
+            bool interfacesMatch = source.Transport.InterfaceObservations.IsDefault
+                ? interfaces.Length > 0 && interfaces.All(item => ExactEndpoint(item.Url, source.Transport.Endpoint)
+                    && source.Transport.Interfaces.Contains(item.ProtocolBinding, StringComparer.Ordinal)
+                    && string.Equals(item.ProtocolVersion, source.Transport.ProtocolVersion, StringComparison.Ordinal))
+                : interfaces.Select(item => new GuildRemoteInterfaceDescriptor(item.Url, item.ProtocolBinding, item.ProtocolVersion))
+                    .SequenceEqual(source.Transport.InterfaceObservations);
+
+            if (!interfacesMatch)
             {
                 return Failure(ErrorCodes.Guild.DestinationChanged);
             }

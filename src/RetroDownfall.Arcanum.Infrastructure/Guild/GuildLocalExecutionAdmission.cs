@@ -23,20 +23,32 @@ internal sealed class GuildLocalExecutionAdmission(IOptionsMonitor<ArcanumSettin
 
         return Task.FromResult(Result<GuildLocalExecutionInput>.Success(new(1,
             admission.Kind == GuildLocalChildToolKind.DelegateTask ? GuildLocalExecutionMode.Sterile : GuildLocalExecutionMode.Apprentice,
-            quest.Quest.GoalRef, inherited.Provider, inherited.Model, [], inherited.MaxOutputTokens)));
+            quest.Quest.GoalRef, inherited.Provider, inherited.Model, [], inherited.MaxOutputTokens, inherited.DelegationChain)));
     }
 
-    public Task<Result<GuildLocalExecutionInput>> ResolveWithinAsync(GuildCallerContext caller, GuildQuestStored quest,
+    public async Task<Result<GuildLocalExecutionInput>> ResolveWithinAsync(GuildCallerContext caller, GuildQuestStored quest,
         SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
     {
         ArcanumSettings current = settings.CurrentValue;
 
         if (!TryResolve(current, out ProviderSettings? provider, out string model))
-            return Task.FromResult(Result<GuildLocalExecutionInput>.Failure(new(ErrorCodes.Guild.Unavailable,
-                "A configured local HTTP inference provider and enabled Apprentice execution are required.")));
+            return new Error(ErrorCodes.Guild.Unavailable,
+                "A configured local HTTP inference provider and enabled Apprentice execution are required.");
 
-        return Task.FromResult(Result<GuildLocalExecutionInput>.Success(new(1, GuildLocalExecutionMode.Apprentice,
-            quest.Quest.GoalRef, provider!.Name, model, [], null)));
+        GuildLocalExecutionInput input = new(1, GuildLocalExecutionMode.Apprentice,
+            quest.Quest.GoalRef, provider!.Name, model, [], null);
+
+        if (caller.Execution is { } parent)
+        {
+            var inherited = await GuildLocalExecutionStore.ReadInputWithinAsync(connection, transaction,
+                parent.QuestId, null, cancellationToken).ConfigureAwait(false);
+
+            if (inherited.IsFailure) return inherited.Error;
+
+            input = input with { DelegationChain = inherited.Value.DelegationChain };
+        }
+
+        return input;
     }
 
     private static bool TryResolve(ArcanumSettings current, out ProviderSettings? provider, out string model)

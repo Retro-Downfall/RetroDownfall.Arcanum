@@ -37,7 +37,10 @@ public sealed class A2ASendingCallbackRegistry(ILogger<A2ASendingCallbackRegistr
     /// a peer may post several transitions before the task settles, and each one is a reason to re-read
     /// the task rather than to conclude it is finished.
     /// </param>
-    public IDisposable Register(string configId, string tokenHash, SemaphoreSlim signal)
+    public IDisposable Register(string configId, string tokenHash, SemaphoreSlim signal) =>
+        RegisterOwned(configId, tokenHash, signal);
+
+    internal Registration RegisterOwned(string configId, string tokenHash, SemaphoreSlim signal)
     {
 
         ArgumentException.ThrowIfNullOrWhiteSpace(configId);
@@ -102,7 +105,7 @@ public sealed class A2ASendingCallbackRegistry(ILogger<A2ASendingCallbackRegistr
 
     private void Remove(string configId) => _waiters.TryRemove(configId, out _);
 
-    private sealed class Registration(A2ASendingCallbackRegistry owner, string configId) : IDisposable
+    internal sealed class Registration(A2ASendingCallbackRegistry owner, string configId) : IDisposable
     {
 
         private bool _disposed;

@@ -53,7 +53,8 @@ internal sealed partial class GuildQuestStore
                         NOT EXISTS(SELECT 1 FROM children t JOIN guild_quests c ON c.Id=t.Id
                             WHERE c.Id<>$quest AND {GuildQuestRetentionPins.StoppedExecutionUnresolved})
                         AND NOT EXISTS(SELECT 1 FROM children t JOIN guild_quests c ON c.Id=t.Id
-                            WHERE {GuildQuestRetentionPins.ExternalWorkUnresolved})
+                            WHERE (c.Id<>$quest OR NOT EXISTS(SELECT 1 FROM guild_remote_executions remote WHERE remote.QuestId=$quest))
+                                AND {GuildQuestRetentionPins.ExternalWorkUnresolved})
                     """);
 
                 Add(frontier, "$quest", Id(questId));

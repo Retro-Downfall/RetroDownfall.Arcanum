@@ -405,26 +405,25 @@ public static class OutboundUrlGuard
                 throw new OutboundConnectException(BlockedMessage) { ErrorCode = BlockedErrorCode };
             }
 
-            Socket socket = new(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
-            {
-                // Mirrors SocketsHttpHandler's default connect path: small request frames must not wait
-                // on Nagle's algorithm just because this handler owns the socket.
-                NoDelay = true,
-            };
+            Socket socket = new(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
 
             try
             {
+                // Mirrors SocketsHttpHandler's default connect path: small request frames must not wait
+                // on Nagle's algorithm just because this handler owns the socket.
+                socket.NoDelay = true;
+
                 await socket.ConnectAsync(new IPEndPoint(address, port), connectToken).ConfigureAwait(false);
 
                 return new NetworkStream(socket, ownsSocket: true);
             }
             catch (Exception ex) when (ex is SocketException or TimeoutException)
             {
+                socket.Dispose();
+
                 connectErrors ??= [];
 
                 connectErrors.Add(ex);
-
-                socket.Dispose();
             }
             catch (OperationCanceledException ex) when (ConnectDeadlineElapsed(connectScope, cancellationToken))
             {

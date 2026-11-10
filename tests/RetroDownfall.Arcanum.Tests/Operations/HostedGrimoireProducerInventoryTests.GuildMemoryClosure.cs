@@ -11,14 +11,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void GuildMemoryReachableHostedRootsRetainTheirClosedAuthorityProof()
     {
-        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProductionSites(
-            HostedProducerProductionPartition.Primary, ["SagaExtractionService", "SessionAttachmentIndexingService"]);
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
-        Assert.Contains(result.Items, static site => site.RootType == "SagaExtractionService"
-            && site.Kind == HostedProducerSiteKind.DatabaseAccess);
+        Assert.Contains(ObserveFullProductionRoot(result, "SagaExtractionService"), static site =>
+            site.Kind == HostedProducerSiteKind.DatabaseAccess);
 
-        Assert.Contains(result.Items, static site => site.RootType == "SessionAttachmentIndexingService"
-            && site.Kind == HostedProducerSiteKind.FileSystemRead);
+        Assert.Contains(ObserveFullProductionRoot(result, "SessionAttachmentIndexingService"), static site =>
+            site.Kind == HostedProducerSiteKind.FileSystemRead);
 
         Assert.True(result.Diagnostics.Count == 0, HostedGrimoireProducerInventory.RenderDiagnosticReport(result.Diagnostics));
     }

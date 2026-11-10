@@ -536,6 +536,46 @@ internal sealed partial class SignetAuthority(GuildSignetStore store, IGrimoireC
     private Task<Result<T>> UnderRootAsync<T>(Guid root, bool effect, Func<CancellationToken, Task<Result<T>>> action, CancellationToken ct) =>
         WithInstallationAsync(effect, token => GuildSignetRootGate.RunAsync(gate, root, action, token), ct);
 
+    private async Task<Result<T>> WithInstallationEffectAsync<T>(
+        Func<CancellationToken, Task<Result<T>>> action, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        if (Volatile.Read(ref _disposed) != 0 || policy.InstallationGeneration == Guid.Empty)
+        {
+            return GuildSignetStore.Unavailable;
+        }
+
+        if (!gate.TryAcquireWorkLease(GrimoireWorkKind.GuildStorage, out IGrimoireWorkLease? work))
+        {
+            return Deferred;
+        }
+
+        await using IGrimoireWorkLease held = work!;
+
+        if (!held.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? group))
+        {
+            return Deferred;
+        }
+
+        await using IGrimoireExternalEffectGroup heldEffect = group!;
+
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(ct, held.MaintenanceRevocation);
+
+        try
+        {
+            return await action(linked.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && held.MaintenanceRevocation.IsCancellationRequested)
+        {
+            return Deferred;
+        }
+        catch (OverflowException)
+        {
+            return new Error(ErrorCodes.Guild.SequenceExhausted, "The Guild authority generation is exhausted.");
+        }
+    }
+
     private async Task<Result<T>> WithInstallationAsync<T>(bool effect,
         Func<CancellationToken, Task<Result<T>>> action, CancellationToken ct)
     {

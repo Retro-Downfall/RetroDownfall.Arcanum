@@ -19,7 +19,8 @@ internal sealed record GuildLocalExecutionFile(string Name, GuildDataRef Content
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 internal sealed record GuildLocalExecutionInput(int Version, GuildLocalExecutionMode Mode, GuildDataRef Goal,
-    string Provider, string Model, ImmutableArray<GuildLocalExecutionFile> Files, int? MaxOutputTokens);
+    string Provider, string Model, ImmutableArray<GuildLocalExecutionFile> Files, int? MaxOutputTokens,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ImmutableArray<string>? DelegationChain = null);
 
 internal sealed record GuildLocalExecutionBinding(Guid QuestId, Guid ApprenticeId, Guid RunId, Guid SessionId,
     Guid? ParentQuestId, Guid RootQuestId, Guid? ParentApprenticeId, GuildDataRef Input);

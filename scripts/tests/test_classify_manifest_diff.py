@@ -103,6 +103,46 @@ def patched(name, value):
         setattr(CLASSIFIER, name, original)
 
 
+
+def scheduler_cancellation_handoff_fixture():
+    caller = "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalQuestScheduler.cs"
+
+    catalog = "tests/RetroDownfall.Arcanum.Tests/Support/HostedGrimoireProducerInventory.cs"
+
+    prefix = "RetroDownfall.Arcanum.Infrastructure.Guild."
+
+    rows = []
+
+    for source, owner, member, parameters, callee, fingerprint in (
+        ("GuildLocalHostPolicy.Canonical.cs", "GuildLocalHostPolicy", "OperationMatchesAsync", "Microsoft.Data.Sqlite.SqliteConnection,Microsoft.Data.Sqlite.SqliteTransaction,System.Guid,System.Guid,System.Threading.CancellationToken", "System.Data.Common.DbCommand.ExecuteScalarAsync", "8FAA042C7137E09C06B26DD33746F64FF464D3DDBF792DAACA4FAA7FAD12B6F2"),
+        ("GuildSignetStore.cs", "GuildSignetStore", "ReadAsync", "Microsoft.Data.Sqlite.SqliteConnection,Microsoft.Data.Sqlite.SqliteTransaction,System.Guid,System.Boolean,System.Threading.CancellationToken", "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync", "885CC089D5C8A0D70513D923924F72E692666546DE423395648201E632DF6912"),
+        ("GuildSignetStore.cs", "GuildSignetStore", "ReadAsync", "Microsoft.Data.Sqlite.SqliteConnection,Microsoft.Data.Sqlite.SqliteTransaction,System.Guid,System.Boolean,System.Threading.CancellationToken", "System.Data.Common.DbDataReader.ReadAsync", "3B2939BA3EA89FCFE52B2D385C8FBA1ACAEB53B8728660D32646CDAFF49D1F39"),
+    ):
+        rows.append(site("src/RetroDownfall.Arcanum.Infrastructure/Guild/" + source, callee=callee, member=member,
+            root="GuildLocalQuestScheduler", operation=prefix + "GuildLocalQuestScheduler.ExecuteAsync",
+            work="9BF6CCE78957077CC7AFED66E4DB844AFF6A1499F1D7D479BCF170A9171BA53C")._replace(
+                enclosing_type=prefix + owner, member_identity="M:" + prefix + owner + "." + member + "(" + parameters + ")",
+                syntax_sha256=fingerprint))
+
+    base = {caller: """
+private async Task RequestDisabledCancellationAsync(CancellationToken ct)
+{
+    await DrainCancellationAsync(scope.ServiceProvider, caller.Value, questId, ct).ConfigureAwait(false);
+}
+private async Task DrainCancellationAsync(IServiceProvider services, GuildCallerContext caller, Guid questId, CancellationToken ct)
+{
+    var recovery = await policy.CreateRecoveryAsync(caller, quest.Id, operationId, quest.SignetRevision, ct).ConfigureAwait(false);
+}
+""", catalog: "// No cancellation handoff root at the baseline.\n"}
+
+    head = {caller: base[caller].replace("DrainCancellationAsync(scope.ServiceProvider", "DrainCancellationAsync(work, scope.ServiceProvider")
+        .replace("DrainCancellationAsync(IServiceProvider", "DrainCancellationAsync(IGrimoireWorkLease work, IServiceProvider")
+        .replace("    var recovery", "    work.MaintenanceRevocation.ThrowIfCancellationRequested();\n    var recovery"),
+        catalog: '''Handoff(Operation("Guild", "GuildLocalQuestScheduler", "DrainCancellationAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
+                GrimoireWorkKind.GuildStorage), "work")'''}
+
+    return rows, FakeSources(base, head), caller, catalog
+
 def reach_for(row, caller="src/Edited.cs", marker="Topology.Reconcile(", side="+"):
     """A reviewed call chain that reaches `row`, as the table spells one."""
     return CLASSIFIER.Reach(
@@ -370,6 +410,126 @@ class ClassifyManifestDiffTests(unittest.TestCase):
         self.assertEqual("r", explained[("-", removed)].label)
 
         self.assertEqual("d", unexplained[("-", removed)].label)
+
+    def test_scheduler_cancellation_handoff_explains_only_the_three_exact_removed_rows(self) -> None:
+        rows, sources, caller, catalog = scheduler_cancellation_handoff_fixture()
+
+        retained = manifest(*(row._replace(authority_operation_id="RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.DrainCancellationAsync") for row in rows))
+
+        for row in rows:
+            with self.subTest(callee=row.callee):
+                reach, _ = CLASSIFIER.prove_reach(row, "-", frozenset((caller, catalog)), sources, retained)
+
+                self.assertIsNotNone(reach)
+
+                for field, value in (("root_type", "Other"), ("authority_operation_id", row.authority_operation_id + ".Other"),
+                    ("source_path", "src/Other.cs"), ("enclosing_type", "Other"), ("member", "Other"),
+                    ("member_identity", "M:Other"), ("kind", "ProviderCall"), ("callee", "System.IO.File.Delete"),
+                    ("syntax_ordinal", "1"), ("syntax_sha256", "F" * 64), ("work", "A" * 64),
+                    ("effect", "B" * 64), ("admitted_work_kind", "GuildStorage")):
+                    with self.subTest(field=field):
+                        refused, _ = CLASSIFIER.prove_reach(row._replace(**{field: value}), "-", frozenset((caller, catalog)), sources, retained)
+
+                        self.assertIsNone(refused)
+
+                refused, _ = CLASSIFIER.prove_reach(row, "+", frozenset((caller, catalog)), sources, retained)
+
+                self.assertIsNone(refused)
+
+    def test_scheduler_cancellation_handoff_requires_edited_caller_and_exact_source_transition(self) -> None:
+        rows, sources, caller, catalog = scheduler_cancellation_handoff_fixture()
+
+        retained = manifest(*(row._replace(authority_operation_id="RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.DrainCancellationAsync") for row in rows))
+
+        for edited in ((), (catalog,)):
+            with self.subTest(edited=edited):
+                self.assertIsNone(CLASSIFIER.prove_reach(rows[0], "-", frozenset(edited), sources, retained)[0])
+
+        # The CLI edit set contains authored src files, not the test-owned catalog. Its exact Git transition is checked separately.
+        self.assertIsNotNone(CLASSIFIER.prove_reach(rows[0], "-", frozenset((caller,)), sources, retained)[0])
+
+        self.assertIsNone(CLASSIFIER.prove_reach(rows[0], "-", frozenset((caller, catalog)), None, retained)[0])
+
+        for path in (caller, catalog):
+            for revision in ("base", "head"):
+                for mutation in ("absent", "empty", "same-as-other"):
+                    with self.subTest(path=path, revision=revision, mutation=mutation):
+                        base, head = dict(sources.base_texts), dict(sources.head_texts)
+
+                        target, other = (base, head) if revision == "base" else (head, base)
+
+                        if mutation == "absent":
+                            target.pop(path)
+                        else:
+                            target[path] = "" if mutation == "empty" else other[path]
+
+                        self.assertIsNone(CLASSIFIER.prove_reach(rows[0], "-", frozenset((caller, catalog)), FakeSources(base, head), retained)[0])
+
+        for old, new in (
+            ("DrainCancellationAsync(work, scope.ServiceProvider", "DrainCancellationAsync(scope.ServiceProvider"),
+            ("DrainCancellationAsync(IGrimoireWorkLease work,", "DrainCancellationAsync(object work,"),
+            ("work.MaintenanceRevocation.ThrowIfCancellationRequested();", ""),
+            ("policy.CreateRecoveryAsync(", "policy.OtherAsync("),
+            ("RequestDisabledCancellationAsync", "OtherAsync"),
+        ):
+            with self.subTest(marker=old):
+                head = dict(sources.head_texts)
+
+                head[caller] = head[caller].replace(old, new)
+
+                self.assertIsNone(CLASSIFIER.prove_reach(rows[0], "-", frozenset((caller, catalog)), FakeSources(sources.base_texts, head), retained)[0])
+
+        # The replacement in a different caller is not evidence for the disabled-cancellation path.
+        head = dict(sources.head_texts)
+
+        head[caller] = head[caller].replace("RequestDisabledCancellationAsync", "OtherAsync")
+
+        head[caller] += "\nprivate async Task RequestDisabledCancellationAsync(CancellationToken ct) { Other(); }"
+
+        self.assertIsNone(CLASSIFIER.prove_reach(rows[0], "-", frozenset((caller, catalog)), FakeSources(sources.base_texts, head), retained)[0])
+
+    def test_scheduler_cancellation_handoff_classifies_source_removals_only_with_the_retained_reads(self) -> None:
+        rows, sources, caller, catalog = scheduler_cancellation_handoff_fixture()
+
+        reviewed = CLASSIFIER.parse_manifest(MANIFEST_PATH.read_text(encoding="utf-8"), "reviewed")
+
+        work = reviewed.resolve(rows[0].work)[0]
+
+        committed = manifest(work, *rows)
+
+        retained = [row._replace(authority_operation_id="RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.DrainCancellationAsync") for row in rows]
+
+        for missing in (None, 0, 1, 2):
+            with self.subTest(missing=missing):
+                regenerated = manifest(work, *(row for index, row in enumerate(retained) if index != missing))
+
+                result = classify(committed, regenerated, edited=(caller,), parity=committed, sources=sources)
+
+                for index, row in enumerate(rows):
+                    self.assertEqual("d" if index == missing else "r", result[("-", row)].label)
+
+                    self.assertEqual("source", result[("-", row)].stage)
+
+        without_parity = classify(committed, manifest(work, *retained), edited=(caller,), sources=sources)
+
+        for row in rows:
+            self.assertEqual("d", without_parity[("-", row)].label)
+
+    def test_scheduler_cancellation_handoff_requires_each_exact_retained_counterpart(self) -> None:
+        rows, sources, caller, catalog = scheduler_cancellation_handoff_fixture()
+
+        for row in rows:
+            retained = row._replace(authority_operation_id="RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.DrainCancellationAsync")
+
+            for observation in (None, manifest(), manifest(retained, retained)):
+                with self.subTest(callee=row.callee, observation=observation):
+                    self.assertIsNone(CLASSIFIER.prove_reach(row, "-", frozenset((caller, catalog)), sources, observation)[0])
+
+            for field in CLASSIFIER.Row._fields:
+                with self.subTest(callee=row.callee, field=field):
+                    changed = retained._replace(**{field: getattr(retained, field) + ".Other"})
+
+                    self.assertIsNone(CLASSIFIER.prove_reach(row, "-", frozenset((caller, catalog)), sources, manifest(changed))[0])
 
     def test_a_reviewed_call_chain_does_not_explain_a_row_whose_call_was_already_there_at_the_base(self) -> None:
         added = site("src/Unedited.cs", member="ProveAbsent")
@@ -1094,11 +1254,14 @@ class ClassifyManifestDiffTests(unittest.TestCase):
         texts = {path: (REPOSITORY / path).read_text() for path in CLASSIFIER.WORKSPACE_LEASE_BASE_SOURCE_SHA256}
         source_hashes = {path: hashlib.sha256(text.encode()).hexdigest() for path, text in texts.items()}
         sources = FakeSources(base=texts, head=texts)
-        # Exercise the source guard with this test's current authored fixture corpus. The final observation wrapper separately
-        # validates the real pinned baseline hashes from the contract against the verified exact baseline snapshot.
+        terminal_hashes = {path: source_hashes[path] for path in CLASSIFIER.WORKSPACE_LEASE_TERMINAL_SOURCE_SHA256}
+        # This synthetic fixture defines both sides as the same current authored corpus. Pin both guard layers to those
+        # fixture bytes only within this test; production keeps the contract's historical baseline and terminal digests.
+        # The final observation wrapper separately validates those real pins against the verified exact baseline snapshot.
         reviewed = CLASSIFIER.parse_manifest(MANIFEST_PATH.read_text(), "reviewed")
 
-        with patched("WORKSPACE_LEASE_BASE_SOURCE_SHA256", source_hashes):
+        with patched("WORKSPACE_LEASE_BASE_SOURCE_SHA256", source_hashes), \
+            patched("WORKSPACE_LEASE_TERMINAL_SOURCE_SHA256", terminal_hashes):
             for row in rows:
                 retained = site("src/Retained.cs", root=row.root_type, operation=row.authority_operation_id)
                 references = [candidate for candidate in rows if candidate.capsule_id in row.references]
@@ -1119,11 +1282,22 @@ class ClassifyManifestDiffTests(unittest.TestCase):
                 self.assertEqual(expected_rule, item.rule)
 
                 if row == rows[0]:
-                    chain = "src/RetroDownfall.Arcanum.Infrastructure/Workspaces/WorkspaceMutationPlan.cs"
-                    drift = FakeSources(base={**texts, chain: "changed call-chain source"}, head=texts)
-                    result = CLASSIFIER.classify(old, new, frozenset(), parity, drift, old)
+                    # Every baseline chain source remains required, even when it is not this row's terminal file.
+                    for path in source_hashes:
+                        for altered in (None, "changed call-chain source"):
+                            drift = FakeSources(base={**texts, path: altered}, head=texts)
+                            result = CLASSIFIER.classify(old, new, frozenset(), parity, drift, old)
 
-                    self.assertNotEqual("c", next(item for item in result if item.row == row).label)
+                            self.assertNotEqual("c", next(item for item in result if item.row == row).label, path)
+
+                    # Terminal sources must remain exact on the head side too. A real candidate edit cannot borrow
+                    # the synthetic fixture's equal-source classification merely by retaining its historical base.
+                    for path in terminal_hashes:
+                        for altered in (None, "changed terminal source"):
+                            drift = FakeSources(base=texts, head={**texts, path: altered})
+                            result = CLASSIFIER.classify(old, new, frozenset(), parity, drift, old)
+
+                            self.assertNotEqual("c", next(item for item in result if item.row == row).label, path)
 
                 for changed in (row._replace(member="Other"), row._replace(syntax_ordinal="999"),
                     row._replace(syntax_sha256="A" * 64), row._replace(effect="B" * 64),
@@ -1529,14 +1703,25 @@ class ClassifyManifestDiffTests(unittest.TestCase):
             *(("GuildLocalHostReadiness", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalHostReadiness." + member)
                 for member in ("RequireExecutionReady", "StartAsync", "StopAsync")),
             *(("GuildLocalQuestScheduler", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler." + member)
-                for member in ("ExecuteAsync", "RunAdmittedAsync", "RunCommittedAsync", "Schedule", "StartAsync")),
+                for member in ("ExecuteAsync", "RunAdmittedAsync", "RunRemoteAdmittedAsync", "DrainCancellationAsync", "RunCommittedAsync", "Schedule", "StartAsync")),
+            *(("GuildInboundPeerReloadService", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildInboundPeerReloadService." + member)
+                for member in ("StartAsync", "ExecuteAsync", "OnChanged")),
         }
 
         actual = {(entry.root_type, entry.operation) for entry in CLASSIFIER.NEW_ROOTS
-            if entry.root_type in ("GuildLocalHostReadiness", "GuildLocalQuestScheduler")
+            if entry.root_type in ("GuildLocalHostReadiness", "GuildLocalQuestScheduler", "GuildInboundPeerReloadService")
                 or entry.operation.endswith(".ExecuteGuildAsync")}
 
         self.assertEqual(expected, actual)
+
+        # These declared traversal roots currently have no physical sites. They must not grant a new-root
+        # explanation to a future physical effect merely because their lifecycle methods already exist.
+        for member in ("StopAsync", "Dispose"):
+            operation = "RetroDownfall.Arcanum.Infrastructure.Guild.GuildInboundPeerReloadService." + member
+            unexpected = site("src/Unedited.cs", root="GuildInboundPeerReloadService", operation=operation)
+            result = classify(manifest(), manifest(unexpected))
+
+            self.assertEqual("d", result[("+", unexpected)].label, member)
 
         self.assertNotIn(("GuildLocalQuestScheduler",
             "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync"), actual)

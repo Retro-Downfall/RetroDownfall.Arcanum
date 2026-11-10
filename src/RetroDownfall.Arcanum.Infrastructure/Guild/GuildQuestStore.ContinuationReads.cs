@@ -7,7 +7,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 /// <summary>Immutable attribution only; neither this record nor its labels convey execution authority.</summary>
 internal sealed record GuildContinuationStored(Guid QuestId, Guid ContinuationId, GuildAuthorityKind Authority,
-    GuildProducerIdentity? Producer, GuildDataRef ContentRef, long AcceptedRevision, DateTimeOffset CreatedAt);
+    GuildProducerIdentity? Producer, GuildDataRef ContentRef, long AcceptedRevision, DateTimeOffset CreatedAt,
+    string? PeerId = null, string? PeerGrantRevision = null);
 
 internal sealed partial class GuildQuestStore
 {
@@ -59,14 +60,18 @@ internal sealed partial class GuildQuestStore
                 WHERE ContentId=(SELECT ContentId FROM guild_continuations WHERE QuestId=$quest AND ContinuationId=$continuation)
             )
             SELECT a.AuthorityCode,a.ProducerAgentId,a.ProducerRunId,a.ProducerQuestId,a.OperatorPrincipalId,
-                a.ContentId,a.AcceptedRevision,a.CreatedAtUtc,c.Digest,c.MimeType,c.ByteLength,c.Erased
+                a.ContentId,a.AcceptedRevision,a.CreatedAtUtc,c.Digest,c.MimeType,c.ByteLength,c.Erased,a.PeerId,a.PeerGrantRevision
             FROM guild_continuations a JOIN content c ON c.ContentId=a.ContentId
             WHERE a.QuestId=$quest AND a.ContinuationId=$continuation
                 AND typeof(a.AuthorityCode)='integer' AND a.AuthorityCode IN(0,1,2)
                 AND (a.AuthorityCode<>2 OR EXISTS(SELECT 1 FROM guild_quests parent
                     WHERE parent.Id=$parent AND parent.Id=a.ProducerQuestId
                         AND parent.AgentId=a.ProducerAgentId AND parent.RunId=a.ProducerRunId
-                        AND parent.RootQuestId=$root AND parent.InstallationGeneration=$generation))
+                        AND parent.RootQuestId=$root AND parent.InstallationGeneration=$generation)
+                    OR (a.PeerId IS NOT NULL AND typeof(a.PeerId)='text' AND length(CAST(a.PeerId AS BLOB)) BETWEEN 1 AND 65536
+                        AND typeof(a.PeerGrantRevision)='text' AND length(a.PeerGrantRevision)=64
+                        AND EXISTS(SELECT 1 FROM guild_inbound_tasks inbound WHERE inbound.QuestId=a.QuestId
+                            AND inbound.PeerId=a.PeerId AND inbound.GrantRevision=a.PeerGrantRevision)))
                 AND (a.ProducerAgentId IS NULL OR (typeof(a.ProducerAgentId)='text' AND length(CAST(a.ProducerAgentId AS BLOB))=36))
                 AND (a.ProducerRunId IS NULL OR (typeof(a.ProducerRunId)='text' AND length(CAST(a.ProducerRunId AS BLOB))=36))
                 AND (a.ProducerQuestId IS NULL OR (typeof(a.ProducerQuestId)='text' AND length(CAST(a.ProducerQuestId AS BLOB))=36))
@@ -122,6 +127,9 @@ internal sealed partial class GuildQuestStore
             else if (authorityKind == GuildAuthorityKind.Parent && agent is not null && run is not null
                 && producerQuest == quest.Quest.ParentQuestId && producerQuest is not null && principal is null)
                 producer = new(GuildProducerKind.Run, agent, run, producerQuest, null, null, null, null);
+            else if (authorityKind == GuildAuthorityKind.Parent && agent is null && run is null && producerQuest is null
+                && principal is null && !reader.IsDBNull(12) && !reader.IsDBNull(13) && quest.Quest.ParentQuestId is null)
+                producer = null;
             else
                 return Unavailable;
 
@@ -129,7 +137,8 @@ internal sealed partial class GuildQuestStore
                 Convert.ToHexString((byte[])reader.GetValue(8)), reader.GetString(9), reader.GetInt64(10), reader.GetInt32(11) == 1);
 
             GuildContinuationStored stored = new(quest.Quest.Id, continuationId, authorityKind, producer, content,
-                reader.GetInt64(6), UtcInstantText.Parse(reader.GetString(7)));
+                reader.GetInt64(6), UtcInstantText.Parse(reader.GetString(7)),
+                reader.IsDBNull(12) ? null : reader.GetString(12), reader.IsDBNull(13) ? null : reader.GetString(13));
 
             return await reader.ReadAsync(ct).ConfigureAwait(false) ? Unavailable : stored;
         }

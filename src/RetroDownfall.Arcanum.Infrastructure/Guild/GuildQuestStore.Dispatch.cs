@@ -52,7 +52,13 @@ internal sealed partial class GuildQuestStore
 
                 Guid? localChild = null;
 
-                if (localExecution is not null)
+                await using SqliteCommand remoteKind = Command(connection, transaction, "SELECT EXISTS(SELECT 1 FROM guild_remote_executions WHERE QuestId=$quest)");
+
+                Add(remoteKind, "$quest", Id(row.Quest.Id));
+
+                bool remoteExecution = Equals(1L, await remoteKind.ExecuteScalarAsync(token).ConfigureAwait(false));
+
+                if (localExecution is not null && !remoteExecution)
                 {
                     Result<GuildLocalExecutionBinding> binding = await GuildLocalExecutionStore.ReadWithinAsync(
                         connection, transaction, row.Quest.Id, token).ConfigureAwait(false);
@@ -228,9 +234,16 @@ internal sealed partial class GuildQuestStore
         SqliteConnection connection, SqliteTransaction transaction, SignetAuthority.QuestTransaction signets,
         GuildQuestDriver driver, bool requireLease, bool allowCancelling, CancellationToken ct)
     {
-        Result<GuildGrant> live = await signets.VerifyAsync(driver.Execution, ct).ConfigureAwait(false);
+        bool cleanup = driver.Caller?.Kind == GuildCallerKind.HostReceipt;
 
-        if (live.IsFailure) return live.Error;
+        if (cleanup && !allowCancelling) return ClosedDispatch;
+
+        if (!cleanup)
+        {
+            Result<GuildGrant> live = await signets.VerifyAsync(driver.Execution, ct).ConfigureAwait(false);
+
+            if (live.IsFailure) return live.Error;
+        }
 
         Result<GuildQuestStored> found = await ReadWithinAsync(connection, transaction, driver.Execution.QuestId, ct).ConfigureAwait(false);
 
@@ -245,13 +258,24 @@ internal sealed partial class GuildQuestStore
         GuildCallerContext caller = driver.Caller ?? new(GuildCallerKind.Run, signet.Value.Binding.OriginPrincipalId, driver.Execution.RunId,
             policy.InstallationGeneration, driver.Execution);
 
-        if (caller.Kind != GuildCallerKind.Run || !ReferenceEquals(caller.Execution, driver.Execution)
-            || caller.PrincipalId != signet.Value.Binding.OriginPrincipalId || caller.InstallationGeneration != policy.InstallationGeneration)
-            return new Error(ErrorCodes.Guild.AuthorityMismatch, "The driver does not bind its authenticated Run caller.");
+        if (cleanup)
+        {
+            if (policy is not GuildLocalHostPolicy host) return Unavailable;
 
-        Result visible = await RequireVisibleAsync(connection, transaction, caller, row, ct).ConfigureAwait(false);
+            Result permitted = await host.AuthorizeRemoteCleanupWithinAsync(driver, row, connection, transaction, ct).ConfigureAwait(false);
 
-        if (visible.IsFailure) return visible.Error;
+            if (permitted.IsFailure) return permitted.Error;
+        }
+        else
+        {
+            if (caller.Kind != GuildCallerKind.Run || !ReferenceEquals(caller.Execution, driver.Execution)
+                || caller.PrincipalId != signet.Value.Binding.OriginPrincipalId || caller.InstallationGeneration != policy.InstallationGeneration)
+                return new Error(ErrorCodes.Guild.AuthorityMismatch, "The driver does not bind its authenticated Run caller.");
+
+            Result visible = await RequireVisibleAsync(connection, transaction, caller, row, ct).ConfigureAwait(false);
+
+            if (visible.IsFailure) return visible.Error;
+        }
 
         if (driver.Execution.SignetId != row.Quest.SignetId || driver.Execution.AgentId != row.Quest.AgentId
             || driver.Execution.RunId != row.Quest.RunId || driver.Execution.RootQuestId != row.Quest.RootQuestId)

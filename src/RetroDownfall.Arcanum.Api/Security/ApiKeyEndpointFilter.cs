@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using RetroDownfall.Arcanum.Api.A2A;
 
 namespace RetroDownfall.Arcanum.Api.Security;
 
@@ -24,6 +25,8 @@ public sealed class ApiKeyEndpointFilter(ApiKeyAuthenticator authenticator) : IE
         {
             return ApiKeyAuthenticator.Unauthorized(context.HttpContext);
         }
+
+        using IDisposable? peerScope = A2APeerAuthenticator.EnterScope(context.HttpContext);
 
         return await next(context).ConfigureAwait(false);
     }

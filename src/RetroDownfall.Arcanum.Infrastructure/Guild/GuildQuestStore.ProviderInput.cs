@@ -80,9 +80,20 @@ internal sealed partial class GuildQuestStore
             files.Add(new(file.Name, body.Value));
         }
 
+        GuildAuthorityKind goalAuthority = quest.Quest.ParentQuestId is null ? GuildAuthorityKind.Operator : GuildAuthorityKind.Parent;
+
+        await using (SqliteCommand provenance = Command(connection, transaction,
+            "SELECT PeerId FROM guild_signets WHERE QuestId=$quest AND PeerId IS NOT NULL"))
+        {
+            Add(provenance, "$quest", Id(quest.Quest.Id));
+
+            if (await provenance.ExecuteScalarAsync(ct).ConfigureAwait(false) is string) goalAuthority = GuildAuthorityKind.Parent;
+        }
+
         return new GuildLocalInferenceMaterialization(goal.Value, files.ToImmutable(), binding.Value, dispatch)
         {
             CampaignId = quest.Quest.CampaignId,
+            GoalAuthority = goalAuthority,
         };
     }
 

@@ -3,9 +3,11 @@ using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Primitives;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
+using RetroDownfall.Arcanum.Api.A2A;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -53,6 +55,18 @@ public sealed class ApiKeyAuthenticator(
     private sealed record FailedRefresh(long Generation, long FailedAtTimestamp);
 
     public async ValueTask<bool> IsAuthorizedAsync(HttpContext httpContext)
+    {
+        if (httpContext.GetEndpoint()?.Metadata.GetMetadata<A2APeerRouteMetadata>() is { } route)
+        {
+            A2APeerAuthenticator? resolver = httpContext.RequestServices.GetService<A2APeerAuthenticator>();
+
+            return resolver is not null && await resolver.IsAuthorizedAsync(this, httpContext, route).ConfigureAwait(false);
+        }
+
+        return await IsOperatorAuthorizedAsync(httpContext).ConfigureAwait(false);
+    }
+
+    internal async ValueTask<bool> IsOperatorAuthorizedAsync(HttpContext httpContext)
     {
         int maxHeaderUtf16 = ArcanumSettingClamps.MaxApiKeyHeaderUtf16Chars(
             ArcanumRuntimeDefaults.SecurityMaxApiKeyHeaderUtf16Chars);
@@ -359,6 +373,16 @@ public sealed class ApiKeyAuthenticator(
     /// </summary>
     public static IResult Unauthorized(HttpContext httpContext)
     {
+        if (A2APeerAuthenticator.RequiresPeerGrant(httpContext))
+        {
+            ApiResponse<string> refusal = new(null, false,
+                new Error(ErrorCodes.Guild.PeerGrantRequired, "A configured inbound peer grant is required for A2A work."),
+                Activity.Current?.Id ?? httpContext.TraceIdentifier);
+
+            return Results.Json(refusal, ArcanumJsonContext.Default.ApiResponseString,
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
         if (httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase))
         {
             return Results.Json(

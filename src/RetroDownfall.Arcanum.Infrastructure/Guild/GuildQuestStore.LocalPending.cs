@@ -7,7 +7,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 internal sealed record GuildLocalPendingWork(GuildQuestStored Quest, LongRunningOperation Operation,
-    GuildDispatchRequest? Request, bool RequiresAttention);
+    GuildDispatchRequest? Request, bool RequiresAttention, bool IsRemote = false);
 
 internal sealed partial class GuildQuestStore
 {
@@ -71,7 +71,7 @@ internal sealed partial class GuildQuestStore
 
                 // Only a generic crash park at a proven frontier is reopened. Attempts and accepted
                 // request/child identities stay intact; explicit runtime interruption remains parked.
-                if (pending.Value.Operation.TerminalErrorCode != ErrorCodes.Guild.ReconciliationRequired) return UncertainDispatch;
+                if (!pending.Value.IsRemote && pending.Value.Operation.TerminalErrorCode != ErrorCodes.Guild.ReconciliationRequired) return UncertainDispatch;
 
                 if (!await LongRunningOperationStore.TryTransitionWithinAsync(connection, transaction, request.OperationId,
                     expectedOperationRevision, null, LongRunningOperationState.Pending, now, null, token).ConfigureAwait(false)) return RevisionConflict;
@@ -102,6 +102,9 @@ internal sealed partial class GuildQuestStore
         LongRunningOperation? operation = await LongRunningOperationStore.ReadWithinAsync(connection, transaction, row.Quest.OperationId, ct).ConfigureAwait(false);
 
         if (operation is null || operation.Kind != LongRunningOperationKinds.GuildQuest) return Unavailable;
+
+        if (await IsRemoteWithinAsync(connection, transaction, row.Quest.Id, ct).ConfigureAwait(false))
+            return await ReadRemotePendingWithinAsync(connection, transaction, row, operation, now, ct).ConfigureAwait(false);
 
         GuildLocalPendingWork parked = new(row, operation, null, true);
 

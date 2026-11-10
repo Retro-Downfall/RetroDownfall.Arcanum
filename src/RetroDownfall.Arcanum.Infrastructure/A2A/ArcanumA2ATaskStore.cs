@@ -7,6 +7,9 @@ using A2ATaskStatus = A2A.TaskStatus;
 
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 
 namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 
@@ -31,7 +34,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 /// </remarks>
 internal sealed class ArcanumA2ATaskStore(
     IServiceScopeFactory? scopeFactory,
-    ILogger<ArcanumA2ATaskStore> logger) : ITaskStore
+    ILogger<ArcanumA2ATaskStore> logger,
+    IOptionsMonitor<ArcanumSettings>? settings = null) : ITaskStore
 {
     /// <summary>
     /// How many tasks this process keeps in memory. A code-owned retention bound, not an operator knob:
@@ -52,12 +56,34 @@ internal sealed class ArcanumA2ATaskStore(
 
     private long _saves;
 
+    internal IServiceScopeFactory? GuildScopeFactory => scopeFactory;
+
+    internal bool GuildEnabled => GuildA2AAdapter.Enabled(scopeFactory, settings);
+
     public async Task<AgentTask?> GetTaskAsync(string taskId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(taskId))
         {
             return null;
         }
+
+        if (GuildEnabled)
+        {
+            GuildInboundPeer? peer = GuildA2AAdapter.Capture(scopeFactory);
+
+            if (peer is null) return null;
+
+            try
+            {
+                return GuildA2AAdapter.Project(await GuildA2AAdapter.ReadAsync(scopeFactory, peer, taskId, cancellationToken).ConfigureAwait(false));
+            }
+            catch (A2AException)
+            {
+                return null;
+            }
+        }
+
+        if (await GuildA2AAdapter.IsGuildTaskAsync(scopeFactory, taskId, cancellationToken).ConfigureAwait(false)) return null;
 
         if (_live.TryGetValue(taskId, out RetainedTask? live))
         {
@@ -126,17 +152,22 @@ internal sealed class ArcanumA2ATaskStore(
         }
     }
 
-    public Task SaveTaskAsync(string taskId, AgentTask task, CancellationToken cancellationToken = default)
+    public async Task SaveTaskAsync(string taskId, AgentTask task, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
 
         ArgumentNullException.ThrowIfNull(task);
 
+        if (GuildEnabled || await GuildA2AAdapter.IsGuildTaskAsync(scopeFactory, taskId, cancellationToken).ConfigureAwait(false))
+        {
+            _live.TryRemove(taskId, out _);
+
+            return;
+        }
+
         _live[taskId] = new RetainedTask(Interlocked.Increment(ref _saves), task);
 
         Evict();
-
-        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -209,11 +240,24 @@ internal sealed class ArcanumA2ATaskStore(
     /// page, or declines the artifacts gets what it asked for rather than everything this process holds.
     /// </para>
     /// </remarks>
-    public Task<ListTasksResponse> ListTasksAsync(
+    public async Task<ListTasksResponse> ListTasksAsync(
         ListTasksRequest request,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        if (GuildEnabled)
+        {
+            return await ListGuildAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+
+        foreach (string taskId in _live.Keys)
+        {
+            if (await GuildA2AAdapter.IsGuildTaskAsync(scopeFactory, taskId, cancellationToken).ConfigureAwait(false))
+            {
+                _live.TryRemove(taskId, out _);
+            }
+        }
 
         // Newest first, with the id as a tiebreak so a cursor means the same thing on every page even
         // when two tasks carry the same status timestamp.
@@ -242,13 +286,44 @@ internal sealed class ArcanumA2ATaskStore(
 
         int next = cursor + page.Count;
 
-        return Task.FromResult(new ListTasksResponse
+        return new ListTasksResponse
         {
             Tasks = page,
             PageSize = page.Count,
             TotalSize = matches.Length,
             NextPageToken = next < matches.Length ? next.ToString(CultureInfo.InvariantCulture) : string.Empty,
-        });
+        };
+    }
+
+    private async Task<ListTasksResponse> ListGuildAsync(ListTasksRequest request, CancellationToken ct)
+    {
+        GuildInboundPeer? peer = GuildA2AAdapter.Capture(scopeFactory);
+
+        if (peer is null || scopeFactory is null) return new() { Tasks = [], PageSize = 0 };
+
+        string? after = GuildA2AAdapter.DecodeCursor(request.PageToken);
+
+        int pageSize = request.PageSize is > 0 ? Math.Min(request.PageSize.Value, MaxListPageSize) : DefaultListPageSize;
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        GuildInboundHost? host = scope.ServiceProvider.GetService<GuildInboundHost>();
+
+        if (host is null) return new() { Tasks = [], PageSize = 0 };
+
+        var result = await host.ListAsync(peer, after, pageSize, request.IncludeArtifacts == true, ct).ConfigureAwait(false);
+
+        if (result.IsFailure || !GuildA2AAdapter.Authenticates(scopeFactory, peer)) return new() { Tasks = [], PageSize = 0 };
+
+        List<AgentTask> tasks = [.. result.Value.Items.Select(GuildA2AAdapter.Project)
+            .Where(task => Matches(task, request)).Select(task => Project(task, request))];
+
+        return new()
+        {
+            Tasks = tasks,
+            PageSize = tasks.Count,
+            NextPageToken = GuildA2AAdapter.EncodeCursor(result.Value.NextTaskId),
+        };
     }
 
     private static bool Matches(AgentTask task, ListTasksRequest request)

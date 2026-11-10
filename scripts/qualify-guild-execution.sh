@@ -36,6 +36,8 @@ filter+='|FullyQualifiedName~Owner_bound_ambient_recovery_identity_preserves_sem
 filter+='|FullyQualifiedName~Self_admitted_task_handoff_uses_its_unique_declared_catalog_owner|FullyQualifiedName~Host_owned_task_handoff_uses_its_unique_declared_catalog_owner'
 filter+='|FullyQualifiedName~ManifestNullEffectWorkOnlyConsumersResolveOneExactAcquisitionContext|FullyQualifiedName~ManifestNullEffectWorkOnlyConsumersPreserveStrictFrontierBoundaries'
 filter+='|FullyQualifiedName~Authored_overrides_of_framework_virtual_members_that_reach_a_site_are_exactly_the_reviewed_types|FullyQualifiedName~Authored_disposals_that_reach_a_site_and_belong_to_the_container_are_exactly_the_reviewed_types'
+filter+='|FullyQualifiedName~GuildA2A|FullyQualifiedName~GuildProgress|FullyQualifiedName~GuildAbsentProgress|FullyQualifiedName~GuildNamedHttpFactory|FullyQualifiedName~GuildMetadata'
+filter+='|FullyQualifiedName~Guild_transport_duration_metric_requires_|FullyQualifiedName~Guild_background_cleanup_reviews_|FullyQualifiedName~OptionsMonitorSubscriptionCleanupRequiresExactUnreplacedDefaultRegistration'
 dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
   -c Release --filter "$filter" --blame-hang-timeout 15m --blame-hang-dump-type none \
   --logger 'trx;LogFileName=guild-execution.trx' --logger 'console;verbosity=normal' --results-directory "$results"
@@ -59,6 +61,12 @@ esac
 python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.trx" \
   --summary-json "$results/evidence-summary.json" \
   RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests \
+  RetroDownfall.Arcanum.Tests.Guild.GuildInboundPeerRegistryTests \
+  RetroDownfall.Arcanum.Tests.Guild.GuildInboundPeerDenialJournalTests \
+  RetroDownfall.Arcanum.Tests.Guild.GuildInboundSchemaTests \
+  RetroDownfall.Arcanum.Tests.Security.A2APeerAuthenticationTests \
+  RetroDownfall.Arcanum.Tests.Configuration.A2AInboundPeerConfigurationTests \
+  RetroDownfall.Arcanum.Tests.A2A.A2AClientTests \
   RetroDownfall.Arcanum.Tests.Guild.GuildQuestStoreTests \
   RetroDownfall.Arcanum.Tests.Guild.GuildLocalExecutionSchemaTests \
   RetroDownfall.Arcanum.Tests.Data.Schema.GuildCancellationSchemaTests \
@@ -72,6 +80,41 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.t
   RetroDownfall.Arcanum.Tests.Guild.WorkspaceLeaseDirectoryCreationTests \
   RetroDownfall.Arcanum.Tests.Guild.WorkspaceLeaseDirectoryRemovalTests \
   RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceMutationFenceWriterTests \
+  --required-case RetroDownfall.Arcanum.Tests.Api.GuildEndpointTests.Mounted_peer_work_rejects_master_before_binding_invalid_body \
+  --required-case RetroDownfall.Arcanum.Tests.Api.GuildEndpointTests.Remote_resolution_is_operator_authenticated_and_rejects_unconfigured_destination \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_task_store_checks_peer_binding_before_serving_a_cached_legacy_task \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_task_store_rehydrates_only_current_peer_owned_durable_tasks_after_restart \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_two_peer_task_guessing_matches_absence_before_and_after_restart \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_stream_captures_verified_peer_and_stops_before_disclosure_after_revocation \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_three_hop_cycle_keeps_received_chain_in_checkpoint_and_onward_dispatch \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_callback_final_handoff_rechecks_peer_after_DNS \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_create_push_after_Sending_starts_callback_observation \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_push_observer_rechecks_standing_authority_after_DNS \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_callback_watch_requires_a_registered_peer_reference_and_host_issued_capability \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Remote_discovery_rechecks_run_authority_at_the_physical_request \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Remote_discovery_rechecks_transport_policy_after_DNS_resolution \
+  --required-case RetroDownfall.Arcanum.Tests.A2A.A2AClientTests.Guild_card_body_finishes_inside_its_physical_discovery_admission \
+  --required-case RetroDownfall.Arcanum.Tests.A2A.A2AClientTests.Guild_interface_DNS_rechecks_the_actual_destination_inside_its_admission \
+  --required-case RetroDownfall.Arcanum.Tests.A2A.A2AClientTests.Guild_transport_closes_stream_and_admission_before_authoritative_settlement_query \
+  --required-case RetroDownfall.Arcanum.Tests.A2A.A2AClientTests.Guild_transport_read_after_cancel_requires_fresh_admission \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Inbound_binding_failure_rolls_back_session_signet_budget_and_local_execution \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Inbound_cancellation_replay_reuses_the_accepted_CAS_before_reading_current_revision \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Peer_disable_commits_canonical_cancellation_and_revocation_before_reload_returns_and_reenable_never_revives_root \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Durable_denial_survives_database_failure_crash_and_reverted_peer_grant \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Failed_peer_denial_marker_publication_keeps_the_credential_snapshot_unavailable \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Peer_reload_shutdown_joins_a_callback_that_already_admitted_durable_work \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Remote_callback_HTTP_commits_receipt_before_acknowledgement_even_with_a_live_waiter \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Remote_callback_current_authority_and_source_close_before_receipt \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Remote_port_owns_one_Quest_and_retains_unknown_cost_without_a_second_lifecycle \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Remote_cancellation_after_erasure_before_dispatch_does_not_invent_spend \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Qualified_remote_tool_freezes_modes_and_replays_one_child_for_one_logical_call \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Qualified_continue_sending_uses_the_existing_immediate_child_and_one_answer_receipt \
+  --required-case RetroDownfall.Arcanum.Tests.A2A.A2AClientTests.Guild_transport_refuses_unsupported_finite_axes_before_discovery \
+  --required-case RetroDownfall.Arcanum.Tests.A2A.A2AClientTests.Guild_transport_preserves_the_frozen_multi_interface_card_and_uses_the_supported_binding \
+  --required-case RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.GuildA2AStreamingProviderWorkCompletesUnderItsEnumerationFrontiers \
+  --required-case RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.GuildNamedHttpFactoryClosesOnlyItsExactAuthoredConfiguration \
+  --required-case RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.GuildMetadataLookupRequiresAnExplicitClosedDictionaryOrigin \
+  --required-case RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.OptionsMonitorSubscriptionCleanupRequiresExactUnreplacedDefaultRegistration \
   --required-case RetroDownfall.Arcanum.Tests.Intelligence.WizardIntelligenceProviderTests.Guild_wizard_entry_refuses_unknown_binding_without_ambient \
   --required-case RetroDownfall.Arcanum.Tests.Intelligence.WizardIntelligenceProviderTests.Guild_ordinary_context_path_is_unavailable_before_provider_or_embedding_effects \
   --required-case RetroDownfall.Arcanum.Tests.Intelligence.WizardIntelligenceProviderTests.Spell_parent_pivot_during_hydration_never_discloses_external_content_to_provider \

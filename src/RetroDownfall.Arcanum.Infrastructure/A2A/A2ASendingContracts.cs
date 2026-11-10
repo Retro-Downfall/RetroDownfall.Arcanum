@@ -144,6 +144,33 @@ public static class A2ASendingUsageMetadata
 
     }
 
+    // Guild reads wire keys from the SDK's concrete dictionary storage. Its
+    // struct enumerator does not dispatch an interface slot or stored comparer.
+    internal static A2ARemoteCost ReadGuild(AgentTask? task)
+    {
+        A2ARemoteCost fromTask = ReadGuildMetadata(task?.Metadata);
+
+        return fromTask.IsKnown ? fromTask : ReadGuildMetadata(task?.Status.Message?.Metadata);
+    }
+
+    private static A2ARemoteCost ReadGuildMetadata(Dictionary<string, JsonElement>? metadata)
+    {
+        if (metadata is null) return A2ARemoteCost.Unknown;
+
+        JsonElement namespaced = default;
+
+        JsonElement fallback = default;
+
+        foreach (KeyValuePair<string, JsonElement> entry in metadata)
+        {
+            if (string.Equals(entry.Key, MetadataKey, StringComparison.Ordinal)) namespaced = entry.Value;
+            else if (string.Equals(entry.Key, FallbackMetadataKey, StringComparison.Ordinal)) fallback = entry.Value;
+        }
+
+        return TryReadBlock(namespaced, out A2ARemoteCost primary) ? primary
+            : TryReadBlock(fallback, out A2ARemoteCost generic) ? generic : A2ARemoteCost.Unknown;
+    }
+
     /// <summary>Reads the cost a peer reported in an A2A metadata dictionary.</summary>
     public static A2ARemoteCost Read(IDictionary<string, JsonElement>? metadata)
     {

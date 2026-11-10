@@ -44,9 +44,33 @@ internal sealed partial class GuildQuestStore
 
                 if (row.Quest.Revision != expectedQuestRevision) return RevisionConflict;
 
-                if (row.Quest.GoalRef.ContentErased) return new Error(ErrorCodes.Guild.ContentErased, "The Quest goal was erased.");
+                if (row.Quest.GoalRef.ContentErased)
+                {
+                    bool cleanup = driver.Caller?.Kind == GuildCallerKind.HostReceipt && result.Receipt.Content is null
+                        && result.Body is null && (result.RemoteEvidence is not null
+                            || result.Receipt.Outcome == QuestState.Canceled && result.NoDispatchProven && result.WorkStoppedProven);
+
+                    if (!cleanup || result.Receipt.Outcome is not (QuestState.Canceled or QuestState.Failed))
+                        return new Error(ErrorCodes.Guild.ContentErased, "The Quest goal was erased.");
+
+                    if (result.Receipt.Outcome == QuestState.Failed)
+                    {
+                        var stopped = await ReadRemoteStopReasonWithinAsync(connection, transaction, row.Quest.Id, token).ConfigureAwait(false);
+
+                        if (stopped.IsFailure || stopped.Value != ErrorCodes.Sending.TaskRejected
+                            || result.Receipt.ReasonCode != ErrorCodes.Sending.TaskRejected)
+                            return new Error(ErrorCodes.Guild.ContentErased, "The Quest goal was erased.");
+                    }
+                }
 
                 if (row.Quest.Revision == long.MaxValue) return ExhaustedReceipt;
+
+                if (result.RemoteEvidence is { } remote)
+                {
+                    Result physical = await ApplyRemoteEvidenceWithinAsync(connection, transaction, row, remote, true, token).ConfigureAwait(false);
+
+                    if (physical.IsFailure) return physical.Error;
+                }
 
                 Result proof = await RequireOutcomeProofWithinAsync(connection, transaction, row, admitted.Value.Operation, result, token).ConfigureAwait(false);
 

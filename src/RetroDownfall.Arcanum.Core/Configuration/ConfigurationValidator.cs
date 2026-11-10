@@ -1128,6 +1128,7 @@ public sealed class ConfigurationValidator(
                 "integrations.a2A.outboundCredentialEnvironmentVariable",
                 environmentReferences);
         }
+        ValidateA2AInboundPeers(a2a, environmentReferences, errors);
         ValidateA2A(a2a, errors);
         ValidateWebResearch(webResearch, errors);
         ValidateUniqueEnvironmentVariableReferences(environmentReferences, errors);
@@ -2143,6 +2144,80 @@ public sealed class ConfigurationValidator(
             ValidateModes(skill.InputModes, $"integrations.a2A.skills[{index}].inputModes", errors);
 
             ValidateModes(skill.OutputModes, $"integrations.a2A.skills[{index}].outputModes", errors);
+        }
+    }
+
+    private static void ValidateA2AInboundPeers(
+        ConclaveA2ASettings settings,
+        List<EnvironmentVariableReference> references,
+        List<ConfigurationValidationError> errors)
+    {
+        HashSet<string> peerIds = new(StringComparer.Ordinal);
+
+        A2AInboundPeerSettings[] peers = settings.InboundPeers ?? [];
+
+        for (int index = 0; index < peers.Length; index++)
+        {
+            string pointer = $"integrations.a2A.inboundPeers[{index}]";
+
+            A2AInboundPeerSettings? peer = peers[index];
+
+            if (peer is null)
+            {
+                errors.Add(new ConfigurationValidationError(pointer, "An inbound peer must be an explicit object."));
+
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(peer.PeerId) || peer.PeerId != peer.PeerId.Trim()
+                || peer.PeerId.Any(char.IsControl) || !peerIds.Add(peer.PeerId))
+            {
+                errors.Add(new ConfigurationValidationError(pointer + ".peerId",
+                    "An inbound peer requires a nonblank exact principal id, unique with ordinal comparison."));
+            }
+
+            if (string.IsNullOrWhiteSpace(peer.CredentialEnvironmentVariable)
+                || peer.CredentialEnvironmentVariable != peer.CredentialEnvironmentVariable.Trim())
+            {
+                errors.Add(new ConfigurationValidationError(pointer + ".credentialEnvironmentVariable",
+                    "An inbound peer requires an exact nonblank credential environment-variable reference."));
+            }
+            else
+            {
+                ValidateOptionalEnvironmentVariableName(peer.CredentialEnvironmentVariable,
+                    pointer + ".credentialEnvironmentVariable", errors);
+
+                AddEnvironmentVariableReference(peer.CredentialEnvironmentVariable,
+                    pointer + ".credentialEnvironmentVariable", references);
+            }
+
+            if (!peer.HasExplicitCampaignId || peer.CampaignId == Guid.Empty)
+            {
+                errors.Add(new ConfigurationValidationError(pointer + ".campaignId",
+                    "CampaignId must be an explicit nonempty GUID or null for an unbound invocation."));
+            }
+
+            if (peer.SessionId == Guid.Empty)
+            {
+                errors.Add(new ConfigurationValidationError(pointer + ".sessionId", "A supplied SessionId must be nonempty."));
+            }
+
+            if (peer.WorkspaceId == Guid.Empty)
+            {
+                errors.Add(new ConfigurationValidationError(pointer + ".workspaceId", "A supplied WorkspaceId must be nonempty."));
+            }
+
+            if (peer.Grant is null || peer.Grant.ToGrant() is { IsFailure: true })
+            {
+                errors.Add(new ConfigurationValidationError(pointer + ".grant",
+                    "An inbound peer requires a complete valid Guild grant with explicit budget modes and nullable expiry."));
+            }
+            else if (peer.Grant.Workspaces is { Length: > 0 } workspaces
+                && (peer.WorkspaceId is null || workspaces.Any(item => item.WorkspaceId != peer.WorkspaceId)))
+            {
+                errors.Add(new ConfigurationValidationError(pointer + ".workspaceId",
+                    "Workspace access requires the configured WorkspaceId and every workspace grant must match it."));
+            }
         }
     }
 

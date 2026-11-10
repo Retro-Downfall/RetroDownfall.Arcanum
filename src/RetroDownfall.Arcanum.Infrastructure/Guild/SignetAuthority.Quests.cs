@@ -21,28 +21,51 @@ internal sealed partial class SignetAuthority
             return Task.FromResult(Result<T>.Failure(Mismatch));
         }
 
-        return WithInstallationAsync<T>(true, async token =>
+        return WithInstallationEffectAsync<T>(async token =>
         {
-            Result<Task<Result<T>>> handedOff = await GuildSignetRootGate.RunAsync<Task<Result<T>>>(gate, root,
-                async rootToken =>
-                {
-                    Result<bool> committed = await ExecuteQuestTransactionAsync(root, admission, rootToken).ConfigureAwait(false);
+            var acquired = await GuildSignetRootGate.AcquireAsync(gate, root, token).ConfigureAwait(false);
 
-                    if (committed.IsFailure) return committed.Error;
+            if (acquired.IsFailure) return acquired.Error;
 
-                    if (!committed.Value)
-                    {
-                        return new Error(ErrorCodes.Guild.ReconciliationRequired,
-                            "The recorded effect must be observed; replay cannot authorize another dispatch.");
-                    }
+            using GuildSignetRootGate.RootLease ordering = acquired.Value;
 
-                    rootToken.ThrowIfCancellationRequested();
+            if (!ordering.Enter()) return GuildSignetStore.Unavailable;
 
-                    return Result<Task<Result<T>>>.Success(effect(rootToken));
-                }, token).ConfigureAwait(false);
+            Result<bool> committed = await ExecuteQuestTransactionAsync(root, admission, token).ConfigureAwait(false);
 
-            return handedOff.IsFailure ? handedOff.Error : await handedOff.Value.ConfigureAwait(false);
+            if (committed.IsFailure) return committed.Error;
+
+            if (!committed.Value)
+            {
+                return new Error(ErrorCodes.Guild.ReconciliationRequired,
+                    "The recorded effect must be observed; replay cannot authorize another dispatch.");
+            }
+
+            token.ThrowIfCancellationRequested();
+
+            Task<Result<T>> pending = effect(token);
+
+            return await ReleaseRootAndObserveAsync(ordering, pending).ConfigureAwait(false);
         }, cancellationToken);
+    }
+
+    private static async Task<Result<T>> ReleaseRootAndObserveAsync<T>(GuildSignetRootGate.RootLease ordering,
+        Task<Result<T>> pending)
+    {
+        Result<T> observed;
+
+        try
+        {
+            ordering.Dispose();
+        }
+        finally
+        {
+            // The physical handoff precedes release; even failed ordering cleanup cannot
+            // detach it from the installation work and effect lifetime held by the caller.
+            observed = await pending.ConfigureAwait(false);
+        }
+
+        return observed;
     }
 
     /// <summary>
