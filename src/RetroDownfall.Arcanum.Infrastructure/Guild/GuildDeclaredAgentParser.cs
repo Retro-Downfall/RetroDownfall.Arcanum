@@ -1,12 +1,16 @@
 using System.Collections.Immutable;
 using System.Text;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 internal sealed record GuildParsedAgent(Guid? ExplicitId, string Name, string Description, string Version,
     ImmutableArray<string> Skills, ImmutableArray<string> InputModes, ImmutableArray<string> OutputModes,
-    ImmutableArray<string> RequestedTools, string Guidance);
+    ImmutableArray<string> RequestedTools, string Guidance, bool RequestedToolsSpecified = false)
+{
+    internal ToolNameDiagnostic[] ToolDiagnostics => ToolNameDiagnostics.Removed(RequestedTools);
+}
 
 /// <summary>The declared-agent format is a closed single-line subset, not a general YAML loader.</summary>
 internal static class GuildDeclaredAgentParser
@@ -99,7 +103,7 @@ internal static class GuildDeclaredAgentParser
         }
 
         return Result<GuildParsedAgent>.Success(new GuildParsedAgent(explicitId, name, description, version,
-            skills, inputs, outputs, tools, text[position..]));
+            skills, inputs, outputs, tools, text[position..], fields.ContainsKey("tools")));
     }
 
     private static string ReadLine(string text, ref int position)

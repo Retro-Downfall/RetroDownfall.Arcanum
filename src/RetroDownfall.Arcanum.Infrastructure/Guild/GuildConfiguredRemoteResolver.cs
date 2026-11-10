@@ -152,7 +152,7 @@ internal sealed class GuildConfiguredRemoteResolver(GuildLocalHostPolicy policy,
 
         if (grant.IsFailure) return grant.Error;
 
-        if (!grant.Value.Tools.Contains(new(GuildToolSourceKind.InternalMcp, "arcanum", "dispatch_sending"))
+        if (!grant.Value.Tools.Contains(new(GuildToolSourceKind.InternalMcp, "arcanum", "create_agent_task"))
             || !grant.Value.Delegation.Contains(GuildDelegationKind.Remote)) return Forbidden;
 
         if (grant.Value.Budget.Usd.Mode != GuildBudgetMode.Unlimited || grant.Value.Budget.Tokens.Mode != GuildBudgetMode.Unlimited)

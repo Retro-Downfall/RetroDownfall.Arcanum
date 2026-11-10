@@ -8,6 +8,12 @@ using RetroDownfall.Arcanum.Api.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
+using RetroDownfall.Arcanum.Core.Memory;
+
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Lexicon;
@@ -37,10 +43,10 @@ public sealed class InternalToolServerFailureLoggingTests
     private const string MemoryText = "the operator's private diagnosis is SENTINEL-7731";
 
     [Theory]
-    [InlineData("read_saga", "read_saga failed")]
-    [InlineData("scribe_lexicon", "scribe_lexicon failed")]
-    [InlineData("delete_lexicon", "delete_lexicon failed")]
-    [InlineData("search_archives", "search_archives failed")]
+    [InlineData("search_memory", "search_memory failed")]
+    [InlineData("save_memory", "save_memory failed")]
+    [InlineData("delete_memory", "delete_memory failed")]
+    [InlineData("search_history", "search_history failed")]
     public async Task A_failing_memory_tool_logs_its_exception_type_and_none_of_the_memory_text(
         string tool,
         string expectedMessageStart)
@@ -72,13 +78,13 @@ public sealed class InternalToolServerFailureLoggingTests
 
     private static JsonElement ArgumentsFor(string tool) => tool switch
     {
-        "read_saga" => JsonSerializer.SerializeToElement(
-            new ReadSagaParams(MemoryText),
-            McpJsonSerializerContext.Default.ReadSagaParams),
-        "scribe_lexicon" => JsonSerializer.SerializeToElement(
+        "search_memory" => JsonSerializer.SerializeToElement(
+            new SearchMemoryParams(MemoryText),
+            McpJsonSerializerContext.Default.SearchMemoryParams),
+        "save_memory" => JsonSerializer.SerializeToElement(
             new ScribeLexiconParams(MemoryText, null, ["a fact"]),
             McpJsonSerializerContext.Default.ScribeLexiconParams),
-        "delete_lexicon" => JsonSerializer.SerializeToElement(
+        "delete_memory" => JsonSerializer.SerializeToElement(
             new DeleteLexiconParams(MemoryText),
             McpJsonSerializerContext.Default.DeleteLexiconParams),
         _ => JsonSerializer.SerializeToElement(
@@ -88,6 +94,27 @@ public sealed class InternalToolServerFailureLoggingTests
 
     /// <summary>What a failing store throws: its message echoes the text it was asked to search for.</summary>
     private sealed class StoreFailureException() : Exception($"fts5: syntax error near \"{MemoryText}\"");
+
+    private sealed class FailingMemorySearch : IMemorySearchService
+    {
+        public Task<Result<MemorySearchResponse>> SearchForInvocationAsync(
+            MemorySearchRequest request, CancellationToken cancellationToken = default) =>
+            Task.FromException<Result<MemorySearchResponse>>(new StoreFailureException());
+
+        public Task<Result<LexiconInspectionResult<MemorySearchResponse>>> SearchAsync(
+            MemorySearchRequest? request, ICovenantSnapshotReadLease? readLease, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("Model tools must not use operator inspection.");
+    }
+
+    private sealed class InstallationMemoryScope : IMemoryScopeResolver
+    {
+        public bool IsCampaignScopingEnabled => false;
+
+        public MemoryScope ForResolvedCampaign(Guid? campaignId) => MemoryScope.Installation;
+
+        public ValueTask<MemoryScope> ResolveForSessionAsync(Guid? sessionId, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(MemoryScope.Installation);
+    }
 
     private sealed class TestSession(
         InProcessMcpTransport transport,
@@ -102,7 +129,9 @@ public sealed class InternalToolServerFailureLoggingTests
 
             // Every store these tools reach fails the way an FTS-backed one can: with a message that quotes
             // the text it was given.
-            services.AddScoped<IWeaveService>(static _ => throw new StoreFailureException());
+            services.AddSingleton<IMemorySearchService>(new FailingMemorySearch());
+
+            services.AddSingleton<IMemoryScopeResolver>(new InstallationMemoryScope());
 
             services.AddScoped<ILexiconService>(static _ => throw new StoreFailureException());
 

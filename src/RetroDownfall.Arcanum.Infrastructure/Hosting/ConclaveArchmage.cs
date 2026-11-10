@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -17,7 +18,7 @@ internal sealed partial class ConclaveArchmage(
     IApprenticeRepository repository,
     IOptionsMonitor<ArcanumSettings> settings,
     GuildQuestStore? quests = null,
-    IGuildLocalQuestScheduler? guildScheduler = null, GuildConfiguredRemoteResolver? remoteResolver = null) : IConclaveArchmage, IGuildQuestCoordinator
+    IGuildLocalQuestScheduler? guildScheduler = null, GuildConfiguredRemoteResolver? remoteResolver = null, IMemorySearchService? memorySearch = null) : IConclaveArchmage, IGuildQuestCoordinator
 {
     public async Task<Result<Apprentice>> CastAsync(
         ConclaveCastRequest request,

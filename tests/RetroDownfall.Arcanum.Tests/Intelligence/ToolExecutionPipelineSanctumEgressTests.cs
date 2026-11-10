@@ -222,7 +222,7 @@ public sealed class ToolExecutionPipelineSanctumEgressTests : IDisposable
 
         (ToolExecutionPipeline.ProcessedToolCall allowed, bool allowedInvoked) =
             await harness.ProcessStandInAsync(
-                "run_spell_script",
+                "run_script",
                 arguments,
                 harness.StrictTurnContext(spellScriptRoots: [activeRoot, resonantRoot]));
 
@@ -257,7 +257,7 @@ public sealed class ToolExecutionPipelineSanctumEgressTests : IDisposable
 
         (ToolExecutionPipeline.ProcessedToolCall denied, bool deniedInvoked) =
             await harness.ProcessStandInAsync(
-                "run_spell_script",
+                "run_script",
                 arguments,
                 harness.StrictTurnContext(spellScriptRoots: [activeRoot, outsideRoot]));
 
@@ -269,7 +269,7 @@ public sealed class ToolExecutionPipelineSanctumEgressTests : IDisposable
 
         Assert.Equal("PathEscape", breach.BreachType);
 
-        Assert.Equal("run_spell_script", breach.ToolName);
+        Assert.Equal("run_script", breach.ToolName);
     }
 
     private static Task<ToolExecutionPipeline.ProcessedToolCall> RunReadUrlAsync(

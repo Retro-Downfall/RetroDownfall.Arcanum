@@ -936,17 +936,29 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal List<string> TaskIds { get; } = [];
 
+        internal List<IReadOnlyList<string>> DelegationChains { get; } = [];
+
         public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken ct)
         {
             int call = Interlocked.Increment(ref Calls);
 
             TaskIds.Add(context.TaskId);
 
+            DelegationChains.Add(ConclaveDelegationChain.Read(context.Message?.Metadata));
+
             TaskUpdater updater = new(eventQueue, context.TaskId, context.ContextId);
 
             await updater.SubmitAsync(ct);
 
             await updater.StartWorkAsync(cancellationToken: ct);
+
+            if (call == 1 && scenario == "auth-wait")
+            {
+                await updater.RequireAuthAsync(new Message { Role = Role.Agent, MessageId = Guid.NewGuid().ToString("N"),
+                    Parts = [Part.FromText("Which credential?")] }, ct);
+
+                return;
+            }
 
             if (call == 1 && scenario is "wait" or "restart-wait" or "observe-wait" or "modality" or "revoked" or "revoked-erased" or "continuation-push" or "continuation-disconnect" or "unsupported-wait" or "revoked-cancel-disconnect" or "continuation-cancel" or "slow-cancel" or "maintenance-stall")
             {

@@ -27,7 +27,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         GuildCallerContext owner = await f.OperatorAsync();
 
-        GuildToolGrant tool = cast ? new(GuildToolSourceKind.InternalMcp, "arcanum", "cast_sending")
+        GuildToolGrant tool = cast ? new(GuildToolSourceKind.InternalMcp, "arcanum", "create_agent_task")
             : new(GuildToolSourceKind.BuiltIn, "arcanum", "delegate_task");
 
         var parent = await f.IssueAsync(owner, f.Request with { Grant = f.Request.Grant with

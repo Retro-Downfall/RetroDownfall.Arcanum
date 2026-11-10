@@ -4,7 +4,7 @@ public sealed record SecuritySettings
 {
 
     /// <summary>
-    /// When <c>false</c> (default), <c>execute_command</c> / <c>run_spell_script</c> children require an OS
+    /// When <c>false</c> (default), <c>execute_command</c> / <c>run_script</c> children require an OS
     /// filesystem jail where one is active for this beta (macOS deprecated <c>sandbox-exec</c>). Linux Landlock
     /// is present in-tree but inactive — fail-closed unless this escape hatch is true. If the jail cannot be
     /// applied, the tool is denied rather than running unbounded. When <c>true</c>, Arcanum logs a warning

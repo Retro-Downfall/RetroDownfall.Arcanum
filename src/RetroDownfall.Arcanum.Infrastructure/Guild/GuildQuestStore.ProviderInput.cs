@@ -80,6 +80,41 @@ internal sealed partial class GuildQuestStore
             files.Add(new(file.Name, body.Value));
         }
 
+        if (accepted.Value.Card is { } selected)
+        {
+            if (selected.CardId != quest.Quest.CardId || selected.Revision != quest.Quest.CardRevision) return Conflict;
+
+            await using SqliteCommand pinned = Command(connection, transaction, """
+                SELECT EXISTS(SELECT 1 FROM guild_agent_card_revisions r JOIN guild_agent_cards a ON a.CardId=r.CardId
+                    WHERE r.CardId=$card AND r.Revision=$revision AND r.ContentId=$content
+                        AND a.AgentId=$agent AND a.SourceKindCode<>3)
+                """);
+
+            Add(pinned, "$card", Id(selected.CardId));
+
+            Add(pinned, "$revision", selected.Revision);
+
+            Add(pinned, "$content", Id(selected.Content.ContentId));
+
+            Add(pinned, "$agent", Id(quest.Quest.AgentId));
+
+            if (!Equals(1L, await pinned.ExecuteScalarAsync(ct).ConfigureAwait(false))) return Conflict;
+
+            var body = await ReadProviderContentWithinAsync(connection, transaction, selected.Content, ct).ConfigureAwait(false);
+
+            if (body.IsFailure) return body.Error;
+
+            GuildStoredAgentCardPayload? payload;
+
+            try { payload = JsonSerializer.Deserialize(body.Value, GuildStorageJsonContext.Default.GuildStoredAgentCardPayload); }
+            catch (JsonException) { return Unavailable; }
+
+            if (payload is null || payload.Card is null || payload.Guidance is null || payload.Card.CardId != selected.CardId
+                || payload.Card.Revision != selected.Revision || payload.Card.AgentId != quest.Quest.AgentId) return Conflict;
+
+            files.Add(new($"Agent Card {selected.CardId:D} revision {selected.Revision}", payload.Guidance));
+        }
+
         GuildAuthorityKind goalAuthority = quest.Quest.ParentQuestId is null ? GuildAuthorityKind.Operator : GuildAuthorityKind.Parent;
 
         await using (SqliteCommand provenance = Command(connection, transaction,

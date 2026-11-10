@@ -12,6 +12,11 @@ namespace RetroDownfall.Arcanum.Core.Lexicon;
 /// </summary>
 public interface ILexiconService
 {
+    /// <summary>Bounded literal model search with existing live tier/sensitivity/grant predicates before limits.</summary>
+    Task<Result<LexiconSearchRow[]>> SearchMemoryPageAsync(string query, LexiconScope scope, int limit,
+        LexiconSearchPosition? after, CancellationToken cancellationToken = default, int contentByteLimit = 65536) =>
+        Task.FromResult(Result<LexiconSearchRow[]>.Failure(new(ErrorCodes.MemorySearch.IndexUnavailable, "Model Lexicon search is unavailable.")));
+
     /// <summary>
     /// Creates a new entity or appends non-duplicate facts to an existing entity matched by
     /// case-insensitive name. Type semantics: new entity + blank type defaults to

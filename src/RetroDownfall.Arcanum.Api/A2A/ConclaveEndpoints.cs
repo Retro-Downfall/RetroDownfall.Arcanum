@@ -20,7 +20,7 @@ namespace RetroDownfall.Arcanum.Api.A2A;
 /// </summary>
 /// <remarks>
 /// Issue #12 requires the Mage to discover capability, dispatch work, observe progress, cancel, and receive
-/// a terminal result <em>without raw HTTP calls</em>. Before this, <c>dispatch_sending</c> was reachable
+/// a terminal result <em>without raw HTTP calls</em>. Before this, <c>create_agent_task</c> was reachable
 /// only from inside an Apprentice's tool loop, so an operator had no supported way to drive A2A at all.
 /// These routes are the API half; <c>arcanum conclave</c> is the CLI half.
 /// </remarks>

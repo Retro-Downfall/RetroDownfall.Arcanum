@@ -26,6 +26,29 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 
 public sealed class McpToolMergerTests
 {
+    [Theory]
+    [InlineData("read_file_chunk")]
+    [InlineData("replace_text_block")]
+    [InlineData("scribe_lexicon")]
+    [InlineData("delete_lexicon")]
+    [InlineData("read_saga")]
+    [InlineData("search_archives")]
+    [InlineData("adjust_initiative")]
+    [InlineData("send_commlink_alert")]
+    [InlineData("petition_dungeon_master")]
+    [InlineData("cast_sending")]
+    [InlineData("dispatch_sending")]
+    [InlineData("continue_sending")]
+    [InlineData("run_spell_script")]
+    public void Removed_tool_names_cannot_be_resurrected_by_external_servers(string removed)
+    {
+        LoadedMcpToolRow row = Row(removed.ToUpperInvariant(), "external");
+
+        Assert.Empty(McpToolMerger.DedupeGlobalTaggedTools([row]).SurfaceTools);
+
+        Assert.Empty(McpToolMerger.MergeWorkspaceSurface([], new Dictionary<string, LoadedMcpToolRow>(), [row]));
+    }
+
     [Fact]
     public void DedupeGlobalTaggedTools_first_seen_wins_and_preserves_order()
     {
@@ -163,10 +186,10 @@ public sealed class McpToolMergerTests
 
     [Theory]
     [InlineData("write_file")]
-    [InlineData("read_file_chunk")]
+    [InlineData("read_file")]
     [InlineData("ask_human")]
-    [InlineData("scribe_lexicon")]
-    [InlineData("replace_text_block")]
+    [InlineData("save_memory")]
+    [InlineData("edit_file")]
     public void MergeWorkspaceSurface_workspace_local_server_cannot_replace_unreserved_internal_tool(
         string internalName)
     {
@@ -333,13 +356,13 @@ public sealed class McpToolMergerTests
 
     [Theory]
     [InlineData("ask_human")]
-    [InlineData("scribe_lexicon")]
-    [InlineData("delete_lexicon")]
-    [InlineData("search_archives")]
+    [InlineData("save_memory")]
+    [InlineData("delete_memory")]
+    [InlineData("search_history")]
     [InlineData("cast_sending")]
     [InlineData("dispatch_sending")]
     [InlineData("continue_sending")]
-    [InlineData("read_saga")]
+    [InlineData("search_memory")]
     [InlineData("attach_session_file")]
     [InlineData("refresh_session_file")]
     [InlineData("write_file")]
@@ -347,7 +370,7 @@ public sealed class McpToolMergerTests
     public void MergeWorkspaceSurface_workspace_local_server_cannot_claim_an_internal_tool_the_session_does_not_advertise(
         string internalName)
     {
-        // The built-in is gated off for this session (ask_human on a non-streaming turn, scribe_lexicon
+        // The built-in is gated off for this session (ask_human on a non-streaming turn, save_memory
         // with the Lexicon feature off, no workspace root for the file tools), so no internal row exists
         // to collide with. The name is still the built-in's: handing it to an approved workspace
         // mcp.json would let that file answer to a name the model and the name-keyed policy attribute to
@@ -384,7 +407,7 @@ public sealed class McpToolMergerTests
     public void MergeWorkspaceSurface_a_global_server_cannot_claim_an_internal_tool_name_that_is_not_workspace_root_gated(
         string name)
     {
-        // The built-in is gated off for this session (ask_human on a non-streaming turn, scribe_lexicon
+        // The built-in is gated off for this session (ask_human on a non-streaming turn, save_memory
         // with the Lexicon feature off, the Conclave, Saga, A2A and attachment tools behind their flags),
         // so no internal row exists to collide with. The operator's own global configuration is trusted,
         // but not so far that a tool could answer to the name the model and the name-keyed Ward policy
@@ -465,7 +488,7 @@ public sealed class McpToolMergerTests
 
             // Guards the probe: the file tools really are advertised with a root, and the host-process
             // tools really are absent when they are gated off.
-            Assert.Contains("read_file_chunk", advertised);
+            Assert.Contains("read_file", advertised);
 
             Assert.DoesNotContain("execute_command", advertised);
 
@@ -663,7 +686,7 @@ public sealed class McpToolMergerTests
 
             string[] advertised = await ListAdvertisedToolNamesAsync(transport, server);
 
-            Assert.Contains("read_file_chunk", advertised);
+            Assert.Contains("read_file", advertised);
 
             Assert.DoesNotContain("execute_command", advertised);
         }

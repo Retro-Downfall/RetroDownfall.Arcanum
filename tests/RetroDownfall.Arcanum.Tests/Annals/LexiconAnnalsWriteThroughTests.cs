@@ -25,7 +25,7 @@ namespace RetroDownfall.Arcanum.Tests.Annals;
 /// asserting a claim and correcting one is observable.
 /// </summary>
 /// <remarks>
-/// The entry point is <see cref="ILexiconService"/>, which is what <c>scribe_lexicon</c> and every
+/// The entry point is <see cref="ILexiconService"/>, which is what <c>save_memory</c> and every
 /// endpoint hold. Nothing here writes an <c>annal_*</c> row.
 /// </remarks>
 [Collection("Grimoire")]

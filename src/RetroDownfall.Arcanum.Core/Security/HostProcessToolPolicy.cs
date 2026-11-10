@@ -6,7 +6,7 @@ namespace RetroDownfall.Arcanum.Core.Security;
 
 /// <summary>
 /// Central policy for arbitrary host process execution tools (<c>execute_command</c>,
-/// <c>run_spell_script</c>). Default Local edition denies advertise and invoke on every path.
+/// <c>run_script</c>). Default Local edition denies advertise and invoke on every path.
 /// </summary>
 /// <remarks>
 /// <see cref="ArcanumEdition.Development"/> plus the startup env
@@ -38,7 +38,7 @@ public static class HostProcessToolPolicy
     /// gate's own remedy, word for word, so a reader who follows either one lands in the same place.
     /// </remarks>
     public const string DeniedMessage =
-        "Host process tools (execute_command / run_spell_script) are refused for this process. The "
+        "Host process tools (execute_command / run_script) are refused for this process. The "
         + "Development edition and ARCANUM_ALLOW_HOST_PROCESS_TOOLS are necessary for them, never "
         + "sufficient: the startup gate's published decision can still withhold them, and on an "
         + "installation with no completed host-process-tools transition it does - a host started "
@@ -130,7 +130,7 @@ public static class HostProcessToolPolicy
                   + "transition. Clear ARCANUM_ALLOW_HOST_PROCESS_TOOLS and start the host again."
                 : edition == ArcanumEdition.Development
                     ? "Development edition: host process tools remain off until ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1."
-                    : "Local edition: host process tools disabled (execute_command / run_spell_script).";
+                    : "Local edition: host process tools disabled (execute_command / run_script).";
 
         return new HostProcessToolPolicyStatus(
             Edition: edition,

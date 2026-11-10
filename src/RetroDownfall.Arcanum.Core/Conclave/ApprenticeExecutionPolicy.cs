@@ -17,7 +17,7 @@ public enum StepFailureKind
 
 public static class ApprenticeExecutionPolicy
 {
-    public const string PetitionDungeonMasterToolName = "petition_dungeon_master";
+    public const string PetitionDungeonMasterToolName = "request_intervention";
 
     public static StepFailureKind ClassifyStepFailure(
         bool stepFailed,

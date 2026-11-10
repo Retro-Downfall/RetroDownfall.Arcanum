@@ -110,8 +110,8 @@ public sealed record ConclaveA2AStatus(
             string idleDetail = idleState == ConclaveA2AState.Configured
                 ? "A2A settings are present but no surface is enabled. Set Arcanum:Features:A2AServer to accept "
                     + "inbound Sendings, Arcanum:Features:A2AClient to dispatch them, or Arcanum:Features:Conclave "
-                    + "for local cast_sending delegation only."
-                : "The Conclave is disabled. Set Arcanum:Features:Conclave for local cast_sending delegation, or "
+                    + "for local Apprentice operator delegation."
+                : "The Conclave is disabled. Set Arcanum:Features:Conclave for local Apprentice operator delegation, or "
                     + "Arcanum:Features:A2AServer / Arcanum:Features:A2AClient for the A2A surface.";
 
             return new ConclaveA2AStatus(
@@ -159,17 +159,19 @@ public sealed record ConclaveA2AStatus(
 
             notes.Add(
                 allowlistCount == 0
-                    ? "outbound dispatch_sending enabled; no AllowedRemoteAgents allowlist, so any SSRF-guarded public target is a candidate"
-                    : $"outbound dispatch_sending enabled; {allowlistCount} allowed remote agent(s)");
+                    ? "outbound operator Sending dispatch enabled; no AllowedRemoteAgents allowlist, so any SSRF-guarded public target is a candidate"
+                    : $"outbound operator Sending dispatch enabled; {allowlistCount} allowed remote agent(s)");
 
         }
 
         if (!a2a.ServerEnabled && !a2a.ClientEnabled)
         {
 
-            notes.Add("local cast_sending delegation only; no A2A surface is enabled");
+            notes.Add("local Apprentice operator delegation configured; no A2A surface is enabled");
 
         }
+
+        notes.Add("model task tools additionally require a live Guild invocation and exact tool authority; remote creation requires an exact configured discovery destination");
 
         return new ConclaveA2AStatus(
             state,

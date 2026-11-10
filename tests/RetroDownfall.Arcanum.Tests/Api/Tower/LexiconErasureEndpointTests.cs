@@ -535,7 +535,7 @@ public sealed class LexiconErasureEndpointTests
     }
 
     /// <summary>
-    /// After an erase through the route, the agent's own <c>scribe_lexicon</c> tool, reached through
+    /// After an erase through the route, the agent's own <c>save_memory</c> tool, reached through
     /// the host's MCP bridge exactly as a turn reaches it, is refused with the operator-managed text and
     /// records nothing.
     /// </summary>
@@ -545,7 +545,7 @@ public sealed class LexiconErasureEndpointTests
     /// outside a turn has no Session, so it writes to the Global tier.
     /// </remarks>
     [SkippableFact]
-    public async Task A_scribe_lexicon_tool_call_after_an_erase_is_refused_with_the_operator_managed_text()
+    public async Task A_save_memory_tool_call_after_an_erase_is_refused_with_the_operator_managed_text()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -564,7 +564,7 @@ public sealed class LexiconErasureEndpointTests
             .GetAvailableToolsAsync(null);
 
         AIFunction scribe = Assert.IsAssignableFrom<AIFunction>(
-            Assert.Single(tools, static tool => string.Equals(tool.Name, "scribe_lexicon", StringComparison.Ordinal)));
+            Assert.Single(tools, static tool => string.Equals(tool.Name, "save_memory", StringComparison.Ordinal)));
 
         InvalidOperationException refused = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await scribe.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>
@@ -585,11 +585,11 @@ public sealed class LexiconErasureEndpointTests
     }
 
     /// <summary>
-    /// The agent's <c>delete_lexicon</c> still refuses a daemon's own entry by name, through the same
+    /// The agent's <c>delete_memory</c> still refuses a daemon's own entry by name, through the same
     /// recognizer the erase refuses it with, and leaves the entry in place.
     /// </summary>
     [SkippableFact]
-    public async Task A_delete_lexicon_tool_call_still_refuses_a_daemon_state_entry()
+    public async Task A_delete_memory_tool_call_still_refuses_a_daemon_state_entry()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -606,7 +606,7 @@ public sealed class LexiconErasureEndpointTests
             .GetAvailableToolsAsync(null);
 
         AIFunction delete = Assert.IsAssignableFrom<AIFunction>(
-            Assert.Single(tools, static tool => string.Equals(tool.Name, "delete_lexicon", StringComparison.Ordinal)));
+            Assert.Single(tools, static tool => string.Equals(tool.Name, "delete_memory", StringComparison.Ordinal)));
 
         InvalidOperationException refused = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await delete.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>

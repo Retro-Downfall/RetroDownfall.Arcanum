@@ -249,7 +249,7 @@ public sealed class WardGateTests
 
         _ = gate.WardAsync(
             "ward-active",
-            "read_file_chunk",
+            "read_file",
             arguments,
             sessionId: "sess-42",
             timeout: TimeSpan.FromSeconds(30),
@@ -261,7 +261,7 @@ public sealed class WardGateTests
 
         Assert.Equal("ward-active", ward.WardId);
 
-        Assert.Equal("read_file_chunk", ward.ToolName);
+        Assert.Equal("read_file", ward.ToolName);
 
         Assert.Equal("sess-42", ward.SessionId);
 

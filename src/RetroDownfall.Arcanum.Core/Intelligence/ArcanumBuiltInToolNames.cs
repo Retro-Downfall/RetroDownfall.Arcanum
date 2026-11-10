@@ -11,7 +11,7 @@ public static class ArcanumBuiltInToolNames
 
     public const string GetArcanumSystemInfo = "get_arcanum_system_info";
 
-    public const string RunSpellScript = "run_spell_script";
+    public const string RunSpellScript = "run_script";
 
     public const string DelegateTask = "delegate_task";
 

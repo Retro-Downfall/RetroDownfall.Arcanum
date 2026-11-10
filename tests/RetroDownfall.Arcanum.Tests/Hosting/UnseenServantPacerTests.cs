@@ -108,7 +108,7 @@ public sealed class UnseenServantPacerTests
 
     /// <summary>
     /// The pacer cannot apply an override for a name absent from Arcanum:Daemon:Jobs, so it must say
-    /// so — <c>adjust_initiative</c> reported success for a job it never touched.
+    /// so — <c>set_task_priority</c> reported success for a job it never touched.
     /// </summary>
     [Fact]
     public async Task SetDynamicInterval_reports_failure_for_a_job_not_in_configuration()

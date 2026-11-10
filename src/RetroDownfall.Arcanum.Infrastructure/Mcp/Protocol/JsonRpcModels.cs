@@ -114,7 +114,7 @@ public sealed record JsonRpcNotification
 [JsonSerializable(typeof(RetireCovenantParams))]
 [JsonSerializable(typeof(CovenantMutationStagedResultWire))]
 [JsonSerializable(typeof(CovenantMutationFailureResultWire))]
-[JsonSerializable(typeof(ReadSagaParams))]
+[JsonSerializable(typeof(SearchMemoryParams))]
 [JsonSerializable(typeof(AttachSessionFileParams))]
 [JsonSerializable(typeof(RefreshSessionFileParams))]
 [JsonSerializable(typeof(RefreshSessionFileResultWire))]

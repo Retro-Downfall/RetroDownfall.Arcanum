@@ -2803,7 +2803,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             clientTools.Add(
                 new OpenAiToolDefinition(
                     "function",
-                    new OpenAiFunctionDefinition("read_file_chunk")));
+                    new OpenAiFunctionDefinition("read_file")));
         }
 
         WizardIntelligenceProvider wizard = CreateWizard(chat);
@@ -3169,7 +3169,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         IReadOnlyList<AITool> internalTools = await actualManager.GetAvailableToolsAsync(_workspace.Root);
 
-        mcp.Tools.Add(internalTools.Single(static tool => tool.Name == "read_file_chunk"));
+        mcp.Tools.Add(internalTools.Single(static tool => tool.Name == "read_file"));
 
         mcp.Tools.Add(internalTools.Single(static tool => tool.Name == "search_workspace"));
 
@@ -3197,7 +3197,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
 
-        Assert.Contains("read_file_chunk", toolNames);
+        Assert.Contains("read_file", toolNames);
 
         Assert.Contains("search_workspace", toolNames);
 
@@ -3226,7 +3226,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         FakeMcpConnectionManager mcp = new();
 
-        mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
+        mcp.Tools.Add(CreateMcpTool("read_file"));
 
         mcp.Tools.Add(CreateMcpTool("search_workspace"));
 
@@ -3247,7 +3247,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
 
-        Assert.DoesNotContain("read_file_chunk", toolNames);
+        Assert.DoesNotContain("read_file", toolNames);
 
         Assert.DoesNotContain("search_workspace", toolNames);
     }
@@ -3266,7 +3266,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         FakeMcpConnectionManager mcp = new();
 
-        mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
+        mcp.Tools.Add(CreateMcpTool("read_file"));
 
         mcp.Tools.Add(CreateMcpTool("write_file"));
 
@@ -3296,11 +3296,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         FakeMcpConnectionManager mcp = new();
 
-        mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
+        mcp.Tools.Add(CreateMcpTool("read_file"));
 
         mcp.Tools.Add(CreateMcpTool("write_file"));
 
-        mcp.Tools.Add(CreateMcpTool("replace_text_block"));
+        mcp.Tools.Add(CreateMcpTool("edit_file"));
 
         mcp.Tools.Add(CreateMcpTool(ToolRiskClassifier.ApplyPatchToolName));
 
@@ -3320,11 +3320,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
 
-        Assert.Contains("read_file_chunk", toolNames);
+        Assert.Contains("read_file", toolNames);
 
         Assert.DoesNotContain("write_file", toolNames);
 
-        Assert.DoesNotContain("replace_text_block", toolNames);
+        Assert.DoesNotContain("edit_file", toolNames);
 
         Assert.DoesNotContain(ToolRiskClassifier.ApplyPatchToolName, toolNames);
     }
@@ -4404,7 +4404,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         ScriptingChatClient chat = new();
 
         chat.EnqueueToolCall(
-            "read_file_chunk",
+            "read_file",
             "rf2",
             new Dictionary<string, object?>
             {
@@ -4421,7 +4421,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             ToolValidator = (_, toolName, _) =>
                 Task.FromResult(
-                    string.Equals(toolName, "read_file_chunk", StringComparison.Ordinal)
+                    string.Equals(toolName, "read_file", StringComparison.Ordinal)
                         ? new SanctumResult
                         {
                             Allowed = false,
@@ -4432,7 +4432,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         };
         FakeMcpConnectionManager mcp = new();
 
-        mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
+        mcp.Tools.Add(CreateMcpTool("read_file"));
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
@@ -4464,7 +4464,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         ScriptingChatClient chat = new();
 
         chat.EnqueueToolCall(
-            "read_file_chunk",
+            "read_file",
             "rf1",
             new Dictionary<string, object?>
             {
@@ -4488,7 +4488,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         };
         FakeMcpConnectionManager mcp = new();
 
-        mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
+        mcp.Tools.Add(CreateMcpTool("read_file"));
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
@@ -4523,7 +4523,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         FakeMcpConnectionManager mcp = new();
 
-        mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
+        mcp.Tools.Add(CreateMcpTool("read_file"));
 
         mcp.Tools.Add(CreateMcpTool("execute_command"));
 
@@ -4558,7 +4558,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
 
-        Assert.Contains("read_file_chunk", toolNames);
+        Assert.Contains("read_file", toolNames);
 
         Assert.DoesNotContain("execute_command", toolNames);
 
@@ -4580,7 +4580,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         mcp.Tools.Add(CreateMcpTool("ask_human"));
 
-        mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
+        mcp.Tools.Add(CreateMcpTool("read_file"));
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
 
@@ -4598,7 +4598,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
 
-        Assert.Contains("read_file_chunk", toolNames);
+        Assert.Contains("read_file", toolNames);
 
         Assert.DoesNotContain("ask_human", toolNames);
     }
@@ -4614,7 +4614,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         mcp.Tools.Add(CreateMcpTool("ask_human"));
 
-        mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
+        mcp.Tools.Add(CreateMcpTool("read_file"));
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
 
@@ -4632,7 +4632,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
 
-        Assert.Contains("read_file_chunk", toolNames);
+        Assert.Contains("read_file", toolNames);
 
         Assert.DoesNotContain("ask_human", toolNames);
     }
@@ -4648,7 +4648,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         mcp.Tools.Add(CreateMcpTool("ask_human"));
 
-        mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
+        mcp.Tools.Add(CreateMcpTool("read_file"));
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
 
@@ -4667,7 +4667,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("ask_human", toolNames);
 
-        Assert.Contains("read_file_chunk", toolNames);
+        Assert.Contains("read_file", toolNames);
     }
 
     [Fact]

@@ -55,7 +55,7 @@ public sealed class CappedChildProcessRunnerTests : IAsyncLifetime
         // A run given no input bytes (every model-directed tool) must hand its child a closed pipe on
         // fd 0 rather than the host's inherited console. Without the redirect a child that reads
         // stdin (`cat`, `git commit`, `ssh`, `sudo`) blocks on the operator's terminal, and since
-        // execute_command / run_spell_script / workspace_check all pass Timeout.InfiniteTimeSpan
+        // execute_command / run_script / workspace_check all pass Timeout.InfiniteTimeSpan
         // there is no deadline that would ever unwedge the tool call.
         using ReadyMarker ready = new();
 

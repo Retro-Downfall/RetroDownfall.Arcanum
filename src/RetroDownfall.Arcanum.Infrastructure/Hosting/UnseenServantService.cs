@@ -499,21 +499,21 @@ internal sealed class UnseenServantService(
  * --- Sample: UnseenMarketWatcher / SPELL.md (copy to ~/.config/arcanum/spells/UnseenMarketWatcher/SPELL.md) ---
  * ---
  * name: UnseenMarketWatcher
- * description: Example headless daemon spell — query a target (e.g. Kalshi spreads) and persist a moving average for the next cycle via scribe_lexicon.
+ * description: Example headless daemon spell — query a target (e.g. Kalshi spreads) and persist a moving average for the next cycle via save_memory.
  * ---
  *
  * ## Daemon job pairing
  *
  * Set `Arcanum:Daemon:Jobs` with `name` matching the daemon job. The host injects prior state from the Lexicon entity
  * `daemon_state:{job.Name}:{shortHash(targetSpell)}` (e.g. job `name` = `MarketWatcher` → entity `daemon_state:MarketWatcher:<hash>`).
- * Use that exact name (type `DaemonState`) in `scribe_lexicon` each run.
+ * Use that exact name (type `DaemonState`) in `save_memory` each run.
  *
  * ## Behavior
  *
  * 1. Use available tools (e.g. Kalshi MCP or HTTP) to read the current bid/ask or spread for one or more target markets.
  * 2. Parse **Previous State** from the kickoff (facts you chose in the prior cycle) for last run's spread and running average.
  * 3. Update a simple moving average (or EMA) of the spread across cycles; include timestamp and raw observations.
- * 4. Call `scribe_lexicon` with name `daemon_state:<YourJobName>:<hash>` and type `DaemonState`, appending concise facts so the next waking cycle can continue the trend.
+ * 4. Call `save_memory` with name `daemon_state:<YourJobName>:<hash>` and type `DaemonState`, appending concise facts so the next waking cycle can continue the trend.
  * 5. Summarize briefly in natural language if the model output is shown in logs.
  *
  * --- end sample ---

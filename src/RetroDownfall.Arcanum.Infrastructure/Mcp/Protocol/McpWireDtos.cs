@@ -157,7 +157,7 @@ public sealed record McpToolsCallResultWire
 }
 
 /// <summary>
-/// Arguments accepted by the in-process <c>read_file_chunk</c> tool. Line numbers are 1-based and inclusive.
+/// Arguments accepted by the in-process <c>read_file</c> tool. Line numbers are 1-based and inclusive.
 /// </summary>
 public sealed record ReadFileChunkParams
 {
@@ -172,7 +172,7 @@ public sealed record ReadFileChunkParams
 }
 
 /// <summary>
-/// Arguments accepted by the in-process <c>replace_text_block</c> tool. <see cref="ExactSearchText"/> must be a verbatim block from the file (whitespace and newlines preserved).
+/// Arguments accepted by the in-process <c>edit_file</c> tool. <see cref="ExactSearchText"/> must be a verbatim block from the file (whitespace and newlines preserved).
 /// </summary>
 public sealed record ReplaceTextBlockParams
 {
@@ -412,12 +412,14 @@ public sealed record CovenantMutationFailureResultWire(
     [property: JsonPropertyName("message")] string Message);
 
 /// <summary>
-/// Arguments accepted by the in-process <c>read_saga</c> tool (RAG Phase 4 — semantic search over
-/// Saga long-term associative memory).
+/// Arguments accepted by bounded cross-store <c>search_memory</c>; Session and workspace selectors
+/// come from the host invocation rather than the model.
 /// </summary>
-public sealed record ReadSagaParams(
+public sealed record SearchMemoryParams(
     [property: JsonPropertyName("query")] string Query,
-    [property: JsonPropertyName("limit")] int? Limit = null);
+    [property: JsonPropertyName("limit")] int? Limit = null,
+    [property: JsonPropertyName("scope")] string? Scope = null,
+    [property: JsonPropertyName("continuation")] string? Continuation = null);
 
 /// <summary>
 /// Arguments accepted by the in-process <c>attach_session_file</c> tool (re-attach a bound session
@@ -450,7 +452,7 @@ public sealed record RefreshSessionFileResultWire(
     [property: JsonPropertyName("message")] string? Message = null);
 
 /// <summary>
-/// Arguments accepted by the in-process <c>adjust_initiative</c> tool (Unseen Servant dynamic polling).
+/// Arguments accepted by the in-process <c>set_task_priority</c> tool (Unseen Servant dynamic polling).
 /// </summary>
 public sealed record AdjustInitiativeArgs
 {
@@ -462,7 +464,7 @@ public sealed record AdjustInitiativeArgs
 }
 
 /// <summary>
-/// Arguments accepted by the in-process <c>send_commlink_alert</c> tool (Comm Link alerts).
+/// Arguments accepted by the in-process <c>send_notification</c> tool (Comm Link alerts).
 /// </summary>
 public sealed record SendCommLinkAlertParams
 {
@@ -480,7 +482,7 @@ public sealed record SendCommLinkAlertParams
 }
 
 /// <summary>
-/// Arguments accepted by the in-process <c>petition_dungeon_master</c> tool (Divine Intervention).
+/// Arguments accepted by the in-process <c>request_intervention</c> tool (Divine Intervention).
 /// </summary>
 public sealed record PetitionDungeonMasterParams
 {
@@ -492,7 +494,7 @@ public sealed record PetitionDungeonMasterParams
 }
 
 /// <summary>
-/// Structured result from <c>petition_dungeon_master</c>. Delivery is informational —
+/// Structured result from <c>request_intervention</c>. Delivery is informational —
 /// the tool never sets MCP <c>IsError</c> for Comm Link delivery outcomes.
 /// <c>notificationStatus</c> is <c>delivered</c>, <c>suppressed</c>, or <c>failed</c>.
 /// </summary>
@@ -506,7 +508,7 @@ public sealed record PetitionDungeonMasterResultWire
 }
 
 /// <summary>
-/// Arguments accepted by the in-process <c>cast_sending</c> tool (Conclave cross-Apprentice delegation).
+/// Historical Cast Sending arguments retained for legacy cross-Apprentice records; Guild task tools use Quest contracts.
 /// </summary>
 public sealed record CastSendingParams
 {
@@ -518,7 +520,7 @@ public sealed record CastSendingParams
 }
 
 /// <summary>
-/// Result payload returned by the in-process <c>cast_sending</c> tool: the id of the newly created child Apprentice.
+/// Historical Cast Sending result identifying a child Apprentice; Guild task creation returns a Quest projection.
 /// </summary>
 public sealed record CastSendingResultWire
 {
@@ -527,7 +529,7 @@ public sealed record CastSendingResultWire
 }
 
 /// <summary>
-/// Arguments accepted by the in-process <c>dispatch_sending</c> tool (Archmage Client: A2A delegation to an external agent).
+/// Legacy Sending dispatch arguments retained for historical transport records; Guild task tools use Quest contracts.
 /// </summary>
 public sealed record DispatchSendingParams
 {
@@ -570,8 +572,8 @@ public sealed record DispatchSendingParams
 }
 
 /// <summary>
-/// Arguments for the in-process <c>continue_sending</c> tool: answers a Sending a remote agent parked
-/// at <c>input-required</c>/<c>auth-required</c> without re-running the goal (issue #64).
+/// Legacy Sending continuation arguments retained for historical transport records, using a remote task id.
+/// Guild messaging instead uses a typed message or revision-bound continuation addressed to a Quest.
 /// </summary>
 public sealed record ContinueSendingParams
 {
@@ -597,10 +599,9 @@ public sealed record ContinueSendingParams
 }
 
 /// <summary>
-/// Result payload returned by the in-process <c>dispatch_sending</c> tool. Always the JSON-RPC success shape
-/// (<c>IsError = false</c>) once a dispatch was actually attempted, so both the calling Apprentice's tool loop
-/// and <c>ApprenticeService</c>'s Chronicle interception can parse the same structured outcome — including a
-/// remote-side failure, which is carried in <see cref="Error"/> rather than as an MCP-level tool error.
+/// Historical Sending tool result retained for Chronicle parsing. The legacy transport used the JSON-RPC
+/// success shape (<c>IsError = false</c>) once dispatch was attempted, carrying a remote-side failure in
+/// <see cref="Error"/>. Guild task creation returns a Quest projection immediately after durable acceptance.
 /// </summary>
 public sealed record DispatchSendingResultWire
 {

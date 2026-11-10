@@ -376,8 +376,8 @@ internal static class ReadOnlyToolProvenance
 
     internal static IReadOnlyList<string> InternalObservationNames { get; } = Array.AsReadOnly<string>(
     [
-        "read_file_chunk", "list_directory", "search_workspace", "read_command_output",
-        "read_saga", "search_archives", "ask_human",
+        "read_file", "list_directory", "search_workspace", "read_command_output",
+        "search_memory", "search_history", "ask_human",
     ]);
 
     /// <summary>Called only after the actual in-process server's final wrapper has been constructed.</summary>

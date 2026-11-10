@@ -1,7 +1,9 @@
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 
@@ -9,19 +11,29 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 internal sealed partial class ConclaveArchmage : IGuildLocalChildToolDispatcher
 {
+    public bool SupportsLocal => settings.CurrentValue.Features.Conclave && GuildLocalExecutionAdmission.IsAvailable(settings.CurrentValue);
+
     public async Task<Result<GuildLocalChildToolResult>> DispatchAsync(GuildLocalChildToolCall call, CancellationToken cancellationToken)
     {
         if (call is null || call.Admission is null || !CanIssueGuild()
             || !ReferenceEquals(call.Admission.Registry.Parent.Store, quests)
             || !call.Admission.Registry.Owns(call.Admission) || call.Kind != call.Admission.Kind
-            || call.ParentQuest.Id != call.Admission.Registry.Parent.Driver.Execution.QuestId
-            || call.Kind == GuildLocalChildToolKind.CastSending && !settings.CurrentValue.Features.Conclave)
+            || call.ParentQuest.Id != call.Admission.Registry.Parent.Driver.Execution.QuestId)
             return UnavailableGuild();
 
-        if (call.Kind is GuildLocalChildToolKind.DispatchSending or GuildLocalChildToolKind.ContinueSending)
+        if (call.Kind == GuildLocalChildToolKind.SearchMemory)
+            return await SearchGuildMemoryAsync(call, cancellationToken).ConfigureAwait(false);
+
+        if (call.Kind is not (GuildLocalChildToolKind.DelegateTask or GuildLocalChildToolKind.CreateAgentTask))
+            return await DispatchTaskManagementAsync(call, cancellationToken).ConfigureAwait(false);
+
+        if (call.Kind == GuildLocalChildToolKind.CreateAgentTask && GuildTaskArguments.IsRemote(call.Arguments))
             return await DispatchRemoteToolAsync(call, cancellationToken).ConfigureAwait(false);
 
-        Result<GuildIssueChildRequest> request = ChildToolRequest(call);
+        if (call.Kind == GuildLocalChildToolKind.CreateAgentTask && !SupportsLocal) return UnavailableGuild();
+
+        Result<GuildIssueChildRequest> request = call.Kind == GuildLocalChildToolKind.CreateAgentTask
+            ? GuildTaskArguments.Creation(call) : ChildToolRequest(call);
 
         if (request.IsFailure) return request.Error;
 
@@ -41,7 +53,8 @@ internal sealed partial class ConclaveArchmage : IGuildLocalChildToolDispatcher
 
         guildScheduler!.Schedule(accepted.Value.Quest);
 
-        if (call.Kind == GuildLocalChildToolKind.CastSending) return new GuildLocalChildToolResult(accepted.Value.Quest);
+        if (call.Kind == GuildLocalChildToolKind.CreateAgentTask) return new GuildLocalChildToolResult(accepted.Value.Quest,
+            Projection: JsonSerializer.SerializeToElement(accepted.Value.Quest, GuildJsonContext.Default.GuildQuestDto));
 
         while (true)
         {

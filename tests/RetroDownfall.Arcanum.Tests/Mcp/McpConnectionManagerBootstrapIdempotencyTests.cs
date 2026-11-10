@@ -1771,7 +1771,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
         // before it waits on the drain, not after it.
         AIFunction readFileChunk = await GetToolAsync(
             workspace.Root,
-            "read_file_chunk").WaitAsync(TimeSpan.FromSeconds(10));
+            "read_file").WaitAsync(TimeSpan.FromSeconds(10));
         object? readResult = await readFileChunk.InvokeAsync(
             new AIFunctionArguments(
                 new Dictionary<string, object?>
@@ -2278,7 +2278,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
     }
 
     [Fact]
-    public async Task Unattended_forbidden_scribe_lexicon_runs_through_the_registered_MCP_bridge_and_records_an_ungated_audit()
+    public async Task Unattended_forbidden_save_memory_runs_through_the_registered_MCP_bridge_and_records_an_ungated_audit()
     {
         await using TempWorkspace workspace = new();
         await workspace.InitializeAsync();
@@ -2288,7 +2288,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
         ToolExecutionPipeline.ProcessedToolCall processed = await ProcessRegisteredToolAsync(
             workspace.Root,
-            "scribe_lexicon",
+            "save_memory",
             new Dictionary<string, object?>
             {
                 ["name"] = entityName,
@@ -2314,7 +2314,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
         Assert.Null(entry.ScopeCampaignId);
 
-        AssertUngatedAudit(processed, "scribe_lexicon", ward);
+        AssertUngatedAudit(processed, "save_memory", ward);
     }
 
     private async Task<ToolExecutionPipeline.ProcessedToolCall> ProcessRegisteredToolAsync(

@@ -547,13 +547,13 @@ public sealed partial class WizardIntelligenceProviderTests
             ["memory_grant"] = "memory",
         });
         bool denied = scenario.StartsWith("denied", StringComparison.Ordinal);
-        string toolName = denied ? "ask_human" : "read_file_chunk";
+        string toolName = denied ? "ask_human" : "read_file";
         string argumentName = denied ? "question" : "relativePath";
         chat.EnqueueToolCall(toolName, "read-a", new() { [argumentName] = "protected-a" });
         chat.EnqueueToolCall(toolName, "read-b", new() { [argumentName] = scenario is "arguments" or "oscillate" or "denied-arguments" ? "protected-b" : "protected-a" });
         if (scenario == "oscillate")
         {
-            chat.EnqueueToolCall("read_file_chunk", "read-a-again", new() { ["relativePath"] = "protected-a" });
+            chat.EnqueueToolCall("read_file", "read-a-again", new() { ["relativePath"] = "protected-a" });
         }
         chat.EnqueueText("parent complete");
         int reads = 0;
@@ -562,7 +562,7 @@ public sealed partial class WizardIntelligenceProviderTests
         {
             reads++;
             return scenario == "results" ? $"protected-result-{reads}" : "protected-result";
-        }, "read_file_chunk", "reads protected evidence"));
+        }, "read_file", "reads protected evidence"));
         TestCapturingLogger<WizardIntelligenceProvider> logger = new();
         var wizard = CreateWizard(chat, mcp: mcp, logger: logger,
             covenantDispatch: WizardIntelligenceProviderCovenantTests.EmptyDisclosureGate(),

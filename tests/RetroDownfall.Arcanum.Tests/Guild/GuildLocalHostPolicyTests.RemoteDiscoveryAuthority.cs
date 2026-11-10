@@ -19,7 +19,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         ConfigureRemote(fixture);
 
-        GuildToolGrant tool = new(GuildToolSourceKind.InternalMcp, "arcanum", "dispatch_sending");
+        GuildToolGrant tool = new(GuildToolSourceKind.InternalMcp, "arcanum", "create_agent_task");
 
         GuildCallerContext owner = await fixture.OperatorAsync();
 
@@ -103,7 +103,7 @@ public sealed partial class GuildLocalHostPolicyTests
         {
             Grant = fixture.Request.Grant with
             {
-                Tools = [new(GuildToolSourceKind.InternalMcp, "arcanum", "dispatch_sending")],
+                Tools = [new(GuildToolSourceKind.InternalMcp, "arcanum", "create_agent_task")],
                 Delegation = [GuildDelegationKind.Local, GuildDelegationKind.Remote],
             },
         });

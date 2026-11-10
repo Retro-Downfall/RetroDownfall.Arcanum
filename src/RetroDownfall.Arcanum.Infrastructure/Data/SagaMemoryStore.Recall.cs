@@ -9,6 +9,50 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed partial class SagaMemoryStore
 {
+    public Task<RetroDownfall.Arcanum.Core.Primitives.Result<SagaMemoryCurationRow[]>> SearchMemoryPageAsync(
+        string query, Guid? sessionId, MemoryScope scope, int limit, SagaMemoryPosition? after, CancellationToken cancellationToken, int contentByteLimit = 65536) =>
+        GuildMemoryAccess.RunResultAsync(RetroDownfall.Arcanum.Core.Guild.GuildMemoryStore.Saga,
+            RetroDownfall.Arcanum.Core.Guild.GuildMemoryOperation.Read, async ct =>
+        {
+            SagaMemoryCurationRow[] rows = await ReadLongRestSnapshotAsync(async (connection, longRest) =>
+            {
+                SagaRankingReader ranking = await SagaRankingReader.CreateAsync(connection, options.CurrentValue.Features.LongRest,
+                    (timeProvider ?? TimeProvider.System).GetUtcNow(), ct).ConfigureAwait(false);
+
+                await using DbCommand command = connection.CreateCommand();
+
+                BuildListCommand(command, query, sessionId, scope, limit, 0, includeEmbeddingProbe: true, longRest,
+                    cleanRecall: true, after: after);
+
+                command.CommandText = command.CommandText.Replace("THEN m.\"Content\" ELSE NULL END AS \"Content\"",
+                    "THEN CASE WHEN octet_length(m.Content)>@searchContentBytes THEN substr(m.Content,1,@searchContentChars)||@searchExcerptMarker ELSE m.Content END ELSE NULL END AS \"Content\"", StringComparison.Ordinal);
+
+                AddParameter(command, "@searchContentBytes", contentByteLimit);
+
+                AddParameter(command, "@searchContentChars", Math.Max(1, (contentByteLimit - 96) / 4));
+
+                AddParameter(command, "@searchExcerptMarker", " [TRUNCATED excerpt; inspect the source for full content]");
+
+                List<SagaMemoryCurationRow> page = [];
+
+                await using DbDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+                while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                {
+                    if (reader.IsDBNull(1)) throw new InvalidOperationException("A model search payload exceeds its supported allocation.");
+
+                    SagaMemoryDto memory = ReadMemory(reader, ranking);
+
+                    page.Add(new(memory, new(memory.RetiredAtUtc, memory.PinnedAtUtc), reader.GetInt32(18) == 1,
+                        new(reader.GetString(2), reader.GetString(0))));
+                }
+
+                return page.ToArray();
+            }, ct).ConfigureAwait(false);
+
+            return RetroDownfall.Arcanum.Core.Primitives.Result<SagaMemoryCurationRow[]>.Success(rows);
+        }, cancellationToken);
+
     public Task<SagaMemoryCurationRow[]> ListCleanRecallRowsAsync(string query, MemoryScope scope,
         int limit, CancellationToken cancellationToken)
     {

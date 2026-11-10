@@ -31,8 +31,8 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class WardRecordPipelineTests(ITestOutputHelper output)
 {
     [Theory]
-    [InlineData("read_file_chunk")]
-    [InlineData("read_saga")]
+    [InlineData("read_file")]
+    [InlineData("search_memory")]
     [InlineData("delegate_task")]
     [InlineData("web_search")]
     [InlineData("write_file")]

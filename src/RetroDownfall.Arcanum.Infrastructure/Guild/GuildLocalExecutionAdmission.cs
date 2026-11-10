@@ -16,14 +16,16 @@ internal sealed class GuildLocalExecutionAdmission(IOptionsMonitor<ArcanumSettin
         if (!settings.CurrentValue.Features.Guild || !settings.CurrentValue.Features.Apprentices
             || !admission.Registry.Owns(admission) || !ReferenceEquals(admission.Registry.Parent.Driver.Caller, caller)
             || quest.Quest.ParentQuestId != admission.Registry.Parent.Driver.Execution.QuestId)
-            return Task.FromResult(Result<GuildLocalExecutionInput>.Failure(new(ErrorCodes.Guild.AuthorityUnavailable,
+            return Task.FromResult(Result<GuildLocalExecutionInput>.Failure(new Error(ErrorCodes.Guild.AuthorityUnavailable,
                 "The child execution does not belong to this live tool admission.")));
 
         GuildLocalExecutionInput inherited = admission.Registry.AcceptedInput;
 
-        return Task.FromResult(Result<GuildLocalExecutionInput>.Success(new(1,
+        GuildLocalExecutionInput input = new(1,
             admission.Kind == GuildLocalChildToolKind.DelegateTask ? GuildLocalExecutionMode.Sterile : GuildLocalExecutionMode.Apprentice,
-            quest.Quest.GoalRef, inherited.Provider, inherited.Model, [], inherited.MaxOutputTokens, inherited.DelegationChain)));
+            quest.Quest.GoalRef, inherited.Provider, inherited.Model, [], inherited.MaxOutputTokens, inherited.DelegationChain);
+
+        return Task.FromResult(Result<GuildLocalExecutionInput>.Success(input));
     }
 
     public async Task<Result<GuildLocalExecutionInput>> ResolveWithinAsync(GuildCallerContext caller, GuildQuestStored quest,

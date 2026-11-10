@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
 using System.Security.Cryptography;
+using System.Text;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Conclave;
@@ -73,6 +75,13 @@ internal sealed partial class GuildQuestStore
 
                 if (frontier.IsFailure) return frontier.Error;
 
+                var planDiagnosis = await DiagnoseWaitPlanWithinAsync(connection, transaction, driver.Execution.QuestId,
+                    continuationId, token).ConfigureAwait(false);
+
+                if (planDiagnosis.IsFailure) return planDiagnosis.Error;
+
+                if (planDiagnosis.Value is { } removedTool) return removedTool;
+
                 await using SqliteCommand read = Command(connection, transaction, $"""
                     SELECT w.ContentId,w.Digest,w.ByteLength FROM guild_local_wait_checkpoints w
                     JOIN guild_continuations answer ON answer.QuestId=w.QuestId AND answer.ContinuationId=w.ContinuationId
@@ -105,13 +114,110 @@ internal sealed partial class GuildQuestStore
                     if (!ValidWaitSnapshot(snapshot, binding.Value) || JsonSerializer.Serialize(snapshot, GuildStorageJsonContext.Default.GuildLocalWaitSnapshot) != content.Value)
                         return InvalidReceipt;
 
-                    return snapshot!;
+                    Error? legacy = ApprenticeLegacyToolPolicy.Diagnose(snapshot!.Plan, snapshot.CurrentStep);
+
+                    if (legacy is { } removed) return removed;
+
+                    return snapshot;
                 }
                 catch (JsonException)
                 {
                     return InvalidReceipt;
                 }
             }, ct);
+    }
+
+    /// <summary>Read only an integrity-proven retained checkpoint; absence is valid for non-planner questions.</summary>
+    internal static async Task<Result<Error?>> DiagnoseWaitPlanWithinAsync(SqliteConnection connection,
+        SqliteTransaction transaction, Guid questId, Guid continuationId, CancellationToken ct)
+    {
+        var snapshot = await ReadDiagnosticWaitSnapshotWithinAsync(connection, transaction, questId, continuationId, ct).ConfigureAwait(false);
+
+        return snapshot.IsFailure ? snapshot.Error : Result<Error?>.Success(snapshot.Value is null ? null
+            : ApprenticeLegacyToolPolicy.Diagnose(snapshot.Value.Plan, snapshot.Value.CurrentStep));
+    }
+
+    internal static async Task<Result<ToolNameDiagnostic[]>> ReadWaitToolDiagnosticsWithinAsync(SqliteConnection connection,
+        SqliteTransaction transaction, Guid questId, Guid? continuationId, CancellationToken ct)
+    {
+        if (continuationId is null)
+        {
+            await using SqliteCommand latest = Command(connection, transaction, """
+                SELECT w.ContinuationId FROM guild_local_wait_checkpoints w
+                JOIN guild_continuations c ON c.QuestId=w.QuestId AND c.ContinuationId=w.ContinuationId
+                WHERE w.QuestId=$quest ORDER BY c.AcceptedRevision DESC LIMIT 1
+                """);
+
+            Add(latest, "$quest", Id(questId));
+
+            if (await latest.ExecuteScalarAsync(ct).ConfigureAwait(false) is not string id) return Array.Empty<ToolNameDiagnostic>();
+
+            continuationId = Guid.Parse(id);
+        }
+
+        var snapshot = await ReadDiagnosticWaitSnapshotWithinAsync(connection, transaction, questId, continuationId.Value, ct).ConfigureAwait(false);
+
+        return snapshot.IsFailure ? snapshot.Error : snapshot.Value is null ? Array.Empty<ToolNameDiagnostic>()
+            : ApprenticeLegacyToolPolicy.GetDiagnostics(snapshot.Value.Plan, snapshot.Value.CurrentStep);
+    }
+
+    private static async Task<Result<GuildLocalWaitSnapshot?>> ReadDiagnosticWaitSnapshotWithinAsync(SqliteConnection connection,
+        SqliteTransaction transaction, Guid questId, Guid continuationId, CancellationToken ct)
+    {
+        await using SqliteCommand read = Command(connection, transaction, $"""
+            SELECT w.ContentId,w.Digest,w.ByteLength FROM guild_local_wait_checkpoints w
+            WHERE w.QuestId=$quest AND w.ContinuationId=$continuation AND {WaitCheckpointProof}
+                AND w.ByteLength BETWEEN 1 AND 65536 AND length(w.Digest)=32
+            """);
+
+        Add(read, "$quest", Id(questId));
+
+        Add(read, "$continuation", Id(continuationId));
+
+        GuildDataRef reference;
+
+        await using (SqliteDataReader reader = await read.ExecuteReaderAsync(ct).ConfigureAwait(false))
+        {
+            if (!await reader.ReadAsync(ct).ConfigureAwait(false)) return Result<GuildLocalWaitSnapshot?>.Success(null);
+
+            reference = new(Guid.Parse(reader.GetString(0)), GuildContentKind.ExecutionCheckpoint, 1,
+                Convert.ToHexString((byte[])reader.GetValue(1)), "application/json", reader.GetInt64(2), false);
+        }
+
+        var binding = await GuildLocalExecutionStore.ReadWithinAsync(connection, transaction, questId, ct).ConfigureAwait(false);
+
+        if (binding.IsFailure) return binding.Error;
+
+        var validated = await GuildLocalExecutionStore.ValidateReferenceAsync(connection, transaction, reference, ct).ConfigureAwait(false);
+
+        if (validated.IsFailure) return validated.Error;
+
+        // Host inspection emits only closed removed-tool identifiers and replacements. It never
+        // returns authored checkpoint text and does not authorize its disclosure to a provider.
+        await using SqliteCommand bodyRead = Command(connection, transaction,
+            "SELECT Body FROM guild_content WHERE ContentId=$id AND typeof(Body)='blob' AND length(Body)<=65536");
+
+        Add(bodyRead, "$id", Id(reference.ContentId));
+
+        if (await bodyRead.ExecuteScalarAsync(ct).ConfigureAwait(false) is not byte[] body || body.LongLength != reference.ByteLength
+            || Convert.ToHexString(SHA256.HashData(body)) != reference.Digest) return Unavailable;
+
+        try
+        {
+            string content = new UTF8Encoding(false, true).GetString(body);
+
+            GuildLocalWaitSnapshot? snapshot = JsonSerializer.Deserialize(content, GuildStorageJsonContext.Default.GuildLocalWaitSnapshot);
+
+            if (!ValidWaitSnapshot(snapshot, binding.Value)
+                || JsonSerializer.Serialize(snapshot, GuildStorageJsonContext.Default.GuildLocalWaitSnapshot) != content)
+                return InvalidReceipt;
+
+            return Result<GuildLocalWaitSnapshot?>.Success(snapshot);
+        }
+        catch (Exception exception) when (exception is JsonException or DecoderFallbackException)
+        {
+            return InvalidReceipt;
+        }
     }
 
     private static bool ValidWaitSnapshot(GuildLocalWaitSnapshot? snapshot, GuildLocalExecutionBinding binding) =>

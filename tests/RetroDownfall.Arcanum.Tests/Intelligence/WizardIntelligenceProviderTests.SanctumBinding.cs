@@ -45,7 +45,7 @@ public sealed partial class WizardIntelligenceProviderTests
         ScriptingChatClient chat = new();
 
         chat.EnqueueToolCall(
-            "read_file_chunk",
+            "read_file",
             "sanctum-probe",
             new Dictionary<string, object?>
             {
@@ -76,7 +76,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         FakeMcpConnectionManager mcp = new();
 
-        mcp.Tools.Add(CreateMcpTool("read_file_chunk"));
+        mcp.Tools.Add(CreateMcpTool("read_file"));
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,

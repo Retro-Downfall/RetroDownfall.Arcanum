@@ -738,7 +738,7 @@ An exclusively created and verified managed file may be locally revocable. Appen
 
 ### 12.6 Host-process tools and Covenant cannot coexist
 
-Unsandboxed host-process tools (`execute_command`, `run_spell_script`) and Covenant authority are mutually exclusive. `HostProcessToolsTransitionService`, the pure `HostProcessToolsMarkerPairJoiner`, and `HostProcessToolsStartupGate` classify the installation before any pool, key, or Covenant service exists. A host started with the escape-hatch environment but without a completed, marker-matched taint transition exits with `Covenant.HostToolsTransitionRequired`. An installation that has completed the transition can never open Covenant again on any later start. `PendingHostToolsTaint` counts as tainted everywhere: "cannot prove clean" is the only reading a fail-closed decision may take.
+Unsandboxed host-process tools (`execute_command`, `run_script`) and Covenant authority are mutually exclusive. `HostProcessToolsTransitionService`, the pure `HostProcessToolsMarkerPairJoiner`, and `HostProcessToolsStartupGate` classify the installation before any pool, key, or Covenant service exists. A host started with the escape-hatch environment but without a completed, marker-matched taint transition exits with `Covenant.HostToolsTransitionRequired`. An installation that has completed the transition can never open Covenant again on any later start. `PendingHostToolsTaint` counts as tainted everywhere: "cannot prove clean" is the only reading a fail-closed decision may take.
 
 ## 13. How the existing memory systems participate
 
@@ -1128,7 +1128,7 @@ Each durable store gets the same verbs against one item, using the identity that
 
 **Saga versions and lifecycle.** Correction appends an immutable version and atomically publishes embeddings and current-state projections. Retirement stores content-free keyed suppression evidence that blocks equivalent re-extraction — without it the next extraction pass re-adds what the operator just removed and the curation loop never converges.
 
-**Lexicon versions and lifecycle.** Item identity includes typed scope, normalized name, and exact version, with Campaign-shadowing preserved. Correction updates the external-content FTS projection in the same publication boundary. Retired entries leave matching and retrieval, remain inspectable, and cannot be silently recreated through `scribe_lexicon`.
+**Lexicon versions and lifecycle.** Item identity includes typed scope, normalized name, and exact version, with Campaign-shadowing preserved. Correction updates the external-content FTS projection in the same publication boundary. Retired entries leave matching and retrieval, remain inspectable, and cannot be silently recreated through `save_memory`.
 
 **Review queues, bulk actions, and actionable search.** Bounded, newest-first, paginated queues reporting assertion origin, source, scope, and exact version, with a durable review marker. **Unreviewed memory keeps its normal eligibility** — the queue is a tool, not a gate — and advancing a marker never mutates the reviewed item. Search hits route to the owning store's typed operation and prove other stores were unchanged.
 

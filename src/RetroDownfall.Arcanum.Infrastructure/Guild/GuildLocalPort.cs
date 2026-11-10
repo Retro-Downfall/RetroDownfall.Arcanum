@@ -167,7 +167,7 @@ internal sealed partial class GuildLocalPort(GuildQuestStore quests, GuildLocalH
             state.Binding.ApprenticeId, null, null);
 
     private async Task<Result<GuildDispatchObservation>> ParkAsync(GuildLocalInferenceExecution execution,
-        Guid observedDispatch, CancellationToken drainCancellation)
+        Guid observedDispatch, CancellationToken drainCancellation, string? reasonCode = null)
     {
         // The engine has returned and its owned in-process work has joined. Keep that known
         // stop in this live scope while descendants drain; interruption never fabricates proof.
@@ -255,7 +255,7 @@ internal sealed partial class GuildLocalPort(GuildQuestStore quests, GuildLocalH
         {
         }
 
-        var parked = await quests.ParkLocalExecutionAsync(execution.Driver, CancellationToken.None).ConfigureAwait(false);
+        var parked = await quests.ParkLocalExecutionAsync(execution.Driver, CancellationToken.None, reasonCode).ConfigureAwait(false);
 
         if (parked.IsFailure) return parked.Error;
 

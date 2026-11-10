@@ -233,7 +233,7 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
             }
 
             Result<(Guid AgentId, Guid CardId, long Revision)> destination = await ResolveDestinationAsync(connection, transaction,
-                root?.AgentId ?? child?.AgentId, proposal, plan, token).ConfigureAwait(false);
+                root?.AgentId ?? child?.AgentId, proposal, plan, token, child?.CardId, parent?.Quest.SessionId).ConfigureAwait(false);
 
             if (destination.IsFailure) return destination.Error;
 
@@ -256,8 +256,15 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
             GuildSignetBinding binding = new(Guid.NewGuid(), destination.Value.AgentId, proposal.RunId, id, rootId,
                 caller.Execution?.SignetId, plan.Grant, now, plan.OriginPrincipalId);
 
+            GuildRequestedGrant? signingRequest = child?.RequestedGrant ?? (child is null ? null : new());
+
+            // Card attunement is a host-resolved further attenuation. The caller's original intent
+            // digest remains unchanged; the accepted resolution binds this exact pinned revision.
+            if (child?.CardId is not null)
+                signingRequest = signingRequest! with { Tools = new(true, plan.Grant.Tools) };
+
             Result<GuildSignetRecord> signet = await signets.IssueAsync(plan.Admission, binding, caller.Execution,
-                child?.RequestedGrant ?? (child is null ? null : new()), token).ConfigureAwait(false);
+                signingRequest, token).ConfigureAwait(false);
 
             if (signet.IsFailure) return signet.Error;
 
@@ -319,6 +326,21 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
             if (input.IsFailure) return input.Error;
 
+            if (child?.CardId is not null)
+            {
+                // The exact selected source belongs to child issuance, whether the Run arrived through
+                // a model tool or the native coordinator. Both persist the same pinned disclosure input.
+                GuildQuestDto cardIssuer = parent!.Quest;
+
+                var source = await GuildStore.ResolveQuestCardWithinAsync(connection, transaction,
+                    created.Value.Quest.AgentId, created.Value.Quest.CardId, created.Value.Quest.CardRevision,
+                    new(cardIssuer.WorkspaceId, cardIssuer.SessionId, cardIssuer.CampaignId), token).ConfigureAwait(false);
+
+                if (source.IsFailure) return source.Error;
+
+                input = input.Value with { Card = new(created.Value.Quest.CardId, created.Value.Quest.CardRevision, source.Value.Content) };
+            }
+
             if (inbound?.DelegationChain is { } inboundChain)
                 input = input.Value with { DelegationChain = inboundChain };
 
@@ -339,8 +361,12 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
     }
 
     private async Task<Result<(Guid AgentId, Guid CardId, long Revision)>> ResolveDestinationAsync(SqliteConnection connection,
-        SqliteTransaction transaction, Guid? selectedAgent, GuildQuestProposal proposal, GuildQuestAdmissionPlan plan, CancellationToken ct)
+        SqliteTransaction transaction, Guid? selectedAgent, GuildQuestProposal proposal, GuildQuestAdmissionPlan plan, CancellationToken ct, Guid? selectedCard = null, Guid? issuerSession = null)
     {
+        if (selectedAgent is null && selectedCard is not null)
+            return await GuildStore.SelectLocalQuestCardWithinAsync(connection, transaction, selectedCard.Value,
+                new(proposal.WorkspaceId, issuerSession ?? proposal.SessionId, proposal.CampaignId), ct).ConfigureAwait(false);
+
         if (selectedAgent is null)
         {
             if (plan.GeneratedCard is not { } template || template.Card.Source.Kind != GuildAgentSourceKind.Derived) return Unavailable;

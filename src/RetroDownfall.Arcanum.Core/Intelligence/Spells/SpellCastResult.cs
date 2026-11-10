@@ -13,4 +13,5 @@ public sealed record SpellCastResult(
     string[] AvailableTools,
     string[] AvailableSpellScripts,
     string? CodexContent,
-    bool HasDeclaredToolsFilter = false);
+    bool HasDeclaredToolsFilter = false,
+    ToolNameDiagnostic[]? ToolDiagnostics = null);

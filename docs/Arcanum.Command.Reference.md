@@ -1533,6 +1533,12 @@ Watch terminal output uses UTC timestamps and source-specific colors. The shared
 - [`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md) — operator troubleshooting.
 - [`Arcanum.CommandMap.json`](../tests/RetroDownfall.Arcanum.Tests/TestData/Contracts/Arcanum.CommandMap.json) — the machine-readable command map: every command path, argument, option, alias, closed value set, dynamic-completion source, and example, projected from the live parser. It is regenerated and diffed by test, so an unintended entry in its diff is an unintended change to the public CLI surface.
 
+## Model tool name migration
+
+Model-facing tools use the hard-cutover names in [DESIGN §23.16](Arcanum.DESIGN.md#2316-public-surfaces-and-the-model-facing-tool-map). This does not rename CLI verbs or add a `guild` command. Update authored Spell `declaredTools` and agent tool declarations to current names; validation and cast preview report removed, unknown and known-unavailable declarations. Removed names cannot execute through aliases or external MCP collisions.
+
+An unfinished persisted plan that names a removed tool parks with `Guild.LegacyToolName` and a visible replacement mapping. Its stored text and historical results are preserved. Create a corrected new Quest through the native Guild API; a resume or continuation never silently rewrites/replays the old plan. Existing operator `memory search` uses the shared literal search service and retains its authenticated inspection semantics. Model `search_memory` uses host-bound source scope and bounded excerpts; `save_memory`/`delete_memory` remain Lexicon-only.
+
 ## Proposed Guild commands
 
 Local and remote Guild execution are available through the native HTTP subset documented in the [API reference](Arcanum.API.md#implemented-guild-execution). No `guild` CLI verb, completion entry or executable alias is registered; the command surface below remains proposed. With `Arcanum:Features:Guild=true`, legacy Apprentice creation and new legacy local/remote rounds refuse instead of minting unsealed work. Existing inspection commands retain their documented output; use the Guild API for accepted Quest identities and status. Turning Guild off requests cancellation/drain and does not make stored Guild work eligible for legacy resume. Existing data-lifecycle commands recognize `guild-content`, `guild-records`, and `guild-evidence`. Only the first two have configurable timer policies, both disabled by default.

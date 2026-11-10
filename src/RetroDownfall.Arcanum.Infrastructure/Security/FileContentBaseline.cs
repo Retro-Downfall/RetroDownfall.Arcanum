@@ -12,7 +12,7 @@ internal readonly record struct FileContentBaseline(
     string Sha256Hex)
 {
     /// <summary>
-    /// What both read-modify-write writers (the PATCH route and the in-process <c>replace_text_block</c>
+    /// What both read-modify-write writers (the PATCH route and the in-process <c>edit_file</c>
     /// tool) tell the caller when the replace aborted against a baseline, so the two cannot drift.
     /// </summary>
     internal const string ChangedAfterReadMessage =

@@ -50,7 +50,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
     /// Floor of the code-owned <c>workspace_check</c> memory ceiling. A <c>dotnet build</c> /
     /// <c>dotnet test</c> tree (CLI host, MSBuild nodes, the VBCSCompiler server, test hosts) is summed
     /// against one per-invocation ceiling, and the 512 MB Sanctum default that suits
-    /// <c>execute_command</c> and <c>run_spell_script</c> would kill ordinary builds.
+    /// <c>execute_command</c> and <c>run_script</c> would kill ordinary builds.
     /// </summary>
     internal const int MemoryCeilingFloorMb = 4096;
 

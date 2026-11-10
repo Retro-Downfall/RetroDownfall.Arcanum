@@ -1,11 +1,11 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Weave;
 
-namespace RetroDownfall.Arcanum.Api.Tower;
+namespace RetroDownfall.Arcanum.Infrastructure.Memory;
 
 internal static class MemorySearchContinuationCodec
 {
@@ -25,7 +25,7 @@ internal static class MemorySearchContinuationCodec
     }
 
     internal static string Write(string binding, MemorySearchPosition position) => "ms1." + Convert.ToBase64String(
-        JsonSerializer.SerializeToUtf8Bytes(new MemorySearchCursor(1, binding, position), ArcanumJsonContext.Default.MemorySearchCursor))
+        JsonSerializer.SerializeToUtf8Bytes(new MemorySearchCursor(1, binding, position), ArcanumCoreJsonContext.Default.MemorySearchCursor))
         .TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
     internal static bool AppliesTo(MemorySearchScope scope, int phase) => scope switch
@@ -55,7 +55,7 @@ internal static class MemorySearchContinuationCodec
 
             text = text.PadRight((text.Length + 3) / 4 * 4, '=');
 
-            MemorySearchCursor? cursor = JsonSerializer.Deserialize(Convert.FromBase64String(text), ArcanumJsonContext.Default.MemorySearchCursor);
+            MemorySearchCursor? cursor = JsonSerializer.Deserialize(Convert.FromBase64String(text), ArcanumCoreJsonContext.Default.MemorySearchCursor);
 
             if (cursor is not { Version: 1, Position: { } p } || cursor.Binding != binding || p.Phase is < 0 or > 5
                 || p.Time?.Length > (p.Phase == 5 ? 512 : 128) || p.Id?.Length > 512 || p.Path?.Length > 4096 || p.Tier?.Length > 256

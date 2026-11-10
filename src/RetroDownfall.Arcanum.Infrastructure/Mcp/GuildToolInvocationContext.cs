@@ -41,13 +41,15 @@ internal sealed class GuildToolInvocationContext(
     }
 
     internal ValueTask<object?> DispatchMcpAsync(GuildLocalToolRegistry.Invocation frame, string name,
-        JsonElement arguments, CancellationToken ct)
+        JsonElement arguments, CancellationToken ct, long outputAllocationBytes = 1_048_576)
     {
         GuildToolGrant tool = new(GuildToolSourceKind.InternalMcp, "arcanum", name);
 
         if (registry is null || !registry.Matches(execution, authority) || !ReferenceEquals(frame.Registry, registry)
             || frame.Tool != tool || !frame.IsActive || !currentEligibility(tool))
             return ValueTask.FromResult<object?>(Format(Unavailable));
+
+        frame.NarrowOutputAllocation(outputAllocationBytes);
 
         if (arguments.ValueKind != JsonValueKind.Object)
             return ValueTask.FromResult<object?>(Format(new(ErrorCodes.Guild.InvalidRequest, "Tool arguments must be a JSON object.")));

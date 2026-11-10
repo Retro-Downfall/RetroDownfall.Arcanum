@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -52,6 +53,8 @@ public sealed record ParsedSpell(
     public string Body { get; init; } = string.Empty;
 
     public SkillMetadata? SkillMetadata { get; init; }
+
+    public IReadOnlyList<ToolNameDiagnostic> ToolDiagnostics { get; init; } = [];
 }
 
 internal static class SpellScanner
@@ -1551,6 +1554,7 @@ internal static class SpellScanner
             RequiredMcpServers = parsed.RequiredMcpServers,
             Body = parsed.Body,
             SkillMetadata = skillMetadata,
+            ToolDiagnostics = ToolNameDiagnostics.Removed(skillMetadata?.DeclaredTools ?? parsed.Tools.AsEnumerable()),
         };
     }
 

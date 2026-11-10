@@ -1376,7 +1376,7 @@ public sealed class ToolExecutionPipeline(
                 if (result is GuildLocalChildToolResult child)
                 {
                     string body = GuildPromptBuilder.Build(GuildAuthorityKind.Child, GuildEnvelopeKind.Result,
-                        child.Quest.ResultReceiptId ?? child.Quest.Id, child.Summary ?? $"Child Quest {child.Quest.Id:N}: {child.Quest.State}.");
+                        child.Quest.ResultReceiptId ?? child.Quest.Id, child.Projection?.GetRawText() ?? child.Summary ?? $"Child Quest {child.Quest.Id:N}: {child.Quest.State}.");
 
                     return new WardedToolExecutionResult(body, BufferedWardEventsOrEmpty(wardEvents)) { Sensitivity = child.Sensitivity };
                 }
@@ -2170,8 +2170,8 @@ public sealed class ToolExecutionPipeline(
                 }
 
             case "write_file":
-            case "replace_text_block":
-            case "read_file_chunk":
+            case "edit_file":
+            case "read_file":
             case "list_directory":
                 {
                     if (!TryGetJsonStringProperty(argsRoot, "relativePath", out string? relativePath)
@@ -2205,7 +2205,7 @@ public sealed class ToolExecutionPipeline(
                     break;
                 }
 
-            case "run_spell_script":
+            case "run_script":
                 {
                     // W3.5: validate the script path under EVERY candidate root the tool will resolve
                     // against (active spell + Arcane Resonance dependencies), not just the active spell's

@@ -7,10 +7,16 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 /// <c>saga_memory_embeddings</c> +
 /// <c>saga_extraction_watermarks</c>; see <c>Infrastructure/Data/Schema/Tables/</c>). Shared by
 /// <c>SagaExtractionService</c> (writes), the <c>/api/saga</c> endpoints (reads/deletes), and the
-/// <c>read_saga</c> MCP tool (reads), so all three surfaces stay consistent without duplicating SQL.
+/// <c>search_memory</c> MCP tool (reads), so all three surfaces stay consistent without duplicating SQL.
 /// </summary>
 public interface ISagaMemoryStore
 {
+    /// <summary>Model disclosure search, constrained before seeking and allocation; never operator curation.</summary>
+    Task<RetroDownfall.Arcanum.Core.Primitives.Result<SagaMemoryCurationRow[]>> SearchMemoryPageAsync(
+        string query, Guid? sessionId, MemoryScope scope, int limit, SagaMemoryPosition? after, CancellationToken cancellationToken, int contentByteLimit = 65536) =>
+        Task.FromResult(RetroDownfall.Arcanum.Core.Primitives.Result<SagaMemoryCurationRow[]>.Failure(
+            new(RetroDownfall.Arcanum.Core.Primitives.ErrorCodes.MemorySearch.IndexUnavailable, "Model Saga search is unavailable.")));
+
     /// <summary>
     /// Inserts a new memory: a row in <c>saga_memories</c>, its BLOB embedding in
     /// <c>saga_memory_embeddings</c>, committed together.

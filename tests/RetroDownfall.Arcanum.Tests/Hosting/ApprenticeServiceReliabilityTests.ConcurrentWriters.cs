@@ -127,9 +127,9 @@ public sealed partial class ApprenticeServiceReliabilityTests
     {
         Guid apprenticeId = Guid.NewGuid();
 
-        AfterFirstReadRepository repo = new(TwoStepApprentice(apprenticeId, ApprenticeStatus.Paused))
+        BeforeFirstWriteRepository repo = new(TwoStepApprentice(apprenticeId, ApprenticeStatus.Paused))
         {
-            AfterFirstRead = CommitFirstStep,
+            BeforeFirstWrite = CommitFirstStep,
         };
 
         using ApprenticeService service = CreateService(

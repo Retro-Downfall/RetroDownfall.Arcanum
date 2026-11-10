@@ -501,7 +501,7 @@ internal sealed class CommandCenterChatRunner(
     private void TryBeginHumanPrompt(IntelligenceEvent evt, CommandCenterState state)
     {
         string toolName = NormalizeToolName(evt.ToolCall?.Name ?? evt.Message);
-        // Do not route petition_dungeon_master / send_commlink_alert (or aliases) through ask_human.
+        // Do not route request_intervention / send_notification (or aliases) through ask_human.
         if (!string.Equals(toolName, "ask_human", StringComparison.Ordinal))
         {
             return;

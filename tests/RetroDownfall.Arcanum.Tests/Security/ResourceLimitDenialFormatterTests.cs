@@ -67,7 +67,7 @@ public sealed class ResourceLimitDenialFormatterTests
         string message = await ResourceLimitDenialFormatter.RecordAndDescribeAsync(
             guard,
             workspaceRoot: null,
-            toolName: "run_spell_script",
+            toolName: "run_script",
             Limits,
             exceededResource: null,
             CancellationToken.None);

@@ -14,7 +14,7 @@ internal sealed partial class GuildPortalStore(GuildQuestStore quests, SignetAut
 {
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
-    internal async Task<Result<GuildMessageReceipt>> PublishAsync(GuildCallerContext caller, Guid questId, GuildPublishRequest request, CancellationToken ct)
+    internal async Task<Result<GuildMessageReceipt>> PublishAsync(GuildCallerContext caller, Guid questId, GuildPublishRequest request, CancellationToken ct, GuildChildToolAdmission? toolAdmission = null)
     {
         Result<GuildPublishRequest> normalized = Normalize(request, caller?.Kind == GuildCallerKind.HostReceipt);
 
@@ -32,7 +32,7 @@ internal sealed partial class GuildPortalStore(GuildQuestStore quests, SignetAut
 
         return await authority.InQuestTransactionAsync<GuildMessageReceipt>(located.Value.Quest.RootQuestId,
             (connection, transaction, signets, token) => PublishWithinAsync(connection, transaction, signets,
-                caller, questId, normalized.Value, token), ct).ConfigureAwait(false);
+                caller, questId, normalized.Value, token, toolAdmission), ct).ConfigureAwait(false);
     }
 
     private static Result<GuildPublishRequest> Normalize(GuildPublishRequest? request, bool preserveBody = false)

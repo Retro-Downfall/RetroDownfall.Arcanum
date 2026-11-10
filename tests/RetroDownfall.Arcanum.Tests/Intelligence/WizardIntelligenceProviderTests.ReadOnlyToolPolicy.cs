@@ -1,9 +1,14 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Protocol;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Lexicon;
+using RetroDownfall.Arcanum.Core.Memory;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
@@ -17,8 +22,8 @@ public sealed partial class WizardIntelligenceProviderTests
 {
     private static readonly HashSet<string> AuditedInternalObservationNames = new(StringComparer.Ordinal)
     {
-        "read_file_chunk", "list_directory", "search_workspace", "read_command_output",
-        "read_saga", "search_archives", "ask_human",
+        "read_file", "list_directory", "search_workspace", "read_command_output",
+        "search_memory", "search_history", "ask_human",
     };
 
     [Fact]
@@ -65,15 +70,16 @@ public sealed partial class WizardIntelligenceProviderTests
 
         configuration.Providers = [DefaultProvider() with { ContextWindowLimit = 32_768 }];
 
-        await using McpConnectionManager manager = McpConnectionManagerHarness.Create(configuration);
+        await using McpConnectionManager manager = McpConnectionManagerHarness.Create(configuration,
+            configureServices: services => services.AddSingleton<IMemorySearchService>(new ReadOnlyMemorySearchSurface()));
 
         IReadOnlyList<AITool> actual = await manager.GetAvailableToolsAsync(_workspace.Root);
 
-        Assert.Contains(actual, static tool => tool.Name == "read_saga");
+        Assert.Contains(actual, static tool => tool.Name == "search_memory");
 
-        Assert.Contains(actual, static tool => tool.Name == "search_archives");
+        Assert.Contains(actual, static tool => tool.Name == "search_history");
 
-        Assert.Contains(actual, static tool => tool.Name == "read_file_chunk");
+        Assert.Contains(actual, static tool => tool.Name == "read_file");
 
         Assert.DoesNotContain(actual, static tool => tool.Name == "read_lore");
 
@@ -93,12 +99,12 @@ public sealed partial class WizardIntelligenceProviderTests
     }
 
     [Theory]
-    [InlineData("read_file_chunk", false)]
-    [InlineData("read_file_chunk", true)]
+    [InlineData("read_file", false)]
+    [InlineData("read_file", true)]
     [InlineData("search_workspace", false)]
     [InlineData("search_workspace", true)]
-    [InlineData("read_saga", false)]
-    [InlineData("read_saga", true)]
+    [InlineData("search_memory", false)]
+    [InlineData("search_memory", true)]
     public async Task ReadOnly_policy_refuses_unknown_name_and_hint_lookalikes(string name, bool readOnlyHint)
     {
         PolicyLookalike lookalike = new(name, readOnlyHint);
@@ -115,7 +121,7 @@ public sealed partial class WizardIntelligenceProviderTests
     [InlineData(true)]
     public async Task ReadOnly_policy_never_invokes_an_unknown_lookalike_requested_by_the_model(bool streaming)
     {
-        PolicyLookalike lookalike = new("read_file_chunk", true);
+        PolicyLookalike lookalike = new("read_file", true);
 
         FakeMcpConnectionManager mcp = new();
 
@@ -196,7 +202,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         IReadOnlyList<AITool> actual = await manager.GetAvailableToolsAsync(_workspace.Root);
 
-        McpBridgeTool original = Assert.IsType<McpBridgeTool>(Assert.Single(actual, static tool => tool.Name == "read_file_chunk"));
+        McpBridgeTool original = Assert.IsType<McpBridgeTool>(Assert.Single(actual, static tool => tool.Name == "read_file"));
 
         PolicyNonInvokingClient external = new();
 
@@ -215,18 +221,18 @@ public sealed partial class WizardIntelligenceProviderTests
             Assert.True(PromptCacheToolProvenance.IsCurrent(clone));
         }
 
-        Assert.Contains("read_file_chunk", await AdvertiseReadOnlyToolsAsync([original], streaming: false));
+        Assert.Contains("read_file", await AdvertiseReadOnlyToolsAsync([original], streaming: false));
 
-        Assert.DoesNotContain("read_file_chunk", await AdvertiseReadOnlyToolsAsync([clone], streaming: false));
+        Assert.DoesNotContain("read_file", await AdvertiseReadOnlyToolsAsync([clone], streaming: false));
 
         Assert.Equal(0, external.Calls);
     }
 
     [Theory]
-    [InlineData("read_file_chunk", false, false)]
-    [InlineData("read_file_chunk", false, true)]
-    [InlineData("read_file_chunk", true, false)]
-    [InlineData("read_file_chunk", true, true)]
+    [InlineData("read_file", false, false)]
+    [InlineData("read_file", false, true)]
+    [InlineData("read_file", true, false)]
+    [InlineData("read_file", true, true)]
     [InlineData("get_local_system_time", false, false)]
     [InlineData("get_local_system_time", false, true)]
     [InlineData("get_local_system_time", true, false)]
@@ -301,7 +307,7 @@ public sealed partial class WizardIntelligenceProviderTests
     [InlineData(true, true)]
     public async Task Context_preview_keeps_supported_ordinary_controls_without_inventing_a_policy_wire_input(bool disableAll, bool unattended)
     {
-        PolicyLookalike observation = new("read_file_chunk", true);
+        PolicyLookalike observation = new("read_file", true);
 
         PolicyLookalike human = new("ask_human", true);
 
@@ -326,7 +332,7 @@ public sealed partial class WizardIntelligenceProviderTests
         }
         else
         {
-            Assert.Contains(result.Value.Tools, static tool => tool.Included && tool.Name == "read_file_chunk");
+            Assert.Contains(result.Value.Tools, static tool => tool.Included && tool.Name == "read_file");
         }
 
         Assert.DoesNotContain(result.Value.Tools, static tool => tool.Included && tool.Name == "ask_human");
@@ -420,4 +426,15 @@ public sealed partial class WizardIntelligenceProviderTests
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
+    private sealed class ReadOnlyMemorySearchSurface : IMemorySearchService
+    {
+        public Task<Result<MemorySearchResponse>> SearchForInvocationAsync(
+            MemorySearchRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("This fixture exercises tool metadata only.");
+
+        public Task<Result<LexiconInspectionResult<MemorySearchResponse>>> SearchAsync(
+            MemorySearchRequest? request, ICovenantSnapshotReadLease? readLease, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("This fixture exercises tool metadata only.");
+    }
+
 }

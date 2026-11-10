@@ -225,7 +225,7 @@ public sealed class ChannelClientTransportTests : IDisposable
         {
             Method = "tools/call",
             Id = new RequestId(1),
-            Params = new JsonObject { ["name"] = "read_file_chunk", ["pad"] = new string('p', padding) },
+            Params = new JsonObject { ["name"] = "read_file", ["pad"] = new string('p', padding) },
         };
 
     private static int SerializedBytes(JsonRpcRequest request) =>

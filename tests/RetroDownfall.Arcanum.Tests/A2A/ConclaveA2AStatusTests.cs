@@ -191,7 +191,7 @@ public sealed class ConclaveA2AStatusTests
 
         Assert.False(status.ClientEnabled);
 
-        Assert.Contains("cast_sending", status.Detail, StringComparison.Ordinal);
+        Assert.Contains("local Apprentice operator delegation", status.Detail, StringComparison.Ordinal);
 
     }
 

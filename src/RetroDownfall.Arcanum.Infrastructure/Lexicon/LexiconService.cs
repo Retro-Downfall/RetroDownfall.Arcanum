@@ -34,7 +34,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Lexicon;
 /// model (they are declared in <c>Data/Schema/</c> and installed with the rest of the schema), so all
 /// access goes through <see cref="DbCommand"/> rather than LINQ, mirroring <c>SagaMemoryStore</c>.
 /// Writes use <c>BEGIN IMMEDIATE</c> inside <see cref="SqliteBusyRetry"/> so concurrent
-/// <c>scribe_lexicon</c> appends serialize and cannot lose facts.
+/// <c>save_memory</c> appends serialize and cannot lose facts.
 /// </summary>
 internal sealed partial class LexiconService(
     ArcanumDbContext db,
@@ -125,7 +125,7 @@ internal sealed partial class LexiconService(
                     async () =>
                     {
                         // BEGIN IMMEDIATE acquires the write lock up front so the read-merge-write is
-                        // serialized against other concurrent scribe_lexicon appends. SqliteBusyRetry
+                        // serialized against other concurrent save_memory appends. SqliteBusyRetry
                         // re-runs the whole delegate (fresh BEGIN) on SQLITE_BUSY/LOCKED.
                         await ExecuteNonQueryAsync(connection, cancellationToken, "BEGIN IMMEDIATE").ConfigureAwait(false);
 

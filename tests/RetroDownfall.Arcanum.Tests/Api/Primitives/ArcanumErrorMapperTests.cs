@@ -20,6 +20,7 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Guild.SequenceExhausted, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.Guild.SourceConflict, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.Guild.LocalExecutionInterrupted, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Guild.LegacyToolName, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.Guild.ContentErased, StatusCodes.Status410Gone)]
     [InlineData(ErrorCodes.Guild.PayloadTooLarge, StatusCodes.Status413PayloadTooLarge)]
     public void Native_Guild_execution_errors_preserve_the_exact_contract(string code, int expected)

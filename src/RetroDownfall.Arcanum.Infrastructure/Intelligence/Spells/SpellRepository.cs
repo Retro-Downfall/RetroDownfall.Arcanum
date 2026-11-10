@@ -5,6 +5,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Environment;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
@@ -49,6 +51,8 @@ internal sealed partial class SpellRepository : ISpellRepository
 
     private readonly SpellSearchService _searchService;
 
+    private readonly IOptionsMonitor<ArcanumSettings> _settingsMonitor;
+
     /// <summary>
     /// Deterministic test seam invoked right after a staged spell directory has been moved into place and
     /// before anything is read back, so a test can cancel the caller at the one instant the spell is
@@ -77,6 +81,8 @@ internal sealed partial class SpellRepository : ISpellRepository
         _mcpManager = mcpManager;
 
         _searchService = new SpellSearchService(settingsMonitor);
+
+        _settingsMonitor = settingsMonitor;
     }
 
     private long GetMaxSpellFileSizeBytes() =>
@@ -559,17 +565,45 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         if (detail.DeclaredTools is { Length: > 0 })
         {
-            IReadOnlyList<string> toolNames = await GetMcpToolNamesAsync(ct).ConfigureAwait(false);
+            IReadOnlyList<string> toolNames = await GetMcpToolNamesAsync(workingDirectory, ct).ConfigureAwait(false);
 
-            HashSet<string> known = new(toolNames, StringComparer.OrdinalIgnoreCase);
-
-            foreach (string tool in detail.DeclaredTools)
+            HashSet<string> available = new(toolNames, StringComparer.OrdinalIgnoreCase)
             {
-                if (!known.Contains(tool)
-                    && !ArcanumBuiltInToolNames.IsKnown(tool))
+                ArcanumBuiltInToolNames.GetLocalSystemTime,
+                ArcanumBuiltInToolNames.GetArcanumSystemInfo,
+            };
+
+            ArcanumSettings settings = _settingsMonitor.CurrentValue;
+
+            if (settings.ResolveWebBrowsing().Enabled)
+            {
+                available.Add(ArcanumBuiltInToolNames.WebSearch);
+
+                available.Add(ArcanumBuiltInToolNames.ReadUrl);
+            }
+
+            if (detail.DeclaredTools.Contains(ArcanumBuiltInToolNames.RunSpellScript, StringComparer.OrdinalIgnoreCase)
+                && HostProcessToolPolicy.AreAllowed(ArcanumEnvironment.ResolveEdition(settings.Edition)))
+            {
+                IReadOnlyList<ParsedSpell> spells = await SpellScanner.ScanAsync(workingDirectory, ct,
+                    GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+
+                ParsedSpell? primary = spells.FirstOrDefault(spell => spell.FilePath == detail.FilePath);
+
+                if (primary is not null)
                 {
-                    warnings.Add($"Declared tool '{tool}' was not found in configured MCP servers.");
+                    ResolvedSpell resolved = await SpellDependencyResolver.ResolveAsync(primary, workingDirectory,
+                        GetMaxSpellFileSizeBytes(), ct, _logger).ConfigureAwait(false);
+
+                    if (primary.AvailableScripts.Count > 0 || resolved.Resonants.Any(static spell => spell.AvailableScripts.Count > 0))
+                        available.Add(ArcanumBuiltInToolNames.RunSpellScript);
                 }
+            }
+
+            foreach (ToolNameDiagnostic diagnostic in ToolNameDiagnostics.Diagnose(detail.DeclaredTools, available))
+            {
+                if (diagnostic.Kind == ToolNameDiagnosticKind.Removed) errors.Add(diagnostic.Message);
+                else warnings.Add(diagnostic.Message);
             }
         }
 
@@ -1961,12 +1995,12 @@ internal sealed partial class SpellRepository : ISpellRepository
             DeclaredTools: parsed.Tools is { Length: > 0 } tools ? tools : null);
     }
 
-    private async Task<IReadOnlyList<string>> GetMcpToolNamesAsync(CancellationToken ct)
+    private async Task<IReadOnlyList<string>> GetMcpToolNamesAsync(string? workingDirectory, CancellationToken ct)
     {
         try
         {
             IReadOnlyList<Microsoft.Extensions.AI.AITool> tools =
-                await _mcpManager.GetAvailableToolsAsync(null, ct).ConfigureAwait(false);
+                await _mcpManager.GetAvailableToolsAsync(workingDirectory, ct).ConfigureAwait(false);
 
             return tools.Select(t => t.Name).ToArray();
         }

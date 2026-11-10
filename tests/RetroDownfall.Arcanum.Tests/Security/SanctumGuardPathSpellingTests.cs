@@ -105,7 +105,7 @@ public sealed class SanctumGuardPathSpellingTests : IAsyncLifetime
 
         foreach (string path in inside)
         {
-            SanctumResult result = await guard.ValidatePathAsync(campaignId, path, "read", "read_file_chunk");
+            SanctumResult result = await guard.ValidatePathAsync(campaignId, path, "read", "read_file");
 
             Assert.True(result.Allowed, $"'{path}' is inside the Campaign but was refused: {result.DenyReason}");
         }
@@ -148,7 +148,7 @@ public sealed class SanctumGuardPathSpellingTests : IAsyncLifetime
 
         foreach (string path in outside)
         {
-            SanctumResult result = await guard.ValidatePathAsync(campaignId, path, "read", "read_file_chunk");
+            SanctumResult result = await guard.ValidatePathAsync(campaignId, path, "read", "read_file");
 
             Assert.False(result.Allowed, $"'{path}' leaves the Campaign but was admitted.");
 
@@ -196,12 +196,12 @@ public sealed class SanctumGuardPathSpellingTests : IAsyncLifetime
         string campaignId = campaign.Id.ToString("D");
 
         Assert.True(
-            (await guard.ValidatePathAsync(campaignId, Path.Combine(sharedSpelled, "data.txt"), "read", "read_file_chunk")).Allowed);
+            (await guard.ValidatePathAsync(campaignId, Path.Combine(sharedSpelled, "data.txt"), "read", "read_file")).Allowed);
 
         if (!OperatingSystem.IsWindows())
         {
             Assert.False(
-                (await guard.ValidatePathAsync(campaignId, Path.Combine(sharedSpelled, "escape", "x.txt"), "read", "read_file_chunk")).Allowed);
+                (await guard.ValidatePathAsync(campaignId, Path.Combine(sharedSpelled, "escape", "x.txt"), "read", "read_file")).Allowed);
         }
 
         // Only the attempt to leave through the link out of the allowed directory is a breach.

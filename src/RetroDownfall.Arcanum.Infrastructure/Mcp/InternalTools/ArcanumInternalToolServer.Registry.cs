@@ -23,7 +23,7 @@ internal sealed partial class ArcanumInternalToolServer
     /// Every tool name this server registers a handler for, independent of which of them a given
     /// session's feature gates, workspace root or turn shape actually advertise. <see cref="McpToolMerger"/>
     /// reserves these names against workspace-local servers: a built-in that is gated off for one session
-    /// (<c>ask_human</c> on a non-streaming turn, <c>scribe_lexicon</c> with the Lexicon feature off)
+    /// (<c>ask_human</c> on a non-streaming turn, <c>save_memory</c> with the Lexicon feature off)
     /// is absent from that session's advertised rows, and a name reserved only while its row exists would
     /// be claimable by an approved <c>mcp.json</c> exactly when the built-in is unavailable. Keep this set
     /// in step with <see cref="BuildToolHandlerRegistry"/>; a test compares the two.
@@ -31,9 +31,9 @@ internal sealed partial class ArcanumInternalToolServer
     internal static IReadOnlySet<string> RegisteredToolNames { get; } =
         new HashSet<string>(StringComparer.Ordinal)
         {
-            "read_file_chunk",
+            "read_file",
 
-            "replace_text_block",
+            "edit_file",
 
             "write_file",
 
@@ -49,31 +49,35 @@ internal sealed partial class ArcanumInternalToolServer
 
             "read_command_output",
 
-            "adjust_initiative",
+            "set_task_priority",
 
-            "send_commlink_alert",
+            "send_notification",
 
-            "petition_dungeon_master",
+            "request_intervention",
 
-            "cast_sending",
+            "create_agent_task",
 
-            "dispatch_sending",
+            "send_agent_message",
 
-            "continue_sending",
+            "get_agent_task",
+
+            "cancel_agent_task",
+
+            "list_agents",
 
             "ask_human",
 
-            "scribe_lexicon",
+            "save_memory",
 
-            "delete_lexicon",
+            "delete_memory",
 
-            "search_archives",
+            "search_history",
 
             CovenantToolNames.ProposeCovenant,
 
             CovenantToolNames.RetireCovenant,
 
-            "read_saga",
+            "search_memory",
 
             "attach_session_file",
 
@@ -96,9 +100,9 @@ internal sealed partial class ArcanumInternalToolServer
     internal static IReadOnlySet<string> WorkspaceRootToolNames { get; } =
         new HashSet<string>(StringComparer.Ordinal)
         {
-            "read_file_chunk",
+            "read_file",
 
-            "replace_text_block",
+            "edit_file",
 
             "write_file",
 
@@ -109,9 +113,9 @@ internal sealed partial class ArcanumInternalToolServer
     {
         Dictionary<string, InternalToolHandler> handlers = new(StringComparer.Ordinal)
         {
-            ["read_file_chunk"] = ExecuteReadFileChunkAsync,
+            ["read_file"] = ExecuteReadFileChunkAsync,
 
-            ["replace_text_block"] = ExecuteReplaceTextBlockAsync,
+            ["edit_file"] = ExecuteReplaceTextBlockAsync,
 
             ["write_file"] = ExecuteWriteFileAsync,
 
@@ -127,24 +131,29 @@ internal sealed partial class ArcanumInternalToolServer
 
             ["read_command_output"] = ExecuteReadCommandOutputAsync,
 
-            ["adjust_initiative"] = ExecuteAdjustInitiativeAsync,
+            ["set_task_priority"] = ExecuteAdjustInitiativeAsync,
 
-            ["send_commlink_alert"] = ExecuteSendCommlinkAlertAsync,
+            ["send_notification"] = ExecuteSendCommlinkAlertAsync,
 
-            ["petition_dungeon_master"] = ExecutePetitionDungeonMasterAsync,
+            ["request_intervention"] = ExecutePetitionDungeonMasterAsync,
 
-            ["cast_sending"] = ExecuteCastSendingAsync,
+            ["create_agent_task"] = ExecuteUnboundTaskAsync,
 
-            ["dispatch_sending"] = ExecuteDispatchSendingAsync,
-            ["continue_sending"] = ExecuteContinueSendingAsync,
+            ["send_agent_message"] = ExecuteUnboundTaskAsync,
+
+            ["get_agent_task"] = ExecuteUnboundTaskAsync,
+
+            ["cancel_agent_task"] = ExecuteUnboundTaskAsync,
+
+            ["list_agents"] = ExecuteUnboundTaskAsync,
 
             ["ask_human"] = ExecuteAskHumanAsync,
 
-            ["scribe_lexicon"] = ExecuteScribeLexiconAsync,
+            ["save_memory"] = ExecuteScribeLexiconAsync,
 
-            ["delete_lexicon"] = ExecuteDeleteLexiconAsync,
+            ["delete_memory"] = ExecuteDeleteLexiconAsync,
 
-            ["search_archives"] = ExecuteSearchArchivesAsync,
+            ["search_history"] = ExecuteSearchArchivesAsync,
 
             // Always registered, never unconditionally advertised. Registration keeps runtime
             // enablement and schema-repair recovery working without rebuilding connection
@@ -153,7 +162,7 @@ internal sealed partial class ArcanumInternalToolServer
 
             [CovenantToolNames.RetireCovenant] = ExecuteRetireCovenantAsync,
 
-            ["read_saga"] = ExecuteReadSagaAsync,
+            ["search_memory"] = ExecuteSearchMemoryAsync,
 
             ["attach_session_file"] = ExecuteAttachSessionFileAsync,
 

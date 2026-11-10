@@ -1,6 +1,6 @@
 namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
-/// <summary>Filesystem jail posture for tool children (<c>execute_command</c> / <c>run_spell_script</c>).</summary>
+/// <summary>Filesystem jail posture for tool children (<c>execute_command</c> / <c>run_script</c>).</summary>
 public enum ToolChildFilesystemJailMode
 {
     /// <summary>OS filesystem jail is applied (e.g. macOS Seatbelt via <c>/usr/bin/sandbox-exec</c>).</summary>

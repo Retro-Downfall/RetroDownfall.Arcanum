@@ -34,7 +34,7 @@ public sealed class CovenantSensitiveEgressTests
     public void Ordinary_tool_names_are_ordinary_without_configuration_dependent_risk_metadata()
     {
         Result<ProviderToolCallClassification> ordinary = CovenantToolClassifier.Classify(
-            "read_saga", Bytes("{\"query\":\"a\"}"));
+            "search_memory", Bytes("{\"query\":\"a\"}"));
         Result<ProviderToolCallClassification> formerlyIntrinsic = CovenantToolClassifier.Classify(
             ToolRiskClassifier.ApplyPatchToolName, Bytes("{\"patch\":\"a\"}"));
 
@@ -62,7 +62,7 @@ public sealed class CovenantSensitiveEgressTests
         Assert.NotEqual(first.CanonicalArgumentDigest, different.CanonicalArgumentDigest);
         Assert.NotEqual(
             first.FrozenNameDigest,
-            CovenantToolClassifier.Classify("read_saga", Bytes("{}")).Value.FrozenNameDigest);
+            CovenantToolClassifier.Classify("search_memory", Bytes("{}")).Value.FrozenNameDigest);
     }
 
     [Fact]
@@ -78,10 +78,10 @@ public sealed class CovenantSensitiveEgressTests
     public void An_absent_argument_body_classifies_as_the_empty_object()
     {
         ProviderToolCallClassification empty = CovenantToolClassifier
-            .Classify("read_saga", Bytes(string.Empty))
+            .Classify("search_memory", Bytes(string.Empty))
             .Value;
         ProviderToolCallClassification explicitEmpty = CovenantToolClassifier
-            .Classify("read_saga", Bytes("{}"))
+            .Classify("search_memory", Bytes("{}"))
             .Value;
 
         Assert.Equal(explicitEmpty.CanonicalArgumentDigest, empty.CanonicalArgumentDigest);
@@ -138,7 +138,7 @@ public sealed class CovenantSensitiveEgressTests
     public void An_ordinary_call_is_outside_this_policy_entirely()
     {
         CovenantEgressWardDecision decision = CovenantEgressWardPolicy.Resolve(
-            Classified("read_saga"),
+            Classified("search_memory"),
             EligibleInvocation());
 
         Assert.Equal(CovenantEgressAuthorization.NotSensitive, decision.Authorization);

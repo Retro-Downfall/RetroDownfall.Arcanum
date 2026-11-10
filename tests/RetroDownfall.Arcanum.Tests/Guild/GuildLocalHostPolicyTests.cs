@@ -395,12 +395,14 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal GuildLocalExecutionMode ToolChildMode { get; set; } = GuildLocalExecutionMode.Apprentice;
 
+        internal string[]? ToolDelegationChain { get; set; }
+
         private sealed class ToolLocalAdmission(Fixture fixture) : IGuildLocalExecutionAdmission
         {
             public Task<Result<GuildLocalExecutionInput>> ResolveWithinAsync(GuildCallerContext caller, GuildQuestStored quest,
                 SqliteConnection connection, SqliteTransaction transaction, CancellationToken ct) =>
                 Task.FromResult(Result<GuildLocalExecutionInput>.Success(new(1, fixture.ToolChildMode, quest.Quest.GoalRef,
-                    "accepted-provider", "accepted-model", [], null)));
+                    "accepted-provider", "accepted-model", [], null, fixture.ToolDelegationChain is { } chain ? [.. chain] : null)));
         }
 
         internal GuildLocalHostPolicy NewPolicy() => new(Connections, Gate, Settings, Opener, TimeProvider.System, InboundPeers);

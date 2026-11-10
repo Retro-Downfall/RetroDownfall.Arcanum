@@ -23,7 +23,7 @@ namespace RetroDownfall.Arcanum.Tests.Process;
 /// which <c>FamiliarSecretEnvironmentNames.Collect</c> builds.</para>
 ///
 /// <para>Scoped to every authored production source, not to the Infrastructure project alone. The
-/// runner is Infrastructure's, but the callers are not: <c>run_spell_script</c> lives in the Api
+/// runner is Infrastructure's, but the callers are not: <c>run_script</c> lives in the Api
 /// project, and an inventory that only looked where the runner lives declared the wiring complete
 /// while the spell-script child still inherited every operator-declared credential.</para>
 /// </remarks>

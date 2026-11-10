@@ -7445,7 +7445,7 @@ public sealed partial class WizardIntelligenceProvider(
             StringComparison.OrdinalIgnoreCase)
         || string.Equals(
             toolName,
-            "replace_text_block",
+            "edit_file",
             StringComparison.OrdinalIgnoreCase);
 
     private static List<AITool> FilterHostProcessTools(List<AITool> tools, bool hostProcessToolsAllowed)

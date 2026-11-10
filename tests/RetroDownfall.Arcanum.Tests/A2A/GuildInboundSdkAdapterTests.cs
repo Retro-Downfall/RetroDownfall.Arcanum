@@ -225,7 +225,7 @@ public sealed partial class GuildLocalHostPolicyTests
     }
 
     [Fact]
-    public async Task Sdk_three_hop_cycle_keeps_received_chain_in_checkpoint_and_onward_dispatch()
+    public async Task Sdk_inbound_checkpoint_retains_chain_and_rejects_repeated_node_after_tool_cutover()
     {
         await using Fixture f = await Fixture.CreateAsync(localExecution: true, inboundPeers: true);
 
@@ -280,11 +280,11 @@ public sealed partial class GuildLocalHostPolicyTests
         IReadOnlyList<string>? forwarded = await RetroDownfall.Arcanum.Tests.A2A.A2ADelegationCycleTests
             .DispatchFromApprenticeAsync(apprentice, inherited);
 
-        Assert.Equal(["origin-node-a", ConclaveDelegationChain.NodeId], forwarded);
+        Assert.Null(forwarded);
 
         Message repeated = new() { MessageId = "cycled", Role = Role.User, Parts = [Part.FromText("Cycled work")] };
 
-        ConclaveDelegationChain.Write(repeated, [.. forwarded!, "downstream-node-c"]);
+        ConclaveDelegationChain.Write(repeated, [.. inherited, "downstream-node-c"]);
 
         AgentEventQueue refusedQueue = new();
 

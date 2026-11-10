@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -158,13 +159,29 @@ internal sealed partial class GuildQuestStore
             && (await RequireWaitFrontierWithinAsync(connection, transaction, id, ct).ConfigureAwait(false)).IsSuccess
             && await HasParkedInputCheckpointWithinAsync(connection, transaction, id, question, ct).ConfigureAwait(false);
 
+        ToolNameDiagnostic[]? toolDiagnostics = null;
+
+        bool legacyPark = operation.State == LongRunningOperationState.ReconciliationRequired
+            && operation.TerminalErrorCode == ErrorCodes.Guild.LegacyToolName && result is null;
+
+        if (legacyPark)
+        {
+            var diagnosed = await ReadWaitToolDiagnosticsWithinAsync(connection, transaction, id, question?.ContinuationId, ct).ConfigureAwait(false);
+
+            if (diagnosed.IsFailure) return diagnosed.Error;
+
+            toolDiagnostics = diagnosed.Value;
+        }
+
         dto = dto with
         {
             GoalRef = goalRef.Value, ResultRef = result?.Content, ResultReceiptId = result?.ResultId, ResolvedGrant = signet.Value.Binding.Grant,
             SignetRevision = signet.Value.Revision, State = projection.State, WaitReason = projection.WaitReason,
             CancellationRequested = projection.CancellationRequested, CancellationConverged = projection.CancellationConverged,
             ReconciliationRequired = projection.ReconciliationRequired, DeliveryState = delivery,
-            AwaitingInput = projection.State == QuestState.InputRequired && (!projection.ReconciliationRequired || parkedQuestion) ? question : null
+            AwaitingInput = projection.State == QuestState.InputRequired && (!projection.ReconciliationRequired || parkedQuestion) ? question : null,
+            ReasonCode = legacyPark ? ErrorCodes.Guild.LegacyToolName : null,
+            ToolDiagnostics = toolDiagnostics,
         };
         return new GuildQuestStored(dto, issuance, mutation, intent, resolution, account, retired);
     }

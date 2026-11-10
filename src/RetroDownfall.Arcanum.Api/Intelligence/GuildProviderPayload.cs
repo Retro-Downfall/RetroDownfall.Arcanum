@@ -74,7 +74,7 @@ internal sealed class GuildProviderPayload
 
             foreach (AIFunction function in functions)
             {
-                if (function.Name is not ("delegate_task" or "cast_sending") || !names.Add(function.Name)) throw Invalid();
+                if (function.Name is not ("delegate_task" or "create_agent_task" or "send_agent_message" or "get_agent_task" or "cancel_agent_task" or "list_agents" or "search_memory") || !names.Add(function.Name)) throw Invalid();
 
                 writer.WriteStartObject();
 

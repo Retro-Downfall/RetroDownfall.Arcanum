@@ -329,6 +329,28 @@ public sealed partial class ApprenticeRepository : IApprenticeRepository
         return updated > 0;
     }
 
+    public async Task<bool> TryParkLegacyToolPlanAsync(Guid id, string expectedPlan, int expectedCurrentStep,
+        string expectedStatus, string reason, CancellationToken cancellationToken = default)
+    {
+        int updated = await ExecuteWriteAsync(
+            """
+            UPDATE "Apprentices" SET "Status"=$status,"ErrorMessage"=$reason,"UpdatedAt"=$now
+            WHERE "Id"=$id AND "Plan"=$plan AND "CurrentStep"=$step AND "Status"=$expectedStatus;
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$id", GrimoireEntitySql.Format(id));
+                GrimoireEntitySql.AddParameter(command, "$plan", expectedPlan);
+                GrimoireEntitySql.AddParameter(command, "$step", expectedCurrentStep);
+                GrimoireEntitySql.AddParameter(command, "$expectedStatus", expectedStatus);
+                GrimoireEntitySql.AddParameter(command, "$status", ApprenticeStatus.Escalated.ToString());
+                GrimoireEntitySql.AddParameter(command, "$reason", reason);
+                GrimoireEntitySql.AddParameter(command, "$now", GrimoireEntitySql.Format(DateTimeOffset.UtcNow));
+            }, cancellationToken).ConfigureAwait(false);
+
+        return updated == 1;
+    }
+
     public async Task<bool> TryUpdateStatusAsync(
         Guid id,
         string status,

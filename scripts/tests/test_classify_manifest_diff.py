@@ -1197,6 +1197,46 @@ class ClassifyManifestDiffTests(unittest.TestCase):
                     ("source_path", "src/Other.cs"), ("member", "Other"), ("callee", "Other.Call")):
                     self.assertEqual("d", label(row._replace(**{field: value})), field)
 
+    def test_legacy_wait_diagnostic_reaches_require_the_new_call_and_exact_root_site(self) -> None:
+        caller = "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalWaitCheckpoint.cs"
+
+        marker = "await ReadDiagnosticWaitSnapshotWithinAsync(connection, transaction, questId, continuationId.Value, ct)"
+
+        entries = [entry for entry in CLASSIFIER.REACHED_THROUGH if entry.caller == caller and entry.marker == marker]
+
+        self.assertEqual(56, len(entries))
+
+        self.assertEqual(8, len({entry.operation for entry in entries}))
+
+        for entry in entries:
+            with self.subTest(root=entry.root_type, operation=entry.operation, member=entry.member, callee=entry.callee):
+                row = site(entry.source_path, callee=entry.callee, member=entry.member,
+                    root=entry.root_type, operation=entry.operation)
+
+                def label(candidate=row, base="", head=marker, edited=(caller,), parity=manifest()):
+                    retained = site("src/Retained.cs", root=candidate.root_type, operation=candidate.authority_operation_id)
+
+                    result = classify(manifest(retained), manifest(retained, candidate), edited=edited, parity=parity,
+                        sources=FakeSources(base={caller: base}, head={caller: head}))
+
+                    return result[("+", candidate)].label
+
+                self.assertEqual("r", label())
+
+                self.assertEqual("d", label(head=""))
+
+                self.assertEqual("d", label(base=marker))
+
+                self.assertEqual("d", label(edited=()))
+
+                self.assertEqual("d", label(parity=None))
+
+                self.assertEqual("d", label(parity=manifest(row)))
+
+                for field, value in (("root_type", "Other"), ("authority_operation_id", "Other.Run"),
+                    ("source_path", "src/Other.cs"), ("member", "Other"), ("callee", "Other.Call")):
+                    self.assertEqual("d", label(row._replace(**{field: value})), field)
+
     def test_historical_ledger_addition_requires_exact_baseline_and_parity_rows(self) -> None:
         retained = site("src/Retained.cs")
         added = site("src/Preexisting.cs")

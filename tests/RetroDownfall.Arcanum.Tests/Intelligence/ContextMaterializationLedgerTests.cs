@@ -552,7 +552,7 @@ public sealed class ContextMaterializationLedgerTests
     /// re-established. If beginning the child disposed whatever turn was ambient, the parent's
     /// per-Session entry would go, and the in-process server — which runs on its own task and finds the
     /// gate only through that entry — would see no materialized attachment content for the rest of the
-    /// parent's turn, so its <c>scribe_lexicon</c> provenance gate would fail open.
+    /// parent's turn, so its <c>save_memory</c> provenance gate would fail open.
     /// </remarks>
     [Fact]
     public async Task BeginningANestedTurn_LeavesTheEnclosingTurnsSessionStateResolvable()

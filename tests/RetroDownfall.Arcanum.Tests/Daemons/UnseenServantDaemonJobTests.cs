@@ -73,7 +73,7 @@ public sealed class UnseenServantDaemonJobTests
 
         await job.RunAsync(CancellationToken.None);
 
-        Assert.Contains("scribe_lexicon", intelligence.LastPrompt, StringComparison.Ordinal);
+        Assert.Contains("save_memory", intelligence.LastPrompt, StringComparison.Ordinal);
 
         Assert.Contains("daemon_state:Watcher:default", intelligence.LastPrompt, StringComparison.Ordinal);
 
@@ -95,7 +95,7 @@ public sealed class UnseenServantDaemonJobTests
 
         await job.RunAsync(CancellationToken.None);
 
-        Assert.DoesNotContain("scribe_lexicon", intelligence.LastPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("save_memory", intelligence.LastPrompt, StringComparison.Ordinal);
 
         Assert.DoesNotContain("scribe_lore", intelligence.LastPrompt, StringComparison.Ordinal);
     }
@@ -113,7 +113,7 @@ public sealed class UnseenServantDaemonJobTests
 
         Assert.Contains("No previous state recorded.", intelligence.LastPrompt, StringComparison.Ordinal);
 
-        Assert.Contains("scribe_lexicon", intelligence.LastPrompt, StringComparison.Ordinal);
+        Assert.Contains("save_memory", intelligence.LastPrompt, StringComparison.Ordinal);
     }
 
     private static async Task<UnseenServantDaemonJob> RunJobAsync(

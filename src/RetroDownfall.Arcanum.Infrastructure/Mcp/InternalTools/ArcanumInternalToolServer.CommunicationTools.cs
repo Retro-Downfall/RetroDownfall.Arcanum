@@ -77,14 +77,14 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            _logger?.LogError(ex, "adjust_initiative argument deserialization failed.");
+            _logger?.LogError(ex, "set_task_priority argument deserialization failed.");
 
-            return ToolError("Invalid arguments for adjust_initiative.");
+            return ToolError("Invalid arguments for set_task_priority.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.JobName))
         {
-            return ToolError("adjust_initiative requires a non-empty 'job_name'.");
+            return ToolError("set_task_priority requires a non-empty 'job_name'.");
         }
 
         string jobName = args.JobName.Trim();
@@ -94,7 +94,7 @@ internal sealed partial class ArcanumInternalToolServer
         if (!await _pacer.SetDynamicIntervalAsync(jobName, args.IntervalMinutes, cancellationToken).ConfigureAwait(false))
         {
             return ToolError(
-                $"adjust_initiative: no Unseen Servant job named '{jobName}' is configured under Arcanum:Daemon:Jobs; "
+                $"set_task_priority: no Unseen Servant job named '{jobName}' is configured under Arcanum:Daemon:Jobs; "
                 + "list the configured jobs on the daemon surface before retrying.");
         }
 
@@ -124,9 +124,9 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            _logger?.LogError(ex, "send_commlink_alert argument deserialization failed.");
+            _logger?.LogError(ex, "send_notification argument deserialization failed.");
 
-            return ToolError("Invalid arguments for send_commlink_alert.");
+            return ToolError("Invalid arguments for send_notification.");
         }
 
         if (args is null
@@ -134,7 +134,7 @@ internal sealed partial class ArcanumInternalToolServer
             || string.IsNullOrWhiteSpace(args.Body)
             || string.IsNullOrWhiteSpace(args.Severity))
         {
-            return ToolError("send_commlink_alert requires non-empty 'title', 'body', and 'severity'.");
+            return ToolError("send_notification requires non-empty 'title', 'body', and 'severity'.");
         }
 
         if (!Enum.TryParse(args.Severity.Trim(), ignoreCase: true, out CommLinkSeverity severity))
@@ -142,7 +142,7 @@ internal sealed partial class ArcanumInternalToolServer
             severity = CommLinkSeverity.Info;
         }
 
-        string source = string.IsNullOrWhiteSpace(args.Source) ? "send_commlink_alert" : args.Source.Trim();
+        string source = string.IsNullOrWhiteSpace(args.Source) ? "send_notification" : args.Source.Trim();
 
         CommLinkMessage message = new(args.Title.Trim(), args.Body.Trim(), severity, source);
 
@@ -187,9 +187,9 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "send_commlink_alert dispatch failed.");
+            _logger?.LogError(ex, "send_notification dispatch failed.");
 
-            return ToolError("An internal error occurred during send_commlink_alert.");
+            return ToolError("An internal error occurred during send_notification.");
         }
     }
 
@@ -205,19 +205,19 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            _logger?.LogError(ex, "petition_dungeon_master argument deserialization failed.");
+            _logger?.LogError(ex, "request_intervention argument deserialization failed.");
 
-            return ToolError("Invalid arguments for petition_dungeon_master.");
+            return ToolError("Invalid arguments for request_intervention.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.Reason))
         {
-            return ToolError("petition_dungeon_master requires a non-empty 'reason'.");
+            return ToolError("request_intervention requires a non-empty 'reason'.");
         }
 
         string reason = args.Reason.Trim();
 
-        string source = string.IsNullOrWhiteSpace(args.Source) ? "petition_dungeon_master" : args.Source.Trim();
+        string source = string.IsNullOrWhiteSpace(args.Source) ? "request_intervention" : args.Source.Trim();
 
         CommLinkMessage message = new(
             "Apprentice petitions the Dungeon Master",
@@ -250,7 +250,7 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "petition_dungeon_master dispatch failed.");
+            _logger?.LogError(ex, "request_intervention dispatch failed.");
 
             return PetitionResult("failed");
         }
@@ -274,388 +274,6 @@ internal sealed partial class ArcanumInternalToolServer
             ],
             IsError = false,
         };
-    }
-
-    private async Task<McpToolsCallResultWire> ExecuteCastSendingAsync(
-        JsonElement arguments,
-        CancellationToken cancellationToken)
-    {
-        if (!_conclaveEnabled)
-        {
-            return ToolError("The Conclave is disabled; cross-Apprentice delegation is not available.");
-        }
-
-        if (string.IsNullOrWhiteSpace(_workspaceRoot))
-        {
-            return ToolError(WorkspaceNotConfiguredMessage);
-        }
-
-        CastSendingParams? args;
-
-        try
-        {
-            args = JsonSerializer.Deserialize(arguments, _json.CastSendingParams);
-        }
-        catch (JsonException ex)
-        {
-            _logger?.LogError(ex, "cast_sending argument deserialization failed.");
-
-            return ToolError("Invalid arguments for cast_sending.");
-        }
-
-        if (args is null || string.IsNullOrWhiteSpace(args.Goal))
-        {
-            return ToolError("cast_sending requires a non-empty 'goal'.");
-        }
-
-        try
-        {
-            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
-
-            IConclaveArchmage archmage = scope.ServiceProvider.GetRequiredService<IConclaveArchmage>();
-
-            ApprenticeToolInvocationContext? caller = ApprenticeToolInvocationAmbient.Current;
-
-            Result<Apprentice> result = await archmage
-                .CastAsync(
-                    new ConclaveCastRequest(
-                        args.Goal.Trim(),
-                        args.Name,
-                        _workspaceRoot!,
-                        CampaignId: caller is { IsValid: true } ? caller.CampaignId : null,
-                        ParentApprenticeId: caller is { IsValid: true } ? caller.ApprenticeId : null,
-                        DelegationChain: caller is { IsValid: true } ? caller.DelegationChain : null,
-                        LaunchRequested: caller is { IsValid: true }),
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (result.IsFailure)
-            {
-                return ToolError($"cast_sending failed: {result.Error.Message}");
-            }
-
-            CastSendingResultWire payload = new() { ChildApprenticeId = result.Value!.Id };
-
-            string json = JsonSerializer.Serialize(payload, _json.CastSendingResultWire);
-
-            return new McpToolsCallResultWire
-            {
-                Content =
-                [
-                    new McpToolContentTextWire { Text = json },
-                ],
-                IsError = false,
-            };
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogError(ex, "cast_sending failed.");
-
-            return ToolError("An internal error occurred during cast_sending.");
-        }
-    }
-
-    private async Task<McpToolsCallResultWire> ExecuteDispatchSendingAsync(
-        JsonElement arguments,
-        CancellationToken cancellationToken)
-    {
-        if (!_a2aClientEnabled)
-        {
-            return ToolError("A2A is disabled; dispatch_sending is not available.");
-        }
-
-        DispatchSendingParams? args;
-
-        try
-        {
-            args = JsonSerializer.Deserialize(arguments, _json.DispatchSendingParams);
-        }
-        catch (JsonException ex)
-        {
-            _logger?.LogError(ex, "dispatch_sending argument deserialization failed.");
-
-            return ToolError("Invalid arguments for dispatch_sending.");
-        }
-
-        if (args is null || string.IsNullOrWhiteSpace(args.Goal) || string.IsNullOrWhiteSpace(args.AgentUrl))
-        {
-            return ToolError("dispatch_sending requires a non-empty 'goal' and 'agent_url'.");
-        }
-
-        string agentUrl = args.AgentUrl.Trim();
-
-        try
-        {
-            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
-
-            IA2AClientService client = scope.ServiceProvider.GetRequiredService<IA2AClientService>();
-
-            // The in-process MCP server is workspace-scoped rather than Apprentice-scoped, so the calling
-            // Apprentice arrives through the request-id binding rather than an AsyncLocal. Extending its
-            // inherited chain instead of restarting from empty is what makes a multi-hop cycle
-            // (A → B → C → A) detectable at the repeated node, not just the direct A → B → A case
-            // (issue #59).
-            ApprenticeToolInvocationContext? caller = ApprenticeToolInvocationAmbient.Current;
-
-            // A Sending has no whole-operation deadline, so the window between dispatch and its
-            // terminal frame is unbounded. Relaying remote state changes onto the caller's Chronicle is
-            // what stops that window being a black box (issue #61).
-            IProgress<A2ASendingProgress>? progress = CreateSendingProgress(scope, caller);
-
-            Result<A2ADispatchResult> result = await client
-                .DispatchSendingAsync(
-                    args.Goal.Trim(),
-                    args.Name,
-                    agentUrl,
-                    caller?.DelegationChain,
-                    cancellationToken,
-                    progress,
-                    ResolveDispatchMode(args.Continuable, args.Callback),
-                    new A2ASendingOptions(args.AcceptedOutputModes, args.SkillId, caller?.BudgetReservationId))
-                .ConfigureAwait(false);
-
-            // Distinguishes "never dispatched" (config gate, allowlist, concurrency cap, bad goal — a
-            // plain MCP tool error, nothing for the Chronicle to say) from "a Sending was actually
-            // attempted" (a structured result either way, so both the tool loop and ApprenticeService's
-            // Chronicle interception can read the same succeeded/error payload).
-            if (result.IsFailure && IsPreflightRejection(result.Error.Code))
-            {
-                return ToolError($"dispatch_sending failed: {result.Error.Message}");
-            }
-
-            return BuildSendingToolResult(agentUrl, result);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogError(ex, "dispatch_sending failed.");
-
-            return ToolError("An internal error occurred during dispatch_sending.");
-        }
-    }
-
-    /// <summary>
-    /// Answers a Sending a remote agent parked at <c>input-required</c>/<c>auth-required</c>, resuming
-    /// that same remote task.
-    /// </summary>
-    /// <remarks>
-    /// Without this, a continuable <c>dispatch_sending</c> would let an Apprentice park a remote task it
-    /// has no way to answer — the remote would sit alive and billing until reconciliation or the peer's
-    /// own patience ran out. The capability and its counterpart ship together (issue #64).
-    /// </remarks>
-    private async Task<McpToolsCallResultWire> ExecuteContinueSendingAsync(
-        JsonElement arguments,
-        CancellationToken cancellationToken)
-    {
-        if (!_a2aClientEnabled)
-        {
-            return ToolError("A2A is disabled; continue_sending is not available.");
-        }
-
-        ContinueSendingParams? args;
-
-        try
-        {
-            args = JsonSerializer.Deserialize(arguments, _json.ContinueSendingParams);
-        }
-        catch (JsonException ex)
-        {
-            _logger?.LogError(ex, "continue_sending argument deserialization failed.");
-
-            return ToolError("Invalid arguments for continue_sending.");
-        }
-
-        if (args is null
-            || string.IsNullOrWhiteSpace(args.TaskId)
-            || string.IsNullOrWhiteSpace(args.AgentUrl)
-            || string.IsNullOrWhiteSpace(args.Message))
-        {
-            return ToolError("continue_sending requires a non-empty 'task_id', 'agent_url', and 'message'.");
-        }
-
-        string agentUrl = args.AgentUrl.Trim();
-
-        try
-        {
-            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
-
-            IA2AClientService client = scope.ServiceProvider.GetRequiredService<IA2AClientService>();
-
-            ApprenticeToolInvocationContext? caller = ApprenticeToolInvocationAmbient.Current;
-
-            IProgress<A2ASendingProgress>? progress = CreateSendingProgress(scope, caller);
-
-            Result<A2ADispatchResult> result = await client
-                .ContinueSendingAsync(
-                    agentUrl,
-                    args.TaskId.Trim(),
-                    args.Message.Trim(),
-                    caller?.DelegationChain,
-                    cancellationToken,
-                    progress,
-                    args.Continuable == true ? A2ADispatchMode.Continuable : A2ADispatchMode.Blocking,
-                    new A2ASendingOptions(args.AcceptedOutputModes, args.SkillId, caller?.BudgetReservationId))
-                .ConfigureAwait(false);
-
-            if (result.IsFailure && IsPreflightRejection(result.Error.Code))
-            {
-                return ToolError($"continue_sending failed: {result.Error.Message}");
-            }
-
-            return BuildSendingToolResult(agentUrl, result);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogError(ex, "continue_sending failed.");
-
-            return ToolError("An internal error occurred during continue_sending.");
-        }
-    }
-
-    /// <summary>
-    /// Shapes a settled Sending into the structured tool payload both the model and
-    /// <c>ApprenticeService</c>'s Chronicle interception read.
-    /// </summary>
-    private McpToolsCallResultWire BuildSendingToolResult(string agentUrl, Result<A2ADispatchResult> result)
-    {
-        // The remote chooses its task ids, and they reach the model as ordinary JSON fields rather than
-        // inside the untrusted-content frame (the model passes the exact string back to continue_sending, so
-        // it cannot be quoted or altered). Only a plain token is echoed: an id that is a sentence is withheld.
-        string? taskId = result.IsSuccess ? PlainRemoteId(result.Value.TaskId) : null;
-
-        string? continuationTaskId = result.IsSuccess ? PlainRemoteId(result.Value.Continuation?.TaskId) : null;
-
-        if (result.IsSuccess
-            && ((result.Value.TaskId is not null && taskId is null)
-                || (result.Value.Continuation is not null && continuationTaskId is null)))
-        {
-            _logger?.LogWarning(
-                "A remote A2A agent returned a task id that is not a plain token; it was withheld from the model.");
-        }
-
-        DispatchSendingResultWire payload = result.IsSuccess
-            ? new DispatchSendingResultWire
-            {
-                AgentUrl = agentUrl,
-                TaskId = taskId,
-                Succeeded = true,
-
-                // The remote agent controls this text completely and it lands directly in the model's
-                // context. Frame it as untrusted data so a hostile peer's "ignore your instructions"
-                // reads as quoted content rather than as a new directive.
-                Response = FrameUntrustedRemoteText(agentUrl, "response", result.Value.ResponseText),
-                CostKnown = result.Value.RemoteCost.IsKnown,
-                RemoteTotalTokens = result.Value.RemoteCost.TotalTokens,
-                RemoteCostUsd = result.Value.RemoteCost.CostUsd,
-                DispatchedAt = Stamp(result.Value.DispatchedAt),
-                SettledAt = Stamp(result.Value.SettledAt),
-                ContinuationTaskId = continuationTaskId,
-
-                // With no id the model could pass back there is nothing to continue, so no need is offered.
-                ContinuationNeed = continuationTaskId is null ? null : DescribeNeed(result.Value.Continuation?.Need),
-            }
-            : new DispatchSendingResultWire
-            {
-                AgentUrl = agentUrl,
-                Succeeded = false,
-
-                // A failure after the dispatch commonly carries the peer's own words (a rejected task's
-                // reason, a JSON-RPC error message), so it is framed exactly like a reply.
-                Error = FrameUntrustedRemoteText(agentUrl, "error", result.Error.Message),
-            };
-
-        string json = JsonSerializer.Serialize(payload, _json.DispatchSendingResultWire);
-
-        return new McpToolsCallResultWire
-        {
-            Content =
-            [
-                new McpToolContentTextWire { Text = json },
-            ],
-            IsError = false,
-        };
-    }
-
-    private static DateTimeOffset? Stamp(DateTimeOffset value) => value == default ? null : value;
-
-    private static string? DescribeNeed(A2AContinuationNeed? need) => need switch
-    {
-        A2AContinuationNeed.Input => "input",
-        A2AContinuationNeed.Authentication => "auth",
-        _ => null,
-    };
-
-    /// <summary>
-    /// Builds the observer that turns remote A2A task-state changes into <c>sendingProgress</c> Chronicle
-    /// frames on the calling Apprentice's stream.
-    /// </summary>
-    /// <remarks>
-    /// Returns <c>null</c> for an operator-initiated Sending (<c>POST /api/conclave/sendings</c>): there is
-    /// no Apprentice Chronicle to publish onto, and the blocking call itself is the operator's progress
-    /// indicator. Frames carry peer identity, direction, remote state, and a timestamp only — never the
-    /// peer's own status prose (issue #61).
-    /// </remarks>
-    private static IProgress<A2ASendingProgress>? CreateSendingProgress(
-        AsyncServiceScope scope,
-        ApprenticeToolInvocationContext? caller)
-    {
-        if (caller is not { IsValid: true })
-        {
-            return null;
-        }
-
-        ChronicleHub? hub = scope.ServiceProvider.GetService<ChronicleHub>();
-
-        if (hub is null)
-        {
-            return null;
-        }
-
-        Guid apprenticeId = caller.ApprenticeId;
-
-        return new OrderedSendingProgress(hub, apprenticeId);
-    }
-
-    /// <summary>
-    /// Publishes Sending transitions onto a Chronicle in the exact order they were reported.
-    /// </summary>
-    /// <remarks>
-    /// Deliberately not <see cref="Progress{T}"/>. With no synchronization context — every server-side
-    /// tool path — <see cref="Progress{T}"/> queues each <c>Report</c> as an independent thread-pool
-    /// work item and guarantees no ordering between them, so two rapid transitions can surface on the
-    /// operator's Chronicle reversed (<c>working</c> before <c>submitted</c>). A Sending's state
-    /// timeline is the whole point of the frames, so it is published inline instead;
-    /// <see cref="ChronicleHub.Publish"/> is a non-blocking bounded-channel write.
-    /// </remarks>
-    private sealed class OrderedSendingProgress(
-        ChronicleHub hub,
-        Guid apprenticeId) : IProgress<A2ASendingProgress>
-    {
-        public void Report(A2ASendingProgress update) =>
-            hub.Publish(apprenticeId, new ApprenticeEvent
-            {
-                Type = ApprenticeEventType.SendingProgress,
-                ApprenticeId = apprenticeId,
-                Timestamp = update.Timestamp,
-                Description = update.AgentUrl,
-
-                // The peer chooses its task ids, so a progress frame echoes one only when it is a plain
-                // token, exactly as the dispatched and terminal frames do (BuildSendingToolResult).
-                Summary = PlainRemoteId(update.TaskId),
-                SendingState = update.RemoteState,
-                SendingDirection = update.Direction == A2ASendingDirection.Inbound ? "inbound" : "outbound",
-            });
     }
 
     /// <summary>
@@ -824,25 +442,4 @@ internal sealed partial class ArcanumInternalToolServer
         return -1;
     }
 
-    /// <summary>
-    /// Resolves the dispatch mode from the two flags a caller may set.
-    /// </summary>
-    /// <remarks>
-    /// Callback mode wins when both are set: it is about <em>where the waiting happens</em> rather than
-    /// about answering a question, and it treats <c>input-required</c> exactly as the blocking mode does
-    /// (issue #67).
-    /// </remarks>
-    private static A2ADispatchMode ResolveDispatchMode(bool? continuable, bool? callback) => callback == true
-        ? A2ADispatchMode.Callback
-        : continuable == true
-            ? A2ADispatchMode.Continuable
-            : A2ADispatchMode.Blocking;
-
-    private static bool IsPreflightRejection(string errorCode) => errorCode
-        is ErrorCodes.Sending.Disabled
-        or ErrorCodes.Sending.AgentNotAllowed
-        or ErrorCodes.Sending.MaxTasksReached
-        or ErrorCodes.Sending.ModalityMismatch
-        or ErrorCodes.Sending.SkillNotAdvertised
-        or ErrorCodes.Apprentice.InvalidGoal;
 }

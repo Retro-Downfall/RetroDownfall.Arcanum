@@ -24,8 +24,8 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 
 /// <summary>
 /// Builds a real <see cref="McpConnectionManager"/> over inert collaborators for the manager-level
-/// MCP tests: an untrusted workspace store, a silent event bus, an empty service scope and an open
-/// global admission gate. Callers pass only what the scenario varies.
+/// MCP tests: an untrusted workspace store, a silent event bus, an empty service scope by default,
+/// and an open global admission gate. Callers pass only what the scenario varies.
 /// </summary>
 internal static class McpConnectionManagerHarness
 {
@@ -36,10 +36,14 @@ internal static class McpConnectionManagerHarness
         ITrustedMcpWorkspaceStore? trustStore = null,
         IEventBus? eventBus = null,
         HttpMessageHandler? httpHandler = null,
-        bool managerOwnsHttpHandler = false)
+        bool managerOwnsHttpHandler = false,
+        Action<IServiceCollection>? configureServices = null)
     {
-        IServiceScopeFactory scopeFactory = new ServiceCollection()
-            .BuildServiceProvider()
+        ServiceCollection services = new();
+
+        configureServices?.Invoke(services);
+
+        IServiceScopeFactory scopeFactory = services.BuildServiceProvider()
             .GetRequiredService<IServiceScopeFactory>();
 
         IUnseenServantPacer pacer = new UnseenServantPacer(

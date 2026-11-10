@@ -73,7 +73,7 @@ public enum ApprenticeEventType
     EventsDropped,
 
     /// <summary>
-    /// The Archmage Client (<c>dispatch_sending</c>) created an A2A task on a remote agent. Carries the
+    /// The Archmage Client (<c>create_agent_task</c>) created an A2A task on a remote agent. Carries the
     /// remote agent URL and A2A task id in <see cref="ApprenticeEvent.Summary"/>/<see cref="ApprenticeEvent.Result"/>.
     /// </summary>
     [JsonStringEnumMemberName("sendingDispatched")]

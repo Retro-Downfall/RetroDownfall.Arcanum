@@ -1029,7 +1029,7 @@ public static class SystemPromptBuilder
         sb.Append('\n');
 
         sb.Append(
-            "You may run these scripts only via the run_spell_script tool: pass script_name (file name only) and optional arguments.").Append('\n');
+            "You may run these scripts only via the run_script tool: pass script_name (file name only) and optional arguments.").Append('\n');
     }
 
     private static bool HasChronosyncContent(PingRequest request)

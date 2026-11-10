@@ -27,19 +27,19 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            _logger?.LogError(ex, "scribe_lexicon argument deserialization failed.");
+            _logger?.LogError(ex, "save_memory argument deserialization failed.");
 
-            return ToolError("Invalid arguments for scribe_lexicon.");
+            return ToolError("Invalid arguments for save_memory.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.Name))
         {
-            return ToolError("scribe_lexicon requires a non-empty 'name'.");
+            return ToolError("save_memory requires a non-empty 'name'.");
         }
 
         if (args.Facts is null || args.Facts.Length == 0)
         {
-            return ToolError("scribe_lexicon requires at least one 'facts' entry.");
+            return ToolError("save_memory requires at least one 'facts' entry.");
         }
 
         string name = args.Name.Trim();
@@ -52,13 +52,13 @@ internal sealed partial class ArcanumInternalToolServer
                 || !AttachmentMemoryGateAmbient.TryResolve(attachmentId, out provenance))
             {
                 return ToolError(
-                    "scribe_lexicon attachment_id must identify attachment content materialized in the current turn.");
+                    "save_memory attachment_id must identify attachment content materialized in the current turn.");
             }
         }
         else if (AttachmentMemoryGateAmbient.HasMaterializedAttachmentContent)
         {
             return ToolError(
-                "scribe_lexicon requires attachment_id while attachment content is materialized; untrusted attachment instructions cannot authorize memory promotion.");
+                "save_memory requires attachment_id while attachment content is materialized; untrusted attachment instructions cannot authorize memory promotion.");
         }
 
         try
@@ -68,7 +68,7 @@ internal sealed partial class ArcanumInternalToolServer
             ILexiconService lexicon = scope.ServiceProvider.GetRequiredService<ILexiconService>();
 
             // The tier written is the turn's, and the turn's alone: with the gate off this is the global
-            // tier, which is where every scribe_lexicon fact has always landed.
+            // tier, which is where every save_memory fact has always landed.
             if (await ResolveLexiconScopeAsync(scope, cancellationToken).ConfigureAwait(false)
                 is not { } lexiconScope)
             {
@@ -109,7 +109,7 @@ internal sealed partial class ArcanumInternalToolServer
         {
             // The exception type only: the entry name and facts are memory text, and the exception message
             // can echo them into the rolling log and GET /api/logs.
-            _logger?.LogError("scribe_lexicon failed ({ExceptionType}).", ex.GetType().Name);
+            _logger?.LogError("save_memory failed ({ExceptionType}).", ex.GetType().Name);
 
             return ToolError("An internal error occurred during tool execution.");
         }
@@ -125,14 +125,14 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            _logger?.LogError(ex, "delete_lexicon argument deserialization failed.");
+            _logger?.LogError(ex, "delete_memory argument deserialization failed.");
 
-            return ToolError("Invalid arguments for delete_lexicon.");
+            return ToolError("Invalid arguments for delete_memory.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.Name))
         {
-            return ToolError("delete_lexicon requires a non-empty 'name'.");
+            return ToolError("delete_memory requires a non-empty 'name'.");
         }
 
         string name = args.Name.Trim();
@@ -140,7 +140,7 @@ internal sealed partial class ArcanumInternalToolServer
         if (LexiconDaemonStateNames.Is(name))
         {
             return ToolError(
-                "delete_lexicon cannot remove Unseen Servant daemon_state entries; clear them via daemon job removal or Lexicon admin tooling.");
+                "delete_memory cannot remove Unseen Servant daemon_state entries; clear them via daemon job removal or Lexicon admin tooling.");
         }
 
         try
@@ -250,7 +250,7 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (Exception ex)
         {
-            _logger?.LogError("delete_lexicon failed ({ExceptionType}).", ex.GetType().Name);
+            _logger?.LogError("delete_memory failed ({ExceptionType}).", ex.GetType().Name);
 
             return ToolError("An internal error occurred during tool execution.");
         }
@@ -268,14 +268,14 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            _logger?.LogError(ex, "search_archives argument deserialization failed.");
+            _logger?.LogError(ex, "search_history argument deserialization failed.");
 
-            return ToolError("Invalid arguments for search_archives.");
+            return ToolError("Invalid arguments for search_history.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.Query))
         {
-            return ToolError("search_archives requires a non-empty 'query'.");
+            return ToolError("search_history requires a non-empty 'query'.");
         }
 
         string query = args.Query.Trim();
@@ -307,14 +307,14 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (Exception ex)
         {
-            _logger?.LogError("search_archives failed ({ExceptionType}).", ex.GetType().Name);
+            _logger?.LogError("search_history failed ({ExceptionType}).", ex.GetType().Name);
 
             return ToolError("An internal error occurred during tool execution.");
         }
     }
 
     /// <summary>
-    /// search_archives is the one text tool with neither a continuation cursor nor a model-settable
+    /// search_history is the one text tool with neither a continuation cursor nor a model-settable
     /// result knob — its schema exposes only <c>query</c> — while a single archived entry is allowed to
     /// be as large as the whole tool-result allocation. Letting the global cap reject the response
     /// therefore turns any sufficiently large match into a dead end whose error names no parameter the
@@ -349,7 +349,7 @@ internal sealed partial class ArcanumInternalToolServer
         if (bodyBudget <= 0L)
         {
             return ToolError(
-                $"search_archives: output too large ({byteCount} UTF-8 bytes; limit {effectiveCap}). Narrow 'query' and retry.");
+                $"search_history: output too large ({byteCount} UTF-8 bytes; limit {effectiveCap}). Narrow 'query' and retry.");
         }
 
         int retained = LongestPrefixWithinUtf8Budget(text, bodyBudget);

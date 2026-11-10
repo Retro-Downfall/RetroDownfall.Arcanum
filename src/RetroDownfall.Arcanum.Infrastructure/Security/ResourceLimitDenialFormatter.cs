@@ -7,7 +7,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// <summary>
 /// Shared, sanitized model-facing denial text for OS-enforced resource limit breaches, plus the
 /// breach-recording call that must accompany it. Used by both <c>execute_command</c> and
-/// <c>run_spell_script</c> so the two tools stay consistent.
+/// <c>run_script</c> so the two tools stay consistent.
 /// </summary>
 /// <remarks>
 /// The message intentionally contains only the resource name and the configured limit value — never

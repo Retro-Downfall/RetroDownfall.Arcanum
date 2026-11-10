@@ -56,7 +56,7 @@ public sealed class A2ADelegationCycleTests
     };
 
     [Fact]
-    public async Task ThreeHopCycle_IsRefusedAtTheRepeatedNode()
+    public async Task Inbound_chain_is_retained_and_repeated_node_is_refused_after_tool_cutover()
     {
         ArcanumSettings settings = EnabledSettings();
 
@@ -70,14 +70,13 @@ public sealed class A2ADelegationCycleTests
 
         Assert.Equal([OriginNode, ConclaveDelegationChain.NodeId], inherited);
 
-        // ── Hop 3. The spawned Apprentice delegates onward through dispatch_sending. Before #59 this
-        // leg emitted a chain of just [this node], and the origin hop vanished. ───────────────────
+        // Retired unbound MCP dispatch cannot continue this lineage after the hard cutover.
         IReadOnlyList<string>? forwarded = await DispatchFromApprenticeAsync(spawned.Id, inherited);
 
-        Assert.Equal([OriginNode, ConclaveDelegationChain.NodeId], forwarded);
+        Assert.Null(forwarded);
 
         // A foreign peer appends its own node exactly as ConclaveDelegationChain.Extend does here.
-        string[] chainSeenByOrigin = [.. forwarded!, DownstreamNode];
+        string[] chainSeenByOrigin = [.. inherited, DownstreamNode];
 
         // ── Hop 4. The work loops back to a node already in the chain. ────────────────────────────
         (Apprentice? cycled, TaskState? finalState) = await TryAcceptInboundSendingAsync(
@@ -261,6 +260,11 @@ public sealed class A2ADelegationCycleTests
             Assert.Equal(McpInboundKind.Response, envelope.Kind);
 
             Assert.Null(envelope.Response!.Error);
+
+            McpToolsCallResultWire result = JsonSerializer.Deserialize(envelope.Response.Result!.Value,
+                McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
+
+            Assert.True(result.IsError);
 
             return a2aClient.ObservedChain;
         }

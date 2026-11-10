@@ -53,7 +53,7 @@ public sealed class ApprenticePromptBuilderTests
 
         Assert.Contains("Focus on edge cases.", prompt, StringComparison.Ordinal);
 
-        Assert.Contains("petition_dungeon_master", prompt, StringComparison.Ordinal);
+        Assert.Contains("request_intervention", prompt, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -149,7 +149,7 @@ public sealed class ApprenticePromptBuilderTests
         {
             Assert.Contains("CURRENT", exposed, StringComparison.Ordinal);
 
-            Assert.Contains("petition_dungeon_master", exposed, StringComparison.Ordinal);
+            Assert.Contains("request_intervention", exposed, StringComparison.Ordinal);
         }
     }
 

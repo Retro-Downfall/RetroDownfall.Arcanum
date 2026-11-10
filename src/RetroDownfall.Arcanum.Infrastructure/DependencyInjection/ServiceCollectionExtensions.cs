@@ -1532,6 +1532,8 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ISagaMemoryStore, SagaMemoryStore>();
 
+        services.AddScoped<RetroDownfall.Arcanum.Core.Memory.IMemorySearchService, RetroDownfall.Arcanum.Infrastructure.Memory.MemorySearchService>();
+
         services.AddScoped<IMemoryRecallCandidateReader, MemoryRecallCandidateReader>();
 
         // Same lifetime and DbContext as the store: extraction's page gate and pre-embed check ask

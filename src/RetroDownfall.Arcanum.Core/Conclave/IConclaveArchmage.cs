@@ -22,7 +22,7 @@ public sealed record ConclaveCastRequest(
 
 /// <summary>
 /// The <strong>Conclave Archmage</strong> mints child Apprentices for cross-Apprentice delegation.
-/// It is the single source of delegation/domain logic shared by the in-process <c>cast_sending</c>
+/// It is the single source of delegation/domain logic shared by the in-process <c>create_agent_task</c>
 /// MCP tool and the <c>POST /api/apprentices/{id}/cast</c> endpoint, and enforces the
 /// <c>Arcanum:Features:Conclave</c> gate.
 /// </summary>

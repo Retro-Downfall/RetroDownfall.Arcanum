@@ -103,7 +103,7 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
 
         Assert.NotNull(result);
 
-        Assert.StartsWith("run_spell_script: ambiguous script 'dup.sh'", result, StringComparison.Ordinal);
+        Assert.StartsWith("run_script: ambiguous script 'dup.sh'", result, StringComparison.Ordinal);
 
         Assert.Contains(_rootA, result, StringComparison.Ordinal);
 

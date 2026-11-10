@@ -44,7 +44,7 @@ public sealed record IntelligenceSettings
 
     /// <summary>
     /// Hard cap (bytes) on captured <c>stdout</c> and <c>stderr</c> for in-process MCP
-    /// <c>execute_command</c> and the <c>run_spell_script</c> hub tool. Output beyond this is
+    /// <c>execute_command</c> and the <c>run_script</c> hub tool. Output beyond this is
     /// truncated with a marker so verbose tool calls cannot exhaust host memory.
     /// </summary>
     public long ToolOutputCapBytes { get; set; } = 1L * 1024L * 1024L;

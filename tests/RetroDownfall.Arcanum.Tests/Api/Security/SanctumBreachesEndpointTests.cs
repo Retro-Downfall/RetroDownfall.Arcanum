@@ -35,7 +35,7 @@ public sealed class SanctumBreachesEndpointTests
 
         await RecordBreachAsync(
             campaignId,
-            "read_file_chunk",
+            "read_file",
             "PathEscape",
             details: new SanctumBreachDetails(
                 RequestedPath: "/tmp/campaign-root/../../etc/secret.txt",
@@ -103,12 +103,12 @@ public sealed class SanctumBreachesEndpointTests
 
         await RecordBreachAsync(campaignId, "network_fetch", "NetworkEgress");
 
-        await RecordBreachAsync(campaignId, "read_file_chunk", "PathEscape");
+        await RecordBreachAsync(campaignId, "read_file", "PathEscape");
 
         HttpClient client = _factory.CreateAuthenticatedClient();
 
         HttpResponseMessage response = await client.GetAsync(
-            $"/api/campaigns/{campaignId}/sanctum/breaches?tool=read_file_chunk");
+            $"/api/campaigns/{campaignId}/sanctum/breaches?tool=read_file");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
@@ -116,7 +116,7 @@ public sealed class SanctumBreachesEndpointTests
 
         SanctumBreachDto breach = Assert.Single(result.Items);
 
-        Assert.Equal("read_file_chunk", breach.ToolName);
+        Assert.Equal("read_file", breach.ToolName);
 
     }
 

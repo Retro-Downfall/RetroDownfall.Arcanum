@@ -138,7 +138,7 @@ public sealed record A2ADispatchResult(
 /// <summary>
 /// The <strong>Archmage Client</strong>: the Conclave's outward-facing delegate to external A2A-compatible
 /// agents. Wraps Agent Card discovery, SSRF-guarded outbound connections, and blocking task dispatch behind
-/// the in-process <c>dispatch_sending</c> MCP tool.
+/// the in-process <c>create_agent_task</c> MCP tool.
 /// </summary>
 public interface IA2AClientService
 {

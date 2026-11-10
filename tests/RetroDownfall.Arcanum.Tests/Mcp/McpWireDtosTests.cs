@@ -41,7 +41,7 @@ public sealed class McpWireDtosTests
 
         McpToolsCallParams original = new()
         {
-            Name = "read_file_chunk",
+            Name = "read_file",
             Arguments = args,
         };
 
@@ -51,7 +51,7 @@ public sealed class McpWireDtosTests
 
         Assert.NotNull(parsed);
 
-        Assert.Equal("read_file_chunk", parsed!.Name);
+        Assert.Equal("read_file", parsed!.Name);
 
         Assert.Equal("src/a.cs", parsed.Arguments.GetProperty("relativePath").GetString());
 

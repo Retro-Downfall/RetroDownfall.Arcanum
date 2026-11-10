@@ -1032,7 +1032,7 @@ public sealed class DocumentationCodeContradictionTests
     public void The_chat_loop_document_states_the_window_the_progress_detector_compares_against()
     {
         static IReadOnlyList<ToolLoopProgressEntry> Round(int index) =>
-            [new ToolLoopProgressEntry("read_file_chunk", $"{{\"relativePath\":\"f{index}.txt\"}}", $"result {index}")];
+            [new ToolLoopProgressEntry("read_file", $"{{\"relativePath\":\"f{index}.txt\"}}", $"result {index}")];
 
         ToolLoopProgressDetector withinWindow = new();
 

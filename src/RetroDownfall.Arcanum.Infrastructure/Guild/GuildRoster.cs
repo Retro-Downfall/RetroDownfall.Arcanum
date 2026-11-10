@@ -631,6 +631,13 @@ internal sealed class GuildRoster(GuildStore store, GuildRosterRefreshStore refr
                 observation.ReasonCode ?? ErrorCodes.Guild.Unavailable, token).ConfigureAwait(false);
         }
 
+        if (parsed.ToolDiagnostics is { Length: > 0 } removed)
+        {
+            var unavailable = await UnavailableAsync(observation.SourceIdentity, observation.Kind, ErrorCodes.Guild.LegacyToolName, token).ConfigureAwait(false);
+
+            return unavailable.IsFailure ? unavailable.Error : unavailable.Value with { ToolDiagnostics = removed };
+        }
+
         GuildStoredAgentCardPayload payload = Payload(parsed, observation.Kind, observation.WorkspaceId);
 
         if (claim.Value)
@@ -810,7 +817,7 @@ internal sealed class GuildRoster(GuildStore store, GuildRosterRefreshStore refr
         new(new(Guid.Empty, Guid.Empty, 0, parsed.Name, parsed.Description, parsed.Version,
             [.. parsed.Skills.Select(id => new GuildAgentSkillDto(id, id, id, [], parsed.InputModes, parsed.OutputModes))],
             parsed.InputModes, parsed.OutputModes, new(false, false, false), new(kind, workspace, null, true, null)),
-            parsed.Guidance, parsed.RequestedTools);
+            parsed.Guidance, parsed.RequestedTools, RequestedToolsSpecified: parsed.RequestedToolsSpecified);
 
     private static GuildAgentCardDto Project(GuildAgentCard card) => new(card.AgentId, card.CardId, card.Revision,
         card.Name, card.Description, card.Version, card.Skills, card.DefaultInputModes, card.DefaultOutputModes, card.Capabilities, card.Source);

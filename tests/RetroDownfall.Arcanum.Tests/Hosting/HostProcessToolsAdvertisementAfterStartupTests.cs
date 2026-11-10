@@ -52,11 +52,11 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 /// host started with the escape hatch against a provably clean installation is the case where the
 /// published decision and the legacy edition-plus-environment rule disagree: the gate refuses, the
 /// host degrades to a warning and starts, and nothing that advertises a tool may hand out
-/// <c>execute_command</c> or <c>run_spell_script</c> afterwards (§10.12, §11.1).
+/// <c>execute_command</c> or <c>run_script</c> afterwards (§10.12, §11.1).
 ///
 /// <para>Both advertisement surfaces are the production ones. <c>execute_command</c> exists only
 /// when <see cref="McpConnectionManager"/> builds the in-process tool server for a workspace, and
-/// <c>run_spell_script</c> only when a spell preview reports the tools a cast would have; a test
+/// <c>run_script</c> only when a spell preview reports the tools a cast would have; a test
 /// that asked the policy predicate directly would prove nothing about either.</para>
 /// </remarks>
 [Collection("ProcessEnvironment")]

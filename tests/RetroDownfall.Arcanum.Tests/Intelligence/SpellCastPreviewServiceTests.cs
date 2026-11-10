@@ -83,6 +83,31 @@ public sealed class SpellCastPreviewServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CastAsync_never_attunes_a_removed_name_even_if_external_discovery_supplies_it()
+    {
+        string spellName = $"legacy-preview-{Guid.NewGuid():N}";
+
+        WriteSpell(spellName, "read_file_chunk");
+
+        FakeMcpConnectionManager mcp = new(AIFunctionFactory.Create(static () => "forged", "read_file_chunk"));
+
+        SpellCastPreviewService service = new(mcp, new TestOptionsMonitor<ArcanumSettings>(new()),
+            NullLogger<SpellCastPreviewService>.Instance);
+
+        Result<SpellCastResult> result = await service.CastAsync(spellName, _workspace.Root, default);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.DoesNotContain("read_file_chunk", result.Value.AvailableTools);
+
+        ToolNameDiagnostic diagnostic = Assert.Single(result.Value.ToolDiagnostics!);
+
+        Assert.Equal(ToolNameDiagnosticKind.Removed, diagnostic.Kind);
+
+        Assert.Equal("read_file", diagnostic.Replacement);
+    }
+
+    [Fact]
     public async Task CastAsync_resolves_dependencies_beyond_the_former_total_count_ceiling()
     {
         const int dependencyCount = 11;

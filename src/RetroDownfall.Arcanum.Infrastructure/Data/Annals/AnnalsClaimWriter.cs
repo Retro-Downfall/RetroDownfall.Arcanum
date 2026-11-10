@@ -177,7 +177,7 @@ internal static class AnnalsClaimWriter
     /// <remarks>
     /// The content-hash comparison is what keeps a correction deterministic. A Lexicon upsert merges
     /// incoming facts with existing ones, and a merge that adds nothing new produces an unchanged fact
-    /// set; without the comparison every repeated <c>scribe_lexicon</c> call restating a known fact would
+    /// set; without the comparison every repeated <c>save_memory</c> call restating a known fact would
     /// append a revision recording no change, and a claim's history would fill with noise that a reader
     /// could not tell from real corrections.
     /// </remarks>

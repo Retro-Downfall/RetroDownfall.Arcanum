@@ -22,20 +22,24 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 
 public sealed partial class GuildLocalHostPolicyTests
 {
-    [Fact]
-    public async Task Qualified_remote_tool_returns_a_question_and_answers_the_same_remote_task_to_completion()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Qualified_remote_tool_returns_a_question_and_answers_the_same_remote_task_to_completion(bool authentication)
     {
         await using Fixture f = await Fixture.CreateAsync(localExecution: true);
 
         ConfigureRemote(f);
 
+        f.ToolDelegationChain = ["origin-node-a", "previous-node-b"];
+
         f.Settings.CurrentValue.Features.Conclave = true;
 
         GuildCallerContext owner = await f.OperatorAsync();
 
-        GuildToolGrant dispatch = new(GuildToolSourceKind.InternalMcp, "arcanum", "dispatch_sending");
+        GuildToolGrant dispatch = new(GuildToolSourceKind.InternalMcp, "arcanum", "create_agent_task");
 
-        GuildToolGrant continuation = new(GuildToolSourceKind.InternalMcp, "arcanum", "continue_sending");
+        GuildToolGrant continuation = new(GuildToolSourceKind.InternalMcp, "arcanum", "send_agent_message");
 
         var parent = await f.IssueAsync(owner, f.Request with { Grant = f.Request.Grant with
             { Tools = [dispatch, continuation], Delegation = [GuildDelegationKind.Remote] } });
@@ -64,7 +68,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.NotNull(answer);
 
-        RemotePortAgent agent = new("wait");
+        RemotePortAgent agent = new(authentication ? "auth-wait" : "wait");
 
         using IHost remote = await new HostBuilder().ConfigureWebHost(web =>
         {
@@ -112,65 +116,94 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using (registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), dispatch))
         {
-            using CancellationTokenSource lifetime = new();
+            var submitted = Assert.IsType<GuildLocalChildToolResult>(await context.InvokeBoundAsync(start,
+                new() { ["goal"] = "Remote goal", ["agent"] = RemoteDiscovery }, default));
 
-            Task<object?> invoked = context.InvokeBoundAsync(start, new() { ["goal"] = "Remote goal", ["agent_url"] = RemoteDiscovery,
-                ["continuable"] = true }, lifetime.Token).AsTask();
+            child = submitted.Quest;
 
-            Task<GuildQuestDto> pending = queue.Pending.Reader.ReadAsync(lifetime.Token).AsTask();
+            Assert.Null(child.ResultReceiptId);
 
-            try
-            {
-                Assert.Same(pending, await Task.WhenAny(pending, invoked));
+            Assert.True(queue.Pending.Reader.TryRead(out _));
 
-                child = await pending;
+            await DriveRemoteToolChildAsync(f, owner, port, child.Id, default);
 
-                await DriveRemoteToolChildAsync(f, owner, port, child.Id, lifetime.Token);
+            var waiting = await f.Store.ReadLocalQuestionAsync(owner, child.Id, default);
 
-                var question = Assert.IsType<GuildLocalChildToolResult>(await invoked);
+            Assert.True(waiting.IsSuccess, waiting.Error.Message);
 
-                Assert.Equal(QuestState.InputRequired, question.Quest.State);
+            Assert.Contains(authentication ? "Which credential?" : "Which answer?", waiting.Value.Question);
 
-                Assert.Contains("Which answer?", question.Summary);
+            child = (await f.Store.GetAsync(owner, child.Id, default)).Value.Quest;
 
-                Assert.Contains($"task_id {child.Id:D}", question.Summary);
-            }
-            finally
-            {
-                await JoinRemoteToolTestWorkAsync(lifetime, invoked, pending);
-            }
+            Assert.Equal(QuestState.InputRequired, child.State);
         }
 
         using (registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), continuation))
         {
-            using CancellationTokenSource lifetime = new();
+            var messageReceipt = Assert.IsType<GuildLocalChildToolResult>(await context.InvokeBoundAsync(answer,
+                new() { ["questId"] = child.Id.ToString("D"), ["kind"] = "message", ["contentType"] = "text/plain",
+                    ["body"] = "Informational progress, not a continuation" }, default));
 
-            Task<object?> invoked = context.InvokeBoundAsync(answer, new() { ["task_id"] = child.Id.ToString("D"),
-                ["agent_url"] = RemoteDiscovery, ["message"] = "The first answer", ["accepted_output_modes"] = new[] { "text/plain" } }, lifetime.Token).AsTask();
+            Assert.True(messageReceipt.Projection!.Value.TryGetProperty("messageId", out _));
 
-            Task<GuildQuestDto> pending = queue.Pending.Reader.ReadAsync(lifetime.Token).AsTask();
+            Assert.Equal(QuestState.InputRequired, (await f.Store.GetAsync(owner, child.Id, default)).Value.Quest.State);
 
-            try
-            {
-                Assert.Same(pending, await Task.WhenAny(pending, invoked));
+            Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_continuations"));
 
-                Assert.Equal(child.Id, (await pending).Id);
+            Assert.Equal(1, agent.Calls);
+        }
 
-                await DriveRemoteToolChildAsync(f, owner, port, child.Id, lifetime.Token);
+        using (registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), continuation))
+        {
+            object? stale = await context.InvokeBoundAsync(answer,
+                new() { ["questId"] = child.Id.ToString("D"), ["kind"] = "continuation", ["contentType"] = "text/plain",
+                    ["body"] = "Stale answer", ["expectedRevision"] = child.Revision - 1 }, default);
 
-                var completed = Assert.IsType<GuildLocalChildToolResult>(await invoked);
+            Assert.Contains(Core.Primitives.ErrorCodes.Guild.RevisionConflict, Assert.IsType<string>(stale));
 
-                Assert.Equal(QuestState.Completed, completed.Quest.State);
+            Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_continuations"));
 
-                Assert.Contains("Remote answer", completed.Summary);
-            }
-            finally
-            {
-                await JoinRemoteToolTestWorkAsync(lifetime, invoked, pending);
-            }
+            Assert.Equal(1, agent.Calls);
+        }
+
+        using (registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), continuation))
+        {
+            AIFunctionArguments answerArguments = new() { ["questId"] = child.Id.ToString("D"), ["kind"] = "continuation", ["contentType"] = "text/plain",
+                ["body"] = "The first answer", ["expectedRevision"] = child.Revision, ["idempotencyKey"] = Guid.NewGuid().ToString("D") };
+
+            var resumed = Assert.IsType<GuildLocalChildToolResult>(await context.InvokeBoundAsync(answer, answerArguments, default));
+
+            Assert.Equal(child.Id, resumed.Quest.Id);
+
+            Assert.True(queue.Pending.Reader.TryRead(out _));
+
+            var replay = Assert.IsType<GuildLocalChildToolResult>(await context.InvokeBoundAsync(answer, answerArguments, default));
+
+            Assert.Equal(child.Id, replay.Quest.Id);
+
+            Assert.True(replay.Quest.Receipt!.Replayed);
+
+            Assert.True(queue.Pending.Reader.TryRead(out _));
+
+            Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_continuations"));
+
+            Assert.Equal(1, agent.Calls);
+
+            await DriveRemoteToolChildAsync(f, owner, port, child.Id, default);
+
+            var completed = await f.Store.ReadLocalResultAsync(owner, child.Id, true, default);
+
+            Assert.True(completed.IsSuccess, completed.Error.Message);
+
+            Assert.Equal(QuestState.Completed, completed.Value.Quest.State);
+
+            Assert.Contains("Remote answer", completed.Value.Body);
         }
 
         Assert.Equal(2, agent.Calls);
+
+        Assert.All(agent.DelegationChains, chain => Assert.Equal(
+            ["origin-node-a", "previous-node-b", ConclaveDelegationChain.NodeId], chain));
 
         Assert.Single(agent.TaskIds.Distinct(StringComparer.Ordinal));
 
@@ -178,7 +211,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_continuations"));
 
-        Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_result_applications"));
+        Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_result_applications"));
     }
 
     private static async Task DriveRemoteToolChildAsync(Fixture f, GuildCallerContext owner, GuildRemotePort port, Guid questId, CancellationToken ct)

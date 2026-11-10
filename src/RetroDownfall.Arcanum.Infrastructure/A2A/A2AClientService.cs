@@ -288,7 +288,7 @@ public sealed partial class A2AClientService : IA2AClientService
         if (!existingGuildTask && (!settings.ResolveConclave().Enabled || !a2a.Enabled || !a2a.ClientEnabled))
         {
             return Result<A2ADispatchResult>.Failure(
-                new Error(ErrorCodes.Sending.Disabled, "A2A is disabled; dispatch_sending is not available."));
+                new Error(ErrorCodes.Sending.Disabled, "A2A is disabled; outbound Sending dispatch is not available."));
         }
 
         if (string.IsNullOrWhiteSpace(agentUrl) || !Uri.TryCreate(agentUrl.Trim(), UriKind.Absolute, out _))
@@ -352,7 +352,7 @@ public sealed partial class A2AClientService : IA2AClientService
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
                     _logger.LogWarning(
-                        "dispatch_sending: discovery of the remote agent at {AgentUrl} did not finish within {Seconds:0.###} s.",
+                        "A2A dispatch: discovery of the remote agent at {AgentUrl} did not finish within {Seconds:0.###} s.",
                         trimmedUrl,
                         DiscoveryTimeout.TotalSeconds);
 
@@ -430,7 +430,7 @@ public sealed partial class A2AClientService : IA2AClientService
             // A card is remote-authored: a body that is not JSON, or that carries a malformed value, is an
             // invalid card, not an unhandled exception out of the tool call.
             _logger.LogWarning(
-                "dispatch_sending: failed to resolve the remote Agent Card ({ExceptionType}).",
+                "A2A dispatch: failed to resolve the remote Agent Card ({ExceptionType}).",
                 ex.GetType().Name);
 
             return Result<ConnectedPeer>.Failure(
@@ -515,7 +515,7 @@ public sealed partial class A2AClientService : IA2AClientService
         catch (Exception ex) when (ex is A2AException or ArgumentException or InvalidOperationException)
         {
             _logger.LogWarning(
-                "dispatch_sending: the remote Agent Card has no supported protocol binding ({ExceptionType}).",
+                "A2A dispatch: the remote Agent Card has no supported protocol binding ({ExceptionType}).",
                 ex.GetType().Name);
 
             return Result<ConnectedPeer>.Failure(
@@ -631,7 +631,7 @@ public sealed partial class A2AClientService : IA2AClientService
         if (modality.IsFailure)
         {
             _logger.LogWarning(
-                "dispatch_sending: refusing to dispatch — {Reason}",
+                "A2A dispatch: refusing to dispatch — {Reason}",
                 modality.Error.Message);
         }
 
@@ -710,7 +710,7 @@ public sealed partial class A2AClientService : IA2AClientService
         catch (Exception ex) when (ex is HttpRequestException or A2AException or JsonException)
         {
             _logger.LogWarning(
-                "dispatch_sending: failed to send message to the remote agent ({ExceptionType}).",
+                "A2A dispatch: failed to send message to the remote agent ({ExceptionType}).",
                 ex.GetType().Name);
 
             return Result<A2ADispatchResult>.Failure(
@@ -748,7 +748,7 @@ public sealed partial class A2AClientService : IA2AClientService
         // not an exception out of the tool call.
         if (response.Task is not { Status: not null } accepted)
         {
-            _logger.LogWarning("dispatch_sending: the remote agent accepted the message with no usable task payload.");
+            _logger.LogWarning("A2A dispatch: the remote agent accepted the message with no usable task payload.");
 
             // A fresh dispatch has recorded nothing durably yet and there is no usable snapshot to follow, so
             // a task id that did arrive names a task the remote may be running: it is cancelled rather than
@@ -845,7 +845,7 @@ public sealed partial class A2AClientService : IA2AClientService
             StopRenewing(ledgerEntry);
 
             _logger.LogWarning(
-                "dispatch_sending: lost contact with the remote agent while polling task {TaskId} ({ExceptionType}).",
+                "A2A dispatch: lost contact with the remote agent while polling task {TaskId} ({ExceptionType}).",
                 task.Id,
                 ex.GetType().Name);
 
@@ -864,7 +864,7 @@ public sealed partial class A2AClientService : IA2AClientService
             StopRenewing(ledgerEntry);
 
             _logger.LogWarning(
-                "dispatch_sending: the remote agent answered task {TaskId} with an unreadable response ({ExceptionType}).",
+                "A2A dispatch: the remote agent answered task {TaskId} with an unreadable response ({ExceptionType}).",
                 task.Id,
                 ex.GetType().Name);
 
@@ -1008,7 +1008,7 @@ public sealed partial class A2AClientService : IA2AClientService
             || card.Capabilities?.PushNotifications != true)
         {
             _logger.LogDebug(
-                "dispatch_sending: callback mode is unavailable for remote task {TaskId}; waiting inline instead.",
+                "A2A dispatch: callback mode is unavailable for remote task {TaskId}; waiting inline instead.",
                 remoteTaskId);
 
             return null;
@@ -1050,7 +1050,7 @@ public sealed partial class A2AClientService : IA2AClientService
             // HTTP error: it must not reach the catch-all that follows an accepted task, which ends the whole
             // Sending as lost contact and leaves the remote task running.
             _logger.LogInformation(
-                "dispatch_sending: the peer would not register a callback for remote task {TaskId} "
+                "A2A dispatch: the peer would not register a callback for remote task {TaskId} "
                 + "({ExceptionType}); waiting inline instead.",
                 remoteTaskId,
                 ex.GetType().Name);
@@ -1176,7 +1176,7 @@ public sealed partial class A2AClientService : IA2AClientService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "dispatch_sending: could not record a Sending's callback registration.");
+            _logger.LogWarning(ex, "A2A dispatch: could not record a Sending's callback registration.");
         }
     }
 
@@ -1226,7 +1226,7 @@ public sealed partial class A2AClientService : IA2AClientService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "dispatch_sending: could not record a durable Sending for remote task {TaskId}.", remoteTaskId);
+            _logger.LogWarning(ex, "A2A dispatch: could not record a durable Sending for remote task {TaskId}.", remoteTaskId);
 
             return default;
         }
@@ -1299,7 +1299,7 @@ public sealed partial class A2AClientService : IA2AClientService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "dispatch_sending: could not close the durable record for a settled Sending.");
+            _logger.LogWarning(ex, "A2A dispatch: could not close the durable record for a settled Sending.");
         }
     }
 
@@ -1389,7 +1389,7 @@ public sealed partial class A2AClientService : IA2AClientService
                 catch (Exception ex) when (ex is HttpRequestException or A2AException or IOException or InvalidOperationException or JsonException)
                 {
                     _logger.LogInformation(
-                        "dispatch_sending: could not read the settled task after subscription "
+                        "A2A dispatch: could not read the settled task after subscription "
                         + "({ExceptionType}); falling back to polling.",
                         ex.GetType().Name);
                 }
@@ -1456,7 +1456,7 @@ public sealed partial class A2AClientService : IA2AClientService
             }
 
             _logger.LogInformation(
-                "dispatch_sending: the push stream for remote task {TaskId} ended before it settled; falling back to polling.",
+                "A2A dispatch: the push stream for remote task {TaskId} ended before it settled; falling back to polling.",
                 task.Id);
         }
         catch (OperationCanceledException)
@@ -1468,7 +1468,7 @@ public sealed partial class A2AClientService : IA2AClientService
             // A frame the peer sent that is not JSON is the same failure as a stream it refused or dropped:
             // the Sending is still running on the far side, so it degrades to the poll.
             _logger.LogInformation(
-                "dispatch_sending: could not follow remote task {TaskId} by subscription "
+                "A2A dispatch: could not follow remote task {TaskId} by subscription "
                 + "({ExceptionType}); falling back to polling.",
                 task.Id,
                 ex.GetType().Name);
@@ -1629,7 +1629,7 @@ public sealed partial class A2AClientService : IA2AClientService
         catch (Exception ex)
         {
             _logger.LogInformation(
-                "dispatch_sending: could not cancel remote A2A task {TaskId} after local cancellation "
+                "A2A dispatch: could not cancel remote A2A task {TaskId} after local cancellation "
                 + "({ExceptionType}).",
                 taskId,
                 ex.GetType().Name);
@@ -1723,8 +1723,8 @@ public sealed partial class A2AClientService : IA2AClientService
             ? [path]
             : [WellKnownAgentCardPath, ArcanumRuntimeDefaults.Conclave.A2A.ServerPath + "/agent-card"];
 
-        // agent_url is model-supplied on dispatch_sending, so discovery is credentialed only when the
-        // allowlist vouches for it. CreateOutboundClient owns that decision for every caller.
+        // Discovery URLs can come from multiple dispatch callers. Attach a credential only when the
+        // allowlist vouches for the target. CreateOutboundClient owns that decision for every caller.
         HttpClient httpClient = CreateOutboundClient(discoveryUrl, allowlist, MaxAgentCardBytes);
 
         Exception? lastFailure = null;
@@ -1877,10 +1877,8 @@ public sealed partial class A2AClientService : IA2AClientService
     /// <param name="allowlist">The configured <c>AllowedRemoteAgents</c> entries.</param>
     /// <remarks>
     /// The allowlist is the <em>only</em> thing that vouches for a credential target, and the rule is uniform
-    /// across callers. <c>agent_url</c> reaches this service verbatim from the model on the
-    /// <c>dispatch_sending</c> / <c>continue_sending</c> tools, so "the operator typed this URL" was never a
-    /// safe assumption: a prompt-injected Apprentice could otherwise name an attacker host and be handed a
-    /// peer Arcanum API key — an operator-equivalent credential (&#167;11.13) — during card discovery, before
+    /// across callers. A dispatch URL alone never proves operator approval to receive a credential.
+    /// Discovery without this check could hand an attacker host the configured peer credential before
     /// any card-interface scoping runs. When nothing vouches for the target the Sending still goes out, just
     /// unauthenticated.
     /// <para>
@@ -1906,7 +1904,7 @@ public sealed partial class A2AClientService : IA2AClientService
         if (allowlist.Length == 0 || !IsAllowedAgent(credentialTarget, allowlist))
         {
             _logger.LogWarning(
-                "dispatch_sending: withholding the outbound peer credential from '{AgentUrl}' because it "
+                "A2A dispatch: withholding the outbound peer credential from '{AgentUrl}' because it "
                 + "matches no Arcanum:Integrations:A2A:AllowedRemoteAgents entry. The Sending is dispatched "
                 + "unauthenticated; add the target to that setting to authenticate it.",
                 credentialTarget);
@@ -1920,7 +1918,7 @@ public sealed partial class A2AClientService : IA2AClientService
         if (string.IsNullOrWhiteSpace(credential))
         {
             _logger.LogWarning(
-                "dispatch_sending: Arcanum:Integrations:A2A:OutboundCredentialEnvironmentVariable names "
+                "A2A dispatch: Arcanum:Integrations:A2A:OutboundCredentialEnvironmentVariable names "
                 + "'{EnvironmentVariable}', but it is not set; dispatching without a peer credential.",
                 a2a.OutboundCredentialEnvironmentVariable);
 

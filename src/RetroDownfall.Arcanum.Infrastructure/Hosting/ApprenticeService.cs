@@ -1509,6 +1509,10 @@ internal sealed partial class ApprenticeService(
             return ApprenticeUnitDisposition.Stop;
         }
 
+        Result currentTools = await RequireCurrentToolPlanAsync(repo, apprentice, linkedCts.Token).ConfigureAwait(false);
+
+        if (currentTools.IsFailure) return ApprenticeUnitDisposition.Stop;
+
         List<PlanStep> plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
 
         if (plan.Count == 0)
@@ -3540,7 +3544,7 @@ internal sealed partial class ApprenticeService(
     }
 
     /// <summary>
-    /// Parses a <c>dispatch_sending</c> tool result and publishes <c>sendingDispatched</c> followed by
+    /// Parses a historical Sending result and publishes <c>sendingDispatched</c> followed by
     /// <c>sendingCompleted</c>/<c>sendingFailed</c> on <paramref name="apprenticeId"/>'s Chronicle. Malformed
     /// payloads are ignored (best-effort observability; never fails the step).
     /// </summary>
@@ -3577,7 +3581,7 @@ internal sealed partial class ApprenticeService(
     }
 
     /// <summary>
-    /// Fail-closed parse of <c>petition_dungeon_master</c> structured result.
+    /// Fail-closed parse of <c>request_intervention</c> structured result.
     /// Only an explicit <c>notificationStatus: "delivered"</c> counts as already alerted.
     /// </summary>
     private static bool IsPetitionNotificationDelivered(string? resultText)
@@ -3636,9 +3640,8 @@ internal sealed partial class ApprenticeService(
 
         List<Guid> spawnedChildIds = [];
 
-        // Names the Apprentice behind every internal MCP tool call this step makes. dispatch_sending
-        // needs it to extend the inherited A2A delegation chain rather than restarting it (issue #59)
-        // and to publish live sendingProgress frames onto this Apprentice's Chronicle (issue #61).
+        // Supplies the current Apprentice and inherited chain to the remaining Apprentice-scoped tools.
+        // Guild task execution uses its separate live host-bound invocation and cannot be authorized here.
         using IDisposable apprenticeToolScope = ApprenticeToolInvocationAmbient.Begin(
             new ApprenticeToolInvocationContext(
                 apprenticeId,
@@ -3753,28 +3756,6 @@ internal sealed partial class ApprenticeService(
                     stepError = frame.Data;
                 }
 
-                if (frame.Type == IntelligenceEventType.ToolResult
-                    && string.Equals(frame.ToolCall?.Name, "cast_sending", StringComparison.Ordinal)
-                    && !string.IsNullOrWhiteSpace(frame.Data)
-                    && TryParseCastSendingChildId(frame.Data, out Guid spawnedChildId))
-                {
-                    spawnedChildIds.Add(spawnedChildId);
-
-                    castSendings?.Record(spawnedChildId);
-                }
-                // dispatch_sending (Archmage Client) is blocking: by the time this ToolResult frame
-                // arrives, the exchange with the remote A2A agent has already fully completed or
-                // failed. Unlike cast_sending there is no child Apprentice to stamp/start afterward,
-                // so the Chronicle events are published immediately here — apprenticeId (the currently
-                // running Apprentice) is already in scope, which is exactly the piece of context the
-                // dispatch_sending MCP tool itself cannot see (it is workspace-scoped, not
-                // Apprentice-scoped; see docs/Arcanum.DESIGN.md §5.7.1.
-                if (frame.Type == IntelligenceEventType.ToolResult
-                    && string.Equals(frame.ToolCall?.Name, "dispatch_sending", StringComparison.Ordinal)
-                    && !string.IsNullOrWhiteSpace(frame.Data))
-                {
-                    PublishDispatchSendingEvents(apprenticeId, frame.Data);
-                }
             }
         }
         catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)

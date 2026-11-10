@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 public enum A2ASendingDirection
 {
 
-    /// <summary>This instance dispatched work to a remote agent (<c>dispatch_sending</c>).</summary>
+    /// <summary>This instance dispatched work to a remote agent (<c>create_agent_task</c>).</summary>
     Outbound = 0,
 
     /// <summary>A remote agent dispatched work to this instance (the A2A server).</summary>

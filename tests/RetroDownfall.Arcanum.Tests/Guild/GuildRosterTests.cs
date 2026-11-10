@@ -54,6 +54,52 @@ public sealed class GuildRosterTests : IDisposable
     }
 
     [Fact]
+    public async Task Declared_card_removed_tools_are_diagnosed_on_refresh_without_rewriting_the_source()
+    {
+        using EvolutionScratchDatabase database = EvolutionScratchDatabase.Create();
+
+        var (roster, caller) = await CreateAsync(database);
+
+        string source = Path.Combine(_root, "review.md");
+
+        await File.WriteAllTextAsync(source, "---\nname: Reviewer\ndescription: Reviews a patch\ntools: [custom_external_tool]\n---");
+
+        var request = new GuildRefreshAgentsRequest(Guid.NewGuid());
+
+        var first = await roster.RefreshAsync(caller, roster.CreateRefreshMutation(request), request, default);
+
+        Assert.True(first.IsSuccess);
+
+        Assert.True(Assert.Single(first.Value.Diagnostics.Items).Available);
+
+        Guid agent = Assert.Single(first.Value.Diagnostics.Items).AgentId!.Value;
+
+        const string legacy = "---\nname: Reviewer\ndescription: Reviews a patch\ntools: [READ_FILE_CHUNK, custom_external_tool]\n---\nHistorical instructions";
+
+        await File.WriteAllTextAsync(source, legacy);
+
+        request = new GuildRefreshAgentsRequest(Guid.NewGuid(), agent);
+
+        var refresh = await roster.RefreshAsync(caller, roster.CreateRefreshMutation(request), request, default);
+
+        Assert.True(refresh.IsSuccess);
+
+        var diagnostic = Assert.Single(refresh.Value.Diagnostics.Items);
+
+        Assert.False(diagnostic.Available);
+
+        Assert.Equal("Guild.LegacyToolName", diagnostic.ReasonCode);
+
+        var tool = Assert.Single(diagnostic.ToolDiagnostics!);
+
+        Assert.Equal("READ_FILE_CHUNK", tool.ToolName);
+
+        Assert.Equal("read_file", tool.Replacement);
+
+        Assert.Equal(legacy, await File.ReadAllTextAsync(source));
+    }
+
+    [Fact]
     public async Task Invalid_refresh_keeps_pinned_revision_but_refuses_new_selection()
     {
         using EvolutionScratchDatabase database = EvolutionScratchDatabase.Create();

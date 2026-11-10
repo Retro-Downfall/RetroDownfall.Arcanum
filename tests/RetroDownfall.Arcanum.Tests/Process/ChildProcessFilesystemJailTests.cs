@@ -199,7 +199,7 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     [Fact]
     public void Profile_without_fork_denial_never_mentions_process_fork()
     {
-        // Every other jailed child (execute_command, run_spell_script, workspace_check) forks its own tools.
+        // Every other jailed child (execute_command, run_script, workspace_check) forks its own tools.
         foreach (bool denyNetwork in new[] { false, true })
         {
             string profile = MacOsSandboxExecProfileBuilder.Build(
@@ -359,7 +359,7 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     [Fact]
     public void Profile_without_write_denial_keeps_its_temp_device_socket_clone_and_link_grants()
     {
-        // Every other jailed child (execute_command, run_spell_script, workspace_check) writes its workspace, its temp
+        // Every other jailed child (execute_command, run_script, workspace_check) writes its workspace, its temp
         // directory and its devices exactly as before.
         const string workspace = "/Users/arcanum-test/workspace";
 

@@ -116,104 +116,115 @@ internal sealed partial class GuildStore(IGrimoireOrdinaryConnectionFactory conn
 
     public Task<Result<GuildStoredCardPage>> ListAsync(GuildCardReadScope scope, GuildAgentSourceKind? source, string? skill,
         string? afterCardId, int pageSize, CancellationToken ct, long? snapshotSequence = null) =>
-        ExecuteAsync<GuildStoredCardPage>(false, async (connection, transaction, token) =>
+        ExecuteAsync<GuildStoredCardPage>(false, (connection, transaction, token) =>
+            ListWithinAsync(connection, transaction, scope, source, skill, afterCardId, pageSize, token, snapshotSequence), ct);
+
+    internal async Task<Result<GuildStoredCardPage>> ListWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        GuildCardReadScope scope, GuildAgentSourceKind? source, string? skill, string? afterCardId, int pageSize,
+        CancellationToken token, long? snapshotSequence = null, long maximumBytes = 1_048_576)
+    {
+        if (maximumBytes < 4096)
+            return new Error(ErrorCodes.Guild.PayloadTooLarge, "The Roster page has no usable response allocation.");
+
+        if (pageSize is < 1 or > 100 || snapshotSequence < 0)
         {
-            if (pageSize is < 1 or > 100 || snapshotSequence < 0)
+            return Invalid();
+        }
+
+        Result owner = await RequireOwnerWithinAsync(connection, transaction, scope.SessionId, scope.CampaignId, token).ConfigureAwait(false);
+
+        if (owner.IsFailure)
+        {
+            return owner.Error;
+        }
+
+        Result workspace = await RequireWorkspaceWithinAsync(connection, transaction, scope.WorkspaceId, scope.WorkspaceRoot, token).ConfigureAwait(false);
+
+        if (workspace.IsFailure)
+        {
+            return workspace.Error;
+        }
+
+        long afterSequence = 0;
+
+        if (afterCardId is not null)
+        {
+            int separator = afterCardId.IndexOf(':');
+
+            if (separator < 1 || !long.TryParse(afterCardId.AsSpan(0, separator), NumberStyles.None, CultureInfo.InvariantCulture, out afterSequence)
+                || afterSequence < 1 || !Guid.TryParseExact(afterCardId.AsSpan(separator + 1), "D", out _))
             {
-                return Invalid();
+                return new Error(ErrorCodes.Guild.CursorInvalid, "The Guild storage continuation is invalid.");
+            }
+        }
+
+        await using SqliteCommand high = Command(connection, transaction, "SELECT COALESCE(MAX(IssuedSequence),0) FROM guild_agent_cards");
+
+        long snapshot = snapshotSequence ?? (long)(await high.ExecuteScalarAsync(token).ConfigureAwait(false))!;
+
+        await using SqliteCommand command = Command(connection, transaction, $"""
+            SELECT {ReadColumns} FROM guild_agent_cards a
+            JOIN guild_agent_card_revisions r ON r.CardId=a.CardId AND r.Revision=a.CurrentRevision
+            JOIN guild_content c ON c.ContentId=r.ContentId
+            WHERE {LiveOwners} AND {LiveContent} AND {ScopePredicate}
+              AND ($source IS NULL OR a.SourceKindCode=$source)
+              AND ($skill IS NULL OR EXISTS(SELECT 1 FROM guild_agent_card_skills k WHERE k.CardId=a.CardId AND k.Revision=a.CurrentRevision AND k.SkillId=$skill))
+              AND a.IssuedSequence>$after AND a.IssuedSequence<=$snapshot AND c.SensitivityCode=0 AND NOT EXISTS(SELECT 1 FROM artifact_sensitivity l WHERE l.ArtifactKindCode=17 AND lower(replace(l.ArtifactId,'-',''))=lower(replace(c.ContentId,'-','')))
+            ORDER BY a.IssuedSequence,a.CardId LIMIT $limit
+            """);
+
+        BindScope(command, scope);
+
+        Add(command, "$source", source.HasValue ? (int)source.Value : null);
+
+        Add(command, "$skill", skill);
+
+        Add(command, "$after", afterSequence);
+
+        Add(command, "$snapshot", snapshot);
+
+        Add(command, "$limit", pageSize + 1);
+
+        ImmutableArray<GuildStoredCard>.Builder items = ImmutableArray.CreateBuilder<GuildStoredCard>();
+
+        long bytes = 0;
+
+        string? last = null;
+
+        bool more = false;
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(token).ConfigureAwait(false))
+        {
+            long size = reader.GetInt64(10) + Encoding.UTF8.GetByteCount(reader.GetString(0)) + 4096;
+
+            if (items.Count == 0 && size > maximumBytes)
+                return new Error(ErrorCodes.Guild.PayloadTooLarge, "One Roster item exceeds the response allocation.");
+
+            if (items.Count == pageSize || (items.Count > 0 && bytes + size > maximumBytes))
+            {
+                more = true;
+
+                break;
             }
 
-            Result owner = await RequireOwnerWithinAsync(connection, transaction, scope.SessionId, scope.CampaignId, token).ConfigureAwait(false);
+            Result<GuildStoredCard> item = Materialize(reader);
 
-            if (owner.IsFailure)
+            if (item.IsFailure)
             {
-                return owner.Error;
+                return item.Error;
             }
 
-            Result workspace = await RequireWorkspaceWithinAsync(connection, transaction, scope.WorkspaceId, scope.WorkspaceRoot, token).ConfigureAwait(false);
+            items.Add(item.Value);
 
-            if (workspace.IsFailure)
-            {
-                return workspace.Error;
-            }
+            bytes += size;
 
-            long afterSequence = 0;
+            last = reader.GetInt64(18).ToString(CultureInfo.InvariantCulture) + ":" + reader.GetString(13);
+        }
 
-            if (afterCardId is not null)
-            {
-                int separator = afterCardId.IndexOf(':');
-
-                if (separator < 1 || !long.TryParse(afterCardId.AsSpan(0, separator), NumberStyles.None, CultureInfo.InvariantCulture, out afterSequence)
-                    || afterSequence < 1 || !Guid.TryParseExact(afterCardId.AsSpan(separator + 1), "D", out _))
-                {
-                    return new Error(ErrorCodes.Guild.CursorInvalid, "The Guild storage continuation is invalid.");
-                }
-            }
-
-            await using SqliteCommand high = Command(connection, transaction, "SELECT COALESCE(MAX(IssuedSequence),0) FROM guild_agent_cards");
-
-            long snapshot = snapshotSequence ?? (long)(await high.ExecuteScalarAsync(token).ConfigureAwait(false))!;
-
-            await using SqliteCommand command = Command(connection, transaction, $"""
-                SELECT {ReadColumns} FROM guild_agent_cards a
-                JOIN guild_agent_card_revisions r ON r.CardId=a.CardId AND r.Revision=a.CurrentRevision
-                JOIN guild_content c ON c.ContentId=r.ContentId
-                WHERE {LiveOwners} AND {LiveContent} AND {ScopePredicate}
-                  AND ($source IS NULL OR a.SourceKindCode=$source)
-                  AND ($skill IS NULL OR EXISTS(SELECT 1 FROM guild_agent_card_skills k WHERE k.CardId=a.CardId AND k.Revision=a.CurrentRevision AND k.SkillId=$skill))
-                  AND a.IssuedSequence>$after AND a.IssuedSequence<=$snapshot AND c.SensitivityCode=0 AND NOT EXISTS(SELECT 1 FROM artifact_sensitivity l WHERE l.ArtifactKindCode=17 AND lower(replace(l.ArtifactId,'-',''))=lower(replace(c.ContentId,'-','')))
-                ORDER BY a.IssuedSequence,a.CardId LIMIT $limit
-                """);
-
-            BindScope(command, scope);
-
-            Add(command, "$source", source.HasValue ? (int)source.Value : null);
-
-            Add(command, "$skill", skill);
-
-            Add(command, "$after", afterSequence);
-
-            Add(command, "$snapshot", snapshot);
-
-            Add(command, "$limit", pageSize + 1);
-
-            ImmutableArray<GuildStoredCard>.Builder items = ImmutableArray.CreateBuilder<GuildStoredCard>();
-
-            long bytes = 0;
-
-            string? last = null;
-
-            bool more = false;
-
-            await using SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
-
-            while (await reader.ReadAsync(token).ConfigureAwait(false))
-            {
-                long size = reader.GetInt64(10) + Encoding.UTF8.GetByteCount(reader.GetString(0)) + 4096;
-
-                if (items.Count == pageSize || (items.Count > 0 && bytes + size > 1_048_576))
-                {
-                    more = true;
-
-                    break;
-                }
-
-                Result<GuildStoredCard> item = Materialize(reader);
-
-                if (item.IsFailure)
-                {
-                    return item.Error;
-                }
-
-                items.Add(item.Value);
-
-                bytes += size;
-
-                last = reader.GetInt64(18).ToString(CultureInfo.InvariantCulture) + ":" + reader.GetString(13);
-            }
-
-            return Result<GuildStoredCardPage>.Success(new(items.ToImmutable(), more ? last : null, snapshot));
-        }, ct);
+        return Result<GuildStoredCardPage>.Success(new(items.ToImmutable(), more ? last : null, snapshot));
+    }
 
     public Task<Result<GuildDataRef>> WriteContentAsync(GuildContentWrite write, CancellationToken ct) =>
         ExecuteAsync(true, (connection, transaction, token) => WriteContentWithinAsync(connection, transaction, write, time.GetUtcNow(), token), ct);

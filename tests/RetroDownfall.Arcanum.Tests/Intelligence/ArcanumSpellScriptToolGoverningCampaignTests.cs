@@ -8,7 +8,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 /// <summary>
-/// <c>run_spell_script</c> takes its resource limits, child-process boundary and breach record from the Campaign that governs the turn.
+/// <c>run_script</c> takes its resource limits, child-process boundary and breach record from the Campaign that governs the turn.
 /// A Session-bound or explicitly bound turn has no working directory to find that Campaign from, and a working directory can sit in
 /// another Campaign than the one that governs the turn, so the tool is told the governing Campaign's root and looks that up instead.
 /// </summary>

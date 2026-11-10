@@ -64,6 +64,10 @@ public interface IApprenticeRepository
         IReadOnlyCollection<string> expectedStatuses,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Park only the exact observed unfinished plan; never rewrite its bytes, progress or checkpoint.</summary>
+    Task<bool> TryParkLegacyToolPlanAsync(Guid id, string expectedPlan, int expectedCurrentStep,
+        string expectedStatus, string reason, CancellationToken cancellationToken = default) => Task.FromResult(false);
+
     Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default);

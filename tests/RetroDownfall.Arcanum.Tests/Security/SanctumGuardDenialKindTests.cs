@@ -28,7 +28,7 @@ public sealed class SanctumGuardDenialKindTests : IDisposable
     {
         SanctumGuard guard = CreateGuard(CreateCampaign(SanctumMode.AuditOnly), new ThrowingBreachRepository());
 
-        SanctumResult path = await guard.ValidatePathAsync(campaignId, Path.Combine(_root, "x.txt"), "read", "read_file_chunk");
+        SanctumResult path = await guard.ValidatePathAsync(campaignId, Path.Combine(_root, "x.txt"), "read", "read_file");
 
         SanctumResult network = await guard.ValidateNetworkAsync(campaignId, OffListUrl, "read_url");
 
@@ -59,7 +59,7 @@ public sealed class SanctumGuardDenialKindTests : IDisposable
 
         SanctumResult network = await guard.ValidateNetworkAsync(campaign.Id.ToString("D"), OffListUrl, "read_url");
 
-        SanctumResult path = await guard.ValidatePathAsync(campaign.Id.ToString("D"), Path.Combine(Path.GetTempPath(), "outside.txt"), "read", "read_file_chunk");
+        SanctumResult path = await guard.ValidatePathAsync(campaign.Id.ToString("D"), Path.Combine(Path.GetTempPath(), "outside.txt"), "read", "read_file");
 
         SanctumResult tool = await guard.ValidateToolAsync(campaign.Id.ToString("D"), "write_file");
 
@@ -86,7 +86,7 @@ public sealed class SanctumGuardDenialKindTests : IDisposable
 
         SanctumResult network = await guard.ValidateNetworkAsync(campaign.Id.ToString("D"), OffListUrl, "read_url");
 
-        SanctumResult path = await guard.ValidatePathAsync(campaign.Id.ToString("D"), Path.Combine(Path.GetTempPath(), "outside.txt"), "read", "read_file_chunk");
+        SanctumResult path = await guard.ValidatePathAsync(campaign.Id.ToString("D"), Path.Combine(Path.GetTempPath(), "outside.txt"), "read", "read_file");
 
         SanctumResult tool = await guard.ValidateToolAsync(campaign.Id.ToString("D"), "write_file");
 

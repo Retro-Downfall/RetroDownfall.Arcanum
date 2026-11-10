@@ -283,9 +283,9 @@ public sealed class CampaignRootCaseSensitiveVolumeTests : IClassFixture<CaseSen
 
         string campaignId = registered.Id.ToString("D");
 
-        Assert.True((await guard.ValidatePathAsync(campaignId, Path.Combine(root, "inside.txt"), "read", "read_file_chunk")).Allowed);
+        Assert.True((await guard.ValidatePathAsync(campaignId, Path.Combine(root, "inside.txt"), "read", "read_file")).Allowed);
 
-        SanctumResult refused = await guard.ValidatePathAsync(campaignId, Path.Combine(sibling, "outside.txt"), "read", "read_file_chunk");
+        SanctumResult refused = await guard.ValidatePathAsync(campaignId, Path.Combine(sibling, "outside.txt"), "read", "read_file");
 
         Assert.False(refused.Allowed);
 

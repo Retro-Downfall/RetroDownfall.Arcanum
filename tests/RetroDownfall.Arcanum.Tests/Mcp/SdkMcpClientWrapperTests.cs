@@ -131,7 +131,7 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
 
             string[] names = tools.Select(static t => t.Name).ToArray();
 
-            Assert.Contains("read_file_chunk", names);
+            Assert.Contains("read_file", names);
 
             Assert.Contains("execute_command", names);
 
@@ -140,12 +140,12 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task CallToolAsync_read_file_chunk_returns_expected_text_via_real_sdk_session()
+    public async Task CallToolAsync_read_file_returns_expected_text_via_real_sdk_session()
     {
         await using (SdkMcpClientWrapper client = await CreateInitializedClientAsync())
         {
             CallToolResult result = await client.CallToolAsync(
-                "read_file_chunk",
+                "read_file",
                 new Dictionary<string, object?>
                 {
                     ["relativePath"] = "notes/alpha.txt",
@@ -197,7 +197,7 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
         await client.DisposeAsync();
 
         await Assert.ThrowsAsync<ObjectDisposedException>(
-            () => client.CallToolAsync("read_file_chunk", new Dictionary<string, object?>()));
+            () => client.CallToolAsync("read_file", new Dictionary<string, object?>()));
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.Guild;
@@ -17,7 +18,7 @@ public sealed record GuildIssueRootRequest(Guid IdempotencyKey, Guid? AgentId, s
 
 public sealed record GuildIssueChildData(Guid? AgentId, string? Name, string Goal, GuildRequestedGrant? RequestedGrant);
 
-public sealed record GuildIssueChildRequest(Guid IdempotencyKey, long ExpectedRevision, Guid? AgentId, string? Name, string Goal, GuildRequestedGrant? RequestedGrant, GuildRemoteInvocationOptions? RemoteOptions = null);
+public sealed record GuildIssueChildRequest(Guid IdempotencyKey, long ExpectedRevision, Guid? AgentId, string? Name, string Goal, GuildRequestedGrant? RequestedGrant, GuildRemoteInvocationOptions? RemoteOptions = null, Guid? CardId = null);
 
 public sealed record GuildSendOperatorMessageRequest(Guid IdempotencyKey, long ExpectedRevision, GuildMessageKind Kind, string MimeType, string Body);
 
@@ -59,7 +60,9 @@ public sealed record GuildQuestDto(
     DateTimeOffset UpdatedAt,
     long EventWatermark,
     GuildMutationReceiptDto? Receipt = null,
-    GuildQuestInputEvidence? AwaitingInput = null);
+    GuildQuestInputEvidence? AwaitingInput = null,
+    string? ReasonCode = null,
+    ToolNameDiagnostic[]? ToolDiagnostics = null);
 
 public sealed record GuildCancellationDto(Guid QuestId, Guid RootQuestId, long Revision, bool CancellationRequested, bool CancellationConverged, long PendingExecutionCount, long UnresolvedExternalEffectCount, GuildAccountingState AccountingState, long EventWatermark, GuildMutationReceiptDto? Receipt = null);
 

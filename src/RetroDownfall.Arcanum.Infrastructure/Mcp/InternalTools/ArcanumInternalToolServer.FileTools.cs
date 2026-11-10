@@ -49,26 +49,26 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            _logger?.LogError(ex, "read_file_chunk argument deserialization failed.");
+            _logger?.LogError(ex, "read_file argument deserialization failed.");
 
-            return ToolError("Invalid arguments for read_file_chunk.");
+            return ToolError("Invalid arguments for read_file.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.RelativePath))
         {
-            return ToolError("read_file_chunk requires 'relativePath', 'startLine', and 'endLine'.");
+            return ToolError("read_file requires 'relativePath', 'startLine', and 'endLine'.");
         }
 
         if (args.StartLine < 1 || args.EndLine < args.StartLine)
         {
             return ToolError(
-                $"read_file_chunk requires 1 <= startLine <= endLine; got startLine={args.StartLine}, endLine={args.EndLine}.");
+                $"read_file requires 1 <= startLine <= endLine; got startLine={args.StartLine}, endLine={args.EndLine}.");
         }
 
         if (args.StartLine > McpSecurityLimits.ReadFileChunkMaxStartLine)
         {
             return ToolError(
-                $"read_file_chunk: startLine exceeds the maximum ({McpSecurityLimits.ReadFileChunkMaxStartLine}).");
+                $"read_file: startLine exceeds the maximum ({McpSecurityLimits.ReadFileChunkMaxStartLine}).");
         }
 
         int requestedLines = args.EndLine - args.StartLine + 1;
@@ -76,7 +76,7 @@ internal sealed partial class ArcanumInternalToolServer
         if (requestedLines > McpSecurityLimits.ReadFileChunkMaxLinesPerRequest)
         {
             return ToolError(
-                $"read_file_chunk: requested range ({requestedLines} lines) exceeds the maximum ({McpSecurityLimits.ReadFileChunkMaxLinesPerRequest} lines per request).");
+                $"read_file: requested range ({requestedLines} lines) exceeds the maximum ({McpSecurityLimits.ReadFileChunkMaxLinesPerRequest} lines per request).");
         }
 
         if (!TryResolveSandboxedPath(args.RelativePath, out string? absolutePath, out McpToolsCallResultWire? resolveErr))
@@ -104,10 +104,10 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (slice is null)
         {
-            return PrefixToolError("read_file_chunk", readError!);
+            return PrefixToolError("read_file", readError!);
         }
 
-        return CapToolTextResult(slice, "read_file_chunk");
+        return CapToolTextResult(slice, "read_file");
     }
 
     private static readonly UTF8Encoding StrictUtf8NoBom = new(
@@ -268,7 +268,7 @@ internal sealed partial class ArcanumInternalToolServer
     /// this tool returns is a literal substring of the file's decoded bytes. <c>StringReader.ReadLine</c>
     /// consumes <c>"\r\n"</c>, <c>"\n"</c> and a lone <c>"\r"</c> and hands back none of them, so
     /// rejoining with <c>"\n"</c> rewrote every CRLF (and classic-Mac) file and made the chunk
-    /// impossible to use as <c>replace_text_block</c>'s verbatim <c>exactSearchText</c>, whose schema
+    /// impossible to use as <c>edit_file</c>'s verbatim <c>exactSearchText</c>, whose schema
     /// promises the block is matched "including whitespace and newlines". The terminator model matches
     /// <c>WorkspaceTextFile.ParseLines</c>, which is what already makes <c>apply_patch</c> line-ending
     /// faithful. The final selected line's terminator is excluded, so a pure-LF file's chunk is
@@ -372,19 +372,19 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (JsonException ex)
         {
-            _logger?.LogError(ex, "replace_text_block argument deserialization failed.");
+            _logger?.LogError(ex, "edit_file argument deserialization failed.");
 
-            return ToolError("Invalid arguments for replace_text_block.");
+            return ToolError("Invalid arguments for edit_file.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.RelativePath))
         {
-            return ToolError("replace_text_block requires 'relativePath', 'exactSearchText', and 'replacementText'.");
+            return ToolError("edit_file requires 'relativePath', 'exactSearchText', and 'replacementText'.");
         }
 
         if (args.ExactSearchText.Length == 0)
         {
-            return ToolError("replace_text_block: 'exactSearchText' must be non-empty.");
+            return ToolError("edit_file: 'exactSearchText' must be non-empty.");
         }
 
         // An explicit JSON null deserializes to null here despite the non-nullable declaration, and
@@ -392,7 +392,7 @@ internal sealed partial class ArcanumInternalToolServer
         // empty string, not arrive by accident.
         if (args.ReplacementText is null)
         {
-            return ToolError("replace_text_block: 'replacementText' must be a string; use an empty string to delete the block.");
+            return ToolError("edit_file: 'replacementText' must be a string; use an empty string to delete the block.");
         }
 
         if (!TryResolveSandboxedPath(args.RelativePath, out string? absolutePath, out McpToolsCallResultWire? resolveErr))
@@ -420,13 +420,13 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (content is null)
         {
-            return PrefixToolError("replace_text_block", readError!);
+            return PrefixToolError("edit_file", readError!);
         }
 
         if (!content.Contains(args.ExactSearchText, StringComparison.Ordinal))
         {
             return ToolError(
-                $"Exact search text not found in '{absolutePath}'. Re-read the file with read_file_chunk and use a verbatim block (including whitespace and newlines) before retrying.");
+                $"Exact search text not found in '{absolutePath}'. Re-read the file with read_file and use a verbatim block (including whitespace and newlines) before retrying.");
         }
 
         int occurrences = CountOccurrences(content, args.ExactSearchText);
@@ -434,7 +434,7 @@ internal sealed partial class ArcanumInternalToolServer
         if (occurrences > 1 && args.ReplaceAll != true)
         {
             return ToolError(
-                $"replace_text_block: the exact search text matches {occurrences} occurrences in '{args.RelativePath}', and nothing was changed. Include enough surrounding text to match exactly one block, or set replaceAll to true to replace every occurrence.");
+                $"edit_file: the exact search text matches {occurrences} occurrences in '{args.RelativePath}', and nothing was changed. Include enough surrounding text to match exactly one block, or set replaceAll to true to replace every occurrence.");
         }
 
         // replaceAll multiplies the replacement by the occurrence count, so the result can be far past the
@@ -446,7 +446,7 @@ internal sealed partial class ArcanumInternalToolServer
         McpToolsCallResultWire? writeLimitError = TryRejectIfWriteExceedsLimit(
             projectedBytes,
             resourceLimits.MaxFileWriteMb,
-            "replace_text_block");
+            "edit_file");
 
         if (writeLimitError is not null)
         {
@@ -458,7 +458,7 @@ internal sealed partial class ArcanumInternalToolServer
         writeLimitError = TryRejectIfWriteExceedsLimit(
             updated,
             resourceLimits.MaxFileWriteMb,
-            "replace_text_block");
+            "edit_file");
 
         if (writeLimitError is not null)
         {
@@ -477,7 +477,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (!writeSuccess)
         {
-            return PrefixToolError("replace_text_block", writeError!);
+            return PrefixToolError("edit_file", writeError!);
         }
 
         string text = occurrences == 1

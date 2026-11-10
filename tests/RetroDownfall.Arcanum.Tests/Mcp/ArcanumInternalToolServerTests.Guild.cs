@@ -10,9 +10,9 @@ public sealed partial class ArcanumInternalToolServerTests
 {
     [Theory]
     [InlineData("write_file", "{\"relativePath\":\"guild-denied.txt\",\"content\":\"must not be written\"}")]
-    [InlineData("read_file_chunk", "{\"relativePath\":\"notes/alpha.txt\",\"startLine\":1,\"endLine\":2}")]
+    [InlineData("read_file", "{\"relativePath\":\"notes/alpha.txt\",\"startLine\":1,\"endLine\":2}")]
     [InlineData("execute_command", "{\"command\":\"touch guild-denied.txt\"}")]
-    [InlineData("read_saga", "{}")]
+    [InlineData("search_memory", "{}")]
     public async Task Guild_private_context_crosses_server_task_and_refuses_before_effect(string name, string json)
     {
         await using TestMcpSession session = await CreateSessionAsync();
@@ -27,7 +27,7 @@ public sealed partial class ArcanumInternalToolServerTests
 
         Assert.True(result.IsError);
 
-        Assert.Contains(name == "read_saga" ? ErrorCodes.Guild.ToolNotGranted : ErrorCodes.Guild.ToolBoundaryUnavailable,
+        Assert.Contains(name == "search_memory" ? ErrorCodes.Guild.ToolNotGranted : ErrorCodes.Guild.ToolBoundaryUnavailable,
             result.Content![0].Text);
 
         Assert.DoesNotContain("line one", result.Content[0].Text);
@@ -58,7 +58,7 @@ public sealed partial class ArcanumInternalToolServerTests
 
         using IDisposable scope = GuildToolInvocationAmbient.Begin(GuildToolBoundaryTests.CreateContext(_ => Volatile.Read(ref eligible)));
 
-        Task<McpToolsCallResultWire> pending = session.CallToolAsync("read_file_chunk", arguments.RootElement);
+        Task<McpToolsCallResultWire> pending = session.CallToolAsync("read_file", arguments.RootElement);
 
         try
         {

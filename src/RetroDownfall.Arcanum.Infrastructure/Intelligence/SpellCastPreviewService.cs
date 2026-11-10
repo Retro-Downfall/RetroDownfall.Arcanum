@@ -145,7 +145,8 @@ internal sealed class SpellCastPreviewService(
         availableTools.AddRange(
             attunement.Allowed
                 .OfType<AIFunction>()
-                .Select(static function => function.Name));
+                .Select(static function => function.Name)
+                .Where(static name => !ArcanumToolNameCatalog.TryGetReplacement(name, out _)));
 
         string[] resonantNames = resolved.Resonants.Select(static r => r.Name).ToArray();
 
@@ -157,7 +158,8 @@ internal sealed class SpellCastPreviewService(
             availableTools.ToArray(),
             scripts.ToArray(),
             codexContent,
-            HasDeclaredToolsFilter: primary.SkillMetadata?.DeclaredTools is { Count: > 0 });
+            HasDeclaredToolsFilter: primary.SkillMetadata?.DeclaredTools is { Count: > 0 },
+            ToolDiagnostics: ToolNameDiagnostics.Diagnose(declaredTools, availableTools));
 
         return Result<SpellCastResult>.Success(result);
     }

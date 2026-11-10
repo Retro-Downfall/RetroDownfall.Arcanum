@@ -1,7 +1,7 @@
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Weave;
 
-namespace RetroDownfall.Arcanum.Api.Tower;
+namespace RetroDownfall.Arcanum.Core.Memory;
 
 /// <summary>
 /// Turns a resolved <see cref="MemoryScope"/> into the block <c>memory status</c>,
@@ -12,10 +12,10 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 /// sentences say what an operator needs in order to act: whether recall is narrowed, what narrowed it,
 /// and that widening it again is a configuration change rather than a data change.
 /// </remarks>
-internal static class MemoryCampaignScopeReport
+public static class MemoryCampaignScopeReport
 {
 
-    internal static MemoryCampaignScopeDto Describe(MemoryScope scope) =>
+    public static MemoryCampaignScopeDto Describe(MemoryScope scope) =>
         new(
             scope.Kind.ToString(),
             scope.CampaignId,

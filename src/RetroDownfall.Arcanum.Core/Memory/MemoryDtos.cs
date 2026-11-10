@@ -177,7 +177,9 @@ public sealed record MemorySearchResultDto(
 public sealed record MemorySearchScopeStatusDto(
     MemorySearchScope Scope,
     int Count,
-    bool HasMore);
+    bool HasMore,
+    bool Available = true,
+    string? ErrorCode = null);
 
 /// <param name="Scopes">One status per requested scope in phase order, including exhausted earlier and unvisited later phases.</param>
 /// <param name="HasMore">True when work or matches remain; use the continuation with the same query/selectors. Limit may change.</param>
@@ -212,7 +214,9 @@ public sealed record SagaRankingExplanationDto(
     float MinModifier,
     float MaxModifier,
     SagaRankingExplanationMemoryDto[] Memories,
-    bool HasMore);
+    bool HasMore,
+    bool Available = true,
+    string? ErrorCode = null);
 
 public sealed record SagaRankingExplanationMemoryDto(
     string MemoryId,

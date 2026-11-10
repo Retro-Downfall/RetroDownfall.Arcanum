@@ -560,9 +560,9 @@ public sealed class ArcanumJsonContextCompletenessTests
 
         IntelligenceEvent streamFrame = new(
             IntelligenceEventType.WardResolved,
-            "read_file_chunk",
+            "read_file",
             WardId: "ward-ungated",
-            ToolName: "read_file_chunk",
+            ToolName: "read_file",
             Allowed: true,
             Origin: origin);
 

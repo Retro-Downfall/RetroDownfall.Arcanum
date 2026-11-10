@@ -35,6 +35,7 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Guild.SourceConflict
                 or ErrorCodes.Guild.ReconciliationRequired
                 or ErrorCodes.Guild.LocalExecutionInterrupted
+                or ErrorCodes.Guild.LegacyToolName
                 or ErrorCodes.Guild.LeaseConflict
                 or ErrorCodes.Guild.LeaseLapsed
                 or ErrorCodes.Guild.WorkspaceIdentityUnavailable => StatusCodes.Status409Conflict,
@@ -51,7 +52,7 @@ internal static class ArcanumErrorMapper
 
             ErrorCodes.Grimoire.OpeningTimeout or ErrorCodes.Grimoire.StaleOpenGeneration => StatusCodes.Status503ServiceUnavailable,
 
-            ErrorCodes.Session.PinUnavailable => StatusCodes.Status503ServiceUnavailable,
+            ErrorCodes.Session.PinUnavailable or ErrorCodes.MemorySearch.IndexUnavailable => StatusCodes.Status503ServiceUnavailable,
 
             ErrorCodes.Session.CompactionUnavailable => StatusCodes.Status409Conflict,
 

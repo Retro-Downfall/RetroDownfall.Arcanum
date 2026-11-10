@@ -74,6 +74,9 @@ internal sealed class GuildQuestRecoveryHandler(IGrimoireOrdinaryConnectionFacto
                 if (Terminal(snapshot) is { } terminal)
                     return terminal;
 
+                if (!snapshot.Evidence.CancellationRequested && snapshot.Evidence.ResultReceipt is null && snapshot.HasLegacyTool)
+                    return LongRunningOperationRecoveryResult.RequiresAttention(ErrorCodes.Guild.LegacyToolName);
+
                 if (snapshot.Evidence.ResultReceipt is null
                     && operation.State is LongRunningOperationState.Running or LongRunningOperationState.Waiting or LongRunningOperationState.ReconciliationRequired
                     && !snapshot.Evidence.CancellationRequested && !snapshot.HasPossiblyDispatched
@@ -216,8 +219,20 @@ internal sealed class GuildQuestRecoveryHandler(IGrimoireOrdinaryConnectionFacto
             };
         }
 
+        bool hasLegacyTool = false;
+
+        if (!evidence.CancellationRequested && evidence.ResultReceipt is null)
+        {
+            var diagnosed = await GuildQuestStore.ReadWaitToolDiagnosticsWithinAsync(lease.Connection, transaction,
+                questId, input?.ContinuationId, ct).ConfigureAwait(false);
+
+            if (diagnosed.IsFailure) return diagnosed.Error;
+
+            hasLegacyTool = diagnosed.Value.Length > 0;
+        }
+
         RecoverySnapshot snapshot = new(current, evidence, root, installationGeneration,
-            epoch, questRevision, outboxMatches, null, possiblyDispatched);
+            epoch, questRevision, outboxMatches, null, possiblyDispatched, hasLegacyTool);
 
         await using SqliteCommand dispatch = lease.Connection.CreateCommand();
 
@@ -324,7 +339,7 @@ internal sealed class GuildQuestRecoveryHandler(IGrimoireOrdinaryConnectionFacto
         && before.AuthorityEpoch == after.AuthorityEpoch && before.AuthorityEpoch != Guid.Empty
         && before.QuestRevision == after.QuestRevision && before.Evidence == after.Evidence
         && before.Target == after.Target && before.OutboxMatches == after.OutboxMatches
-        && before.HasPossiblyDispatched == after.HasPossiblyDispatched;
+        && before.HasPossiblyDispatched == after.HasPossiblyDispatched && before.HasLegacyTool == after.HasLegacyTool;
 
     private static LongRunningOperationRecoveryResult? Terminal(RecoverySnapshot snapshot)
     {
@@ -356,5 +371,5 @@ internal sealed class GuildQuestRecoveryHandler(IGrimoireOrdinaryConnectionFacto
     private static LongRunningOperationRecoveryResult Uncertain() => LongRunningOperationRecoveryResult.RequiresAttention(ErrorCodes.Guild.ReconciliationRequired);
 
     private sealed record RecoverySnapshot(LongRunningOperation Operation, GuildQuestProjectionEvidence Evidence,
-        Guid RootId, Guid InstallationGeneration, Guid AuthorityEpoch, long QuestRevision, bool OutboxMatches, GuildQuestRecoveryTarget? Target, bool HasPossiblyDispatched);
+        Guid RootId, Guid InstallationGeneration, Guid AuthorityEpoch, long QuestRevision, bool OutboxMatches, GuildQuestRecoveryTarget? Target, bool HasPossiblyDispatched, bool HasLegacyTool);
 }

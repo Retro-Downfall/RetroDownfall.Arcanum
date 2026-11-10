@@ -10,7 +10,7 @@ namespace RetroDownfall.Arcanum.Tests.Workspaces;
 /// <c>workspace_check</c> sums a whole <c>dotnet build</c>/<c>dotnet test</c> tree against one memory
 /// ceiling, so it gets a code-owned ceiling of <c>max(effective campaign ceiling, 4096 MB)</c> capped at
 /// 8192 MB rather than the 512 MB Sanctum default that suits <c>execute_command</c> and
-/// <c>run_spell_script</c>. These pin the limits <see cref="WorkspaceCheckRuntime"/> hands the runner.
+/// <c>run_script</c>. These pin the limits <see cref="WorkspaceCheckRuntime"/> hands the runner.
 /// </summary>
 public sealed class WorkspaceCheckRuntimeTests
 {

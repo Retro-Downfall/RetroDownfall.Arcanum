@@ -20,7 +20,7 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// <c>arcanum_tool_invocations_total</c> lives on the process-wide <c>"Arcanum"</c> meter, and a
 /// <see cref="MeterListener"/> observes every measurement recorded anywhere in the process. The
 /// canonical-tool-name test below cannot tag its measurement with a unique marker — the whole point
-/// is that the pipeline records the literal <c>send_commlink_alert</c> — so its
+/// is that the pipeline records the literal <c>send_notification</c> — so its
 /// <c>Assert.Single</c> is only correct while no other class is driving
 /// <c>ToolExecutionPipeline</c> concurrently. The <c>Telemetry</c> collection is the
 /// <c>DisableParallelization</c> guarantee that makes that true.
@@ -152,13 +152,13 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
             new NoOpSessionAttachmentStore(),
             NullLogger<ToolExecutionPipeline>.Instance);
 
-        FunctionCallContent fcc = new("call_1", "send_commlink_alert", new Dictionary<string, object?>());
+        FunctionCallContent fcc = new("call_1", "send_notification", new Dictionary<string, object?>());
 
         ChatOptions chatOptions = new()
         {
             Tools =
             [
-                AIFunctionFactory.Create(() => "sent", "send_commlink_alert"),
+                AIFunctionFactory.Create(() => "sent", "send_notification"),
             ],
         };
 
@@ -175,11 +175,11 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
 
         Assert.False(processed.Failed);
 
-        Assert.Equal("send_commlink_alert", processed.ToolName);
+        Assert.Equal("send_notification", processed.ToolName);
 
         string recorded = Assert.Single(toolNames);
 
-        Assert.Equal("send_commlink_alert", recorded);
+        Assert.Equal("send_notification", recorded);
     }
 
     /// <summary>
@@ -245,7 +245,7 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
         {
             Tools =
             [
-                AIFunctionFactory.Create(() => "sent", "send_commlink_alert"),
+                AIFunctionFactory.Create(() => "sent", "send_notification"),
             ],
         };
 
@@ -260,7 +260,7 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
                 suppressInvocationFailures: true,
                 cancellationToken: CancellationToken.None);
 
-        Assert.Contains("Choose an advertised tool: send_commlink_alert", processed.ResultText, StringComparison.Ordinal);
+        Assert.Contains("Choose an advertised tool: send_notification", processed.ResultText, StringComparison.Ordinal);
 
         (string ToolName, string Outcome) recorded = Assert.Single(measurements);
 

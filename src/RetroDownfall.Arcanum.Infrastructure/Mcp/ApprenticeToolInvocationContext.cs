@@ -7,7 +7,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// <remarks>
 /// The in-process MCP server is <em>workspace</em>-scoped, not Apprentice-scoped: one server instance
 /// serves every Apprentice sharing a workspace, so a tool handler cannot tell which Apprentice is
-/// calling. Without that, <c>dispatch_sending</c> restarts the delegation chain from empty and a
+/// calling. Without that, <c>create_agent_task</c> restarts the delegation chain from empty and a
 /// multi-hop cycle (A &#8594; B &#8594; C &#8594; A) is invisible — only the direct A &#8594; B &#8594; A case is caught
 /// (issue #59, docs/Arcanum.DESIGN.md &#167;5.7.1).
 /// </remarks>

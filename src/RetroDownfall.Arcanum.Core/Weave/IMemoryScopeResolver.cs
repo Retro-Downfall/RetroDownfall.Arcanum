@@ -5,7 +5,7 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 /// writes durable memory.
 /// </summary>
 /// <remarks>
-/// Retrieval, <c>read_saga</c>, <c>scribe_lexicon</c>, the <c>/api/saga</c> and <c>/api/memory</c>
+/// Retrieval, <c>search_memory</c>, <c>save_memory</c>, the <c>/api/saga</c> and <c>/api/memory</c>
 /// routes, and <c>arcanum memory explain</c> all resolve through here. A surface that read the gate
 /// itself could report a scope the turn would not use, and an operator inspecting memory would be shown
 /// a set no turn ever sees.

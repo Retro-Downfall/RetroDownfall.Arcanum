@@ -122,7 +122,7 @@ public sealed class ToolExecutionPipelineSanctumAuditOnlyTests : IDisposable
         Assert.Empty(harness.Breaches.Records);
     }
 
-    // run_spell_script resolves its script under every candidate root, and every one of them is a place the script may run from. Each root
+    // run_script resolves its script under every candidate root, and every one of them is a place the script may run from. Each root
     // outside the boundary is its own breach, and the audit row of the first must not stand for all of them.
     [Fact]
     public async Task AuditOnly_records_every_script_root_outside_the_boundary_and_lets_the_call_run()
@@ -136,7 +136,7 @@ public sealed class ToolExecutionPipelineSanctumAuditOnlyTests : IDisposable
         ToolExecutionPipeline.TurnContext turn = TurnFor(harness, SanctumMode.AuditOnly, [outsideOne, outsideTwo]);
 
         (ToolExecutionPipeline.ProcessedToolCall processed, bool invoked) = await harness.ProcessStandInAsync(
-            "run_spell_script",
+            "run_script",
             new Dictionary<string, object?> { ["script_name"] = "build.sh" },
             turn);
 
@@ -168,7 +168,7 @@ public sealed class ToolExecutionPipelineSanctumAuditOnlyTests : IDisposable
         ToolExecutionPipeline.TurnContext turn = TurnFor(harness, SanctumMode.Strict, [outsideOne, outsideTwo]);
 
         (ToolExecutionPipeline.ProcessedToolCall processed, bool invoked) = await harness.ProcessStandInAsync(
-            "run_spell_script",
+            "run_script",
             new Dictionary<string, object?> { ["script_name"] = "build.sh" },
             turn);
 

@@ -65,7 +65,7 @@ internal static class ApprenticePromptBuilder
 
         sb.AppendLine("When the step is complete, summarize what you accomplished as an explicit result.");
 
-        sb.AppendLine("If you encounter an unresolvable obstacle, call the petition_dungeon_master tool with a clear reason instead of guessing.");
+        sb.AppendLine("If you encounter an unresolvable obstacle, call the request_intervention tool with a clear reason instead of guessing.");
 
         sb.AppendLine("If you encounter a transient error you cannot resolve, explain why the step failed.");
 

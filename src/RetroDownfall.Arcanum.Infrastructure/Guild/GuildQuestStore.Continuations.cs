@@ -285,6 +285,13 @@ internal sealed partial class GuildQuestStore
 
                 if (currentGrant.IsFailure) return currentGrant.Error;
 
+                var planDiagnosis = await DiagnoseWaitPlanWithinAsync(connection, transaction, questId,
+                    request.ContinuationId, token).ConfigureAwait(false);
+
+                if (planDiagnosis.IsFailure) return planDiagnosis.Error;
+
+                if (planDiagnosis.Value is { } legacyTool) return legacyTool;
+
                 LongRunningOperation? operation = await LongRunningOperationStore.ReadWithinAsync(connection, transaction,
                     row.Quest.OperationId, token).ConfigureAwait(false);
 

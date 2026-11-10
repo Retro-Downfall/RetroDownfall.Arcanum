@@ -4,6 +4,8 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -81,7 +83,9 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly JsonElement _covenantMutationOutputSchema;
 
-    private readonly JsonElement _readSagaSchema;
+    private readonly JsonElement _searchMemorySchema;
+
+    private readonly bool _memorySearchAvailable;
 
     private readonly JsonElement _attachSessionFileSchema;
 
@@ -93,11 +97,7 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly JsonElement _petitionDungeonMasterSchema;
 
-    private readonly JsonElement _castSendingSchema;
-
-    private readonly JsonElement _dispatchSendingSchema;
-
-    private readonly JsonElement _continueSendingSchema;
+    private readonly bool _guildTaskToolsEnabled;
 
     private readonly IntelligenceSettings _settings;
 
@@ -329,6 +329,10 @@ internal sealed partial class ArcanumInternalToolServer
         // no Covenant tier resolves nothing and the two handlers stay inert.
         using (IServiceScope composition = scopeFactory.CreateScope())
         {
+            _guildTaskToolsEnabled = composition.ServiceProvider.GetService<IOptionsMonitor<ArcanumSettings>>()?.CurrentValue.Features.Guild == true;
+
+            _memorySearchAvailable = composition.ServiceProvider.GetService<IMemorySearchService>() is not null;
+
             _covenantAvailability = composition.ServiceProvider.GetService<ICovenantAvailability>();
 
             _covenantCapabilities = composition.ServiceProvider.GetService<CovenantToolCapabilityRegistry>();
@@ -375,7 +379,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         _covenantMutationOutputSchema = BuildCovenantMutationOutputSchema();
 
-        _readSagaSchema = BuildReadSagaSchema();
+        _searchMemorySchema = BuildSearchMemorySchema();
 
         _attachSessionFileSchema = BuildAttachSessionFileSchema();
 
@@ -386,12 +390,6 @@ internal sealed partial class ArcanumInternalToolServer
         _sendCommLinkAlertSchema = BuildSendCommLinkAlertSchema();
 
         _petitionDungeonMasterSchema = BuildPetitionDungeonMasterSchema();
-
-        _castSendingSchema = BuildCastSendingSchema();
-
-        _dispatchSendingSchema = BuildDispatchSendingSchema();
-
-        _continueSendingSchema = BuildContinueSendingSchema();
 
         _executeCommandToolDescription =
             "Runs a command without a shell (stdout/stderr previewed in memory; complete larger streams remain retrievable through read_command_output until this connection closes). Runs until completion or cooperative caller cancellation, which kills the process tree. Optional workingDirectory is relative to the workspace root.";
@@ -846,10 +844,10 @@ internal sealed partial class ArcanumInternalToolServer
     }
 
     private static bool HasConstantCacheDefinition(string name) => name is
-        "read_file_chunk" or "replace_text_block" or "write_file" or "list_directory" or "execute_command"
-        or "adjust_initiative" or "send_commlink_alert" or "petition_dungeon_master" or "ask_human"
-        or "cast_sending" or "dispatch_sending" or "continue_sending" or "scribe_lexicon" or "delete_lexicon"
-        or "propose_covenant" or "retire_covenant" or "search_archives" or "read_saga"
+        "read_file" or "edit_file" or "write_file" or "list_directory" or "execute_command"
+        or "set_task_priority" or "send_notification" or "request_intervention" or "ask_human"
+        or "create_agent_task" or "send_agent_message" or "get_agent_task" or "cancel_agent_task" or "list_agents" or "save_memory" or "delete_memory"
+        or "propose_covenant" or "retire_covenant" or "search_history" or "search_memory"
         or "attach_session_file" or "refresh_session_file";
 
     private JsonRpcResponse BuildToolsListResponse(JsonElement rpcId)
@@ -862,13 +860,13 @@ internal sealed partial class ArcanumInternalToolServer
             [
                 new McpToolDefinitionWire
                 {
-                    Name = "read_file_chunk",
+                    Name = "read_file",
                     Description = "Reads a specific range of lines from a file to avoid token exhaustion.",
                     InputSchema = _readFileChunkSchema,
                 },
                 new McpToolDefinitionWire
                 {
-                    Name = "replace_text_block",
+                    Name = "edit_file",
                     Description = "Replaces an exact block of text in a file with new text. Use this to patch files safely. If the block occurs more than once the call fails without changing the file, unless replaceAll is true, which replaces every occurrence. replacementText must be a string; an empty string deletes the block.",
                     InputSchema = _replaceTextBlockSchema,
                 },
@@ -941,7 +939,7 @@ internal sealed partial class ArcanumInternalToolServer
         tools.Add(
             new McpToolDefinitionWire
             {
-                Name = "adjust_initiative",
+                Name = "set_task_priority",
                 Description =
                     "Dynamically adjusts the polling interval (in minutes) for a background Unseen Servant job based on current conditions.",
                 InputSchema = _adjustInitiativeSchema,
@@ -950,7 +948,7 @@ internal sealed partial class ArcanumInternalToolServer
         tools.Add(
             new McpToolDefinitionWire
             {
-                Name = "send_commlink_alert",
+                Name = "send_notification",
                 Description =
                     "Send a one-way external notification through the configured Comm Link. This does not wait for or receive a reply.",
                 InputSchema = _sendCommLinkAlertSchema,
@@ -959,7 +957,7 @@ internal sealed partial class ArcanumInternalToolServer
         tools.Add(
             new McpToolDefinitionWire
             {
-                Name = "petition_dungeon_master",
+                Name = "request_intervention",
                 Description =
                     "Escalate an autonomous task that cannot safely continue. The Apprentice pauses for later Dungeon Master intervention. Do not use for ordinary questions.",
                 InputSchema = _petitionDungeonMasterSchema,
@@ -974,37 +972,19 @@ internal sealed partial class ArcanumInternalToolServer
                 InputSchema = _askHumanSchema,
             });
 
-        if (_conclaveEnabled)
+        if (_guildTaskToolsEnabled)
         {
-            tools.Add(
-                new McpToolDefinitionWire
-                {
-                    Name = "cast_sending",
-                    Description =
-                        "Conclave delegation: cast a Sending to spawn a new child Apprentice that pursues a delegated sub-task outside your immediate spell. Returns the new child Apprentice id.",
-                    InputSchema = _castSendingSchema,
-                });
-        }
+            foreach (string name in new[] { "create_agent_task", "send_agent_message", "get_agent_task", "cancel_agent_task", "list_agents" })
+            {
+                if (name == "create_agent_task" && !_conclaveEnabled && !_a2aClientEnabled) continue;
 
-        if (_a2aClientEnabled)
-        {
-            tools.Add(
-                new McpToolDefinitionWire
+                tools.Add(new McpToolDefinitionWire
                 {
-                    Name = "dispatch_sending",
-                    Description =
-                        "Archmage Client: dispatch a Sending to an external A2A-compatible agent at agent_url and block until it responds. Returns the remote agent's response text.",
-                    InputSchema = _dispatchSendingSchema,
+                    Name = name,
+                    Description = DescribeGuildTool(name),
+                    InputSchema = BuildTaskToolSchema(name),
                 });
-
-            tools.Add(
-                new McpToolDefinitionWire
-                {
-                    Name = "continue_sending",
-                    Description =
-                        "Answer a Sending that a remote agent parked because it needed more input or authentication, resuming the same remote task instead of re-running the goal. Use the task_id a continuable dispatch_sending returned; a qualified Guild Sending uses its Guild Quest id.",
-                    InputSchema = _continueSendingSchema,
-                });
+            }
         }
 
         if (_settings.EnableLexiconSystem)
@@ -1012,7 +992,7 @@ internal sealed partial class ArcanumInternalToolServer
             tools.Add(
                 new McpToolDefinitionWire
                 {
-                    Name = "scribe_lexicon",
+                    Name = "save_memory",
                     Description =
                         "Records structured agent memory only when authorized by the current conversation. Attaching or indexing never promotes automatically. When a fact is attachment-derived, attachment_id is required and must name content materialized in this turn; typed provenance is retained.",
                     InputSchema = _scribeLexiconSchema,
@@ -1021,7 +1001,7 @@ internal sealed partial class ArcanumInternalToolServer
             tools.Add(
                 new McpToolDefinitionWire
                 {
-                    Name = "delete_lexicon",
+                    Name = "delete_memory",
                     Description = "Removes an active, unpinned Lexicon entity by name when a memory is obsolete; retired and pinned entities are managed by the operator.",
                     InputSchema = _deleteLexiconSchema,
                 });
@@ -1059,22 +1039,21 @@ internal sealed partial class ArcanumInternalToolServer
             tools.Add(
                 new McpToolDefinitionWire
                 {
-                    Name = "search_archives",
+                    Name = "search_history",
                     Description =
                         "Search Grimoire conversation content with native FTS5 expressions: words use implicit AND; use OR, NOT, quoted phrases, prefixes, NEAR, anchors and Content column filters. Quote literal punctuation and double embedded quotes. Invalid or overlong expressions are tool errors.",
                     InputSchema = _searchArchivesSchema,
                 });
         }
 
-        if (_sagaEnabled)
+        if (_memorySearchAvailable)
         {
             tools.Add(
                 new McpToolDefinitionWire
                 {
-                    Name = "read_saga",
-                    Description =
-                        "Semantically search Saga (Arcanum's long-term associative memory) for durable facts, decisions, and preferences extracted from past sessions. Read-only — there is no scribe_saga or delete_saga tool; Saga memories are auto-extracted and operator-deletable only.",
-                    InputSchema = _readSagaSchema,
+                    Name = "search_memory",
+                    Description = DescribeGuildTool("search_memory"),
+                    InputSchema = _searchMemorySchema,
                 });
         }
 
@@ -1201,19 +1180,19 @@ internal sealed partial class ArcanumInternalToolServer
                     : GuildToolInvocationContext.Format(new(ErrorCodes.Guild.ToolNotGranted,
                         "The tool is unavailable under the current host policy.")));
 
-            if ((call.Name is "scribe_lexicon" or "delete_lexicon") && !_settings.EnableLexiconSystem)
+            if ((call.Name is "save_memory" or "delete_memory") && !_settings.EnableLexiconSystem)
             {
                 return BuildToolsCallResponse(rpcId, CurrentPolicyError("The Lexicon system is disabled in configuration."));
             }
 
-            if (call.Name == "search_archives" && !_settings.EnableArchiveSearch)
+            if (call.Name == "search_history" && !_settings.EnableArchiveSearch)
             {
                 return BuildToolsCallResponse(rpcId, CurrentPolicyError("Archive search is disabled in configuration."));
             }
 
-            if (call.Name == "read_saga" && !_sagaEnabled)
+            if (call.Name == "search_memory" && !_memorySearchAvailable)
             {
-                return BuildToolsCallResponse(rpcId, CurrentPolicyError("Saga is disabled in configuration."));
+                return BuildToolsCallResponse(rpcId, CurrentPolicyError("Memory search is unavailable on this host."));
             }
 
             if (call.Name is "attach_session_file" or "refresh_session_file" && !_attachmentsToolEnabled)
@@ -1221,25 +1200,17 @@ internal sealed partial class ArcanumInternalToolServer
                 return BuildToolsCallResponse(rpcId, CurrentPolicyError("Session attachment model tool is disabled in configuration."));
             }
 
-            if (call.Name == "cast_sending" && !_conclaveEnabled)
-            {
-                return BuildToolsCallResponse(rpcId, CurrentPolicyError("The Conclave is disabled; cross-Apprentice delegation is not available."));
-            }
-
-            if (call.Name is "dispatch_sending" or "continue_sending" && !_a2aClientEnabled)
-            {
-                return BuildToolsCallResponse(rpcId, CurrentPolicyError($"A2A is disabled; {call.Name} is not available."));
-            }
-
             if (GuildToolInvocationAmbient.Current is { } guildContext)
             {
                 if (boundGuildContext is not null && guildIdentityMatches && requestReservation?.Frame is { } frame)
                 {
                     object? dispatched = await guildContext.DispatchMcpAsync(frame, call.Name, call.Arguments,
-                        toolScope.Token).ConfigureAwait(false);
+                        toolScope.Token, ArcanumSettingClamps.EffectiveInProcessToolOutputCapBytes(_settings.ToolOutputCapBytes, _maxJsonRpcLineBytes)).ConfigureAwait(false);
 
                     McpToolsCallResultWire qualified = dispatched is GuildLocalChildToolResult accepted
-                        ? new() { Content = accepted.Summary is null
+                        ? new() { Content = accepted.Projection is { } projection
+                            ? [new McpToolContentTextWire { Text = projection.GetRawText() }]
+                            : accepted.Summary is null
                             ? [new McpToolContentTextWire { Text = JsonSerializer.Serialize(accepted.Quest, GuildJsonContext.Default.GuildQuestDto) }]
                             : [new McpToolContentTextWire { Text = JsonSerializer.Serialize(accepted.Quest, GuildJsonContext.Default.GuildQuestDto) },
                                 new McpToolContentTextWire { Text = GuildPromptBuilder.Build(GuildAuthorityKind.Child, GuildEnvelopeKind.Result,
@@ -1280,7 +1251,7 @@ internal sealed partial class ArcanumInternalToolServer
                     ? persistedContext
                     : null;
 
-            // Tells Apprentice-scoped tools (dispatch_sending) which Apprentice is calling and which
+            // Tells Apprentice-scoped tools (create_agent_task) which Apprentice is calling and which
             // A2A delegation chain it inherited, so a Sending it makes extends that chain instead of
             // restarting it (issue #59).
             ApprenticeToolInvocationAmbient.Current =

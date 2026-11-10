@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -100,10 +101,24 @@ internal sealed partial class GuildQuestStore
 
         if (live.IsFailure) return live.Error;
 
-        bool remoteTool = tool.Name is "dispatch_sending" or "continue_sending";
+        bool creation = tool.Name is "delegate_task" or "create_agent_task";
 
-        if (!live.Value.Tools.Contains(tool) || !live.Value.Delegation.Contains(remoteTool ? GuildDelegationKind.Remote : GuildDelegationKind.Local))
+        bool remoteTool = tool.Name == "create_agent_task" && GuildTaskArguments.IsRemote(registry.CaptureInvocation(tool)?.Admission?.Arguments);
+
+        JsonElement? arguments = registry.CaptureInvocation(tool)?.Admission?.Arguments;
+
+        bool mayCreate = tool.Name == "delegate_task" ? live.Value.Delegation.Contains(GuildDelegationKind.Local)
+            : !creation || (arguments is not null
+                ? live.Value.Delegation.Contains(remoteTool ? GuildDelegationKind.Remote : GuildDelegationKind.Local)
+                : registry.ChildDispatcher?.SupportsLocal == true && live.Value.Delegation.Contains(GuildDelegationKind.Local)
+                    || registry.ChildDispatcher?.SupportsRemote == true && live.Value.Delegation.Contains(GuildDelegationKind.Remote));
+
+        if (!live.Value.Tools.Contains(tool) || !mayCreate)
             return new Error(ErrorCodes.Guild.ToolNotGranted, "The exact local tool and delegation rights are not granted.");
+
+        if (tool.Name == "create_agent_task" && arguments is not null
+            && (remoteTool ? registry.ChildDispatcher?.SupportsRemote != true : registry.ChildDispatcher?.SupportsLocal != true))
+            return new Error(ErrorCodes.Guild.Unavailable, "The selected task destination capability is unavailable.");
 
         if (remoteTool && (live.Value.Budget.Usd.Mode != GuildBudgetMode.Unlimited
             || live.Value.Budget.Tokens.Mode != GuildBudgetMode.Unlimited
@@ -144,9 +159,9 @@ internal sealed partial class GuildQuestStore
 
         if (authorized.IsFailure) return authorized.Error;
 
-        if (admission.Kind == GuildLocalChildToolKind.DispatchSending
+        if (admission.Kind == GuildLocalChildToolKind.CreateAgentTask && GuildTaskArguments.IsRemote(admission.Arguments)
             && (policy is not GuildLocalHostPolicy host
-                || !host.IsConfiguredRemoteDestination(admission.Arguments.GetProperty("agent_url").GetString()!)))
+                || !host.IsConfiguredRemoteDestination(admission.Arguments.GetProperty("agent").GetString()!)))
             return new Error(ErrorCodes.Guild.DestinationChanged, "The Sending requires its current configured destination.");
 
         return Result.Success();
@@ -159,7 +174,11 @@ internal sealed partial class GuildQuestStore
             || RequireLocalExecutionReady().IsFailure)
             return GuildLocalToolRegistry.Unavailable;
 
-        if (admission.Kind == GuildLocalChildToolKind.DispatchSending)
+        if (admission.Kind == GuildLocalChildToolKind.CreateAgentTask && !GuildTaskArguments.IsRemote(admission.Arguments)
+            && admission.Registry.ChildDispatcher?.SupportsLocal != true)
+            return new Error(ErrorCodes.Guild.Unavailable, "Local task creation is unavailable.");
+
+        if (admission.Kind == GuildLocalChildToolKind.CreateAgentTask && GuildTaskArguments.IsRemote(admission.Arguments))
         {
             var remote = await GuildRemoteExecutionStore.ReadRecoveryWithinAsync(connection, transaction, child.Quest.Id, ct).ConfigureAwait(false);
 

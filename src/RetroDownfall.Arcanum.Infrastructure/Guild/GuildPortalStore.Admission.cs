@@ -15,7 +15,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 internal sealed partial class GuildPortalStore
 {
     internal async Task<Result<GuildMessageReceipt>> PublishWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
-        SignetAuthority.QuestTransaction signets, GuildCallerContext caller, Guid questId, GuildPublishRequest request, CancellationToken ct)
+        SignetAuthority.QuestTransaction signets, GuildCallerContext caller, Guid questId, GuildPublishRequest request, CancellationToken ct, GuildChildToolAdmission? toolAdmission = null)
     {
         Result<GuildPublishRequest> normalized = Normalize(request, caller.Kind == GuildCallerKind.HostReceipt);
 
@@ -28,6 +28,17 @@ internal sealed partial class GuildPortalStore
         if (found.IsFailure) return found.Error;
 
         GuildQuestStored source = found.Value;
+
+        if (toolAdmission is not null)
+        {
+            if (toolAdmission.Kind != GuildLocalChildToolKind.SendAgentMessage || !ReferenceEquals(toolAdmission.Registry.Parent.Driver.Caller, caller)
+                || questId != caller.Execution?.QuestId || request.Address.QuestId is not { } taskRecipientId) return Forbidden;
+
+            Result admitted = await quests.AuthorizeTaskToolWithinAsync(connection, transaction, signets, toolAdmission,
+                taskRecipientId, true, ct).ConfigureAwait(false);
+
+            if (admitted.IsFailure) return admitted.Error;
+        }
 
         Result<GuildProducerIdentity> stamped = await AuthorizeProducerWithinAsync(connection, transaction, signets, caller, source, request, ct).ConfigureAwait(false);
 
@@ -158,13 +169,13 @@ internal sealed partial class GuildPortalStore
 
             if (notice.Value.MimeType != request.MimeType || notice.Value.Body != request.Body) return Conflict;
 
-            content = await WriteBodyWithinAsync(connection, transaction, caller, source, id, request.MimeType, body, now, ct).ConfigureAwait(false);
+            content = await WriteBodyWithinAsync(connection, transaction, caller, source, id, request.MimeType, body, now, ct, toolAdmission).ConfigureAwait(false);
         }
         else
         {
             content = caller.Kind == GuildCallerKind.HostReceipt
                 ? HostContent(source, request, body)
-                : await WriteBodyWithinAsync(connection, transaction, caller, source, id, request.MimeType, body, now, ct).ConfigureAwait(false);
+                : await WriteBodyWithinAsync(connection, transaction, caller, source, id, request.MimeType, body, now, ct, toolAdmission).ConfigureAwait(false);
         }
 
         if (content.IsFailure) return content.Error;
@@ -307,7 +318,8 @@ internal sealed partial class GuildPortalStore
     }
 
     private async Task<Result<GuildDataRef>> WriteBodyWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
-        GuildCallerContext caller, GuildQuestStored source, Guid envelopeId, string mimeType, byte[] body, DateTimeOffset now, CancellationToken ct)
+        GuildCallerContext caller, GuildQuestStored source, Guid envelopeId, string mimeType, byte[] body, DateTimeOffset now, CancellationToken ct,
+        GuildChildToolAdmission? toolAdmission = null)
     {
         Guid contentId = Guid.NewGuid();
 
@@ -345,11 +357,19 @@ internal sealed partial class GuildPortalStore
 
         if (caller.Kind != GuildCallerKind.HostReceipt)
         {
-            if (policy is not IGuildPortalDisclosurePolicy disclosure) return Unavailable;
+            if (policy is IGuildPortalDisclosurePolicy disclosure)
+            {
+                resolved = await disclosure.ResolvePublicationSensitivityAsync(caller, source, connection, transaction, ct).ConfigureAwait(false);
 
-            resolved = await disclosure.ResolvePublicationSensitivityAsync(caller, source, connection, transaction, ct).ConfigureAwait(false);
-
-            if (resolved.IsFailure) return resolved.Error;
+                if (resolved.IsFailure) return resolved.Error;
+            }
+            else
+            {
+                // The exact live task admission above materialized every accepted provider source.
+                // That boundary refuses protected content; it is not an operator publication bypass.
+                if (toolAdmission is null || !toolAdmission.Registry.Owns(toolAdmission)
+                    || toolAdmission.Kind != GuildLocalChildToolKind.SendAgentMessage || labelled.Value is not null) return Unavailable;
+            }
         }
 
         ArtifactSensitivityLabel? label = resolved.Value ?? labelled.Value;

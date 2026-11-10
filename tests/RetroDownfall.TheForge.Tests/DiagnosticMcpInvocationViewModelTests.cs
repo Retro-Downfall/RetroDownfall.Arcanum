@@ -27,7 +27,7 @@ public sealed class DiagnosticMcpInvocationViewModelTests
             NativeTools: [],
             McpServers:
             [
-                new(DiagnosticMcpInvocationViewModel.InternalServerName, "running", 3, ["execute_command", "write_file", "read_file_chunk"], null),
+                new(DiagnosticMcpInvocationViewModel.InternalServerName, "running", 3, ["execute_command", "write_file", "read_file"], null),
                 new("external-a", "running", 1, ["echo"], null),
                 new("external-b", "stopped", 0, [], "not started"),
             ],

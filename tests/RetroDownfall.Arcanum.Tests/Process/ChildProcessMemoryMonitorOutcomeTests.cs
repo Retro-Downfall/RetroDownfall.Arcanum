@@ -15,7 +15,7 @@ public sealed class ChildProcessMemoryMonitorOutcomeTests
 {
     [Theory]
     [InlineData("execute_command")]
-    [InlineData("run_spell_script")]
+    [InlineData("run_script")]
     [InlineData("workspace_check")]
     public void Description_names_the_tool_and_says_the_process_ran(string toolName)
     {
@@ -94,7 +94,7 @@ public sealed class ChildProcessMemoryMonitorOutcomeTests
                     && !source.Is("CappedChildProcessRunner.cs")),
         ];
 
-        // execute_command, run_spell_script and workspace_check: fewer means the scan stopped seeing them.
+        // execute_command, run_script and workspace_check: fewer means the scan stopped seeing them.
         Assert.True(
             consumers.Length >= 3,
             "Expected at least the three tools that map the runner's outcome, found "

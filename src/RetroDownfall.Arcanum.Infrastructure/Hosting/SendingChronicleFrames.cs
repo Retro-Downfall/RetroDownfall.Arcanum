@@ -7,7 +7,8 @@ using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 /// <summary>
-/// Turns a settled <c>dispatch_sending</c> tool result into the Chronicle frames an operator sees.
+/// Turns a historical settled Sending tool result into the Chronicle frames an operator sees.
+/// Guild task acceptance and lifecycle use Quest projections instead.
 /// </summary>
 /// <remarks>
 /// Separate from <c>ApprenticeService</c> because the mapping carries real decisions — which instants the

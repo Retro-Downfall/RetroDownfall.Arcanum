@@ -77,30 +77,32 @@ public sealed class ToolRiskClassifierTests
         "apply_patch",
         "workspace_check",
         "write_file",
-        "replace_text_block",
+        "edit_file",
         "search_workspace",
-        "read_file_chunk",
+        "read_file",
         "list_directory",
         "execute_command",
-        "run_spell_script",
+        "run_script",
         "read_command_output",
-        "delete_lexicon",
-        "scribe_lexicon",
-        "read_saga",
+        "delete_memory",
+        "save_memory",
+        "search_memory",
         "recall_memory",
-        "search_archives",
+        "search_history",
         "retire_covenant",
         "propose_covenant",
         "attach_session_file",
         "refresh_session_file",
         "delegate_task",
-        "petition_dungeon_master",
+        "request_intervention",
         "ask_human",
-        "adjust_initiative",
-        "cast_sending",
-        "continue_sending",
-        "dispatch_sending",
-        "send_commlink_alert",
+        "set_task_priority",
+        "create_agent_task",
+        "send_agent_message",
+        "get_agent_task",
+        "cancel_agent_task",
+        "list_agents",
+        "send_notification",
         "web_search",
         "read_url",
         "browse_web",
@@ -117,9 +119,9 @@ public sealed class ToolRiskClassifierTests
     [Fact]
     public void Known_tool_inventory_contains_32_distinct_names()
     {
-        Assert.Equal(32, KnownToolNames.Length);
+        Assert.Equal(34, KnownToolNames.Length);
 
-        Assert.Equal(32, KnownToolNames.Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(34, KnownToolNames.Distinct(StringComparer.Ordinal).Count());
     }
 
     [Fact]
@@ -131,9 +133,9 @@ public sealed class ToolRiskClassifierTests
 
         IReadOnlyList<WardToolInventoryRow> rows = ReadWardToolInventory(design);
 
-        Assert.Equal(32, rows.Count);
+        Assert.Equal(34, rows.Count);
 
-        Assert.Equal(32, rows.Select(static row => row.Name).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(34, rows.Select(static row => row.Name).Distinct(StringComparer.Ordinal).Count());
 
         Assert.Equal(
             KnownToolNames.OrderBy(static name => name, StringComparer.Ordinal).ToArray(),

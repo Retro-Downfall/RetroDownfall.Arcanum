@@ -211,7 +211,7 @@ public sealed partial class WizardIntelligenceProviderTests
     }
 
     /// <summary>
-    /// R-008 / V-S17-01: a model's <c>scribe_lexicon</c> call in a Campaign-bound Session writes the
+    /// R-008 / V-S17-01: a model's <c>save_memory</c> call in a Campaign-bound Session writes the
     /// Campaign's tier, not the installation's.
     /// </summary>
     /// <remarks>
@@ -240,7 +240,7 @@ public sealed partial class WizardIntelligenceProviderTests
         ScriptingChatClient chat = new();
 
         chat.EnqueueStreamToolCall(
-            "scribe_lexicon",
+            "save_memory",
             "call-scribe",
             new Dictionary<string, object?>
             {
@@ -455,7 +455,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
                     return result.Content?.FirstOrDefault()?.Text ?? string.Empty;
                 },
-                "scribe_lexicon",
+                "save_memory",
                 "records a Lexicon entry",
                 AdHocJson.AIFunctionOptions);
 
@@ -469,7 +469,7 @@ public sealed partial class WizardIntelligenceProviderTests
                 Params = JsonSerializer.SerializeToElement(
                     new McpToolsCallParams
                     {
-                        Name = "scribe_lexicon",
+                        Name = "save_memory",
                         Arguments = JsonSerializer.SerializeToElement(
                             new ScribeLexiconParams(name, type, facts),
                             McpJsonSerializerContext.Default.ScribeLexiconParams),

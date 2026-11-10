@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.Guild;
@@ -49,7 +50,8 @@ public sealed record GuildRefreshAgentsRequest(Guid IdempotencyKey, Guid? AgentI
 
 public sealed record GuildResolveRemoteAgentRequest(string Agent);
 
-public sealed record GuildRefreshDiagnosticDto(Guid? AgentId, GuildAgentSourceKind SourceKind, string? ReasonCode, bool Available, long? CardRevision);
+public sealed record GuildRefreshDiagnosticDto(Guid? AgentId, GuildAgentSourceKind SourceKind, string? ReasonCode, bool Available, long? CardRevision,
+    ToolNameDiagnostic[]? ToolDiagnostics = null);
 
 public sealed record GuildRefreshReceipt(GuildMutationReceiptDto Receipt, GuildRefreshDiagnosticPageDto Diagnostics, bool Completed);
 

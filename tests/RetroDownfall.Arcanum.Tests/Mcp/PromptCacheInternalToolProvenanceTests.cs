@@ -17,7 +17,7 @@ public sealed class PromptCacheInternalToolProvenanceTests
 
         var tools = await manager.GetAvailableToolsAsync(workspace.Root);
 
-        Assert.True(PromptCacheToolProvenance.IsCurrent(Assert.Single(tools, t => t.Name == "read_file_chunk")));
+        Assert.True(PromptCacheToolProvenance.IsCurrent(Assert.Single(tools, t => t.Name == "read_file")));
 
         Assert.True(PromptCacheToolProvenance.IsCurrent(Assert.Single(tools, t => t.Name == "ask_human")));
 

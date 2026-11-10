@@ -578,7 +578,7 @@ internal static class CappedChildProcessRunner
 
                     ProcessTreeKiller.TryKillEntireTree(
                         process,
-                        context: "execute_command/run_spell_script (memory monitor could not attach)");
+                        context: "execute_command/run_script (memory monitor could not attach)");
 
                     return new CappedChildProcessRunResult
                     {
@@ -620,7 +620,7 @@ internal static class CappedChildProcessRunner
                 {
                     ProcessTreeKiller.TryKillEntireTree(
                         process,
-                        context: "execute_command/run_spell_script (Job Object assign failed)");
+                        context: "execute_command/run_script (Job Object assign failed)");
 
                     return new CappedChildProcessRunResult
                     {
@@ -638,7 +638,7 @@ internal static class CappedChildProcessRunner
                 {
                     ProcessTreeKiller.TryKillEntireTree(
                         process,
-                        context: "execute_command/run_spell_script (Job Object confirmation failed)");
+                        context: "execute_command/run_script (Job Object confirmation failed)");
 
                     return new CappedChildProcessRunResult
                     {
@@ -663,7 +663,7 @@ internal static class CappedChildProcessRunner
                         groupId);
                     ProcessTreeKiller.TryKillEntireTree(
                         child,
-                        context: "execute_command/run_spell_script");
+                        context: "execute_command/run_script");
                 },
                 (process, unixProcessGroupId, descendantSupervisor));
 
@@ -714,7 +714,7 @@ internal static class CappedChildProcessRunner
                 {
                     UnixProcessGroup.TryKill(unixProcessGroupId);
 
-                    ProcessTreeKiller.TryKillEntireTree(process, context: "execute_command/run_spell_script");
+                    ProcessTreeKiller.TryKillEntireTree(process, context: "execute_command/run_script");
                     if (descendantSupervisor is not null)
                     {
                         descendantContainmentVerified =
@@ -1158,7 +1158,7 @@ internal static class CappedChildProcessRunner
     {
         if (maxFileSizeBytes is null)
         {
-            // Call sites without Sanctum context (e.g. run_spell_script constructed directly in unit
+            // Call sites without Sanctum context (e.g. run_script constructed directly in unit
             // tests, with no campaign/DI backing) legitimately have nothing to resolve limits from;
             // resource-limit enforcement is simply skipped for that invocation rather than applying an
             // unconfigured default.

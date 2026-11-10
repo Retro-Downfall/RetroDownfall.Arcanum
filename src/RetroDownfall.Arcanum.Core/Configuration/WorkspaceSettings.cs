@@ -18,7 +18,7 @@ public sealed record WorkspaceSettings
 
     /// <summary>
     /// Operator opt-out from the protected-metadata guard. When <c>false</c> (default), model-driven
-    /// tools (<c>write_file</c>, <c>replace_text_block</c>, <c>apply_patch</c>) and the workspace file
+    /// tools (<c>write_file</c>, <c>edit_file</c>, <c>apply_patch</c>) and the workspace file
     /// write API refuse to create, modify, rename or delete anything under <c>.git</c> (at any depth) or
     /// the first-level <c>.arcanum</c> marker directory. A hook planted in <c>.git</c> runs with the
     /// operator's full identity on the next <c>git</c> command, outside any tool jail, so the default

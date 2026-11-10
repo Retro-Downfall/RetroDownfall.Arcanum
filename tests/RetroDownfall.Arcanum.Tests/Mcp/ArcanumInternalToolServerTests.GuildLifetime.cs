@@ -33,7 +33,7 @@ public sealed partial class ArcanumInternalToolServerTests
             return null;
         };
 
-        using JsonDocument original = JsonDocument.Parse("{\"name\":\"read_file_chunk\",\"arguments\":{\"relativePath\":\"notes/alpha.txt\",\"startLine\":1,\"endLine\":2}}");
+        using JsonDocument original = JsonDocument.Parse("{\"name\":\"read_file\",\"arguments\":{\"relativePath\":\"notes/alpha.txt\",\"startLine\":1,\"endLine\":2}}");
 
         const int requestId = 7711;
 
@@ -46,7 +46,7 @@ public sealed partial class ArcanumInternalToolServerTests
 
         try
         {
-            using JsonDocument oversized = JsonDocument.Parse("{\"name\":\"read_file_chunk\",\"arguments\":{\"junk\":\"" + new string('x', 8192) + "\"}}");
+            using JsonDocument oversized = JsonDocument.Parse("{\"name\":\"read_file\",\"arguments\":{\"junk\":\"" + new string('x', 8192) + "\"}}");
 
             await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 session.WriteRequestWithFixedIdAsync(requestId, "tools/call", oversized.RootElement));
@@ -92,7 +92,7 @@ public sealed partial class ArcanumInternalToolServerTests
             await Task.Delay(1, deadline.Token);
         }
 
-        using JsonDocument parameters = JsonDocument.Parse("{\"name\":\"read_file_chunk\",\"arguments\":{\"relativePath\":\"notes/alpha.txt\",\"startLine\":1,\"endLine\":2}}");
+        using JsonDocument parameters = JsonDocument.Parse("{\"name\":\"read_file\",\"arguments\":{\"relativePath\":\"notes/alpha.txt\",\"startLine\":1,\"endLine\":2}}");
 
         using IDisposable scope = GuildToolInvocationAmbient.Begin(GuildToolBoundaryTests.CreateContext());
 
@@ -127,7 +127,7 @@ public sealed partial class ArcanumInternalToolServerTests
 
         const int requestId = 7713;
 
-        using JsonDocument malformed = JsonDocument.Parse("{\"name\":\"read_file_chunk\"}");
+        using JsonDocument malformed = JsonDocument.Parse("{\"name\":\"read_file\"}");
 
         await session.WriteRequestWithFixedIdAsync(requestId, "tools/call", malformed.RootElement);
 
@@ -140,7 +140,7 @@ public sealed partial class ArcanumInternalToolServerTests
 
         Assert.Equal("tools/call params were not valid JSON.", rejectedResult.Content[0].Text);
 
-        using JsonDocument valid = JsonDocument.Parse("{\"name\":\"read_file_chunk\",\"arguments\":{\"relativePath\":\"notes/alpha.txt\",\"startLine\":1,\"endLine\":2}}");
+        using JsonDocument valid = JsonDocument.Parse("{\"name\":\"read_file\",\"arguments\":{\"relativePath\":\"notes/alpha.txt\",\"startLine\":1,\"endLine\":2}}");
 
         await session.WriteRequestWithFixedIdAsync(requestId, "tools/call", valid.RootElement);
 
@@ -176,7 +176,7 @@ public sealed partial class ArcanumInternalToolServerTests
         {
             await using TestMcpSession session = await CreateSessionAsync();
 
-            using JsonDocument parameters = JsonDocument.Parse("{\"name\":\"read_file_chunk\",\"arguments\":{\"relativePath\":\"notes/alpha.txt\",\"startLine\":1,\"endLine\":2}}");
+            using JsonDocument parameters = JsonDocument.Parse("{\"name\":\"read_file\",\"arguments\":{\"relativePath\":\"notes/alpha.txt\",\"startLine\":1,\"endLine\":2}}");
 
             const int requestId = 7714;
 

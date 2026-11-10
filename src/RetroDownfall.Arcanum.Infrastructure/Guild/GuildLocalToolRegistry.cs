@@ -9,14 +9,18 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
-internal enum GuildLocalChildToolKind { DelegateTask, CastSending, DispatchSending, ContinueSending }
+internal enum GuildLocalChildToolKind { DelegateTask, CreateAgentTask, SendAgentMessage, GetAgentTask, CancelAgentTask, ListAgents, SearchMemory }
 
 /// <summary>Host output consumed before generic model-tool stringification.</summary>
-internal sealed record GuildLocalChildToolResult(GuildQuestDto Quest, string? Summary = null, ProviderCallSensitivity? Sensitivity = null);
+internal sealed record GuildLocalChildToolResult(GuildQuestDto Quest, string? Summary = null, ProviderCallSensitivity? Sensitivity = null, JsonElement? Projection = null);
 
 internal interface IGuildLocalChildToolDispatcher
 {
+    bool SupportsLocal => true;
+
     bool SupportsRemote => false;
+
+    bool SupportsMemory => false;
 
     Task<Result<GuildLocalChildToolResult>> DispatchAsync(GuildLocalChildToolCall call, CancellationToken cancellationToken);
 }
@@ -50,12 +54,18 @@ internal sealed class GuildChildToolAdmission(GuildLocalToolRegistry registry, G
 
     internal GuildToolGrant Tool => Frame.Tool;
 
+    internal long ResponseAllocationBytes => Math.Max(0, Frame.OutputAllocationBytes - 4096);
+
     internal GuildLocalChildToolKind Kind => Tool.SourceKind == GuildToolSourceKind.BuiltIn
         ? GuildLocalChildToolKind.DelegateTask : Tool.Name switch
         {
-            "dispatch_sending" => GuildLocalChildToolKind.DispatchSending,
-            "continue_sending" => GuildLocalChildToolKind.ContinueSending,
-            _ => GuildLocalChildToolKind.CastSending,
+            "create_agent_task" => GuildLocalChildToolKind.CreateAgentTask,
+            "send_agent_message" => GuildLocalChildToolKind.SendAgentMessage,
+            "get_agent_task" => GuildLocalChildToolKind.GetAgentTask,
+            "cancel_agent_task" => GuildLocalChildToolKind.CancelAgentTask,
+            "list_agents" => GuildLocalChildToolKind.ListAgents,
+            "search_memory" => GuildLocalChildToolKind.SearchMemory,
+            _ => throw new InvalidOperationException("Unknown task tool."),
         };
 
     internal bool BindIntent(string digest)
@@ -91,7 +101,7 @@ internal sealed class GuildChildToolAdmission(GuildLocalToolRegistry registry, G
 
 /// <summary>Closed local routes tied to one actual driver, accepted input and live host call scope.</summary>
 internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent, GuildLocalExecutionInput acceptedInput,
-    IGuildLocalChildToolDispatcher? childDispatcher) : IDisposable
+    IGuildLocalChildToolDispatcher? childDispatcher, long outputAllocationBytes = 1_048_576) : IDisposable
 {
     private static readonly AsyncLocal<Invocation?> Current = new();
 
@@ -102,8 +112,13 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
     private int _closed;
 
     internal static ImmutableArray<GuildToolGrant> SupportedTools { get; } =
-        [new(GuildToolSourceKind.BuiltIn, "arcanum", "delegate_task"), new(GuildToolSourceKind.InternalMcp, "arcanum", "cast_sending"),
-            new(GuildToolSourceKind.InternalMcp, "arcanum", "dispatch_sending"), new(GuildToolSourceKind.InternalMcp, "arcanum", "continue_sending")];
+        [new(GuildToolSourceKind.BuiltIn, "arcanum", "delegate_task"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "create_agent_task"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "send_agent_message"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "get_agent_task"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "cancel_agent_task"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "list_agents"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "search_memory")];
 
     internal GuildLocalInferenceExecution Parent { get; } = parent;
 
@@ -111,11 +126,14 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
 
     internal IGuildLocalChildToolDispatcher? ChildDispatcher { get; } = childDispatcher;
 
+    internal long OutputAllocationBytes { get; } = Math.Max(0, outputAllocationBytes);
+
     internal bool IsActive => Volatile.Read(ref _closed) == 0;
 
     internal bool Supports(GuildToolGrant tool) => IsActive && Parent?.Store is not null && Parent.Driver is not null
         && AcceptedInput is not null && ChildDispatcher is not null && AcceptedInput.Mode == GuildLocalExecutionMode.Apprentice && SupportedTools.Contains(tool)
-        && (tool.Name is not ("dispatch_sending" or "continue_sending") || ChildDispatcher.SupportsRemote);
+        && (tool.Name != "search_memory" || ChildDispatcher.SupportsMemory)
+        && (tool.Name != "create_agent_task" || ChildDispatcher.SupportsLocal || ChildDispatcher.SupportsRemote);
 
     internal bool Matches(GuildExecutionHandle execution, IGuildToolAuthority authority) =>
         Parent?.Driver is { } driver && Parent.Store is not null && ReferenceEquals(driver.Execution, execution)
@@ -160,9 +178,16 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
         DispatchFrameAsync(Current.Value, tool, arguments, eligibility, ct);
 
     // The transport borrows the exact live frame; it neither creates nor closes a host invocation.
-    internal ValueTask<object?> DispatchTransferredAsync(Invocation frame, GuildToolGrant tool, AIFunctionArguments arguments,
-        Func<GuildToolGrant, bool> eligibility, CancellationToken ct) =>
-        DispatchFrameAsync(frame, tool, arguments, eligibility, ct);
+    internal async ValueTask<object?> DispatchTransferredAsync(Invocation frame, GuildToolGrant tool, AIFunctionArguments arguments,
+        Func<GuildToolGrant, bool> eligibility, CancellationToken ct)
+    {
+        Invocation? previous = Current.Value;
+
+        Current.Value = frame;
+
+        try { return await DispatchFrameAsync(frame, tool, arguments, eligibility, ct).ConfigureAwait(false); }
+        finally { Current.Value = previous; }
+    }
 
     private async ValueTask<object?> DispatchFrameAsync(Invocation? frame, GuildToolGrant tool, AIFunctionArguments arguments,
         Func<GuildToolGrant, bool> eligibility, CancellationToken ct)
@@ -209,6 +234,10 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
 
         if (!Owns(admission) || !admission.MatchesCommitted(result.Value.Quest)) return Format(Unavailable);
 
+        if (result.Value.Projection is { } projection
+            && System.Text.Encoding.UTF8.GetByteCount(projection.GetRawText()) > admission.ResponseAllocationBytes)
+            return Format(new(ErrorCodes.Guild.PayloadTooLarge, "The typed tool projection exceeds one response allocation."));
+
         Result<GuildQuestStored> current = await Parent.Store.AuthorizeLocalToolAsync(this, tool, eligibility, linked.Token).ConfigureAwait(false);
 
         return current.IsFailure ? Format(current.Error) : result.Value;
@@ -246,6 +275,13 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
         internal GuildToolGrant Tool { get; } = tool;
 
         internal GuildChildToolAdmission? Admission;
+
+        internal long OutputAllocationBytes { get; private set; } = registry.OutputAllocationBytes;
+
+        internal void NarrowOutputAllocation(long allocationBytes)
+        {
+            lock (Sync) OutputAllocationBytes = Math.Min(OutputAllocationBytes, Math.Max(0, allocationBytes));
+        }
 
         internal bool IsActive => Volatile.Read(ref _closed) == 0 && Registry.IsActive;
 

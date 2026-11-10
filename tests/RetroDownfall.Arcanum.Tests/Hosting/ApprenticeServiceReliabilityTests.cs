@@ -982,7 +982,7 @@ public sealed partial class ApprenticeServiceReliabilityTests
     }
 
     [Fact]
-    public async Task SimulacrumValidatesChildrenThenCommitsCompletionBeforeShiftingFate()
+    public async Task SimulacrumJoinsProvidersThenCommitsCompletionBeforeShiftingFate()
     {
         Guid apprenticeId = Guid.NewGuid();
 
@@ -1048,11 +1048,11 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         try
         {
-            await repo.ChildSettlementReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await intelligence.ProvidersReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
             AssertUnadvanced(repo.Get(apprenticeId));
 
-            repo.AllowChildSettlement.TrySetResult();
+            intelligence.AllowProviders.TrySetResult();
 
             await intelligence.ShiftingFateReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -1065,10 +1065,12 @@ public sealed partial class ApprenticeServiceReliabilityTests
             Assert.True(await execution.WaitAsync(TimeSpan.FromSeconds(10)));
 
             AssertAdvanced(repo.Get(apprenticeId), expectedTail: "Revised tail");
+
+            Assert.Equal(0, repo.ChildReads);
         }
         finally
         {
-            repo.AllowChildSettlement.TrySetResult();
+            intelligence.AllowProviders.TrySetResult();
 
             intelligence.AllowShiftingFate.TrySetResult();
 
@@ -1111,7 +1113,7 @@ public sealed partial class ApprenticeServiceReliabilityTests
     }
 
     [Fact]
-    public async Task SerialRetrySettlesCastChildrenFromEveryAttempt()
+    public async Task SerialRetryLeavesRetiredCastPayloadChildrenUntouched()
     {
         Guid apprenticeId = Guid.NewGuid();
 
@@ -1150,11 +1152,19 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         Assert.Equal(apprenticeId, repo.Get(secondChildId).ParentApprenticeId);
 
+        Assert.Equal(ApprenticeStatus.Running.ToString(), repo.Get(firstChildId).Status);
+
+        Assert.Equal(ApprenticeStatus.Running.ToString(), repo.Get(secondChildId).Status);
+
+        Assert.False(HasExecutionGeneration(service, firstChildId));
+
+        Assert.False(HasExecutionGeneration(service, secondChildId));
+
         Assert.Equal(ApprenticeStatus.Completed.ToString(), repo.Get(apprenticeId).Status);
     }
 
     [Fact]
-    public async Task SerialProviderFaultAfterCastStillSettlesDurableChild()
+    public async Task SerialProviderFaultAfterRetiredCastPayloadLeavesChildUntouched()
     {
         Guid apprenticeId = Guid.NewGuid();
 
@@ -1187,11 +1197,15 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         Assert.Equal(apprenticeId, repo.Get(childId).ParentApprenticeId);
 
+        Assert.Equal(ApprenticeStatus.Running.ToString(), repo.Get(childId).Status);
+
+        Assert.False(HasExecutionGeneration(service, childId));
+
         Assert.Equal(ApprenticeStatus.Failed.ToString(), repo.Get(apprenticeId).Status);
     }
 
     [Fact]
-    public async Task SerialCancellationAfterCastSettlesChildWithoutCallerToken()
+    public async Task SerialCancellationAfterRetiredCastPayloadLeavesChildUntouched()
     {
         Guid apprenticeId = Guid.NewGuid();
 
@@ -1230,11 +1244,15 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         Assert.Equal(apprenticeId, repo.Get(childId).ParentApprenticeId);
 
+        Assert.Equal(ApprenticeStatus.Running.ToString(), repo.Get(childId).Status);
+
+        Assert.False(HasExecutionGeneration(service, childId));
+
         Assert.Equal(ApprenticeStatus.Cancelled.ToString(), repo.Get(apprenticeId).Status);
     }
 
     [Fact]
-    public async Task CastResultCannotReparentAnUnrelatedApprentice()
+    public async Task RetiredCastPayloadCannotReparentAnUnrelatedApprentice()
     {
         Guid apprenticeId = Guid.NewGuid();
 
@@ -1271,11 +1289,15 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         Assert.Equal(unrelatedParentId, repo.Get(childId).ParentApprenticeId);
 
-        Assert.Equal(ApprenticeStatus.Failed.ToString(), repo.Get(apprenticeId).Status);
+        Assert.Equal(ApprenticeStatus.Running.ToString(), repo.Get(childId).Status);
+
+        Assert.Equal(ApprenticeStatus.Completed.ToString(), repo.Get(apprenticeId).Status);
+
+        Assert.False(HasExecutionGeneration(service, childId));
     }
 
     [Fact]
-    public async Task CastResultCannotClaimAChildFromAnotherCampaign()
+    public async Task RetiredCastPayloadCannotClaimAChildFromAnotherCampaign()
     {
         Guid apprenticeId = Guid.NewGuid();
 
@@ -1314,11 +1336,15 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         Assert.NotEqual(campaignId, repo.Get(childId).CampaignId);
 
-        Assert.Equal(ApprenticeStatus.Failed.ToString(), repo.Get(apprenticeId).Status);
+        Assert.Equal(ApprenticeStatus.Running.ToString(), repo.Get(childId).Status);
+
+        Assert.Equal(ApprenticeStatus.Completed.ToString(), repo.Get(apprenticeId).Status);
+
+        Assert.False(HasExecutionGeneration(service, childId));
     }
 
     [Fact]
-    public async Task CastResultCannotClaimAChildWithAnotherDelegationChain()
+    public async Task RetiredCastPayloadCannotClaimAChildWithAnotherDelegationChain()
     {
         Guid apprenticeId = Guid.NewGuid();
 
@@ -1365,11 +1391,15 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         Assert.Equal(["different-hop"], childCheckpoint.DelegationChain);
 
-        Assert.Equal(ApprenticeStatus.Failed.ToString(), repo.Get(apprenticeId).Status);
+        Assert.Equal(ApprenticeStatus.Running.ToString(), repo.Get(childId).Status);
+
+        Assert.Equal(ApprenticeStatus.Completed.ToString(), repo.Get(apprenticeId).Status);
+
+        Assert.False(HasExecutionGeneration(service, childId));
     }
 
     [Fact]
-    public async Task CastResultCannotLaunchManualSiblingWithoutDurableLaunchIntent()
+    public async Task RetiredCastPayloadCannotLaunchManualSiblingWithoutDurableLaunchIntent()
     {
         Guid apprenticeId = Guid.NewGuid();
 
@@ -1416,11 +1446,11 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         Assert.False(HasExecutionGeneration(service, childId));
 
-        Assert.Equal(ApprenticeStatus.Failed.ToString(), repo.Get(apprenticeId).Status);
+        Assert.Equal(ApprenticeStatus.Completed.ToString(), repo.Get(apprenticeId).Status);
     }
 
     [Fact]
-    public async Task SimulacrumRetrySettlesCastChildrenFromEveryAttempt()
+    public async Task SimulacrumRetryLeavesRetiredCastPayloadChildrenUntouchedOnEveryAttempt()
     {
         Guid apprenticeId = Guid.NewGuid();
 
@@ -1479,13 +1509,23 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         Assert.Equal(apprenticeId, repo.Get(secondChildId).ParentApprenticeId);
 
-        Assert.Equal(1, repo.SettlementReadCount(firstChildId));
+        Assert.Equal(2, intelligence.RetryBranchCalls);
 
-        Assert.Equal(1, repo.SettlementReadCount(secondChildId));
+        Assert.Equal(0, repo.SettlementReadCount(firstChildId));
+
+        Assert.Equal(0, repo.SettlementReadCount(secondChildId));
+
+        Assert.Equal(ApprenticeStatus.Running.ToString(), repo.Get(firstChildId).Status);
+
+        Assert.Equal(ApprenticeStatus.Running.ToString(), repo.Get(secondChildId).Status);
+
+        Assert.False(HasExecutionGeneration(service, firstChildId));
+
+        Assert.False(HasExecutionGeneration(service, secondChildId));
     }
 
     [Fact]
-    public async Task SimulacrumProviderFaultAfterCastStillSettlesDurableChild()
+    public async Task SimulacrumProviderFaultAfterRetiredCastPayloadLeavesChildUntouched()
     {
         Guid apprenticeId = Guid.NewGuid();
 
@@ -1529,11 +1569,15 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         Assert.Equal(apprenticeId, repo.Get(childId).ParentApprenticeId);
 
+        Assert.Equal(ApprenticeStatus.Running.ToString(), repo.Get(childId).Status);
+
+        Assert.False(HasExecutionGeneration(service, childId));
+
         Assert.Equal(ApprenticeStatus.Failed.ToString(), repo.Get(apprenticeId).Status);
     }
 
     [Fact]
-    public async Task SimulacrumCancellationAfterCastStillSettlesDurableChild()
+    public async Task SimulacrumCancellationAfterRetiredCastPayloadLeavesChildUntouched()
     {
         Guid apprenticeId = Guid.NewGuid();
 
@@ -1576,6 +1620,10 @@ public sealed partial class ApprenticeServiceReliabilityTests
         Assert.False(advanced);
 
         Assert.Equal(apprenticeId, repo.Get(childId).ParentApprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Running.ToString(), repo.Get(childId).Status);
+
+        Assert.False(HasExecutionGeneration(service, childId));
     }
 
     [Fact]
@@ -3021,19 +3069,11 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         intelligence.AllowProviders.TrySetResult();
 
-        await repo.ChildSettlementReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
-
-        Assert.Equal(["provider", "child-authority"], phases);
-
-        Assert.False(drain.IsCompleted);
-
-        repo.AllowChildSettlement.TrySetResult();
-
         // The group's completion is past the point of no return, so it commits before the cancellable
         // Shifting Fate evaluation rather than after it.
         await repo.FinalCheckpointReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-        Assert.Equal(["provider", "child-authority", "final-checkpoint"], phases);
+        Assert.Equal(["provider", "final-checkpoint"], phases);
 
         Assert.False(drain.IsCompleted);
 
@@ -3042,7 +3082,7 @@ public sealed partial class ApprenticeServiceReliabilityTests
         await intelligence.ShiftingFateReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.Equal(
-            ["provider", "child-authority", "final-checkpoint", "shifting-fate"],
+            ["provider", "final-checkpoint", "shifting-fate"],
             phases);
 
         Assert.False(drain.IsCompleted);
@@ -3054,7 +3094,6 @@ public sealed partial class ApprenticeServiceReliabilityTests
         Assert.Equal(
             [
                 "provider",
-                "child-authority",
                 "final-checkpoint",
                 "shifting-fate",
                 "effect-group-disposal",
@@ -3070,7 +3109,6 @@ public sealed partial class ApprenticeServiceReliabilityTests
         Assert.Equal(
             [
                 "provider",
-                "child-authority",
                 "final-checkpoint",
                 "shifting-fate",
                 "effect-group-disposal",
@@ -3087,7 +3125,6 @@ public sealed partial class ApprenticeServiceReliabilityTests
         Assert.Equal(
             [
                 "provider",
-                "child-authority",
                 "final-checkpoint",
                 "shifting-fate",
                 "effect-group-disposal",
@@ -3121,6 +3158,12 @@ public sealed partial class ApprenticeServiceReliabilityTests
         Assert.Equal(2, checkpoint.CurrentStep);
 
         Assert.Equal(apprenticeId, repo.Get(childId).ParentApprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Running.ToString(), repo.Get(childId).Status);
+
+        Assert.Equal(0, repo.ChildReads);
+
+        Assert.False(HasExecutionGeneration(service, childId));
 
         Assert.Equal(1, gate.EffectGroupAttempts);
 
@@ -4843,6 +4886,22 @@ public sealed partial class ApprenticeServiceReliabilityTests
             return true;
         }
 
+        public Task<bool> TryParkLegacyToolPlanAsync(Guid id, string expectedPlan, int expectedCurrentStep,
+            string expectedStatus, string reason, CancellationToken cancellationToken = default)
+        {
+            lock (_sync)
+            {
+                if (!_store.TryGetValue(id, out Apprentice? stored) || stored.Plan != expectedPlan
+                    || stored.CurrentStep != expectedCurrentStep || stored.Status != expectedStatus) return Task.FromResult(false);
+
+                stored.Status = ApprenticeStatus.Escalated.ToString();
+
+                stored.ErrorMessage = reason;
+
+                return Task.FromResult(true);
+            }
+        }
+
         public virtual async Task<bool> TryUpdateStatusAsync(
             Guid id,
             string status,
@@ -5313,11 +5372,7 @@ public sealed partial class ApprenticeServiceReliabilityTests
                 apprentice.CampaignId,
                 ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData)?.DelegationChain))
     {
-        internal TaskCompletionSource ChildSettlementReached { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        internal TaskCompletionSource AllowChildSettlement { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal int ChildReads { get; private set; }
 
         public override async Task<Apprentice?> GetByIdAsync(
             Guid id,
@@ -5325,9 +5380,7 @@ public sealed partial class ApprenticeServiceReliabilityTests
         {
             if (id == childId)
             {
-                ChildSettlementReached.TrySetResult();
-
-                await AllowChildSettlement.Task.WaitAsync(cancellationToken);
+                ChildReads++;
             }
             Apprentice? current = await base.GetByIdAsync(id, cancellationToken);
 
@@ -5364,6 +5417,12 @@ public sealed partial class ApprenticeServiceReliabilityTests
     {
         private int _streams;
 
+        internal TaskCompletionSource ProvidersReached { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource AllowProviders { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         internal TaskCompletionSource ShiftingFateReached { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -5392,6 +5451,13 @@ public sealed partial class ApprenticeServiceReliabilityTests
             InferenceAuditContext? auditContext = null)
         {
             int stream = Interlocked.Increment(ref _streams);
+
+            if (stream == 2)
+            {
+                ProvidersReached.TrySetResult();
+            }
+
+            await AllowProviders.Task.WaitAsync(cancellationToken);
 
             if (stream == 1)
             {
@@ -5424,15 +5490,9 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         private readonly Guid _childId = child.Id;
 
-        private int _childSettlementRecorded;
+        internal int ChildReads { get; private set; }
 
         private int _finalCheckpointRecorded;
-
-        internal TaskCompletionSource ChildSettlementReached { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        internal TaskCompletionSource AllowChildSettlement { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal TaskCompletionSource FinalCheckpointReached { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -5444,15 +5504,9 @@ public sealed partial class ApprenticeServiceReliabilityTests
             Guid id,
             CancellationToken cancellationToken = default)
         {
-            if (id == _childId
-                && !cancellationToken.CanBeCanceled
-                && Interlocked.Exchange(ref _childSettlementRecorded, 1) == 0)
+            if (id == _childId)
             {
-                phases.Enqueue("child-authority");
-
-                ChildSettlementReached.TrySetResult();
-
-                await AllowChildSettlement.Task;
+                ChildReads++;
             }
             Apprentice? current = await base.GetByIdAsync(id, cancellationToken);
 
@@ -5706,7 +5760,7 @@ public sealed partial class ApprenticeServiceReliabilityTests
                     "{}"));
 
             yield return stream == 1
-                ? new IntelligenceEvent(IntelligenceEventType.Error, "retry after durable cast")
+                ? new IntelligenceEvent(IntelligenceEventType.Error, "retry after retired cast payload")
                 : new IntelligenceEvent(IntelligenceEventType.Result, "step complete");
 
             await Task.Yield();
@@ -5741,7 +5795,7 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
             await Task.Yield();
 
-            throw new InvalidOperationException("provider failed after durable cast");
+            throw new InvalidOperationException("provider failed after retired cast payload");
         }
     }
 
@@ -5783,6 +5837,8 @@ public sealed partial class ApprenticeServiceReliabilityTests
         Guid secondChildId) : IArcanumIntelligenceProvider
     {
         private int _retryBranchCalls;
+
+        internal int RetryBranchCalls => _retryBranchCalls;
 
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
             PingRequest request,
@@ -5849,7 +5905,7 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
             await Task.Yield();
 
-            throw new InvalidOperationException("branch provider failed after durable cast");
+            throw new InvalidOperationException("branch provider failed after retired cast payload");
         }
     }
 

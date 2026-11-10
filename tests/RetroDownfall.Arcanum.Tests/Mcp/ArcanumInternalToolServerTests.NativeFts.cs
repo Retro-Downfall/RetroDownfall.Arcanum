@@ -36,7 +36,7 @@ public sealed partial class ArcanumInternalToolServerTests
             intelligenceSettings: ArcanumRuntimeDefaults.Intelligence with { EnableArchiveSearch = true },
             grimoireRepository: repository);
 
-        McpToolsCallResultWire result = await session.CallToolAsync("search_archives",
+        McpToolsCallResultWire result = await session.CallToolAsync("search_history",
             JsonSerializer.SerializeToElement(new SearchArchivesParams(expression), McpJsonSerializerContext.Default.SearchArchivesParams));
 
         Assert.Equal(!valid, result.IsError);
@@ -78,7 +78,7 @@ public sealed partial class ArcanumInternalToolServerTests
 
         string expression = new string('(', depth) + "schema" + new string(')', depth);
 
-        McpToolsCallResultWire result = await session.CallToolAsync("search_archives",
+        McpToolsCallResultWire result = await session.CallToolAsync("search_history",
             JsonSerializer.SerializeToElement(new SearchArchivesParams(expression), McpJsonSerializerContext.Default.SearchArchivesParams));
 
         Assert.Equal(depth == 100, result.IsError);
@@ -128,7 +128,7 @@ public sealed partial class ArcanumInternalToolServerTests
             intelligenceSettings: ArcanumRuntimeDefaults.Intelligence with { EnableArchiveSearch = true },
             grimoireRepository: repository);
 
-        McpToolsCallResultWire result = await session.CallToolAsync("search_archives",
+        McpToolsCallResultWire result = await session.CallToolAsync("search_history",
             JsonSerializer.SerializeToElement(new SearchArchivesParams(query), McpJsonSerializerContext.Default.SearchArchivesParams));
 
         Assert.False(result.IsError);
@@ -167,7 +167,7 @@ public sealed partial class ArcanumInternalToolServerTests
             },
             grimoireRepository: repository);
 
-        McpToolsCallResultWire result = await session.CallToolAsync("search_archives",
+        McpToolsCallResultWire result = await session.CallToolAsync("search_history",
             JsonSerializer.SerializeToElement(new SearchArchivesParams(query), McpJsonSerializerContext.Default.SearchArchivesParams));
 
         Assert.True(result.IsError);

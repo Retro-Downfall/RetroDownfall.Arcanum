@@ -19,7 +19,7 @@ public enum ChildProcessEnvironmentProfile
     ToolExec,
 
     /// <summary>
-    /// <c>run_spell_script</c>: same scrub as <see cref="ToolExec"/> — strip <c>ARCANUM_*</c>
+    /// <c>run_script</c>: same scrub as <see cref="ToolExec"/> — strip <c>ARCANUM_*</c>
     /// secrets and loader/runtime hijack variables; preserve PATH/HOME and other host vars.
     /// </summary>
     SpellScript,

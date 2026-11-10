@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
@@ -23,6 +24,61 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
     }
 
     public Task DisposeAsync() => _workspace.DisposeAsync();
+
+    [Theory]
+    [InlineData("ambiguous")]
+    [InlineData("cancelled")]
+    [InlineData("external-cancelled")]
+    [InlineData("external-failed")]
+    public async Task Test_receipt_owner_closes_its_managed_permit_after_terminal_handoff(string outcome)
+    {
+        using IDisposable host = WorkspaceMutationFence.IsolateProcessHistoryForTests();
+
+        _workspace.WriteFile("owned-receipt.txt", "before\n");
+
+        using CancellationTokenSource cancellation = new();
+
+        IApplyPatchPendingReceiptSink sink = outcome switch
+        {
+            "ambiguous" => new OutcomePendingReceiptSink(MandatoryToolInteractionAppendOutcome.Ambiguous),
+            "cancelled" => new WaitForHandoffCancellationSink(cancellation),
+            "external-cancelled" => new CancellingAfterExternalEditSink(_workspace.Root, "owned-receipt.txt", cancellation),
+            _ => new FailedAfterExternalEditSink(_workspace.Root, "owned-receipt.txt"),
+        };
+
+        ObservedReceiptSink observed = new(sink);
+
+        try
+        {
+            Task<ApplyPatchToolExecutionResponse> execution = CreateExecutor().ExecuteAsync(
+                ModifyRequest("owned-receipt.txt", "before", "after"), InvocationContext(observed), cancellation.Token);
+
+            if (outcome == "ambiguous")
+            {
+                await Assert.ThrowsAsync<ApplyPatchReceiptHandoffException>(() => execution);
+            }
+            else if (outcome == "external-failed")
+            {
+                Assert.Equal("rollback_incomplete", ResultStatus(await execution));
+            }
+            else
+            {
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => execution);
+            }
+
+            Assert.NotNull(observed.Receipt);
+
+            // A fresh synthetic host is eligible only after the exact handoff owner has closed its
+            // permit. Ambiguous history remains in the old host; this does not clear active effects.
+            using IDisposable next = WorkspaceMutationFence.IsolateProcessHistoryForTests();
+        }
+        finally
+        {
+            // RED must not contaminate subsequent tests: release only the captured test-owned receipt,
+            // retaining its uncertainty and recovery artifacts through the ordinary abandonment lane.
+            if (observed.Receipt is { } receipt) await receipt.AbandonAsync();
+        }
+    }
 
     [Fact]
     public void Parser_accepts_create_modify_rename_delete_and_normalizes_manifest()
@@ -2277,6 +2333,28 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.DoesNotContain('\\', path);
     }
 
+    private sealed class ObservedReceiptSink(IApplyPatchPendingReceiptSink inner) : IApplyPatchPendingReceiptSink
+    {
+        internal PendingApplyPatchReceipt? Receipt { get; private set; }
+
+        public ValueTask<ApplyPatchReceiptProbeResult> ProbeAsync(ApplyPatchReceiptProbe probe, CancellationToken cancellationToken) =>
+            inner.ProbeAsync(probe, cancellationToken);
+
+        public ValueTask<ApplyPatchReceiptPreflightResult> PreflightAsync(ApplyPatchReceiptPreflight preflight, CancellationToken cancellationToken) =>
+            inner.PreflightAsync(preflight, cancellationToken);
+
+        public ValueTask<MandatoryToolInteractionAppendOutcome> PersistRecoveryReceiptAsync(
+            ApplyPatchRecoveryReceipt receipt, CancellationToken cancellationToken) =>
+            inner.PersistRecoveryReceiptAsync(receipt, cancellationToken);
+
+        public ValueTask<ApplyPatchPendingReceiptHandoffResult> HandoffAsync(PendingApplyPatchReceipt receipt, CancellationToken cancellationToken)
+        {
+            Receipt = receipt;
+
+            return inner.HandoffAsync(receipt, cancellationToken);
+        }
+    }
+
     private abstract class AdmittingPendingReceiptSink
         : IApplyPatchPendingReceiptSink
     {
@@ -2467,6 +2545,12 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             else if (outcome == MandatoryToolInteractionAppendOutcome.Failed)
             {
                 rollback = await receipt.RollbackAsync(CancellationToken.None);
+
+                if (!rollback.Complete) await receipt.AbandonAsync();
+            }
+            else if (outcome == MandatoryToolInteractionAppendOutcome.Ambiguous)
+            {
+                await receipt.AbandonAsync();
             }
 
             return new ApplyPatchPendingReceiptHandoffResult(
@@ -2487,12 +2571,19 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         {
             cancellation.Cancel();
 
-            await Task.Delay(
-                Timeout.InfiniteTimeSpan,
-                cancellationToken);
+            try
+            {
+                await Task.Delay(
+                    Timeout.InfiniteTimeSpan,
+                    cancellationToken);
 
-            throw new InvalidOperationException(
-                "The handoff cancellation wait unexpectedly completed.");
+                throw new InvalidOperationException(
+                    "The handoff cancellation wait unexpectedly completed.");
+            }
+            finally
+            {
+                await receipt.AbandonAsync();
+            }
         }
     }
 
@@ -2502,7 +2593,7 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         CancellationTokenSource cancellation)
         : AdmittingPendingReceiptSink
     {
-        public override ValueTask<ApplyPatchPendingReceiptHandoffResult> HandoffAsync(
+        public override async ValueTask<ApplyPatchPendingReceiptHandoffResult> HandoffAsync(
             PendingApplyPatchReceipt receipt,
             CancellationToken cancellationToken)
         {
@@ -2511,8 +2602,9 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 "external-after-handoff\n");
             cancellation.Cancel();
 
-            return ValueTask.FromException<ApplyPatchPendingReceiptHandoffResult>(
-                new OperationCanceledException(cancellation.Token));
+            await receipt.AbandonAsync();
+
+            throw new OperationCanceledException(cancellation.Token);
         }
     }
 
@@ -2531,6 +2623,8 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
             WorkspaceRollbackResult rollback =
                 await receipt.RollbackAsync(CancellationToken.None);
+
+            if (!rollback.Complete) await receipt.AbandonAsync();
 
             return new ApplyPatchPendingReceiptHandoffResult(
                 MandatoryToolInteractionAppendOutcome.Failed,

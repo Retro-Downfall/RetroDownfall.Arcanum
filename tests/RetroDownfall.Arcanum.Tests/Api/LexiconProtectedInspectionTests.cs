@@ -353,6 +353,10 @@ public sealed class LexiconProtectedInspectionTests
 
             services.AddScoped<ISagaMemoryStore, SagaMemoryStore>();
 
+            services.AddScoped<IMemoryScopeResolver, MemoryScopeResolver>();
+
+            services.AddScoped<IMemorySearchService, RetroDownfall.Arcanum.Infrastructure.Memory.MemorySearchService>();
+
             services.AddSingleton<IMemoryErasureKeyProvider>(MemoryErasureTestKeys.Isolated());
 
             services.AddSingleton<WeaveIndexAvailability>();

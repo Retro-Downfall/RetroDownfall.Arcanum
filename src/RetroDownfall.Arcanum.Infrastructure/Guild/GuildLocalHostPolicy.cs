@@ -34,7 +34,7 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
     internal bool IsExecutionEnabled => settings.CurrentValue.Features.Guild;
 
     internal bool IsConfiguredRemoteDestination(string destination) => IsExecutionEnabled
-        && settings.CurrentValue.Features.Conclave && settings.CurrentValue.ResolveA2A().ClientEnabled
+        && settings.CurrentValue.ResolveA2A().ClientEnabled
         && RetroDownfall.Arcanum.Infrastructure.A2A.A2AClientService.IsConfiguredGuildDestination(destination,
             settings.CurrentValue.ResolveA2A().AllowedRemoteAgents);
 
@@ -195,6 +195,33 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
         return Result.Success();
     }
 
+    internal async Task<Result> ValidateTaskGrantWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        GuildGrant parent, GuildRequestedGrant? requested, CancellationToken ct)
+    {
+        GuildRequestedGrant request = (requested ?? new()) with { Budget = default };
+
+        if (requested is { Budget.IsSpecified: true } && (requested.Budget.Value is null
+            || GuildGrantPolicy.Validate(parent with { Budget = requested.Budget.Value }).IsFailure)) return Forbidden;
+
+        if (request.Workspaces.IsSpecified && request.Workspaces.Value is null
+            || request.Tools.IsSpecified && request.Tools.Value is null || request.Memory.IsSpecified && request.Memory.Value is null
+            || request.Delegation.IsSpecified && request.Delegation.Value is null) return Forbidden;
+
+        GuildGrant candidate = new(request.Workspaces.IsSpecified ? request.Workspaces.Value!.Value : parent.Workspaces,
+            request.Tools.IsSpecified ? request.Tools.Value!.Value : parent.Tools,
+            request.Memory.IsSpecified ? request.Memory.Value!.Value : parent.Memory, parent.Budget,
+            request.Delegation.IsSpecified ? request.Delegation.Value!.Value : parent.Delegation,
+            request.ExpiresAtUtc.IsSpecified ? request.ExpiresAtUtc.Value : parent.ExpiresAtUtc);
+
+        var scope = await ScopeAsync(connection, transaction, parent, candidate, ct).ConfigureAwait(false);
+
+        if (scope.IsFailure) return scope.Error;
+
+        var narrowed = GuildGrantPolicy.Attenuate(parent, request, scope.Value);
+
+        return narrowed.IsFailure ? narrowed.Error : Result.Success();
+    }
+
     public async Task<Result<GuildQuestAdmissionPlan>> ResolveAsync(GuildCallerContext caller, GuildQuestProposal proposal,
         SqliteConnection connection, SqliteTransaction transaction, CancellationToken ct)
     {
@@ -271,6 +298,33 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
             if (narrowed.IsFailure) return narrowed.Error;
 
             grant = narrowed.Value;
+        }
+
+        if (!root && proposal.Child?.CardId is { } selectedCard)
+        {
+            var issuer = await GuildSignetStore.ReadAsync(connection, transaction, proposal.ParentQuestId!.Value, true, ct).ConfigureAwait(false);
+
+            if (issuer.IsFailure) return issuer.Error;
+
+            GuildCardReadScope cardScope = new(proposal.WorkspaceId, issuer.Value.Owners.SessionId, proposal.CampaignId);
+
+            var selected = await GuildStore.SelectLocalQuestCardWithinAsync(connection, transaction, selectedCard, cardScope, ct).ConfigureAwait(false);
+
+            if (selected.IsFailure) return selected.Error;
+
+            var source = await GuildStore.ResolveQuestCardWithinAsync(connection, transaction, selected.Value.AgentId,
+                selected.Value.CardId, selected.Value.Revision, cardScope, ct).ConfigureAwait(false);
+
+            if (source.IsFailure) return source.Error;
+
+            GuildStoredAgentCardPayload payload = source.Value.Payload;
+
+            if (payload.RequestedToolsSpecified is null && payload.RequestedTools.IsEmpty
+                && payload.Card.Source.Kind is GuildAgentSourceKind.DeclaredGlobal or GuildAgentSourceKind.DeclaredWorkspace)
+                return new Error(ErrorCodes.Guild.Unavailable, "Refresh this Card to establish its authored tool-subset semantics.");
+
+            if (payload.RequestedToolsSpecified == true || !payload.RequestedTools.IsEmpty)
+                grant = grant with { Tools = [.. grant.Tools.Where(tool => payload.RequestedTools.Contains(tool.Name, StringComparer.Ordinal))] };
         }
 
         if (GuildGrantPolicy.Validate(grant).IsFailure || grant.Workspaces.Any(item => item.WorkspaceId != proposal.WorkspaceId) || grant.Delegation.Any(item => item is not (GuildDelegationKind.Local or GuildDelegationKind.Remote))) return Forbidden;

@@ -27,7 +27,8 @@ internal static partial class GuildLocalExecutionStore
         SqliteTransaction transaction, GuildQuestStored quest, GuildLocalExecutionInput input,
         ArtifactSensitivityLabel? sourceLabel, DateTimeOffset now, CancellationToken ct)
     {
-        if (quest is null || !ValidInput(input) || now == default || input.Goal != quest.Quest.GoalRef)
+        if (quest is null || !ValidInput(input) || now == default || input.Goal != quest.Quest.GoalRef
+            || input.Card is { } selected && (selected.CardId != quest.Quest.CardId || selected.Revision != quest.Quest.CardRevision))
             return Invalid;
 
         byte[] body = JsonSerializer.SerializeToUtf8Bytes(input, GuildStorageJsonContext.Default.GuildLocalExecutionInput);
@@ -79,7 +80,11 @@ internal static partial class GuildLocalExecutionStore
 
         ContentSensitivity sensitivity = sourceLabel?.Sensitivity ?? ContentSensitivity.None;
 
-        foreach (GuildDataRef reference in input.Files.Select(file => file.Content).Prepend(input.Goal))
+        IEnumerable<GuildDataRef> sources = input.Files.Select(file => file.Content).Prepend(input.Goal);
+
+        if (input.Card is { } card) sources = sources.Append(card.Content);
+
+        foreach (GuildDataRef reference in sources)
         {
             Result<ArtifactSensitivityLabel?> inherited = await ValidateReferenceAsync(connection, transaction, reference, ct).ConfigureAwait(false);
 
@@ -170,6 +175,8 @@ internal static partial class GuildLocalExecutionStore
         && Enum.IsDefined(input.Mode) && input.Goal.Kind == GuildContentKind.QuestGoal
         && !string.IsNullOrWhiteSpace(input.Provider) && !string.IsNullOrWhiteSpace(input.Model)
         && !input.Files.IsDefault && input.Files.All(file => file is not null && !string.IsNullOrWhiteSpace(file.Name) && file.Content is not null)
+        && (input.Card is null || input.Card.CardId != Guid.Empty && input.Card.Revision > 0
+            && input.Card.Content is { Kind: GuildContentKind.AgentCard } && input.Card.Content.Revision == input.Card.Revision)
         && input.MaxOutputTokens is null or > 0
         && (input.DelegationChain is null || !input.DelegationChain.Value.IsDefault
             && input.DelegationChain.Value.All(hop => !string.IsNullOrWhiteSpace(hop)));

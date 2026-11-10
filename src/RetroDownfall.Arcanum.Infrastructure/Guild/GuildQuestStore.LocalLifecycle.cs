@@ -118,7 +118,7 @@ internal sealed partial class GuildQuestStore
                 return Result<GuildLocalAcceptedContinuation?>.Success(new(continuation.Value, body.Value, mutation));
             }, ct);
 
-    internal Task<Result<GuildQuestStored>> ParkLocalExecutionAsync(GuildQuestDriver driver, CancellationToken ct) =>
+    internal Task<Result<GuildQuestStored>> ParkLocalExecutionAsync(GuildQuestDriver driver, CancellationToken ct, string? reasonCode = null) =>
         authority.InQuestTransactionAsync<GuildQuestStored>(driver.Execution.RootQuestId,
             async (connection, transaction, signets, token) =>
             {
@@ -135,8 +135,8 @@ internal sealed partial class GuildQuestStore
                 if (operation.LeaseOwner != driver.LeaseOwner || operation.LeaseExpiresAt <= time.GetUtcNow()
                     || row.Quest.Revision == long.MaxValue) return RevisionConflict;
 
-                string reason = row.Quest.State == QuestState.InputRequired
-                    ? ErrorCodes.Guild.AwaitingInput : ErrorCodes.Guild.LocalExecutionInterrupted;
+                string reason = reasonCode == ErrorCodes.Guild.LegacyToolName ? ErrorCodes.Guild.LegacyToolName
+                    : row.Quest.State == QuestState.InputRequired ? ErrorCodes.Guild.AwaitingInput : ErrorCodes.Guild.LocalExecutionInterrupted;
 
                 if (!await LongRunningOperationStore.TryTransitionWithinAsync(connection, transaction, operation.Id,
                     operation.Revision, driver.LeaseOwner, LongRunningOperationState.ReconciliationRequired, time.GetUtcNow(), reason, token).ConfigureAwait(false))

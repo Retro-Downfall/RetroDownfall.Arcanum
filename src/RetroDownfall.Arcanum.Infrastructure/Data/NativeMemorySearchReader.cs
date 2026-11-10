@@ -3,6 +3,12 @@ using System.Globalization;
 using System.Text;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
@@ -35,11 +41,36 @@ internal static class NativeMemorySearchReader
 
     internal static async Task<Result<NativeMemorySearchPage>> ReadAsync(
         DbConnection connection, string query, MemorySearchScope scope, Guid? sessionId,
-        (string Path, string Label)? workspace, MemorySearchPosition start, int limit, CancellationToken cancellationToken)
+        (string Path, string Label)? workspace, MemorySearchPosition start, int limit, CancellationToken cancellationToken, ArcanumSettings? settings = null, bool modelDisclosure = false, int contentByteLimit = 65536, long pageByteLimit = 8L * 1024 * 1024)
     {
-        Error unavailable = new(ErrorCodes.MemorySearch.IndexUnavailable,
-            "Persisted-memory search requires a healthy, completed Core search projection. Inspect arcanum doctor --only grimoire.schema_transition and allow a compatible host to finish any pending transition.");
+        if (GuildMemoryAccess.IsGuildInvocation && scope is MemorySearchScope.Workspace or MemorySearchScope.All)
+        {
+            return new Error(ErrorCodes.Guild.AuthorityUnavailable, "Mixed or workspace search requires separate host-bound source admissions.");
+        }
 
+        modelDisclosure |= GuildMemoryAccess.IsGuildInvocation;
+
+        Result availability = await CheckAvailabilityAsync(connection, cancellationToken).ConfigureAwait(false);
+
+        if (availability.IsFailure) return availability.Error;
+
+        try
+        {
+            return Result<NativeMemorySearchPage>.Success(await ReadCoreAsync(connection, query, scope, sessionId,
+                workspace, start, limit, cancellationToken, settings, modelDisclosure, contentByteLimit, pageByteLimit).ConfigureAwait(false));
+        }
+        catch (SqliteException exception) when (exception.SqliteErrorCode == 1
+            && exception.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase))
+        {
+            return SearchUnavailable();
+        }
+    }
+
+    private static Error SearchUnavailable() => new(ErrorCodes.MemorySearch.IndexUnavailable,
+        "Persisted-memory search requires a healthy, completed Core search projection. Inspect arcanum doctor --only grimoire.schema_transition and allow a compatible host to finish any pending transition.");
+
+    internal static async Task<Result> CheckAvailabilityAsync(DbConnection connection, CancellationToken cancellationToken)
+    {
         await using (DbCommand readiness = connection.CreateCommand())
         {
             readiness.CommandText = """
@@ -52,21 +83,21 @@ internal static class NativeMemorySearchReader
             try
             {
                 if (await readiness.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not long ready || ready != 1)
-                    return Result<NativeMemorySearchPage>.Failure(unavailable);
+                    return SearchUnavailable();
             }
             catch (SqliteException exception) when (exception.SqliteErrorCode is 1 or 11 or 26)
             {
-                return Result<NativeMemorySearchPage>.Failure(unavailable);
+                return SearchUnavailable();
             }
         }
 
-        return Result<NativeMemorySearchPage>.Success(await ReadCoreAsync(connection, query, scope, sessionId,
-            workspace, start, limit, cancellationToken).ConfigureAwait(false));
+        return Result.Success();
     }
 
     private static async Task<NativeMemorySearchPage> ReadCoreAsync(
         DbConnection connection, string query, MemorySearchScope scope, Guid? sessionId,
-        (string Path, string Label)? workspace, MemorySearchPosition start, int limit, CancellationToken cancellationToken)
+        (string Path, string Label)? workspace, MemorySearchPosition start, int limit, CancellationToken cancellationToken,
+        ArcanumSettings? settings, bool modelDisclosure, int contentByteLimit, long pageByteLimit)
     {
         (List<long>? sparse, int seedStatements) = scope is MemorySearchScope.Saga or MemorySearchScope.Lexicon
             ? (null, 0) : await ReadSparseCandidatesAsync(connection, query, cancellationToken).ConfigureAwait(false);
@@ -102,6 +133,9 @@ internal static class NativeMemorySearchReader
                 await using DbCommand metadata = connection.CreateCommand();
                 string predicate = source.Filter is null ? "1=1" : "d." + source.Filter;
                 if (owner is not null) { predicate += " AND d." + source.Owner + "=@owner"; Bind(metadata, "@owner", owner); }
+                // Scope and sensitivity are metadata predicates. Full-content digest verification
+                // waits until the candidate window has been charged to the examined-byte budget.
+                if (modelDisclosure) predicate += " AND (" + SourcePolicy(metadata, phase, settings, verifySummaryDigest: false) + ")";
                 if (after is not null)
                 {
                     IEnumerable<int> ranges = sparse is null ? [source.Keys.Length - 1 - branch] : Enumerable.Range(0, source.Keys.Length);
@@ -139,36 +173,91 @@ internal static class NativeMemorySearchReader
                 bytes += candidate.Bytes;
             }
 
+            // Establish only matching identities first. No returned content is selected until its
+            // result slot and byte allocation have both been admitted below.
             if (++statements > StatementLimit) return Page(MemorySearchTruncationReason.StatementLimit);
-            await using DbCommand match = connection.CreateCommand();
-            string names = string.Join(',', charged.Select((_, i) => "(@row" + i + ")"));
-            for (int i = 0; i < charged.Count; i++) Bind(match, "@row" + i, charged[i].RowId);
-            Bind(match, "@query", query);
-            string guard = "";
-            if (owner is not null)
+
+            HashSet<long> matched = [];
+
+            await using (DbCommand match = CreateMatchCommand(connection, source, charged, query, owner,
+                phase, modelDisclosure, settings, contentByteLimit, hydrate: false, Math.Max(0, limit - hits.Count) + 1))
             {
-                guard += " AND d." + source.Owner + "=@owner";
-                Bind(match, "@owner", owner);
+                await using DbDataReader reader = await match.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) matched.Add(reader.GetInt64(0));
             }
 
-            if (source.Filter is not null) guard += " AND d." + source.Filter;
-            match.CommandText = $"WITH selected(rowid) AS MATERIALIZED (VALUES {names}) SELECT d.rowid,{source.Select} FROM selected c CROSS JOIN {source.Table} d ON d.rowid=c.rowid{source.Join} WHERE ({string.Join(" OR ", source.Fields.Select(f => $"arcanum_ordinal_contains(d.{f},@query)"))}){guard} ORDER BY {Order(source, "d.")}";
-            Dictionary<long, MemorySearchResultDto> matches = [];
-            await using (DbDataReader reader = await match.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
-            {
-                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) matches.Add(reader.GetInt64(0), ReadHit(reader, phase, workspace?.Label));
-            }
+            List<Candidate> admitted = [];
+
+            long reservedBytes = returned;
+
+            MemorySearchTruncationReason? omitted = null;
 
             foreach (Candidate candidate in charged)
             {
+                if (!matched.Contains(candidate.RowId)) continue;
+
+                if (hits.Count + admitted.Count >= limit)
+                {
+                    omitted = MemorySearchTruncationReason.ResultLimit;
+
+                    break;
+                }
+
+                long candidateBytes = modelDisclosure ? Math.Min(candidate.Bytes, contentByteLimit) : candidate.Bytes;
+
+                if (reservedBytes >= pageByteLimit
+                    || modelDisclosure && reservedBytes + candidateBytes > pageByteLimit)
+                {
+                    omitted = MemorySearchTruncationReason.ContentBytes;
+
+                    break;
+                }
+
+                admitted.Add(candidate);
+
+                reservedBytes += candidateBytes;
+            }
+
+            Dictionary<long, MemorySearchResultDto> matches = [];
+
+            if (admitted.Count > 0)
+            {
+                if (++statements > StatementLimit) return Page(MemorySearchTruncationReason.StatementLimit);
+
+                await using DbCommand hydration = CreateMatchCommand(connection, source, admitted, query, owner,
+                    phase, modelDisclosure, settings, contentByteLimit, hydrate: true, 0);
+
+                await using DbDataReader reader = await hydration.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    MemorySearchResultDto hydrated = ReadHit(reader, phase, workspace?.Label, modelDisclosure);
+
+                    await GrimoireScopedConsumerTestSeam.PauseAsync(HydrationCheckpoint(connection),
+                        GrimoireScopedConsumerFinalUseKind.ReaderMaterialized, Encoding.UTF8.GetByteCount(hydrated.Content), cancellationToken).ConfigureAwait(false);
+
+                    matches.Add(reader.GetInt64(0), hydrated);
+                }
+            }
+
+            HashSet<long> admittedIds = [.. admitted.Select(candidate => candidate.RowId)];
+
+            foreach (Candidate candidate in charged)
+            {
+                if (matched.Contains(candidate.RowId) && !admittedIds.Contains(candidate.RowId))
+                    return Page(omitted ?? MemorySearchTruncationReason.ResultLimit);
+
                 if (matches.TryGetValue(candidate.RowId, out MemorySearchResultDto? hit))
                 {
-                    if (hits.Count >= limit) return Page(MemorySearchTruncationReason.ResultLimit);
                     hits.Add(new(hit, candidate.Position));
-                    returned += System.Text.Encoding.UTF8.GetByteCount(hit.Content);
+
+                    returned += Encoding.UTF8.GetByteCount(hit.Content);
                 }
+
                 position = candidate.Position;
-                if (returned >= 8L * 1024 * 1024) return Page(MemorySearchTruncationReason.ContentBytes);
+
+                if (returned >= pageByteLimit) return Page(MemorySearchTruncationReason.ContentBytes);
             }
 
             if (bytes >= ExaminedByteLimit) return Page(MemorySearchTruncationReason.ExaminedBytes);
@@ -179,6 +268,61 @@ internal static class NativeMemorySearchReader
         return new([.. hits], new(4), null);
 
         NativeMemorySearchPage Page(MemorySearchTruncationReason reason) => new([.. hits], position, reason);
+    }
+
+    private static DbCommand CreateMatchCommand(DbConnection connection, Source source, IReadOnlyList<Candidate> candidates,
+        string query, string? owner, int phase, bool modelDisclosure, ArcanumSettings? settings,
+        int contentByteLimit, bool hydrate, int matchingTake)
+    {
+        DbCommand command = connection.CreateCommand();
+
+        string names = string.Join(',', candidates.Select((_, index) => "(@row" + index + ")"));
+
+        for (int index = 0; index < candidates.Count; index++) Bind(command, "@row" + index, candidates[index].RowId);
+
+        Bind(command, "@query", query);
+
+        string guard = "";
+
+        if (owner is not null)
+        {
+            guard += " AND d." + source.Owner + "=@owner";
+
+            Bind(command, "@owner", owner);
+        }
+
+        if (source.Filter is not null) guard += " AND d." + source.Filter;
+
+        if (modelDisclosure) guard += " AND (" + SourcePolicy(command, phase, settings) + ")";
+
+        string select = source.Select;
+
+        if (hydrate && modelDisclosure)
+        {
+            select = select.Replace("COALESCE(s.Title,'')", "''", StringComparison.Ordinal)
+                .Replace("COALESCE(d.Title,'')", "''", StringComparison.Ordinal);
+
+            // Eligibility verifies the retained summary digest before the bounded projection.
+            if (phase == 1) select = select.Replace("d.Summary", "CASE WHEN octet_length(d.Summary)>@searchContentBytes THEN substr(d.Summary,1,@searchContentChars)||@searchExcerptMarker ELSE d.Summary END", StringComparison.Ordinal);
+
+            select = select.Replace("d.Content,", "CASE WHEN octet_length(d.Content)>@searchContentBytes THEN substr(d.Content,1,@searchContentChars)||@searchExcerptMarker ELSE d.Content END,", StringComparison.Ordinal);
+
+            Bind(command, "@searchContentBytes", contentByteLimit);
+
+            Bind(command, "@searchContentChars", Math.Max(1, (contentByteLimit - 96) / 4));
+
+            Bind(command, "@searchExcerptMarker", " [TRUNCATED excerpt; inspect the source for full content]");
+        }
+
+        string projection = hydrate ? "d.rowid," + select : "d.rowid";
+
+        string limit = hydrate ? "" : " LIMIT @matchingTake";
+
+        if (!hydrate) Bind(command, "@matchingTake", matchingTake);
+
+        command.CommandText = $"WITH selected(rowid) AS MATERIALIZED (VALUES {names}) SELECT {projection} FROM selected c CROSS JOIN {source.Table} d ON d.rowid=c.rowid{source.Join} WHERE ({string.Join(" OR ", source.Fields.Select(field => $"arcanum_ordinal_contains(d.{field},@query)"))}){guard} ORDER BY {Order(source, "d.")}{limit}";
+
+        return command;
     }
 
     private static async Task<(List<long>? Ids, int Statements)> ReadSparseCandidatesAsync(DbConnection connection, string query, CancellationToken cancellationToken)
@@ -221,17 +365,69 @@ internal static class NativeMemorySearchReader
         return (null, statements);
     }
 
+    internal static string HydrationCheckpoint(DbConnection connection) =>
+        "NativeMemorySearchReader.Hydrate:" + System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(connection).ToString(CultureInfo.InvariantCulture);
+
     private static object Coordinate(MemorySearchPosition position, int coordinate) => coordinate switch { 0 => position.Time!, 1 => position.Number, 2 => position.Path!, _ => position.Id! };
 
     private static string Order(Source source, string prefix) => string.Join(',', source.Keys.Select(k => prefix + k.Column + (k.Descending ? " DESC" : " ASC")));
 
     private static void Bind(DbCommand command, string name, object value) { DbParameter p = command.CreateParameter(); p.ParameterName = name; p.Value = value; command.Parameters.Add(p); }
 
-    private static MemorySearchResultDto ReadHit(DbDataReader r, int phase, string? workspace) => phase switch
+    private static string SourcePolicy(DbCommand command, int phase, ArcanumSettings? settings, bool verifySummaryDigest = true)
     {
+        if (phase == 3)
+        {
+            if (GuildMemoryAccess.IsGuildInvocation) throw new GuildMemoryAccessException(new(ErrorCodes.Guild.AuthorityUnavailable, "Workspace source authority is unavailable."));
+
+            return "1=1";
+        }
+
+        GuildMemoryStore store = phase == 2 ? GuildMemoryStore.Attachment : GuildMemoryStore.Transcript;
+
+        string scope = GuildMemoryAccess.SqlSession(command, store, GuildMemoryOperation.Read, phase == 1 ? "d.Id" : "d.SessionId");
+
+        if (phase == 0) return scope + " AND NOT EXISTS(SELECT 1 FROM artifact_sensitivity search_label WHERE search_label.ArtifactKindCode=1 AND lower(replace(search_label.ArtifactId,'-',''))=lower(replace(d.Id,'-','')))";
+
+        if (phase == 1) return scope + " AND " + SummaryEligible("d")
+            + (verifySummaryDigest ? " AND arcanum_derived_content_matches(d.Summary," + SummaryDigestProjection("d") + ")" : "");
+
+        scope += " AND " + SessionAttachmentGuildReadPolicy.Indexed("d");
+
+        if (settings is null || !SessionAttachmentComprehensionPolicy.IsEnabled(settings))
+        {
+            scope += $" AND {SessionAttachmentDocumentMimeSql.NormalizedExpression("d.MimeType")} NOT IN ({SessionAttachmentDocumentMimeSql.ParameterList})";
+
+            foreach (KeyValuePair<string, string> mime in SessionAttachmentDocumentMimeSql.Parameters) Bind(command, mime.Key, mime.Value);
+        }
+
+        return scope;
+    }
+
+    private static string SummaryEligible(string session) => $"""
+        EXISTS(SELECT 1 FROM session_summary_state search_state
+          JOIN session_summary_artifacts search_artifact ON search_artifact.ArtifactId=search_state.CurrentArtifactId
+            AND search_artifact.SessionId=search_state.SessionId AND search_artifact.Revision=search_state.Revision
+          WHERE search_state.SessionId={session}.Id COLLATE NOCASE AND search_artifact.SensitivityCode=0
+            AND NOT EXISTS(SELECT 1 FROM artifact_sensitivity search_label WHERE search_label.ArtifactKindCode=3
+              AND lower(replace(search_label.ArtifactId,'-',''))=lower(replace(search_artifact.ArtifactId,'-',''))))
+        """;
+
+    private static string SummaryDigestProjection(string session) => $"""
+        (SELECT search_artifact.ContentDigest FROM session_summary_state search_state
+          JOIN session_summary_artifacts search_artifact ON search_artifact.ArtifactId=search_state.CurrentArtifactId
+            AND search_artifact.SessionId=search_state.SessionId AND search_artifact.Revision=search_state.Revision
+          WHERE search_state.SessionId={session}.Id COLLATE NOCASE)
+        """;
+
+    private static MemorySearchResultDto ReadHit(DbDataReader r, int phase, string? workspace, bool modelDisclosure)
+    {
+        return phase switch
+        {
         0 => new(MemorySearchScope.Session, $"Session entry ({(MessageRole)r.GetInt32(4)})", r.GetString(3), $"Session {(r.GetString(5).Length == 0 ? r.GetString(2) : r.GetString(5))}, entry {r.GetString(1)}", "Session lifetime; archiving retains it and session purge removes it.", r.GetString(1)),
         1 => new(MemorySearchScope.Session, "Session Summary", r.GetString(3), $"Session {(r.GetString(2).Length == 0 ? r.GetString(1) : r.GetString(2))}, Summary field", "Session lifetime; archiving retains it and session purge removes it.", r.GetString(1)),
         2 => new(MemorySearchScope.Attachments, $"{r.GetString(6)} chunk {r.GetInt32(7)}", r.GetString(8), $"Session {r.GetString(2)}, attachment {r.GetString(3)}, logical key {r.GetString(4)}, version {r.GetInt32(5)}, content hash {r.GetString(9)}", "Derived and rebuildable from bound attachment versions; removed with the attachment or index reset.", r.GetString(1)),
         _ => new(MemorySearchScope.Workspace, $"{r.GetString(3)} lines {r.GetInt32(6)}-{r.GetInt32(7)}", r.GetString(5), $"Workspace {workspace ?? "indexed workspace"}, relative file {r.GetString(3)}, chunk {r.GetInt32(4)}", "Derived and rebuildable from registered workspace files; not session memory.", r.GetString(1)),
-    };
+        };
+    }
 }

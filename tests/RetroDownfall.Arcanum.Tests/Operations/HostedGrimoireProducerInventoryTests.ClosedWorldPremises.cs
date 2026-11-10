@@ -1054,12 +1054,51 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Theory]
     [InlineData("PidFileService")]
     [InlineData("GuildMaintenanceHostedService")]
+    [InlineData("GuildQuestRecovery")]
     [InlineData("Issue145AffectedPrimary")]
     [InlineData("Issue145SchemaAdditional")]
     [Trait("Category", "HostedProducerProductionAnalysis")]
     [Trait("Category", "HostedProducerAdditionalAnalysis")]
     public void The_production_entry_runs_only_the_named_roots_under_the_production_premise(string serviceType)
     {
+        if (serviceType == "GuildQuestRecovery")
+        {
+            const string type = "RetroDownfall.Arcanum.Infrastructure.Guild.GuildQuestRecoveryHandler";
+
+            const string operation = type + ".RecoverAsync";
+
+            HostedProducerDiscovery<HostedProducerSite> recovery = HostedGrimoireProducerInventory.DiscoverProductionSites(
+                HostedProducerProductionPartition.Additional, [operation]);
+
+            Assert.True(recovery.Diagnostics.Count == 0,
+                HostedGrimoireProducerInventory.RenderDiagnosticReport(recovery.Diagnostics));
+
+            Assert.NotEmpty(recovery.Items);
+
+            Assert.All(recovery.Items, site => Assert.Equal(type, site.RootType));
+
+            HostedProducerAnalysisMetrics metrics = Assert.IsType<HostedProducerAnalysisMetrics>(recovery.AnalysisMetrics);
+
+            HostedProducerRootTraversalMetric traversal = Assert.Single(metrics.RootTraversals);
+
+            Assert.Equal(type, traversal.RootType);
+
+            Assert.Equal(operation, traversal.RootOperation);
+
+            foreach (string line in RenderRootTraversalMetrics(metrics.RootTraversals)) output.WriteLine(line);
+
+            output.WriteLine(HostedGrimoireProducerInventory.RenderCapsuleManifest(recovery.Items));
+
+            HeadroomCeiling ceiling = Assert.Single(AdditionalRootCeilings, row => row.RootOperation == operation);
+
+            string[] violations = HeadroomViolations(metrics.RootTraversals, [ceiling],
+                HostedGrimoireProducerInventory.MaximumAnalyzedStatesPerRoot);
+
+            Assert.True(violations.Length == 0, string.Join(global::System.Environment.NewLine, violations));
+
+            return;
+        }
+
         if (serviceType is "Issue145AffectedPrimary" or "Issue145SchemaAdditional")
         {
             VerifyIssue145AffectedProductionRoots(serviceType == "Issue145SchemaAdditional");

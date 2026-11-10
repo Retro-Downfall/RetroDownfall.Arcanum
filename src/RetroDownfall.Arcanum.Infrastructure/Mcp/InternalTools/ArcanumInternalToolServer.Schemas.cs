@@ -590,7 +590,7 @@ internal sealed partial class ArcanumInternalToolServer
         });
     }
 
-    private static JsonElement BuildReadSagaSchema()
+    internal static JsonElement BuildSearchMemorySchema()
     {
         return BuildSchema(static w =>
         {
@@ -601,12 +601,16 @@ internal sealed partial class ArcanumInternalToolServer
             WriteStringProperty(
                 w,
                 "query",
-                "Natural-language query to semantically search Saga (long-term associative memory) for relevant past facts, decisions, and preferences.");
+                "Search authorized Session, attachment, workspace, Saga and Lexicon memory. Results identify their store.");
 
             WriteIntegerProperty(
                 w,
                 "limit",
                 "Optional maximum number of memories to return (omission uses the code-owned default).");
+
+            WriteStringProperty(w, "scope", "Optional memory store scope; omission searches all authorized stores.");
+
+            WriteStringProperty(w, "continuation", "Opaque continuation returned by the previous memory page.");
 
             w.WriteEndObject();
 
@@ -741,7 +745,7 @@ internal sealed partial class ArcanumInternalToolServer
             WriteStringProperty(
                 w,
                 "source",
-                "Optional origin label (defaults to send_commlink_alert).");
+                "Optional origin label (defaults to send_notification).");
 
             w.WriteEndObject();
 
@@ -775,142 +779,13 @@ internal sealed partial class ArcanumInternalToolServer
             WriteStringProperty(
                 w,
                 "source",
-                "Optional origin label (defaults to petition_dungeon_master).");
+                "Optional origin label (defaults to request_intervention).");
 
             w.WriteEndObject();
 
             w.WriteStartArray("required");
 
             w.WriteStringValue("reason");
-
-            w.WriteEndArray();
-
-            w.WriteBoolean("additionalProperties", false);
-        });
-    }
-
-    internal static JsonElement BuildCastSendingSchema()
-    {
-        return BuildSchema(static w =>
-        {
-            w.WriteString("type", "object");
-
-            w.WriteStartObject("properties");
-
-            WriteStringProperty(
-                w,
-                "goal",
-                "The goal for the new child Apprentice. Describe the delegated sub-task clearly and self-containedly.");
-
-            WriteStringProperty(
-                w,
-                "name",
-                "Optional display name for the child Apprentice. A themed default is used when omitted.");
-
-            w.WriteEndObject();
-
-            w.WriteStartArray("required");
-
-            w.WriteStringValue("goal");
-
-            w.WriteEndArray();
-
-            w.WriteBoolean("additionalProperties", false);
-        });
-    }
-
-    private static JsonElement BuildDispatchSendingSchema()
-    {
-        return BuildSchema(static w =>
-        {
-            w.WriteString("type", "object");
-
-            w.WriteStartObject("properties");
-
-            WriteStringProperty(
-                w,
-                "goal",
-                "The goal to delegate to the remote agent. Describe the task clearly and self-containedly.");
-
-            WriteStringProperty(
-                w,
-                "agent_url",
-                "The base URL of a remote A2A-compatible agent. Its Agent Card is discovered from this URL before dispatch.");
-
-            WriteStringProperty(
-                w,
-                "name",
-                "Optional display name for this Sending, used in Chronicle events.");
-
-            WriteBooleanProperty(
-                w,
-                "continuable",
-                "When true, a remote agent that asks for more input or authentication returns a continuation "
-                + "task id instead of ending the Sending, so the request can be answered. Defaults to false "
-                + "(the Sending ends with an actionable reason and the remote task is cancelled).");
-
-            WriteBooleanProperty(
-                w,
-                "callback",
-                "When true, ask the remote agent to report back when it finishes instead of holding one of "
-                + "this instance's concurrent-Sending slots for the whole remote run. Falls back to the "
-                + "ordinary wait when the peer cannot accept a callback.");
-
-            WriteSendingNegotiationProperties(w);
-
-            w.WriteEndObject();
-
-            w.WriteStartArray("required");
-
-            w.WriteStringValue("goal");
-
-            w.WriteStringValue("agent_url");
-
-            w.WriteEndArray();
-
-            w.WriteBoolean("additionalProperties", false);
-        });
-    }
-
-    private static JsonElement BuildContinueSendingSchema()
-    {
-        return BuildSchema(static w =>
-        {
-            w.WriteString("type", "object");
-
-            w.WriteStartObject("properties");
-
-            WriteStringProperty(
-                w,
-                "task_id",
-                "Remote A2A task id returned by a continuable dispatch_sending that stopped at input-required or auth-required.");
-
-            WriteStringProperty(
-                w,
-                "agent_url",
-                "The same remote agent URL the Sending was dispatched to.");
-
-            WriteStringProperty(
-                w,
-                "message",
-                "The input or credential the remote agent asked for.");
-
-            WriteBooleanProperty(
-                w,
-                "continuable",
-                "When true, keep returning a continuation task id if the remote agent asks for something again.");
-
-            WriteSendingNegotiationProperties(w);
-
-            w.WriteEndObject();
-
-            w.WriteStartArray("required");
-
-            w.WriteStringValue("task_id");
-
-            w.WriteStringValue("agent_url");
-
-            w.WriteStringValue("message");
 
             w.WriteEndArray();
 
@@ -986,22 +861,4 @@ internal sealed partial class ArcanumInternalToolServer
         w.WriteEndObject();
     }
 
-    /// <summary>
-    /// The two Agent Card negotiation knobs both Sending tools share (issue #65).
-    /// </summary>
-    private static void WriteSendingNegotiationProperties(Utf8JsonWriter w)
-    {
-        WriteStringProperty(
-            w,
-            "skill_id",
-            "Optional Agent Card skill id to target. The dispatch fails before the remote task is created "
-            + "if the peer advertises no such skill.");
-
-        WriteStringArrayProperty(
-            w,
-            "accepted_output_modes",
-            "Optional media types to accept back (e.g. \"text/plain\"). Omit to accept whatever this "
-            + "instance can consume. A peer whose Agent Card can produce none of them is refused before "
-            + "the remote task is created.");
-    }
 }

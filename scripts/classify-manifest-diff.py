@@ -1031,7 +1031,45 @@ GUILD_CANCELLATION_HANDOFF_REACHES = tuple(
 )
 
 
+GUILD_LEGACY_WAIT_DIAGNOSTIC_REACHES = tuple(
+    Reach(
+        root,
+        operation,
+        "src/RetroDownfall.Arcanum.Infrastructure/" + source,
+        member,
+        callee,
+        "+",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalWaitCheckpoint.cs",
+        "await ReadDiagnosticWaitSnapshotWithinAsync(connection, transaction, questId, continuationId.Value, ct)",
+        "Quest reads now project Guild.LegacyToolName through the new retained-wait diagnostic reader; "
+        "ReadDiagnosticWaitSnapshotWithinAsync checks the exact execution binding and calls ValidateReferenceAsync, "
+        "which verifies the sensitivity label and artifact before interpreting the bounded, digest-checked checkpoint; "
+        "only removed-tool identifiers and replacements are projected",
+    )
+    for root, operation in (
+        ("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ExecuteGuildAsync"),
+        ("GuildInboundPeerReloadService", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildInboundPeerReloadService.ExecuteAsync"),
+        ("GuildInboundPeerReloadService", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildInboundPeerReloadService.OnChanged"),
+        ("GuildInboundPeerReloadService", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildInboundPeerReloadService.StartAsync"),
+        ("GuildLocalQuestScheduler", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.DrainCancellationAsync"),
+        ("GuildLocalQuestScheduler", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.ExecuteAsync"),
+        ("GuildLocalQuestScheduler", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.RunAdmittedAsync"),
+        ("GuildLocalQuestScheduler", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.RunRemoteAdmittedAsync"),
+    )
+    for source, member, callee in (
+        ("Data/Covenant/ArtifactSensitivityLedger.cs", "ReadLabelWithinAsync", "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync"),
+        ("Data/Covenant/ArtifactSensitivityLedger.cs", "ReadLabelWithinAsync", "System.Data.Common.DbDataReader.ReadAsync"),
+        ("Guild/GuildContentLifecycle.cs", "ValidateArtifactAsync", "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync"),
+        ("Guild/GuildContentLifecycle.cs", "ValidateArtifactAsync", "System.Data.Common.DbDataReader.ReadAsync"),
+        ("Guild/GuildLocalExecutionStore.Reads.cs", "ReadWithinAsync", "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync"),
+        ("Guild/GuildLocalExecutionStore.Reads.cs", "ReadWithinAsync", "System.Data.Common.DbDataReader.ReadAsync"),
+        ("Guild/GuildLocalExecutionStore.Reads.cs", "ValidateReferenceAsync", "System.Data.Common.DbCommand.ExecuteScalarAsync"),
+    )
+)
+
+
 REACHED_THROUGH = (
+    *GUILD_LEGACY_WAIT_DIAGNOSTIC_REACHES,
     *GUILD_CANCELLATION_HANDOFF_REACHES,
     *GUILD_MEMORY_READ_REACHES,
     *APPRENTICE_GUILD_OWNERSHIP_REACHES,

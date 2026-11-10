@@ -1,5 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Tests.Support;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -33,7 +35,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         GuildCallerContext owner = await f.OperatorAsync();
 
-        GuildToolGrant tool = new(GuildToolSourceKind.InternalMcp, "arcanum", "cast_sending");
+        GuildToolGrant tool = new(GuildToolSourceKind.InternalMcp, "arcanum", "create_agent_task");
 
         var root = await f.IssueAsync(owner, f.Request with { Grant = f.Request.Grant with { Tools = [tool] } });
 
@@ -101,7 +103,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         GuildCallerContext owner = await f.OperatorAsync();
 
-        GuildToolGrant tool = new(GuildToolSourceKind.InternalMcp, "arcanum", "cast_sending");
+        GuildToolGrant tool = new(GuildToolSourceKind.InternalMcp, "arcanum", "create_agent_task");
 
         var root = await f.IssueAsync(owner, f.Request with { Grant = f.Request.Grant with { Tools = [tool] } });
 
@@ -125,7 +127,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using IDisposable frame = registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), tool);
 
-        Task<(bool Error, string Text)> pending = route.CallAsync(boundary == "wrong-name" ? "get_sending" : "cast_sending",
+        Task<(bool Error, string Text)> pending = route.CallAsync(boundary == "wrong-name" ? "get_sending" : "create_agent_task",
             boundary == "duplicate-argument" ? """{"goal":"First goal","goal":"Second goal","name":"Child"}""" : null);
 
         await route.RequestWritten;
@@ -186,9 +188,11 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal void StartServer() => _serverTask ??= Task.Run(_runServer!);
 
-        internal static async Task<GuildMcpRoute> CreateAsync(bool useSdk, bool deferServer = false, bool generation = false)
+        internal static async Task<GuildMcpRoute> CreateAsync(bool useSdk, bool deferServer = false, bool generation = false, long outputCapBytes = 1_048_576)
         {
-            ServiceProvider services = new ServiceCollection().BuildServiceProvider();
+            ServiceProvider services = new ServiceCollection()
+                .AddSingleton<IOptionsMonitor<ArcanumSettings>>(new TestOptionsMonitor<ArcanumSettings>(new() { Features = new() { Guild = true, Conclave = true } }))
+                .BuildServiceProvider();
 
             IServiceScopeFactory scopeFactory = services.GetRequiredService<IServiceScopeFactory>();
 
@@ -199,7 +203,7 @@ public sealed partial class GuildLocalHostPolicyTests
             if (useSdk)
             {
                 var (toServer, fromServer, server) = InProcessMcpTransport.CreateServerChannelPair(new HumanPromptRegistry(),
-                    scopeFactory, new GuildMcpPacer(), null, 16, new IntelligenceSettings(), 1024,
+                    scopeFactory, new GuildMcpPacer(), null, 16, new IntelligenceSettings { ToolOutputCapBytes = outputCapBytes }, 1024,
                     true, false, false, false, 1_048_576, NullLogger<ArcanumInternalToolServer>.Instance);
 
                 ChannelClientTransport transport = new(toServer, fromServer, 1_048_576, server.AmbientConnectionKey);
@@ -221,12 +225,12 @@ public sealed partial class GuildLocalHostPolicyTests
                 IReadOnlyList<McpBridgeTool> tools = route._generation is { } owned
                     ? await owned.GetToolsAsync(lifetime.Token) : await sdk.GetToolsAsync(lifetime.Token);
 
-                route._bridge = tools.Single(function => function.Name == "cast_sending");
+                route._bridge = tools.Single(function => function.Name == "create_agent_task");
             }
             else
             {
                 var (transport, server) = InProcessMcpTransport.CreatePair(new HumanPromptRegistry(), scopeFactory,
-                    new GuildMcpPacer(), null, 16, new IntelligenceSettings(), 1024, true, false, false, false, 1_048_576);
+                    new GuildMcpPacer(), null, 16, new IntelligenceSettings { ToolOutputCapBytes = outputCapBytes }, 1024, true, false, false, false, 1_048_576);
 
                 route = new(services, transport, null, lifetime);
 
@@ -265,7 +269,7 @@ public sealed partial class GuildLocalHostPolicyTests
             return JsonSerializer.Deserialize(result.Text, GuildJsonContext.Default.GuildQuestDto)!;
         }
 
-        internal async Task<(bool Error, string Text)> CallAsync(string name = "cast_sending", string? argumentsJson = null)
+        internal async Task<(bool Error, string Text)> CallAsync(string name = "create_agent_task", string? argumentsJson = null)
         {
             if (sdk is not null)
             {

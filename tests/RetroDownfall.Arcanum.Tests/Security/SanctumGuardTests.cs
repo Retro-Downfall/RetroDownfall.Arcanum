@@ -48,7 +48,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             campaignId.ToString(),
             "/etc/passwd",
             "read",
-            "read_file_chunk");
+            "read_file");
 
         Assert.True(result.Allowed);
     }
@@ -69,7 +69,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             campaignId.ToString(),
             "bad\u0000path",
             "read",
-            "read_file_chunk");
+            "read_file");
 
         Assert.False(result.Allowed);
 
@@ -92,7 +92,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             campaignId.ToString(),
             "/etc/passwd",
             "read",
-            "read_file_chunk");
+            "read_file");
 
         Assert.True(result.Allowed);
     }
@@ -115,7 +115,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             campaignId.ToString(),
             nestedFile,
             "read",
-            "read_file_chunk");
+            "read_file");
 
         Assert.True(result.Allowed);
     }
@@ -146,7 +146,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
                 campaignId.ToString(),
                 Path.Combine(outside, "secret.txt"),
                 "read",
-                "read_file_chunk");
+                "read_file");
 
             Assert.False(result.Allowed);
 
@@ -188,7 +188,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             campaignId.ToString(),
             file,
             "read",
-            "read_file_chunk");
+            "read_file");
 
         Assert.True(result.Allowed);
     }
@@ -227,7 +227,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             campaignId.ToString(),
             file,
             "read",
-            "read_file_chunk");
+            "read_file");
 
         Assert.True(result.Allowed);
     }
@@ -260,7 +260,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             campaignId.ToString(),
             file,
             "read",
-            "read_file_chunk");
+            "read_file");
 
         Assert.True(result.Allowed);
     }
@@ -291,7 +291,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             campaignId.ToString(),
             file,
             "read",
-            "read_file_chunk");
+            "read_file");
 
         Assert.True(result.Allowed);
     }
@@ -324,7 +324,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
                 campaignId.ToString(),
                 file,
                 "read",
-                "read_file_chunk");
+                "read_file");
 
             Assert.True(result.Allowed);
         }
@@ -358,7 +358,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
                 campaignId.ToString(),
                 Path.Combine(outside, "secret.txt"),
                 "read",
-                "read_file_chunk");
+                "read_file");
 
             Assert.False(result.Allowed);
         }
@@ -384,7 +384,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             campaignId.ToString(),
             _workspace.WriteFile("readme.md", "hello"),
             "read",
-            "read_file_chunk");
+            "read_file");
 
         Assert.False(result.Allowed);
 
@@ -398,7 +398,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             Guid.NewGuid().ToString(),
             "/etc/passwd",
             "read",
-            "read_file_chunk");
+            "read_file");
 
         Assert.False(result.Allowed);
 
@@ -414,7 +414,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "",
             "/etc/passwd",
             "read",
-            "read_file_chunk");
+            "read_file");
 
         Assert.True(result.Allowed);
 
@@ -617,7 +617,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
         SanctumResult result = await CreateGuard(repository).ValidateToolAsync(
             campaignId.ToString(),
-            "read_file_chunk");
+            "read_file");
 
         Assert.True(result.Allowed);
     }
@@ -861,7 +861,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
     {
         SanctumResult result = await CreateGuard(new FakeCampaignRepository()).ValidateToolAsync(
             "not-a-valid-guid",
-            "read_file_chunk");
+            "read_file");
 
         Assert.False(result.Allowed);
 

@@ -33,8 +33,8 @@ public sealed class DiagnosticMcpInvocationService
     {
         ToolRiskClassifier.ExecuteCommandToolName,
         "write_file",
-        "replace_text_block",
-        "delete_lexicon",
+        "edit_file",
+        "delete_memory",
         HostProcessToolPolicy.RunSpellScriptToolName,
         ToolRiskClassifier.ApplyPatchToolName,
         ToolRiskClassifier.WorkspaceCheckToolName,

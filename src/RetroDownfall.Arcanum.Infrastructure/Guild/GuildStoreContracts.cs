@@ -8,7 +8,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 internal sealed record GuildStoredAgentCardPayload(GuildAgentCard Card, string Guidance, ImmutableArray<string> RequestedTools,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] GuildRemoteTransportDescriptor? RemoteTransport = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? DiscoveryEndpoint = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? DiscoveryEndpoint = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? RequestedToolsSpecified = null);
 
 internal sealed record GuildCardWrite(string SourceIdentity, Guid? ExplicitAgentId, Guid? SessionId, Guid? CampaignId,
     GuildStoredAgentCardPayload Payload, string SourceDigest, long? ExpectedRevision = null, ArtifactSensitivityLabel? Label = null, string? WorkspaceRoot = null);
@@ -23,6 +24,7 @@ internal sealed record GuildCardReadScope(Guid? WorkspaceId, Guid? SessionId, Gu
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(GuildStoredAgentCardPayload))]
 [JsonSerializable(typeof(GuildLocalExecutionInput))]
+[JsonSerializable(typeof(GuildLocalExecutionCardInput))]
 [JsonSerializable(typeof(GuildRemoteExecutionInput))]
 [JsonSerializable(typeof(GuildLocalWaitSnapshot))]
 internal sealed partial class GuildStorageJsonContext : JsonSerializerContext;

@@ -96,14 +96,14 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
         if (lease.Provider.Name != binding.Input.Provider || lease.ResolvedModel != binding.Input.Model) return GuildContextUnavailable;
 
         using GuildLocalToolRegistry registry = new(binding.Execution, binding.Input,
-            serviceProvider?.GetService<IGuildLocalChildToolDispatcher>());
+            serviceProvider?.GetService<IGuildLocalChildToolDispatcher>(),
+            ArcanumSettingClamps.ToolOutputCapBytes(settings.Value.ResolveIntelligence().ToolOutputCapBytes));
 
         bool Eligible(GuildToolGrant tool)
         {
             ArcanumSettings current = serviceProvider?.GetService<IOptionsMonitor<ArcanumSettings>>()?.CurrentValue ?? settings.Value;
 
-            return !request.DisableAllTools && current.Features.Guild
-                && (tool.Name == ArcanumBuiltInToolNames.DelegateTask || tool.Name == "cast_sending" && current.Features.Conclave);
+            return !request.DisableAllTools && current.Features.Guild;
         }
 
         GuildToolInvocationContext tools = binding.Execution.Store.CreateToolContext(binding.Execution, registry, Eligible);
@@ -116,7 +116,8 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
         {
             GuildSchemaFunction template = tool.Name == ArcanumBuiltInToolNames.DelegateTask
                 ? new(tool.Name, "Run a self-contained task in an isolated child with an explicit budget and return its result.", ArcanumDelegateTaskTool.GuildSchema)
-                : new(tool.Name, "Delegate a task to an Apprentice Quest.", ArcanumInternalToolServer.BuildCastSendingSchema());
+                : new(tool.Name, ArcanumInternalToolServer.DescribeGuildTool(tool.Name), tool.Name == "search_memory" ? ArcanumInternalToolServer.BuildSearchMemorySchema()
+                    : ArcanumInternalToolServer.BuildTaskToolSchema(tool.Name));
 
             if (await tools.AdvertiseAsync(template, tool, ct).ConfigureAwait(false) is { } advertised) functions.Add(advertised);
         }

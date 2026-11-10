@@ -1014,7 +1014,7 @@ public sealed partial class SpellRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task ValidateAsync_recognizes_browse_web_as_a_builtin_tool()
+    public async Task ValidateAsync_recognizes_browse_web_as_a_known_unavailable_builtin_tool()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -1056,11 +1056,10 @@ public sealed partial class SpellRepositoryTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.True(validation.IsValid, string.Join("; ", validation.Errors));
-        Assert.DoesNotContain(
-            validation.Warnings,
-            static warning => warning.Contains(
-                "browse_web",
-                StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(validation.Warnings, static warning => warning.Contains("browse_web", StringComparison.OrdinalIgnoreCase)
+            && warning.Contains("known but unavailable", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(validation.Warnings, static warning => warning.Contains("unknown", StringComparison.Ordinal));
     }
 
     [SkippableFact]
@@ -3124,7 +3123,7 @@ public sealed partial class SpellRepositoryTests : IAsyncLifetime
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             FixtureLabeledArtifactGuard.For(_db!));
 
-    private sealed class FakeMcpConnectionManager : IMcpConnectionManager
+    private sealed class FakeMcpConnectionManager(string? toolWorkspace = null) : IMcpConnectionManager
     {
         public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
@@ -3146,7 +3145,8 @@ public sealed partial class SpellRepositoryTests : IAsyncLifetime
             Task.FromResult(Array.Empty<McpServerInfo>());
 
         public Task<IReadOnlyList<AITool>> GetAvailableToolsAsync(string? workingDirectory, CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<AITool>>([]);
+            Task.FromResult<IReadOnlyList<AITool>>(toolWorkspace is not null && workingDirectory == toolWorkspace
+                ? [AIFunctionFactory.Create(static () => "workspace", "workspace_tool")] : []);
 
         public Task<AIFunction?> GetToolAsync(
             string serverName,

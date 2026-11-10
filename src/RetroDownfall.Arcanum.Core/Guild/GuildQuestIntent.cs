@@ -96,6 +96,8 @@ public static class GuildQuestIntent
 
         WriteIdentity(writer, "agentId", request.AgentId);
 
+        if (request.CardId is not null) WriteIdentity(writer, "cardId", request.CardId);
+
         WriteText(writer, "name", request.Name);
 
         WriteText(writer, "goal", NormalizeGoal(request.Goal));

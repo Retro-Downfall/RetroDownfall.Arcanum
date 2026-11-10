@@ -47,7 +47,7 @@ public sealed class SystemPromptBuilderResonanceTests
 
         Assert.Contains("analyze.py", prompt, StringComparison.Ordinal);
 
-        Assert.Contains("run_spell_script", prompt, StringComparison.Ordinal);
+        Assert.Contains("run_script", prompt, StringComparison.Ordinal);
     }
 
     [Fact]

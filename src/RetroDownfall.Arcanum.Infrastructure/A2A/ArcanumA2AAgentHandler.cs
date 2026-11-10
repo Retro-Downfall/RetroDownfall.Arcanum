@@ -17,7 +17,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 /// <summary>
 /// The A2A server side of the Conclave: implements the SDK's <see cref="IAgentHandler"/> so external A2A
 /// clients can drive Arcanum Apprentices. An inbound message spawns a headless Apprentice via the same
-/// <see cref="IConclaveArchmage"/> used by <c>cast_sending</c> and <c>POST /api/apprentices/{id}/cast</c>;
+/// <see cref="IConclaveArchmage"/> used by <c>create_agent_task</c> and <c>POST /api/apprentices/{id}/cast</c>;
 /// the Apprentice's own Chronicle is then forwarded onto the A2A task lifecycle until a terminal state.
 /// </summary>
 /// <remarks>

@@ -39,7 +39,7 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 /// <item><description>the other bulk review actions in each store: Confirm, Unpin, and Correct, where the Saga
 /// correction releases an erasure fingerprint implicitly while the other two stores hold
 /// fingerprints of their own;</description></item>
-/// <item><description>the agent tools <c>scribe_lexicon</c> and <c>delete_lexicon</c>, through the function the
+/// <item><description>the agent tools <c>save_memory</c> and <c>delete_memory</c>, through the function the
 /// host's MCP bridge hands a turn, which outside a turn writes the Global tier.</description></item>
 /// </list>
 ///
@@ -134,7 +134,7 @@ public sealed class MemoryCrossStoreIsolationTests
         new("legacy-lexicon-delete", MemoryStoreFamily.Lexicon, NoPrecondition, static world => DeleteAsync(world, $"/api/memory/lexicon/{Uri.EscapeDataString(GlobalEntry)}")),
         new("agent-scribe-lexicon", MemoryStoreFamily.Lexicon, NoPrecondition, static world => ScribeByToolAsync(world)) { AgentTool = true },
 
-        // An agent tool call never carries sensitivity-purge authority, so delete_lexicon refuses a
+        // An agent tool call never carries sensitivity-purge authority, so delete_memory refuses a
         // labelled target by design; this row deletes an unlabelled entry beside labelled bystanders.
         new("agent-delete-lexicon", MemoryStoreFamily.Lexicon, NoPrecondition, static world => DeleteByToolAsync(world)) { AgentTool = true, Unlabelled = SeededItem.GlobalEntry },
     ];
@@ -792,14 +792,14 @@ public sealed class MemoryCrossStoreIsolationTests
     }
 
     /// <summary>
-    /// Scribes a new Global entry through the agent's <c>scribe_lexicon</c> tool. Outside a turn a tool
+    /// Scribes a new Global entry through the agent's <c>save_memory</c> tool. Outside a turn a tool
     /// call has no Session, so it writes the Global tier.
     /// </summary>
     private static async Task ScribeByToolAsync(IsolationWorld world)
     {
         string text = await InvokeToolAsync(
             world,
-            "scribe_lexicon",
+            "save_memory",
             new Dictionary<string, object?>
             {
                 ["name"] = "Iso Herald",
@@ -810,10 +810,10 @@ public sealed class MemoryCrossStoreIsolationTests
         Assert.Contains("Iso Herald", text, StringComparison.Ordinal);
     }
 
-    /// <summary>Deletes the Global entry through the agent's <c>delete_lexicon</c> tool.</summary>
+    /// <summary>Deletes the Global entry through the agent's <c>delete_memory</c> tool.</summary>
     private static async Task DeleteByToolAsync(IsolationWorld world)
     {
-        string text = await InvokeToolAsync(world, "delete_lexicon", new Dictionary<string, object?> { ["name"] = GlobalEntry });
+        string text = await InvokeToolAsync(world, "delete_memory", new Dictionary<string, object?> { ["name"] = GlobalEntry });
 
         Assert.Contains("was removed", text, StringComparison.Ordinal);
     }

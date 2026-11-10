@@ -1,163 +1,96 @@
-using System.Globalization;
 using System.Text;
 using System.Text.Json;
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Memory;
+using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
+using RetroDownfall.Arcanum.Infrastructure.Memory;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
-/// <summary>
-/// RAG Phase 4 — <c>read_saga</c>: semantic search over Saga (long-term associative memory). Read-only
-/// by design — there is no <c>scribe_saga</c> or <c>delete_saga</c> counterpart, so the model cannot
-/// poison its own memory. Gated by <c>Arcanum:Features:Saga</c> plus valid
-/// <c>Arcanum:Integrations:Embeddings</c> provider/model facts (see
-/// <see cref="ArcanumInternalToolServer._sagaEnabled"/>, checked both at <c>tools/list</c>
-/// advertising and <c>tools/call</c> dispatch).
-/// </summary>
 internal sealed partial class ArcanumInternalToolServer
 {
-    private async Task<McpToolsCallResultWire> ExecuteReadSagaAsync(JsonElement arguments, CancellationToken cancellationToken)
+    private async Task<McpToolsCallResultWire> ExecuteSearchMemoryAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
-        ReadSagaParams? args;
+        SearchMemoryParams? args;
 
         try
         {
-            args = JsonSerializer.Deserialize(arguments, _json.ReadSagaParams);
+            args = JsonSerializer.Deserialize(arguments, _json.SearchMemoryParams);
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            _logger?.LogError(ex, "read_saga argument deserialization failed.");
-
-            return ToolError("Invalid arguments for read_saga.");
+            return ToolError("Invalid arguments for search_memory.");
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.Query))
         {
-            return ToolError("read_saga requires a non-empty 'query'.");
+            return ToolError("search_memory requires a non-empty 'query'.");
         }
 
-        string query = args.Query.Trim();
+        MemorySearchScope requested = MemorySearchScope.All;
+
+        if (args.Scope is not null && (!Enum.TryParse(args.Scope, true, out requested)
+            || !Enum.IsDefined(requested) || int.TryParse(args.Scope, out _)))
+        {
+            return ToolError("search_memory scope must be session, attachments, workspace, saga, lexicon, or all.");
+        }
+
+        if (args.Limit is < 1 or > 10_000)
+        {
+            return ToolError("search_memory limit must be between 1 and 10000.");
+        }
 
         try
         {
             await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
 
-            IWeaveService weaveService = scope.ServiceProvider.GetRequiredService<IWeaveService>();
+            IMemorySearchService? search = scope.ServiceProvider.GetService<IMemorySearchService>();
 
-            if (!weaveService.IsAvailable)
+            if (search is null)
             {
-                return ToolError("The embedding provider is unavailable; Saga cannot be searched right now.");
+                return ToolError("Memory search is unavailable on this host.");
             }
 
-            Result<Embedding<float>> embedResult = await weaveService.EmbedAsync(query, cancellationToken).ConfigureAwait(false);
+            IMemoryScopeResolver resolver = scope.ServiceProvider.GetRequiredService<IMemoryScopeResolver>();
 
-            if (embedResult.IsFailure)
-            {
-                return ToolError("Failed to embed the query for Saga search; see server logs for detail.");
-            }
-
-            IOptionsMonitor<ArcanumSettings> options = scope.ServiceProvider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
-
-            EmbeddingSettings embeddings = options.CurrentValue.ResolveEmbeddings();
-
-            int limit = ArcanumSettingClamps.EmbeddingsMaxResults(args.Limit ?? embeddings.MaxResults);
-
-            float similarityThreshold = ArcanumSettingClamps.EmbeddingsSimilarityThreshold(embeddings.SimilarityThreshold);
-
-            IDivinationService divinationService = scope.ServiceProvider.GetRequiredService<IDivinationService>();
-
-            // The turn's own scope, from the Session the host bound to this call - never a Campaign the
-            // model could name. read_saga is read-only precisely so the model cannot steer its memory;
-            // letting it steer which Campaign's memory it reads would give that back.
-            if (await ResolveToolMemoryScopeAsync(
-                        scope.ServiceProvider.GetRequiredService<IMemoryScopeResolver>(),
-                        cancellationToken)
-                    .ConfigureAwait(false) is not { } memoryScope)
+            if (await ResolveToolMemoryScopeAsync(resolver, cancellationToken).ConfigureAwait(false) is null)
             {
                 return ToolError(UnresolvedMemoryScopeMessage);
             }
 
-            Result<DivinationResult[]> searchResult = memoryScope.IsEnforced
-                ? await divinationService
-                    .SearchCampaignScopedAsync(
-                        SagaStorageKeys.EmbeddingTable,
-                        SagaStorageKeys.EmbeddingKeyColumn,
-                        SagaStorageKeys.EmbeddingColumn,
-                        memoryScope.ToSagaScope(),
-                        embedResult.Value,
-                        limit,
-                        similarityThreshold,
-                        cancellationToken)
-                    .ConfigureAwait(false)
-                : await divinationService
-                    .SearchAsync(
-                        SagaStorageKeys.EmbeddingTable,
-                        SagaStorageKeys.EmbeddingKeyColumn,
-                        SagaStorageKeys.EmbeddingColumn,
-                        embedResult.Value,
-                        limit,
-                        similarityThreshold,
-                        cancellationToken)
-                    .ConfigureAwait(false);
+            long cap = ArcanumSettingClamps.EffectiveInProcessToolOutputCapBytes(_settings.ToolOutputCapBytes, _maxJsonRpcLineBytes);
 
-            if (searchResult.IsFailure)
+            // Reserve response metadata and one bounded excerpt per result before asking the sources.
+            int limit = Math.Min(args.Limit ?? 20, (int)Math.Clamp(cap / 4096, 1, 10_000));
+
+            var result = await search.SearchForInvocationAsync(new(args.Query, requested,
+                SessionAttachmentToolAmbient.CurrentSessionId, WorkspaceId: _workspaceRoot, Limit: limit, Continuation: args.Continuation),
+                cap, cancellationToken).ConfigureAwait(false);
+
+            if (result.IsFailure)
             {
-                return ToolError("Saga search failed; see server logs for detail.");
+                return ToolError($"{result.Error.Code}: {result.Error.Message}");
             }
 
-            if (searchResult.Value.Length == 0)
+            var formatted = MemorySearchToolResponseFormatter.Format(result.Value, cap);
+
+            if (formatted.IsFailure) return ToolError($"{formatted.Error.Code}: {formatted.Error.Message}");
+
+            MemorySearchResponse response = formatted.Value;
+
+            string text = JsonSerializer.Serialize(response, ArcanumCoreJsonContext.Default.MemorySearchResponse);
+
+            if (Encoding.UTF8.GetByteCount(text) > cap)
             {
-                return new McpToolsCallResultWire
-                {
-                    Content = [new McpToolContentTextWire { Text = "No Saga memories matched that query." }],
-                    IsError = false,
-                };
+                return ToolError("Memory search metadata exceeds one tool response allocation; request a smaller limit or narrower scope.");
             }
 
-            ISagaMemoryStore store = scope.ServiceProvider.GetRequiredService<ISagaMemoryStore>();
-
-            IReadOnlyDictionary<string, SagaMemoryDto> byId = await store
-                .GetByIdsAsync([.. searchResult.Value.Select(static hit => hit.Id)], cancellationToken)
-                .ConfigureAwait(false);
-
-            StringBuilder sb = new();
-
-            foreach (DivinationResult hit in searchResult.Value)
-            {
-                if (!byId.TryGetValue(hit.Id, out SagaMemoryDto? memory))
-                {
-                    continue;
-                }
-
-                sb.Append("- ");
-
-                sb.Append(memory.Content);
-
-                sb.Append(" (similarity: ");
-
-                sb.Append(hit.Similarity.ToString("F2", CultureInfo.InvariantCulture));
-
-                sb.Append(", formed ");
-
-                sb.Append(memory.CreatedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
-
-                sb.AppendLine(")");
-            }
-
-            string text = sb.Length == 0 ? "No Saga memories matched that query." : sb.ToString().TrimEnd();
-
-            return new McpToolsCallResultWire
-            {
-                Content = [new McpToolContentTextWire { Text = text }],
-                IsError = false,
-            };
+            return new McpToolsCallResultWire { Content = [new McpToolContentTextWire { Text = text }], IsError = false };
         }
         catch (OperationCanceledException)
         {
@@ -165,11 +98,10 @@ internal sealed partial class ArcanumInternalToolServer
         }
         catch (Exception ex)
         {
-            // The exception type only: the query is the model's, and the exception message (an FTS
-            // fragment, say) can echo it, which would copy memory text into the rolling log and GET /api/logs.
-            _logger?.LogError("read_saga failed ({ExceptionType}).", ex.GetType().Name);
+            _logger?.LogError("search_memory failed ({ExceptionType}).", ex.GetType().Name);
 
             return ToolError("An internal error occurred during tool execution.");
         }
     }
+
 }

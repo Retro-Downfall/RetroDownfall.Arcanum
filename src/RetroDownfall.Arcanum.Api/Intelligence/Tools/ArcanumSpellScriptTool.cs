@@ -220,26 +220,26 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
         if (_scriptsRootsFull.Count == 0)
         {
-            return "run_spell_script: scripts directory path could not be resolved.";
+            return "run_script: scripts directory path could not be resolved.";
         }
 
         if (!TryGetStringArgument(arguments, "script_name", out string? scriptName) || string.IsNullOrWhiteSpace(scriptName))
         {
-            return "run_spell_script: 'script_name' is required and must be a non-empty string.";
+            return "run_script: 'script_name' is required and must be a non-empty string.";
         }
 
         scriptName = scriptName.Trim();
 
         if (!string.Equals(Path.GetFileName(scriptName), scriptName, StringComparison.Ordinal))
         {
-            return "run_spell_script: 'script_name' must be a bare file name (no directories or path separators).";
+            return "run_script: 'script_name' must be a bare file name (no directories or path separators).";
         }
 
         List<(string Root, string Candidate)> matches = FindScriptMatches(scriptName);
 
         if (matches.Count == 0)
         {
-            return $"run_spell_script: script not found: '{scriptName}'.";
+            return $"run_script: script not found: '{scriptName}'.";
         }
 
         if (matches.Count > 1)
@@ -247,18 +247,18 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             string rootsList = string.Join(", ", matches.Select(static m => m.Root));
 
             _logger?.LogWarning(
-                "run_spell_script ambiguous script {Script} across roots {Roots}",
+                "run_script ambiguous script {Script} across roots {Roots}",
                 scriptName,
                 rootsList);
 
-            return $"run_spell_script: ambiguous script '{scriptName}'; it exists in multiple resonant spells ({rootsList}). Rename the script to a unique file name.";
+            return $"run_script: ambiguous script '{scriptName}'; it exists in multiple resonant spells ({rootsList}). Rename the script to a unique file name.";
         }
 
         (string scriptsRootFull, string candidate) = matches[0];
 
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(scriptsRootFull, candidate, out _))
         {
-            return "run_spell_script: resolved path leaves the spell scripts directory; request rejected.";
+            return "run_script: resolved path leaves the spell scripts directory; request rejected.";
         }
 
         // W3.5: allow-list the documented interpreter-wrapped script types. Without this, an
@@ -268,7 +268,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
         if (!IsAllowedScriptExtension(scriptExtension))
         {
-            return $"run_spell_script: unsupported script type '{scriptExtension}'. Allowed extensions: .py, .js, .sh, .ps1.";
+            return $"run_script: unsupported script type '{scriptExtension}'. Allowed extensions: .py, .js, .sh, .ps1.";
         }
 
         _ = TryGetStringArgument(arguments, "arguments", out string? extraArgs);
@@ -291,7 +291,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
                 if (!IsAllowedScriptExtension(resolvedExtension))
                 {
-                    return $"run_spell_script: unsupported script type '{resolvedExtension}'. Allowed extensions: .py, .js, .sh, .ps1.";
+                    return $"run_script: unsupported script type '{resolvedExtension}'. Allowed extensions: .py, .js, .sh, .ps1.";
                 }
 
                 // Rebuild so argv carries the realpath Seatbelt/Landlock will match.
@@ -319,10 +319,10 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         {
             _logger?.LogWarning(
                 ex,
-                "run_spell_script: could not resolve the real path for {ScriptName}.",
+                "run_script: could not resolve the real path for {ScriptName}.",
                 scriptName);
 
-            return "run_spell_script: could not resolve the script's real path; request rejected.";
+            return "run_script: could not resolve the script's real path; request rejected.";
         }
         // BuildProcessStartInfo throws for an extension with no interpreter. The allow-list checks above
         // make that unreachable; if one ever slips past them the call is refused, never faulted.
@@ -330,20 +330,20 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         {
             _logger?.LogWarning(
                 ex,
-                "run_spell_script: no interpreter for {ScriptName}.",
+                "run_script: no interpreter for {ScriptName}.",
                 scriptName);
 
-            return "run_spell_script: unsupported script type; request rejected.";
+            return "run_script: unsupported script type; request rejected.";
         }
 
         if (!File.Exists(candidate))
         {
-            return $"run_spell_script: script not found: '{scriptName}'.";
+            return $"run_script: script not found: '{scriptName}'.";
         }
 
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(scriptsRootFull, candidate))
         {
-            return "run_spell_script: resolved path leaves the spell scripts directory; request rejected.";
+            return "run_script: resolved path leaves the spell scripts directory; request rejected.";
         }
 
         ResourceLimits? resourceLimits = _sanctumGuard is null
@@ -402,18 +402,18 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             case CappedChildProcessOutcome.ResourceLimitApplyFailed:
 
                 _logger?.LogError(
-                    "run_spell_script: failed to apply Sanctum resource limits: {Error}",
+                    "run_script: failed to apply Sanctum resource limits: {Error}",
                     runResult.ResourceLimitApplyError);
 
-                return "run_spell_script: the invocation was blocked because OS-level resource limits could not be applied.";
+                return "run_script: the invocation was blocked because OS-level resource limits could not be applied.";
 
             case CappedChildProcessOutcome.MemoryMonitorStopped:
 
                 _logger?.LogError(
                     runResult.FaultException,
-                    "run_spell_script: the memory monitor stopped while the script was running; the process tree was killed.");
+                    "run_script: the memory monitor stopped while the script was running; the process tree was killed.");
 
-                return ChildProcessMemoryMonitorMessages.Describe("run_spell_script");
+                return ChildProcessMemoryMonitorMessages.Describe("run_script");
 
             case CappedChildProcessOutcome.ResourceLimitExceeded when _sanctumGuard is not null:
 
@@ -427,7 +427,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
             case CappedChildProcessOutcome.ResourceLimitExceeded:
 
-                return "run_spell_script: execution blocked after exceeding an OS-enforced resource limit.";
+                return "run_script: execution blocked after exceeding an OS-enforced resource limit.";
 
             case CappedChildProcessOutcome.IoErrorOnStart:
 
@@ -435,29 +435,29 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
             case CappedChildProcessOutcome.FailedToStart:
 
-                return "run_spell_script: failed to start the script process.";
+                return "run_script: failed to start the script process.";
 
             case CappedChildProcessOutcome.CanceledBeforeStart:
 
-                return "run_spell_script: canceled before start completed.";
+                return "run_script: canceled before start completed.";
 
             case CappedChildProcessOutcome.TimedOut:
 
-                return "run_spell_script: canceled by an external process deadline.";
+                return "run_script: canceled by an external process deadline.";
 
             case CappedChildProcessOutcome.Canceled:
 
-                return "run_spell_script: canceled.";
+                return "run_script: canceled.";
 
             case CappedChildProcessOutcome.IoErrorReadingOutput:
 
             case CappedChildProcessOutcome.AccessDeniedReadingOutput:
 
-                return "run_spell_script: failed to read process output.";
+                return "run_script: failed to read process output.";
 
             case CappedChildProcessOutcome.CanceledWhileReadingOutput:
 
-                return "run_spell_script: canceled while reading output.";
+                return "run_script: canceled while reading output.";
 
             case CappedChildProcessOutcome.Completed:
 
@@ -465,7 +465,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
             default:
 
-                return "run_spell_script: failed to start the script process.";
+                return "run_script: failed to start the script process.";
         }
 
         long perStreamCap = runResult.PerStreamCapBytes;
@@ -605,7 +605,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             // W3.5: defense-in-depth — callers allow-list the extension first, so an unknown type
             // must never reach here and be launched directly as a process image.
             throw new InvalidOperationException(
-                $"run_spell_script: unsupported script extension '{ext}'.");
+                $"run_script: unsupported script extension '{ext}'.");
         }
 
         return psi;

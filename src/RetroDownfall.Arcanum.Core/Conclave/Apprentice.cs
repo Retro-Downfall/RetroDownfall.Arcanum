@@ -32,7 +32,7 @@ public sealed class Apprentice
     public DateTimeOffset UpdatedAt { get; set; }
 
     /// <summary>
-    /// Lineage to the Conclave Apprentice that cast this child via <c>cast_sending</c>, when any.
+    /// Lineage to the Conclave Apprentice that cast this child via <c>create_agent_task</c>, when any.
     /// Not a mapped column: the persisted source of truth is <see cref="ApprenticeCheckpoint.ParentApprenticeId"/>
     /// inside the <c>CheckpointData</c> JSON. Hydrated by the repository on load.
     /// </summary>

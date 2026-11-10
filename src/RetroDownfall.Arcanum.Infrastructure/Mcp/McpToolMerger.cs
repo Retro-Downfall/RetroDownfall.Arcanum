@@ -46,7 +46,7 @@ internal static class McpToolMerger
     /// <summary>
     /// Every name the in-process server registers a handler for, matched in any letter case. Workspace-local
     /// rows are checked against this set rather than only against the rows a session advertises: a built-in
-    /// that is gated off for one session (<c>ask_human</c> on a non-streaming turn, <c>scribe_lexicon</c>
+    /// that is gated off for one session (<c>ask_human</c> on a non-streaming turn, <c>save_memory</c>
     /// with the Lexicon feature off, the Conclave, Saga, A2A and attachment tools behind their own flags,
     /// the file tools without a workspace root) has no advertised row to collide with, and an approved
     /// <c>mcp.json</c> could otherwise answer to the built-in's name exactly when the built-in is unavailable.
@@ -58,7 +58,7 @@ internal static class McpToolMerger
     /// What a global server may not claim: the six unconditionally reserved names plus every registered
     /// handler name except the file tools. A global server is the operator's own configuration, so it keeps
     /// the file-tool names a session with no workspace root leaves unadvertised, but it is not trusted to
-    /// answer to <c>ask_human</c>, <c>scribe_lexicon</c>, <c>read_command_output</c> or the like exactly when
+    /// answer to <c>ask_human</c>, <c>save_memory</c>, <c>read_command_output</c> or the like exactly when
     /// that built-in is gated off: the model and the name-keyed Ward policy would still attribute the call
     /// to the built-in.
     /// </summary>
@@ -268,10 +268,10 @@ internal static class McpToolMerger
     }
 
     private static bool IsReservedInternalName(string name) =>
-        ReservedInternalToolNames.Contains(name);
+        ReservedInternalToolNames.Contains(name) || ArcanumToolNameCatalog.TryGetReplacement(name, out _);
 
     private static bool IsReservedAgainstGlobalServers(string name) =>
-        GloballyReservedToolNames.Contains(name);
+        GloballyReservedToolNames.Contains(name) || ArcanumToolNameCatalog.TryGetReplacement(name, out _);
 
     private static void LogExternalCollision(
         ILogger? logger,

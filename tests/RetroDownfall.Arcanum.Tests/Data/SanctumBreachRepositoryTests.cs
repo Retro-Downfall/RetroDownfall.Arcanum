@@ -84,7 +84,7 @@ public sealed class SanctumBreachRepositoryTests : IAsyncLifetime
             Id: "ignored-by-repository",
             CampaignId: campaignId,
             OccurredAt: DateTimeOffset.Parse("2026-07-01T12:00:00Z", System.Globalization.CultureInfo.InvariantCulture),
-            ToolName: "read_file_chunk",
+            ToolName: "read_file",
             BreachType: "PathEscape",
             Description: "Path would leave the campaign workspace.",
             Details: details);
@@ -102,7 +102,7 @@ public sealed class SanctumBreachRepositoryTests : IAsyncLifetime
         // CampaignId is normalized to match EF's uppercase Guid text representation on write.
         Assert.Equal(campaignId, loaded.CampaignId, StringComparer.OrdinalIgnoreCase);
 
-        Assert.Equal("read_file_chunk", loaded.ToolName);
+        Assert.Equal("read_file", loaded.ToolName);
 
         Assert.Equal("PathEscape", loaded.BreachType);
 
@@ -130,17 +130,17 @@ public sealed class SanctumBreachRepositoryTests : IAsyncLifetime
 
         await RecordSimpleBreachAsync(campaignId, "network_fetch", "NetworkEgress");
 
-        await RecordSimpleBreachAsync(campaignId, "read_file_chunk", "PathEscape");
+        await RecordSimpleBreachAsync(campaignId, "read_file", "PathEscape");
 
         IReadOnlyList<SanctumBreachRecord> filtered = await _repository!.QueryAsync(
             campaignId,
             limit: 10,
-            toolName: "read_file_chunk",
+            toolName: "read_file",
             ct: CancellationToken.None);
 
         Assert.Single(filtered);
 
-        Assert.Equal("read_file_chunk", filtered[0].ToolName);
+        Assert.Equal("read_file", filtered[0].ToolName);
 
     }
 

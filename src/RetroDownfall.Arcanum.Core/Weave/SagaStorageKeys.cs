@@ -6,7 +6,7 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 /// </summary>
 /// <remarks>
 /// Every surface that searches Saga - the turn path, <c>POST /api/saga/divine</c>, <c>arcanum saga</c>,
-/// and the <c>read_saga</c> tool - builds its scope from here. That is what makes "inspection matches
+/// and the <c>search_memory</c> tool - builds its scope from here. That is what makes "inspection matches
 /// retrieval" structural rather than a promise four call sites have to keep separately.
 ///
 /// <para>These names reach <c>DivinationService</c> as interpolated SQL identifiers, which is the same

@@ -38,6 +38,7 @@ filter+='|FullyQualifiedName~ManifestNullEffectWorkOnlyConsumersResolveOneExactA
 filter+='|FullyQualifiedName~Authored_overrides_of_framework_virtual_members_that_reach_a_site_are_exactly_the_reviewed_types|FullyQualifiedName~Authored_disposals_that_reach_a_site_and_belong_to_the_container_are_exactly_the_reviewed_types'
 filter+='|FullyQualifiedName~GuildA2A|FullyQualifiedName~GuildProgress|FullyQualifiedName~GuildAbsentProgress|FullyQualifiedName~GuildNamedHttpFactory|FullyQualifiedName~GuildMetadata'
 filter+='|FullyQualifiedName~Guild_transport_duration_metric_requires_|FullyQualifiedName~Guild_background_cleanup_reviews_|FullyQualifiedName~OptionsMonitorSubscriptionCleanupRequiresExactUnreplacedDefaultRegistration'
+filter+='|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Mcp|FullyQualifiedName~MemoryEndpointTests|FullyQualifiedName~NativeMemorySearchReaderTests|FullyQualifiedName~LexiconProtectedInspectionTests|FullyQualifiedName~LexiconInspectionQueryBudgetTests|FullyQualifiedName~SpellRepositoryTests|FullyQualifiedName~SpellScannerTests|FullyQualifiedName~SpellCastPreviewServiceTests|FullyQualifiedName~ArcanumToolNameCatalogTests|FullyQualifiedName~ToolAttunementTests|FullyQualifiedName~ToolRiskClassifierTests|FullyQualifiedName~ToolExecutionPipeline|FullyQualifiedName~SystemPromptBuilder|FullyQualifiedName~HostProcessToolPolicyTests'
 dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
   -c Release --filter "$filter" --blame-hang-timeout 15m --blame-hang-dump-type none \
   --logger 'trx;LogFileName=guild-execution.trx' --logger 'console;verbosity=normal' --results-directory "$results"
@@ -61,6 +62,10 @@ esac
 python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.trx" \
   --summary-json "$results/evidence-summary.json" \
   RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests \
+  RetroDownfall.Arcanum.Tests.Guild.GuildMemorySearchTests \
+  RetroDownfall.Arcanum.Tests.Mcp.SearchMemoryToolTests \
+  RetroDownfall.Arcanum.Tests.Mcp.GuildTaskToolSchemaTests \
+  RetroDownfall.Arcanum.Tests.Intelligence.ArcanumToolNameCatalogTests \
   RetroDownfall.Arcanum.Tests.Guild.GuildInboundPeerRegistryTests \
   RetroDownfall.Arcanum.Tests.Guild.GuildInboundPeerDenialJournalTests \
   RetroDownfall.Arcanum.Tests.Guild.GuildInboundSchemaTests \
@@ -80,6 +85,27 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.t
   RetroDownfall.Arcanum.Tests.Guild.WorkspaceLeaseDirectoryCreationTests \
   RetroDownfall.Arcanum.Tests.Guild.WorkspaceLeaseDirectoryRemovalTests \
   RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceMutationFenceWriterTests \
+  --required-case RetroDownfall.Arcanum.Tests.Mcp.ArcanumInternalToolServerTests.Tool_cutover_registers_only_current_executable_names \
+  --required-case RetroDownfall.Arcanum.Tests.Mcp.McpToolMergerTests.Removed_tool_names_cannot_be_resurrected_by_external_servers \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Create_task_remote_destination_returns_committed_projection_without_waiting_for_peer_work \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Task_tools_read_message_list_cancel_and_replay_only_the_current_subtree \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Bound_memory_tool_reads_the_real_scoped_source_without_borrowing_operator_authority \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Persisted_legacy_tool_wait_parks_recovery_and_refuses_continuation_without_rewriting_checkpoint \
+  --required-case RetroDownfall.Arcanum.Tests.Api.MemoryEndpointTests.Search_all_keeps_Saga_readable_when_native_search_projection_is_unavailable \
+  --required-case RetroDownfall.Arcanum.Tests.Api.MemoryEndpointTests.Model_search_uses_the_callers_allocation_and_continuation_never_skips_excerpted_hits \
+  --required-case RetroDownfall.Arcanum.Tests.Data.NativeMemorySearchReaderTests.Model_page_materializes_only_its_admitted_results_and_keeps_every_undisclosed_match \
+  --required-case RetroDownfall.Arcanum.Tests.Data.NativeMemorySearchReaderTests.Summary_digest_validation_never_materializes_content_during_the_metadata_scan \
+  --required-case RetroDownfall.Arcanum.Tests.Api.MemoryEndpointTests.All_search_reports_missing_later_stores_when_an_early_scope_saturates \
+  --required-case RetroDownfall.Arcanum.Tests.Api.MemoryEndpointTests.All_model_search_reports_disabled_later_stores_when_an_early_scope_saturates \
+  --required-case RetroDownfall.Arcanum.Tests.Api.MemoryEndpointTests.All_search_preserves_unavailable_earlier_scope_status_on_a_later_store_continuation \
+  --required-case RetroDownfall.Arcanum.Tests.Api.MemoryEndpointTests.Explicit_unavailable_model_scope_returns_a_typed_failure \
+  --required-case RetroDownfall.Arcanum.Tests.Api.MemoryEndpointTests.Explicit_missing_store_HTTP_search_returns_a_typed_unavailable_failure \
+  --required-case RetroDownfall.Arcanum.Tests.Api.MemoryEndpointTests.ArchiveSearch_off_blocks_model_transcripts_and_preserves_operator_inspection \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Bound_memory_tool_honors_ArchiveSearch_off_for_transcript_grants \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Selected_local_card_shapes_native_and_model_child_guidance_and_tools_with_pinned_replay \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_and_model_card_selection_refuse_protected_erased_and_foreign_sources \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Selected_card_empty_tool_subset_differs_from_omitted_subset \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Bound_task_creation_preserves_explicit_local_and_remote_capability_matrix \
   --required-case RetroDownfall.Arcanum.Tests.Api.GuildEndpointTests.Mounted_peer_work_rejects_master_before_binding_invalid_body \
   --required-case RetroDownfall.Arcanum.Tests.Api.GuildEndpointTests.Remote_resolution_is_operator_authenticated_and_rejects_unconfigured_destination \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildInboundPeerDenialJournalTests.Existing_nonprivate_journal_directory_fails_closed_without_permission_repair \
@@ -87,7 +113,7 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.t
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_task_store_rehydrates_only_current_peer_owned_durable_tasks_after_restart \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_two_peer_task_guessing_matches_absence_before_and_after_restart \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_stream_captures_verified_peer_and_stops_before_disclosure_after_revocation \
-  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_three_hop_cycle_keeps_received_chain_in_checkpoint_and_onward_dispatch \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_inbound_checkpoint_retains_chain_and_rejects_repeated_node_after_tool_cutover \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_callback_final_handoff_rechecks_peer_after_DNS \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_create_push_after_Sending_starts_callback_observation \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_push_observer_rechecks_standing_authority_after_DNS \
@@ -108,8 +134,9 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.t
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Remote_callback_current_authority_and_source_close_before_receipt \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Remote_port_owns_one_Quest_and_retains_unknown_cost_without_a_second_lifecycle \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Remote_cancellation_after_erasure_before_dispatch_does_not_invent_spend \
-  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Qualified_remote_tool_freezes_modes_and_replays_one_child_for_one_logical_call \
-  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Qualified_continue_sending_uses_the_existing_immediate_child_and_one_answer_receipt \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Qualified_remote_creation_replays_one_asynchronous_child_for_one_logical_call \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Qualified_remote_tool_returns_a_question_and_answers_the_same_remote_task_to_completion \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Qualified_continue_sending_refuses_a_task_outside_the_current_immediate_parent \
   --required-case RetroDownfall.Arcanum.Tests.A2A.A2AClientTests.Guild_transport_refuses_unsupported_finite_axes_before_discovery \
   --required-case RetroDownfall.Arcanum.Tests.A2A.A2AClientTests.Guild_transport_preserves_the_frozen_multi_interface_card_and_uses_the_supported_binding \
   --required-case RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.GuildA2AStreamingProviderWorkCompletesUnderItsEnumerationFrontiers \

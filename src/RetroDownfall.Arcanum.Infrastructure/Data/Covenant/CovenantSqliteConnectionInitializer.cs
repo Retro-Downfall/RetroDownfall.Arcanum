@@ -196,6 +196,11 @@ internal sealed class CovenantSqliteConnectionInitializer : ICovenantSqliteConne
                 && Encoding.UTF8.GetString(value).Contains(Encoding.UTF8.GetString(query), StringComparison.OrdinalIgnoreCase),
             isDeterministic: true);
 
+        connection.CreateFunction<byte[]?, byte[]?, bool>("arcanum_derived_content_matches",
+            static (value, digest) => value is not null && digest is { Length: 32 }
+                && RetroDownfall.Arcanum.Core.Storage.DerivedArtifactContentDigest.ForBytes(value).Bytes.AsSpan().SequenceEqual(digest),
+            isDeterministic: true);
+
         // The canonical search fallback refines its substring prefilter with this, so a term matches
         // only where a token can begin, as it does in the full-text index.
         connection.CreateFunction<string?, string?, bool>(

@@ -5,6 +5,8 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(string))]
+[JsonSerializable(typeof(Memory.MemorySearchCursor))]
+[JsonSerializable(typeof(Memory.MemorySearchResponse))]
 [JsonSerializable(typeof(Conclave.PlanStep))]
 [JsonSerializable(typeof(List<Conclave.PlanStep>))]
 [JsonSerializable(typeof(Conclave.ApprenticeCheckpoint))]

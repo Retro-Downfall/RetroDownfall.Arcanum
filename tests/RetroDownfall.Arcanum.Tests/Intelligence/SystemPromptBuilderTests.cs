@@ -397,7 +397,7 @@ public sealed class SystemPromptBuilderTests
 
         Assert.Contains("cast.sh", prompt, StringComparison.Ordinal);
 
-        Assert.Contains("run_spell_script", prompt, StringComparison.Ordinal);
+        Assert.Contains("run_script", prompt, StringComparison.Ordinal);
 
     }
 

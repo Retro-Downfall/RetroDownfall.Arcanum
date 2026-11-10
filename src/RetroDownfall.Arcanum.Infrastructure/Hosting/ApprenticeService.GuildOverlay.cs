@@ -78,6 +78,24 @@ internal sealed class GuildApprenticeOverlay(Apprentice initial) : IApprenticeRe
         }
     }
 
+    public Task<bool> TryParkLegacyToolPlanAsync(Guid id, string expectedPlan, int expectedCurrentStep,
+        string expectedStatus, string reason, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        lock (_gate)
+        {
+            if (id != _value.Id || _value.Plan != expectedPlan || _value.CurrentStep != expectedCurrentStep
+                || _value.Status != expectedStatus) return Task.FromResult(false);
+
+            _value.Status = ApprenticeStatus.Escalated.ToString();
+
+            _value.ErrorMessage = reason;
+
+            return Task.FromResult(true);
+        }
+    }
+
     public Task<bool> TryUpdateStatusAsync(Guid id, string status, IReadOnlyCollection<string> expectedStatuses,
         CancellationToken cancellationToken = default)
     {

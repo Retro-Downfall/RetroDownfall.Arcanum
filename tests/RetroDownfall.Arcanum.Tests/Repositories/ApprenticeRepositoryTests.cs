@@ -440,6 +440,44 @@ public sealed class ApprenticeRepositoryTests : IAsyncLifetime
             CancellationToken.None));
     }
 
+    [SkippableFact]
+    public async Task Legacy_tool_parking_uses_exact_plan_step_status_CAS_and_changes_only_disposition()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
+
+        Apprentice initial = NewApprentice(ApprenticeStatus.Paused, 0);
+
+        initial.Plan = ApprenticeRepository.SerializePlan([new() { Description = "Use read_file_chunk" }]);
+
+        Apprentice stored = await repository.AddAsync(initial);
+
+        Assert.False(await repository.TryParkLegacyToolPlanAsync(stored.Id, "[]", 0, stored.Status, "legacy"));
+
+        Assert.False(await repository.TryParkLegacyToolPlanAsync(stored.Id, stored.Plan, 1, stored.Status, "legacy"));
+
+        Assert.False(await repository.TryParkLegacyToolPlanAsync(stored.Id, stored.Plan, 0, "Running", "legacy"));
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), (await repository.GetByIdAsync(stored.Id))!.Status);
+
+        Assert.True(await repository.TryParkLegacyToolPlanAsync(stored.Id, stored.Plan, 0, stored.Status, "read_file_chunk → read_file"));
+
+        Apprentice parked = (await repository.GetByIdAsync(stored.Id))!;
+
+        Assert.Equal(ApprenticeStatus.Escalated.ToString(), parked.Status);
+
+        Assert.Equal("read_file_chunk → read_file", parked.ErrorMessage);
+
+        Assert.Equal(stored.Plan, parked.Plan);
+
+        Assert.Equal(stored.CheckpointData, parked.CheckpointData);
+
+        Assert.Equal(stored.SessionId, parked.SessionId);
+
+        Assert.Equal(stored.CurrentStep, parked.CurrentStep);
+    }
+
     private static Apprentice NewApprentice(
         ApprenticeStatus status,
         int currentStep,

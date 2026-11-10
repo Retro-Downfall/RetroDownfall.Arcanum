@@ -15,8 +15,9 @@ public sealed class HostProcessToolPolicyTests
     public void IsHostProcessTool_RecognizesExecuteCommandAndRunSpellScript()
     {
         Assert.True(HostProcessToolPolicy.IsHostProcessTool("execute_command"));
-        Assert.True(HostProcessToolPolicy.IsHostProcessTool("RUN_SPELL_SCRIPT"));
-        Assert.False(HostProcessToolPolicy.IsHostProcessTool("read_file_chunk"));
+        Assert.True(HostProcessToolPolicy.IsHostProcessTool("RUN_SCRIPT"));
+        Assert.False(HostProcessToolPolicy.IsHostProcessTool("RUN_SPELL_SCRIPT"));
+        Assert.False(HostProcessToolPolicy.IsHostProcessTool("read_file"));
         Assert.False(HostProcessToolPolicy.IsHostProcessTool(null));
     }
 

@@ -28,7 +28,7 @@ public sealed class SanctumGuardInvalidCampaignTests
             "not-a-valid-guid",
             "/tmp/secret.txt",
             "read",
-            "read_file_chunk");
+            "read_file");
 
         Assert.False(result.Allowed);
 
@@ -104,7 +104,7 @@ public sealed class SanctumGuardInvalidCampaignTests
             NullLogger<SanctumGuard>.Instance,
             UnregisteredCampaignRoots.Instance);
 
-        SanctumResult result = await guard.ValidateToolAsync(campaignId, "read_file_chunk");
+        SanctumResult result = await guard.ValidateToolAsync(campaignId, "read_file");
 
         Assert.True(result.Allowed);
 
@@ -141,7 +141,7 @@ public sealed class SanctumGuardInvalidCampaignTests
             "https://example.invalid/resource",
             "fetch_url");
 
-        SanctumResult tool = await guard.ValidateToolAsync("not-a-valid-guid", "read_file_chunk");
+        SanctumResult tool = await guard.ValidateToolAsync("not-a-valid-guid", "read_file");
 
         Assert.False(network.Allowed);
 

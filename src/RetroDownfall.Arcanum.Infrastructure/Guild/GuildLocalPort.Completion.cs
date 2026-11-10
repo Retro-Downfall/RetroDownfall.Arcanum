@@ -87,6 +87,9 @@ internal sealed partial class GuildLocalPort
         {
             GuildLocalInferenceExecution execution = running.Execution;
 
+            if (error.Code == ErrorCodes.Guild.LegacyToolName)
+                return await ParkAsync(execution, request.DispatchId, ct, ErrorCodes.Guild.LegacyToolName).ConfigureAwait(false);
+
             // Only known preflight decisions can become a failed result. An arbitrary adapter
             // error remains reconciliation work unless durable cancellation can prove a stop.
             if (error.Code is not (ErrorCodes.Guild.Unavailable or ErrorCodes.Guild.PriceUnavailable

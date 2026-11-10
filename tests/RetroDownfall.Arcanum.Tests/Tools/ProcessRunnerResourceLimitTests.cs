@@ -10,7 +10,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Tools;
 
 /// <summary>
-/// Integration coverage for OS-enforced resource limits on <c>run_spell_script</c>. The CPU/memory
+/// Integration coverage for OS-enforced resource limits on <c>run_script</c>. The CPU/memory
 /// exceed tests are opt-in (see remarks) on macOS and Linux.
 /// </summary>
 /// <remarks>
@@ -300,7 +300,7 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
         string message = await ResourceLimitDenialFormatter.RecordAndDescribeAsync(
             guard,
             "/fake/workspace",
-            "run_spell_script",
+            "run_script",
             new ResourceLimits { MaxCpuSeconds = 30, MaxMemoryMb = 512, MaxFileDescriptors = 256 },
             ResourceLimitKind.Cpu,
             CancellationToken.None);

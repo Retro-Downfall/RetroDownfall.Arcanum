@@ -12,7 +12,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 /// <summary>
-/// The tools a turn runs take their Sanctum facts from the Campaign that governs the turn. <c>run_spell_script</c> reads the resource
+/// The tools a turn runs take their Sanctum facts from the Campaign that governs the turn. <c>run_script</c> reads the resource
 /// limits and the child-process boundary of a Campaign, and it must read them from the governing Campaign, not from whichever Campaign
 /// (if any) its working directory happens to name.
 /// </summary>
@@ -31,7 +31,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         Campaign campaign = StrictSanctumCampaign(campaignRoot);
 
-        await CreateSpellWithDeclaredToolsAsync("scripted", ["run_spell_script"]);
+        await CreateSpellWithDeclaredToolsAsync("scripted", ["run_script"]);
 
         string scripts = Directory.CreateDirectory(Path.Combine(_workspace.Root, "scripted", "scripts")).FullName;
 
@@ -47,7 +47,7 @@ public sealed partial class WizardIntelligenceProviderTests
         ScriptingChatClient chat = new();
 
         chat.EnqueueToolCall(
-            "run_spell_script",
+            "run_script",
             "governing-script",
             new Dictionary<string, object?> { ["script_name"] = "hello.sh" });
 

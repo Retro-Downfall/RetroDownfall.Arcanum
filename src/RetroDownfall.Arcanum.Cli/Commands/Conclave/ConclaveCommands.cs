@@ -50,7 +50,7 @@ public sealed class ConclaveCommands(
 
         console.WritePayload($"Conclave: {status.State}");
 
-        console.WritePayload($"  Cross-Apprentice delegation (cast_sending): {Describe(status.ConclaveEnabled)}");
+        console.WritePayload($"  Cross-Apprentice delegation (create_agent_task): {Describe(status.ConclaveEnabled)}");
 
         console.WritePayload($"  Inbound A2A server:  {Describe(status.A2AServerEnabled)}");
 

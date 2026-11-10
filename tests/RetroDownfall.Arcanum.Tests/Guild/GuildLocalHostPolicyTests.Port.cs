@@ -15,6 +15,7 @@ public sealed partial class GuildLocalHostPolicyTests
     [Theory]
     [InlineData("success")]
     [InlineData("uncertain")]
+    [InlineData("legacy-tool")]
     [InlineData("throw")]
     [InlineData("refused")]
     [InlineData("context-refused")]
@@ -204,13 +205,16 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Result<GuildDispatchObservation> dispatched = await dispatchTask;
 
-        if (outcome is "uncertain" or "throw")
+        if (outcome is "uncertain" or "throw" or "legacy-tool")
         {
             Assert.True(dispatched.IsSuccess, dispatched.Error.Message);
 
             Assert.True(dispatched.Value.ReconciliationRequired);
 
             Assert.Equal(LongRunningOperationState.ReconciliationRequired, (await operations.GetAsync(quest.OperationId))!.State);
+
+            if (outcome == "legacy-tool")
+                Assert.Equal(ErrorCodes.Guild.LegacyToolName, (await operations.GetAsync(quest.OperationId))!.TerminalErrorCode);
 
             Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_result_receipts"));
 
@@ -366,6 +370,9 @@ public sealed partial class GuildLocalHostPolicyTests
             }
 
             if (Outcome == "throw") throw new InvalidOperationException("An engine fault must preserve durable work for inspection.");
+
+            if (Outcome == "legacy-tool") return new Error(ErrorCodes.Guild.LegacyToolName,
+                "read_file_chunk → read_file; start a new Quest with a corrected plan.");
 
             if (Outcome == "uncertain") return new Error(ErrorCodes.Guild.ReconciliationRequired, "No terminal execution evidence is available.");
 

@@ -111,15 +111,15 @@ public sealed class CommandCenterWardRecordTests
                     Origin: WardResolutionOrigin.Ungated),
                 new IntelligenceEvent(
                     IntelligenceEventType.Warded,
-                    "scribe_lexicon",
+                    "save_memory",
                     WardId: "ward-record-2",
-                    ToolName: "scribe_lexicon",
+                    ToolName: "save_memory",
                     Origin: WardResolutionOrigin.Ungated),
                 new IntelligenceEvent(
                     IntelligenceEventType.WardResolved,
-                    "scribe_lexicon",
+                    "save_memory",
                     WardId: "ward-record-2",
-                    ToolName: "scribe_lexicon",
+                    ToolName: "save_memory",
                     Allowed: true,
                     Origin: WardResolutionOrigin.Ungated),
                 new IntelligenceEvent(
@@ -154,7 +154,7 @@ public sealed class CommandCenterWardRecordTests
         IncantationRecord[] records = [.. state.Incantations.Snapshot()];
 
         Assert.Equal(
-            ["apply_patch", "retire_covenant", "scribe_lexicon"],
+            ["apply_patch", "retire_covenant", "save_memory"],
             records
                 .Select(static record => record.ToolName)
                 .OrderBy(static toolName => toolName, StringComparer.Ordinal));

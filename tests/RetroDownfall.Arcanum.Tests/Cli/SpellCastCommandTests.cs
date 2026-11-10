@@ -24,7 +24,7 @@ public sealed class SpellCastCommandTests
             "Say hello",
             "Assembled system prompt body.",
             ["helper"],
-            ["read_file_chunk"],
+            ["read_file"],
             ["setup.sh"],
             "Codex content",
             HasDeclaredToolsFilter: true);

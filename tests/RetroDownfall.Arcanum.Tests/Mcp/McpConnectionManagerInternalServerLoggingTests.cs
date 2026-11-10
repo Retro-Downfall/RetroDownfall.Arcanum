@@ -31,7 +31,7 @@ public sealed class McpConnectionManagerInternalServerLoggingTests
         IReadOnlyList<AITool> tools = await manager.GetAvailableToolsAsync(workspace.Root);
 
         AIFunction readFileChunk = Assert.IsAssignableFrom<AIFunction>(
-            tools.Single(static tool => string.Equals(tool.Name, "read_file_chunk", StringComparison.Ordinal)));
+            tools.Single(static tool => string.Equals(tool.Name, "read_file", StringComparison.Ordinal)));
 
         // A number where the schema requires a string makes the server's argument deserialization
         // throw; the handler logs that fault and answers with a generic tool error.
@@ -46,14 +46,14 @@ public sealed class McpConnectionManagerInternalServerLoggingTests
                     }),
                 CancellationToken.None));
 
-        Assert.Contains("Invalid arguments for read_file_chunk", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("Invalid arguments for read_file", failure.Message, StringComparison.Ordinal);
 
         CapturingLoggerFactory.CapturedLogEntry entry = Assert.Single(
             loggers.Entries,
             static entry => entry.Level == LogLevel.Error
                 && entry.Category.EndsWith(nameof(ArcanumInternalToolServer), StringComparison.Ordinal));
 
-        Assert.Contains("read_file_chunk argument deserialization failed", entry.Message, StringComparison.Ordinal);
+        Assert.Contains("read_file argument deserialization failed", entry.Message, StringComparison.Ordinal);
 
         Assert.IsAssignableFrom<System.Text.Json.JsonException>(entry.Exception);
     }
