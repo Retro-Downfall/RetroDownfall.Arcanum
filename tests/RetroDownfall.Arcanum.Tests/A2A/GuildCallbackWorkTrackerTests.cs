@@ -12,7 +12,7 @@ public sealed class GuildCallbackWorkTrackerTests
 
         using HeldCallbackHandler handler = new();
 
-        using HttpClient client = new(handler);
+        using HttpClient client = new(handler) { Timeout = Timeout.InfiniteTimeSpan };
 
         Task old = Assert.IsAssignableFrom<Task>(tracker.Start("task", new object(), async ct =>
         {
@@ -23,34 +23,51 @@ public sealed class GuildCallbackWorkTrackerTests
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         }));
 
-        await handler.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Task? replacement = null;
 
-        Task replacement = Assert.IsAssignableFrom<Task>(tracker.Start("task", new object(), _ => Task.CompletedTask));
+        Task? stopping = null;
 
-        await replacement;
+        Task? late = null;
 
-        Task stopping = tracker.DisposeAsync().AsTask();
-
-        Task firstCompleted = await Task.WhenAny(stopping, Task.Delay(TimeSpan.FromMilliseconds(100)));
-
-        bool escapedOldSend = ReferenceEquals(firstCompleted, stopping);
+        bool escapedOldSend = false;
 
         int lateCalls = 0;
 
-        Task? late = tracker.Start("late-task", new object(), _ =>
+        try
         {
-            Interlocked.Increment(ref lateCalls);
+            await handler.Entered.Task;
 
-            return Task.CompletedTask;
-        });
+            replacement = Assert.IsAssignableFrom<Task>(tracker.Start("task", new object(), _ => Task.CompletedTask));
 
-        handler.Release.TrySetResult(new(HttpStatusCode.OK));
+            await replacement;
 
-        await old;
+            stopping = tracker.DisposeAsync().AsTask();
 
-        await stopping;
+            await handler.CancellationObserved.Task;
 
-        if (late is not null) await late;
+            escapedOldSend = stopping.IsCompleted;
+
+            late = tracker.Start("late-task", new object(), _ =>
+            {
+                Interlocked.Increment(ref lateCalls);
+
+                return Task.CompletedTask;
+            });
+        }
+        finally
+        {
+            handler.Release.TrySetResult(new(HttpStatusCode.OK));
+
+            List<Task> owned = [old];
+
+            if (replacement is not null) owned.Add(replacement);
+
+            if (stopping is not null) owned.Add(stopping);
+
+            if (late is not null) owned.Add(late);
+
+            await Task.WhenAll(owned);
+        }
 
         Assert.False(escapedOldSend);
 
@@ -79,11 +96,16 @@ public sealed class GuildCallbackWorkTrackerTests
             observed = finiteRequest.Value;
         }));
 
-        finiteRequest.Value = null;
+        try
+        {
+            finiteRequest.Value = null;
+        }
+        finally
+        {
+            release.TrySetResult();
 
-        release.TrySetResult();
-
-        await background;
+            await background;
+        }
 
         Assert.Null(observed);
     }
@@ -108,11 +130,22 @@ public sealed class GuildCallbackWorkTrackerTests
 
         Task first = Assert.IsAssignableFrom<Task>(tracker.Start("task", peer, Work));
 
-        Task second = Assert.IsAssignableFrom<Task>(tracker.Start("task", peer, Work));
+        Task? second = null;
 
-        release.TrySetResult();
+        try
+        {
+            second = Assert.IsAssignableFrom<Task>(tracker.Start("task", peer, Work));
+        }
+        finally
+        {
+            release.TrySetResult();
 
-        await Task.WhenAll(first, second);
+            List<Task> owned = [first];
+
+            if (second is not null) owned.Add(second);
+
+            await Task.WhenAll(owned);
+        }
 
         Assert.Same(first, second);
 
@@ -125,11 +158,15 @@ public sealed class GuildCallbackWorkTrackerTests
 
         internal TaskCompletionSource<HttpResponseMessage> Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        internal TaskCompletionSource CancellationObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            using CancellationTokenRegistration registration = cancellationToken.Register(() => CancellationObserved.TrySetResult());
+
             Entered.TrySetResult();
 
-            return Release.Task;
+            return await Release.Task;
         }
     }
 }

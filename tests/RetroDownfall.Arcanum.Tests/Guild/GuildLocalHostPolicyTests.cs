@@ -325,7 +325,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal Guid Generation { get; } = Guid.NewGuid();
 
-        internal readonly GrimoireConnectionAdmissionGate Gate = new(TimeProvider.System);
+        internal readonly GrimoireConnectionAdmissionGate Gate;
 
         internal readonly InboundOptionsMonitor Settings = new(new() { Features = new() { Guild = true } });
 
@@ -353,9 +353,11 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal readonly GuildIssueRootRequest Request = new(Guid.NewGuid(), null, "Local", "Compute a result", new([], [], [], new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited)), [GuildDelegationKind.Local], null));
 
-        private Fixture(EvolutionScratchDatabase file, bool localExecution, bool productionOptions, bool inboundPeers, bool denialJournal, bool unsafeJournal)
+        private Fixture(EvolutionScratchDatabase file, bool localExecution, bool productionOptions, bool inboundPeers, bool denialJournal, bool unsafeJournal, TimeProvider? gateTimeProvider)
         {
             _file = file;
+
+            Gate = new(gateTimeProvider ?? TimeProvider.System);
 
             Connections = new(file.ConnectionString);
 
@@ -403,7 +405,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal GuildLocalHostPolicy NewPolicy() => new(Connections, Gate, Settings, Opener, TimeProvider.System, InboundPeers);
 
-        internal static async Task<Fixture> CreateAsync(bool localExecution = false, bool productionOptions = false, bool inboundPeers = false, bool denialJournal = false, bool unsafeJournal = false)
+        internal static async Task<Fixture> CreateAsync(bool localExecution = false, bool productionOptions = false, bool inboundPeers = false, bool denialJournal = false, bool unsafeJournal = false, TimeProvider? gateTimeProvider = null)
         {
             EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
@@ -413,7 +415,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.True(installed.GuildCanonical.IsHealthy, installed.GuildCanonical.ToString());
 
-            Fixture f = new(file, localExecution, productionOptions, inboundPeers, denialJournal, unsafeJournal);
+            Fixture f = new(file, localExecution, productionOptions, inboundPeers, denialJournal, unsafeJournal, gateTimeProvider);
 
             await f.ExecuteAsync($"UPDATE covenant_authority_state SET InstallationIdentity='{f.Generation:D}' WHERE StateKey=1");
 

@@ -110,8 +110,7 @@ public sealed partial class A2AClientTests
         settings.Features.Guild = true;
 
         var result = await CreateClient(handler, settings).SendGuildAsync(new(DiscoveryUrl, "Compute", "stream-settlement",
-            new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited))), lifecycle, default)
-            .WaitAsync(TimeSpan.FromSeconds(15));
+            new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited))), lifecycle, default);
 
         Assert.Equal(!revokeAfterStream, result.IsSuccess);
 

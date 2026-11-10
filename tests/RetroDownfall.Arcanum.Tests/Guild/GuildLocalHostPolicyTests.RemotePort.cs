@@ -52,7 +52,7 @@ public sealed partial class GuildLocalHostPolicyTests
     [InlineData(A2ADispatchMode.Blocking, "scheduler")]
     public async Task Remote_port_owns_one_Quest_and_retains_unknown_cost_without_a_second_lifecycle(A2ADispatchMode mode, string scenario)
     {
-        await using Fixture f = await Fixture.CreateAsync();
+        await using Fixture f = await Fixture.CreateAsync(gateTimeProvider: new ManualTimerTimeProvider());
 
         f.Settings.CurrentValue.Features.Conclave = true;
 
@@ -107,6 +107,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
         RemotePortAgent agent = new(scenario);
 
+        CompletedRemoteTaskStore peerTasks = new();
+
         FakeDnsResolver peerDns = new();
 
         peerDns.Add("callback.example", IPAddress.Parse("93.184.216.35"));
@@ -140,7 +142,7 @@ public sealed partial class GuildLocalHostPolicyTests
                         SupportedInterfaces = [new() { Url = target.Endpoint, ProtocolBinding = "JSONRPC", ProtocolVersion = "1.0" }],
                         Capabilities = new() { PushNotifications = scenario is "push" or "continuation-push" }, DefaultInputModes = ["text/plain"], DefaultOutputModes = ["text/plain"] });
 
-                    endpoints.MapA2A(new ArcanumA2AServer(agent, new InMemoryTaskStore(), new ChannelEventNotifier(),
+                    endpoints.MapA2A(new ArcanumA2AServer(agent, peerTasks, new ChannelEventNotifier(),
                         new A2APushNotificationRegistry(new TestOptionsMonitor<ArcanumSettings>(peerSettings), peerDns,
                             NullLogger<A2APushNotificationRegistry>.Instance), NullLogger<A2AServer>.Instance, new A2AServerOptions()), "/agent");
                 });
@@ -210,28 +212,29 @@ public sealed partial class GuildLocalHostPolicyTests
             {
                 scheduler.Schedule((await f.Store.GetAsync(caller, quest.Id, default)).Value.Quest);
 
-                using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10));
-
-                while ((await f.Store.GetAsync(caller, quest.Id, deadline.Token)).Value.Quest.ResultReceiptId is null)
-                    await Task.Delay(25, deadline.Token);
+                while ((await f.Store.GetAsync(caller, quest.Id, CancellationToken.None)).Value.Quest.ResultReceiptId is null)
+                    await Task.Delay(25, CancellationToken.None);
             }
             finally { await scheduler.StopAsync(default); }
 
         }
 
-        async Task<Result<GuildDispatchObservation>> CompletePushAsync(Task<Result<GuildDispatchObservation>> dispatch)
+        async Task<Result<GuildDispatchObservation>> CompletePushAsync(Func<CancellationToken, Task<Result<GuildDispatchObservation>>> start)
         {
-            using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10));
+            using CancellationTokenSource lifetime = new();
 
+            Task<Result<GuildDispatchObservation>> dispatch = start(lifetime.Token);
             try
             {
-                await capture.InitialRead.Task.WaitAsync(deadline.Token);
+                Assert.Same(capture.InitialRead.Task, await Task.WhenAny(capture.InitialRead.Task, dispatch));
+
+                await capture.InitialRead.Task;
 
                 Assert.False(dispatch.IsCompleted);
 
                 Assert.NotNull(capture.ConfigId);
 
-                var binding = await f.Store.FindRemoteCallbackAsync(capture.ConfigId!, capture.Token, deadline.Token);
+                var binding = await f.Store.FindRemoteCallbackAsync(capture.ConfigId!, capture.Token, CancellationToken.None);
 
                 Assert.True(binding.IsSuccess, binding.Error.Message);
 
@@ -239,16 +242,15 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 agent.Release();
 
-                while (!dispatch.IsCompleted)
-                {
-                    var accepted = await f.Store.AcceptRemoteCallbackAsync(caller, capture.ConfigId!, capture.Token, binding.Value!, deadline.Token);
+                Assert.Same(peerTasks.Completed.Task, await Task.WhenAny(peerTasks.Completed.Task, dispatch));
 
-                    Assert.True(accepted.IsSuccess, accepted.Error.Message);
+                await peerTasks.Completed.Task;
 
-                    callbacks.TrySignal(capture.ConfigId!, capture.Token);
+                var accepted = await f.Store.AcceptRemoteCallbackAsync(caller, capture.ConfigId!, capture.Token, binding.Value!, CancellationToken.None);
 
-                    await Task.Delay(25, deadline.Token);
-                }
+                Assert.True(accepted.IsSuccess, accepted.Error.Message);
+
+                Assert.Equal(A2ACallbackOutcome.Delivered, callbacks.TrySignal(capture.ConfigId!, capture.Token));
 
                 var completed = await dispatch;
 
@@ -260,9 +262,14 @@ public sealed partial class GuildLocalHostPolicyTests
             }
             finally
             {
+                await lifetime.CancelAsync();
+
                 agent.Release();
 
                 if (capture.ConfigId is { } config) callbacks.TrySignal(config, capture.Token);
+
+                try { _ = await dispatch; }
+                catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
             }
         }
 
@@ -310,10 +317,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 scheduler.Schedule(quest);
 
-                using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
-
-                while ((await f.Store.GetAsync(caller, quest.Id, deadline.Token)).Value.Quest.ResultReceiptId is null)
-                    await Task.Delay(25, deadline.Token);
+                while ((await f.Store.GetAsync(caller, quest.Id, CancellationToken.None)).Value.Quest.ResultReceiptId is null)
+                    await Task.Delay(25, CancellationToken.None);
 
                 Assert.Equal(0, localEngine.Calls);
             }
@@ -327,7 +332,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             result = await port.ObserveAsync(currentExecution, quest.Id, quest.Id, default);
         }
-        else if (scenario == "push") result = await CompletePushAsync(port.DispatchAsync(currentExecution, request, default));
+        else if (scenario == "push") result = await CompletePushAsync(ct => port.DispatchAsync(currentExecution, request, ct));
         else result = await port.DispatchAsync(currentExecution, request, default);
 
         Assert.True(result.IsSuccess, result.Error.Message);
@@ -380,10 +385,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.True(mutation.IsSuccess, mutation.Error.Message);
 
-            using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
-
             Task<Result<GuildDispatchObservation>> stopping = port.RequestCancellationAsync(currentExecution, mutation.Value,
-                quest.Id, quest.Id, deadline.Token);
+                quest.Id, quest.Id, CancellationToken.None);
 
             IGrimoireClosingOwner? closing = null;
 
@@ -393,7 +396,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             try
             {
-                await capture.CancelEntered.Task.WaitAsync(deadline.Token);
+                await capture.CancelEntered.Task.WaitAsync(CancellationToken.None);
 
                 startedRequests = capture.Requests;
 
@@ -406,12 +409,13 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 closing = begun.Value;
 
-                drain = f.Gate.DrainRequestAndWorkAsync(closing, deadline.Token).AsTask();
+                drain = f.Gate.DrainRequestAndWorkAsync(closing, CancellationToken.None).AsTask();
 
-                DateTimeOffset revokeDeadline = DateTimeOffset.UtcNow.AddSeconds(2);
+                TaskCompletionSource revoked = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-                while (!capture.CancelToken.IsCancellationRequested && DateTimeOffset.UtcNow < revokeDeadline)
-                    await Task.Delay(10, deadline.Token);
+                using CancellationTokenRegistration registration = capture.CancelToken.Register(() => revoked.TrySetResult());
+
+                await revoked.Task;
 
                 Assert.True(capture.CancelToken.IsCancellationRequested,
                     "Closing must revoke coordination while the admitted physical send remains owned.");
@@ -426,17 +430,22 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 try
                 {
-                    _ = await stopping.WaitAsync(deadline.Token);
+                    _ = await stopping.WaitAsync(CancellationToken.None);
                 }
-                catch (OperationCanceledException) when (capture.CancelToken.IsCancellationRequested && !deadline.IsCancellationRequested)
+                catch (OperationCanceledException) when (capture.CancelToken.IsCancellationRequested)
                 {
                     // Revoked coordination may cancel the owned call; the physical task is already joined.
                 }
                 finally
                 {
-                    if (drain is not null) Assert.True((await drain.WaitAsync(deadline.Token)).IsSuccess);
-
-                    if (closing is not null) await closing.DisposeAsync();
+                    try
+                    {
+                        if (drain is not null) Assert.True((await drain).IsSuccess);
+                    }
+                    finally
+                    {
+                        if (closing is not null) await closing.DisposeAsync();
+                    }
                 }
             }
 
@@ -467,31 +476,24 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.True(mutation.IsSuccess, mutation.Error.Message);
 
-            using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
-
-            var stopping = port.RequestCancellationAsync(currentExecution, mutation.Value, quest.Id, quest.Id, deadline.Token);
+            var stopping = port.RequestCancellationAsync(currentExecution, mutation.Value, quest.Id, quest.Id, CancellationToken.None);
 
             Result<GuildDispatchObservation> stopped;
 
             try
             {
-                await capture.CancelEntered.Task.WaitAsync(deadline.Token);
+                await capture.CancelEntered.Task.WaitAsync(CancellationToken.None);
 
-                var beforeStop = (await operations.GetAsync(quest.OperationId, deadline.Token))!;
+                var beforeStop = (await operations.GetAsync(quest.OperationId, CancellationToken.None))!;
+
+                int timersBeforeRenewal = cancellationClock.TimersCreated;
 
                 cancellationClock.Advance(TimeSpan.FromSeconds(11));
 
-                DateTimeOffset renewalDeadline = DateTimeOffset.UtcNow.AddSeconds(2);
+                // The next pulse timer is armed only after the previous renewal and read finish.
+                await cancellationClock.WaitForTimerCountAsync(timersBeforeRenewal + 1, CancellationToken.None);
 
-                LongRunningOperation renewed;
-
-                do
-                {
-                    await Task.Delay(25, deadline.Token);
-
-                    renewed = (await operations.GetAsync(quest.OperationId, deadline.Token))!;
-                }
-                while (renewed.Revision == beforeStop.Revision && DateTimeOffset.UtcNow < renewalDeadline);
+                LongRunningOperation renewed = (await operations.GetAsync(quest.OperationId, CancellationToken.None))!;
 
                 Assert.True(renewed.Revision > beforeStop.Revision, "The cancelling owner must renew its lease while the exact remote stop is pending.");
 
@@ -503,7 +505,7 @@ public sealed partial class GuildLocalHostPolicyTests
             {
                 capture.CancelRelease.TrySetResult();
 
-                stopped = await stopping.WaitAsync(deadline.Token);
+                stopped = await stopping.WaitAsync(CancellationToken.None);
             }
 
             Assert.True(stopped.IsSuccess, stopped.Error.Message);
@@ -638,9 +640,9 @@ public sealed partial class GuildLocalHostPolicyTests
             request = new(acceptedDispatch.Value!.Mutation, quest.Id,
                 quest.OperationId, quest.RunId, answer.ContinuationId, operation.Revision, continuation.Value.ContentRef.Digest);
 
-            var continued = port.ContinueAsync(currentExecution, request, answer, default);
-
-            result = scenario == "continuation-push" ? await CompletePushAsync(continued) : await continued;
+            result = scenario == "continuation-push"
+                ? await CompletePushAsync(ct => port.ContinueAsync(currentExecution, request, answer, ct))
+                : await port.ContinueAsync(currentExecution, request, answer, default);
 
             Assert.True(result.IsSuccess, result.Error.Message);
 
@@ -900,6 +902,26 @@ public sealed partial class GuildLocalHostPolicyTests
     private sealed class RemotePortHttp(HttpMessageHandler handler) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new(handler, false);
+    }
+
+    private sealed class CompletedRemoteTaskStore : ITaskStore
+    {
+        private readonly InMemoryTaskStore _inner = new();
+
+        internal readonly TaskCompletionSource Completed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task SaveTaskAsync(string taskId, AgentTask task, CancellationToken ct = default)
+        {
+            await _inner.SaveTaskAsync(taskId, task, ct);
+
+            if (task.Status.State == TaskState.Completed) Completed.TrySetResult();
+        }
+
+        public Task<AgentTask?> GetTaskAsync(string taskId, CancellationToken ct = default) => _inner.GetTaskAsync(taskId, ct);
+
+        public Task DeleteTaskAsync(string taskId, CancellationToken ct = default) => _inner.DeleteTaskAsync(taskId, ct);
+
+        public Task<ListTasksResponse> ListTasksAsync(ListTasksRequest request, CancellationToken ct = default) => _inner.ListTasksAsync(request, ct);
     }
 
     private sealed class RemotePortAgent(string scenario) : IAgentHandler

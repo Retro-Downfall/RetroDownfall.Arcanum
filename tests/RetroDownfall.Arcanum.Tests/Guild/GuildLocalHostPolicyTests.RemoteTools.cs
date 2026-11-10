@@ -97,6 +97,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
     }
+
     [Theory]
     [InlineData("blocking")]
     [InlineData("continuable")]
@@ -146,24 +147,31 @@ public sealed partial class GuildLocalHostPolicyTests
 
         for (int attempt = 0; attempt < 2; attempt++)
         {
-            using CancellationTokenSource stop = new(TimeSpan.FromSeconds(5));
+            using CancellationTokenSource stop = new();
 
             Task<object?> invoked = context.InvokeBoundAsync(function, arguments, stop.Token).AsTask();
 
             Task<GuildQuestDto> pending = queue.Pending.Reader.ReadAsync(stop.Token).AsTask();
 
-            Assert.Same(pending, await Task.WhenAny(pending, invoked));
+            try
+            {
+                Assert.Same(pending, await Task.WhenAny(pending, invoked));
 
-            GuildQuestDto child = await pending;
+                GuildQuestDto child = await pending;
 
-            Assert.False(invoked.IsCompleted);
+                Assert.False(invoked.IsCompleted);
 
-            if (accepted is null) accepted = child;
-            else Assert.Equal(accepted.Id, child.Id);
+                if (accepted is null) accepted = child;
+                else Assert.Equal(accepted.Id, child.Id);
 
-            stop.Cancel();
+                stop.Cancel();
 
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await invoked);
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await invoked);
+            }
+            finally
+            {
+                await JoinRemoteToolTestWorkAsync(stop, invoked, pending);
+            }
         }
 
         Assert.Equal(1, http.Requests);
@@ -238,20 +246,27 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using (registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), dispatch))
         {
-            using CancellationTokenSource stop = new(TimeSpan.FromSeconds(5));
+            using CancellationTokenSource stop = new();
 
             Task<object?> invoked = context.InvokeBoundAsync(start, new() { ["goal"] = "Remote goal", ["agent_url"] = RemoteDiscovery,
                 ["continuable"] = true }, stop.Token).AsTask();
 
             Task<GuildQuestDto> pending = queue.Pending.Reader.ReadAsync(stop.Token).AsTask();
 
-            Assert.Same(pending, await Task.WhenAny(pending, invoked));
+            try
+            {
+                Assert.Same(pending, await Task.WhenAny(pending, invoked));
 
-            child = await pending;
+                child = await pending;
 
-            stop.Cancel();
+                stop.Cancel();
 
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await invoked);
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await invoked);
+            }
+            finally
+            {
+                await JoinRemoteToolTestWorkAsync(stop, invoked, pending);
+            }
         }
 
         GuildCallerContext childCaller = await RunCallerAsync(f, owner, (await f.Store.GetAsync(owner, child.Id, default)).Value);
@@ -286,19 +301,26 @@ public sealed partial class GuildLocalHostPolicyTests
 
         for (int attempt = 0; attempt < 2; attempt++)
         {
-            using CancellationTokenSource stop = new(TimeSpan.FromSeconds(5));
+            using CancellationTokenSource stop = new();
 
             Task<object?> invoked = context.InvokeBoundAsync(answer, arguments, stop.Token).AsTask();
 
             Task<GuildQuestDto> pending = queue.Pending.Reader.ReadAsync(stop.Token).AsTask();
 
-            Assert.Same(pending, await Task.WhenAny(pending, invoked));
+            try
+            {
+                Assert.Same(pending, await Task.WhenAny(pending, invoked));
 
-            Assert.Equal(child.Id, (await pending).Id);
+                Assert.Equal(child.Id, (await pending).Id);
 
-            stop.Cancel();
+                stop.Cancel();
 
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await invoked);
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await invoked);
+            }
+            finally
+            {
+                await JoinRemoteToolTestWorkAsync(stop, invoked, pending);
+            }
         }
 
         Assert.Equal(1, http.Requests);
@@ -309,6 +331,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_continuations WHERE AuthorityCode=2 AND ProducerQuestId IS NOT NULL"));
     }
+
     [Fact]
     public async Task Qualified_continue_sending_refuses_a_task_outside_the_current_immediate_parent()
     {
@@ -361,5 +384,18 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
 
         Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_continuations"));
+    }
+
+    private static async Task JoinRemoteToolTestWorkAsync(CancellationTokenSource lifetime, Task invocation, Task queuedChild)
+    {
+        lifetime.Cancel();
+
+        try
+        {
+            await Task.WhenAll(invocation, queuedChild);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
     }
 }

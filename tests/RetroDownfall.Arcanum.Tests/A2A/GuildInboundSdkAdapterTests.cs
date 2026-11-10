@@ -332,13 +332,20 @@ public sealed partial class GuildLocalHostPolicyTests
         Task delivery = dispatcher.NotifyAsync(new() { Url = "https://callback.example.test/hook" }, "callback-task", "working", default,
             (send, ct) => host.AdmitDisclosureAsync(peer, "callback-task", send, ct));
 
-        await dns.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        try
+        {
+            Assert.Same(dns.Entered.Task, await Task.WhenAny(dns.Entered.Task, delivery));
 
-        if (revoke) ReloadInbound(f, configured => configured.Enabled = false);
+            await dns.Entered.Task;
 
-        dns.Release.TrySetResult();
+            if (revoke) ReloadInbound(f, configured => configured.Enabled = false);
+        }
+        finally
+        {
+            dns.Release.TrySetResult();
 
-        await delivery;
+            await delivery;
+        }
 
         Assert.Equal(revoke ? 0 : 1, physical.Sends);
     }

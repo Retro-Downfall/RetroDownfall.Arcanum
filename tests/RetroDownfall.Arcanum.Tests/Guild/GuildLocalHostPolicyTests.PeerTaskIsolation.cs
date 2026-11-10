@@ -77,13 +77,14 @@ public sealed partial class GuildLocalHostPolicyTests
     {
         const string known = "alpha-private-task";
 
-        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10));
+        // This proves authority, not throughput. The suite watchdog bounds hangs without
+        // injecting runner-speed cancellation into the authenticated database operations.
 
         using (runtime.Request.Enter(runtime.Alpha))
         {
-            Assert.Equal(known, (await runtime.Server.GetTaskAsync(new() { Id = known }, deadline.Token)).Id);
+            Assert.Equal(known, (await runtime.Server.GetTaskAsync(new() { Id = known }, CancellationToken.None)).Id);
 
-            await using var stream = runtime.Server.SubscribeToTaskAsync(new() { Id = known }, deadline.Token).GetAsyncEnumerator(deadline.Token);
+            await using var stream = runtime.Server.SubscribeToTaskAsync(new() { Id = known }, CancellationToken.None).GetAsyncEnumerator(CancellationToken.None);
 
             Assert.True(await stream.MoveNextAsync());
 
@@ -91,27 +92,27 @@ public sealed partial class GuildLocalHostPolicyTests
         }
 
         Assert.True((await runtime.Notifications.RegisterAsync(known,
-            new() { Id = "private-config", Url = "https://callback.example.test/private", Token = "private-token" }, deadline.Token)).IsSuccess);
+            new() { Id = "private-config", Url = "https://callback.example.test/private", Token = "private-token" }, CancellationToken.None)).IsSuccess);
 
         using (runtime.Request.Enter(runtime.Alpha))
         {
             Assert.Equal("private-config", (await runtime.Server.GetTaskPushNotificationConfigAsync(new()
-                { TaskId = known, Id = "private-config" }, deadline.Token)).Id);
+                { TaskId = known, Id = "private-config" }, CancellationToken.None)).Id);
 
-            Assert.Single((await runtime.Server.ListTaskPushNotificationConfigAsync(new() { TaskId = known }, deadline.Token)).Configs!);
+            Assert.Single((await runtime.Server.ListTaskPushNotificationConfigAsync(new() { TaskId = known }, CancellationToken.None)).Configs!);
         }
 
         int resolutions = runtime.Dns.Requests;
 
         using (runtime.Request.Enter(runtime.Beta))
         {
-            Assert.Equal("beta-own-task", (await runtime.Server.GetTaskAsync(new() { Id = "beta-own-task" }, deadline.Token)).Id);
+            Assert.Equal("beta-own-task", (await runtime.Server.GetTaskAsync(new() { Id = "beta-own-task" }, CancellationToken.None)).Id);
 
-            Assert.Equal("beta-own-task", Assert.Single((await runtime.Server.ListTasksAsync(new(), deadline.Token)).Tasks).Id);
+            Assert.Equal("beta-own-task", Assert.Single((await runtime.Server.ListTasksAsync(new(), CancellationToken.None)).Tasks).Id);
 
-            A2AException foreign = await Assert.ThrowsAsync<A2AException>(() => ProbePeerTaskAsync(runtime.Server, operation, known, deadline.Token));
+            A2AException foreign = await Assert.ThrowsAsync<A2AException>(() => ProbePeerTaskAsync(runtime.Server, operation, known, CancellationToken.None));
 
-            A2AException absent = await Assert.ThrowsAsync<A2AException>(() => ProbePeerTaskAsync(runtime.Server, operation, "absent-task", deadline.Token));
+            A2AException absent = await Assert.ThrowsAsync<A2AException>(() => ProbePeerTaskAsync(runtime.Server, operation, "absent-task", CancellationToken.None));
 
             Assert.Equal(absent.ErrorCode, foreign.ErrorCode);
 

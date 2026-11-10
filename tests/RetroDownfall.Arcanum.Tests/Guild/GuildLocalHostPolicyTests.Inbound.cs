@@ -72,6 +72,7 @@ public sealed partial class GuildLocalHostPolicyTests
         foreach (string table in new[] { "Sessions", "guild_quests", "guild_signets", "guild_budget_accounts", "guild_local_executions", "guild_inbound_tasks" })
             Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM " + table));
     }
+
     [Fact]
     public async Task Inbound_host_replays_one_task_and_conflicts_on_changed_goal_without_new_owner_or_authority()
     {
@@ -426,19 +427,24 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using ManualResetEventSlim release = new();
 
-        gate.BeforeEffectGroupAdmission = () => { entered.TrySetResult(); Assert.True(release.Wait(TimeSpan.FromSeconds(10))); };
+        gate.BeforeEffectGroupAdmission = () => { entered.TrySetResult(); release.Wait(); };
 
         Task callback = Task.Run(() => ReloadInbound(f, value => value.Enabled = false));
 
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Task? stopping = null;
 
-        Task stopping = listener.StopAsync(default);
-
-        bool returnedBeforeCallback;
+        bool returnedBeforeCallback = false;
 
         try
         {
-            await Task.Delay(30);
+            Assert.Same(entered.Task, await Task.WhenAny(entered.Task, callback));
+
+            await entered.Task;
+
+            // The cancelled shutdown token makes the base service stop complete without an
+            // asynchronous wait hiding an early return. Our uncancelled serial join must still
+            // hold the returned task while this admitted callback owns the reconciliation gate.
+            stopping = listener.StopAsync(new CancellationToken(canceled: true));
 
             returnedBeforeCallback = stopping.IsCompleted;
         }
@@ -446,9 +452,13 @@ public sealed partial class GuildLocalHostPolicyTests
         {
             release.Set();
 
-            await callback;
-
-            await stopping;
+            try
+            {
+                await Task.WhenAll(callback, stopping ?? Task.CompletedTask);
+            }
+            catch (OperationCanceledException) when (stopping?.IsCanceled == true && callback.IsCompletedSuccessfully)
+            {
+            }
         }
 
         Assert.False(returnedBeforeCallback);

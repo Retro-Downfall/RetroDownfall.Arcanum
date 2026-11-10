@@ -108,50 +108,66 @@ public sealed partial class GuildLocalHostPolicyTests
 
         GuildRemotePort port = new(f.Store, f.Policy, f.Authority, operations, client, f.Gate, new(), TimeProvider.System);
 
-        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(15));
-
         GuildQuestDto child;
 
         using (registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), dispatch))
         {
+            using CancellationTokenSource lifetime = new();
+
             Task<object?> invoked = context.InvokeBoundAsync(start, new() { ["goal"] = "Remote goal", ["agent_url"] = RemoteDiscovery,
-                ["continuable"] = true }, deadline.Token).AsTask();
+                ["continuable"] = true }, lifetime.Token).AsTask();
 
-            Task<GuildQuestDto> pending = queue.Pending.Reader.ReadAsync(deadline.Token).AsTask();
+            Task<GuildQuestDto> pending = queue.Pending.Reader.ReadAsync(lifetime.Token).AsTask();
 
-            Assert.Same(pending, await Task.WhenAny(pending, invoked));
+            try
+            {
+                Assert.Same(pending, await Task.WhenAny(pending, invoked));
 
-            child = await pending;
+                child = await pending;
 
-            await DriveRemoteToolChildAsync(f, owner, port, child.Id, deadline.Token);
+                await DriveRemoteToolChildAsync(f, owner, port, child.Id, lifetime.Token);
 
-            var question = Assert.IsType<GuildLocalChildToolResult>(await invoked);
+                var question = Assert.IsType<GuildLocalChildToolResult>(await invoked);
 
-            Assert.Equal(QuestState.InputRequired, question.Quest.State);
+                Assert.Equal(QuestState.InputRequired, question.Quest.State);
 
-            Assert.Contains("Which answer?", question.Summary);
+                Assert.Contains("Which answer?", question.Summary);
 
-            Assert.Contains($"task_id {child.Id:D}", question.Summary);
+                Assert.Contains($"task_id {child.Id:D}", question.Summary);
+            }
+            finally
+            {
+                await JoinRemoteToolTestWorkAsync(lifetime, invoked, pending);
+            }
         }
 
         using (registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), continuation))
         {
+            using CancellationTokenSource lifetime = new();
+
             Task<object?> invoked = context.InvokeBoundAsync(answer, new() { ["task_id"] = child.Id.ToString("D"),
-                ["agent_url"] = RemoteDiscovery, ["message"] = "The first answer", ["accepted_output_modes"] = new[] { "text/plain" } }, deadline.Token).AsTask();
+                ["agent_url"] = RemoteDiscovery, ["message"] = "The first answer", ["accepted_output_modes"] = new[] { "text/plain" } }, lifetime.Token).AsTask();
 
-            Task<GuildQuestDto> pending = queue.Pending.Reader.ReadAsync(deadline.Token).AsTask();
+            Task<GuildQuestDto> pending = queue.Pending.Reader.ReadAsync(lifetime.Token).AsTask();
 
-            Assert.Same(pending, await Task.WhenAny(pending, invoked));
+            try
+            {
+                Assert.Same(pending, await Task.WhenAny(pending, invoked));
 
-            Assert.Equal(child.Id, (await pending).Id);
+                Assert.Equal(child.Id, (await pending).Id);
 
-            await DriveRemoteToolChildAsync(f, owner, port, child.Id, deadline.Token);
+                await DriveRemoteToolChildAsync(f, owner, port, child.Id, lifetime.Token);
 
-            var completed = Assert.IsType<GuildLocalChildToolResult>(await invoked);
+                var completed = Assert.IsType<GuildLocalChildToolResult>(await invoked);
 
-            Assert.Equal(QuestState.Completed, completed.Quest.State);
+                Assert.Equal(QuestState.Completed, completed.Quest.State);
 
-            Assert.Contains("Remote answer", completed.Summary);
+                Assert.Contains("Remote answer", completed.Summary);
+            }
+            finally
+            {
+                await JoinRemoteToolTestWorkAsync(lifetime, invoked, pending);
+            }
         }
 
         Assert.Equal(2, agent.Calls);

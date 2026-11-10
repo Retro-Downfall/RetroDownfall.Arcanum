@@ -44,15 +44,25 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Task<Core.Primitives.Result<GuildAgentCard>> pending = resolver.ResolveAsync(execution.Driver.Caller!, RemoteDiscovery, default);
 
-        if (duringDns)
+        try
         {
-            await dns.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            if (duringDns)
+            {
+                Assert.Same(dns.Entered.Task, await Task.WhenAny(dns.Entered.Task, pending));
 
-            try { await RevokeDiscoveryRootAsync(fixture, owner, issued.Value.Quest); }
-            finally { dns.Release.TrySetResult(); }
+                await dns.Entered.Task;
+
+                await RevokeDiscoveryRootAsync(fixture, owner, issued.Value.Quest);
+            }
+        }
+        finally
+        {
+            dns.Release.TrySetResult();
+
+            await pending;
         }
 
-        var refused = await pending.WaitAsync(TimeSpan.FromSeconds(10));
+        var refused = await pending;
 
         Assert.Equal(!revoke, refused.IsSuccess);
 
@@ -112,22 +122,31 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Task<Core.Primitives.Result<GuildAgentCard>> pending = resolver.ResolveAsync(run ? execution.Driver.Caller! : owner, RemoteDiscovery, default);
 
-        await dns.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
-
-        if (dailyBudget)
+        try
         {
-            fixture.Settings.CurrentValue.Cost.Budget.Enabled = true;
+            Assert.Same(dns.Entered.Task, await Task.WhenAny(dns.Entered.Task, pending));
 
-            fixture.Settings.CurrentValue.Cost.Budget.DailyLimitUsd = 1;
+            await dns.Entered.Task;
+
+            if (dailyBudget)
+            {
+                fixture.Settings.CurrentValue.Cost.Budget.Enabled = true;
+
+                fixture.Settings.CurrentValue.Cost.Budget.DailyLimitUsd = 1;
+            }
+            else
+            {
+                fixture.Settings.CurrentValue.Features.A2AClient = false;
+            }
         }
-        else
+        finally
         {
-            fixture.Settings.CurrentValue.Features.A2AClient = false;
+            dns.Release.TrySetResult();
+
+            await pending;
         }
 
-        dns.Release.TrySetResult();
-
-        var refused = await pending.WaitAsync(TimeSpan.FromSeconds(10));
+        var refused = await pending;
 
         Assert.True(refused.IsFailure);
 

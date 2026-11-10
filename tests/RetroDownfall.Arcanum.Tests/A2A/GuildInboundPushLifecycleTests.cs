@@ -45,14 +45,21 @@ public sealed partial class GuildLocalHostPolicyTests
 
         await CompleteInboundPushTaskAsync(f, services.GetRequiredService<GuildInboundHost>(), peer, sent.Task!.Id);
 
-        await server.CreateTaskPushNotificationConfigAsync(new()
+        try
         {
-            TaskId = sent.Task.Id, ConfigId = "late-config", Config = new() { Url = "https://callback.example.test/hook" },
-        });
+            await server.CreateTaskPushNotificationConfigAsync(new()
+            {
+                TaskId = sent.Task.Id, ConfigId = "late-config", Config = new() { Url = "https://callback.example.test/hook" },
+            });
 
-        await physical.Delivered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await physical.Delivered.Task;
+        }
+        finally
+        {
+            dns.Release.TrySetResult();
 
-        await handler.DisposeAsync();
+            await handler.DisposeAsync();
+        }
 
         Assert.Equal(1, physical.Sends);
     }
@@ -88,21 +95,21 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using var principal = services.GetRequiredService<GuildInboundRequestContext>().Enter(peer);
 
-        SendMessageResponse sent = await server.SendMessageAsync(new()
-        {
-            Message = new() { MessageId = "push-authority", Role = Role.User, Parts = [Part.FromText("Compute")] },
-            Configuration = new()
-            {
-                ReturnImmediately = true,
-                PushNotificationConfig = new() { Url = "https://callback.example.test/hook" },
-            },
-        });
-
-        await CompleteInboundPushTaskAsync(f, services.GetRequiredService<GuildInboundHost>(), peer, sent.Task!.Id);
-
         try
         {
-            await dns.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            SendMessageResponse sent = await server.SendMessageAsync(new()
+            {
+                Message = new() { MessageId = "push-authority", Role = Role.User, Parts = [Part.FromText("Compute")] },
+                Configuration = new()
+                {
+                    ReturnImmediately = true,
+                    PushNotificationConfig = new() { Url = "https://callback.example.test/hook" },
+                },
+            });
+
+            await CompleteInboundPushTaskAsync(f, services.GetRequiredService<GuildInboundHost>(), peer, sent.Task!.Id);
+
+            await dns.Entered.Task;
 
             if (change == "rotate")
             {
@@ -120,15 +127,17 @@ public sealed partial class GuildLocalHostPolicyTests
             }
             else if (change == "grant") ReloadInbound(f, configured => configured.Grant!.Delegation = []);
             else await f.ExecuteAsync("UPDATE guild_signet_authority_state SET Epoch='AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA'");
+
+            dns.Release.TrySetResult();
+
+            if (expected != 0) await physical.Delivered.Task;
         }
         finally
         {
             dns.Release.TrySetResult();
+
+            await handler.DisposeAsync();
         }
-
-        if (expected != 0) await physical.Delivered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        await handler.DisposeAsync();
 
         Assert.Equal(expected, physical.Sends);
     }
