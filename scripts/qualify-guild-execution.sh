@@ -82,6 +82,7 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.t
   RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceMutationFenceWriterTests \
   --required-case RetroDownfall.Arcanum.Tests.Api.GuildEndpointTests.Mounted_peer_work_rejects_master_before_binding_invalid_body \
   --required-case RetroDownfall.Arcanum.Tests.Api.GuildEndpointTests.Remote_resolution_is_operator_authenticated_and_rejects_unconfigured_destination \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildInboundPeerDenialJournalTests.Existing_nonprivate_journal_directory_fails_closed_without_permission_repair \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_task_store_checks_peer_binding_before_serving_a_cached_legacy_task \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_task_store_rehydrates_only_current_peer_owned_durable_tasks_after_restart \
   --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Sdk_two_peer_task_guessing_matches_absence_before_and_after_restart \
