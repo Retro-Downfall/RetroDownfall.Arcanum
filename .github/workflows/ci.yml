@@ -25,6 +25,15 @@ on:
           - guild-budget
           - guild-workspace
           - guild-execution
+      execution-platform:
+        description: Platform for focused Guild execution qualification only
+        type: choice
+        required: true
+        default: both
+        options:
+          - both
+          - macos
+          - windows
 
 permissions:
   contents: read
@@ -1400,12 +1409,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-26, windows-latest]
+        os: ${{ fromJSON(inputs.execution-platform == 'windows' && '["windows-latest"]' || inputs.execution-platform == 'macos' && '["macos-26"]' || '["macos-26","windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
         shell: bash
-    timeout-minutes: 60
+    # Hosted Windows was still making test progress after 52m18s of runtime, with setup/build
+    # consuming the rest of the 60-minute job. Leave aggregate headroom; per-test hang guards remain.
+    timeout-minutes: 90
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true

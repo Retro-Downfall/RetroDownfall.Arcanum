@@ -1,6 +1,7 @@
 """Exercise the CI authority and pin conservative documentation-only job wiring."""
 
 import os
+import json
 import re
 import shutil
 from pathlib import Path
@@ -33,7 +34,104 @@ def step(body, name):
     return match.group(1)
 
 
+def matrix_hosts(body, platform):
+    """Evaluate the workflow's closed JSON matrix branches, not a copied platform map."""
+    value = re.search(r"^        os: (.+)$", body, re.M)
+    if value is None:
+        return [None]
+    value = value.group(1)
+    if value.startswith("["):
+        return [host.strip() for host in value.strip("[]").split(",")]
+    expression = re.fullmatch(r"\$\{\{ fromJSON\((.*)\) \}\}", value)
+    if expression is None:
+        raise AssertionError("Unsupported matrix expression: " + value)
+    branches = expression.group(1).split(" || ")
+    for branch in branches[:-1]:
+        match = re.fullmatch(r"inputs\.execution-platform == '([^']+)' && '([^']+)'", branch)
+        if match is None:
+            raise AssertionError("Unsupported matrix branch: " + branch)
+        if platform == match.group(1):
+            return json.loads(match.group(2))
+    fallback = re.fullmatch(r"'([^']+)'", branches[-1])
+    if fallback is None:
+        raise AssertionError("Unsupported matrix fallback: " + branches[-1])
+    return json.loads(fallback.group(1))
+
+
+def selected_inventory(event, qualification, platform, full="true"):
+    """Execute the simple job guards and matrix values declared in this workflow."""
+    context = {"github.event_name": event, "inputs.qualification": qualification,
+               "inputs.execution-platform": platform, "needs.scope.outputs.full": full,
+               "needs.native-sqlcipher-assets.outputs.win-x64": "verified",
+               "needs.native-sqlcipher-assets.outputs.win-arm64": "verified"}
+
+    def atom(value):
+        if value == "always()":
+            return True
+        match = re.fullmatch(r"([\w.-]+) (==|!=) '([^']*)'", value)
+        if match is None or match.group(1) not in context:
+            raise AssertionError("Unsupported job guard: " + value)
+        equal = context[match.group(1)] == match.group(3)
+        return equal if match.group(2) == "==" else not equal
+
+    selected, skipped = [], []
+    for name in re.findall(r"^  ([\w-]+):", WORKFLOW.read_text().split("\njobs:\n", 1)[1], re.M):
+        body = job(name)
+        guard = re.search(r"^    if: (.+)$", body, re.M)
+        enabled = guard is None or any(all(atom(value) for value in branch.split(" && "))
+                                       for branch in guard.group(1).split(" || "))
+        if enabled:
+            selected.extend((name, host) for host in matrix_hosts(body, platform))
+        else:
+            skipped.append(name)
+    return selected, skipped
+
+
 class CiScopeWorkflowTests(unittest.TestCase):
+    def test_execution_platform_choice_defaults_to_both_without_affecting_other_jobs(self):
+        source = WORKFLOW.read_text()
+        match = re.search(r"^      execution-platform:\n(.*?)(?=^      [^ ]|^permissions:)", source, re.M | re.S)
+        self.assertIsNotNone(match, "The focused execution dispatch needs an explicit platform choice")
+        declaration = match.group(1)
+        self.assertRegex(declaration, r"(?m)^        type: choice$")
+        self.assertRegex(declaration, r"(?m)^        default: both$")
+        self.assertEqual(["both", "macos", "windows"], re.findall(r"^          - ([\w-]+)$", declaration, re.M))
+        names = re.findall(r"^  ([\w-]+):", source.split("\njobs:\n", 1)[1], re.M)
+        for name in names:
+            if name != "guild-execution":
+                self.assertNotIn("inputs.execution-platform", job(name), name)
+
+    def test_execution_matrix_selects_only_the_requested_platform_and_preserves_default_inventory(self):
+        support = {("scope", None), ("sdk", None), ("native-sqlcipher-assets", None), ("static-analysis", None)}
+        for platform, hosts in (("both", ["macos-26", "windows-latest"]),
+                                ("", ["macos-26", "windows-latest"]),
+                                ("macos", ["macos-26"]), ("windows", ["windows-latest"])):
+            with self.subTest(platform=platform):
+                selected, skipped = selected_inventory("workflow_dispatch", "guild-execution", platform)
+                self.assertEqual(support | {("guild-execution", host) for host in hosts}, set(selected))
+                self.assertEqual(4 + len(hosts), len(selected))
+                self.assertEqual(14, len(skipped))
+
+    def test_execution_platform_choice_does_not_change_full_pr_or_other_focused_inventories(self):
+        for event, profile, full in (("pull_request", "", "true"), ("pull_request", "", "false"),
+                                     ("workflow_dispatch", "full", "true"),
+                                     ("workflow_dispatch", "guild-memory", "true"),
+                                     ("workflow_dispatch", "guild-budget", "true"),
+                                     ("workflow_dispatch", "guild-workspace", "true")):
+            baseline = selected_inventory(event, profile, "both", full)
+            for platform in ("macos", "windows", ""):
+                with self.subTest(event=event, profile=profile, full=full, platform=platform):
+                    self.assertEqual(baseline, selected_inventory(event, profile, platform, full))
+
+    def test_execution_job_has_budget_for_measured_continuing_windows_work(self):
+        focused = job("guild-execution")
+        self.assertRegex(focused, r"(?m)^    timeout-minutes: 90$")
+        self.assertIn("fail-fast: false", focused)
+        self.assertNotIn("continue-on-error", focused)
+        self.assertIn("if: always()", step(focused, "Upload focused evidence"))
+        self.assertIn("name: guild-execution-qualification-${{ matrix.os }}", focused)
+        self.assertRegex(job("guild-workspace"), r"(?m)^    timeout-minutes: 60$")
+
     def test_execution_qualifier_requires_windows_permission_witnesses_only_on_windows(self):
         windows_cases = (
             "RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests."
@@ -81,7 +179,7 @@ class CiScopeWorkflowTests(unittest.TestCase):
     def test_focused_execution_profile_requires_both_hosts_and_execution_evidence(self):
         focused = job("guild-execution")
         self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.qualification == 'guild-execution'", focused)
-        self.assertIn("os: [macos-26, windows-latest]", focused)
+        self.assertEqual(["macos-26", "windows-latest"], matrix_hosts(focused, "both"))
         self.assertIn("run: ./scripts/qualify-guild-execution.sh", focused)
         self.assertNotIn("continue-on-error", focused)
         for name in ("build-test", *WORKERS, "hosted-producer-analysis", "windows-suite",

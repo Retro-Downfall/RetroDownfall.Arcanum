@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -8,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
+using RetroDownfall.Arcanum.Tests.Support;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
@@ -26,7 +28,7 @@ public sealed partial class GuildCapacityTests
 
         using ParallelTransport transport = new();
 
-        await using ArcanumWebApplicationFactory factory = new()
+        ArcanumWebApplicationFactory factory = new()
         {
             SettingsOverride = settings =>
             {
@@ -52,91 +54,238 @@ public sealed partial class GuildCapacityTests
             },
         };
 
-        using HttpClient client = factory.CreateAuthenticatedClient();
+        ParallelPhaseWatchdog watchdog = new(TimeProvider.System, TimeSpan.FromSeconds(60));
 
-        GuildIssueRootRequest request = new(Guid.NewGuid(), null, "Parallel parent", "Complete two independent branches",
-            new([], [], [], new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited)), [], null));
-
-        using HttpResponseMessage issued = await client.PostAsync("/api/guild/quests",
-            Json(JsonSerializer.Serialize(request, GuildJsonContext.Default.GuildIssueRootRequest)));
-
-        string issuedBody = await issued.Content.ReadAsStringAsync();
-
-        Assert.True(issued.StatusCode == HttpStatusCode.Created, issuedBody);
-
-        using JsonDocument accepted = JsonDocument.Parse(issuedBody);
-
-        Guid id = accepted.RootElement.GetProperty("data").GetProperty("id").GetGuid();
-
-        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
+        Guid id = Guid.Empty;
 
         try
         {
-            await transport.FirstUnitHttp.Task.WaitAsync(deadline.Token);
+            using HttpClient client = factory.CreateAuthenticatedClient();
 
-            await transport.BothUnitsEntered.Task.WaitAsync(deadline.Token);
+            GuildIssueRootRequest request = new(Guid.NewGuid(), null, "Parallel parent", "Complete two independent branches",
+                new([], [], [], new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited)), [], null));
 
-            // The first real HTTP call is deliberately held after dispatch. The sibling has
-            // entered the real Wizard; it must wait for settlement instead of refusing that live effect.
-            _ = await Task.WhenAny(transport.Failed.Task, Task.Delay(500, deadline.Token));
+            using HttpResponseMessage issued = await client.PostAsync("/api/guild/quests",
+                Json(JsonSerializer.Serialize(request, GuildJsonContext.Default.GuildIssueRootRequest)));
 
-            Assert.False(transport.Failed.Task.IsCompleted, transport.Failure);
+            string issuedBody = await issued.Content.ReadAsStringAsync();
 
-            Assert.Equal(2, transport.Calls);
+            Assert.True(issued.StatusCode == HttpStatusCode.Created, issuedBody);
+
+            using JsonDocument accepted = JsonDocument.Parse(issuedBody);
+
+            id = accepted.RootElement.GetProperty("data").GetProperty("id").GetGuid();
+
+            await PhaseAsync("first physical branch and live sibling", async ct =>
+            {
+                await transport.FirstUnitHttp.Task.WaitAsync(ct);
+
+                await transport.BothUnitsEntered.Task.WaitAsync(ct);
+
+                _ = await Task.WhenAny(transport.Failed.Task, Task.Delay(500, ct));
+
+                Assert.False(transport.Failed.Task.IsCompleted, transport.Failure);
+
+                Assert.Equal(2, transport.Calls);
+
+                await AssertParallelAccountingAsync(factory, settled: 1, exposed: 1, ct);
+            });
 
             transport.Release.TrySetResult();
 
-            while (true)
+            await PhaseAsync("sibling physical call after first settlement", async ct =>
             {
-                using HttpResponseMessage result = await client.GetAsync($"/api/guild/quests/{id:D}/result", deadline.Token);
+                await transport.SecondUnitHttp.Task.WaitAsync(ct);
 
-                if (result.StatusCode == HttpStatusCode.OK) break;
+                Assert.False(transport.Failed.Task.IsCompleted, transport.Failure);
 
-                Assert.True(result.StatusCode == HttpStatusCode.NotFound, await result.Content.ReadAsStringAsync(deadline.Token));
+                Assert.Equal(3, transport.Calls);
 
-                await Task.Delay(25, deadline.Token);
-            }
+                // Bills are inserted by SettleProviderEffectAsync, not preparation. Also require the
+                // completed bill's exact Guild evidence/effect association; a pending row proves nothing.
+                await AssertParallelAccountingAsync(factory, settled: 2, exposed: 1, ct);
+            });
 
-            // One planner call, two parallel unit calls, then one Shifting Fate review for
-            // the completed group (the shared engine does not review each branch separately).
-            Assert.Equal(4, transport.Calls);
+            transport.ReleaseSecond.TrySetResult();
 
-            using HttpResponseMessage content = await client.GetAsync($"/api/guild/quests/{id:D}/result/content", deadline.Token);
+            await PhaseAsync("group review after both branch settlements", async ct =>
+            {
+                await transport.ReviewHttp.Task.WaitAsync(ct);
 
-            Assert.Equal(HttpStatusCode.OK, content.StatusCode);
+                Assert.False(transport.Failed.Task.IsCompleted, transport.Failure);
 
-            using JsonDocument completed = JsonDocument.Parse(await content.Content.ReadAsStringAsync(deadline.Token));
+                Assert.Equal(4, transport.Calls);
 
-            string finalBody = completed.RootElement.GetProperty("data").GetProperty("body").GetString()!;
+                await AssertParallelAccountingAsync(factory, settled: 3, exposed: 1, ct);
+            });
 
-            Assert.Contains("first unit finished", finalBody, StringComparison.Ordinal);
+            transport.ReleaseReview.TrySetResult();
 
-            Assert.Contains("second unit finished", finalBody, StringComparison.Ordinal);
+            await PhaseAsync("durable result and final accounting", async ct =>
+            {
+                while (true)
+                {
+                    using HttpResponseMessage result = await client.GetAsync($"/api/guild/quests/{id:D}/result", ct);
 
-            Assert.False(transport.Failed.Task.IsCompleted, transport.Failure);
+                    if (result.StatusCode == HttpStatusCode.OK) break;
 
-            await using AsyncServiceScope verification = factory.Services.CreateAsyncScope();
+                    Assert.True(result.StatusCode == HttpStatusCode.NotFound, await result.Content.ReadAsStringAsync(ct));
 
-            var opened = await verification.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()
-                .OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, deadline.Token);
+                    Assert.False(transport.Failed.Task.IsCompleted, transport.Failure);
 
-            Assert.True(opened.IsSuccess, opened.Error.Message);
+                    await Task.Delay(25, ct);
+                }
 
-            await using var connection = opened.Value;
+                // One planner call, two unit calls and one shared Shifting Fate review.
+                Assert.Equal(4, transport.Calls);
 
-            await using var command = connection.Connection.CreateCommand();
+                using HttpResponseMessage content = await client.GetAsync($"/api/guild/quests/{id:D}/result/content", ct);
 
-            command.CommandText = "SELECT count(*) FROM BillableOperations";
+                Assert.Equal(HttpStatusCode.OK, content.StatusCode);
 
-            Assert.Equal(4L, await command.ExecuteScalarAsync(deadline.Token));
+                using JsonDocument completed = JsonDocument.Parse(await content.Content.ReadAsStringAsync(ct));
 
-            command.CommandText = "SELECT count(*) FROM guild_budget_effects WHERE StateCode IN(0,1)";
+                string finalBody = completed.RootElement.GetProperty("data").GetProperty("body").GetString()!;
 
-            Assert.Equal(0L, await command.ExecuteScalarAsync(deadline.Token));
+                Assert.Contains("first unit finished", finalBody, StringComparison.Ordinal);
+
+                Assert.Contains("second unit finished", finalBody, StringComparison.Ordinal);
+
+                Assert.False(transport.Failed.Task.IsCompleted, transport.Failure);
+
+                await AssertParallelAccountingAsync(factory, settled: 4, exposed: 0, ct);
+
+                Assert.Equal(4, transport.OwnedCalls.Count);
+
+                Assert.All(transport.OwnedCalls, call => Assert.True(call.IsCompletedSuccessfully));
+            });
         }
         finally
         {
-            transport.Release.TrySetResult();
+            // Release every fixture-owned pause before stopping/joining the actual host and its calls.
+            // An assertion or observer watchdog must never leave physical work behind the isolated history.
+            transport.ReleaseAll();
+
+            try { await factory.DisposeAsync(); }
+            finally { await transport.JoinOwnedCallsAsync(); }
+        }
+
+        async Task PhaseAsync(string name, Func<CancellationToken, Task> action)
+        {
+            try
+            {
+                await watchdog.ObserveAsync(action);
+            }
+            catch (TimeoutException)
+            {
+                string snapshot = await CapacitySnapshotAsync(factory, id);
+
+                Assert.Fail($"Parallel phase '{name}' stalled; calls={transport.Calls}; turns={transport.Turns}; "
+                    + $"runtime={transport.Failure}; {snapshot}");
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Parallel_phase_watchdog_allows_slow_successive_phases_without_spending_the_next_phase_budget()
+    {
+        ManualTimerTimeProvider clock = new();
+
+        ParallelPhaseWatchdog watchdog = new(clock, TimeSpan.FromSeconds(20));
+
+        TaskCompletionSource first = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task firstObservation = watchdog.ObserveAsync(ct => first.Task.WaitAsync(ct));
+
+        clock.Advance(TimeSpan.FromSeconds(15));
+
+        first.TrySetResult();
+
+        await firstObservation;
+
+        TaskCompletionSource settlement = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task secondObservation = watchdog.ObserveAsync(ct => settlement.Task.WaitAsync(ct));
+
+        clock.Advance(TimeSpan.FromSeconds(15));
+
+        settlement.TrySetResult();
+
+        await secondObservation;
+
+        Assert.Equal(0, clock.ActiveTimers);
+    }
+
+    [Fact]
+    public async Task Parallel_phase_watchdog_refuses_a_stall_without_canceling_the_owned_producer()
+    {
+        ManualTimerTimeProvider clock = new();
+
+        ParallelPhaseWatchdog watchdog = new(clock, TimeSpan.FromSeconds(20));
+
+        TaskCompletionSource settlement = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task observation = watchdog.ObserveAsync(ct => settlement.Task.WaitAsync(ct));
+
+        clock.Advance(TimeSpan.FromSeconds(20));
+
+        await Assert.ThrowsAsync<TimeoutException>(() => observation);
+
+        Assert.False(settlement.Task.IsCompleted);
+
+        settlement.TrySetResult();
+
+        await settlement.Task;
+
+        Assert.Equal(0, clock.ActiveTimers);
+    }
+
+    private static async Task AssertParallelAccountingAsync(ArcanumWebApplicationFactory factory, long settled, long exposed, CancellationToken ct)
+    {
+        await using AsyncServiceScope scope = factory.Services.CreateAsyncScope();
+
+        var opened = await scope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()
+            .OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, ct);
+
+        Assert.True(opened.IsSuccess, opened.Error.Message);
+
+        await using var connection = opened.Value;
+
+        await using var command = connection.Connection.CreateCommand();
+
+        command.CommandText = "SELECT count(*) FROM BillableOperations";
+
+        Assert.Equal(settled, await command.ExecuteScalarAsync(ct));
+
+        command.CommandText = """
+            SELECT count(*) FROM BillableOperations b
+            JOIN guild_budget_evidence e ON lower(replace(e.ReceiptId,'-',''))=lower(replace(b.Id,'-',''))
+            JOIN guild_budget_effects f ON f.EffectId=e.EffectId
+            WHERE b.Status=0 AND e.Complete=1 AND f.StateCode=2
+                AND lower(replace(f.SourceId,'-',''))=lower(replace(b.Id,'-',''))
+                AND lower(replace(f.AccountingAssociationId,'-',''))=lower(replace(b.RunId,'-',''))
+            """;
+
+        Assert.Equal(settled, await command.ExecuteScalarAsync(ct));
+
+        command.CommandText = "SELECT count(*) FROM guild_budget_effects WHERE StateCode IN(0,1)";
+
+        Assert.Equal(exposed, await command.ExecuteScalarAsync(ct));
+    }
+
+    // Each causal phase owns its observation budget. Expiry cancels only the observer, while
+    // fixture-owned provider work remains owned until release and host/runtime joining in finally.
+    private sealed class ParallelPhaseWatchdog(TimeProvider clock, TimeSpan budget)
+    {
+        internal async Task ObserveAsync(Func<CancellationToken, Task> action)
+        {
+            using CancellationTokenSource deadline = new(budget, clock);
+
+            try { await action(deadline.Token); }
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+            {
+                throw new TimeoutException("The parallel observation watchdog expired.");
+            }
         }
     }
 
@@ -149,14 +298,28 @@ public sealed partial class GuildCapacityTests
         public Task<Result<PromptTurnResult>> ExecuteAsync(GuildLocalInferenceExecution execution, GuildLocalExecutionInput input, CancellationToken ct) =>
             Actual.ExecuteAsync(execution, input, ct);
 
-        public async Task<Result<PromptTurnResult>> ExecuteTurnAsync(GuildLocalInferenceExecution execution, GuildLocalExecutionInput input,
+        public Task<Result<PromptTurnResult>> ExecuteTurnAsync(GuildLocalInferenceExecution execution, GuildLocalExecutionInput input,
             GuildLocalInferenceTurn turn, CancellationToken ct)
         {
-            if (Interlocked.Increment(ref transport.Turns) == 3) transport.BothUnitsEntered.TrySetResult();
+            Task<Result<PromptTurnResult>> owned = RecordTurnAsync(execution, input, turn, ct);
+
+            transport.OwnedCalls.Enqueue(owned);
+
+            return owned;
+        }
+
+        private async Task<Result<PromptTurnResult>> RecordTurnAsync(GuildLocalInferenceExecution execution, GuildLocalExecutionInput input,
+            GuildLocalInferenceTurn turn, CancellationToken ct)
+        {
+            int ordinal = Interlocked.Increment(ref transport.Turns);
 
             try
             {
-                var result = await Actual.ExecuteTurnAsync(execution, input, turn, ct);
+                Task<Result<PromptTurnResult>> actual = Actual.ExecuteTurnAsync(execution, input, turn, ct);
+
+                if (ordinal == 3) transport.BothUnitsEntered.TrySetResult();
+
+                var result = await actual;
 
                 if (result.IsFailure)
                 {
@@ -169,7 +332,7 @@ public sealed partial class GuildCapacityTests
             }
             catch (Exception error)
             {
-                transport.Failure = error.GetType().Name;
+                transport.Failure = error.GetType().Name + ": " + error.Message;
 
                 transport.Failed.TrySetResult();
 
@@ -194,6 +357,36 @@ public sealed partial class GuildCapacityTests
 
         internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        internal TaskCompletionSource SecondUnitHttp { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource ReleaseSecond { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource ReviewHttp { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource ReleaseReview { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal ConcurrentQueue<Task> OwnedCalls { get; } = new();
+
+        internal void ReleaseAll()
+        {
+            Release.TrySetResult();
+
+            ReleaseSecond.TrySetResult();
+
+            ReleaseReview.TrySetResult();
+        }
+
+        internal async Task JoinOwnedCallsAsync()
+        {
+            Task[] owned = OwnedCalls.ToArray();
+
+            try { await Task.WhenAll(owned); }
+            catch (Exception) when (owned.All(task => task.IsCompleted))
+            {
+                // The runtime diagnostic retains faults; observing them here still joins every task.
+            }
+        }
+
         internal TaskCompletionSource Failed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
@@ -205,6 +398,20 @@ public sealed partial class GuildCapacityTests
                 FirstUnitHttp.TrySetResult();
 
                 await Release.Task.WaitAsync(ct);
+            }
+
+            if (ordinal == 3)
+            {
+                SecondUnitHttp.TrySetResult();
+
+                await ReleaseSecond.Task.WaitAsync(ct);
+            }
+
+            if (ordinal == 4)
+            {
+                ReviewHttp.TrySetResult();
+
+                await ReleaseReview.Task.WaitAsync(ct);
             }
 
             string content = ordinal == 1

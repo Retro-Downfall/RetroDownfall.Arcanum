@@ -1733,6 +1733,29 @@ public sealed class ContinuousIntegrationWorkflowTests
     private const int MaximumJobTimeoutMinutes = 270;
 
     [Fact]
+    public void Focused_execution_platform_choice_is_local_and_retains_a_measured_job_budget()
+    {
+        WorkflowJob[] jobs = ContinuousIntegrationJobs(FindRepositoryRoot()).ToArray();
+
+        WorkflowJob execution = Assert.Single(jobs, job => job.Id == "guild-execution");
+
+        Assert.Contains("timeout-minutes: 90", execution.Body, StringComparison.Ordinal);
+
+        Assert.Contains("inputs.execution-platform", execution.Body, StringComparison.Ordinal);
+
+        Assert.Contains("run: ./scripts/qualify-guild-execution.sh", execution.Body, StringComparison.Ordinal);
+
+        Assert.Contains("fail-fast: false", execution.Body, StringComparison.Ordinal);
+
+        Assert.Contains("if: always()", execution.Body, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("continue-on-error", execution.Body, StringComparison.Ordinal);
+
+        Assert.All(jobs.Where(job => job.Id != "guild-execution"),
+            job => Assert.DoesNotContain("inputs.execution-platform", job.Body, StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Every_job_declares_a_job_level_timeout()
     {
         List<string> offenders = [];
