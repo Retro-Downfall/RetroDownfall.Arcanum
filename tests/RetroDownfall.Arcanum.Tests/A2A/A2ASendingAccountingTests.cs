@@ -1,7 +1,11 @@
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
+using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
@@ -9,6 +13,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Tests.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Operations;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.A2A;
 
@@ -147,6 +152,233 @@ public sealed class A2ASendingAccountingTests : IAsyncLifetime
 
         Assert.True(summary.HasUnpricedDelegation);
 
+    }
+
+    [SkippableTheory]
+    [InlineData("precision")]
+    [InlineData("range")]
+    public async Task ExternalSpendLedger_LegacyTotalsRefuseAnyUnrepresentableUsdSum(string boundary)
+    {
+        RequireSqlCipher();
+
+        await SeedLegacyExternalSpendBoundaryAsync(boundary);
+
+        await Assert.ThrowsAsync<OverflowException>(() => CreateExternalSpendLedger().GetTodayAsync());
+    }
+
+    [SkippableFact]
+    public async Task ExternalSpendLedger_LegacyTokenOverflowNeverWrapsIntoAnApparentTotal()
+    {
+        RequireSqlCipher();
+
+        await SeedLegacyExternalSpendBoundaryAsync("tokens");
+
+        await Assert.ThrowsAsync<OverflowException>(() => CreateExternalSpendLedger().GetTodayAsync());
+    }
+
+    [SkippableFact]
+    public async Task ExternalSpendLedger_LegacyRepresentableSubcentTotalRemainsExact()
+    {
+        RequireSqlCipher();
+
+        IA2ASendingLedger ledger = CreateLedger();
+
+        await SettleAsync(ledger, "tiny-a", A2ARemoteCost.Known(7, 0.00000001m));
+
+        await SettleAsync(ledger, "tiny-b", A2ARemoteCost.Known(8, 0.00000002m));
+
+        ExternalSpendSummary actual = await CreateExternalSpendLedger().GetTodayAsync();
+
+        Assert.Equal(new ExternalSpendSummary(0.00000003m, 15, 2, 0), actual);
+    }
+
+    [SkippableFact]
+    public async Task ExternalSpendLedger_StreamsEverySettledLegacyRowBeyondTheOldScanCeiling()
+    {
+        RequireSqlCipher();
+
+        IA2ASendingLedger ledger = CreateLedger();
+
+        var entry = await ledger.RegisterOutboundAsync("bulk-template", "https://peer.example.test/");
+
+        Assert.True(entry.IsRecorded);
+
+        await ledger.SettleOutboundAsync(entry, A2ARemoteCost.Known(1, 0.00000001m));
+
+        LongRunningOperationStore operations = new(_db!, TestOrdinaryConnectionFactory.For(_db!));
+
+        LongRunningOperation template = (await operations.GetAsync(entry.OperationId))!;
+
+        Assert.Equal(LongRunningOperationState.Completed, template.State);
+
+        A2ASendingRecord payload = A2ASendingLedger.TryRead(template)!;
+
+        Assert.True(payload.CostKnown);
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open) await _db.Database.OpenConnectionAsync();
+
+        await using (SqliteTransaction transaction = connection.BeginTransaction())
+        {
+            await using SqliteCommand insert = connection.CreateCommand();
+
+            insert.Transaction = transaction;
+
+            insert.CommandText = """
+                INSERT INTO LongRunningOperations(Id,Kind,State,RecoveryPolicy,CreatedAt,StartedAt,HeartbeatAt,
+                    CompletedAt,AttemptCount,CheckpointVersion,CheckpointPayload,PublicSummary,Revision)
+                SELECT $id,Kind,State,RecoveryPolicy,CreatedAt,StartedAt,HeartbeatAt,CompletedAt,
+                    AttemptCount,CheckpointVersion,$payload,$summary,Revision
+                FROM LongRunningOperations WHERE lower(replace(Id,'-',''))=$template
+                """;
+
+            insert.Parameters.AddWithValue("$template", entry.OperationId.ToString("N"));
+
+            SqliteParameter identity = insert.Parameters.AddWithValue("$id", "");
+
+            SqliteParameter checkpoint = insert.Parameters.AddWithValue("$payload", Array.Empty<byte>());
+
+            SqliteParameter summary = insert.Parameters.AddWithValue("$summary", "");
+
+            // One transaction, unique operation/task identities and an actual settled row shape:
+            // 10,000 tiny sources followed by a distinct late source that a capped scan cannot drop.
+            for (int index = 0; index < 10_000; index++)
+            {
+                bool late = index == 9_999;
+
+                string task = $"bulk-{index}";
+
+                identity.Value = Guid.NewGuid().ToString("N");
+
+                checkpoint.Value = JsonSerializer.SerializeToUtf8Bytes(payload with
+                {
+                    TaskId = task,
+                    CostUsd = late ? 1m : 0.00000001m,
+                    TotalTokens = late ? 7 : 1,
+                }, A2ASendingLedgerJsonContext.Default.A2ASendingRecord);
+
+                summary.Value = $"Outbound A2A Sending {task} settled.";
+
+                Assert.Equal(1, await insert.ExecuteNonQueryAsync());
+            }
+
+            await transaction.CommitAsync();
+        }
+
+        Assert.Equal(new ExternalSpendSummary(1.0001m, 10_007, 10_001, 0),
+            await CreateExternalSpendLedger().GetTodayAsync());
+    }
+
+    [SkippableFact]
+    public async Task ExternalSpendLedger_RequiredTableReadFailureNeverBecomesNoSpend()
+    {
+        RequireSqlCipher();
+
+        await DropExternalSpendTableAsync();
+
+        await Assert.ThrowsAsync<SqliteException>(() => CreateExternalSpendLedger().GetTodayAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData("precision")]
+    [InlineData("range")]
+    [InlineData("tokens")]
+    [InlineData("storage")]
+    public async Task ExternalSpendBudgetMonitor_PropagatesUnverifiableSpendBeforeSuccessfulAdmission(string boundary)
+    {
+        RequireSqlCipher();
+
+        if (boundary == "storage") await DropExternalSpendTableAsync();
+        else await SeedLegacyExternalSpendBoundaryAsync(boundary);
+
+        ArcanumSettings settings = new() { Cost = new() { Budget = new() { Enabled = true, DailyLimitUsd = 10m } } };
+
+        TestOptionsMonitor<ArcanumSettings> options = new(settings);
+
+        FakeBudgetAlertRepository alerts = new();
+
+        FakeCommLinkDispatcher commLink = new();
+
+        ServiceCollection services = new();
+
+        services.AddScoped<IBudgetReservationService>(_ => new BudgetReservationService(_db!, options));
+
+        services.AddSingleton<IBudgetAlertRepository>(alerts);
+
+        services.AddSingleton(CreateExternalSpendLedger());
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+
+        BudgetMonitor monitor = new(provider.GetRequiredService<IServiceScopeFactory>(), commLink, options, NullLogger<BudgetMonitor>.Instance);
+
+        if (boundary == "storage") await Assert.ThrowsAsync<SqliteException>(() => monitor.CheckAsync());
+        else await Assert.ThrowsAsync<OverflowException>(() => monitor.CheckAsync());
+
+        Assert.Equal(0, alerts.PrecheckCalls);
+
+        Assert.Equal(0, alerts.RecordCalls);
+
+        Assert.Empty(commLink.Dispatched);
+    }
+
+    [SkippableFact]
+    public async Task ExternalSpendBudgetMonitor_NoRegisteredLedgerKeepsTheLegitimateEmptyFallback()
+    {
+        RequireSqlCipher();
+
+        ArcanumSettings settings = new() { Cost = new() { Budget = new() { Enabled = true, DailyLimitUsd = 10m } } };
+
+        TestOptionsMonitor<ArcanumSettings> options = new(settings);
+
+        FakeBudgetAlertRepository alerts = new();
+
+        FakeCommLinkDispatcher commLink = new();
+
+        ServiceCollection services = new();
+
+        services.AddScoped<IBudgetReservationService>(_ => new BudgetReservationService(_db!, options));
+
+        services.AddSingleton<IBudgetAlertRepository>(alerts);
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+
+        BudgetMonitor monitor = new(provider.GetRequiredService<IServiceScopeFactory>(), commLink, options, NullLogger<BudgetMonitor>.Instance);
+
+        Assert.True((await monitor.CheckAsync()).IsSuccess);
+
+        Assert.Equal(0, alerts.RecordCalls);
+
+        Assert.Empty(commLink.Dispatched);
+    }
+
+    private async Task SeedLegacyExternalSpendBoundaryAsync(string boundary)
+    {
+        IA2ASendingLedger ledger = CreateLedger();
+
+        if (boundary == "tokens")
+        {
+            await SettleAsync(ledger, "tokens-a", A2ARemoteCost.Known(long.MaxValue, 0m));
+
+            await SettleAsync(ledger, "tokens-b", A2ARemoteCost.Known(1, 0m));
+        }
+        else
+        {
+            await SettleAsync(ledger, "usd-a", A2ARemoteCost.Known(0, decimal.MaxValue));
+
+            await SettleAsync(ledger, "usd-b", A2ARemoteCost.Known(0, boundary == "precision" ? 0.00000001m : 1m));
+        }
+    }
+
+    private async Task DropExternalSpendTableAsync()
+    {
+        await _db!.Database.OpenConnectionAsync();
+
+        await using var command = _db.Database.GetDbConnection().CreateCommand();
+
+        command.CommandText = "DROP TABLE LongRunningOperations";
+
+        await command.ExecuteNonQueryAsync();
     }
 
     [SkippableFact]

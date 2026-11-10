@@ -14,6 +14,7 @@ public sealed class ExactUsdTextTests
     {
         string[] expectedOwners =
         [
+            "src/RetroDownfall.Arcanum.Infrastructure/A2A/A2AExternalSpendLedger.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSessionImporter.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/BatchAccountingRecoveryStore.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetAlertRepository.cs",
@@ -25,6 +26,8 @@ public sealed class ExactUsdTextTests
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildBudgetLedger.Reads.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildBudgetLedger.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildBudgetPhysicalAccounting.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.ProviderEffects.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Remote.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/ProtectedArtifactTransferStore.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionRepository.cs",

@@ -35,7 +35,16 @@ public sealed record ExternalSpendSummary(
 public interface IExternalSpendLedger
 {
 
-    /// <summary>Today's delegated spend, by UTC day, matching the daily budget window.</summary>
+    /// <summary>Today's complete delegated spend, by UTC day, matching the daily budget window.</summary>
+    /// <remarks>
+    /// A registered ledger propagates storage/read failures instead of reporting an unverifiable
+    /// total as <see cref="ExternalSpendSummary.None"/>. Known amounts are aggregated exactly;
+    /// individual malformed physical values retain their explicit unpriced classification.
+    /// </remarks>
+    /// <exception cref="OverflowException">
+    /// The known USD sum cannot be represented without precision loss, or a token/count total overflows.
+    /// No rounded, saturated or partial summary is returned.
+    /// </exception>
     Task<ExternalSpendSummary> GetTodayAsync(CancellationToken cancellationToken = default);
 
 }

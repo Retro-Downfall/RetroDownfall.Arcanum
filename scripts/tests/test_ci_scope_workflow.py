@@ -229,6 +229,14 @@ class CiScopeWorkflowTests(unittest.TestCase):
                 with self.subTest(required_cross_platform_case=method):
                     self.assertIn("--required-case " + required_class + "." + method, harness)
         self.assertIn("FullyQualifiedName~Guild", harness)
+        self.assertIn("FullyQualifiedName~ExactUsd", harness)
+        for name in ("ExactUsdTextTests", "ExactUsdTextAccumulationTests"):
+            self.assertRegex(harness, r"(?m)^\s*RetroDownfall\.Arcanum\.Tests\.Data\."
+                             + name + r"\s*\\\s*$")
+        self.assertIn("--required-case RetroDownfall.Arcanum.Tests.Data.ExactUsdTextTests."
+                      "Authoritative_money_boundaries_use_the_exact_codec_and_new_owners_require_review", harness)
+        self.assertRegex(harness, r"(?m)^\s*RetroDownfall\.Arcanum\.Tests\.A2A\."
+                         r"A2ASendingAccountingTests\s*\\\s*$")
         self.assertIn("FullyQualifiedName~WizardIntelligenceProviderTests", harness)
         self.assertIn("FullyQualifiedName~WorkspaceLease", harness)
         for method in ("Authored_overrides_of_framework_virtual_members_that_reach_a_site_are_exactly_the_reviewed_types",
