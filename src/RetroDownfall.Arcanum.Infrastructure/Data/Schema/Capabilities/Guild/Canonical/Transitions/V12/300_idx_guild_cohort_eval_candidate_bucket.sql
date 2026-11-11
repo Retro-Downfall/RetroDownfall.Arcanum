@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS idx_guild_cohort_eval_candidate_bucket ON guild_cohort_eval_candidates(CohortId,Generation,BucketId,ResultSequence);

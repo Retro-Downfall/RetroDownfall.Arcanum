@@ -12,11 +12,14 @@ internal static class GuildTaskArguments
         && value.TryGetProperty("agent", out JsonElement agent) && agent.ValueKind == JsonValueKind.String
         && !string.IsNullOrWhiteSpace(agent.GetString());
 
-    internal static Result<GuildIssueChildRequest> Creation(GuildLocalChildToolCall call)
-    {
-        JsonElement arguments = call.Admission.Arguments;
+    internal static Result<GuildIssueChildRequest> Creation(GuildLocalChildToolCall call, params string[] extraFields) =>
+        Creation(call.Admission, call.ParentQuest.Revision, extraFields);
 
-        if (!Closed(arguments, "goal", "name", "agent", "cardId", "grant")
+    internal static Result<GuildIssueChildRequest> Creation(GuildChildToolAdmission admission, long parentRevision, params string[] extraFields)
+    {
+        JsonElement arguments = admission.Arguments;
+
+        if (!Closed(arguments, ["goal", "name", "agent", "cardId", "grant", .. extraFields])
             || !Text(arguments, "goal", out string? goal) || string.IsNullOrWhiteSpace(goal)
             || !OptionalText(arguments, "name", out string? name)
             || !OptionalText(arguments, "agent", out string? agent)
@@ -40,7 +43,7 @@ internal static class GuildTaskArguments
 
             if (arguments.TryGetProperty("grant", out _) && grant is null) return Invalid;
 
-            return new GuildIssueChildRequest(call.Admission.LogicalCallId, call.ParentQuest.Revision, null,
+            return new GuildIssueChildRequest(admission.LogicalCallId, parentRevision, null,
                 name, goal, grant, agent is null ? null : new(GuildRemoteDispatchMode.Continuable), card);
         }
         catch (JsonException)

@@ -44,19 +44,50 @@ internal sealed partial class GuildLocalPort
         GuildMutationIdentity mutation, Guid questId, Guid dispatchId, Guid claim, CancellationToken cancellationToken) =>
         RequestCancellationCoreAsync(execution, mutation, questId, dispatchId, claim, cancellationToken);
 
+    internal async Task<Result<GuildDispatchObservation>> RequestCancellationOwnedAsync(GuildCallerContext owner,
+        GuildMutationIdentity mutation, Guid questId, Guid dispatchId, Guid claim, CancellationToken cancellationToken)
+    {
+        var cleanup = await quests.CreateLocalCleanupDriverAsync(owner, questId, cancellationToken).ConfigureAwait(false);
+
+        if (cleanup.IsFailure) return cleanup.Error;
+
+        var identity = await quests.ReadLocalCleanupStopIdentityAsync(cleanup.Value, cancellationToken).ConfigureAwait(false);
+
+        return identity.IsFailure ? identity.Error
+            : await RequestCancellationCoreAsync(cleanup.Value.Execution, identity.Value, questId, dispatchId, claim,
+                cancellationToken, cleanup.Value).ConfigureAwait(false);
+    }
+
     private async Task<Result<GuildDispatchObservation>> RequestCancellationCoreAsync(GuildExecutionHandle execution,
-        GuildMutationIdentity mutation, Guid questId, Guid dispatchId, Guid? claimed, CancellationToken cancellationToken)
+        GuildMutationIdentity mutation, Guid questId, Guid dispatchId, Guid? claimed, CancellationToken cancellationToken,
+        GuildQuestDriver? cleanup = null)
     {
         if (execution is null || execution.QuestId != questId || dispatchId == Guid.Empty)
             return new Error(ErrorCodes.Guild.InvalidRequest, "The cancellation does not identify committed local work.");
 
-        var caller = await callers.CreateRunCallerAsync(authority, execution, dispatchId, cancellationToken).ConfigureAwait(false);
+        GuildQuestDriver driver;
 
-        if (caller.IsFailure) return caller.Error;
+        if (cleanup is not null) driver = cleanup;
+        else
+        {
+            var caller = await callers.CreateRunCallerAsync(authority, execution, dispatchId, cancellationToken).ConfigureAwait(false);
 
-        GuildQuestDriver driver = new(execution, "observe", 0, caller.Value);
+            if (caller.IsFailure) return caller.Error;
 
-        Result accepted = await quests.ValidateLocalCancellationRequestAsync(driver, mutation, cancellationToken).ConfigureAwait(false);
+            driver = new(execution, "observe", 0, caller.Value);
+        }
+
+        Result accepted;
+
+        if (cleanup is not null)
+        {
+            var identity = await quests.ReadLocalCleanupStopIdentityAsync(cleanup, cancellationToken).ConfigureAwait(false);
+
+            accepted = identity.IsFailure ? Result.Failure(identity.Error)
+                : identity.Value == mutation ? Result.Success() : Result.Failure(new(ErrorCodes.Guild.IdempotencyConflict,
+                    "The native cleanup stop identity does not bind this Quest."));
+        }
+        else accepted = await quests.ValidateLocalCancellationRequestAsync(driver, mutation, cancellationToken).ConfigureAwait(false);
 
         if (accepted.IsFailure) return accepted.Error;
 
@@ -118,7 +149,7 @@ internal sealed partial class GuildLocalPort
 
             if (!lease.Acquired) return Observation(before, dispatchId);
 
-            driver = new(execution, leaseOwner, lease.Operation.Revision, caller.Value);
+            driver = driver with { LeaseOwner = leaseOwner, OperationRevision = lease.Operation.Revision };
 
             if (before.Dispatch is not null)
             {
@@ -153,7 +184,11 @@ internal sealed partial class GuildLocalPort
 
             if (committed.IsFailure) return committed.Error;
 
-            return await ObserveAsync(execution, questId, dispatchId, cancellationToken).ConfigureAwait(false);
+            if (cleanup is null) return await ObserveAsync(execution, questId, dispatchId, cancellationToken).ConfigureAwait(false);
+
+            state = await quests.ReadLocalPortAsync(driver, dispatchId, cancellationToken).ConfigureAwait(false);
+
+            return state.IsFailure ? state.Error : Observation(state.Value, dispatchId);
         }
         finally
         {

@@ -728,8 +728,11 @@ public sealed partial class A2AClientService : IA2AClientService
         {
             if (guildExecution)
             {
-                Result observed = await guild!.ObservedAsync(new(null, null, "completed", ExtractText(response.Message!.Parts),
-                    A2ARemoteCost.Unknown, DateTimeOffset.UtcNow), CancellationToken.None).ConfigureAwait(false);
+                GuildFinalOutput? output = GuildFinalOutput.FromParts(response.Message!.Parts);
+
+                Result observed = await guild!.ObservedAsync(new(null, null, "completed", ExtractText(response.Message.Parts),
+                    A2ARemoteCost.Unknown, DateTimeOffset.UtcNow, output is null ? null : 1, output?.Utf8, output?.MimeType),
+                    CancellationToken.None).ConfigureAwait(false);
 
                 if (observed.IsFailure) return observed.Error;
             }
@@ -1978,7 +1981,7 @@ public sealed partial class A2AClientService : IA2AClientService
         }
 
         IEnumerable<string> textParts = parts
-            .Where(static p => p.ContentCase == PartContentCase.Text && !string.IsNullOrEmpty(p.Text))
+            .Where(static p => p is not null && p.ContentCase == PartContentCase.Text && !string.IsNullOrEmpty(p.Text))
             .Select(static p => p.Text!);
 
         return string.Join('\n', textParts);

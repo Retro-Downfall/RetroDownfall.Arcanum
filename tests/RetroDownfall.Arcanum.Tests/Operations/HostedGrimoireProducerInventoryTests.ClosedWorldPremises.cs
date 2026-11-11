@@ -1054,6 +1054,14 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Theory]
     [InlineData("PidFileService")]
     [InlineData("GuildMaintenanceHostedService")]
+    [InlineData("GuildLocalQuestScheduler")]
+    [InlineData("ApprenticeService")]
+    [InlineData("McpServerBootstrapHostedService")]
+    [InlineData("GuildInboundPeerReloadService")]
+    [InlineData("GuildLocalHostReadiness")]
+    [InlineData("Loremaster")]
+    [InlineData("SagaExtractionService")]
+    [InlineData("SessionAttachmentIndexingService")]
     [InlineData("GuildQuestRecovery")]
     [InlineData("Issue145AffectedPrimary")]
     [InlineData("Issue145SchemaAdditional")]
@@ -1096,6 +1104,37 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
             Assert.True(violations.Length == 0, string.Join(global::System.Environment.NewLine, violations));
 
+            HostedProducerCapsuleManifest reviewed = HostedGrimoireProducerInventory.ParseCapsuleManifest(
+                global::System.IO.File.ReadAllLines(HostedGrimoireProducerInventory.CapsuleManifestPath));
+
+            Assert.Empty(reviewed.Diagnostics);
+
+            string expected = HostedGrimoireProducerInventory.RenderCapsuleManifest(
+                reviewed.Sites.Where(site => site.AuthorityOperationId != operation).Concat(recovery.Items));
+
+            HostedProducerCapsuleManifestUpdate update = HostedGrimoireProducerInventory.ReadOrUpdateCapsuleManifest(
+                HostedGrimoireProducerInventory.CapsuleManifestPath, expected, recovery.Diagnostics,
+                global::System.Environment.GetEnvironmentVariable("ARCANUM_UPDATE_HOSTED_PRODUCER_CAPSULES") == "1",
+                output.WriteLine);
+
+            Assert.True(string.Equals(expected, update.Reviewed, StringComparison.Ordinal), update.Report);
+
+            HostedProducerCapsuleManifest persisted = HostedGrimoireProducerInventory.ParseCapsuleManifest(
+                update.Reviewed.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+
+            Assert.Empty(persisted.Diagnostics);
+
+            ProductionRootSelection selected = HostedGrimoireProducerInventory.SelectProductionRoots([operation],
+                new([], []), [], HostedGrimoireProducerInventory.AdditionalProductionRoots);
+
+            NonHostedProducerChainEntry declaration = Assert.Single(selected.NonHostedCatalog);
+
+            HostedProducerInventoryValidation validation = HostedGrimoireProducerInventory.Validate([],
+                [declaration with { Sites = [.. persisted.Sites.Where(site => site.AuthorityOperationId == operation)] }],
+                selected.Registrations, recovery);
+
+            Assert.True(validation.IsValid, HostedGrimoireProducerInventory.RenderDiagnosticReport(validation.Diagnostics));
+
             return;
         }
 
@@ -1107,14 +1146,25 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         }
 
         HostedProducerDiscovery<HostedProducerSite> scoped = HostedGrimoireProducerInventory.DiscoverProductionSites(
-            HostedProducerProductionPartition.Primary, [serviceType]);
+            HostedProducerProductionPartition.Primary, serviceType == "GuildLocalHostReadiness"
+                ? [serviceType, "GuildLocalQuestScheduler"] : [serviceType]);
 
         Assert.NotEmpty(scoped.Items);
 
-        Assert.All(scoped.Items, site => Assert.Equal(serviceType, site.RootType));
-
         Assert.True(scoped.Diagnostics.Count == 0,
             HostedGrimoireProducerInventory.RenderDiagnosticReport(scoped.Diagnostics));
+
+        // The Scheduler's independently tracked Apprentice task is analyzed under its
+        // own cataloged authority, even in a Scheduler-only traversal. No caller lease
+        // is inherited across this handoff.
+        Assert.All(scoped.Items, site => Assert.True(site.RootType == serviceType
+            || serviceType == "GuildLocalHostReadiness" && site.RootType == "GuildLocalQuestScheduler"
+            || (serviceType is "GuildLocalQuestScheduler" or "GuildLocalHostReadiness") && site.RootType == "ApprenticeService"
+                && (site.AuthorityOperationId == "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync"
+                    || (site.AuthorityOperationId.StartsWith("RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync/interceptor@", StringComparison.Ordinal)
+                        || site.AuthorityOperationId.StartsWith("RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync/statechange@", StringComparison.Ordinal))
+                    && site.EnclosingType == "RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantConnectionDrain"
+                    && site.Member == "ClearExactPoolAfterClose" && site.Callee == "Microsoft.Data.Sqlite.SqliteConnection.ClearPool")));
 
         if (serviceType == "GuildMaintenanceHostedService")
         {
@@ -1137,13 +1187,18 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             HostedProducerSite[] acquisitions = [.. scoped.Items.Where(
                 static site => site.Callee == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease")];
 
-            Assert.Equal(2, acquisitions.Length);
-
-            Assert.All(acquisitions, static site => Assert.Equal(GrimoireWorkKind.GuildMaintenance, site.AdmittedWorkKind));
-
-            Assert.Contains(acquisitions, static site => site.EnclosingType == "RetroDownfall.Arcanum.Infrastructure.Guild.GuildMaintenanceHostedService");
-
-            Assert.Contains(acquisitions, static site => site.EnclosingType == "RetroDownfall.Arcanum.Infrastructure.Guild.GuildOwnerCleanupCoordinator");
+            Assert.Equal(
+                new[]
+                {
+                    ("GuildLocalHostPolicy", "ExecuteAsync", (GrimoireWorkKind?)GrimoireWorkKind.GuildStorage),
+                    ("GuildMaintenanceHostedService", "RunOnceAsync", (GrimoireWorkKind?)GrimoireWorkKind.GuildMaintenance),
+                    ("GuildOwnerCleanupCoordinator", "RunBatchAsync", (GrimoireWorkKind?)GrimoireWorkKind.GuildMaintenance),
+                    ("GuildStore", "ExecuteAsync", (GrimoireWorkKind?)GrimoireWorkKind.GuildStorage),
+                    ("SignetAuthority", "WithInstallationAsync", (GrimoireWorkKind?)GrimoireWorkKind.GuildStorage),
+                },
+                acquisitions.Select(static site => (
+                    site.EnclosingType[(site.EnclosingType.LastIndexOf('.') + 1)..], site.Member, site.AdmittedWorkKind))
+                    .OrderBy(static site => site.Item1, StringComparer.Ordinal));
 
             Assert.Contains(scoped.Items, static site => site.Kind == HostedProducerSiteKind.DatabaseAccess);
 
@@ -1196,6 +1251,98 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             return;
         }
 
+        if (serviceType is "GuildLocalQuestScheduler" or "ApprenticeService" or "McpServerBootstrapHostedService"
+            or "GuildInboundPeerReloadService" or "GuildLocalHostReadiness" or "Loremaster" or "SagaExtractionService" or "SessionAttachmentIndexingService")
+        {
+            HostedProducerSite[] schedulerSites = [.. scoped.Items.Where(site => site.RootType == serviceType)];
+
+            Assert.NotEmpty(schedulerSites);
+
+            HostedProducerAnalysisMetrics metrics = Assert.IsType<HostedProducerAnalysisMetrics>(scoped.AnalysisMetrics);
+
+            foreach (string line in RenderRootTraversalMetrics(metrics.RootTraversals)) output.WriteLine(line);
+
+            HeadroomCeiling[] ceilings = [.. ProductionRootCeilings.Where(row => row.RootType == serviceType)];
+
+            string[] violations = HeadroomViolations(metrics.RootTraversals.Where(root => root.RootType == serviceType).ToArray(), ceilings,
+                HostedGrimoireProducerInventory.MaximumAnalyzedStatesPerRoot);
+
+            Assert.True(violations.Length == 0, string.Join(global::System.Environment.NewLine, violations));
+
+            HostedProducerCapsuleManifest reviewed = HostedGrimoireProducerInventory.ParseCapsuleManifest(
+                global::System.IO.File.ReadAllLines(HostedGrimoireProducerInventory.CapsuleManifestPath));
+
+            Assert.Empty(reviewed.Diagnostics);
+
+            if (serviceType == "GuildLocalQuestScheduler")
+            {
+                const string apprentice = "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync";
+
+                HostedProducerSite[] importedSites = [.. scoped.Items.Where(static site => site.RootType == "ApprenticeService")];
+
+                string[] imported = HostedGrimoireProducerInventory.RenderCapsuleManifest(
+                    importedSites.Where(site => site.AuthorityOperationId == apprentice))
+                    .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Where(static line => !line.StartsWith('#')).ToArray();
+
+                HashSet<string> reviewedRows = HostedGrimoireProducerInventory.RenderCapsuleManifest(reviewed.Sites)
+                    .Split('\n', StringSplitOptions.RemoveEmptyEntries).ToHashSet(StringComparer.Ordinal);
+
+                string[] missingImported = [.. imported.Where(row => !reviewedRows.Contains(row))];
+
+                HostedProducerSite[] callbacks = [.. importedSites.Where(site => site.AuthorityOperationId != apprentice)];
+
+                Assert.Equal(new[] { "ConnectionClosedAsync", "ConnectionDisposedAsync", "OnPhysicalStateChanged" },
+                    callbacks.Select(static site => site.AuthorityOperationId[(site.AuthorityOperationId.LastIndexOf('/') + 1)..])
+                        .Order(StringComparer.Ordinal));
+
+                Assert.All(callbacks, site => Assert.Contains(reviewed.Sites, candidate =>
+                    candidate.RootType == "ApprenticeService" && candidate.AuthorityOperationId == apprentice
+                    && candidate.Callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal)
+                    && candidate.AdmittedWorkKind == GrimoireWorkKind.ApprenticeExecution
+                    && candidate.CapsuleId == site.WorkFrontierCapsuleId));
+
+                output.WriteLine($"SCHEDULER_IMPORTED_APPRENTICE rows={imported.Length} missing={missingImported.Length} callbacks={callbacks.Length}");
+
+                Assert.True(missingImported.Length == 0, string.Join(global::System.Environment.NewLine, missingImported));
+            }
+
+            string expected = HostedGrimoireProducerInventory.RenderCapsuleManifest(
+                reviewed.Sites.Where(site => site.RootType != serviceType).Concat(schedulerSites));
+
+            HostedProducerCapsuleManifestUpdate update = HostedGrimoireProducerInventory.ReadOrUpdateCapsuleManifest(
+                HostedGrimoireProducerInventory.CapsuleManifestPath, expected, scoped.Diagnostics,
+                global::System.Environment.GetEnvironmentVariable("ARCANUM_UPDATE_HOSTED_PRODUCER_CAPSULES") == "1",
+                output.WriteLine);
+
+            Assert.True(string.Equals(expected, update.Reviewed, StringComparison.Ordinal), update.Report);
+
+            HostedProducerCapsuleManifest persisted = HostedGrimoireProducerInventory.ParseCapsuleManifest(
+                update.Reviewed.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+
+            Assert.Empty(persisted.Diagnostics);
+
+            ProductionRootSelection selected = HostedGrimoireProducerInventory.SelectProductionRoots([serviceType],
+                HostedGrimoireProducerInventory.DiscoverApplicationHostedServices(HostedGrimoireProducerInventory.ProductionCompilations),
+                HostedGrimoireProducerInventory.Catalog, HostedGrimoireProducerInventory.NonHostedCatalog);
+
+            HostedProducerServiceEntry declaration = Assert.Single(selected.Catalog);
+
+            HostedProducerOperationEntry[] operations = [.. declaration.Operations.Select(operation => operation with
+            {
+                Sites = [.. persisted.Sites.Where(site => site.RootType == serviceType
+                    && site.AuthorityOperationId == operation.OperationId)],
+            })];
+
+            HostedProducerInventoryValidation validation = HostedGrimoireProducerInventory.Validate(
+                [declaration with { Operations = operations }], selected.NonHostedCatalog, selected.Registrations,
+                scoped with { Items = schedulerSites });
+
+            Assert.True(validation.IsValid, HostedGrimoireProducerInventory.RenderDiagnosticReport(validation.Diagnostics));
+
+            return;
+        }
+
         HostedProducerDiscovery<HostedProducerSite> additional = HostedGrimoireProducerInventory.DiscoverProductionSites(
             HostedProducerProductionPartition.Additional, ["RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreStagingIndex.Add"]);
 
@@ -1204,6 +1351,102 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.All(additional.Items, static site => Assert.Equal("RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreStagingIndex", site.RootType));
 
         Assert.DoesNotContain(additional.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_PREMISE_VIOLATED");
+    }
+
+    [Theory]
+    [InlineData("exact", false)]
+    [InlineData("missing", true)]
+    [InlineData("ambiguous", true)]
+    [InlineData("wrong-kind", true)]
+    [InlineData("wrong-cleanup-task", true)]
+    public void Scoped_catalog_handoff_requires_unique_independently_admitted_producer(string shape, bool refused)
+    {
+        const string type = "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService";
+
+        HostedProducerOperationEntry startup = new(type + ".StartAsync", "src/Fixture.cs", type, "StartAsync",
+            HostedProducerAuthorityKind.PreReadinessStartup, null, "host startup", []);
+
+        HostedProducerOperationEntry execution = new(type + ".RunApprenticeAsync", "src/Fixture.cs", type,
+            "RunApprenticeAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
+            shape == "wrong-kind" ? GrimoireWorkKind.GuildStorage : GrimoireWorkKind.ApprenticeExecution,
+            "independently admitted producer", []);
+
+        HostedProducerServiceEntry[] proof = shape switch
+        {
+            "missing" => [],
+            "ambiguous" => [new("ApprenticeService", [execution]), new("Duplicate", [execution])],
+            _ => [new("ApprenticeService", [execution])],
+        };
+
+        string source = ApprenticeSelfHandoffSource(shape == "wrong-cleanup-task" ? shape : "exact");
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSitesUnderPremises(
+            HostedProducerPremises.None, [Compile(source)], new(["ApprenticeService"], []),
+            [new("ApprenticeService", [startup])], [], handoffCatalog: proof);
+
+        Assert.Equal(refused, result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith("System.Threading.Tasks.Task.Run;", StringComparison.Ordinal)));
+
+        Assert.All(result.Items, static site => Assert.True(site.AuthorityOperationId == type + ".StartAsync"
+            || site.AuthorityOperationId == type + ".RunApprenticeAsync"));
+
+        if (!refused)
+        {
+            HostedProducerSite effect = Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+            Assert.NotNull(effect.WorkFrontierCapsuleId);
+
+            Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING");
+        }
+    }
+
+    [Fact]
+    public void ParameterCollectionCountRequiresTheClosedProviderDispatchProof()
+    {
+        const string statement = "_ = DispatchInput.Parameters.Count;";
+
+        const string callee = "System.Data.Common.DbParameterCollection.Count";
+
+        Assert.True(DispatchRefused(DispatchDiscover(statement), callee));
+
+        HostedProducerDiscovery<HostedProducerSite> closed = DispatchDiscoverUnder(
+            HostedProducerPremises.DbProviderTypesClosedByUse, statement);
+
+        Assert.Empty(closed.Diagnostics);
+
+        const string authored = "internal abstract class EffectfulParameters : System.Data.Common.DbParameterCollection { public override int Count { get { System.IO.File.Delete(\"count-effect\"); return 0; } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> open = DispatchDiscoverUnder(
+            HostedProducerPremises.DbProviderTypesClosedByUse, statement, authored);
+
+        Assert.NotEmpty(PremiseViolations(open));
+
+        Assert.True(DispatchRefused(open, callee));
+    }
+
+    [Fact]
+    public void FrameworkParameterCountRejectsCounterfeitMetadataEvenWithProviderPremise()
+    {
+        CSharpCompilation foreign = CompileWithProductionReferencePack(
+            "namespace System.Data.Common { public sealed class DbParameterCollection { public int Count { get { System.IO.File.Delete(\"counterfeit-count\"); return 0; } } } }",
+            "RetroDownfall.Arcanum.Api").WithAssemblyName("Untrusted.ParameterCollection");
+
+        using MemoryStream image = new();
+
+        Assert.True(foreign.Emit(image).Success);
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack("extern alias counterfeit; "
+            + R2Source(R2Admission + "_ = new counterfeit::System.Data.Common.DbParameterCollection().Count; await Task.CompletedTask;"),
+            "RetroDownfall.Arcanum.Api").AddReferences(MetadataReference.CreateFromImage(image.ToArray(),
+                new MetadataReferenceProperties(aliases: ["counterfeit"])));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSitesUnderPremises(
+            HostedProducerPremises.DbProviderTypesClosedByUse, [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.True(DispatchRefused(result, "System.Data.Common.DbParameterCollection.Count"));
     }
 
     private void VerifyIssue145AffectedProductionRoots(bool schemaAdditional)

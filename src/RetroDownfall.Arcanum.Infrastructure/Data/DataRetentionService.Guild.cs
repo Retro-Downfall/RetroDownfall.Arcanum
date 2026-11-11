@@ -25,7 +25,7 @@ internal sealed partial class DataRetentionService
             retention, cancellationToken).ConfigureAwait(false);
 
         await AddCompositeDatabaseStatusAsync(items, RetentionDataClass.GuildEvidence,
-            ["guild_workspace_lease_mutations", "guild_workspace_leases", "guild_workspace_authority_state", "guild_budget_evidence", "guild_budget_effects", "guild_quest_budget", "guild_budget_accounts", "guild_memory_attribution", "guild_portal_inputs", "guild_portal_receipts", "guild_inbox", "guild_portal_outbox", "guild_events", "guild_portal_cursors", "guild_envelopes", "guild_portal_streams", "guild_event_streams", "guild_remote_questions", "guild_remote_callbacks", "guild_remote_effects", "guild_remote_executions", "guild_inbound_tasks", "guild_inbound_peer_state", "guild_continuations", "guild_result_inputs", "guild_result_applications", "guild_result_outbox", "guild_result_receipts", "guild_dispatches", "guild_quest_cancellations", "guild_local_wait_checkpoints", "guild_local_executions", "guild_quest_start_intents", "guild_quests", "guild_signets", "guild_signet_revocations", "guild_signet_authority_state", "guild_content_erasure_receipts", "guild_owner_cleanup", "guild_roster_refreshes", "guild_roster_cursors", "guild_declared_source_claims", "guild_declared_roots"],
+            ["guild_portal_cohort_audience", "guild_cohort_settlement_nodes", "guild_cohort_settlement_state", "guild_cohort_settlement_clock", "guild_cohort_selections", "guild_cohort_eval_candidates", "guild_cohort_eval_buckets", "guild_cohort_eval_state", "guild_cohort_stop_frontiers", "guild_cohort_result_observations", "guild_cohort_contributions", "guild_cohort_member_quests", "guild_cohort_mutations", "guild_cohort_members", "guild_cohorts", "guild_workspace_lease_mutations", "guild_workspace_leases", "guild_workspace_authority_state", "guild_budget_evidence", "guild_budget_effects", "guild_quest_budget", "guild_budget_accounts", "guild_memory_attribution", "guild_portal_inputs", "guild_portal_receipts", "guild_inbox", "guild_portal_outbox", "guild_events", "guild_portal_cursors", "guild_envelopes", "guild_portal_streams", "guild_event_streams", "guild_remote_questions", "guild_remote_callbacks", "guild_remote_effects", "guild_remote_executions", "guild_inbound_tasks", "guild_inbound_peer_state", "guild_continuations", "guild_result_inputs", "guild_result_applications", "guild_result_outbox", "guild_result_receipts", "guild_dispatches", "guild_quest_cancellations", "guild_local_wait_checkpoints", "guild_local_executions", "guild_quest_start_intents", "guild_quests", "guild_signets", "guild_signet_revocations", "guild_signet_authority_state", "guild_content_erasure_receipts", "guild_owner_cleanup", "guild_roster_refreshes", "guild_roster_cursors", "guild_declared_source_claims", "guild_declared_roots"],
             "Content-free Guild budget, physical spend, erasure and owner cleanup evidence; never aged out on a timer.",
             retention, cancellationToken).ConfigureAwait(false);
     }
@@ -90,6 +90,16 @@ internal sealed partial class DataRetentionService
                 + " UNION SELECT ReceiptId,0 FROM guild_portal_outbox WHERE DeliveryStateCode=1";
         }
 
+        if (await TableExistsAsync("guild_cohorts", cancellationToken).ConfigureAwait(false))
+        {
+            command.CommandText += " UNION SELECT Id,2 FROM guild_cohorts WHERE StateCode IN(1,2,3)";
+        }
+
+        if (await TableExistsAsync("guild_cohort_stop_frontiers", cancellationToken).ConfigureAwait(false))
+        {
+            command.CommandText += " UNION SELECT CohortId,2 FROM guild_cohort_stop_frontiers WHERE Completed=0";
+        }
+
         if (await TableExistsAsync("guild_workspace_leases", cancellationToken).ConfigureAwait(false))
         {
             command.CommandText += " UNION SELECT Id,1 FROM guild_workspace_leases WHERE StateCode IS NOT 3 OR InFlightMutationCount IS NOT 0";
@@ -103,6 +113,7 @@ internal sealed partial class DataRetentionService
         {
             conflicts.Add(new(ErrorCodes.Guild.ReconciliationRequired, Guid.Parse(reader.GetString(0)).ToString("D"),
                 reader.GetInt64(1) == 1 ? "A Guild workspace lease retains live or unresolved physical mutation ownership."
+                    : reader.GetInt64(1) == 2 ? "A Cohort retains unresolved convergence or cancellation work."
                     : "A Guild Quest retains unresolved execution, delivery or accounting evidence."));
         }
 

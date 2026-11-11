@@ -328,8 +328,9 @@ public sealed class ToolExecutionPipelinePathPreflightTests
     private static readonly string[] ManifestPathTools = [ToolRiskClassifier.ApplyPatchToolName];
 
     /// <summary>
-    /// Registered tools with no workspace path argument at all. Adding a tool here is the explicit
-    /// decision that nothing it accepts names a file or directory.
+    /// Registered tools with no direct filesystem path action. Delegation grant coordinates on
+    /// create_agent_task, create_cohort and admit_cohort_member are authority descriptions: the
+    /// existing Guild scope evidence and attenuation policy validates them before admission.
     /// </summary>
     private static readonly string[] NoWorkspacePathTools =
     [
@@ -341,6 +342,10 @@ public sealed class ToolExecutionPipelinePathPreflightTests
         "create_agent_task",
         "get_agent_task",
         "cancel_agent_task",
+        "create_cohort",
+        "admit_cohort_member",
+        "close_cohort",
+        "remove_cohort_member",
         "list_agents",
         "send_agent_message",
         "ask_human",

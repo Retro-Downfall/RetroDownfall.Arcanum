@@ -9,8 +9,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 /// <summary>
-/// Dormant host authority participant. The private policy recognizes authenticated coordinator
-/// claims; no authorizing policy, execution activation or effect adapters are registered by this slice.
+/// Host authority participant. The private policy recognizes authenticated coordinator claims;
+/// every protected effect rechecks issuer lineage and applicable live Cohort constraints.
 /// </summary>
 internal sealed partial class SignetAuthority(GuildSignetStore store, IGrimoireConnectionAdmissionGate gate,
     IGuildSignetHostPolicy policy, TimeProvider time) : ISignetAuthority, IGuildToolAuthority, IDisposable
@@ -188,7 +188,11 @@ internal sealed partial class SignetAuthority(GuildSignetStore store, IGrimoireC
             return Mismatch;
         }
 
-        Result<GuildGrant> attenuated = GuildGrantPolicy.Attenuate(live.Value.Effective, request, live.Value.Evidence);
+        GuildGrantScopeEvidence evidence = authorized.ScopeEvidence is { } admitted
+            ? new([.. live.Value.Evidence.WorkspaceContainment, .. admitted.WorkspaceContainment],
+                [.. live.Value.Evidence.SessionOwnership, .. admitted.SessionOwnership]) : live.Value.Evidence;
+
+        Result<GuildGrant> attenuated = GuildGrantPolicy.Attenuate(live.Value.Effective, request, evidence);
 
         if (attenuated.IsFailure)
         {
@@ -519,6 +523,16 @@ internal sealed partial class SignetAuthority(GuildSignetStore store, IGrimoireC
         foreach (GuildSignetRecord ancestor in path.Value.Reverse())
         {
             effective = GuildSignetGrantComposition.Intersect(effective, ancestor.Binding.Grant, evidence.ScopeEvidence);
+
+            Result<GuildGrant?> cohort = await GuildCohortStore.ReadAuthorityConstraintWithinAsync(
+                connection, transaction, ancestor, ct).ConfigureAwait(false);
+
+            if (cohort.IsFailure) return cohort.Error;
+
+            if (cohort.Value is { } ceiling)
+            {
+                effective = GuildSignetGrantComposition.Intersect(effective, ceiling, evidence.ScopeEvidence);
+            }
         }
 
         if (effective.ExpiresAtUtc is { } effectiveExpiry && time.GetUtcNow() >= effectiveExpiry)

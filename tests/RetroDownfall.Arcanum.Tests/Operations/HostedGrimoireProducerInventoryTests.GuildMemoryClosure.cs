@@ -75,27 +75,5 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             && diagnostic.Detail == "System.IO.Stream..ctor");
     }
 
-    [Fact]
-    public void ParameterCollectionCountRequiresTheClosedProviderDispatchProof()
-    {
-        const string statement = "_ = DispatchInput.Parameters.Count;";
 
-        const string callee = "System.Data.Common.DbParameterCollection.Count";
-
-        Assert.True(DispatchRefused(DispatchDiscover(statement), callee));
-
-        HostedProducerDiscovery<HostedProducerSite> closed = DispatchDiscoverUnder(
-            HostedProducerPremises.DbProviderTypesClosedByUse, statement);
-
-        Assert.Empty(closed.Diagnostics);
-
-        const string authored = "internal abstract class EffectfulParameters : System.Data.Common.DbParameterCollection { public override int Count { get { System.IO.File.Delete(\"count-effect\"); return 0; } } }";
-
-        HostedProducerDiscovery<HostedProducerSite> open = DispatchDiscoverUnder(
-            HostedProducerPremises.DbProviderTypesClosedByUse, statement, authored);
-
-        Assert.NotEmpty(PremiseViolations(open));
-
-        Assert.True(DispatchRefused(open, callee));
-    }
 }

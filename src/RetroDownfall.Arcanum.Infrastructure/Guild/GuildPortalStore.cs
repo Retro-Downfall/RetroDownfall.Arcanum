@@ -49,9 +49,12 @@ internal sealed partial class GuildPortalStore(GuildQuestStore quests, SignetAut
 
             if (StrictUtf8.GetByteCount(body) > GuildStore.MaximumContentBytes) return TooLarge;
 
-            if (request.Address.CohortId is not null || request.Address.MembershipVersion is not null
-                || request.Address.Kind == GuildCircleAddressKind.Cohort)
-                return new Error(ErrorCodes.Guild.AuthorityUnavailable, "Cohort addressing requires the current membership boundary.");
+            if (request.Address.Kind == GuildCircleAddressKind.Cohort)
+            {
+                if ((request.Address.CohortId is null || request.Address.CohortId == Guid.Empty) || request.Address.QuestId is not null
+                    || request.Address.MembershipVersion is not null) return Invalid;
+            }
+            else if (request.Address.CohortId is not null || request.Address.MembershipVersion is not null) return Invalid;
 
             if (request.Address.QuestId == Guid.Empty) return Invalid;
 

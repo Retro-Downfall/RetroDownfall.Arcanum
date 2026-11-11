@@ -203,6 +203,9 @@ internal sealed class GuildOwnerCleanupCoordinator(
                 UNION SELECT 1,CampaignId FROM guild_signets WHERE CampaignId IS NOT NULL AND (Revoked=0 OR CancellationRequested=0)
                 UNION SELECT 2,SessionId FROM guild_signets WHERE SessionId IS NOT NULL AND (Revoked=0 OR CancellationRequested=0)
                 UNION SELECT 1,WorkspaceId FROM guild_signets WHERE WorkspaceId IS NOT NULL AND (Revoked=0 OR CancellationRequested=0)
+                UNION SELECT 1,q.CampaignId FROM guild_cohorts c JOIN guild_quests q ON q.Id=c.IssuerQuestId WHERE c.Retired=0 AND q.CampaignId IS NOT NULL
+                UNION SELECT 1,q.WorkspaceId FROM guild_cohorts c JOIN guild_quests q ON q.Id=c.IssuerQuestId WHERE c.Retired=0 AND q.WorkspaceId IS NOT NULL
+                UNION SELECT 2,q.SessionId FROM guild_cohorts c JOIN guild_quests q ON q.Id=c.IssuerQuestId WHERE c.Retired=0 AND q.SessionId IS NOT NULL
                 UNION SELECT 1,CampaignId FROM guild_quests WHERE CampaignId IS NOT NULL AND (Retired=0 OR CancellationRequested=0)
                 UNION SELECT 2,SessionId FROM guild_quests WHERE SessionId IS NOT NULL AND (Retired=0 OR CancellationRequested=0)
                 UNION SELECT 1,WorkspaceId FROM guild_quests WHERE WorkspaceId IS NOT NULL AND (Retired=0 OR CancellationRequested=0)

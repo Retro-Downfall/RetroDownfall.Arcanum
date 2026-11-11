@@ -125,9 +125,18 @@ internal sealed partial class GuildQuestStore
         if (receipt is not null)
             return await CancellationSnapshotWithinAsync(connection, transaction, row, receipt, token).ConfigureAwait(false);
 
+        return await PersistCancellationWithinAsync(connection, transaction, row, request, intent, false, token).ConfigureAwait(false);
+    }
+
+    private async Task<Result<GuildCancellationDto>> PersistCancellationWithinAsync(SqliteConnection connection,
+        SqliteTransaction transaction, GuildQuestStored row, GuildCancelQuestRequest request, string intent,
+        bool preserveTerminalResult, CancellationToken token)
+    {
+        Guid questId = row.Quest.Id;
+
         if (row.Quest.Revision != request.ExpectedRevision) return RevisionConflict;
 
-        if (row.Quest.ResultReceiptId is not null) return ClosedDispatch;
+        if (!preserveTerminalResult && row.Quest.ResultReceiptId is not null) return ClosedDispatch;
 
         if (row.Quest.Revision == long.MaxValue) return ExhaustedReceipt;
 
@@ -136,7 +145,7 @@ internal sealed partial class GuildQuestStore
 
         if (operation is null) return Unavailable;
 
-        if (operation.State is LongRunningOperationState.Completed or LongRunningOperationState.Failed or LongRunningOperationState.Abandoned)
+        if (!preserveTerminalResult && operation.State is LongRunningOperationState.Completed or LongRunningOperationState.Failed or LongRunningOperationState.Abandoned)
             return UncertainDispatch;
 
         DateTimeOffset now = time.GetUtcNow();

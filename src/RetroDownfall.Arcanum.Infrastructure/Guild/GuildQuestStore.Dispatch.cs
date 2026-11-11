@@ -262,7 +262,9 @@ internal sealed partial class GuildQuestStore
         {
             if (policy is not GuildLocalHostPolicy host) return Unavailable;
 
-            Result permitted = await host.AuthorizeRemoteCleanupWithinAsync(driver, row, connection, transaction, ct).ConfigureAwait(false);
+            Result permitted = caller.ReceiptSource == GuildLocalHostPolicy.LocalCleanupReceiptSource
+                ? await host.AuthorizeLocalCleanupWithinAsync(driver, row, connection, transaction, ct).ConfigureAwait(false)
+                : await host.AuthorizeRemoteCleanupWithinAsync(driver, row, connection, transaction, ct).ConfigureAwait(false);
 
             if (permitted.IsFailure) return permitted.Error;
         }

@@ -223,8 +223,15 @@ internal static class GuildPortalWithholding
     }
 
     internal static async Task<Result> WithholdWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
-        string prefix, string predicate, Guid identity, string reason, DateTimeOffset now, CancellationToken cancellationToken)
+        string prefix, string predicate, Guid identity, string reason, DateTimeOffset now, CancellationToken cancellationToken,
+        int maximumBatches = int.MaxValue, int batchSize = 100, string? recipientKey = null, bool updateResultOutbox = true)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maximumBatches, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(batchSize, 100);
+
+        int batches = 0;
+
         while (true)
         {
             List<Pending> pending = [];
@@ -234,9 +241,11 @@ internal static class GuildPortalWithholding
                 read.Transaction = transaction;
 
                 read.CommandText = prefix + "SELECT i.Id,i.Revision,e.IntentDigest,e.Id,e.RootQuestId,e.QuestId,i.RecipientQuestId,e.KindCode FROM guild_inbox i JOIN guild_envelopes e ON e.Id=i.EnvelopeId"
-                    + $" WHERE i.DeliveryStateCode=1 AND ({predicate}) ORDER BY i.Id LIMIT 100";
+                    + $" WHERE i.DeliveryStateCode=1 AND ({predicate}) ORDER BY i.Id LIMIT $batchSize";
 
                 read.Parameters.AddWithValue("$identity", Id(identity));
+                read.Parameters.AddWithValue("$batchSize", batchSize);
+                read.Parameters.AddWithValue("$recipientKey", (object?)recipientKey ?? DBNull.Value);
 
                 await using SqliteDataReader reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
@@ -296,7 +305,7 @@ internal static class GuildPortalWithholding
                     return new Error(ErrorCodes.Guild.ReconciliationRequired, "A Portal delivery cannot commit its permanent disposition.");
                 }
 
-                if (item.Kind == GuildEnvelopeKind.Result)
+                if (updateResultOutbox && item.Kind == GuildEnvelopeKind.Result)
                 {
                     await using SqliteCommand result = connection.CreateCommand();
 
@@ -326,6 +335,8 @@ internal static class GuildPortalWithholding
                     return projected.Error;
                 }
             }
+
+            if (++batches >= maximumBatches) return Result.Success();
         }
     }
 

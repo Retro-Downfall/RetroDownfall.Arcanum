@@ -327,7 +327,25 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
                 grant = grant with { Tools = [.. grant.Tools.Where(tool => payload.RequestedTools.Contains(tool.Name, StringComparer.Ordinal))] };
         }
 
-        if (GuildGrantPolicy.Validate(grant).IsFailure || grant.Workspaces.Any(item => item.WorkspaceId != proposal.WorkspaceId) || grant.Delegation.Any(item => item is not (GuildDelegationKind.Local or GuildDelegationKind.Remote))) return Forbidden;
+        if (proposal.CohortId is { } cohortId)
+        {
+            if (root || proposal.ParentQuestId is not { } issuer) return Forbidden;
+
+            var cohort = await GuildCohortStore.ReadWithinAsync(connection, transaction, cohortId, ct).ConfigureAwait(false);
+
+            if (cohort.IsFailure) return cohort.Error;
+
+            if (cohort.Value.Cohort.IssuerQuestId != issuer || cohort.Value.Cohort.RootQuestId != caller.Execution!.RootQuestId
+                || cohort.Value.Cohort.State != GuildCohortState.Open) return Forbidden;
+
+            var scope = await ScopeAsync(connection, transaction, grant, cohort.Value.Cohort.CohortGrant, ct).ConfigureAwait(false);
+
+            if (scope.IsFailure) return scope.Error;
+
+            grant = GuildSignetGrantComposition.Intersect(grant, cohort.Value.Cohort.CohortGrant, scope.Value);
+        }
+
+        if (GuildGrantPolicy.Validate(grant).IsFailure || grant.Workspaces.Any(item => item.WorkspaceId != proposal.WorkspaceId) || grant.Delegation.Any(item => item is not (GuildDelegationKind.Local or GuildDelegationKind.Remote or GuildDelegationKind.Cohort))) return Forbidden;
 
         GuildRemoteTransportDescriptor? remote = null;
 
@@ -404,9 +422,33 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
 
         Result identity = await CurrentIdentityAsync(scope.Connection, scope.Transaction, ct).ConfigureAwait(false);
 
-        return identity.IsFailure ? identity.Error : new GuildSignetAdmissionEvidence(scope.Owners,
+        if (identity.IsFailure) return identity.Error;
+
+        GuildGrantScopeEvidence? issuanceScope = null;
+
+        if (scope.Proposal.ParentQuestId is { } parentId)
+        {
+            var parent = await GuildSignetStore.ReadAsync(scope.Connection, scope.Transaction, parentId, true, ct).ConfigureAwait(false);
+
+            if (parent.IsFailure) return parent.Error;
+
+            var lineage = await GuildSignetStore.LineageAsync(scope.Connection, scope.Transaction, parent.Value, ct).ConfigureAwait(false);
+
+            if (lineage.IsFailure) return lineage.Error;
+
+            var current = await ResolveCurrentWithinAsync(lineage.Value, scope.Connection, scope.Transaction, ct, binding.Grant).ConfigureAwait(false);
+
+            if (current.IsFailure) return current.Error;
+
+            issuanceScope = current.Value.ScopeEvidence;
+        }
+
+        return new GuildSignetAdmissionEvidence(scope.Owners,
             scope.Proposal.Root is not null ? GuildSignetIssuanceEdge.Root
-                : scope.RemoteTransport is null ? GuildSignetIssuanceEdge.Local : GuildSignetIssuanceEdge.Remote);
+                : scope.Proposal.CohortId is not null
+                    ? scope.RemoteTransport is null ? GuildSignetIssuanceEdge.LocalCohort : GuildSignetIssuanceEdge.RemoteCohort
+                    : scope.RemoteTransport is null ? GuildSignetIssuanceEdge.Local : GuildSignetIssuanceEdge.Remote,
+            issuanceScope);
     }
 
     public Task<Result<GuildSignetPolicyEvidence>> ResolveCurrentAsync(ImmutableArray<GuildSignetRecord> lineage, CancellationToken ct)
@@ -420,7 +462,7 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
     }
 
     private async Task<Result<GuildSignetPolicyEvidence>> ResolveCurrentWithinAsync(ImmutableArray<GuildSignetRecord> lineage,
-        SqliteConnection connection, SqliteTransaction transaction, CancellationToken ct)
+        SqliteConnection connection, SqliteTransaction transaction, CancellationToken ct, GuildGrant? prospectiveChild = null)
     {
         Result identity = await CurrentIdentityAsync(connection, transaction, ct).ConfigureAwait(false);
 
@@ -430,7 +472,9 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
 
         GuildGrantScopeEvidence evidence = new([], []);
 
-        foreach (GuildSignetRecord row in lineage)
+        GuildGrant effective = rootGrant;
+
+        foreach (GuildSignetRecord row in lineage.Reverse())
         {
             if (row.InstallationGeneration != InstallationGeneration || row.Binding.OriginPrincipalId != OperatorPrincipalId
                 || row.Revoked || row.RestoredInert || row.Retired
@@ -458,11 +502,39 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
                     || row.Owners.WorkspaceRootIdentity is not { Length: 32 } pin || !CryptographicOperations.FixedTimeEquals(pin, current.Value.RootIdentity.Bytes)) return Forbidden;
             }
 
-            Result<GuildGrantScopeEvidence> scope = await ScopeAsync(connection, transaction, rootGrant, row.Binding.Grant, ct).ConfigureAwait(false);
+            Result<GuildGrantScopeEvidence> scope = await ScopeAsync(connection, transaction, effective, row.Binding.Grant, ct).ConfigureAwait(false);
 
             if (scope.IsFailure) return scope.Error;
 
             evidence = new([.. evidence.WorkspaceContainment, .. scope.Value.WorkspaceContainment], [.. evidence.SessionOwnership, .. scope.Value.SessionOwnership]);
+
+            effective = GuildSignetGrantComposition.Intersect(effective, row.Binding.Grant, scope.Value);
+
+            Result<GuildGrant?> cohort = await GuildCohortStore.ReadAuthorityConstraintWithinAsync(connection, transaction, row, ct).ConfigureAwait(false);
+
+            if (cohort.IsFailure) return cohort.Error;
+
+            if (cohort.Value is { } ceiling)
+            {
+                Result<GuildGrantScopeEvidence> cohortScope = await ScopeAsync(connection, transaction, effective, ceiling, ct).ConfigureAwait(false);
+
+                if (cohortScope.IsFailure) return cohortScope.Error;
+
+                evidence = new([.. evidence.WorkspaceContainment, .. cohortScope.Value.WorkspaceContainment],
+                    [.. evidence.SessionOwnership, .. cohortScope.Value.SessionOwnership]);
+
+                effective = GuildSignetGrantComposition.Intersect(effective, ceiling, cohortScope.Value);
+            }
+        }
+
+        if (prospectiveChild is not null)
+        {
+            var childScope = await ScopeAsync(connection, transaction, effective, prospectiveChild, ct).ConfigureAwait(false);
+
+            if (childScope.IsFailure) return childScope.Error;
+
+            evidence = new([.. evidence.WorkspaceContainment, .. childScope.Value.WorkspaceContainment],
+                [.. evidence.SessionOwnership, .. childScope.Value.SessionOwnership]);
         }
 
         return new GuildSignetPolicyEvidence(rootGrant, evidence);

@@ -37,8 +37,13 @@ public sealed partial class GuildLocalHostPolicyTests
         GuildQuestStore store = new(new(f.Connections, f.Gate, TimeProvider.System), f.Authority, f.Policy,
             new GuildBudgetLedger(daily), TimeProvider.System, new PortAdmission(), f.Readiness);
 
+        GuildIssueRootRequest requested = frontier == "parked-wait" ? f.Request with
+        {
+            Grant = f.Request.Grant with { Delegation = [GuildDelegationKind.Local, GuildDelegationKind.Cohort] },
+        } : f.Request;
+
         var issued = await store.IssueAsync(caller, new(f.Generation, null, caller.InvocationId, caller.InvocationId,
-            f.Request.IdempotencyKey), f.Request, default);
+            requested.IdempotencyKey), requested, default);
 
         Assert.True(issued.IsSuccess, issued.Error.Message);
 
@@ -55,6 +60,21 @@ public sealed partial class GuildLocalHostPolicyTests
         var run = await f.Policy.CreateRunCallerAsync(f.Authority, execution.Value, quest.Id, default);
 
         Assert.True(run.IsSuccess, run.Error.Message);
+
+        Guid? cohortId = null;
+
+        if (frontier == "parked-wait")
+        {
+            GuildCohortStore cohortStore = new(new(f.Connections, f.Gate, TimeProvider.System), f.Authority,
+                store, new GuildBudgetLedger(daily), f.Policy, TimeProvider.System);
+
+            var created = await cohortStore.CreateAsync(run.Value, new(Guid.NewGuid(), quest.Id, "Parked issuer",
+                new(GuildConvergenceKind.All, null), new("text/plain"), null), default);
+
+            Assert.True(created.IsSuccess, created.Error.Message);
+
+            cohortId = created.Value.Id;
+        }
 
         LongRunningOperationStore operations = new(db, f.Connections);
 
@@ -140,6 +160,21 @@ public sealed partial class GuildLocalHostPolicyTests
         var current = await restartedStore.GetAsync(restartedCaller.Value, quest.Id, default);
 
         Assert.True(current.IsSuccess, current.Error.Message);
+
+        if (cohortId is { } retainedCohort)
+        {
+            GuildCohortStore restartedCohorts = new(new(f.Connections, f.Gate, TimeProvider.System), restartedAuthority,
+                restartedStore, new GuildBudgetLedger(daily), restartedPolicy, TimeProvider.System);
+
+            var parkedStep = await restartedCohorts.ReconcileAsync(restartedCaller.Value, retainedCohort, default);
+
+            Assert.True(parkedStep.IsSuccess || parkedStep.Error.Code == ErrorCodes.Guild.MaintenanceDeferred, parkedStep.Error.Message);
+
+            Assert.Equal((long)GuildCohortState.Open,
+                await f.ScalarAsync($"SELECT StateCode FROM guild_cohorts WHERE Id='{retainedCohort:D}' COLLATE NOCASE"));
+
+            Assert.Equal(0L, await f.ScalarAsync($"SELECT COUNT(*) FROM guild_cohort_stop_frontiers WHERE CohortId='{retainedCohort:D}' COLLATE NOCASE"));
+        }
 
         var reboundContext = await restartedPolicy.CreateRecoveryAsync(restartedCaller.Value, quest.Id, quest.OperationId,
             current.Value.Quest.SignetRevision, default);

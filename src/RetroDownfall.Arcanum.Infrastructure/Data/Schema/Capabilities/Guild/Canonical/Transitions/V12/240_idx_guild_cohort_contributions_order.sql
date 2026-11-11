@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS idx_guild_cohort_contributions_order ON guild_cohort_contributions(CohortId,ResultSequence,MemberId);

@@ -9,7 +9,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
-internal enum GuildLocalChildToolKind { DelegateTask, CreateAgentTask, SendAgentMessage, GetAgentTask, CancelAgentTask, ListAgents, SearchMemory }
+internal enum GuildLocalChildToolKind { DelegateTask, CreateAgentTask, SendAgentMessage, GetAgentTask, CancelAgentTask, ListAgents, SearchMemory,
+    CreateCohort, AdmitCohortMember, CloseCohort, RemoveCohortMember }
 
 /// <summary>Host output consumed before generic model-tool stringification.</summary>
 internal sealed record GuildLocalChildToolResult(GuildQuestDto Quest, string? Summary = null, ProviderCallSensitivity? Sensitivity = null, JsonElement? Projection = null);
@@ -21,6 +22,8 @@ internal interface IGuildLocalChildToolDispatcher
     bool SupportsRemote => false;
 
     bool SupportsMemory => false;
+
+    bool SupportsCohorts => false;
 
     Task<Result<GuildLocalChildToolResult>> DispatchAsync(GuildLocalChildToolCall call, CancellationToken cancellationToken);
 }
@@ -37,6 +40,8 @@ internal sealed class GuildChildToolAdmission(GuildLocalToolRegistry registry, G
     private string? _intent;
 
     private GuildQuestDto? _accepted;
+
+    private JsonElement? _acceptedProjection;
 
     internal GuildLocalToolRegistry Registry { get; } = registry;
 
@@ -56,6 +61,19 @@ internal sealed class GuildChildToolAdmission(GuildLocalToolRegistry registry, G
 
     internal long ResponseAllocationBytes => Math.Max(0, Frame.OutputAllocationBytes - 4096);
 
+    internal Result ValidateProjectionAllocation(JsonElement projection)
+    {
+        lock (Frame.Sync)
+        {
+            if (!Registry.Owns(this) || !ReferenceEquals(Registry.CaptureInvocation(Tool), Frame))
+                return GuildLocalToolRegistry.Unavailable;
+
+            return System.Text.Encoding.UTF8.GetByteCount(projection.GetRawText()) > ResponseAllocationBytes
+                ? Result.Failure(new(ErrorCodes.Guild.PayloadTooLarge, "The typed tool projection exceeds one response allocation."))
+                : Result.Success();
+        }
+    }
+
     internal GuildLocalChildToolKind Kind => Tool.SourceKind == GuildToolSourceKind.BuiltIn
         ? GuildLocalChildToolKind.DelegateTask : Tool.Name switch
         {
@@ -65,6 +83,10 @@ internal sealed class GuildChildToolAdmission(GuildLocalToolRegistry registry, G
             "cancel_agent_task" => GuildLocalChildToolKind.CancelAgentTask,
             "list_agents" => GuildLocalChildToolKind.ListAgents,
             "search_memory" => GuildLocalChildToolKind.SearchMemory,
+            "create_cohort" => GuildLocalChildToolKind.CreateCohort,
+            "admit_cohort_member" => GuildLocalChildToolKind.AdmitCohortMember,
+            "close_cohort" => GuildLocalChildToolKind.CloseCohort,
+            "remove_cohort_member" => GuildLocalChildToolKind.RemoveCohortMember,
             _ => throw new InvalidOperationException("Unknown task tool."),
         };
 
@@ -87,7 +109,33 @@ internal sealed class GuildChildToolAdmission(GuildLocalToolRegistry registry, G
 
     internal void RecordCommitted(GuildQuestDto accepted)
     {
-        lock (_sync) _accepted = accepted;
+        lock (_sync)
+        {
+            _accepted = accepted;
+
+            _acceptedProjection = null;
+        }
+    }
+
+    internal void RecordCommittedProjection(GuildQuestDto accepted, JsonElement projection)
+    {
+        lock (_sync)
+        {
+            _accepted = accepted;
+
+            _acceptedProjection = projection.Clone();
+        }
+    }
+
+    internal JsonElement? ReadCommittedProjection()
+    {
+        lock (_sync) return _acceptedProjection;
+    }
+
+    internal bool MatchesCommittedProjection(JsonElement? projection)
+    {
+        lock (_sync) return _acceptedProjection is { } accepted && projection is { } returned
+            && accepted.GetRawText() == returned.GetRawText();
     }
 
     internal bool MatchesCommitted(GuildQuestDto returned)
@@ -118,7 +166,11 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
             new(GuildToolSourceKind.InternalMcp, "arcanum", "get_agent_task"),
             new(GuildToolSourceKind.InternalMcp, "arcanum", "cancel_agent_task"),
             new(GuildToolSourceKind.InternalMcp, "arcanum", "list_agents"),
-            new(GuildToolSourceKind.InternalMcp, "arcanum", "search_memory")];
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "search_memory"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "create_cohort"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "admit_cohort_member"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "close_cohort"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "remove_cohort_member")];
 
     internal GuildLocalInferenceExecution Parent { get; } = parent;
 
@@ -133,7 +185,10 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
     internal bool Supports(GuildToolGrant tool) => IsActive && Parent?.Store is not null && Parent.Driver is not null
         && AcceptedInput is not null && ChildDispatcher is not null && AcceptedInput.Mode == GuildLocalExecutionMode.Apprentice && SupportedTools.Contains(tool)
         && (tool.Name != "search_memory" || ChildDispatcher.SupportsMemory)
-        && (tool.Name != "create_agent_task" || ChildDispatcher.SupportsLocal || ChildDispatcher.SupportsRemote);
+        && (!IsCohortTool(tool.Name) || ChildDispatcher.SupportsCohorts)
+        && (tool.Name is not ("create_agent_task" or "admit_cohort_member") || ChildDispatcher.SupportsLocal || ChildDispatcher.SupportsRemote);
+
+    internal static bool IsCohortTool(string name) => name is "create_cohort" or "admit_cohort_member" or "close_cohort" or "remove_cohort_member";
 
     internal bool Matches(GuildExecutionHandle execution, IGuildToolAuthority authority) =>
         Parent?.Driver is { } driver && Parent.Store is not null && ReferenceEquals(driver.Execution, execution)
@@ -233,6 +288,8 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
         if (result.IsFailure) return Format(result.Error);
 
         if (!Owns(admission) || !admission.MatchesCommitted(result.Value.Quest)) return Format(Unavailable);
+
+        if (IsCohortTool(tool.Name) && !admission.MatchesCommittedProjection(result.Value.Projection)) return Format(Unavailable);
 
         if (result.Value.Projection is { } projection
             && System.Text.Encoding.UTF8.GetByteCount(projection.GetRawText()) > admission.ResponseAllocationBytes)

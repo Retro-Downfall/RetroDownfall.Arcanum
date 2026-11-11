@@ -506,6 +506,53 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.False(HasCampaignEncodingDiagnostic(Discover(source), "System.Text.Json.Utf8JsonReader.Read"));
     }
 
+    [Theory]
+    [InlineData("span", true)]
+    [InlineData("sequence", false)]
+    [InlineData("ref-mutation", false)]
+    [InlineData("escape", false)]
+    [InlineData("sequence-reassignment", false)]
+    [InlineData("copy", false)]
+    public void Guild_cohort_json_reader_requires_owned_span_for_token_and_string_reads(string shape, bool accepted)
+    {
+        string input = shape == "sequence"
+            ? "new System.Buffers.ReadOnlySequence<byte>(new byte[] { 34, 120, 34 })"
+            : "new byte[] { 34, 120, 34 }.AsSpan()";
+
+        string mutation = shape switch
+        {
+            "ref-mutation" => "Replace(ref reader);",
+            "escape" => "Consume(reader);",
+            "sequence-reassignment" => "reader = new System.Text.Json.Utf8JsonReader(new System.Buffers.ReadOnlySequence<byte>(new byte[] { 34, 120, 34 }));",
+            "copy" => "var copy = reader; Consume(copy);",
+            _ => "",
+        };
+
+        string source = FixtureSource("ReaderOwner.Run();", $$"""
+            static class ReaderOwner
+            {
+                public static void Run()
+                {
+                    var reader = new System.Text.Json.Utf8JsonReader({{input}});
+                    {{mutation}}
+                    _ = reader.Read();
+                    _ = reader.TokenType;
+                    _ = reader.GetString();
+                    _ = reader.CurrentDepth;
+                }
+                private static void Replace(ref System.Text.Json.Utf8JsonReader value) { }
+                private static void Consume(System.Text.Json.Utf8JsonReader value) { }
+            }
+            """);
+
+        var discovery = Discover(source);
+
+        foreach (string member in new[] { "Read", "TokenType", "GetString", "CurrentDepth" })
+        {
+            Assert.Equal(!accepted, HasCampaignEncodingDiagnostic(discovery, "System.Text.Json.Utf8JsonReader." + member));
+        }
+    }
+
     [Fact]
     public void CampaignEncoding_reader_rejects_sequence_storage_and_opaque_ref_mutation()
     {

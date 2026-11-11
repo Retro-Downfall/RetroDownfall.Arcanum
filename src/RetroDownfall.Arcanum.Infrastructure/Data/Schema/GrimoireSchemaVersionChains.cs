@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 37 and declares thirty-six steps, Covenant canonical is at version 7 and declares six,
+/// Core is at version 39 and declares thirty-eight steps, Covenant canonical is at version 7 and declares six,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -153,10 +153,13 @@ internal static class GrimoireSchemaVersionChains
     /// keeping the candidate selection a scope seek before managed cosine scoring.</para>
     /// <para>Version 37 adds disposable int8 embedding companions and authoritative-update invalidation.
     /// Existing rows remain searchable while ordinary background work fills missing companions.</para>
+    /// <para>Version 39 adds a content-free sensitivity mutation clock. Bounded readers invalidate
+    /// staged decisions after any label insertion or deletion without coupling Core writes to an
+    /// optional capability. Existing labels remain unchanged.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 38;
+    internal const int CoreSchemaVersion = 39;
 
-    internal const int GuildCanonicalSchemaVersion = 11;
+    internal const int GuildCanonicalSchemaVersion = 12;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -196,6 +199,8 @@ internal static class GrimoireSchemaVersionChains
     private static readonly IReadOnlyDictionary<(GrimoireSchemaTransactionTier Tier, int ToVersion), string> SourcePins =
         new Dictionary<(GrimoireSchemaTransactionTier, int), string>
         {
+            [(GrimoireSchemaTransactionTier.GuildCanonical, 12)] = "977A3344A83FFBCCCB78A12D9224FE2AE3733AC89CF43139FE85760C89434623",
+
             [(GrimoireSchemaTransactionTier.GuildCanonical, 11)] = "9F8587073763E954B95A2F8772370D86BFC10843193A654937C9B34B617CC2DE",
 
             [(GrimoireSchemaTransactionTier.GuildCanonical, 10)] = "D08C0850320EA982D75496C05A873C00F96DF54E9993F092E8959D19172FE796",
@@ -392,6 +397,8 @@ internal static class GrimoireSchemaVersionChains
 
             // Frozen Core35 catalog before the standalone attachment retrieval index.
             [(GrimoireSchemaTransactionTier.Core, 36)] = "1243F9B7B5256B4C07A71E030C145D20804297950101E93A5E411510D872E148",
+
+            [(GrimoireSchemaTransactionTier.Core, 39)] = "614F0BD1685656251669D0268734BB045B805B85AD4CD43D9DEDAEA83E4A71B5",
 
             [(GrimoireSchemaTransactionTier.Core, 38)] = "72BC0F63C58D1B0E0A2E2A6A2FA2C2491506F5983289019CDD5D24AED7A1D634",
 

@@ -45,6 +45,29 @@ internal sealed partial class ConclaveArchmage
                 Projection: JsonSerializer.SerializeToElement(page.Value, GuildJsonContext.Default.GuildAgentCardPageDto));
         }
 
+        if (call.Kind == GuildLocalChildToolKind.SendAgentMessage && arguments.TryGetProperty("cohortId", out _))
+        {
+            if (!GuildTaskArguments.Closed(arguments, "cohortId", "kind", "contentType", "body", "idempotencyKey")
+                || !GuildTaskArguments.Identity(arguments, "cohortId", out Guid cohortId)
+                || !GuildTaskArguments.Text(arguments, "kind", out string? messageKind) || messageKind != "message"
+                || !GuildTaskArguments.Text(arguments, "contentType", out string? mime) || mime is not ("text/plain" or "application/json")
+                || !GuildTaskArguments.Text(arguments, "body", out string? messageBody) || messageBody is null)
+                return GuildTaskArguments.Invalid;
+
+            var key = GuildTaskArguments.Mutation(arguments, admission.LogicalCallId);
+
+            if (key.IsFailure) return key.Error;
+
+            var receipt = await quests!.PublishCohortTaskMessageAsync(admission, cohortId, key.Value, mime, messageBody, ct).ConfigureAwait(false);
+
+            if (receipt.IsFailure) return receipt.Error;
+
+            admission.RecordCommitted(call.ParentQuest);
+
+            return new GuildLocalChildToolResult(call.ParentQuest,
+                Projection: JsonSerializer.SerializeToElement(receipt.Value, GuildJsonContext.Default.GuildMessageReceipt));
+        }
+
         if (!GuildTaskArguments.Identity(arguments, "questId", out Guid questId)) return GuildTaskArguments.Invalid;
 
         bool relationship = call.Kind == GuildLocalChildToolKind.SendAgentMessage;

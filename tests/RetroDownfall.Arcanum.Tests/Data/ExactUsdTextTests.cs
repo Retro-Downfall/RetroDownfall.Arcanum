@@ -26,6 +26,8 @@ public sealed class ExactUsdTextTests
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildBudgetLedger.Reads.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildBudgetLedger.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildBudgetPhysicalAccounting.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.Settlement.Storage.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.Settlement.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.ProviderEffects.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Remote.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.cs",

@@ -8,6 +8,19 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 internal sealed partial class GuildQuestStore
 {
+    internal Task<Result<GuildQuestStored>> AuthorizeCohortToolWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        SignetAuthority.QuestTransaction signets, GuildChildToolAdmission admission, CancellationToken ct)
+    {
+        if (admission is null || !admission.Registry.Owns(admission)
+            || !ReferenceEquals(admission.Registry.Parent.Store, this)
+            || !ReferenceEquals(admission.Registry.CaptureInvocation(admission.Tool), admission.Frame)
+            || !GuildLocalToolRegistry.IsCohortTool(admission.Tool.Name))
+            return Task.FromResult(Result<GuildQuestStored>.Failure(InvalidReceipt));
+
+        return RequireLocalToolWithinAsync(connection, transaction, signets, admission.Registry,
+            admission.Tool, admission.Eligibility, ct);
+    }
+
     internal async Task<Result<GuildQuestStored>> IssueToolChildAsync(GuildChildToolAdmission admission,
         GuildIssuanceIdentity issuance, GuildIssueChildRequest request, CancellationToken ct)
     {
@@ -42,12 +55,13 @@ internal sealed partial class GuildQuestStore
         GuildQuestIntent.Compute(parent, request with { ExpectedRevision = 1 });
 
     private async Task<Result<GuildIssueChildRequest>> ResolveToolBudgetWithinAsync(SqliteConnection connection,
-        SqliteTransaction transaction, GuildQuestStored parent, GuildIssueChildRequest request, CancellationToken ct)
+        SqliteTransaction transaction, GuildQuestStored parent, GuildIssueChildRequest request, CancellationToken ct,
+        Guid? fundingAccountId = null, GuildGrant? ceiling = null)
     {
         if (allocations is not GuildBudgetLedger ledger) return Unavailable;
 
         Result<GuildBudgetSnapshot> available = await ledger.ReadWithinAsync(connection, transaction,
-            parent.AllocationAccountId, ct).ConfigureAwait(false);
+            fundingAccountId ?? parent.AllocationAccountId, ct).ConfigureAwait(false);
 
         if (available.IsFailure) return available.Error;
 
@@ -56,7 +70,7 @@ internal sealed partial class GuildQuestStore
         GuildBudgetGrant? budget = requested.Budget.IsSpecified ? requested.Budget.Value : null;
 
         Result<GuildBudgetGrant> resolved = GuildBudgetAllocationPolicy.ResolveHint(
-            budget is null ? null : new(budget.Usd, budget.Tokens), available.Value.Remaining, parent.Quest.ResolvedGrant.Budget);
+            budget is null ? null : new(budget.Usd, budget.Tokens), available.Value.Remaining, (ceiling ?? parent.Quest.ResolvedGrant).Budget);
 
         return resolved.IsFailure ? resolved.Error : request with
         {
@@ -101,9 +115,10 @@ internal sealed partial class GuildQuestStore
 
         if (live.IsFailure) return live.Error;
 
-        bool creation = tool.Name is "delegate_task" or "create_agent_task";
+        bool creation = tool.Name is "delegate_task" or "create_agent_task" or "admit_cohort_member";
 
-        bool remoteTool = tool.Name == "create_agent_task" && GuildTaskArguments.IsRemote(registry.CaptureInvocation(tool)?.Admission?.Arguments);
+        bool remoteTool = tool.Name is "create_agent_task" or "admit_cohort_member"
+            && GuildTaskArguments.IsRemote(registry.CaptureInvocation(tool)?.Admission?.Arguments);
 
         JsonElement? arguments = registry.CaptureInvocation(tool)?.Admission?.Arguments;
 
@@ -113,10 +128,11 @@ internal sealed partial class GuildQuestStore
                 : registry.ChildDispatcher?.SupportsLocal == true && live.Value.Delegation.Contains(GuildDelegationKind.Local)
                     || registry.ChildDispatcher?.SupportsRemote == true && live.Value.Delegation.Contains(GuildDelegationKind.Remote));
 
-        if (!live.Value.Tools.Contains(tool) || !mayCreate)
+        if (!live.Value.Tools.Contains(tool) || !mayCreate
+            || GuildLocalToolRegistry.IsCohortTool(tool.Name) && !live.Value.Delegation.Contains(GuildDelegationKind.Cohort))
             return new Error(ErrorCodes.Guild.ToolNotGranted, "The exact local tool and delegation rights are not granted.");
 
-        if (tool.Name == "create_agent_task" && arguments is not null
+        if (tool.Name is "create_agent_task" or "admit_cohort_member" && arguments is not null
             && (remoteTool ? registry.ChildDispatcher?.SupportsRemote != true : registry.ChildDispatcher?.SupportsLocal != true))
             return new Error(ErrorCodes.Guild.Unavailable, "The selected task destination capability is unavailable.");
 
@@ -159,7 +175,7 @@ internal sealed partial class GuildQuestStore
 
         if (authorized.IsFailure) return authorized.Error;
 
-        if (admission.Kind == GuildLocalChildToolKind.CreateAgentTask && GuildTaskArguments.IsRemote(admission.Arguments)
+        if (admission.Kind is GuildLocalChildToolKind.CreateAgentTask or GuildLocalChildToolKind.AdmitCohortMember && GuildTaskArguments.IsRemote(admission.Arguments)
             && (policy is not GuildLocalHostPolicy host
                 || !host.IsConfiguredRemoteDestination(admission.Arguments.GetProperty("agent").GetString()!)))
             return new Error(ErrorCodes.Guild.DestinationChanged, "The Sending requires its current configured destination.");
@@ -174,11 +190,11 @@ internal sealed partial class GuildQuestStore
             || RequireLocalExecutionReady().IsFailure)
             return GuildLocalToolRegistry.Unavailable;
 
-        if (admission.Kind == GuildLocalChildToolKind.CreateAgentTask && !GuildTaskArguments.IsRemote(admission.Arguments)
+        if (admission.Kind is GuildLocalChildToolKind.CreateAgentTask or GuildLocalChildToolKind.AdmitCohortMember && !GuildTaskArguments.IsRemote(admission.Arguments)
             && admission.Registry.ChildDispatcher?.SupportsLocal != true)
             return new Error(ErrorCodes.Guild.Unavailable, "Local task creation is unavailable.");
 
-        if (admission.Kind == GuildLocalChildToolKind.CreateAgentTask && GuildTaskArguments.IsRemote(admission.Arguments))
+        if (admission.Kind is GuildLocalChildToolKind.CreateAgentTask or GuildLocalChildToolKind.AdmitCohortMember && GuildTaskArguments.IsRemote(admission.Arguments))
         {
             var remote = await GuildRemoteExecutionStore.ReadRecoveryWithinAsync(connection, transaction, child.Quest.Id, ct).ConfigureAwait(false);
 

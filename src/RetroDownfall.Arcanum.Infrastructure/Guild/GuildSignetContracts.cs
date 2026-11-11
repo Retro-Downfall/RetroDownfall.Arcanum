@@ -28,7 +28,8 @@ internal enum GuildSignetIssuanceEdge
     RemoteCohort,
 }
 
-internal sealed record GuildSignetAdmissionEvidence(GuildSignetOwnerBinding Owners, GuildSignetIssuanceEdge Edge);
+internal sealed record GuildSignetAdmissionEvidence(GuildSignetOwnerBinding Owners, GuildSignetIssuanceEdge Edge,
+    GuildGrantScopeEvidence? ScopeEvidence = null);
 
 /// <summary>
 /// Authentication and coordinator participant boundary. An implementation must recognize host-issued

@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS idx_guild_portal_cohort_audience_member ON guild_portal_cohort_audience(MemberId,QuestId,EnvelopeId);

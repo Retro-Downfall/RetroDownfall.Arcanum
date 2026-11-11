@@ -47,6 +47,7 @@ internal sealed partial class GuildPortalStore
                 {
                     GuildCircleAddressKind.Child => GuildAuthorityKind.Parent,
                     GuildCircleAddressKind.Parent => GuildAuthorityKind.Child,
+                    GuildCircleAddressKind.Cohort => GuildAuthorityKind.Peer,
                     _ => GuildAuthorityKind.LegacyUnknown,
                 };
 

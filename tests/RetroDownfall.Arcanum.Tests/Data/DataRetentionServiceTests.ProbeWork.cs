@@ -258,10 +258,11 @@ public sealed partial class DataRetentionServiceTests
 
         if (apply && family == "sessions")
         {
-            // Guild V11 expands the catalog. The same 921 metadata statements measured
-            // 401,307 -> 408,891 writer steps against V10; retain a small margin without
-            // caching across writers or increasing the candidate-dependent work allowance.
-            Assert.True(catalogSteps - outsideSteps < 413_000,
+            // Guild V12/Core39 add Cohort objects and mutation-clock triggers. The same
+            // 921 metadata statements measured 408,891 -> 433,470 writer steps against V11;
+            // retain a small margin without caching across writers or increasing the
+            // candidate-dependent work allowance.
+            Assert.True(catalogSteps - outsideSteps < 438_000,
                 $"Session writer metadata used {catalogSteps - outsideSteps:N0} native VM steps.");
         }
     }

@@ -32,10 +32,15 @@ internal sealed partial class GuildPortalStore
         if (toolAdmission is not null)
         {
             if (toolAdmission.Kind != GuildLocalChildToolKind.SendAgentMessage || !ReferenceEquals(toolAdmission.Registry.Parent.Driver.Caller, caller)
-                || questId != caller.Execution?.QuestId || request.Address.QuestId is not { } taskRecipientId) return Forbidden;
+                || questId != caller.Execution?.QuestId) return Forbidden;
 
-            Result admitted = await quests.AuthorizeTaskToolWithinAsync(connection, transaction, signets, toolAdmission,
-                taskRecipientId, true, ct).ConfigureAwait(false);
+            if (request.Address.Kind == GuildCircleAddressKind.Cohort && !MatchesCohortToolIntent(toolAdmission, request)) return Forbidden;
+
+            Result admitted = request.Address.Kind == GuildCircleAddressKind.Cohort
+                ? await quests.AuthorizeCohortMessageToolWithinAsync(connection, transaction, signets, toolAdmission, ct).ConfigureAwait(false)
+                : request.Address.QuestId is { } taskRecipientId
+                    ? await quests.AuthorizeTaskToolWithinAsync(connection, transaction, signets, toolAdmission, taskRecipientId, true, ct).ConfigureAwait(false)
+                    : Result.Failure(Forbidden);
 
             if (admitted.IsFailure) return admitted.Error;
         }
@@ -54,7 +59,7 @@ internal sealed partial class GuildPortalStore
 
         Recipient recipient = addressed.Value;
 
-        if (recipient.QuestId is null)
+        if (recipient.QuestId is null && recipient.Address.Kind != GuildCircleAddressKind.Cohort)
         {
             Result<GuildSignetRecord> origin = await GuildSignetStore.ReadAsync(connection, transaction, source.Quest.SignetId, false, ct).ConfigureAwait(false);
 
@@ -65,9 +70,17 @@ internal sealed partial class GuildPortalStore
 
         request = request with { Address = recipient.Address };
 
+        if (recipient.Address.Kind == GuildCircleAddressKind.Cohort)
+        {
+            Result<long> currentMembership = await ReadCohortSourceVersionWithinAsync(connection, transaction, source,
+                recipient.Address.CohortId!.Value, ct).ConfigureAwait(false);
+
+            if (currentMembership.IsFailure) return currentMembership.Error;
+        }
+
         // A revision is a precondition for a new acceptance, not part of the logical message.
         // Host outbox retries may omit it while retaining the exact immutable receipt identity.
-        byte[] intent = SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(request with { ExpectedRevision = null }, GuildJsonContext.Default.GuildPublishRequest));
+        byte[] intent = IntentDigest(request);
 
         string producerKey = ProducerKey(producer);
 
@@ -97,6 +110,7 @@ internal sealed partial class GuildPortalStore
 
         await using (SqliteCommand duplicate = Command(connection, transaction, """
             SELECT e.Id,e.IntentDigest,e.CreatedAtUtc,
+                CASE WHEN typeof(e.MetadataJson)='text' AND length(CAST(e.MetadataJson AS BLOB))<=16384 THEN e.MetadataJson END,
                 (SELECT EventSequence FROM guild_events p WHERE p.RootQuestId=e.RootQuestId AND p.EnvelopeId=e.Id AND p.EventKindCode=1 AND p.SourceKindCode=3 AND p.ObjectId=e.Id AND p.Revision=1)
             FROM guild_envelopes e WHERE e.StreamId=$stream AND e.ProducerRequestId=$request
             """))
@@ -109,13 +123,33 @@ internal sealed partial class GuildPortalStore
 
             if (await reader.ReadAsync(ct).ConfigureAwait(false))
             {
+                if (request.Address.Kind == GuildCircleAddressKind.Cohort)
+                {
+                    if (reader.IsDBNull(3)) return Unavailable;
+
+                    GuildEnvelope? previous;
+
+                    try
+                    {
+                        previous = JsonSerializer.Deserialize(reader.GetString(3), GuildJsonContext.Default.GuildEnvelope);
+                    }
+                    catch (JsonException)
+                    {
+                        return Unavailable;
+                    }
+
+                    if (previous?.Address is not { Kind: GuildCircleAddressKind.Cohort, MembershipVersion: > 0 } savedAddress) return Unavailable;
+
+                    intent = IntentDigest(request with { Address = request.Address with { MembershipVersion = savedAddress.MembershipVersion } });
+                }
+
                 if (reader.GetValue(1) is not byte[] prior || !CryptographicOperations.FixedTimeEquals(prior, intent)) return Conflict;
 
-                if (reader.IsDBNull(3)) return Unavailable;
+                if (reader.IsDBNull(4)) return Unavailable;
 
                 Guid envelopeId = Guid.Parse(reader.GetString(0));
 
-                return new GuildMessageReceipt(questId, envelopeId, 1, GuildDeliveryState.Pending, reader.GetInt64(3),
+                return new GuildMessageReceipt(questId, envelopeId, 1, GuildDeliveryState.Pending, reader.GetInt64(4),
                     new(envelopeId, request.IdempotencyKey, true, UtcInstantText.Parse(reader.GetString(2)), 1));
             }
         }
@@ -126,6 +160,20 @@ internal sealed partial class GuildPortalStore
 
         if (request.ExpectedRevision is { } expected && source.Quest.Revision != expected)
             return new Error(ErrorCodes.Guild.RevisionConflict, "The source Quest changed before publication.");
+
+        if (recipient.Address.Kind == GuildCircleAddressKind.Cohort)
+        {
+            Result<long> version = await AuthorizeCohortPublicationWithinAsync(connection, transaction, signets,
+                caller, source, recipient.Address.CohortId!.Value, ct).ConfigureAwait(false);
+
+            if (version.IsFailure) return version.Error;
+
+            request = request with { Address = request.Address with { MembershipVersion = version.Value } };
+
+            recipient = recipient with { Address = request.Address };
+
+            intent = IntentDigest(request);
+        }
 
         if (recipient.QuestId is { } recipientId)
         {
@@ -183,7 +231,8 @@ internal sealed partial class GuildPortalStore
         GuildEnvelope envelope = new(id, producer, questId, source.Quest.RootQuestId,
             caller.Kind == GuildCallerKind.Run ? source.Quest.SignetRevision : null, source.Quest.SessionId, source.Quest.CampaignId,
             caller.Kind == GuildCallerKind.Operator ? GuildAuthorityKind.Operator
-                : request.Address.Kind == GuildCircleAddressKind.Child ? GuildAuthorityKind.Parent : GuildAuthorityKind.Child,
+                : request.Address.Kind == GuildCircleAddressKind.Child ? GuildAuthorityKind.Parent
+                : request.Address.Kind == GuildCircleAddressKind.Cohort ? GuildAuthorityKind.Peer : GuildAuthorityKind.Child,
             request.Kind, content.Value, sequence + 1, now, request.Address);
 
         string metadata = JsonSerializer.Serialize(envelope, GuildJsonContext.Default.GuildEnvelope);
@@ -213,8 +262,6 @@ internal sealed partial class GuildPortalStore
         await using (SqliteCommand insert = Command(connection, transaction, """
             INSERT INTO guild_envelopes(Id,StreamId,ProducerRequestId,IntentDigest,QuestId,RootQuestId,SessionId,CampaignId,KindCode,ContentId,SenderSequence,MetadataJson,CreatedAtUtc)
             VALUES($id,$stream,$request,$digest,$quest,$root,$session,$campaign,$kind,$content,$sequence,$metadata,$now);
-            INSERT INTO guild_inbox(Id,EnvelopeId,RecipientKey,RecipientQuestId,StreamId,SenderSequence,DeliveryStateCode,Revision,CreatedAtUtc)
-            VALUES($inbox,$id,$recipient,$recipientQuest,$stream,$sequence,1,1,$now);
             """))
         {
             Add(insert, "$id", Id(id));
@@ -243,14 +290,15 @@ internal sealed partial class GuildPortalStore
 
             Add(insert, "$now", UtcInstantText.Format(now));
 
-            Add(insert, "$inbox", Id(Guid.NewGuid()));
-
-            Add(insert, "$recipient", recipient.Key);
-
-            Add(insert, "$recipientQuest", Id(recipient.QuestId));
-
-            if (await insert.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 2) return Unavailable;
+            if (await insert.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1) return Unavailable;
         }
+
+        Result fanout = recipient.Address.Kind == GuildCircleAddressKind.Cohort
+            ? await InsertCohortAudienceWithinAsync(connection, transaction, id, streamId, sequence + 1, source.Quest.Id,
+                recipient.Address.CohortId!.Value, now, ct).ConfigureAwait(false)
+            : await InsertDirectInboxWithinAsync(connection, transaction, id, streamId, sequence + 1, recipient, now, ct).ConfigureAwait(false);
+
+        if (fanout.IsFailure) return fanout.Error;
 
         Result<long> projected = await GuildPortalEvents.AppendWithinAsync(connection, transaction, source.Quest.RootQuestId,
             questId, GuildEventKind.MessageCommitted, id, 1, id, now, ct, GuildPortalEventSource.Envelope).ConfigureAwait(false);
@@ -391,6 +439,10 @@ internal sealed partial class GuildPortalStore
 
     private static Result<Recipient> ResolveAddress(GuildCallerContext caller, GuildQuestStored source, GuildCircleAddress address)
     {
+        if (caller.Kind == GuildCallerKind.Run && address.Kind == GuildCircleAddressKind.Cohort
+            && address.CohortId is not null && address.QuestId is null && address.MembershipVersion is null)
+            return new Recipient("cohort:" + Id(address.CohortId.Value), null, address);
+
         if (caller.Kind == GuildCallerKind.Operator)
             return address.Kind == GuildCircleAddressKind.Child && address.QuestId == source.Quest.Id
                 ? new Recipient("quest:" + Id(source.Quest.Id), source.Quest.Id, address) : Forbidden;
@@ -412,6 +464,9 @@ internal sealed partial class GuildPortalStore
 
         return Forbidden;
     }
+
+    private static byte[] IntentDigest(GuildPublishRequest request) => SHA256.HashData(
+        JsonSerializer.SerializeToUtf8Bytes(request with { ExpectedRevision = null }, GuildJsonContext.Default.GuildPublishRequest));
 
     private sealed record Recipient(string Key, Guid? QuestId, GuildCircleAddress Address);
 }

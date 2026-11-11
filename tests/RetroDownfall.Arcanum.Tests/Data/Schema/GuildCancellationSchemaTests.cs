@@ -34,9 +34,95 @@ public sealed class GuildCancellationSchemaTests(ITestOutputHelper output)
 
         output.WriteLine(string.Join(System.Environment.NewLine, plan));
 
-        Assert.Contains(plan, line => line.Contains("SEARCH quest USING", StringComparison.Ordinal)
+        Assert.Equal(2, plan.Count(line => line.Contains("SEARCH quest USING", StringComparison.Ordinal)
             && line.Contains("idx_guild_quests_cancellation", StringComparison.Ordinal)
-            && line.Contains("CancellationRequested=? AND CancellationConverged=? AND Retired=? AND Id>?", StringComparison.Ordinal));
+            && line.Contains("CancellationRequested=? AND CancellationConverged=? AND Retired=? AND Id>?", StringComparison.Ordinal)));
+
+        // Only the two capped partitions may be sorted for the global merge. Each branch
+        // must retain its Id range seek; a sort over the whole unconverged history is refused.
+        Assert.DoesNotContain(plan, line => line.StartsWith("SCAN quest", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Cancellation_inventory_pages_live_and_retired_local_work_in_one_global_order()
+    {
+        await using SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync("Data Source=:memory:", default);
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            CREATE TABLE guild_quests(Id TEXT PRIMARY KEY,CancellationRequested INTEGER,CancellationConverged INTEGER,Retired INTEGER,ParentQuestId TEXT);
+            CREATE INDEX idx_guild_quests_cancellation ON guild_quests(CancellationRequested,CancellationConverged,Retired,Id);
+            CREATE TABLE guild_quest_start_intents(QuestId TEXT PRIMARY KEY);
+            CREATE TABLE guild_local_executions(QuestId TEXT PRIMARY KEY);
+            CREATE TABLE guild_remote_executions(QuestId TEXT PRIMARY KEY);
+            """;
+
+        await command.ExecuteNonQueryAsync();
+
+        string[] expected = Enumerable.Range(1, 205).Select(value => new Guid(value, 0, 0, new byte[8]).ToString("D").ToUpperInvariant()).ToArray();
+
+        await using (SqliteTransaction transaction = connection.BeginTransaction())
+        {
+            command.Transaction = transaction;
+
+            command.CommandText = """
+                INSERT INTO guild_quests VALUES($id,1,0,$retired,NULL);
+                INSERT INTO guild_quest_start_intents VALUES($id);
+                INSERT INTO guild_local_executions VALUES($id);
+                """;
+
+            command.Parameters.AddWithValue("$id", string.Empty);
+
+            command.Parameters.AddWithValue("$retired", 0);
+
+            for (int index = 0; index < expected.Length; index++)
+            {
+                command.Parameters["$id"].Value = expected[index];
+
+                command.Parameters["$retired"].Value = index % 2;
+
+                await command.ExecuteNonQueryAsync();
+            }
+
+            await transaction.CommitAsync();
+        }
+
+        command.Transaction = null;
+
+        command.Parameters.Clear();
+
+        command.CommandText = GuildLocalQuestScheduler.CancellationFrontierQuery;
+
+        command.Parameters.AddWithValue("$after", string.Empty);
+
+        List<string> actual = [];
+
+        List<int> pageSizes = [];
+
+        while (true)
+        {
+            List<string> page = [];
+
+            await using (SqliteDataReader reader = await command.ExecuteReaderAsync())
+            {
+                while (await reader.ReadAsync()) page.Add(reader.GetString(0));
+            }
+
+            if (page.Count == 0) break;
+
+            Assert.InRange(page.Count, 1, 100);
+
+            pageSizes.Add(page.Count);
+
+            actual.AddRange(page);
+
+            command.Parameters["$after"].Value = page[^1];
+        }
+
+        Assert.Equal([100, 100, 5], pageSizes);
+
+        Assert.Equal(expected, actual);
     }
 
     [Fact]

@@ -13,7 +13,8 @@ internal sealed record A2AGuildSendingRequest(string AgentUrl, string Body, stri
     GuildRemoteTransportDescriptor? Transport = null);
 
 internal sealed record A2AGuildTaskObservation(string? TaskId, string? ContextId, string State, string ResponseText,
-    A2ARemoteCost Cost, DateTimeOffset ObservedAt);
+    A2ARemoteCost Cost, DateTimeOffset ObservedAt, int? DesignatedResultCount = null,
+    byte[]? DesignatedResultUtf8 = null, string? DesignatedResultMimeType = null);
 
 /// <summary>Mandatory durable host participant; transport cannot authorize or settle a Quest.</summary>
 internal interface IA2AGuildSendingLifecycle
@@ -250,9 +251,14 @@ public sealed partial class A2AClientService
                 "The peer stream does not bind the accepted remote task and context."));
     }
 
-    private static A2AGuildTaskObservation GuildObservation(AgentTask task) => new(task.Id, task.ContextId,
-        task.Status.State == TaskState.AuthRequired ? "input-required" : StateName(task.Status.State),
-        ExtractTaskText(task), A2ASendingUsageMetadata.ReadGuild(task), DateTimeOffset.UtcNow);
+    internal static A2AGuildTaskObservation GuildObservation(AgentTask task)
+    {
+        GuildFinalOutput? output = GuildFinalOutput.FromTask(task);
+
+        return new(task.Id, task.ContextId, task.Status.State == TaskState.AuthRequired ? "input-required" : StateName(task.Status.State),
+            ExtractTaskText(task), A2ASendingUsageMetadata.ReadGuild(task), DateTimeOffset.UtcNow,
+            output is null ? null : 1, output?.Utf8, output?.MimeType);
+    }
 
     private static bool UnsupportedGuildState(TaskState state) => state != TaskState.AuthRequired
         && GuildRemoteStateProjection.Observe(StateName(state)).ReconciliationRequired;

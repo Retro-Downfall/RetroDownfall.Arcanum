@@ -43,6 +43,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     }
 
     [Theory]
+    [InlineData("Part", "Url")]
+    [InlineData("Part", "Raw")]
+    [InlineData("Part", "Data")]
     [InlineData("Message", "ContextId")]
     [InlineData("StreamResponse", "ArtifactUpdate")]
     [InlineData("StreamResponse", "Message")]

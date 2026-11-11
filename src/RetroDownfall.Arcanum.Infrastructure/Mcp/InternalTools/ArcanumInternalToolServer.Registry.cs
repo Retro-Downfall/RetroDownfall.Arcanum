@@ -65,6 +65,14 @@ internal sealed partial class ArcanumInternalToolServer
 
             "list_agents",
 
+            "create_cohort",
+
+            "admit_cohort_member",
+
+            "close_cohort",
+
+            "remove_cohort_member",
+
             "ask_human",
 
             "save_memory",
@@ -146,6 +154,14 @@ internal sealed partial class ArcanumInternalToolServer
             ["cancel_agent_task"] = ExecuteUnboundTaskAsync,
 
             ["list_agents"] = ExecuteUnboundTaskAsync,
+
+            ["create_cohort"] = ExecuteUnboundTaskAsync,
+
+            ["admit_cohort_member"] = ExecuteUnboundTaskAsync,
+
+            ["close_cohort"] = ExecuteUnboundTaskAsync,
+
+            ["remove_cohort_member"] = ExecuteUnboundTaskAsync,
 
             ["ask_human"] = ExecuteAskHumanAsync,
 

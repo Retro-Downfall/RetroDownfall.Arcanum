@@ -55,6 +55,10 @@ internal static partial class HostedGrimoireProducerInventory
             "A2A.StreamResponse.Task", "A2A.StreamResponse.StatusUpdate", "A2A.StreamResponse.ArtifactUpdate", "A2A.StreamResponse.Message", "A2A.StreamResponse.PayloadCase",
             "A2A.TaskStatusUpdateEvent.Status", "A2A.TaskStatusUpdateEvent.TaskId", "A2A.TaskStatusUpdateEvent.ContextId",
             "A2A.TaskArtifactUpdateEvent.TaskId", "A2A.TaskArtifactUpdateEvent.ContextId", "A2A.Part.Text", "A2A.Part.ContentCase",
+            // Exact sealed auto-properties in the pinned SDK commit; these reads do not follow a URL
+            // or enumerate binary/JSON content. Receiver expressions still enter authored traversal.
+            // https://github.com/a2aproject/a2a-dotnet/blob/87fd44843dd16339cdb59c2ff547fe374ac46736/src/A2A/Models/Part.cs
+            "A2A.Part.Url", "A2A.Part.Raw", "A2A.Part.Data",
         };
 
         private static readonly HashSet<string> ReviewedA2AWrites = new(StringComparer.Ordinal)

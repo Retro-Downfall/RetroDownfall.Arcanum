@@ -228,7 +228,7 @@ internal sealed partial class GuildQuestStore
         && snapshot.Plan.Select((step, index) => step is not null && step.Index >= 0 && step.Description is not null
             && step.Status is "pending" or "completed" or "failed" && step.Attempts >= 0).All(valid => valid);
 
-    private static async Task<Result> RequireWaitFrontierWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+    internal static async Task<Result> RequireWaitFrontierWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         Guid questId, CancellationToken ct)
     {
         if (await IsRemoteWithinAsync(connection, transaction, questId, ct).ConfigureAwait(false))

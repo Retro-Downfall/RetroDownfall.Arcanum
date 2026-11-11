@@ -1,5 +1,6 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -12,16 +13,22 @@ internal sealed partial class ArcanumInternalToolServer
     internal static string DescribeGuildTool(string name) => name switch
     {
         "create_agent_task" => "Admit an asynchronous child Guild Quest. Omit agent for local work; agent selects an exact configured remote URL. cardId selects a local Card and excludes agent. Returns the admitted Quest without waiting.",
-        "send_agent_message" => "Send an informational message or continue input-required work in the existing Quest relationship. Continuation requires expectedRevision and cannot widen authority.",
+        "send_agent_message" => "Send an informational message to one questId or broadcast to the current cohortId membership; these addresses are mutually exclusive. Only questId can continue input-required work with expectedRevision. Messages never widen authority.",
         "get_agent_task" => "Read the exact current Quest projection in the authorized task subtree.",
         "cancel_agent_task" => "Request subtree cancellation; the receipt distinguishes the accepted request from actual convergence.",
         "list_agents" => "List Cards visible in the current Guild owner scope using a bounded continuation page.",
+        "create_cohort" => "Create a result-collection Cohort under the current Quest with an immutable grant ceiling and all, first, or exact-byte quorum convergence. Membership remains open until explicitly closed.",
+        "admit_cohort_member" => "Atomically issue one ordinary local or remote primary voting Quest into an open Cohort. Requires the current Cohort revision. Host identity and one-vote membership are derived from the accepted issue.",
+        "close_cohort" => "Freeze an open Cohort's active voting membership and evaluate its retained results. The decision remains provisional until all associated work and accounting drain.",
+        "remove_cohort_member" => "Withdraw an exact member and request its associated subtree cancellation. Removing a frozen member does not shrink the electorate or lower quorum.",
         "search_memory" => "Search authorized Session, attachment, workspace, Saga and Lexicon memory. Results identify their store and scoped availability. Long content is explicitly excerpted; continuation preserves remaining matches. save_memory and delete_memory modify only authorized Lexicon entries.",
         _ => throw new ArgumentException("Unknown Guild tool.", nameof(name)),
     };
 
     internal static JsonElement BuildTaskToolSchema(string name)
     {
+        if (GuildLocalToolRegistry.IsCohortTool(name)) return BuildCohortToolSchema(name);
+
         string schema = name switch
         {
             "create_agent_task" => """
@@ -107,12 +114,17 @@ internal sealed partial class ArcanumInternalToolServer
                 {
                   "type":"object","properties":{
                     "questId":{"type":"string","format":"uuid"},
+                    "cohortId":{"type":"string","format":"uuid"},
                     "kind":{"type":"string","enum":["message","continuation"]},
                     "contentType":{"type":"string","enum":["text/plain","application/json"]},
                     "body":{"type":"string","maxLength":65536},
                     "idempotencyKey":{"type":"string","format":"uuid"},
                     "expectedRevision":{"type":"integer","minimum":1,"maximum":9223372036854775807}
-                  },"required":["questId","kind","contentType","body"],"additionalProperties":false,
+                  },"required":["kind","contentType","body"],"additionalProperties":false,
+                  "allOf":[{"oneOf":[
+                    {"required":["questId"],"not":{"required":["cohortId"]}},
+                    {"required":["cohortId"],"not":{"required":["questId"]},"properties":{"kind":{"const":"message"}}}
+                  ]}],
                   "oneOf":[
                     {"properties":{"kind":{"const":"message"}},"not":{"required":["expectedRevision"]}},
                     {"properties":{"kind":{"const":"continuation"}},"required":["expectedRevision"]}

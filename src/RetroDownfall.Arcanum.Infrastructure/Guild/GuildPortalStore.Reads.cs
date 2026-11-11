@@ -48,12 +48,17 @@ internal sealed partial class GuildPortalStore
 
             if (cursor.IsFailure) return cursor.Error;
 
-            if (query.CohortId is not null) return Unavailable;
-
             Result<PortalReadScope> scope = await RequireReadScopeWithinAsync(connection, transaction, signets,
                 caller, query.RootQuestId, binding.Value, query.Cursor is not null, token).ConfigureAwait(false);
 
             if (scope.IsFailure) return scope.Error;
+
+            if (query.CohortId is { } cohort)
+            {
+                Result authorized = await RequireCohortEventScopeWithinAsync(connection, transaction, caller, query.RootQuestId, cohort, token).ConfigureAwait(false);
+
+                if (authorized.IsFailure) return authorized.Error;
+            }
 
             if (query.SubtreeQuestId is { } subtree)
             {
@@ -80,8 +85,63 @@ internal sealed partial class GuildPortalStore
 
             foreach (PortalEvent row in scanned.Value)
             {
+                if (scope.Value.OwnQuest is { } eventActor && !await IsCohortEventActorAuthorizedWithinAsync(connection,
+                    transaction, row, query.RootQuestId, eventActor.Quest.Id, token).ConfigureAwait(false))
+                {
+                    after = row.Sequence;
+
+                    continue;
+                }
+
+                bool cohortLifecycle = false;
+
+                if (query.CohortId is { } eventCohort)
+                {
+                    bool tagged = row.Kind is GuildEventKind.CohortChanged or GuildEventKind.MembershipChanged or GuildEventKind.ContributionAccepted;
+
+                    if (tagged)
+                    {
+                        if (row.ObjectId != eventCohort)
+                        {
+                            after = row.Sequence;
+
+                            continue;
+                        }
+
+                        cohortLifecycle = true;
+                    }
+                    else if (row.Kind is GuildEventKind.OfferChanged or GuildEventKind.BidChanged
+                        or GuildEventKind.AwardCommitted or GuildEventKind.NoteAppended)
+                    {
+                        // Those object kinds need their own exact Cohort bindings before this scope can expose them.
+                        after = row.Sequence;
+
+                        continue;
+                    }
+                    else if (row.EnvelopeId is { } envelopeId)
+                    {
+                        Result<GuildEnvelope> envelope = await ReadEnvelopeWithinAsync(connection, transaction, envelopeId, token).ConfigureAwait(false);
+
+                        if (envelope.IsFailure) return envelope.Error;
+
+                        if (envelope.Value.Address.Kind != GuildCircleAddressKind.Cohort || envelope.Value.Address.CohortId != eventCohort)
+                        {
+                            after = row.Sequence;
+
+                            continue;
+                        }
+                    }
+                    else if (!await IsCurrentCohortQuestWithinAsync(connection, transaction,
+                        eventCohort, query.RootQuestId, row.QuestId, token).ConfigureAwait(false))
+                    {
+                        after = row.Sequence;
+
+                        continue;
+                    }
+                }
+
                 Result<bool> visible = await EventVisibleWithinAsync(connection, transaction, signets, caller, scope.Value,
-                    query.RootQuestId, row.QuestId, row.EnvelopeId, query.SubtreeQuestId, token).ConfigureAwait(false);
+                    query.RootQuestId, row.QuestId, row.EnvelopeId, query.SubtreeQuestId, token, cohortLifecycle).ConfigureAwait(false);
 
                 if (visible.IsFailure) return visible.Error;
 
@@ -165,6 +225,14 @@ internal sealed partial class GuildPortalStore
 
             foreach (PortalEvent row in scanned.Value)
             {
+                if (scope.Value.OwnQuest is { } eventActor && !await IsCohortEventActorAuthorizedWithinAsync(connection,
+                    transaction, row, root, eventActor.Quest.Id, token).ConfigureAwait(false))
+                {
+                    after = row.Sequence;
+
+                    continue;
+                }
+
                 Result<bool> visible = await EventVisibleWithinAsync(connection, transaction, signets, caller, scope.Value,
                     root, row.QuestId, row.EnvelopeId, null, token).ConfigureAwait(false);
 
@@ -440,9 +508,9 @@ internal sealed partial class GuildPortalStore
 
     private async Task<Result<bool>> EventVisibleWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         SignetAuthority.QuestTransaction signets, GuildCallerContext caller, PortalReadScope scope, Guid root, Guid questId,
-        Guid? envelopeId, Guid? subtree, CancellationToken ct)
+        Guid? envelopeId, Guid? subtree, CancellationToken ct, bool cohortLifecycle = false)
     {
-        if (scope.OwnQuest is { } own && questId != own.Quest.Id && questId != own.Quest.ParentQuestId)
+        if (!cohortLifecycle && scope.OwnQuest is { } own && questId != own.Quest.Id && questId != own.Quest.ParentQuestId)
         {
             await using SqliteCommand relation = Command(connection, transaction,
                 "SELECT 1 FROM guild_quests WHERE Id=$quest AND ParentQuestId=$own AND RootQuestId=$root");
@@ -453,7 +521,21 @@ internal sealed partial class GuildPortalStore
 
             Add(relation, "$root", Id(root));
 
-            if (await relation.ExecuteScalarAsync(ct).ConfigureAwait(false) is null) return false;
+            if (await relation.ExecuteScalarAsync(ct).ConfigureAwait(false) is null)
+            {
+                if (envelopeId is not { } peerEnvelope) return false;
+
+                Result<GuildEnvelope> candidate = await ReadEnvelopeWithinAsync(connection, transaction, peerEnvelope, ct).ConfigureAwait(false);
+
+                if (candidate.IsFailure) return candidate.Error;
+
+                if (candidate.Value.Address.Kind != GuildCircleAddressKind.Cohort) return false;
+
+                Result audience = await RequireReaderWithinAsync(connection, transaction, signets, caller, candidate.Value, ct).ConfigureAwait(false);
+
+                if (audience.IsFailure) return audience.Error.Code is ErrorCodes.Guild.Forbidden or ErrorCodes.Guild.OwnerUnavailable
+                    or ErrorCodes.Guild.NotFound ? false : audience.Error;
+            }
         }
 
         if (subtree is { } filter)
@@ -484,7 +566,8 @@ internal sealed partial class GuildPortalStore
 
         Result visible = await quests.RequireVisibleAsync(connection, transaction, caller, found.Value, ct).ConfigureAwait(false);
 
-        if (visible.IsFailure)
+        if (visible.IsFailure && !(scope.OwnQuest is not null && (envelopeId is not null || cohortLifecycle)
+            && visible.Error.Code == ErrorCodes.Guild.Forbidden))
             return visible.Error.Code is ErrorCodes.Guild.Forbidden or ErrorCodes.Guild.OwnerUnavailable ? false : visible.Error;
 
         if (envelopeId is { } envelope)

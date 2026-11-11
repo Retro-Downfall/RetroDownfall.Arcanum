@@ -8,7 +8,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 /// <summary>Host resolution runs only for a new, currently authorized logical issuance.</summary>
 internal sealed record GuildQuestProposal(Guid QuestId, Guid RunId, Guid SessionId,
     GuildMutationIdentity Mutation, GuildIssueRootRequest? Root, Guid? ParentQuestId, GuildIssueChildRequest? Child,
-    Guid? CampaignId, Guid? WorkspaceId);
+    Guid? CampaignId, Guid? WorkspaceId, Guid? CohortId = null);
 
 internal sealed record GuildQuestAdmissionPlan(GuildAdmissionContext Admission, GuildGrant Grant,
     GuildSignetOwnerBinding Owners, Guid OriginPrincipalId, GuildStoredAgentCardPayload? GeneratedCard,
@@ -47,7 +47,8 @@ internal sealed record GuildQuestDriver(GuildExecutionHandle Execution, string L
     GuildCallerContext? Caller = null);
 
 internal sealed record GuildQuestResult(GuildResultReceipt Receipt, byte[]? Body,
-    ArtifactSensitivityLabel? SourceLabel = null, bool NoDispatchProven = false, bool WorkStoppedProven = false, GuildRemoteResultEvidence? RemoteEvidence = null);
+    ArtifactSensitivityLabel? SourceLabel = null, bool NoDispatchProven = false, bool WorkStoppedProven = false, GuildRemoteResultEvidence? RemoteEvidence = null,
+    int? DesignatedResultCount = null, byte[]? DesignatedResultUtf8 = null, string? DesignatedResultMimeType = null);
 
 internal sealed record GuildQuestDispatchRecord(Guid DispatchId, Guid QuestId, string InvocationDigest,
     Guid AccountingAssociationId, bool IsContinuation, GuildDispatchEvidence Evidence, Guid? LocalChildId,

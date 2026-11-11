@@ -9872,7 +9872,9 @@
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildRosterRefreshStore.cs#FindWithinAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Admission.cs#PublishWithinAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalExecutionStore.cs#CreateWithinAsync",
-        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalWaitCheckpoint.cs#WriteWaitCheckpointWithinAsync"
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalWaitCheckpoint.cs#WriteWaitCheckpointWithinAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.Settlement.Storage.cs#SaveSettlementNodeAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.Results.cs#CapturePrimaryResultWithinAsync"
       ],
       "coveredSymbols": [
         "GuildStore.MaximumContentBytes",
@@ -9918,7 +9920,11 @@
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Outbox.cs#DrainOutboxAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalQuestScheduler.cs#ReadPendingIdsAsync",
         "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.CancellationWork.cs#ReadCancellationWorkPageAsync",
-        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Tree.cs#GetTreeAsync"
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Tree.cs#GetTreeAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.Convergence.cs#EvaluateWithinAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.Settlement.cs#AdvanceSettlementWithinAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.Reads.cs#ReadSelectedContributionsPageAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.CohortRecovery.cs#ReadCohortWorkPageAsync"
       ],
       "coveredSymbols": [
         "GuildStore.ListAsync",
@@ -9928,7 +9934,11 @@
         "GuildPortalStore.DrainOutboxAsync",
         "GuildLocalQuestScheduler.ReadPendingIdsAsync",
         "GuildQuestStore.ReadCancellationWorkPageAsync",
-        "GuildQuestStore.GetTreeAsync"
+        "GuildQuestStore.GetTreeAsync",
+        "GuildCohortStore.EvaluateWithinAsync",
+        "GuildCohortStore.AdvanceSettlementWithinAsync",
+        "GuildCohortStore.ReadSelectedContributionsPageAsync",
+        "GuildStore.ReadCohortWorkPageAsync"
       ],
       "symbolValues": {
         "GuildStore.ListAsync": "Up to 100 records and a 1 MiB materialization budget per page",
@@ -9938,7 +9948,11 @@
         "GuildPortalStore.DrainOutboxAsync": "At most 100 pending source receipts per admitted turn; remaining work stays durable",
         "GuildLocalQuestScheduler.ReadPendingIdsAsync": "At most 100 pending identities per keyset page; discovery continues through every page and queued identities coalesce",
         "GuildQuestStore.ReadCancellationWorkPageAsync": "At most 100 descendant cancellation identities per indexed keyset page; durable frontiers remain discoverable until drained",
-        "GuildQuestStore.GetTreeAsync": "At most 100 content-free tree members and 1,048,576 encoded bytes per stable-membership page; state is live per page"
+        "GuildQuestStore.GetTreeAsync": "At most 100 content-free tree members and 1,048,576 encoded bytes per stable-membership page; state is live per page",
+        "GuildCohortStore.EvaluateWithinAsync": "At most 100 staged result work items per turn, with bounded collision comparisons and durable continuation",
+        "GuildCohortStore.AdvanceSettlementWithinAsync": "At most 100 traversal work items per turn, with durable exact-money folds and evidence invalidation",
+        "GuildCohortStore.ReadSelectedContributionsPageAsync": "At most 100 membership rows per indexed keyset page, preserving continuation through sparse selections",
+        "GuildStore.ReadCohortWorkPageAsync": "At most 100 Cohort recovery identities per indexed state/frontier page"
       },
       "currentValue": "Card and Portal lists: up to 100 records and 1 MiB per page. Portal source delivery: up to 100 receipts per turn. Declared sources: up to 100 files, each bounded by the effective Spell byte limit. Hosted cleanup: 64 events and 64 orphans per turn. Quest tree pages: up to 100 members and 1 MiB; descendant cancellation: up to 100 identities per work page.",
       "owner": "host",

@@ -22,13 +22,17 @@ public sealed partial class DataRetentionServiceTests
 
         DataRetentionPlan plan = await CreateService().PlanAsync(new(DataRetentionOperation.FactoryReset));
 
-        Assert.Contains(plan.Items, item => item.DataClass == RetentionDataClass.GuildEvidence && item.DerivedRecords == 3);
+        Assert.Equal(1, await CampaignScalarCountAsync("SELECT count(*) FROM guild_cohort_settlement_clock"));
+
+        Assert.Contains(plan.Items, item => item.DataClass == RetentionDataClass.GuildEvidence && item.DerivedRecords == 4);
 
         var recovered = await ReconcileFactoryResetV0Async(CreateService(), "guild-budget-reset");
 
         Assert.Equal(1, recovered.Summary.Completed);
 
         Assert.Equal(0, await CampaignScalarCountAsync("SELECT count(*) FROM guild_budget_accounts"));
+
+        Assert.Equal(0, await CampaignScalarCountAsync("SELECT count(*) FROM guild_cohort_settlement_clock"));
     }
 
     [SkippableFact]

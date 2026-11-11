@@ -857,6 +857,10 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
             "get_agent_task",
             "cancel_agent_task",
             "list_agents",
+            "create_cohort",
+            "admit_cohort_member",
+            "close_cohort",
+            "remove_cohort_member",
         ]);
 
         Assert.Equal(registeredNames, listedNames);

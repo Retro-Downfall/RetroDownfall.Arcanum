@@ -179,7 +179,16 @@ internal sealed partial class GuildLocalPort(GuildQuestStore quests, GuildLocalH
             {
                 var current = await quests.ReadLocalPortAsync(execution.Driver, execution.Dispatch.DispatchId, CancellationToken.None).ConfigureAwait(false);
 
-                if (current.IsFailure) break;
+                if (current.IsFailure)
+                {
+                    var cleanup = await AdoptStoppedLocalCleanupAsync(execution).ConfigureAwait(false);
+
+                    if (cleanup.IsFailure) break;
+
+                    execution = cleanup.Value;
+
+                    continue;
+                }
 
                 if (!current.Value.Quest.Quest.CancellationRequested)
                 {
@@ -201,6 +210,17 @@ internal sealed partial class GuildLocalPort(GuildQuestStore quests, GuildLocalH
                         execution.Driver.Execution.QuestId, request, drainCancellation).ConfigureAwait(false);
 
                     if (accepted.IsFailure && accepted.Error.Code != ErrorCodes.Guild.RevisionConflict) break;
+
+                    continue;
+                }
+
+                if (execution.Driver.Caller?.Kind != GuildCallerKind.HostReceipt)
+                {
+                    var cleanup = await AdoptStoppedLocalCleanupAsync(execution).ConfigureAwait(false);
+
+                    if (cleanup.IsFailure) break;
+
+                    execution = cleanup.Value;
 
                     continue;
                 }
@@ -241,7 +261,7 @@ internal sealed partial class GuildLocalPort(GuildQuestStore quests, GuildLocalH
                         current.Value.Quest.Quest.Revision, canceled, CancellationToken.None).ConfigureAwait(false);
 
                     if (committed.IsSuccess)
-                        return await ObserveAsync(execution.Driver.Execution, execution.Driver.Execution.QuestId, observedDispatch, CancellationToken.None).ConfigureAwait(false);
+                        return await ObserveStoppedLocalAsync(execution.Driver, observedDispatch).ConfigureAwait(false);
 
                     if (committed.Error.Code != ErrorCodes.Guild.RevisionConflict) break;
                 }
@@ -259,7 +279,32 @@ internal sealed partial class GuildLocalPort(GuildQuestStore quests, GuildLocalH
 
         if (parked.IsFailure) return parked.Error;
 
-        return await ObserveAsync(execution.Driver.Execution, execution.Driver.Execution.QuestId, observedDispatch, CancellationToken.None).ConfigureAwait(false);
+        return await ObserveStoppedLocalAsync(execution.Driver, observedDispatch).ConfigureAwait(false);
+    }
+
+    private async Task<Result<GuildLocalInferenceExecution>> AdoptStoppedLocalCleanupAsync(GuildLocalInferenceExecution execution)
+    {
+        if (execution.Driver.Caller?.Kind == GuildCallerKind.HostReceipt)
+            return new Error(ErrorCodes.Guild.Forbidden, "The stopped cleanup lease cannot acquire work authority.");
+
+        var owner = await callers.CreateNativeOperatorAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
+
+        if (owner.IsFailure) return owner.Error;
+
+        var cleanup = await quests.CreateLocalCleanupDriverAsync(owner.Value, execution.Driver.Execution.QuestId,
+            CancellationToken.None, execution.Driver).ConfigureAwait(false);
+
+        return cleanup.IsFailure ? cleanup.Error : new GuildLocalInferenceExecution(quests, cleanup.Value, execution.Dispatch);
+    }
+
+    private async Task<Result<GuildDispatchObservation>> ObserveStoppedLocalAsync(GuildQuestDriver driver, Guid dispatchId)
+    {
+        if (driver.Caller?.Kind != GuildCallerKind.HostReceipt)
+            return await ObserveAsync(driver.Execution, driver.Execution.QuestId, dispatchId, CancellationToken.None).ConfigureAwait(false);
+
+        var state = await quests.ReadLocalPortAsync(driver, dispatchId, CancellationToken.None).ConfigureAwait(false);
+
+        return state.IsFailure ? state.Error : Observation(state.Value, dispatchId);
     }
 
     private async Task PulseAsync(LocalRun run, CancellationToken ct)

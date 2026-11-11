@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using A2A;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Guild;
@@ -15,17 +16,20 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 internal sealed class GuildConfiguredRemoteResolver(GuildLocalHostPolicy policy, GuildStore store,
     A2AClientService client, IOptionsMonitor<ArcanumSettings> settings, SignetAuthority? authority = null)
 {
-    internal async Task<Result<GuildAgentCard>> ResolveAsync(GuildCallerContext caller, string destination, CancellationToken ct)
+    internal async Task<Result<GuildAgentCard>> ResolveAsync(GuildCallerContext caller, string destination, CancellationToken ct,
+        GuildChildToolAdmission? toolAdmission = null)
     {
         if (!GuildRemotePort.IsTransportEnabled(settings.CurrentValue) || !policy.Authenticates(caller) || caller.Kind is not (GuildCallerKind.Operator or GuildCallerKind.Run))
             return Forbidden;
+
+        if (toolAdmission is not null && caller.Kind != GuildCallerKind.Run) return Forbidden;
 
         if (caller.Kind == GuildCallerKind.Run)
         {
             if (authority is null || caller.Execution is null) return Forbidden;
 
             Result<bool> live = await authority.InQuestTransactionAsync<bool>(caller.Execution.RootQuestId,
-                (_, _, signets, token) => AuthorizeRunAsync(caller, destination, signets, token), ct).ConfigureAwait(false);
+                (connection, transaction, signets, token) => AuthorizeRunAsync(connection, transaction, caller, destination, signets, toolAdmission, token), ct).ConfigureAwait(false);
 
             if (live.IsFailure) return live.Error;
         }
@@ -35,7 +39,7 @@ internal sealed class GuildConfiguredRemoteResolver(GuildLocalHostPolicy policy,
         try
         {
             discovery = await client.DiscoverGuildCardAsync(destination, ct, caller.Kind == GuildCallerKind.Run
-                ? new RunDiscoveryAdmission(this, caller, destination)
+                ? new RunDiscoveryAdmission(this, caller, destination, toolAdmission)
                 : new OperatorDiscoveryAdmission(this, caller, destination)).ConfigureAwait(false);
         }
         catch (DiscoveryRefusedException refused)
@@ -85,7 +89,7 @@ internal sealed class GuildConfiguredRemoteResolver(GuildLocalHostPolicy policy,
             ? await authority!.InQuestTransactionAsync<GuildStoredCard>(caller.Execution!.RootQuestId,
                 async (connection, transaction, signets, token) =>
                 {
-                    Result<bool> live = await AuthorizeRunAsync(caller, endpoint, signets, token).ConfigureAwait(false);
+                    Result<bool> live = await AuthorizeRunAsync(connection, transaction, caller, endpoint, signets, toolAdmission, token).ConfigureAwait(false);
 
                     return live.IsFailure ? live.Error
                         : await store.UpsertWithinAsync(connection, transaction, write, token).ConfigureAwait(false);
@@ -98,10 +102,10 @@ internal sealed class GuildConfiguredRemoteResolver(GuildLocalHostPolicy policy,
     }
 
     private async Task<T> AdmitRunDiscoveryAsync<T>(GuildCallerContext caller, string destination,
-        Func<CancellationToken, Task<T>> send, CancellationToken ct)
+        GuildChildToolAdmission? toolAdmission, Func<CancellationToken, Task<T>> send, CancellationToken ct)
     {
         Result<T> response = await authority!.AdmitQuestEffectAsync<T>(caller.Execution!.RootQuestId,
-            (_, _, signets, token) => AuthorizeRunAsync(caller, destination, signets, token),
+            (connection, transaction, signets, token) => AuthorizeRunAsync(connection, transaction, caller, destination, signets, toolAdmission, token),
             async token => Result<T>.Success(await send(token).ConfigureAwait(false)), ct).ConfigureAwait(false);
 
         if (response.IsFailure) throw new DiscoveryRefusedException(response.Error);
@@ -123,10 +127,10 @@ internal sealed class GuildConfiguredRemoteResolver(GuildLocalHostPolicy policy,
     }
 
     private sealed class RunDiscoveryAdmission(GuildConfiguredRemoteResolver owner, GuildCallerContext caller,
-        string destination) : IA2AGuildDiscoveryAdmission
+        string destination, GuildChildToolAdmission? toolAdmission) : IA2AGuildDiscoveryAdmission
     {
         public Task<T> AdmitAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken ct) =>
-            owner.AdmitRunDiscoveryAsync(caller, destination, action, ct);
+            owner.AdmitRunDiscoveryAsync(caller, destination, toolAdmission, action, ct);
     }
 
     private sealed class OperatorDiscoveryAdmission(GuildConfiguredRemoteResolver owner, GuildCallerContext caller,
@@ -136,12 +140,28 @@ internal sealed class GuildConfiguredRemoteResolver(GuildLocalHostPolicy policy,
             owner.AdmitOperatorDiscoveryAsync(caller, destination, action, ct);
     }
 
-    private async Task<Result<bool>> AuthorizeRunAsync(GuildCallerContext caller, string destination,
-        SignetAuthority.QuestTransaction signets, CancellationToken ct)
+    private async Task<Result<bool>> AuthorizeRunAsync(SqliteConnection connection, SqliteTransaction transaction,
+        GuildCallerContext caller, string destination, SignetAuthority.QuestTransaction signets,
+        GuildChildToolAdmission? toolAdmission, CancellationToken ct)
     {
         if (!GuildRemotePort.IsTransportEnabled(settings.CurrentValue) || !policy.Authenticates(caller) || caller.Execution is null) return Forbidden;
 
         if (!A2AClientService.IsConfiguredGuildDestination(destination, settings.CurrentValue.ResolveA2A().AllowedRemoteAgents)) return Changed;
+
+        if (toolAdmission is not null)
+        {
+            if (toolAdmission.Kind != GuildLocalChildToolKind.AdmitCohortMember
+                || !ReferenceEquals(toolAdmission.Registry.Parent.Driver.Caller, caller)
+                || !GuildTaskArguments.IsRemote(toolAdmission.Arguments)
+                || !Uri.TryCreate(toolAdmission.Arguments.GetProperty("agent").GetString()!.Trim(), UriKind.Absolute, out Uri? intended)
+                || !Uri.TryCreate(destination.Trim(), UriKind.Absolute, out Uri? actual) || intended.AbsoluteUri != actual.AbsoluteUri)
+                return Forbidden;
+
+            var liveTool = await toolAdmission.Registry.Parent.Store.AuthorizeCohortToolWithinAsync(connection, transaction,
+                signets, toolAdmission, ct).ConfigureAwait(false);
+
+            if (liveTool.IsFailure) return liveTool.Error;
+        }
 
         BudgetSettings daily = settings.CurrentValue.ResolveBudget();
 
@@ -152,7 +172,7 @@ internal sealed class GuildConfiguredRemoteResolver(GuildLocalHostPolicy policy,
 
         if (grant.IsFailure) return grant.Error;
 
-        if (!grant.Value.Tools.Contains(new(GuildToolSourceKind.InternalMcp, "arcanum", "create_agent_task"))
+        if (!grant.Value.Tools.Contains(toolAdmission?.Tool ?? new(GuildToolSourceKind.InternalMcp, "arcanum", "create_agent_task"))
             || !grant.Value.Delegation.Contains(GuildDelegationKind.Remote)) return Forbidden;
 
         if (grant.Value.Budget.Usd.Mode != GuildBudgetMode.Unlimited || grant.Value.Budget.Tokens.Mode != GuildBudgetMode.Unlimited)

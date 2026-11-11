@@ -19,6 +19,19 @@ internal sealed partial class GuildLocalPort
         // finish. No root gate is held between polls, and the existing port pulse keeps the LRO owned.
         byte[] body = Encoding.UTF8.GetBytes(result.Value.Text);
 
+        byte[]? designated = body;
+
+        try
+        {
+            // Inspection retains the ordinary public text representation. Voting additionally
+            // requires lossless encoding; replacement fallback cannot repair an invalid result.
+            _ = new UTF8Encoding(false, true).GetByteCount(result.Value.Text);
+        }
+        catch (EncoderFallbackException)
+        {
+            designated = null;
+        }
+
         string digest = Convert.ToHexString(SHA256.HashData(body));
 
         Guid resultId = Guid.NewGuid();
@@ -57,7 +70,8 @@ internal sealed partial class GuildLocalPort
                     if (current.IsFailure) return current.Error;
 
                     GuildQuestResult completion = new(new(request.QuestId, resultId, digest, content, QuestState.Completed, null),
-                        body, label, !current.Value.HadPhysicalDispatch, WorkStoppedProven: true);
+                        body, label, !current.Value.HadPhysicalDispatch, WorkStoppedProven: true,
+                        DesignatedResultCount: 1, DesignatedResultUtf8: designated, DesignatedResultMimeType: "text/plain");
 
                     var committed = await quests.CommitResultAsync(invocation.Driver, new(resultId, digest),
                         current.Value.Quest.Quest.Revision, completion, ct).ConfigureAwait(false);

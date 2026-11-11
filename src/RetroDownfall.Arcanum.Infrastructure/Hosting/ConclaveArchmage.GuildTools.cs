@@ -13,6 +13,8 @@ internal sealed partial class ConclaveArchmage : IGuildLocalChildToolDispatcher
 {
     public bool SupportsLocal => settings.CurrentValue.Features.Conclave && GuildLocalExecutionAdmission.IsAvailable(settings.CurrentValue);
 
+    public bool SupportsCohorts => cohorts is not null && CanIssueGuild();
+
     public async Task<Result<GuildLocalChildToolResult>> DispatchAsync(GuildLocalChildToolCall call, CancellationToken cancellationToken)
     {
         if (call is null || call.Admission is null || !CanIssueGuild()
@@ -23,6 +25,9 @@ internal sealed partial class ConclaveArchmage : IGuildLocalChildToolDispatcher
 
         if (call.Kind == GuildLocalChildToolKind.SearchMemory)
             return await SearchGuildMemoryAsync(call, cancellationToken).ConfigureAwait(false);
+
+        if (GuildLocalToolRegistry.IsCohortTool(call.Admission.Tool.Name))
+            return await DispatchCohortToolAsync(call, cancellationToken).ConfigureAwait(false);
 
         if (call.Kind is not (GuildLocalChildToolKind.DelegateTask or GuildLocalChildToolKind.CreateAgentTask))
             return await DispatchTaskManagementAsync(call, cancellationToken).ConfigureAwait(false);

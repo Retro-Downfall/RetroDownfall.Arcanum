@@ -601,7 +601,7 @@ internal static partial class HostedGrimoireProducerInventory
             ProductionRootSelection primary = SelectProductionRoots(rootSubset, registrations, Catalog, NonHostedCatalog);
 
             return DiscoverProducerSitesUnderPremises(ProductionPremises, ProductionCompilations, primary.Registrations, primary.Catalog, primary.NonHostedCatalog,
-                rootWorkers: rootWorkers);
+                rootWorkers: rootWorkers, handoffCatalog: Catalog);
         }
 
         using HostedProducerPhaseProgress preparation = HostedProducerPhaseProgress.Start("additional-preparation", 0);
@@ -1789,6 +1789,12 @@ internal static partial class HostedGrimoireProducerInventory
             Operation("Guild", "GuildLocalQuestScheduler", "RunCommittedAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.GuildStorage),
             Handoff(Operation("Guild", "GuildLocalQuestScheduler", "RunAdmittedAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
                 GrimoireWorkKind.GuildStorage), "work"),
+            Handoff(Operation("Guild", "GuildLocalQuestScheduler", "RunLocalAdmittedAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
+                GrimoireWorkKind.GuildStorage), "work"),
+            Handoff(Operation("Guild", "GuildLocalQuestScheduler", "RunClaimedLocalAdmittedAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
+                GrimoireWorkKind.GuildStorage), "work"),
+            Handoff(Operation("Guild", "GuildLocalQuestScheduler", "RunLocalPortAdmittedAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
+                GrimoireWorkKind.GuildStorage), "work"),
             Handoff(Operation("Guild", "GuildLocalQuestScheduler", "RunRemoteAdmittedAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
                 GrimoireWorkKind.GuildStorage), "work"),
             Handoff(Operation("Guild", "GuildLocalQuestScheduler", "DrainCancellationAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
@@ -2287,7 +2293,7 @@ internal static partial class HostedGrimoireProducerInventory
 
     // The only seam that accepts premises. Its callers are the Production Discovery Entry and the
     // ClosedWorldPremises fixtures; an architecture pin keeps it that way.
-    internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSitesUnderPremises(HostedProducerPremises premises, IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations, IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog, int evaluationEnvironmentMaximumMembers = DefaultEvaluationEnvironmentMaximumMembers, int evaluationEnvironmentMaximumDepth = DefaultEvaluationEnvironmentMaximumDepth, int traversalMaximumDepth = DefaultTraversalMaximumDepth, int maximumAnalyzedStatesPerRoot = DefaultMaximumAnalyzedStatesPerRoot, HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null, bool auditRecoveryReachabilityParity = false, int rootWorkers = 1, bool reverseRootFamilies = false, Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null, Action<int, int, int, int, bool>? nestedReuseObserver = null)
+    internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSitesUnderPremises(HostedProducerPremises premises, IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations, IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog, int evaluationEnvironmentMaximumMembers = DefaultEvaluationEnvironmentMaximumMembers, int evaluationEnvironmentMaximumDepth = DefaultEvaluationEnvironmentMaximumDepth, int traversalMaximumDepth = DefaultTraversalMaximumDepth, int maximumAnalyzedStatesPerRoot = DefaultMaximumAnalyzedStatesPerRoot, HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null, bool auditRecoveryReachabilityParity = false, int rootWorkers = 1, bool reverseRootFamilies = false, Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null, Action<int, int, int, int, bool>? nestedReuseObserver = null, IReadOnlyList<HostedProducerServiceEntry>? handoffCatalog = null)
     {
         if (rootWorkers is not (1 or 2 or 3))
         {
@@ -2303,7 +2309,7 @@ internal static partial class HostedGrimoireProducerInventory
         // depend on which isolated worker asks first, and shared by every worker graph.
         InventoryFacts facts = new(compilations);
 
-        ProducerGraph CreateGraph() => new(compilations, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, auditRecoveryReachabilityParity, admittedStateObserver, nestedReuseObserver, ledger, facts);
+        ProducerGraph CreateGraph() => new(compilations, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, auditRecoveryReachabilityParity, admittedStateObserver, nestedReuseObserver, ledger, facts, handoffCatalog: handoffCatalog);
 
         return HostedProducerRootWorkers.OnAnalysisStack(() => rootWorkers == 1
             ? CreateGraph().Discover(registrations, catalog, nonHostedCatalog, recoverySelectionProbe)
@@ -3255,6 +3261,9 @@ internal static partial class HostedGrimoireProducerInventory
 
         private HostedProducerOperationEntry[] declaredOperations = [];
 
+        // Only exact source-proven self-admitted handoffs populate this scoped target context.
+        private readonly Dictionary<string, HostedProducerOperationEntry> provenSelfAdmittedRoots = new(StringComparer.Ordinal);
+
         private readonly Dictionary<string, string?> catalogOperationOwners = new(StringComparer.Ordinal);
 
         private readonly Dictionary<GraphMemberIdentity, AdmissionSyntaxPlan>
@@ -3515,6 +3524,8 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly InventoryFacts inventoryFacts;
 
+        private readonly IReadOnlyList<HostedProducerServiceEntry>? handoffCatalog;
+
         private readonly IReadOnlyList<CSharpCompilation> analysedCompilations;
 
         // A graph that answers one question only: whether a body can reach a producer site that is classified (a member of the
@@ -3534,9 +3545,12 @@ internal static partial class HostedGrimoireProducerInventory
             Action<int, int, int, int, bool>? nestedReuseObserver = null,
             HostedProducerPremiseLedger? premises = null,
             InventoryFacts? facts = null,
-            bool sitesOnly = false)
+            bool sitesOnly = false,
+            IReadOnlyList<HostedProducerServiceEntry>? handoffCatalog = null)
         {
             this.premises = premises ?? HostedProducerPremiseLedger.None;
+
+            this.handoffCatalog = handoffCatalog;
 
             inventoryFacts = facts ?? new InventoryFacts(compilations);
 
@@ -6773,6 +6787,8 @@ internal static partial class HostedGrimoireProducerInventory
             HostedProducerOperationEntry[] declared = [.. catalog.SelectMany(static service => service.Operations), .. nonHostedCatalog.Select(static chain => new HostedProducerOperationEntry(chain.ChainId, chain.SourcePath, chain.EnclosingType, chain.Member, chain.Authority, null, chain.Proof, chain.Sites))];
 
             declaredOperations = declared;
+
+            provenSelfAdmittedRoots.Clear();
 
             catalogOperationOwners.Clear();
 
@@ -20458,7 +20474,8 @@ internal static partial class HostedGrimoireProducerInventory
                     lifecycleMembers.Add(visitKey);
                 }
 
-                HostedProducerOperationEntry? ordinary = declaredOperations.FirstOrDefault(entry => entry.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork && (operationId == entry.OperationId || operationId.StartsWith(entry.OperationId + "/", StringComparison.Ordinal)));
+                HostedProducerOperationEntry? ordinary = declaredOperations.FirstOrDefault(entry => entry.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork && (operationId == entry.OperationId || operationId.StartsWith(entry.OperationId + "/", StringComparison.Ordinal)))
+                    ?? provenSelfAdmittedRoots.Values.FirstOrDefault(entry => operationId == entry.OperationId || operationId.StartsWith(entry.OperationId + "/", StringComparison.Ordinal));
 
                 // The Root Lease Formal is a handoff root's admission origin, so its frontier row is the root's own.
                 if (ordinary is { LeaseFormal: not null } handoffRoot
@@ -21279,7 +21296,13 @@ internal static partial class HostedGrimoireProducerInventory
 
                             if (TrySelfAdmittedTaskHandoff(member, callbackCall) is { } selfAdmitted)
                             {
-                                emittedEvidence = MergeEvidence(emittedEvidence, Traverse(selfAdmitted.Target, selfAdmitted.RootType, selfAdmitted.Root.OperationId, active, lifecycle));
+                                // The detached task is its declared ordinary root, not a lifecycle
+                                // child of the caller. Preserve recursion protection but grant it no
+                                // caller Work/Effect and bind its own exact cataloged work kind.
+                                provenSelfAdmittedRoots[selfAdmitted.Root.OperationId] = selfAdmitted.Root;
+
+                                emittedEvidence = MergeEvidence(emittedEvidence, Traverse(selfAdmitted.Target, selfAdmitted.RootType,
+                                    selfAdmitted.Root.OperationId, active, lifecycle: false, selection: selfAdmitted.Target.Syntax));
 
                                 continue;
                             }
@@ -23499,6 +23522,23 @@ internal static partial class HostedGrimoireProducerInventory
                 || taskEscapes)
             {
                 return null;
+            }
+
+            // A scoped production run traverses only its selected roots, but a detached,
+            // independently admitted producer must still bind to its unique production catalog
+            // declaration.  This catalog supplies handoff evidence only; it does not add roots
+            // or authorize inherited work. Synthetic discoveries retain their own catalog.
+            HostedProducerServiceEntry[] owners = (handoffCatalog ?? [])
+                .Where(service => service.Operations.Any(entry => entry.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork && entry.WorkKind == GrimoireWorkKind.ApprenticeExecution && entry.SourcePath == target.Syntax.SyntaxTree.FilePath && entry.EnclosingType == TypeKey(target.Symbol.ContainingType) && entry.Member == target.Symbol.Name && entry.OperationId == entry.EnclosingType + "." + entry.Member))
+                .ToArray();
+
+            if (handoffCatalog is not null)
+            {
+                if (owners is not [HostedProducerServiceEntry owner]) return null;
+
+                HostedProducerOperationEntry[] matches = owner.Operations.Where(entry => entry.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork && entry.WorkKind == GrimoireWorkKind.ApprenticeExecution && entry.SourcePath == target.Syntax.SyntaxTree.FilePath && entry.EnclosingType == TypeKey(target.Symbol.ContainingType) && entry.Member == target.Symbol.Name && entry.OperationId == entry.EnclosingType + "." + entry.Member).ToArray();
+
+                return matches is [HostedProducerOperationEntry match] ? new(target, match, owner.ServiceType) : null;
             }
 
             HostedProducerOperationEntry[] roots = declaredOperations.Where(entry => entry.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork && entry.WorkKind == GrimoireWorkKind.ApprenticeExecution && entry.SourcePath == target.Syntax.SyntaxTree.FilePath && entry.EnclosingType == TypeKey(target.Symbol.ContainingType) && entry.Member == target.Symbol.Name && entry.OperationId == entry.EnclosingType + "." + entry.Member).ToArray();
@@ -26693,6 +26733,7 @@ internal static partial class HostedGrimoireProducerInventory
                     model,
                     context)
                 || IsReviewedPrimitiveQueueProperty(property, mutation, node, context)
+                || IsReviewedCampaignReaderProperty(property, mutation, node, model)
                 || IsReviewedExactInt128Limit(property, mutation)
                 || IsReviewedExactMeAiDimensionsProperty(property, mutation)
                 || IsReviewedA2AProperty(property, mutation)
@@ -54956,7 +54997,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             string capsuleId = CapsuleId(member.Syntax.SyntaxTree.FilePath, memberIdentity, kind, callee, syntaxOrdinal, syntaxFingerprint);
 
-            HostedProducerOperationEntry? ordinary = declaredOperations.FirstOrDefault(entry => entry.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork && rootOperation == entry.OperationId);
+            HostedProducerOperationEntry? ordinary = declaredOperations.FirstOrDefault(entry => entry.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork && rootOperation == entry.OperationId)
+                ?? provenSelfAdmittedRoots.GetValueOrDefault(rootOperation);
 
             // A member that reads a lease out of a holder object is granted no Effect for a physical send or a group, whichever lease the
             // group was begun on: nothing witnesses the holder, so its lease is nobody's. A member that carries a recovery context is

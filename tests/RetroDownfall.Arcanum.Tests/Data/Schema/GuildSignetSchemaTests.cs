@@ -13,9 +13,9 @@ public sealed class GuildSignetSchemaTests
 
         var installed = await GrimoireSchemaTestInstaller.InstallAsync(connection, 768, CancellationToken.None);
 
-        Assert.Equal(38, installed.Core.SchemaVersion);
+        Assert.Equal(39, installed.Core.SchemaVersion);
 
-        Assert.Equal(11, installed.GuildCanonical.SchemaVersion);
+        Assert.Equal(12, installed.GuildCanonical.SchemaVersion);
 
         await using SqliteCommand command = connection.CreateCommand();
 
@@ -69,7 +69,7 @@ public sealed class GuildSignetSchemaTests
 
         Assert.True(upgraded.GuildCanonical.IsHealthy);
 
-        Assert.Equal(11, upgraded.GuildCanonical.SchemaVersion);
+        Assert.Equal(12, upgraded.GuildCanonical.SchemaVersion);
 
         await using SqliteCommand command = connection.CreateCommand();
 

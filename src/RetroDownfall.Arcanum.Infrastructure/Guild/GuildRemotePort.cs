@@ -327,7 +327,10 @@ internal sealed partial class GuildRemotePort(GuildQuestStore quests, GuildLocal
 
         var result = await _quests.CommitResultAsync(run.Driver, new(resultId, content.Digest), state.Value.Quest.Quest.Revision,
             new(new(run.Driver.Execution.QuestId, resultId, content.Digest, cleanup ? null : content, outcome, reason), cleanup ? null : body,
-                WorkStoppedProven: true, RemoteEvidence: new(run.DispatchId, observation)), CancellationToken.None).ConfigureAwait(false);
+                WorkStoppedProven: true, RemoteEvidence: new(run.DispatchId, observation),
+                DesignatedResultCount: outcome == QuestState.Completed && !cleanup ? observation.DesignatedResultCount : null,
+                DesignatedResultUtf8: outcome == QuestState.Completed && !cleanup ? observation.DesignatedResultUtf8 : null,
+                DesignatedResultMimeType: outcome == QuestState.Completed && !cleanup ? observation.DesignatedResultMimeType : null), CancellationToken.None).ConfigureAwait(false);
 
         return result.IsFailure ? result.Error : Result.Success();
     }

@@ -120,7 +120,12 @@ internal sealed partial class GuildPortalStore
             || envelope.Producer.Kind == GuildProducerKind.Run && (envelope.Producer.AgentId != source.Value.Quest.AgentId
                 || envelope.Producer.RunId != source.Value.Quest.RunId || envelope.Producer.QuestId != source.Value.Quest.Id)) return Unavailable;
 
-        Result sourceVisible = await quests.RequireVisibleAsync(connection, transaction, caller, source.Value, ct).ConfigureAwait(false);
+        Result sourceVisible = caller.Kind == GuildCallerKind.Run && envelope.Address.Kind == GuildCircleAddressKind.Cohort
+            ? source.Value.Retired || source.Value.Issuance.InstallationGeneration != policy.InstallationGeneration
+                ? Result.Failure(Forbidden)
+                : await GuildStore.RequireOwnerWithinAsync(connection, transaction, source.Value.Quest.SessionId,
+                    source.Value.Quest.CampaignId, ct).ConfigureAwait(false)
+            : await quests.RequireVisibleAsync(connection, transaction, caller, source.Value, ct).ConfigureAwait(false);
 
         if (sourceVisible.IsFailure) return sourceVisible;
 
@@ -149,10 +154,20 @@ internal sealed partial class GuildPortalStore
             {
                 GuildCircleAddressKind.Parent => source.Value.Quest.ParentQuestId == recipient.Value.Quest.Id,
                 GuildCircleAddressKind.Child => recipient.Value.Quest.ParentQuestId == source.Value.Quest.Id,
+                GuildCircleAddressKind.Cohort => await HasCurrentCohortAudienceWithinAsync(connection, transaction,
+                    envelope, recipient.Value.Quest.Id, ct).ConfigureAwait(false),
                 _ => false,
             };
 
-        if (!relation || envelope.Address.QuestId != recipient.Value.Quest.Id) return Forbidden;
+        if (!relation || envelope.Address.Kind != GuildCircleAddressKind.Cohort
+            && envelope.Address.QuestId != recipient.Value.Quest.Id) return Forbidden;
+
+        if (envelope.Address.Kind == GuildCircleAddressKind.Cohort)
+        {
+            Result<GuildGrant> sourceGrant = await signets.ValidateCurrentGrantAsync(envelope.QuestId, ct).ConfigureAwait(false);
+
+            if (sourceGrant.IsFailure) return sourceGrant.Error;
+        }
 
         await using SqliteCommand inbox = Command(connection, transaction,
             "SELECT 1 FROM guild_inbox WHERE EnvelopeId=$envelope AND RecipientQuestId=$quest AND RecipientKey=$key");

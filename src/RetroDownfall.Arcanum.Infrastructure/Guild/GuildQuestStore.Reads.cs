@@ -186,7 +186,7 @@ internal sealed partial class GuildQuestStore
         return new GuildQuestStored(dto, issuance, mutation, intent, resolution, account, retired);
     }
 
-    private static async Task<bool> HasParkedInputCheckpointWithinAsync(SqliteConnection connection,
+    internal static async Task<bool> HasParkedInputCheckpointWithinAsync(SqliteConnection connection,
         SqliteTransaction transaction, Guid questId, GuildQuestInputEvidence question, CancellationToken ct)
     {
         if (await IsRemoteWithinAsync(connection, transaction, questId, ct).ConfigureAwait(false))

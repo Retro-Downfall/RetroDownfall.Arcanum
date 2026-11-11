@@ -31,6 +31,20 @@ internal sealed partial class DataRetentionService
 {
     private static readonly FactoryTablePlan[] FactoryPlanTables =
     [
+        new("guild_portal_cohort_audience", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_settlement_nodes", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_settlement_state", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_selections", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_eval_candidates", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_eval_buckets", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_eval_state", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_stop_frontiers", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_result_observations", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_contributions", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_member_quests", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_mutations", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_members", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohorts", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_workspace_lease_mutations", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_workspace_leases", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_workspace_authority_state", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
@@ -38,6 +52,7 @@ internal sealed partial class DataRetentionService
         new("guild_budget_effects", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_quest_budget", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_budget_accounts", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_settlement_clock", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_memory_attribution", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
 
         new("guild_portal_inputs", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
@@ -175,6 +190,20 @@ internal sealed partial class DataRetentionService
 
     private static readonly FactoryTablePlan[] FactoryDeletionTables =
     [
+        new("guild_portal_cohort_audience", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_settlement_nodes", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_settlement_state", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_selections", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_eval_candidates", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_eval_buckets", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_eval_state", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_stop_frontiers", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_result_observations", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_contributions", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_member_quests", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_mutations", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_members", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohorts", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_workspace_lease_mutations", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_workspace_leases", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_workspace_authority_state", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
@@ -182,6 +211,7 @@ internal sealed partial class DataRetentionService
         new("guild_budget_effects", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_quest_budget", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_budget_accounts", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_settlement_clock", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_memory_attribution", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
 
         new("guild_portal_inputs", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),

@@ -20,14 +20,29 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
     ILogger<GuildLocalQuestScheduler> logger, IGuildLocalHostReadiness readiness,
     IGrimoireConnectionAdmissionGate admission) : BackgroundService, IGuildLocalQuestScheduler
 {
+    // Retired is before Id in the published cancellation index. Seek each fixed partition
+    // separately, then merge at most 200 rows instead of sorting all unconverged history.
     internal const string CancellationFrontierQuery = """
-        SELECT CASE WHEN typeof(quest.Id)='text' AND length(CAST(quest.Id AS BLOB))=36 THEN quest.Id END
-        FROM guild_quests quest JOIN guild_quest_start_intents intent ON quest.Id=intent.QuestId
-            LEFT JOIN guild_local_executions binding ON binding.QuestId=quest.Id
-            LEFT JOIN guild_remote_executions remote ON remote.QuestId=quest.Id
-        WHERE (binding.QuestId IS NOT NULL OR remote.QuestId IS NOT NULL) AND quest.CancellationRequested=1 AND quest.CancellationConverged=0 AND quest.Retired=0 AND quest.Id>$after
-            AND NOT EXISTS(SELECT 1 FROM guild_quests parent WHERE parent.Id=quest.ParentQuestId AND parent.CancellationRequested=1)
-        ORDER BY quest.Id LIMIT 100
+        SELECT Id FROM (
+            SELECT Id FROM (
+                SELECT CASE WHEN typeof(quest.Id)='text' AND length(CAST(quest.Id AS BLOB))=36 THEN quest.Id END AS Id
+                FROM guild_quests quest JOIN guild_quest_start_intents intent ON quest.Id=intent.QuestId
+                    LEFT JOIN guild_local_executions binding ON binding.QuestId=quest.Id
+                    LEFT JOIN guild_remote_executions remote ON remote.QuestId=quest.Id
+                WHERE quest.CancellationRequested=1 AND quest.CancellationConverged=0 AND quest.Retired=0 AND quest.Id>$after
+                    AND (binding.QuestId IS NOT NULL OR (remote.QuestId IS NOT NULL
+                        AND NOT EXISTS(SELECT 1 FROM guild_quests parent WHERE parent.Id=quest.ParentQuestId AND parent.CancellationRequested=1)))
+                ORDER BY quest.Id LIMIT 100
+            )
+            UNION ALL
+            SELECT Id FROM (
+                SELECT CASE WHEN typeof(quest.Id)='text' AND length(CAST(quest.Id AS BLOB))=36 THEN quest.Id END AS Id
+                FROM guild_quests quest JOIN guild_quest_start_intents intent ON quest.Id=intent.QuestId
+                    JOIN guild_local_executions binding ON binding.QuestId=quest.Id
+                WHERE quest.CancellationRequested=1 AND quest.CancellationConverged=0 AND quest.Retired=1 AND quest.Id>$after
+                ORDER BY quest.Id LIMIT 100
+            )
+        ) ORDER BY Id LIMIT 100
         """;
 
     private readonly Channel<Guid> _wakes = Channel.CreateUnbounded<Guid>(new() { SingleReader = true, AllowSynchronousContinuations = false });
@@ -189,9 +204,13 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
         try
         {
+            // Cohort decisions and stop frontiers remain recovery work even while Guild
+            // execution is disabled. They never rebind the creator's work authority.
+            await DiscoverCohortsAsync(lifetime.Token).ConfigureAwait(false);
+
             // Cascade discovery is independent of the live execution task. A parent waiting
             // for its descendants cannot suppress the durable stop work that lets it finish.
-            await DiscoverCancellationFrontiersAsync(lifetime.Token).ConfigureAwait(false);
+            await DiscoverCancellationFrontiersAsync(work, lifetime.Token).ConfigureAwait(false);
 
             Guid? after = null;
 
@@ -218,7 +237,42 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
         }
     }
 
-    private async Task DiscoverCancellationFrontiersAsync(CancellationToken ct)
+    private async Task DiscoverCohortsAsync(CancellationToken ct)
+    {
+        await using AsyncServiceScope scope = scopes.CreateAsyncScope();
+
+        GuildCohortStore? cohorts = scope.ServiceProvider.GetService<GuildCohortStore>();
+
+        if (cohorts is null) return;
+
+        GuildLocalHostPolicy policy = scope.ServiceProvider.GetRequiredService<GuildLocalHostPolicy>();
+
+        var caller = await policy.CreateNativeOperatorAsync(Guid.NewGuid(), ct).ConfigureAwait(false);
+
+        if (caller.IsFailure) return;
+
+        GuildCohortWorkCursor? after = null;
+
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var page = await cohorts.ReadWorkPageAsync(caller.Value, after, ct).ConfigureAwait(false);
+
+            if (page.IsFailure) return;
+
+            foreach (Guid cohortId in page.Value.CohortIds)
+            {
+                _ = await cohorts.ReconcileAsync(caller.Value, cohortId, ct).ConfigureAwait(false);
+            }
+
+            if (page.Value.NextAfter is not { } next) return;
+
+            after = next;
+        }
+    }
+
+    private async Task DiscoverCancellationFrontiersAsync(IGrimoireWorkLease work, CancellationToken ct)
     {
         await using AsyncServiceScope scope = scopes.CreateAsyncScope();
 
@@ -232,7 +286,7 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
         Guid? after = null;
 
-        while (IsAvailable)
+        while (true)
         {
             var roots = await ReadPendingIdsWithinAsync(after, ct, cancellationFrontiers: true).ConfigureAwait(false);
 
@@ -240,9 +294,15 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
             foreach (Guid root in roots.Value)
             {
+                ct.ThrowIfCancellationRequested();
+
+                // Native stop recovery remains available for retired owners and while work
+                // admission is disabled. It cannot schedule or rebind a Run.
+                await DrainCancellationAsync(work, scope.ServiceProvider, caller.Value, root, ct).ConfigureAwait(false);
+
                 long sequence = 0;
 
-                while (IsAvailable)
+                while (true)
                 {
                     var page = await store.ReadCancellationWorkPageAsync(caller.Value, root, sequence, ct).ConfigureAwait(false);
 
@@ -466,103 +526,126 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
     private async Task RunAdmittedAsync(IGrimoireWorkLease work, Guid questId, CancellationToken ct)
     {
-        Guid operationId = Guid.Empty, claim = Guid.Empty;
+        using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct, work.MaintenanceRevocation);
+
+        ct = lifetime.Token;
+
+        ct.ThrowIfCancellationRequested();
+
+        if (!IsAvailable) return;
+
+        await using AsyncServiceScope scope = scopes.CreateAsyncScope();
+
+        GuildLocalHostPolicy policy = scope.ServiceProvider.GetRequiredService<GuildLocalHostPolicy>();
+
+        GuildQuestStore store = scope.ServiceProvider.GetRequiredService<GuildQuestStore>();
+
+        var caller = await policy.CreateNativeOperatorAsync(Guid.NewGuid(), ct).ConfigureAwait(false);
+
+        if (caller.IsFailure) return;
+
+        var pending = await store.ReadLocalPendingAsync(caller.Value, questId, ct).ConfigureAwait(false);
+
+        if (pending.IsFailure) return;
+
+        if (pending.Value.IsRemote)
+        {
+            await RunRemoteAdmittedAsync(work, scope.ServiceProvider, caller.Value, pending.Value, ct).ConfigureAwait(false);
+
+            return;
+        }
+
+        await RunLocalAdmittedAsync(work, scope.ServiceProvider, caller.Value, pending.Value, ct).ConfigureAwait(false);
+    }
+
+    private async Task RunLocalAdmittedAsync(IGrimoireWorkLease work, IServiceProvider services, GuildCallerContext caller,
+        GuildLocalPendingWork pending, CancellationToken ct)
+    {
+        work.MaintenanceRevocation.ThrowIfCancellationRequested();
+
+        GuildQuestStore store = services.GetRequiredService<GuildQuestStore>();
+
+        Guid questId = pending.Quest.Quest.Id;
+
+        if (!pending.Quest.Quest.CancellationRequested && pending.RequiresAttention)
+        {
+            var frontier = await store.ReadLocalCancellationFrontierAsync(caller, questId, ct).ConfigureAwait(false);
+
+            if (frontier.IsFailure) return;
+
+            if (frontier.Value.AncestorCanceled && frontier.Value.Quest.Quest.ResultReceiptId is null)
+            {
+                GuildCancelQuestRequest stop = new(Guid.NewGuid(), frontier.Value.Quest.Quest.Revision,
+                    GuildCancellationReason.OperatorRequested);
+
+                var digest = GuildQuestIntent.Compute(questId, stop);
+
+                if (digest.IsFailure) return;
+
+                var accepted = await store.RequestCancellationAsync(caller,
+                    new(stop.IdempotencyKey, digest.Value), questId, stop, ct).ConfigureAwait(false);
+
+                if (accepted.IsFailure) return;
+
+                await DrainCancellationAsync(work, services, caller, questId, ct).ConfigureAwait(false);
+
+                return;
+            }
+        }
+
+        if (pending.Quest.Quest.CancellationRequested)
+        {
+            await DrainCancellationAsync(work, services, caller, questId, ct).ConfigureAwait(false);
+
+            return;
+        }
+
+        if (pending.RequiresAttention || pending.Request is null || !IsAvailable) return;
+
+        await RunClaimedLocalAdmittedAsync(work, services, caller, pending, ct).ConfigureAwait(false);
+    }
+
+    private async Task RunClaimedLocalAdmittedAsync(IGrimoireWorkLease work, IServiceProvider services, GuildCallerContext caller,
+        GuildLocalPendingWork pending, CancellationToken ct)
+    {
+        work.MaintenanceRevocation.ThrowIfCancellationRequested();
+
+        GuildQuestDto quest = pending.Quest.Quest;
+
+        // Claim before a rebind can rotate the credential held by an already active local run.
+        if (!ownership.TryClaim(quest.OperationId, out Guid claim)) return;
 
         try
         {
-            using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct, work.MaintenanceRevocation);
+            GuildLocalHostPolicy policy = services.GetRequiredService<GuildLocalHostPolicy>();
 
-            ct = lifetime.Token;
-
-            ct.ThrowIfCancellationRequested();
-
-            if (!IsAvailable) return;
-
-            await using AsyncServiceScope scope = scopes.CreateAsyncScope();
-
-            GuildLocalHostPolicy policy = scope.ServiceProvider.GetRequiredService<GuildLocalHostPolicy>();
-
-            GuildQuestStore store = scope.ServiceProvider.GetRequiredService<GuildQuestStore>();
-
-            SignetAuthority authority = scope.ServiceProvider.GetRequiredService<SignetAuthority>();
-
-            GuildLocalPort port = scope.ServiceProvider.GetRequiredService<GuildLocalPort>();
-
-            var caller = await policy.CreateNativeOperatorAsync(Guid.NewGuid(), ct).ConfigureAwait(false);
-
-            if (caller.IsFailure) return;
-
-            var pending = await store.ReadLocalPendingAsync(caller.Value, questId, ct).ConfigureAwait(false);
-
-            if (pending.IsFailure) return;
-
-            if (pending.Value.IsRemote)
-            {
-                await RunRemoteAdmittedAsync(work, scope.ServiceProvider, caller.Value, pending.Value, ct).ConfigureAwait(false);
-
-                return;
-            }
-
-            if (!pending.Value.Quest.Quest.CancellationRequested && pending.Value.RequiresAttention)
-            {
-                var frontier = await store.ReadLocalCancellationFrontierAsync(caller.Value, questId, ct).ConfigureAwait(false);
-
-                if (frontier.IsFailure) return;
-
-                if (frontier.Value.AncestorCanceled && frontier.Value.Quest.Quest.ResultReceiptId is null)
-                {
-                    GuildCancelQuestRequest stop = new(Guid.NewGuid(), frontier.Value.Quest.Quest.Revision,
-                        GuildCancellationReason.OperatorRequested);
-
-                    var digest = GuildQuestIntent.Compute(questId, stop);
-
-                    if (digest.IsFailure) return;
-
-                    var accepted = await store.RequestCancellationAsync(caller.Value,
-                        new(stop.IdempotencyKey, digest.Value), questId, stop, ct).ConfigureAwait(false);
-
-                    if (accepted.IsFailure) return;
-
-                    await DrainCancellationAsync(work, scope.ServiceProvider, caller.Value, questId, ct).ConfigureAwait(false);
-
-                    return;
-                }
-            }
-
-            if (pending.Value.Quest.Quest.CancellationRequested)
-            {
-                await DrainCancellationAsync(work, scope.ServiceProvider, caller.Value, questId, ct).ConfigureAwait(false);
-
-                return;
-            }
-
-            if (pending.Value.RequiresAttention || pending.Value.Request is null || !IsAvailable) return;
-
-            GuildQuestDto quest = pending.Value.Quest.Quest;
-
-            operationId = quest.OperationId;
-
-            // Claim before a rebind can rotate the credential held by an already active local run.
-            if (!ownership.TryClaim(operationId, out claim)) return;
-
-            var recovery = await policy.CreateRecoveryAsync(caller.Value, quest.Id, quest.OperationId, quest.SignetRevision, ct).ConfigureAwait(false);
+            var recovery = await policy.CreateRecoveryAsync(caller, quest.Id, quest.OperationId, quest.SignetRevision, ct).ConfigureAwait(false);
 
             if (recovery.IsFailure) return;
 
-            var rebound = await authority.RebindAsync(recovery.Value, ct).ConfigureAwait(false);
+            var rebound = await services.GetRequiredService<SignetAuthority>().RebindAsync(recovery.Value, ct).ConfigureAwait(false);
 
             if (rebound.IsFailure) return;
 
-            var prepared = await store.PrepareLocalScheduleAsync(caller.Value, rebound.Value, pending.Value.Operation.Revision, ct).ConfigureAwait(false);
+            var prepared = await services.GetRequiredService<GuildQuestStore>().PrepareLocalScheduleAsync(
+                caller, rebound.Value, pending.Operation.Revision, ct).ConfigureAwait(false);
 
             if (prepared.IsFailure || !IsAvailable) return;
 
-            _ = await port.DispatchClaimedAsync(rebound.Value, prepared.Value, claim, ct).ConfigureAwait(false);
+            await RunLocalPortAdmittedAsync(work, services, rebound.Value, prepared.Value, claim, ct).ConfigureAwait(false);
         }
         finally
         {
-            if (claim != Guid.Empty) ownership.Release(operationId, claim);
+            ownership.Release(quest.OperationId, claim);
         }
+    }
+
+    private async Task RunLocalPortAdmittedAsync(IGrimoireWorkLease work, IServiceProvider services,
+        GuildExecutionHandle execution, GuildDispatchRequest request, Guid claim, CancellationToken ct)
+    {
+        work.MaintenanceRevocation.ThrowIfCancellationRequested();
+
+        _ = await services.GetRequiredService<GuildLocalPort>().DispatchClaimedAsync(execution, request, claim, ct).ConfigureAwait(false);
     }
 
     private async Task RunRemoteAdmittedAsync(IGrimoireWorkLease work, IServiceProvider services, GuildCallerContext caller,
@@ -639,6 +722,33 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
         GuildQuestStore store = services.GetRequiredService<GuildQuestStore>();
 
+        var cleanup = await store.CreateLocalCleanupDriverAsync(caller, questId, ct).ConfigureAwait(false);
+
+        if (cleanup.IsSuccess)
+        {
+            var state = await store.ReadLocalPortAsync(cleanup.Value, questId, ct).ConfigureAwait(false);
+
+            if (state.IsFailure || state.Value.Operation.LeaseOwner is not null
+                && state.Value.Operation.LeaseExpiresAt > time.GetUtcNow()) return;
+
+            var children = await store.LocalChildrenStoppedAsync(cleanup.Value, ct).ConfigureAwait(false);
+
+            if (children.IsFailure || !children.Value) return;
+
+            var identity = await store.ReadLocalCleanupStopIdentityAsync(cleanup.Value, ct).ConfigureAwait(false);
+
+            if (identity.IsFailure || !ownership.TryClaim(state.Value.Operation.Id, out Guid localClaim)) return;
+
+            try
+            {
+                _ = await services.GetRequiredService<GuildLocalPort>().RequestCancellationOwnedAsync(caller,
+                    identity.Value, questId, questId, localClaim, ct).ConfigureAwait(false);
+            }
+            finally { ownership.Release(state.Value.Operation.Id, localClaim); }
+
+            return;
+        }
+
         var pending = await store.ReadLocalPendingAsync(caller, questId, ct).ConfigureAwait(false);
 
         if (pending.IsFailure || !pending.Value.Quest.Quest.CancellationRequested
@@ -661,8 +771,6 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
             if (mutation.IsFailure) return;
 
-            GuildQuestDto quest = pending.Value.Quest.Quest;
-
             if (pending.Value.IsRemote)
             {
                 _ = await services.GetRequiredService<GuildRemotePort>().RequestCancellationOwnedAsync(caller,
@@ -671,17 +779,7 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
                 return;
             }
 
-            GuildLocalHostPolicy policy = services.GetRequiredService<GuildLocalHostPolicy>();
-
-            var recovery = await policy.CreateRecoveryAsync(caller, quest.Id, operationId, quest.SignetRevision, ct).ConfigureAwait(false);
-
-            if (recovery.IsFailure) return;
-
-            var execution = await services.GetRequiredService<SignetAuthority>().RebindAsync(recovery.Value, ct).ConfigureAwait(false);
-
-            if (execution.IsFailure) return;
-
-            _ = await services.GetRequiredService<GuildLocalPort>().RequestCancellationClaimedAsync(execution.Value,
+            _ = await services.GetRequiredService<GuildLocalPort>().RequestCancellationOwnedAsync(caller,
                 mutation.Value, questId, questId, claim, ct).ConfigureAwait(false);
         }
         finally

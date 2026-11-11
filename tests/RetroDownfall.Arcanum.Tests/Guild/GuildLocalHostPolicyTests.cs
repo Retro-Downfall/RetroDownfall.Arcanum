@@ -482,6 +482,8 @@ public sealed partial class GuildLocalHostPolicyTests
             _ = await command.ExecuteNonQueryAsync();
         }
 
+        internal Task<SqliteConnection> OpenAsync() => _file.OpenAsync(default);
+
         internal async Task<long> ScalarAsync(string sql)
         {
             await using SqliteConnection connection = await _file.OpenAsync(default);

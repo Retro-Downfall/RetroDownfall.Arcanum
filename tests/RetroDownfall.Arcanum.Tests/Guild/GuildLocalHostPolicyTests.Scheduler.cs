@@ -291,6 +291,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal int Calls;
 
+        internal string Output { get; set; } = "scheduled public output";
+
         internal CancellationToken InvocationToken;
 
         public async Task<Result<PromptTurnResult>> ExecuteGuildAsync(GuildLocalExecutionBinding binding,
@@ -305,7 +307,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             await Release.Task;
 
-            return new PromptTurnResult("scheduled public output", null);
+            return new PromptTurnResult(Output, null);
         }
     }
 }

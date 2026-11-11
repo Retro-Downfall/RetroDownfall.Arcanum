@@ -34,13 +34,16 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
     private Task<Result<GuildQuestStored>> IssueAsync(GuildCallerContext caller, GuildIssuanceIdentity issuance,
         GuildIssueRootRequest? root, Guid? parentId, GuildIssueChildRequest? child, CancellationToken ct,
-        GuildChildToolAdmission? toolAdmission = null, GuildInboundIssue? inbound = null)
+        GuildChildToolAdmission? toolAdmission = null, GuildInboundIssue? inbound = null, GuildCohortIssue? cohortIssue = null)
     {
         Result<string> digest = root is not null ? GuildQuestIntent.Compute(root)
             : toolAdmission is not null ? ToolIssueIntent(parentId.GetValueOrDefault(), child!)
             : GuildQuestIntent.Compute(parentId.GetValueOrDefault(), child!);
 
         if (digest.IsFailure) return Task.FromResult(Result<GuildQuestStored>.Failure(digest.Error));
+
+        if (cohortIssue is not null)
+            digest = CohortIssueIntent(cohortIssue.Id, cohortIssue.ExpectedRevision, digest.Value);
 
         Guid key = root?.IdempotencyKey ?? child!.IdempotencyKey;
 
@@ -57,7 +60,7 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
         Guid rootId = caller.Execution?.RootQuestId ?? id;
 
-        return authority.InQuestTransactionAsync<GuildQuestStored>(rootId, async (connection, transaction, signets, token) =>
+        return InCohortIssueTransactionAsync(rootId, toolAdmission, cohortIssue, async (connection, transaction, signets, token) =>
         {
             Result authorized = await policy.AuthorizeLocateAsync(caller, connection, transaction, parentId, root?.SessionId, root?.CampaignId, token).ConfigureAwait(false);
 
@@ -68,11 +71,17 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
                 Result<GuildGrant> live = await signets.VerifyAsync(execution, token).ConfigureAwait(false);
 
                 if (live.IsFailure) return live.Error;
+
+                if (cohortIssue is not null && !live.Value.Delegation.Contains(GuildDelegationKind.Cohort))
+                    return new Error(ErrorCodes.Guild.Forbidden, "Cohort membership requires the creator's delegation authority.");
             }
 
             if (toolAdmission is not null)
             {
                 if (root is not null || child is null) return InvalidReceipt;
+
+                if (cohortIssue is not null && !GuildCohortToolArguments.MatchesAdmission(toolAdmission,
+                    cohortIssue.Id, cohortIssue.ExpectedRevision, child)) return InvalidReceipt;
 
                 Result source = await ValidateToolIssueWithinAsync(connection, transaction, signets, caller,
                     digest.Value, toolAdmission, token).ConfigureAwait(false);
@@ -126,6 +135,16 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
                     if (mode.IsFailure) return mode.Error;
                 }
 
+                if (cohortIssue is not null)
+                {
+                    var member = await ReadCohortMemberWithinAsync(connection, transaction, cohortIssue.Id, accepted.Value, token).ConfigureAwait(false);
+
+                    if (member.IsFailure) return member.Error;
+
+                    cohortIssue.Member = member.Value with { Receipt = accepted.Value.Quest.Receipt! with
+                        { Replayed = true, AcceptedRevision = checked(cohortIssue.ExpectedRevision + 1) } };
+                }
+
                 return Replay(accepted.Value);
             }
 
@@ -148,10 +167,37 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
                 if (parent.Quest.RootQuestId != rootId || await HasClosedAncestorAsync(connection, transaction, issuer, token).ConfigureAwait(false))
                     return new Error(ErrorCodes.Guild.Forbidden, "The issuing Quest is closed to new descendants.");
 
-                if (toolAdmission is not null)
+                if (toolAdmission is not null && cohortIssue is null)
                 {
                     Result<GuildIssueChildRequest> resolved = await ResolveToolBudgetWithinAsync(connection, transaction,
                         parent, child, token).ConfigureAwait(false);
+
+                    if (resolved.IsFailure) return resolved.Error;
+
+                    child = resolved.Value;
+                }
+            }
+
+            GuildCohortStored? cohort = null;
+
+            if (cohortIssue is not null)
+            {
+                var located = await GuildCohortStore.ReadWithinAsync(connection, transaction, cohortIssue.Id, token).ConfigureAwait(false);
+
+                if (located.IsFailure) return located.Error;
+
+                cohort = located.Value;
+
+                if (parent is null || cohort.Cohort.RootQuestId != rootId || cohort.Cohort.IssuerQuestId != parent.Quest.Id)
+                    return new Error(ErrorCodes.Guild.Forbidden, "The Cohort belongs to another issuing Quest.");
+
+                if (cohort.Cohort.State != GuildCohortState.Open || cohort.Cohort.Revision != cohortIssue.ExpectedRevision)
+                    return GuildCohortStore.RevisionConflict(cohort.Cohort);
+
+                if (toolAdmission is not null)
+                {
+                    var resolved = await ResolveToolBudgetWithinAsync(connection, transaction, parent, child!, token,
+                        cohort.Cohort.AllocationAccountId, cohort.Cohort.CohortGrant).ConfigureAwait(false);
 
                     if (resolved.IsFailure) return resolved.Error;
 
@@ -183,7 +229,7 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
             GuildMutationIdentity mutation = new(key, digest.Value);
 
-            GuildQuestProposal proposal = new(id, Guid.NewGuid(), session, mutation, root, parentId, child, campaign, workspace);
+            GuildQuestProposal proposal = new(id, Guid.NewGuid(), session, mutation, root, parentId, child, campaign, workspace, cohortIssue?.Id);
 
             Result<GuildQuestAdmissionPlan> resolution = await policy.ResolveAsync(caller, proposal, connection, transaction, token).ConfigureAwait(false);
 
@@ -237,6 +283,14 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
             if (destination.IsFailure) return destination.Error;
 
+            if (cohort is not null)
+            {
+                Result membership = await GuildCohortStore.ValidateAdmissionWithinAsync(connection, transaction, cohort,
+                    parent!.Quest.Id, cohortIssue!.ExpectedRevision, destination.Value.AgentId, token).ConfigureAwait(false);
+
+                if (membership.IsFailure) return membership.Error;
+            }
+
             byte[] body = Encoding.UTF8.GetBytes(GuildQuestIntent.NormalizeGoal(root?.Goal ?? child!.Goal));
 
             Guid content = Guid.NewGuid();
@@ -263,12 +317,14 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
             if (child?.CardId is not null)
                 signingRequest = signingRequest! with { Tools = new(true, plan.Grant.Tools) };
 
+            if (cohort is not null) signingRequest = CohortGrantRequest(plan.Grant);
+
             Result<GuildSignetRecord> signet = await signets.IssueAsync(plan.Admission, binding, caller.Execution,
                 signingRequest, token).ConfigureAwait(false);
 
             if (signet.IsFailure) return signet.Error;
 
-            Result<Guid> account = await allocations.AllocateAsync(connection, transaction, id, parent?.AllocationAccountId, plan.Grant, token).ConfigureAwait(false);
+            Result<Guid> account = await allocations.AllocateAsync(connection, transaction, id, cohort?.Cohort.AllocationAccountId ?? parent?.AllocationAccountId, plan.Grant, token).ConfigureAwait(false);
 
             if (account.IsFailure || account.Value == Guid.Empty) return account.IsFailure ? account.Error : Unavailable;
 
@@ -283,6 +339,17 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
             Result<GuildQuestStored> created = await ReadWithinAsync(connection, transaction, id, token).ConfigureAwait(false);
 
             if (created.IsFailure) return created;
+
+            if (cohort is not null)
+            {
+                var associated = await GuildCohortStore.AddPrimaryWithinAsync(connection, transaction, cohort, id,
+                    destination.Value.AgentId, now, token).ConfigureAwait(false);
+
+                if (associated.IsFailure) return associated.Error;
+
+                cohortIssue!.Member = associated.Value with { Receipt = created.Value.Quest.Receipt! with
+                    { AcceptedRevision = checked(cohort.Cohort.Revision + 1) } };
+            }
 
             if (inbound is not null)
             {
@@ -410,7 +477,7 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
         return await command.ExecuteScalarAsync(ct).ConfigureAwait(false) is string id ? Guid.Parse(id) : null;
     }
 
-    private static async Task<bool> HasClosedAncestorAsync(SqliteConnection connection, SqliteTransaction transaction, Guid parent, CancellationToken ct)
+    internal static async Task<bool> HasClosedAncestorAsync(SqliteConnection connection, SqliteTransaction transaction, Guid parent, CancellationToken ct)
     {
         await using SqliteCommand command = Command(connection, transaction, """
             WITH RECURSIVE lineage(Id,ParentQuestId,CancellationRequested,Retired,OperationId) AS (

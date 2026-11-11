@@ -15,7 +15,7 @@ internal sealed partial class GuildQuestStore
 
                 if (allowed.IsFailure) return allowed.Error;
 
-                if (admission.Kind != GuildLocalChildToolKind.CreateAgentTask || !admission.Registry.Owns(admission)
+                if (admission.Kind is not (GuildLocalChildToolKind.CreateAgentTask or GuildLocalChildToolKind.AdmitCohortMember) || !admission.Registry.Owns(admission)
                     || policy is not GuildLocalHostPolicy host || !host.IsConfiguredRemoteDestination(destination))
                     return new Error(ErrorCodes.Guild.DestinationChanged, "The task requires its current configured destination.");
 

@@ -384,6 +384,14 @@ internal static class GuildAotSmoke
         Require(restoredCheckpoint.IsSuccess && restoredCheckpoint.Value.QuestId == Id
             && restoredCheckpoint.Value.Phase == "admitted", "Quest checkpoints require generated, content-free native round trips.");
 
+        RoundTrip(new GuildCohortSettlementNode
+        {
+            AccountId = Id, RootAccountId = Id, OwnerId = Id, Kind = GuildBudgetOwnerKind.Cohort,
+            Revision = 1, KnownUsd = "0.1234567890123456789012345678", KnownTokens = 37,
+            Phase = 1, LastEffect = Id, LastChild = Id, PendingMembers = 2, PendingEffects = 1,
+            HoldUsd = null, HoldTokens = null, UnknownUsd = true, UnknownTokens = true,
+        }, GuildCohortSettlementJsonContext.Default.GuildCohortSettlementNode);
+
         RoundTrip(new GuildStoredAgentCardPayload(SampleGuildAgentCard(), "Bounded guidance: λ", ["read_file"]),
             GuildStorageJsonContext.Default.GuildStoredAgentCardPayload);
 

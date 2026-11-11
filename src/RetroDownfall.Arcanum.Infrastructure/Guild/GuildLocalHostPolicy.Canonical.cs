@@ -145,6 +145,12 @@ internal sealed partial class GuildLocalHostPolicy
             if (contained.IsFailure) return contained.Error;
 
             workspaces.AddRange(contained.Value.WorkspaceContainment);
+
+            Result<GuildGrantScopeEvidence> reverse = await physical.ResolveContainmentAsync(childScope, parentScope, ct).ConfigureAwait(false);
+
+            if (reverse.IsFailure) return reverse.Error;
+
+            workspaces.AddRange(reverse.Value.WorkspaceContainment);
         }
 
         foreach (GuildMemoryScope scope in parent.Memory.Concat(child.Memory).Select(item => item.Scope).Distinct())
@@ -180,7 +186,7 @@ internal sealed partial class GuildLocalHostPolicy
             if (campaign is { } ownerId) sessions.Add((ownerId, id));
         }
 
-        return new GuildGrantScopeEvidence(workspaces.ToImmutable(), sessions.ToImmutable());
+        return new GuildGrantScopeEvidence(workspaces.Distinct().ToImmutableArray(), sessions.ToImmutable());
     }
 
     private static SqliteCommand Command(SqliteConnection connection, SqliteTransaction transaction, string sql)

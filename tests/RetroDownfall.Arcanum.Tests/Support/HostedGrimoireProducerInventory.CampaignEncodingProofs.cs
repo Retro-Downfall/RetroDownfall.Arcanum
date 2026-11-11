@@ -84,7 +84,7 @@ internal static partial class HostedGrimoireProducerInventory
                     new HashSet<ISymbol>(SymbolEqualityComparer.Default), context);
             }
 
-            if (method.Name == "Read"
+            if (method.Name is "Read" or "GetString"
                 && !method.IsStatic
                 && method.Parameters.Length == 0
                 && IsExactFrameworkType(method.ContainingType, "System.Text.Json.Utf8JsonReader",
@@ -225,6 +225,26 @@ internal static partial class HostedGrimoireProducerInventory
             || IsExactFrameworkType(type, "System.Text.UTF8Encoding",
                 System.Reflection.Assembly.Load(new System.Reflection.AssemblyName("System.Text.Encoding.Extensions")).GetName());
 
+        private bool IsReviewedCampaignReaderProperty(
+            IPropertySymbol property,
+            bool mutation,
+            SyntaxNode? node,
+            SemanticModel? model) =>
+            !mutation
+            && IsExactCampaignReaderProperty(property)
+            && node is MemberAccessExpressionSyntax access
+            && model?.GetOperation(access) is IPropertyReferenceOperation reference
+            && SymbolEqualityComparer.Default.Equals(reference.Property, property)
+            && reference.Instance?.Syntax is ExpressionSyntax reader
+            && HasOwnedCampaignSpanReader(reader, model);
+
+        private static bool IsExactCampaignReaderProperty(IPropertySymbol property) =>
+            !property.IsStatic
+            && property.Parameters.Length == 0
+            && property.Name is "TokenType" or "CurrentDepth"
+            && IsExactFrameworkType(property.ContainingType, "System.Text.Json.Utf8JsonReader",
+                typeof(System.Text.Json.Utf8JsonReader).Assembly.GetName());
+
         private bool HasOwnedCampaignSpanReader(ExpressionSyntax expression, SemanticModel model)
         {
             if (!TryStripCampaignEncodingValue(expression, model, out expression))
@@ -268,10 +288,24 @@ internal static partial class HostedGrimoireProducerInventory
             // https://github.com/dotnet/runtime/blob/v10.0.12/src/libraries/System.Text.Json/src/System/Text/Json/Reader/Utf8JsonReader.cs
             if (CampaignStorageReceiverCall(reference, model) is { TargetMethod: { } method })
             {
-                return method.Name == "Read"
+                return method.Name is "Read" or "GetString"
+                    && !method.IsStatic
                     && method.Parameters.Length == 0
                     && IsExactFrameworkType(method.ContainingType, "System.Text.Json.Utf8JsonReader",
                         typeof(System.Text.Json.Utf8JsonReader).Assembly.GetName());
+            }
+
+            // Runtime v10.0.14 GetString reads/unescapes the owned ValueSpan; only sequence-backed
+            // readers take ValueSequence.ToArray. TokenType and CurrentDepth read scalar reader state.
+            // Preserve the same ownership proof for all uses so ref mutation, sequence reassignment,
+            // and escaping reader copies cannot bypass the callback boundary through these members.
+            // https://github.com/dotnet/runtime/blob/v10.0.14/src/libraries/System.Text.Json/src/System/Text/Json/Reader/Utf8JsonReader.TryGet.cs
+            if (reference.Parent is MemberAccessExpressionSyntax access
+                && access.Expression == reference
+                && model.GetOperation(access) is IPropertyReferenceOperation propertyReference
+                && IsExactCampaignReaderProperty(propertyReference.Property))
+            {
+                return true;
             }
 
             return reference.Parent is ArgumentSyntax { RefKindKeyword.RawKind: (int)SyntaxKind.RefKeyword } argument

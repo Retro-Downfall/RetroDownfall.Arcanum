@@ -847,6 +847,7 @@ internal sealed partial class ArcanumInternalToolServer
         "read_file" or "edit_file" or "write_file" or "list_directory" or "execute_command"
         or "set_task_priority" or "send_notification" or "request_intervention" or "ask_human"
         or "create_agent_task" or "send_agent_message" or "get_agent_task" or "cancel_agent_task" or "list_agents" or "save_memory" or "delete_memory"
+        or "create_cohort" or "admit_cohort_member" or "close_cohort" or "remove_cohort_member"
         or "propose_covenant" or "retire_covenant" or "search_history" or "search_memory"
         or "attach_session_file" or "refresh_session_file";
 
@@ -974,9 +975,10 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (_guildTaskToolsEnabled)
         {
-            foreach (string name in new[] { "create_agent_task", "send_agent_message", "get_agent_task", "cancel_agent_task", "list_agents" })
+            foreach (string name in new[] { "create_agent_task", "send_agent_message", "get_agent_task", "cancel_agent_task", "list_agents",
+                "create_cohort", "admit_cohort_member", "close_cohort", "remove_cohort_member" })
             {
-                if (name == "create_agent_task" && !_conclaveEnabled && !_a2aClientEnabled) continue;
+                if (name is "create_agent_task" or "admit_cohort_member" && !_conclaveEnabled && !_a2aClientEnabled) continue;
 
                 tools.Add(new McpToolDefinitionWire
                 {

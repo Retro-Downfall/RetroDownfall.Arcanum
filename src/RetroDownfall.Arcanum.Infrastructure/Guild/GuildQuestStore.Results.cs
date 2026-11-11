@@ -30,12 +30,25 @@ internal sealed partial class GuildQuestStore
 
                 GuildQuestStored row = visible.Value.Row;
 
+                if (driver.Caller is { Kind: GuildCallerKind.HostReceipt, ReceiptSource: GuildLocalHostPolicy.LocalCleanupReceiptSource }
+                    && (result.Receipt.Outcome != QuestState.Canceled || result.Receipt.Content is not null || result.Body is not null
+                        || result.SourceLabel is not null || result.RemoteEvidence is not null || !result.WorkStoppedProven
+                        || result.DesignatedResultCount is not null || result.DesignatedResultUtf8 is not null || result.DesignatedResultMimeType is not null))
+                    return ClosedDispatch;
+
                 Result<GuildResultReceipt?> prior = await ReadResultWithinAsync(connection, transaction, row, token).ConfigureAwait(false);
 
                 if (prior.IsFailure) return prior.Error;
 
                 if (prior.Value is { } accepted)
-                    return SameTerminalResult(accepted, result.Receipt) && !row.Quest.ReconciliationRequired ? accepted : Conflict;
+                {
+                    if (!SameTerminalResult(accepted, result.Receipt) || row.Quest.ReconciliationRequired) return Conflict;
+
+                    Result captured = await GuildCohortStore.CapturePrimaryResultWithinAsync(connection, transaction,
+                        row, result with { Receipt = accepted }, time.GetUtcNow(), token).ConfigureAwait(false);
+
+                    return captured.IsSuccess ? accepted : captured.Error;
+                }
 
                 Result<(GuildQuestStored Row, LongRunningOperation Operation)> admitted = await RequireDriverWithinAsync(
                     connection, transaction, signets, driver, true, true, token).ConfigureAwait(false);
@@ -48,7 +61,8 @@ internal sealed partial class GuildQuestStore
                 {
                     bool cleanup = driver.Caller?.Kind == GuildCallerKind.HostReceipt && result.Receipt.Content is null
                         && result.Body is null && (result.RemoteEvidence is not null
-                            || result.Receipt.Outcome == QuestState.Canceled && result.NoDispatchProven && result.WorkStoppedProven);
+                            || result.Receipt.Outcome == QuestState.Canceled && result.WorkStoppedProven
+                                && (result.NoDispatchProven || driver.Caller.ReceiptSource == GuildLocalHostPolicy.LocalCleanupReceiptSource));
 
                     if (!cleanup || result.Receipt.Outcome is not (QuestState.Canceled or QuestState.Failed))
                         return new Error(ErrorCodes.Guild.ContentErased, "The Quest goal was erased.");
@@ -185,6 +199,30 @@ internal sealed partial class GuildQuestStore
 
                     if (settlement.IsFailure) return settlement.Error;
                 }
+
+                Result contribution = await GuildCohortStore.CapturePrimaryResultWithinAsync(connection, transaction,
+                    row, result with { Receipt = receipt }, now, token).ConfigureAwait(false);
+
+                if (contribution.IsFailure) return contribution.Error;
+
+                // Owner cleanup may have sealed the lineage before this stopped-work receipt existed.
+                // Preserve the receipt, but do not leave a delivery requiring a retired authority.
+                await using SqliteCommand withheld = Command(connection, transaction, """
+                    UPDATE guild_result_outbox SET DeliveryStateCode=3,Revision=Revision+1,AcknowledgedAtUtc=$now
+                    WHERE QuestId=$quest AND DeliveryStateCode=1 AND EXISTS(
+                        SELECT 1 FROM guild_quests source JOIN guild_quests root ON root.Id=source.RootQuestId
+                        LEFT JOIN guild_quests recipient ON recipient.Id=guild_result_outbox.RecipientQuestId
+                        WHERE source.Id=$quest AND (source.Retired=1 OR root.Retired=1 OR recipient.Retired=1));
+                    UPDATE guild_portal_outbox SET DeliveryStateCode=3
+                    WHERE QuestId=$quest AND DeliveryStateCode=1 AND EXISTS(
+                        SELECT 1 FROM guild_quests source JOIN guild_quests root ON root.Id=source.RootQuestId
+                        WHERE source.Id=$quest AND (source.Retired=1 OR root.Retired=1));
+                    """);
+
+                Add(withheld, "$quest", Id(row.Quest.Id));
+                Add(withheld, "$now", UtcInstantText.Format(now));
+
+                _ = await withheld.ExecuteNonQueryAsync(token).ConfigureAwait(false);
 
                 return receipt;
             }, ct);
@@ -382,7 +420,7 @@ internal sealed partial class GuildQuestStore
         return Result.Success();
     }
 
-    private static async Task<Result<DerivedArtifactWrite>> ResultSensitivityWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+    internal static async Task<Result<DerivedArtifactWrite>> ResultSensitivityWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         GuildQuestStored row, Guid contentId, byte[] body, ArtifactSensitivityLabel? source, CancellationToken ct)
     {
         Result<ArtifactSensitivityLabel?> goal = await ArtifactSensitivityLedger.ReadLabelWithinAsync(connection, transaction,

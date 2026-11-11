@@ -101,7 +101,8 @@ internal sealed class GrimoireSchemaInstaller(
 
         GrimoireSchemaTierInstallResult guild = await InstallOptionalTierAsync(
             connection, GrimoireSchemaTransactionTier.GuildCanonical, embeddingDimensions, context,
-            dependencyHealthy: core.IsHealthy && core.SchemaVersion >= 38, cancellationToken).ConfigureAwait(false);
+            dependencyHealthy: core.IsHealthy && core.SchemaVersion >=
+                (_chains.ForTier(GrimoireSchemaTransactionTier.GuildCanonical).HeadVersion >= 12 ? 39 : 38), cancellationToken).ConfigureAwait(false);
 
         return new GrimoireSchemaInstallResult(core, canonical, accelerator, guild);
     }
