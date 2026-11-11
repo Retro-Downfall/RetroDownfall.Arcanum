@@ -841,9 +841,14 @@ internal sealed partial class GrimoireOfflineTransitionJournalFilePrimitives
     {
         ArgumentNullException.ThrowIfNull(exactLeaves);
 
-        if (!ValidateParent() || exactLeaves.Length == 0 || exactLeaves.Any(leaf => !ValidLeaf(leaf)))
+        if (!ValidateParent() || exactLeaves.Length == 0)
         {
             return Unavailable<GrimoireOfflineTransitionJournalChildEnumeration>();
+        }
+
+        foreach (string leaf in exactLeaves)
+        {
+            if (!ValidLeaf(leaf)) return Unavailable<GrimoireOfflineTransitionJournalChildEnumeration>();
         }
 
         List<string>? names = EnumerateNames();

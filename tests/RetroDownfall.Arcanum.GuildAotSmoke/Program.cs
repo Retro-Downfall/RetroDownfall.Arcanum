@@ -267,6 +267,8 @@ internal static class GuildAotSmoke
 
         Exercise(SampleSharedNoteDto(), GuildJsonContext.Default.SharedNoteDto);
 
+        Exercise(new GuildCohortProgress("note.appended", Id, Id, 17L), GuildJsonContext.Default.GuildCohortProgress);
+
         Exercise(SampleSharedNotePageDto(), GuildJsonContext.Default.SharedNotePageDto);
 
         Exercise(SampleSignetRevocationDto(), GuildJsonContext.Default.SignetRevocationDto);
@@ -848,7 +850,7 @@ internal static class GuildAotSmoke
 
     private static RenewWorkspaceLeaseRequest SampleRenewWorkspaceLeaseRequest() => new(IdempotencyKey: Id, ExpectedRevision: 17L, Epoch: 17L);
 
-    private static SharedNoteDto SampleSharedNoteDto() => new(Id: Id, CohortId: Id, Sequence: 17L, AuthorQuestId: Id, AuthorMemberId: Id, Authority: GuildAuthorityKind.Operator, Kind: GuildNoteKind.Correction, SubjectId: Id, BodyRef: SampleGuildDataRef(), CorrectsNoteId: Id, CreatedAt: Instant, Receipt: SampleGuildMutationReceiptDto());
+    private static SharedNoteDto SampleSharedNoteDto() => new(Id: Id, CohortId: Id, Sequence: 17L, AuthorQuestId: null, AuthorMemberId: null, Authority: GuildAuthorityKind.Operator, Kind: GuildNoteKind.Correction, SubjectId: Id, BodyRef: SampleGuildDataRef(), CorrectsNoteId: Id, CreatedAt: Instant, Receipt: SampleGuildMutationReceiptDto(), OperatorPrincipalId: Id, Body: "sample-untrusted-data");
 
     private static SharedNotePageDto SampleSharedNotePageDto() => new(Items: [SampleSharedNoteDto()], NextCursor: "sample-NextCursor", SnapshotSequence: 17L, StateConsistency: "livePerPage");
 

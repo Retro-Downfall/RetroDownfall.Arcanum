@@ -124,6 +124,8 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
 
         List<ChatMessage> messages = [new(ChatRole.User, request.Prompt)];
 
+        List<GuildCircleInputBatch> circleInputs = [];
+
         ChatCompletionUsage? usage = null;
 
         int roundOrdinal = 0;
@@ -132,7 +134,21 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
         {
             ct.ThrowIfCancellationRequested();
 
-            using GuildProviderCallBinding round = binding.CreateRound(messages, functions);
+            var incoming = await binding.Execution.Store.PrepareCircleInputAsync(binding.Execution, ct).ConfigureAwait(false);
+
+            if (incoming.IsFailure) return incoming.Error;
+
+            if (incoming.Value is { } batch)
+            {
+                Result inputGuardrails = await FilterGuardrailsInputAsync(request with { Prompt = batch.Prompt }, ct).ConfigureAwait(false);
+
+                if (inputGuardrails.IsFailure) return inputGuardrails.Error;
+
+                circleInputs.Add(batch);
+                messages.Add(new(ChatRole.User, batch.Prompt));
+            }
+
+            using GuildProviderCallBinding round = binding.CreateRound(messages, functions, circleInputs);
 
             // The provider's external ceiling is a spend proof, not the requested answer size.
             // Reuse the existing resolved local reservation for an unspecified output limit.

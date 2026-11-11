@@ -1737,6 +1737,12 @@ NEW_ROOTS = (
     ),
     NewRoot(
         "GuildLocalQuestScheduler",
+        "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.RunLocalCompletionAdmittedAsync",
+        "the local completion handoff directly awaits result or refusal handling under the scheduler's exact retained "
+        "GuildStorage work lease, while its caller retains pulse joining and claim cleanup",
+    ),
+    NewRoot(
+        "GuildLocalQuestScheduler",
         "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.RunRemoteAdmittedAsync",
         "the remote dispatch handoff receives the scheduler's retained GuildStorage lease, awaits the physical A2A lifecycle, "
         "and joins its lease renewal before releasing admission",

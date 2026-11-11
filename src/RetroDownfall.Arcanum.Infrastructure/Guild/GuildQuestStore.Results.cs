@@ -205,6 +205,11 @@ internal sealed partial class GuildQuestStore
 
                 if (contribution.IsFailure) return contribution.Error;
 
+                Result awardNotice = await new GuildPortalStore(this, authority, policy, time)
+                    .PublishAwardResultWithinAsync(connection, transaction, signets, row.Quest.Id, now, token).ConfigureAwait(false);
+
+                if (awardNotice.IsFailure) return awardNotice.Error;
+
                 // Owner cleanup may have sealed the lineage before this stopped-work receipt existed.
                 // Preserve the receipt, but do not leave a delivery requiring a retired authority.
                 await using SqliteCommand withheld = Command(connection, transaction, """

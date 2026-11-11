@@ -73,6 +73,20 @@ internal sealed partial class ArcanumInternalToolServer
 
             "remove_cohort_member",
 
+            "post_work_offer",
+
+            "submit_bid",
+
+            "withdraw_bid",
+
+            "award_work",
+
+            "withdraw_work_offer",
+
+            "append_shared_note",
+
+            "read_shared_notes",
+
             "ask_human",
 
             "save_memory",
@@ -162,6 +176,20 @@ internal sealed partial class ArcanumInternalToolServer
             ["close_cohort"] = ExecuteUnboundTaskAsync,
 
             ["remove_cohort_member"] = ExecuteUnboundTaskAsync,
+
+            ["post_work_offer"] = ExecuteUnboundTaskAsync,
+
+            ["submit_bid"] = ExecuteUnboundTaskAsync,
+
+            ["withdraw_bid"] = ExecuteUnboundTaskAsync,
+
+            ["award_work"] = ExecuteUnboundTaskAsync,
+
+            ["withdraw_work_offer"] = ExecuteUnboundTaskAsync,
+
+            ["append_shared_note"] = ExecuteUnboundTaskAsync,
+
+            ["read_shared_notes"] = ExecuteUnboundTaskAsync,
 
             ["ask_human"] = ExecuteAskHumanAsync,
 

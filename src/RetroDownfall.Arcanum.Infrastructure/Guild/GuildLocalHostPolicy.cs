@@ -234,7 +234,9 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
         bool root = proposal.Root is not null;
 
         if (root ? caller.Kind is not (GuildCallerKind.Operator or GuildCallerKind.Peer) || proposal.ParentQuestId is not null
-            : caller.Kind != GuildCallerKind.Run || caller.Execution?.QuestId != proposal.ParentQuestId || proposal.Child is null) return Forbidden;
+            : proposal.Child is null || (caller.Kind == GuildCallerKind.Run
+                ? caller.Execution?.QuestId != proposal.ParentQuestId
+                : caller.Kind != GuildCallerKind.Operator || proposal.Award is null || proposal.Award.IssuerQuestId != proposal.ParentQuestId)) return Forbidden;
 
         Result ownersValid = await ValidateOwnersAsync(connection, transaction, root ? proposal.Root!.SessionId : null,
             proposal.CampaignId, proposal.WorkspaceId, ct).ConfigureAwait(false);
@@ -335,14 +337,43 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
 
             if (cohort.IsFailure) return cohort.Error;
 
-            if (cohort.Value.Cohort.IssuerQuestId != issuer || cohort.Value.Cohort.RootQuestId != caller.Execution!.RootQuestId
-                || cohort.Value.Cohort.State != GuildCohortState.Open) return Forbidden;
+            Guid rootQuest = caller.Execution?.RootQuestId ?? proposal.Award?.RootQuestId ?? Guid.Empty;
+
+            if (cohort.Value.Cohort.RootQuestId != rootQuest || cohort.Value.Cohort.State != GuildCohortState.Open) return Forbidden;
+
+            if (proposal.Award is { } award)
+            {
+                if (award.CohortId != cohortId || award.IssuerQuestId != issuer || award.RootQuestId != rootQuest
+                    || GuildGrantPolicy.Validate(award.PrimaryCeiling).IsFailure) return Forbidden;
+
+                if (cohort.Value.Cohort.IssuerQuestId != issuer)
+                {
+                    await using SqliteCommand member = Command(connection, transaction, """
+                        SELECT EXISTS(SELECT 1 FROM guild_cohort_members m JOIN guild_cohort_member_quests a ON a.MemberId=m.Id
+                        WHERE m.CohortId=$cohort AND m.StateCode=1 AND a.QuestId=$issuer AND a.Active=1)
+                        """);
+                    Add(member, "$cohort", Id(cohortId));
+                    Add(member, "$issuer", Id(issuer));
+
+                    if (!Equals(1L, await member.ExecuteScalarAsync(ct).ConfigureAwait(false))) return Forbidden;
+                }
+            }
+            else if (cohort.Value.Cohort.IssuerQuestId != issuer) return Forbidden;
 
             var scope = await ScopeAsync(connection, transaction, grant, cohort.Value.Cohort.CohortGrant, ct).ConfigureAwait(false);
 
             if (scope.IsFailure) return scope.Error;
 
             grant = GuildSignetGrantComposition.Intersect(grant, cohort.Value.Cohort.CohortGrant, scope.Value);
+
+            if (proposal.Award is { } work)
+            {
+                var primaryScope = await ScopeAsync(connection, transaction, grant, work.PrimaryCeiling, ct).ConfigureAwait(false);
+
+                if (primaryScope.IsFailure) return primaryScope.Error;
+
+                grant = GuildSignetGrantComposition.Intersect(grant, work.PrimaryCeiling, primaryScope.Value);
+            }
         }
 
         if (GuildGrantPolicy.Validate(grant).IsFailure || grant.Workspaces.Any(item => item.WorkspaceId != proposal.WorkspaceId) || grant.Delegation.Any(item => item is not (GuildDelegationKind.Local or GuildDelegationKind.Remote or GuildDelegationKind.Cohort))) return Forbidden;
@@ -413,24 +444,40 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
     public async Task<Result<GuildSignetAdmissionEvidence>> AuthorizeAdmissionAsync(GuildAdmissionContext admission,
         GuildSignetBinding binding, CancellationToken ct)
     {
-        if (!settings.CurrentValue.Features.Guild || admission is null || !_admissions.TryGetValue(admission, out Admission? scope)
+        if (!settings.CurrentValue.Features.Guild || admission is null || binding is null
+            || !_admissions.TryGetValue(admission, out Admission? scope)
             || !Authenticates(admission.Caller) || scope.Transaction.Connection is null
             || binding.QuestId != scope.Proposal.QuestId || binding.RunId != scope.Proposal.RunId
-            || binding.IssuerSignetId != admission.Caller.Execution?.SignetId || binding.OriginPrincipalId != OperatorPrincipalId
-            || binding.RootQuestId != (admission.Caller.Execution?.RootQuestId ?? scope.Proposal.QuestId)
-            || !ReferenceEquals(binding.Grant, scope.Grant) || Interlocked.CompareExchange(ref scope.Consumed, 1, 0) != 0) return Forbidden;
+            || binding.OriginPrincipalId != OperatorPrincipalId || !ReferenceEquals(binding.Grant, scope.Grant)
+            || Interlocked.CompareExchange(ref scope.Consumed, 1, 0) != 0) return Forbidden;
 
         Result identity = await CurrentIdentityAsync(scope.Connection, scope.Transaction, ct).ConfigureAwait(false);
 
         if (identity.IsFailure) return identity.Error;
 
         GuildGrantScopeEvidence? issuanceScope = null;
+        Guid? operatorIssuer = null;
 
         if (scope.Proposal.ParentQuestId is { } parentId)
         {
             var parent = await GuildSignetStore.ReadAsync(scope.Connection, scope.Transaction, parentId, true, ct).ConfigureAwait(false);
 
             if (parent.IsFailure) return parent.Error;
+
+            if (binding.IssuerSignetId != parent.Value.Binding.SignetId || binding.RootQuestId != parent.Value.Binding.RootQuestId
+                || binding.OriginPrincipalId != parent.Value.Binding.OriginPrincipalId) return Forbidden;
+
+            if (admission.Caller.Kind == GuildCallerKind.Operator)
+            {
+                if (admission.Caller.Execution is not null || scope.Proposal.Award is not { } award
+                    || award.IssuerQuestId != parentId || award.RootQuestId != binding.RootQuestId
+                    || award.CohortId != scope.Proposal.CohortId || scope.Proposal.Root is not null) return Forbidden;
+
+                operatorIssuer = parentId;
+            }
+            else if (admission.Caller.Kind != GuildCallerKind.Run || admission.Caller.Execution is not { } execution
+                || execution.QuestId != parentId || execution.SignetId != binding.IssuerSignetId
+                || execution.RootQuestId != binding.RootQuestId) return Forbidden;
 
             var lineage = await GuildSignetStore.LineageAsync(scope.Connection, scope.Transaction, parent.Value, ct).ConfigureAwait(false);
 
@@ -442,13 +489,16 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
 
             issuanceScope = current.Value.ScopeEvidence;
         }
+        else if (scope.Proposal.Root is null || scope.Proposal.Award is not null || binding.IssuerSignetId is not null
+            || binding.RootQuestId != scope.Proposal.QuestId || admission.Caller.Execution is not null
+            || admission.Caller.Kind is not (GuildCallerKind.Operator or GuildCallerKind.Peer)) return Forbidden;
 
         return new GuildSignetAdmissionEvidence(scope.Owners,
             scope.Proposal.Root is not null ? GuildSignetIssuanceEdge.Root
                 : scope.Proposal.CohortId is not null
                     ? scope.RemoteTransport is null ? GuildSignetIssuanceEdge.LocalCohort : GuildSignetIssuanceEdge.RemoteCohort
                     : scope.RemoteTransport is null ? GuildSignetIssuanceEdge.Local : GuildSignetIssuanceEdge.Remote,
-            issuanceScope);
+            issuanceScope, operatorIssuer);
     }
 
     public Task<Result<GuildSignetPolicyEvidence>> ResolveCurrentAsync(ImmutableArray<GuildSignetRecord> lineage, CancellationToken ct)

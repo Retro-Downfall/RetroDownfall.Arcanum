@@ -338,7 +338,7 @@ public sealed partial class ToolExecutionPipelineTests
         Assert.DoesNotContain("attachment_not_visible", result.ResultText, StringComparison.Ordinal);
     }
 
-    private static ToolExecutionPipeline CreatePipeline(
+    internal static ToolExecutionPipeline CreatePipeline(
         NoOpSessionAttachmentStore? store = null,
         IAttachmentSourceResolver? attachmentSourceResolver = null,
         IToolResultMaterializer? materializer = null) =>

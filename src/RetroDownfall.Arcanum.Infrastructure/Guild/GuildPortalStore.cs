@@ -9,7 +9,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
-/// <summary>Dormant, root-gated durable Portal admission and delivery. No public execution path is registered.</summary>
+/// <summary>Root-gated durable Portal admission, current-source materialization and transactional delivery.</summary>
 internal sealed partial class GuildPortalStore(GuildQuestStore quests, SignetAuthority authority, IGuildQuestHostPolicy policy, TimeProvider time)
 {
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);

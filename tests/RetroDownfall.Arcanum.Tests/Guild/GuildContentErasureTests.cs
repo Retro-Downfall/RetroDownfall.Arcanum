@@ -20,6 +20,117 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 
 public sealed class GuildContentErasureTests
 {
+    [Theory]
+    [InlineData("canonical-promotion")]
+    [InlineData("original-exact")]
+    [InlineData("original-bloom")]
+    [InlineData("mode")]
+    [InlineData("exact")]
+    [InlineData("bloom")]
+    [InlineData("huge-exact")]
+    [InlineData("huge-bloom")]
+    [InlineData("owner")]
+    [InlineData("revision")]
+    [InlineData("digest")]
+    [InlineData("body")]
+    [InlineData("original-provenance")]
+    public async Task Current_protection_promotion_erases_only_exact_canonical_original_content(string boundary)
+    {
+        await using SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync("Data Source=:memory:", default);
+
+        _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, 768, default);
+
+        Guid content = Guid.NewGuid();
+
+        Guid source = Guid.NewGuid();
+
+        byte[] body = "protected after publication"u8.ToArray();
+
+        CovenantDigest digest = new(SHA256.HashData(body));
+
+        GenerationProvenance provenance = boundary == "original-bloom"
+            ? GenerationProvenance.CreateBloom(SHA256.HashData("original bloom provenance"u8))
+            : GenerationProvenance.CreateExact([CovenantOperationGateFixture.DatasetGeneration]);
+
+        // The malformed-header cases simulate corrupt imported storage. Normal writes remain
+        // protected by the schema CHECK; the erasure validator must also refuse those bytes.
+        await using (SqliteCommand corrupt = connection.CreateCommand())
+        {
+            corrupt.CommandText = "PRAGMA ignore_check_constraints=ON";
+
+            await corrupt.ExecuteNonQueryAsync();
+        }
+
+        await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
+        {
+            await using SqliteCommand insert = connection.CreateCommand();
+
+            insert.Transaction = transaction;
+            insert.CommandText = """
+                INSERT INTO guild_content(ContentId,ContentKindCode,SourceRecordId,SessionId,Revision,Digest,MimeType,Body,
+                    SensitivityCode,ProvenanceModeCode,ExactGenerationIds,GenerationBloom,CreatedAtUtc)
+                VALUES($content,8,$source,$session,$revision,$digest,'text/plain',$body,$sensitivity,$mode,$exact,$bloom,
+                    '2026-11-05T00:00:00.0000000Z')
+                """;
+
+            insert.Parameters.AddWithValue("$content", content.ToString("D").ToUpperInvariant());
+            insert.Parameters.AddWithValue("$source", source.ToString("D").ToUpperInvariant());
+            insert.Parameters.AddWithValue("$session", boundary == "owner" ? Guid.NewGuid().ToString("D").ToUpperInvariant() : DBNull.Value);
+            insert.Parameters.AddWithValue("$revision", boundary == "revision" ? 2 : 1);
+            insert.Parameters.AddWithValue("$digest", boundary == "digest" ? new byte[32] : digest.Bytes);
+            insert.Parameters.AddWithValue("$body", boundary == "body" ? "different immutable bytes"u8.ToArray() : body);
+            insert.Parameters.AddWithValue("$sensitivity", boundary is "original-provenance" or "original-exact" or "original-bloom" ? 1 : 0);
+            insert.Parameters.AddWithValue("$mode", boundary == "original-bloom" ? 2
+                : boundary is "mode" or "original-provenance" or "original-exact" ? 1 : 0);
+            insert.Parameters.AddWithValue("$exact", boundary == "huge-exact" ? new byte[8_388_608]
+                : boundary == "original-exact" ? provenance.ToCanonicalExactBytes()
+                : boundary is "exact" or "original-provenance"
+                    ? GenerationProvenance.CreateExact([Guid.NewGuid()]).ToCanonicalExactBytes() : DBNull.Value);
+            insert.Parameters.AddWithValue("$bloom", boundary == "huge-bloom" ? new byte[8_388_608]
+                : boundary == "original-bloom" ? provenance.ToCanonicalBloomBytes()
+                : boundary == "bloom" ? SHA256.HashData("unexpected bloom"u8) : DBNull.Value);
+
+            await insert.ExecuteNonQueryAsync();
+
+            var marked = await ArtifactSensitivityLedger.WriteWithinAsync(connection, transaction,
+                new(SensitiveArtifactKind.GuildContent, content, null, null, null, 1, digest,
+                    ContentSensitivity.CovenantDerived, provenance), default);
+
+            Assert.True(marked.IsSuccess, marked.Error.Message);
+
+            await transaction.CommitAsync();
+        }
+
+        await using (SqliteCommand checks = connection.CreateCommand())
+        {
+            checks.CommandText = "PRAGMA ignore_check_constraints=OFF";
+
+            await checks.ExecuteNonQueryAsync();
+        }
+
+        var labelled = await ArtifactSensitivityLedger.ReadLabelWithinAsync(connection, null, SensitiveArtifactKind.GuildContent, content, default);
+
+        Assert.True(labelled.IsSuccess, labelled.Error.Message);
+
+        Fixture fixture = new(connection, content, source, Assert.IsType<ArtifactSensitivityLabel>(labelled.Value));
+
+        var erased = await fixture.PurgeAsync();
+
+        Assert.True(erased.IsSuccess, erased.Error.Message);
+
+        bool eligible = boundary is "canonical-promotion" or "original-exact" or "original-bloom";
+
+        Assert.Equal(eligible ? CovenantErasureBlocker.None : CovenantErasureBlocker.IntegrityFailure, erased.Value.Blocker);
+
+        Assert.Equal(eligible ? 1UL : 0UL, erased.Value.ErasedCount);
+
+        Assert.Equal(eligible ? 0L : 1L, await fixture.CountAsync("SELECT count(*) FROM guild_content"));
+
+        Assert.Equal(eligible ? 0L : 1L, await fixture.CountAsync("SELECT count(*) FROM artifact_sensitivity WHERE ArtifactKindCode=17"));
+
+        Assert.Equal(eligible ? 1L : 0L, await fixture.CountAsync("SELECT count(*) FROM guild_content_erasure_receipts"));
+    }
+
     [Fact]
     public async Task Labelled_Guild_content_refuses_an_ordinary_direct_delete()
     {

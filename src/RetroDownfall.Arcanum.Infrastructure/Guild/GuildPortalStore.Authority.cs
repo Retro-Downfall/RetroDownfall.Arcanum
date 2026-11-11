@@ -149,7 +149,9 @@ internal sealed partial class GuildPortalStore
         if (recipientVisible.IsFailure) return recipientVisible;
 
         bool relation = envelope.Producer.Kind == GuildProducerKind.Operator
-            ? envelope.QuestId == recipient.Value.Quest.Id && envelope.Address.Kind == GuildCircleAddressKind.Child
+            ? envelope.Address.Kind == GuildCircleAddressKind.Cohort
+                ? await HasCurrentCohortAudienceWithinAsync(connection, transaction, envelope, recipient.Value.Quest.Id, ct).ConfigureAwait(false)
+                : envelope.QuestId == recipient.Value.Quest.Id && envelope.Address.Kind == GuildCircleAddressKind.Child
             : envelope.Address.Kind switch
             {
                 GuildCircleAddressKind.Parent => source.Value.Quest.ParentQuestId == recipient.Value.Quest.Id,

@@ -54,10 +54,12 @@ public sealed record SharedNoteDto(
     GuildAuthorityKind Authority,
     GuildNoteKind Kind,
     Guid? SubjectId,
-    GuildDataRef BodyRef,
+    GuildDataRef? BodyRef,
     Guid? CorrectsNoteId,
     DateTimeOffset CreatedAt,
-    GuildMutationReceiptDto? Receipt = null);
+    GuildMutationReceiptDto? Receipt = null,
+    Guid? OperatorPrincipalId = null,
+    string? Body = null);
 
 public sealed record SharedNotePageDto(
     ImmutableArray<SharedNoteDto> Items,

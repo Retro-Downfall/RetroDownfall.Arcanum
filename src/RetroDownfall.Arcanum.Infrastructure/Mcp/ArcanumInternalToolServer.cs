@@ -848,6 +848,7 @@ internal sealed partial class ArcanumInternalToolServer
         or "set_task_priority" or "send_notification" or "request_intervention" or "ask_human"
         or "create_agent_task" or "send_agent_message" or "get_agent_task" or "cancel_agent_task" or "list_agents" or "save_memory" or "delete_memory"
         or "create_cohort" or "admit_cohort_member" or "close_cohort" or "remove_cohort_member"
+        or "post_work_offer" or "submit_bid" or "withdraw_bid" or "award_work" or "withdraw_work_offer" or "append_shared_note" or "read_shared_notes"
         or "propose_covenant" or "retire_covenant" or "search_history" or "search_memory"
         or "attach_session_file" or "refresh_session_file";
 
@@ -976,7 +977,8 @@ internal sealed partial class ArcanumInternalToolServer
         if (_guildTaskToolsEnabled)
         {
             foreach (string name in new[] { "create_agent_task", "send_agent_message", "get_agent_task", "cancel_agent_task", "list_agents",
-                "create_cohort", "admit_cohort_member", "close_cohort", "remove_cohort_member" })
+                "create_cohort", "admit_cohort_member", "close_cohort", "remove_cohort_member",
+                "post_work_offer", "submit_bid", "withdraw_bid", "award_work", "withdraw_work_offer", "append_shared_note", "read_shared_notes" })
             {
                 if (name is "create_agent_task" or "admit_cohort_member" && !_conclaveEnabled && !_a2aClientEnabled) continue;
 
@@ -1215,7 +1217,7 @@ internal sealed partial class ArcanumInternalToolServer
                             : accepted.Summary is null
                             ? [new McpToolContentTextWire { Text = JsonSerializer.Serialize(accepted.Quest, GuildJsonContext.Default.GuildQuestDto) }]
                             : [new McpToolContentTextWire { Text = JsonSerializer.Serialize(accepted.Quest, GuildJsonContext.Default.GuildQuestDto) },
-                                new McpToolContentTextWire { Text = GuildPromptBuilder.Build(GuildAuthorityKind.Child, GuildEnvelopeKind.Result,
+                                new McpToolContentTextWire { Text = GuildPromptBuilder.Build(accepted.Authority, GuildEnvelopeKind.Result,
                                     accepted.Quest.ResultReceiptId ?? accepted.Quest.Id, accepted.Summary) }] }
                         : ToolError(dispatched as string ?? GuildToolInvocationContext.Format(GuildToolInvocationContext.Unavailable));
 

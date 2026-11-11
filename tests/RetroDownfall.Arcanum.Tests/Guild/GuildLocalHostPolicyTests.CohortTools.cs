@@ -2,6 +2,8 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -19,6 +21,41 @@ public sealed partial class GuildLocalHostPolicyTests
     public void Cohort_tools_survive_the_frozen_provider_wire_roundtrip(string name)
     {
         GuildProviderPayload payload = new([new ChatMessage(ChatRole.User, "Collect member results")], [new InertChildTool(name)]);
+
+        Assert.Equal(name, Assert.Single(payload.CreateFunctions()).Name);
+    }
+
+    [Theory]
+    [InlineData("post_work_offer")]
+    [InlineData("submit_bid")]
+    [InlineData("withdraw_bid")]
+    [InlineData("award_work")]
+    [InlineData("withdraw_work_offer")]
+    [InlineData("append_shared_note")]
+    [InlineData("read_shared_notes")]
+    public void Distribution_tools_are_closed_run_bound_and_survive_provider_roundtrip(string name)
+    {
+        JsonElement schema = ArcanumInternalToolServer.BuildTaskToolSchema(name);
+
+        Assert.False(schema.GetProperty("additionalProperties").GetBoolean());
+
+        Assert.False(schema.GetProperty("properties").TryGetProperty("memberId", out _));
+
+        Assert.False(schema.GetProperty("properties").TryGetProperty("issuerQuestId", out _));
+
+        Assert.Contains(name, ArcanumInternalToolServer.RegisteredToolNames);
+
+        Assert.True(ArcanumToolNameCatalog.IsKnown(name));
+
+        Assert.Contains(name, ToolRiskClassifier.BuildForbiddenToolNames([name.ToUpperInvariant()]));
+
+        Assert.Single(ArtifactAttunement.ApplyAttunement([new InertChildTool(name)], [name]).Allowed);
+
+        Assert.Empty(ArtifactAttunement.ApplyAttunement([new InertChildTool(name)], ["unrelated"]).Allowed);
+
+        Assert.Contains(GuildLocalToolRegistry.SupportedTools, tool => tool.Name == name);
+
+        GuildProviderPayload payload = new([new ChatMessage(ChatRole.User, "Distribute work")], [new InertChildTool(name)]);
 
         Assert.Equal(name, Assert.Single(payload.CreateFunctions()).Name);
     }
@@ -191,6 +228,171 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM guild_cohort_members"));
 
         Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_cohort_members WHERE StateCode=1"));
+    }
+
+    [Fact]
+    public async Task Distribution_tools_append_and_read_fenced_shared_note_in_live_run()
+    {
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        GuildCallerContext owner = await f.OperatorAsync();
+
+        GuildToolGrant[] tools = [new(GuildToolSourceKind.InternalMcp, "arcanum", "create_cohort"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "append_shared_note"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "read_shared_notes")];
+
+        var parent = await f.IssueAsync(owner, f.Request with { Grant = f.Request.Grant with
+            { Tools = [.. tools], Delegation = [GuildDelegationKind.Local, GuildDelegationKind.Cohort] } });
+
+        Assert.True(parent.IsSuccess, parent.Error.Message);
+
+        var execution = await ToolExecutionAsync(f, owner, parent.Value);
+
+        var input = await f.Store.ReadLocalInputAsync(execution.Driver, default);
+
+        GuildCohortStore cohorts = new(new(f.Connections, f.Gate, TimeProvider.System), f.Authority, f.Store, new(), f.Policy, TimeProvider.System);
+
+        ConclaveArchmage coordinator = new(null!, f.Settings, f.Store, new ChildQueue(), cohorts: cohorts);
+
+        using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
+
+        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+
+        async Task<GuildLocalChildToolResult> Invoke(string name, AIFunctionArguments arguments)
+        {
+            GuildToolGrant tool = tools.Single(t => t.Name == name);
+
+            var function = await context.AdvertiseAsync(new InertChildTool(name), tool, default);
+
+            Assert.NotNull(function);
+
+            using IDisposable frame = registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), tool);
+
+            object? result = await context.InvokeBoundAsync(function, arguments, default);
+
+            Assert.False(result is string, result?.ToString());
+
+            return Assert.IsType<GuildLocalChildToolResult>(result);
+        }
+
+        var cohort = await Invoke("create_cohort", new() { ["name"] = "Panel", ["policy"] = "all", ["resultType"] = "text/plain" });
+
+        Guid id = cohort.Projection!.Value.GetProperty("id").GetGuid();
+
+        var note = await Invoke("append_shared_note", new() { ["cohortId"] = id.ToString(), ["expectedRevision"] = 1L,
+            ["kind"] = "observation", ["body"] = "untrusted finding" });
+
+        Assert.Equal(parent.Value.Quest.Id, note.Projection!.Value.GetProperty("authorQuestId").GetGuid());
+
+        var page = await Invoke("read_shared_notes", new() { ["cohortId"] = id.ToString() });
+
+        JsonElement item = Assert.Single(page.Projection!.Value.GetProperty("items").EnumerateArray());
+
+        Assert.Contains("untrusted finding", item.GetProperty("body").GetString());
+
+        Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_cohort_ledger"));
+    }
+
+    [Theory]
+    [InlineData("issuerQuestId")]
+    [InlineData("nestedGrant")]
+    public async Task Distribution_tool_rejects_unknown_identity_and_grant_fields_before_store_admission(string invalidField)
+    {
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        GuildCallerContext owner = await f.OperatorAsync();
+
+        GuildToolGrant tool = new(GuildToolSourceKind.InternalMcp, "arcanum", "post_work_offer");
+
+        var parent = await f.IssueAsync(owner, f.Request with { Grant = f.Request.Grant with
+            { Tools = [tool], Delegation = [GuildDelegationKind.Local, GuildDelegationKind.Cohort] } });
+
+        Assert.True(parent.IsSuccess, parent.Error.Message);
+
+        var execution = await ToolExecutionAsync(f, owner, parent.Value);
+
+        var input = await f.Store.ReadLocalInputAsync(execution.Driver, default);
+
+        GuildCohortStore cohorts = new(new(f.Connections, f.Gate, TimeProvider.System), f.Authority, f.Store, new(), f.Policy, TimeProvider.System);
+
+        ConclaveArchmage coordinator = new(null!, f.Settings, f.Store, new ChildQueue(), cohorts: cohorts);
+
+        using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
+
+        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+
+        var bound = await context.AdvertiseAsync(new InertChildTool(tool.Name), tool, default);
+
+        Assert.NotNull(bound);
+
+        using IDisposable frame = registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), tool);
+
+        AIFunctionArguments arguments = new() { ["cohortId"] = Guid.NewGuid().ToString(),
+            ["expectedCohortRevision"] = 1L, ["skillId"] = "review", ["goal"] = "Review", ["resultType"] = "text/plain" };
+
+        if (invalidField == "issuerQuestId") arguments["issuerQuestId"] = Guid.NewGuid().ToString();
+        else arguments["grant"] = new Dictionary<string, object?> { ["unrecognizedAuthority"] = true };
+
+        object? raw = await context.InvokeBoundAsync(bound, arguments, default);
+
+        Assert.Contains(ErrorCodes.Guild.InvalidRequest, Assert.IsType<string>(raw));
+    }
+
+    [Fact]
+    public async Task Distribution_tools_reject_model_supplied_member_identity_before_store_admission()
+    {
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        GuildCallerContext owner = await f.OperatorAsync();
+
+        string[] names = ["post_work_offer", "submit_bid", "withdraw_bid", "award_work", "withdraw_work_offer", "append_shared_note", "read_shared_notes"];
+
+        GuildToolGrant[] tools = names.Select(n => new GuildToolGrant(GuildToolSourceKind.InternalMcp, "arcanum", n)).ToArray();
+
+        var parent = await f.IssueAsync(owner, f.Request with { Grant = f.Request.Grant with
+            { Tools = [.. tools], Delegation = [GuildDelegationKind.Local, GuildDelegationKind.Cohort] } });
+
+        Assert.True(parent.IsSuccess, parent.Error.Message);
+
+        var execution = await ToolExecutionAsync(f, owner, parent.Value);
+
+        var input = await f.Store.ReadLocalInputAsync(execution.Driver, default);
+
+        GuildCohortStore cohorts = new(new(f.Connections, f.Gate, TimeProvider.System), f.Authority, f.Store, new(), f.Policy, TimeProvider.System);
+
+        ConclaveArchmage coordinator = new(null!, f.Settings, f.Store, new ChildQueue(), cohorts: cohorts);
+
+        using GuildLocalToolRegistry registry = new(execution, input.Value, coordinator);
+
+        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+
+        string id = Guid.NewGuid().ToString();
+
+        foreach (GuildToolGrant tool in tools)
+        {
+            var function = await context.AdvertiseAsync(new InertChildTool(tool.Name), tool, default);
+
+            Assert.NotNull(function);
+
+            AIFunctionArguments args = tool.Name switch
+            {
+                "post_work_offer" => new() { ["cohortId"] = id, ["expectedCohortRevision"] = 1L, ["skillId"] = "review", ["goal"] = "Review", ["resultType"] = "text/plain" },
+                "submit_bid" => new() { ["offerId"] = id, ["expectedRevision"] = 1L, ["note"] = "Bid" },
+                "withdraw_bid" => new() { ["bidId"] = id, ["expectedRevision"] = 1L },
+                "award_work" => new() { ["offerId"] = id, ["bidId"] = id, ["expectedRevision"] = 1L, ["expectedCohortRevision"] = 1L },
+                "withdraw_work_offer" => new() { ["offerId"] = id, ["expectedRevision"] = 1L },
+                "append_shared_note" => new() { ["cohortId"] = id, ["expectedRevision"] = 1L, ["kind"] = "observation", ["body"] = "Note" },
+                _ => new() { ["cohortId"] = id },
+            };
+
+            args["memberId"] = id;
+
+            using IDisposable frame = registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), tool);
+
+            object? result = await context.InvokeBoundAsync(function, args, default);
+
+            Assert.Contains(ErrorCodes.Guild.InvalidRequest, Assert.IsType<string>(result));
+        }
     }
 
     [Theory]

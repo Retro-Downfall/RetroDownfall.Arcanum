@@ -26,7 +26,7 @@ internal sealed partial class GuildQuestStore
 
                 if (existing is not { } id) return Result<Guid?>.Success(null);
 
-                var child = await ReadTaskTargetWithinAsync(connection, transaction, admission, id, true, token).ConfigureAwait(false);
+                var child = await ReadTaskTargetWithinAsync(connection, transaction, signets, admission, id, true, token).ConfigureAwait(false);
 
                 if (child.IsFailure) return child.Error;
 

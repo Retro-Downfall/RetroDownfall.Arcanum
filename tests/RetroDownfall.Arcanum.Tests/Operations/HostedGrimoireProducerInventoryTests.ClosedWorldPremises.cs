@@ -1063,12 +1063,59 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("SagaExtractionService")]
     [InlineData("SessionAttachmentIndexingService")]
     [InlineData("GuildQuestRecovery")]
+    [InlineData("GuildOfflineStartupRecovery")]
     [InlineData("Issue145AffectedPrimary")]
     [InlineData("Issue145SchemaAdditional")]
     [Trait("Category", "HostedProducerProductionAnalysis")]
     [Trait("Category", "HostedProducerAdditionalAnalysis")]
     public void The_production_entry_runs_only_the_named_roots_under_the_production_premise(string serviceType)
     {
+        if (serviceType == "GuildOfflineStartupRecovery")
+        {
+            const string type = "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery";
+
+            const string operation = type + ".RecoverBeforeBootstrapAsync";
+
+            var recovery = HostedGrimoireProducerInventory.DiscoverProductionSites(HostedProducerProductionPartition.Primary, [operation]);
+
+            Assert.True(recovery.Diagnostics.Count == 0, HostedGrimoireProducerInventory.RenderDiagnosticReport(recovery.Diagnostics));
+
+            Assert.NotEmpty(recovery.Items);
+
+            Assert.All(recovery.Items, site => Assert.Equal(type, site.RootType));
+
+            var metrics = Assert.IsType<HostedProducerAnalysisMetrics>(recovery.AnalysisMetrics);
+
+            var traversal = Assert.Single(metrics.RootTraversals);
+
+            Assert.Equal(type, traversal.RootType);
+
+            Assert.Equal(operation, traversal.RootOperation);
+
+            foreach (string line in RenderRootTraversalMetrics(metrics.RootTraversals)) output.WriteLine(line);
+
+            HeadroomCeiling ceiling = Assert.Single(ProductionRootCeilings, row => row.RootOperation == operation);
+
+            Assert.Empty(HeadroomViolations(metrics.RootTraversals, [ceiling], HostedGrimoireProducerInventory.MaximumAnalyzedStatesPerRoot));
+
+            int maximum = traversal.AnalyzedStates;
+
+            int required = ((maximum + Math.Max(8, (maximum + 19) / 20) + 7) / 8) * 8;
+
+            Assert.True(required <= HostedGrimoireProducerInventory.MaximumAnalyzedStatesPerRoot * HeadroomPercentOfCap / 100,
+                $"{operation} has {maximum} states and requires {required} under the headroom rule.");
+
+            HostedProducerCapsuleManifest reviewed = HostedGrimoireProducerInventory.ParseCapsuleManifest(
+                global::System.IO.File.ReadAllLines(HostedGrimoireProducerInventory.CapsuleManifestPath));
+
+            Assert.Empty(reviewed.Diagnostics);
+
+            Assert.Equal(HostedGrimoireProducerInventory.RenderCapsuleManifest(reviewed.Sites.Where(site => site.RootType == type)),
+                HostedGrimoireProducerInventory.RenderCapsuleManifest(recovery.Items));
+
+            return;
+        }
+
         if (serviceType == "GuildQuestRecovery")
         {
             const string type = "RetroDownfall.Arcanum.Infrastructure.Guild.GuildQuestRecoveryHandler";

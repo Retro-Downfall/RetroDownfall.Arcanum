@@ -31,6 +31,14 @@ internal sealed partial class DataRetentionService
 {
     private static readonly FactoryTablePlan[] FactoryPlanTables =
     [
+        new("guild_distribution_notifications", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_award_authority_scan", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_work_mutations", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_work_awards", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_work_bids", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_work_offer_recipients", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_work_offers", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_ledger", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_portal_cohort_audience", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_cohort_settlement_nodes", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_cohort_settlement_state", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
@@ -190,6 +198,14 @@ internal sealed partial class DataRetentionService
 
     private static readonly FactoryTablePlan[] FactoryDeletionTables =
     [
+        new("guild_distribution_notifications", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_award_authority_scan", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_work_mutations", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_work_awards", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_work_bids", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_work_offer_recipients", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_work_offers", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
+        new("guild_cohort_ledger", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_portal_cohort_audience", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_cohort_settlement_nodes", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),
         new("guild_cohort_settlement_state", RetentionDataClass.GuildEvidence, FactoryRecordKind.Derived),

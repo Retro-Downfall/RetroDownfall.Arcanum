@@ -11,14 +11,26 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 internal sealed partial class GuildQuestStore
 {
     private Task<Result<GuildQuestStored>> InCohortIssueTransactionAsync(Guid rootQuestId, GuildChildToolAdmission? toolAdmission,
-        GuildCohortIssue? cohortIssue,
+        GuildCohortIssue? cohortIssue, GuildAwardIssueState? awardIssue,
         Func<SqliteConnection, SqliteTransaction, SignetAuthority.QuestTransaction, CancellationToken, Task<Result<GuildQuestStored>>> action,
         CancellationToken ct) => authority.InQuestTransactionAsync<GuildQuestStored>(rootQuestId,
             async (connection, transaction, signets, token) =>
             {
                 var result = await action(connection, transaction, signets, token).ConfigureAwait(false);
 
-                if (result.IsFailure || toolAdmission is null || cohortIssue is null) return result;
+                if (result.IsFailure || toolAdmission is null) return result;
+
+                if (awardIssue is not null)
+                {
+                    if (awardIssue.Award is null) return Unavailable;
+
+                    Result awardProjection = toolAdmission.ValidateProjectionAllocation(JsonSerializer.SerializeToElement(
+                        awardIssue.Award, GuildJsonContext.Default.WorkAwardDto));
+
+                    return awardProjection.IsFailure ? awardProjection.Error : result;
+                }
+
+                if (cohortIssue is null) return result;
 
                 if (cohortIssue.Member is null) return Unavailable;
 
@@ -65,6 +77,36 @@ internal sealed partial class GuildQuestStore
         }
 
         return accepted;
+    }
+
+    private sealed class GuildAwardIssueState(GuildAwardIssue context)
+    {
+        internal GuildAwardIssue Context { get; set; } = context;
+
+        internal WorkAwardDto? Award { get; set; }
+    }
+
+    internal async Task<Result<WorkAwardDto>> IssueAwardAsync(GuildCallerContext caller, GuildAwardIssue award,
+        GuildIssueChildRequest child, GuildChildToolAdmission? toolAdmission, CancellationToken ct)
+    {
+        GuildAwardIssueState state = new(award);
+
+        Guid step = toolAdmission?.IssuingStepId ?? award.Request.IdempotencyKey;
+
+        GuildIssuanceIdentity issuance = new(policy.InstallationGeneration, award.IssuerQuestId, null, step, award.Request.IdempotencyKey);
+
+        var result = await IssueAsync(caller, issuance, null, award.IssuerQuestId, child, ct,
+            toolAdmission, awardIssue: state).ConfigureAwait(false);
+
+        if (result.IsFailure) return result.Error;
+
+        if (state.Award is null) return Unavailable;
+
+        if (toolAdmission is not null)
+            toolAdmission.RecordCommittedProjection(result.Value.Quest,
+                JsonSerializer.SerializeToElement(state.Award, GuildJsonContext.Default.WorkAwardDto));
+
+        return state.Award;
     }
 
     private sealed class GuildCohortIssue(Guid id, long expectedRevision)

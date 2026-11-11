@@ -313,6 +313,11 @@ internal sealed partial class GuildCohortStore
 
                 DateTimeOffset now = time.GetUtcNow();
 
+                Result offersClosed = await CloseOffersWithinAsync(connection, transaction, cohort.Id, null,
+                    "cohort_closed", now, token).ConfigureAwait(false);
+
+                if (offersClosed.IsFailure) return offersClosed.Error;
+
                 Result<long> eventSequence = await GuildPortalEvents.AppendWithinAsync(connection, transaction,
                     cohort.RootQuestId, cohort.IssuerQuestId, GuildEventKind.CohortChanged, cohort.Id,
                     cohort.Revision + 1, null, now, token).ConfigureAwait(false);
@@ -448,6 +453,11 @@ internal sealed partial class GuildCohortStore
                 if (await GuildQuestStore.HasClosedAncestorAsync(connection, transaction, execution.QuestId, token).ConfigureAwait(false)) return Forbidden;
 
                 DateTimeOffset now = time.GetUtcNow();
+
+                Result offersClosed = await CloseOffersWithinAsync(connection, transaction, cohort.Id, memberId,
+                    "issuer_removed", now, token).ConfigureAwait(false);
+
+                if (offersClosed.IsFailure) return offersClosed.Error;
 
                 Result<long> projected = await GuildPortalEvents.AppendWithinAsync(connection, transaction, cohort.RootQuestId,
                     cohort.IssuerQuestId, GuildEventKind.MembershipChanged, cohort.Id, cohort.Revision + 1, null, now, token).ConfigureAwait(false);

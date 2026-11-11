@@ -22,11 +22,20 @@ internal sealed partial class ArcanumInternalToolServer
         "close_cohort" => "Freeze an open Cohort's active voting membership and evaluate its retained results. The decision remains provisional until all associated work and accounting drain.",
         "remove_cohort_member" => "Withdraw an exact member and request its associated subtree cancellation. Removing a frozen member does not shrink the electorate or lower quorum.",
         "search_memory" => "Search authorized Session, attachment, workspace, Saga and Lexicon memory. Results identify their store and scoped availability. Long content is explicitly excerpted; continuation preserves remaining matches. save_memory and delete_memory modify only authorized Lexicon entries.",
+        "post_work_offer" => "Publish work to eligible current Cohort members.",
+        "submit_bid" => "Submit a bid as the current member.",
+        "withdraw_bid" => "Withdraw your submitted bid.",
+        "award_work" => "Award an open offer to a submitted bid.",
+        "withdraw_work_offer" => "Withdraw your open work offer.",
+        "append_shared_note" => "Append a shared Cohort note.",
+        "read_shared_notes" => "Read a bounded page of shared Cohort notes.",
         _ => throw new ArgumentException("Unknown Guild tool.", nameof(name)),
     };
 
     internal static JsonElement BuildTaskToolSchema(string name)
     {
+        if (GuildLocalToolRegistry.IsMarketTool(name)) return BuildMarketToolSchema(name);
+
         if (GuildLocalToolRegistry.IsCohortTool(name)) return BuildCohortToolSchema(name);
 
         string schema = name switch

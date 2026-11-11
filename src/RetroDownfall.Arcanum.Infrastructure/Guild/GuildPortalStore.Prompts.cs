@@ -35,36 +35,13 @@ internal sealed partial class GuildPortalStore
 
             GuildEnvelope envelope = found.Value;
 
-            // The body reader proves the canonical producer, exact addressed edge, current recipient
-            // Signet, owner and sensitivity. A deserialized envelope or requested label is no proof.
-            Result<byte[]> body = await ReadBodyWithinAsync(connection, transaction, signets, caller.Value, envelope, token).ConfigureAwait(false);
+            var prompt = await ReadInputPromptWithinAsync(connection, transaction, signets, caller.Value, envelope, token).ConfigureAwait(false);
 
-            if (body.IsFailure) return body.Error;
-
-            GuildAuthorityKind relationship = envelope.Producer.Kind == GuildProducerKind.Operator
-                ? GuildAuthorityKind.Operator
-                : envelope.Address.Kind switch
-                {
-                    GuildCircleAddressKind.Child => GuildAuthorityKind.Parent,
-                    GuildCircleAddressKind.Parent => GuildAuthorityKind.Child,
-                    GuildCircleAddressKind.Cohort => GuildAuthorityKind.Peer,
-                    _ => GuildAuthorityKind.LegacyUnknown,
-                };
-
-            if (relationship == GuildAuthorityKind.LegacyUnknown || envelope.Authority != relationship) return Unavailable;
+            if (prompt.IsFailure) return prompt.Error;
 
             var current = await quests.RequireDriverWithinAsync(connection, transaction, signets, claim.Driver, true, false, token).ConfigureAwait(false);
 
-            if (current.IsFailure) return current.Error;
-
-            try
-            {
-                return GuildPromptBuilder.Build(relationship, envelope.Kind, envelope.Id, StrictUtf8.GetString(body.Value));
-            }
-            catch (DecoderFallbackException)
-            {
-                return Unavailable;
-            }
+            return current.IsFailure ? current.Error : prompt;
         }, ct);
     }
 }

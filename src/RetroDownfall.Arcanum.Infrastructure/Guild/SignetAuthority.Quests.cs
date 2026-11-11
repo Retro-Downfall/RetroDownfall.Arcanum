@@ -133,7 +133,7 @@ internal sealed partial class SignetAuthority
     }
 
     /// <summary>One callback's authority participant, fenced to its root and exact live transaction.</summary>
-    internal sealed class QuestTransaction
+    internal sealed partial class QuestTransaction
     {
         private readonly SignetAuthority _authority;
 

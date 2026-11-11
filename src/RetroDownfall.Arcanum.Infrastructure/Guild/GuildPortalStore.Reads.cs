@@ -85,7 +85,21 @@ internal sealed partial class GuildPortalStore
 
             foreach (PortalEvent row in scanned.Value)
             {
-                if (scope.Value.OwnQuest is { } eventActor && !await IsCohortEventActorAuthorizedWithinAsync(connection,
+                Guid? distributionCohort = null;
+
+                if (IsDistributionEvent(row.Kind))
+                {
+                    distributionCohort = await DistributionEventCohortWithinAsync(connection, transaction, row, query.RootQuestId,
+                        scope.Value.OwnQuest?.Quest.Id, token).ConfigureAwait(false);
+
+                    if (distributionCohort is null)
+                    {
+                        after = row.Sequence;
+
+                        continue;
+                    }
+                }
+                else if (scope.Value.OwnQuest is { } eventActor && !await IsCohortEventActorAuthorizedWithinAsync(connection,
                     transaction, row, query.RootQuestId, eventActor.Quest.Id, token).ConfigureAwait(false))
                 {
                     after = row.Sequence;
@@ -93,7 +107,7 @@ internal sealed partial class GuildPortalStore
                     continue;
                 }
 
-                bool cohortLifecycle = false;
+                bool cohortLifecycle = distributionCohort is not null;
 
                 if (query.CohortId is { } eventCohort)
                 {
@@ -110,13 +124,14 @@ internal sealed partial class GuildPortalStore
 
                         cohortLifecycle = true;
                     }
-                    else if (row.Kind is GuildEventKind.OfferChanged or GuildEventKind.BidChanged
-                        or GuildEventKind.AwardCommitted or GuildEventKind.NoteAppended)
+                    else if (distributionCohort is { } distribution)
                     {
-                        // Those object kinds need their own exact Cohort bindings before this scope can expose them.
-                        after = row.Sequence;
+                        if (distribution != eventCohort)
+                        {
+                            after = row.Sequence;
 
-                        continue;
+                            continue;
+                        }
                     }
                     else if (row.EnvelopeId is { } envelopeId)
                     {
@@ -225,7 +240,19 @@ internal sealed partial class GuildPortalStore
 
             foreach (PortalEvent row in scanned.Value)
             {
-                if (scope.Value.OwnQuest is { } eventActor && !await IsCohortEventActorAuthorizedWithinAsync(connection,
+                bool distribution = IsDistributionEvent(row.Kind);
+
+                if (distribution)
+                {
+                    if (await DistributionEventCohortWithinAsync(connection, transaction, row, root,
+                        scope.Value.OwnQuest?.Quest.Id, token).ConfigureAwait(false) is null)
+                    {
+                        after = row.Sequence;
+
+                        continue;
+                    }
+                }
+                else if (scope.Value.OwnQuest is { } eventActor && !await IsCohortEventActorAuthorizedWithinAsync(connection,
                     transaction, row, root, eventActor.Quest.Id, token).ConfigureAwait(false))
                 {
                     after = row.Sequence;
@@ -234,7 +261,7 @@ internal sealed partial class GuildPortalStore
                 }
 
                 Result<bool> visible = await EventVisibleWithinAsync(connection, transaction, signets, caller, scope.Value,
-                    root, row.QuestId, row.EnvelopeId, null, token).ConfigureAwait(false);
+                    root, row.QuestId, row.EnvelopeId, null, token, distribution).ConfigureAwait(false);
 
                 if (visible.IsFailure) return visible.Error;
 
@@ -475,7 +502,11 @@ internal sealed partial class GuildPortalStore
 
         if (found.Value.Quest.RootQuestId != root || found.Value.Quest.ParentQuestId is not null) return Forbidden;
 
-        Result visible = await quests.RequireVisibleAsync(connection, transaction, caller, found.Value, ct).ConfigureAwait(false);
+        // A run owns a root-bound stream scope, not visibility of the root Quest as a target.
+        // Its exact execution and own Quest are authenticated below before anything is returned.
+        Result visible = caller.Kind == GuildCallerKind.Run
+            ? await GuildStore.RequireOwnerWithinAsync(connection, transaction, found.Value.Quest.SessionId, found.Value.Quest.CampaignId, ct).ConfigureAwait(false)
+            : await quests.RequireVisibleAsync(connection, transaction, caller, found.Value, ct).ConfigureAwait(false);
 
         if (visible.IsFailure) return continuing && visible.Error.Code == ErrorCodes.Guild.OwnerUnavailable ? CursorGone : visible.Error;
 

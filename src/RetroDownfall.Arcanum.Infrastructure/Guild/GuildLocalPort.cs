@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
@@ -14,14 +15,19 @@ internal sealed partial class GuildLocalPort(GuildQuestStore quests, GuildLocalH
     IGuildLocalQuestScheduler host, LongRunningOperationOwnership ownership, TimeProvider time) : IGuildPort
 {
     public Task<Result<GuildDispatchObservation>> DispatchAsync(GuildExecutionHandle execution, GuildDispatchRequest request,
-        CancellationToken cancellationToken) => DispatchCoreAsync(execution, request, null, cancellationToken);
+        CancellationToken cancellationToken) => DispatchDirectCoreAsync(execution, request, null, cancellationToken);
 
-    internal Task<Result<GuildDispatchObservation>> DispatchClaimedAsync(GuildExecutionHandle execution,
-        GuildDispatchRequest request, Guid claim, CancellationToken cancellationToken) =>
-        DispatchCoreAsync(execution, request, claim, cancellationToken);
+    internal Task<Result<GuildDispatchObservation>> DispatchClaimedAsync(IGrimoireWorkLease work, GuildLocalQuestScheduler scheduler,
+        GuildExecutionHandle execution, GuildDispatchRequest request, Guid claim, CancellationToken cancellationToken) =>
+        DispatchScheduledCoreAsync(execution, request, claim, work, scheduler, cancellationToken);
 
-    private async Task<Result<GuildDispatchObservation>> DispatchCoreAsync(GuildExecutionHandle execution, GuildDispatchRequest request,
-        Guid? claimed, CancellationToken cancellationToken)
+    private sealed record LocalDispatchPreflight(GuildLocalPortState Before, GuildCallerContext Caller,
+        bool Continuation, GuildDispatchObservation? Immediate);
+
+    private sealed record LocalDispatchPrepared(GuildLocalExecutionInput Input, GuildLocalInferenceExecution Invocation);
+
+    private async Task<Result<LocalDispatchPreflight>> ReadDispatchPreflightAsync(GuildExecutionHandle execution,
+        GuildDispatchRequest request, CancellationToken cancellationToken)
     {
         if (execution is null || request is null || request.QuestId != execution.QuestId || request.RunId != execution.RunId
             || request.DispatchId == Guid.Empty || request.ExpectedOperationRevision < 0)
@@ -59,17 +65,58 @@ internal sealed partial class GuildLocalPort(GuildQuestStore quests, GuildLocalH
             || request.InvocationDigest != before.Binding.Input.Digest)
             return new Error(ErrorCodes.Guild.IdempotencyConflict, "The dispatch differs from its committed input.");
 
-        if (before.Quest.Quest.ResultReceiptId is not null) return Observation(before, request.DispatchId);
+        if (before.Quest.Quest.ResultReceiptId is not null) return new LocalDispatchPreflight(before, caller.Value, continuation, Observation(before, request.DispatchId));
 
         if (!host.IsAvailable || !callers.IsExecutionEnabled)
             return new Error(ErrorCodes.Guild.Unavailable, "Qualified local execution is unavailable.");
 
         if (before.Quest.Quest.ReconciliationRequired || before.Quest.Quest.CancellationRequested
             || before.Dispatch is { Evidence: not GuildDispatchEvidence.Prepared })
-            return Observation(before, request.DispatchId);
+            return new LocalDispatchPreflight(before, caller.Value, continuation, Observation(before, request.DispatchId));
 
         if (before.Operation.Revision != request.ExpectedOperationRevision)
             return new Error(ErrorCodes.Guild.RevisionConflict, "The operation revision changed before local dispatch.");
+
+        return new LocalDispatchPreflight(before, caller.Value, continuation, null);
+    }
+
+    private async Task<Result<LocalDispatchPrepared>> PrepareOwnedDispatchAsync(GuildExecutionHandle execution,
+        GuildDispatchRequest request, GuildCallerContext caller, string leaseOwner, bool continuation, CancellationToken cancellationToken)
+    {
+        DateTimeOffset now = time.GetUtcNow();
+
+        var lease = await operations.TryAcquireLeaseAsync(request.OperationId, leaseOwner, now, now.AddMinutes(2), cancellationToken).ConfigureAwait(false);
+
+        if (!lease.Acquired) return new Error(ErrorCodes.Guild.RevisionConflict, "The committed operation has another live owner.");
+
+        GuildQuestDriver driver = new(execution, leaseOwner, lease.Operation.Revision, caller);
+
+        var input = await quests.ReadLocalInputAsync(driver, cancellationToken).ConfigureAwait(false);
+
+        if (input.IsFailure) return input.Error;
+
+        var dispatch = await quests.PrepareDispatchAsync(driver, request.DispatchId, request.InvocationDigest,
+            execution.RunId, continuation, cancellationToken).ConfigureAwait(false);
+
+        if (dispatch.IsFailure) return dispatch.Error;
+
+        return new LocalDispatchPrepared(input.Value, new GuildLocalInferenceExecution(quests, driver, dispatch.Value));
+    }
+
+    private async Task<Result<GuildDispatchObservation>> DispatchDirectCoreAsync(GuildExecutionHandle execution, GuildDispatchRequest request,
+        Guid? claimed, CancellationToken cancellationToken)
+    {
+        var preflight = await ReadDispatchPreflightAsync(execution, request, cancellationToken).ConfigureAwait(false);
+
+        if (preflight.IsFailure) return preflight.Error;
+
+        if (preflight.Value.Immediate is { } immediate) return immediate;
+
+        GuildLocalPortState before = preflight.Value.Before;
+
+        GuildCallerContext caller = preflight.Value.Caller;
+
+        bool continuation = preflight.Value.Continuation;
 
         Guid claim;
 
@@ -88,24 +135,11 @@ internal sealed partial class GuildLocalPort(GuildQuestStore quests, GuildLocalH
 
         try
         {
-            DateTimeOffset now = time.GetUtcNow();
+            var prepared = await PrepareOwnedDispatchAsync(execution, request, caller, leaseOwner, continuation, cancellationToken).ConfigureAwait(false);
 
-            var lease = await operations.TryAcquireLeaseAsync(request.OperationId, leaseOwner, now, now.AddMinutes(2), cancellationToken).ConfigureAwait(false);
+            if (prepared.IsFailure) return prepared.Error;
 
-            if (!lease.Acquired) return new Error(ErrorCodes.Guild.RevisionConflict, "The committed operation has another live owner.");
-
-            driver = new(execution, leaseOwner, lease.Operation.Revision, caller.Value);
-
-            var input = await quests.ReadLocalInputAsync(driver, cancellationToken).ConfigureAwait(false);
-
-            if (input.IsFailure) return input.Error;
-
-            var dispatch = await quests.PrepareDispatchAsync(driver, request.DispatchId, request.InvocationDigest,
-                execution.RunId, continuation, cancellationToken).ConfigureAwait(false);
-
-            if (dispatch.IsFailure) return dispatch.Error;
-
-            GuildLocalInferenceExecution invocation = new(quests, driver, dispatch.Value);
+            GuildLocalInferenceExecution invocation = prepared.Value.Invocation;
 
             using CancellationTokenSource runCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
@@ -119,10 +153,87 @@ internal sealed partial class GuildLocalPort(GuildQuestStore quests, GuildLocalH
             {
                 try
                 {
-                    Result<PromptTurnResult> result = await engine.ExecuteGuildAsync(before.Binding, input.Value, invocation, inference,
+                    Result<PromptTurnResult> result = await engine.ExecuteGuildAsync(before.Binding, prepared.Value.Input, invocation, inference,
                         new EngineWait(this, running), runCancellation.Token).ConfigureAwait(false);
 
                     return await CompleteAsync(running, before, request, result, cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    await pulseCancellation.CancelAsync().ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                await pulse.ConfigureAwait(false);
+            }
+        }
+        catch (Exception) when (running is not null)
+        {
+            return await ParkAsync(running.Execution, request.DispatchId, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            running?.Serial.Dispose();
+
+            ownership.Release(request.OperationId, claim);
+        }
+    }
+
+    private async Task<Result<GuildDispatchObservation>> DispatchScheduledCoreAsync(GuildExecutionHandle execution, GuildDispatchRequest request,
+        Guid? claimed, IGrimoireWorkLease work, GuildLocalQuestScheduler scheduler, CancellationToken cancellationToken)
+    {
+        var preflight = await ReadDispatchPreflightAsync(execution, request, cancellationToken).ConfigureAwait(false);
+
+        if (preflight.IsFailure) return preflight.Error;
+
+        if (preflight.Value.Immediate is { } immediate) return immediate;
+
+        GuildLocalPortState before = preflight.Value.Before;
+
+        GuildCallerContext caller = preflight.Value.Caller;
+
+        bool continuation = preflight.Value.Continuation;
+
+        Guid claim;
+
+        if (claimed is Guid existing)
+        {
+            if (!ownership.IsClaimedBy(request.OperationId, existing))
+                return new Error(ErrorCodes.Guild.AuthorityMismatch, "The scheduler does not own this operation.");
+
+            claim = existing;
+        }
+        else if (!ownership.TryClaim(request.OperationId, out claim)) return Observation(before, request.DispatchId);
+
+        string leaseOwner = "guild-" + claim.ToString("N");
+
+        LocalRun? running = null;
+
+        try
+        {
+            var prepared = await PrepareOwnedDispatchAsync(execution, request, caller, leaseOwner, continuation, cancellationToken).ConfigureAwait(false);
+
+            if (prepared.IsFailure) return prepared.Error;
+
+            GuildLocalInferenceExecution invocation = prepared.Value.Invocation;
+
+            using CancellationTokenSource runCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+            using CancellationTokenSource pulseCancellation = new();
+
+            running = new(invocation, runCancellation, continuation);
+
+            Task pulse = PulseAsync(running, pulseCancellation.Token);
+
+            try
+            {
+                try
+                {
+                    Result<PromptTurnResult> result = await engine.ExecuteGuildAsync(before.Binding, prepared.Value.Input, invocation, inference,
+                        new EngineWait(this, running), runCancellation.Token).ConfigureAwait(false);
+
+                    return await scheduler.RunLocalCompletionAdmittedAsync(work, this, running, before, request, result, cancellationToken).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -436,7 +547,7 @@ internal sealed partial class GuildLocalPort(GuildQuestStore quests, GuildLocalH
             port.WaitAsync(run, execution, checkpoint, cancellationToken);
     }
 
-    private sealed class LocalRun(GuildLocalInferenceExecution execution, CancellationTokenSource cancellation, bool restoring)
+    internal sealed class LocalRun(GuildLocalInferenceExecution execution, CancellationTokenSource cancellation, bool restoring)
     {
         internal GuildLocalInferenceExecution Execution = execution;
 

@@ -4533,6 +4533,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         mcp.Tools.Add(CreateMcpTool("search_workspace"));
 
+        mcp.Tools.Add(CreateMcpTool("post_work_offer"));
+
+        mcp.Tools.Add(CreateMcpTool("read_shared_notes"));
+
         ArcanumSettings settings = DefaultSettings();
 
         settings.Security.Ward.ForbiddenArts =
@@ -4540,6 +4544,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             "execute_command",
             "apply_patch",
             "workspace_check",
+            "post_work_offer",
         ];
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings, mcp: mcp);
@@ -4567,6 +4572,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.DoesNotContain("workspace_check", toolNames);
 
         Assert.Contains("search_workspace", toolNames);
+
+        Assert.DoesNotContain("post_work_offer", toolNames);
+
+        Assert.Contains("read_shared_notes", toolNames);
     }
 
     [Fact]

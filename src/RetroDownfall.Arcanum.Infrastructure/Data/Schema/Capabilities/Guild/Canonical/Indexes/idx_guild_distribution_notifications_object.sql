@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS idx_guild_distribution_notifications_object ON guild_distribution_notifications(CohortId,TypeCode,ObjectId,EnvelopeId);

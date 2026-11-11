@@ -13,7 +13,8 @@ internal sealed partial class GuildQuestStore
 
     internal Task<Result<T>> ExecuteProviderEffectAsync<T>(GuildLocalInferenceExecution execution,
         BudgetReservationService daily, GuildBudgetEffectRequest effect,
-        Func<CancellationToken, Task<Result<T>>> send, CancellationToken ct, GuildLocalExecutionInput? expectedInput = null)
+        Func<CancellationToken, Task<Result<T>>> send, CancellationToken ct, GuildLocalExecutionInput? expectedInput = null,
+        IReadOnlyList<GuildCircleInputBatch>? circleInputs = null)
     {
         if (!ProviderIdentityMatches(execution, effect) || daily is null || send is null || allocations is not GuildBudgetLedger ledger)
             return Task.FromResult(Result<T>.Failure(InvalidReceipt));
@@ -51,6 +52,10 @@ internal sealed partial class GuildQuestStore
                     if (input.IsFailure) return input.Error;
                 }
 
+                Result circle = await ValidateCircleInputWithinAsync(connection, transaction, signets, execution, circleInputs, token).ConfigureAwait(false);
+
+                if (circle.IsFailure) return circle.Error;
+
                 Result<GuildBudgetEffect> prior = await ledger.ReadEffectWithinAsync(connection, transaction, effect.EffectId, token).ConfigureAwait(false);
 
                 if (prior.IsSuccess)
@@ -82,13 +87,23 @@ internal sealed partial class GuildQuestStore
                     var marked = await MarkPossiblyDispatchedWithinAsync(connection, transaction, signets, driver,
                         dispatch.DispatchId, dispatch.Revision, token).ConfigureAwait(false);
 
-                    return marked.IsFailure ? marked.Error : marked.Value.MayDispatch;
+                    if (marked.IsFailure) return marked.Error;
+
+                    if (!marked.Value.MayDispatch) return false;
+                }
+                else
+                {
+                    var exposed = await ledger.ExposeEffectWithinAsync(connection, transaction, effect.EffectId,
+                        prepared.Value.Revision, token).ConfigureAwait(false);
+
+                    if (exposed.IsFailure) return exposed.Error;
+
+                    if (!exposed.Value.MayDispatch) return false;
                 }
 
-                var exposed = await ledger.ExposeEffectWithinAsync(connection, transaction, effect.EffectId,
-                    prepared.Value.Revision, token).ConfigureAwait(false);
+                Result accepted = await CommitCircleInputWithinAsync(connection, transaction, signets, execution, circleInputs, token).ConfigureAwait(false);
 
-                return exposed.IsFailure ? exposed.Error : exposed.Value.MayDispatch;
+                return accepted.IsFailure ? accepted.Error : true;
             }, token =>
             {
                 if (policy is GuildLocalHostPolicy { IsExecutionEnabled: false } || RequireLocalExecutionReady().IsFailure)

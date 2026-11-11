@@ -1375,7 +1375,7 @@ public sealed class ToolExecutionPipeline(
 
                 if (result is GuildLocalChildToolResult child)
                 {
-                    string body = GuildPromptBuilder.Build(GuildAuthorityKind.Child, GuildEnvelopeKind.Result,
+                    string body = GuildPromptBuilder.Build(child.Authority, GuildEnvelopeKind.Result,
                         child.Quest.ResultReceiptId ?? child.Quest.Id, child.Projection?.GetRawText() ?? child.Summary ?? $"Child Quest {child.Quest.Id:N}: {child.Quest.State}.");
 
                     return new WardedToolExecutionResult(body, BufferedWardEventsOrEmpty(wardEvents)) { Sensitivity = child.Sensitivity };

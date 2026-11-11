@@ -83,7 +83,8 @@ internal sealed partial class ConclaveArchmage
             admission.RecordCommitted(target.Value.Quest);
 
             return new GuildLocalChildToolResult(target.Value.Quest,
-                Projection: JsonSerializer.SerializeToElement(target.Value.Quest, GuildJsonContext.Default.GuildQuestDto));
+                Projection: JsonSerializer.SerializeToElement(target.Value.Quest, GuildJsonContext.Default.GuildQuestDto),
+                Authority: target.Value.Authority);
         }
 
         var mutation = GuildTaskArguments.Mutation(arguments, admission.LogicalCallId);

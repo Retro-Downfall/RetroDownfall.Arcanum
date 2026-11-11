@@ -132,7 +132,7 @@ internal sealed partial class GuildQuestStore
         };
     }
 
-    private static async Task<Result<string>> ReadProviderContentWithinAsync(SqliteConnection connection,
+    internal static async Task<Result<string>> ReadProviderContentWithinAsync(SqliteConnection connection,
         SqliteTransaction transaction, GuildDataRef reference, CancellationToken ct)
     {
         var validated = await GuildLocalExecutionStore.ValidateReferenceAsync(connection, transaction, reference, ct).ConfigureAwait(false);

@@ -27,7 +27,7 @@ public sealed class OwnershipProvenanceIndexSchemaTests
 
         Assert.Equal(1, GrimoireSchemaVersionChains.CovenantAcceleratorSchemaVersion);
 
-        Assert.Equal(12, GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion);
+        Assert.Equal(13, GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion);
     }
 
     [Fact]

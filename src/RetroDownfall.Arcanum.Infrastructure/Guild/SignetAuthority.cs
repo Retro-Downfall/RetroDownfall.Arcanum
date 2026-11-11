@@ -158,6 +158,14 @@ internal sealed partial class SignetAuthority(GuildSignetStore store, IGrimoireC
             return live.Error;
         }
 
+        return await AttenuateVerifiedWithinAsync(connection, transaction, live.Value, child, request,
+            authorized, credential, ct).ConfigureAwait(false);
+    }
+
+    private async Task<Result<GuildSignetRecord>> AttenuateVerifiedWithinAsync(SqliteConnection connection,
+        SqliteTransaction transaction, Verified live, GuildSignetBinding child, GuildRequestedGrant request,
+        GuildSignetAdmissionEvidence authorized, Credential credential, CancellationToken ct)
+    {
         GuildSignetIssuanceEdge edge = authorized.Edge;
 
         GuildDelegationKind? transport = edge switch
@@ -167,19 +175,19 @@ internal sealed partial class SignetAuthority(GuildSignetStore store, IGrimoireC
             _ => null,
         };
 
-        if (transport is null || !live.Value.Effective.Delegation.Contains(transport.Value)
+        if (transport is null || !live.Effective.Delegation.Contains(transport.Value)
             || edge is GuildSignetIssuanceEdge.LocalCohort or GuildSignetIssuanceEdge.RemoteCohort
-                && !live.Value.Effective.Delegation.Contains(GuildDelegationKind.Cohort))
+                && !live.Effective.Delegation.Contains(GuildDelegationKind.Cohort))
         {
             return new Error(ErrorCodes.Guild.Forbidden, "The issuing run lacks the exact delegation rights for this host-bound edge.");
         }
 
-        if (live.Value.Lineage.Any(row => row.Binding.AgentId == child.AgentId))
+        if (live.Lineage.Any(row => row.Binding.AgentId == child.AgentId))
         {
             return new Error(ErrorCodes.Guild.DelegationCycle, "The stable agent already occurs in the issuer lineage.");
         }
 
-        GuildSignetRecord issuer = live.Value.Lineage[0];
+        GuildSignetRecord issuer = live.Lineage[0];
 
         GuildSignetOwnerBinding owners = authorized.Owners;
 
@@ -189,10 +197,10 @@ internal sealed partial class SignetAuthority(GuildSignetStore store, IGrimoireC
         }
 
         GuildGrantScopeEvidence evidence = authorized.ScopeEvidence is { } admitted
-            ? new([.. live.Value.Evidence.WorkspaceContainment, .. admitted.WorkspaceContainment],
-                [.. live.Value.Evidence.SessionOwnership, .. admitted.SessionOwnership]) : live.Value.Evidence;
+            ? new([.. live.Evidence.WorkspaceContainment, .. admitted.WorkspaceContainment],
+                [.. live.Evidence.SessionOwnership, .. admitted.SessionOwnership]) : live.Evidence;
 
-        Result<GuildGrant> attenuated = GuildGrantPolicy.Attenuate(live.Value.Effective, request, evidence);
+        Result<GuildGrant> attenuated = GuildGrantPolicy.Attenuate(live.Effective, request, evidence);
 
         if (attenuated.IsFailure)
         {
@@ -471,58 +479,66 @@ internal sealed partial class SignetAuthority(GuildSignetStore store, IGrimoireC
         return live;
     }
 
+    // Frames retain the exact per-lineage policy evidence while dependencies are evaluated.
+    // The worklist avoids using the process call stack as an implicit delegation-depth limit.
+    private sealed class LiveLineageFrame(Guid signet, ImmutableArray<GuildSignetRecord> path, GuildSignetPolicyEvidence evidence)
+    {
+        internal Guid Signet { get; } = signet;
+
+        internal ImmutableArray<GuildSignetRecord> Path { get; } = path;
+
+        internal GuildSignetPolicyEvidence Evidence { get; } = evidence;
+
+        internal GuildGrant Effective { get; set; } = evidence.HostGrant;
+
+        internal int Index { get; set; } = path.Length - 1;
+    }
+
     private async Task<Result<Verified>> LiveRowAsync(SqliteConnection connection, SqliteTransaction transaction,
         GuildSignetRecord row, CancellationToken ct)
     {
-        Result<Guid> epoch = await GuildSignetStore.EpochAsync(connection, transaction, ct).ConfigureAwait(false);
+        var initial = await PrepareLiveLineageAsync(connection, transaction, row, ct).ConfigureAwait(false);
 
-        Result<ImmutableArray<GuildSignetRecord>> path = await GuildSignetStore.LineageAsync(connection, transaction, row, ct).ConfigureAwait(false);
+        if (initial.IsFailure) return initial.Error;
 
-        if (epoch.IsFailure || path.IsFailure)
+        Stack<LiveLineageFrame> pending = new();
+
+        HashSet<Guid> active = [];
+
+        Dictionary<Guid, Verified> completed = [];
+
+        pending.Push(initial.Value);
+
+        active.Add(row.Binding.SignetId);
+
+        while (pending.Count > 0)
         {
-            return epoch.IsFailure ? epoch.Error : path.Error;
-        }
+            LiveLineageFrame frame = pending.Peek();
 
-        foreach (GuildSignetRecord ancestor in path.Value)
-        {
-            if (ancestor.Revoked || ancestor.RestoredInert || ancestor.Retired || ancestor.AuthorityEpoch != epoch.Value
-                || ancestor.InstallationGeneration != policy.InstallationGeneration)
+            if (frame.Index < 0)
             {
-                return Revoked;
+                if (frame.Effective.ExpiresAtUtc is { } expiry && time.GetUtcNow() >= expiry) return Expired;
+
+                pending.Pop();
+
+                active.Remove(frame.Signet);
+
+                Verified verified = new(frame.Effective, frame.Path, frame.Evidence.ScopeEvidence);
+
+                completed.Add(frame.Signet, verified);
+
+                if (pending.Count == 0) return verified;
+
+                LiveLineageFrame parent = pending.Peek();
+
+                parent.Effective = GuildSignetGrantComposition.Intersect(parent.Effective, frame.Effective, parent.Evidence.ScopeEvidence);
+
+                continue;
             }
 
-            if (ancestor.Binding.Grant.ExpiresAtUtc is { } expiry && time.GetUtcNow() >= expiry)
-            {
-                return Expired;
-            }
+            GuildSignetRecord ancestor = frame.Path[frame.Index--];
 
-            Result owners = await GuildSignetStore.OwnersAsync(connection, transaction, ancestor, ct).ConfigureAwait(false);
-
-            if (owners.IsFailure)
-            {
-                return owners.Error;
-            }
-        }
-
-        Result<GuildSignetPolicyEvidence> policyEvidence = await policy.ResolveCurrentAsync(path.Value, ct).ConfigureAwait(false);
-
-        if (policyEvidence.IsFailure)
-        {
-            return policyEvidence.Error;
-        }
-
-        GuildSignetPolicyEvidence evidence = policyEvidence.Value;
-
-        if (GuildGrantPolicy.Validate(evidence.HostGrant).IsFailure || evidence.ScopeEvidence is null)
-        {
-            return GuildSignetStore.Unavailable;
-        }
-
-        GuildGrant effective = evidence.HostGrant;
-
-        foreach (GuildSignetRecord ancestor in path.Value.Reverse())
-        {
-            effective = GuildSignetGrantComposition.Intersect(effective, ancestor.Binding.Grant, evidence.ScopeEvidence);
+            frame.Effective = GuildSignetGrantComposition.Intersect(frame.Effective, ancestor.Binding.Grant, frame.Evidence.ScopeEvidence);
 
             Result<GuildGrant?> cohort = await GuildCohortStore.ReadAuthorityConstraintWithinAsync(
                 connection, transaction, ancestor, ct).ConfigureAwait(false);
@@ -530,17 +546,66 @@ internal sealed partial class SignetAuthority(GuildSignetStore store, IGrimoireC
             if (cohort.IsFailure) return cohort.Error;
 
             if (cohort.Value is { } ceiling)
+                frame.Effective = GuildSignetGrantComposition.Intersect(frame.Effective, ceiling, frame.Evidence.ScopeEvidence);
+
+            Result<GuildSignetRecord?> primary = await GuildCohortStore.ReadAwardPrimaryWithinAsync(connection, transaction, ancestor, ct).ConfigureAwait(false);
+
+            if (primary.IsFailure) return primary.Error;
+
+            if (primary.Value is not { } primaryRow) continue;
+
+            if (primaryRow.Binding.AgentId != ancestor.Binding.AgentId || primaryRow.Binding.RootQuestId != ancestor.Binding.RootQuestId)
+                return GuildSignetStore.Unavailable;
+
+            if (completed.TryGetValue(primaryRow.Binding.SignetId, out Verified? previous))
             {
-                effective = GuildSignetGrantComposition.Intersect(effective, ceiling, evidence.ScopeEvidence);
+                frame.Effective = GuildSignetGrantComposition.Intersect(frame.Effective, previous.Effective, frame.Evidence.ScopeEvidence);
+
+                continue;
             }
+
+            if (!active.Add(primaryRow.Binding.SignetId)) return GuildSignetStore.Unavailable;
+
+            var dependency = await PrepareLiveLineageAsync(connection, transaction, primaryRow, ct).ConfigureAwait(false);
+
+            if (dependency.IsFailure) return dependency.Error;
+
+            pending.Push(dependency.Value);
         }
 
-        if (effective.ExpiresAtUtc is { } effectiveExpiry && time.GetUtcNow() >= effectiveExpiry)
+        return GuildSignetStore.Unavailable;
+    }
+
+    private async Task<Result<LiveLineageFrame>> PrepareLiveLineageAsync(SqliteConnection connection, SqliteTransaction transaction,
+        GuildSignetRecord row, CancellationToken ct)
+    {
+        Result<Guid> epoch = await GuildSignetStore.EpochAsync(connection, transaction, ct).ConfigureAwait(false);
+
+        Result<ImmutableArray<GuildSignetRecord>> path = await GuildSignetStore.LineageAsync(connection, transaction, row, ct).ConfigureAwait(false);
+
+        if (epoch.IsFailure || path.IsFailure) return epoch.IsFailure ? epoch.Error : path.Error;
+
+        foreach (GuildSignetRecord ancestor in path.Value)
         {
-            return Expired;
+            if (ancestor.Revoked || ancestor.RestoredInert || ancestor.Retired || ancestor.AuthorityEpoch != epoch.Value
+                || ancestor.InstallationGeneration != policy.InstallationGeneration) return Revoked;
+
+            if (ancestor.Binding.Grant.ExpiresAtUtc is { } expiry && time.GetUtcNow() >= expiry) return Expired;
+
+            Result owners = await GuildSignetStore.OwnersAsync(connection, transaction, ancestor, ct).ConfigureAwait(false);
+
+            if (owners.IsFailure) return owners.Error;
         }
 
-        return new Verified(effective, path.Value, evidence.ScopeEvidence);
+        Result<GuildSignetPolicyEvidence> policyEvidence = await policy.ResolveCurrentAsync(path.Value, ct).ConfigureAwait(false);
+
+        if (policyEvidence.IsFailure) return policyEvidence.Error;
+
+        GuildSignetPolicyEvidence evidence = policyEvidence.Value;
+
+        if (GuildGrantPolicy.Validate(evidence.HostGrant).IsFailure || evidence.ScopeEvidence is null) return GuildSignetStore.Unavailable;
+
+        return new LiveLineageFrame(row.Binding.SignetId, path.Value, evidence);
     }
 
     private Task<Result<GuildSignetRecord>> FindAsync(Guid id, bool byQuest, CancellationToken ct) =>

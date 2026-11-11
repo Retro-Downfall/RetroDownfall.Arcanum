@@ -36,6 +36,12 @@ internal static class UtcInstantColumnInventory
         new("guild_events", ["CreatedAtUtc"]),
         new("guild_portal_cursors", ["CreatedAtUtc"]),
         new("guild_portal_outbox", ["CreatedAtUtc"]),
+        new("guild_workspace_leases", ["HeartbeatAtUtc", "ExpiresAtUtc"]),
+        new("guild_workspace_lease_mutations", ["AcceptedAtUtc"]),
+        new("guild_quest_cancellations", ["AcceptedAtUtc"]),
+        new("guild_cohort_mutations", ["AcceptedAtUtc"]),
+        new("guild_work_mutations", ["AcceptedAtUtc"]),
+        new("guild_cohort_ledger", ["CreatedAtUtc"]),
     ];
 
     // The version-9 sweep runs before version-11 columns exist. Its positional cursor also depends

@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -645,7 +646,14 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
     {
         work.MaintenanceRevocation.ThrowIfCancellationRequested();
 
-        _ = await services.GetRequiredService<GuildLocalPort>().DispatchClaimedAsync(execution, request, claim, ct).ConfigureAwait(false);
+        _ = await services.GetRequiredService<GuildLocalPort>().DispatchClaimedAsync(work, this, execution, request, claim, ct).ConfigureAwait(false);
+    }
+
+    internal async Task<Result<GuildDispatchObservation>> RunLocalCompletionAdmittedAsync(IGrimoireWorkLease work,
+        GuildLocalPort port, GuildLocalPort.LocalRun running, GuildLocalPortState before, GuildDispatchRequest request,
+        Result<PromptTurnResult> result, CancellationToken ct)
+    {
+        return await port.CompleteAsync(running, before, request, result, ct).ConfigureAwait(false);
     }
 
     private async Task RunRemoteAdmittedAsync(IGrimoireWorkLease work, IServiceProvider services, GuildCallerContext caller,

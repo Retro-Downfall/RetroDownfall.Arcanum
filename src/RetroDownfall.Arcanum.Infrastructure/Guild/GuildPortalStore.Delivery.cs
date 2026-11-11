@@ -200,7 +200,7 @@ internal sealed partial class GuildPortalStore
             }, ct);
     }
 
-    private async Task<Result<GuildCallerContext>> DriverCallerWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+    internal async Task<Result<GuildCallerContext>> DriverCallerWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         GuildQuestDriver driver, CancellationToken ct)
     {
         Result<GuildSignetRecord> signet = await GuildSignetStore.ReadAsync(connection, transaction, driver.Execution.SignetId, false, ct).ConfigureAwait(false);
@@ -282,7 +282,7 @@ internal sealed partial class GuildPortalStore
             new(receipt, receipt, true, UtcInstantText.Parse(reader.GetString(3)), revision)));
     }
 
-    private static async Task<Result<GuildCircleAcknowledgement>> CommitInboxWithinAsync(SqliteConnection connection,
+    internal static async Task<Result<GuildCircleAcknowledgement>> CommitInboxWithinAsync(SqliteConnection connection,
         SqliteTransaction transaction, Guid inbox, Guid envelope, long expectedRevision, Guid receipt, int effectKind,
         Guid? recipientQuest, DateTimeOffset now, CancellationToken ct)
     {

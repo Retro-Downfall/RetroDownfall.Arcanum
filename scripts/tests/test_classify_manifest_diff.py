@@ -1743,7 +1743,7 @@ class ClassifyManifestDiffTests(unittest.TestCase):
             *(("GuildLocalHostReadiness", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalHostReadiness." + member)
                 for member in ("RequireExecutionReady", "StartAsync", "StopAsync")),
             *(("GuildLocalQuestScheduler", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler." + member)
-                for member in ("ExecuteAsync", "RunAdmittedAsync", "RunRemoteAdmittedAsync", "DrainCancellationAsync", "RunCommittedAsync", "Schedule", "StartAsync")),
+                for member in ("ExecuteAsync", "RunAdmittedAsync", "RunLocalCompletionAdmittedAsync", "RunRemoteAdmittedAsync", "DrainCancellationAsync", "RunCommittedAsync", "Schedule", "StartAsync")),
             *(("GuildInboundPeerReloadService", "RetroDownfall.Arcanum.Infrastructure.Guild.GuildInboundPeerReloadService." + member)
                 for member in ("StartAsync", "ExecuteAsync", "OnChanged")),
         }
@@ -1765,6 +1765,19 @@ class ClassifyManifestDiffTests(unittest.TestCase):
 
         self.assertNotIn(("GuildLocalQuestScheduler",
             "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync"), actual)
+
+    def test_guild_completion_handoff_is_named_exactly_without_authorizing_a_neighbor(self) -> None:
+        operation = "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler.RunLocalCompletionAdmittedAsync"
+
+        reviewed = site("src/Unedited.cs", root="GuildLocalQuestScheduler", operation=operation)
+
+        neighbor = site("src/Unedited.cs", root="GuildLocalQuestScheduler", operation=operation + "Other")
+
+        result = classify(manifest(), manifest(reviewed, neighbor))
+
+        self.assertEqual("n", result[("+", reviewed)].label)
+
+        self.assertEqual("d", result[("+", neighbor)].label)
 
     def test_every_reviewed_new_root_is_a_root_of_the_committed_manifest(self) -> None:
         reviewed = CLASSIFIER.parse_manifest(MANIFEST_PATH.read_text(encoding="utf-8"), "reviewed")

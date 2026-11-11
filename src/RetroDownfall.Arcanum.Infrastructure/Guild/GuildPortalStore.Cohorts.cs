@@ -187,22 +187,34 @@ internal sealed partial class GuildPortalStore
     private static async Task<bool> HasCurrentCohortAudienceWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         GuildEnvelope envelope, Guid recipient, CancellationToken ct)
     {
-        if (envelope.Producer.Kind != GuildProducerKind.Run || envelope.Authority != GuildAuthorityKind.Peer
-            || envelope.Address.CohortId is not { } cohort || envelope.Address.QuestId is not null
-            || envelope.Address.MembershipVersion is not > 0) return false;
+        if (envelope.Producer.Kind == GuildProducerKind.HostReceipt)
+            return await HasCurrentAwardResultAudienceWithinAsync(connection, transaction, envelope, recipient, ct).ConfigureAwait(false);
+
+        bool run = envelope.Producer.Kind == GuildProducerKind.Run && envelope.Authority is GuildAuthorityKind.Peer or GuildAuthorityKind.Parent;
+        bool nativeOperator = envelope.Producer.Kind == GuildProducerKind.Operator && envelope.Authority == GuildAuthorityKind.Operator;
+
+        if ((!run && !nativeOperator) || envelope.Address.CohortId is not { } cohort || envelope.Address.QuestId is not null
+            || envelope.Address.MembershipVersion is not >= 0) return false;
 
         await using SqliteCommand command = Command(connection, transaction, """
             SELECT 1 FROM guild_cohorts c
-            JOIN guild_cohort_members sender ON sender.CohortId=c.Id AND sender.StateCode=1
-            JOIN guild_cohort_member_quests sa ON sa.MemberId=sender.Id AND sa.Active=1 AND sa.QuestId=$source
-            JOIN guild_quests sq ON sq.Id=sa.QuestId AND sq.AgentId=sender.AgentId AND sq.RootQuestId=c.RootQuestId
-            JOIN guild_portal_cohort_audience frozen ON frozen.EnvelopeId=$envelope AND frozen.QuestId=$recipient
-            JOIN guild_cohort_members target ON target.Id=frozen.MemberId AND target.CohortId=c.Id AND target.StateCode=1
-            JOIN guild_cohort_member_quests ta ON ta.MemberId=target.Id AND ta.QuestId=frozen.QuestId AND ta.Active=1
-            JOIN guild_quests tq ON tq.Id=ta.QuestId AND tq.AgentId=target.AgentId AND tq.RootQuestId=c.RootQuestId
-            WHERE c.Id=$cohort AND c.RootQuestId=$root AND c.StateCode IN (1,2)
-              AND c.MembershipVersion >= $version AND sender.Id<>target.Id
+            WHERE c.Id=$cohort AND c.RootQuestId=$root AND c.StateCode IN (1,2) AND c.MembershipVersion >= $version
+              AND (c.IssuerQuestId=$recipient OR EXISTS(SELECT 1 FROM guild_portal_cohort_audience frozen
+                JOIN guild_cohort_members target ON target.Id=frozen.MemberId AND target.CohortId=c.Id AND target.StateCode=1
+                JOIN guild_cohort_member_quests ta ON ta.MemberId=target.Id AND ta.QuestId=frozen.QuestId AND ta.Active=1
+                JOIN guild_quests tq ON tq.Id=ta.QuestId AND tq.AgentId=target.AgentId AND tq.RootQuestId=c.RootQuestId
+                WHERE frozen.EnvelopeId=$envelope AND frozen.QuestId=$recipient))
+              AND (($operator IS NOT NULL AND c.IssuerQuestId=$source AND EXISTS(SELECT 1 FROM guild_signets s
+                    WHERE s.QuestId=c.IssuerQuestId AND s.OriginPrincipalId=$operator))
+                OR ($operator IS NULL AND c.IssuerQuestId=$source)
+                OR ($operator IS NULL AND EXISTS(SELECT 1 FROM guild_cohort_members sender
+                    JOIN guild_cohort_member_quests sa ON sa.MemberId=sender.Id AND sa.Active=1
+                    JOIN guild_quests sq ON sq.Id=sa.QuestId AND sq.AgentId=sender.AgentId AND sq.RootQuestId=c.RootQuestId
+                    WHERE sender.CohortId=c.Id AND sender.StateCode=1 AND sa.QuestId=$source
+                        AND NOT EXISTS(SELECT 1 FROM guild_cohort_member_quests own WHERE own.MemberId=sender.Id AND own.QuestId=$recipient))))
             """);
+
+        Add(command, "$operator", nativeOperator ? envelope.Producer.OperatorPrincipalId : null);
 
         Add(command, "$source", Id(envelope.QuestId));
 
@@ -282,5 +294,4 @@ internal sealed partial class GuildPortalStore
 
         return await command.ExecuteScalarAsync(ct).ConfigureAwait(false) is not null;
     }
-
 }

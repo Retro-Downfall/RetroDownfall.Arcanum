@@ -8,7 +8,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 /// <summary>Host resolution runs only for a new, currently authorized logical issuance.</summary>
 internal sealed record GuildQuestProposal(Guid QuestId, Guid RunId, Guid SessionId,
     GuildMutationIdentity Mutation, GuildIssueRootRequest? Root, Guid? ParentQuestId, GuildIssueChildRequest? Child,
-    Guid? CampaignId, Guid? WorkspaceId, Guid? CohortId = null);
+    Guid? CampaignId, Guid? WorkspaceId, Guid? CohortId = null, GuildAwardIssue? Award = null);
 
 internal sealed record GuildQuestAdmissionPlan(GuildAdmissionContext Admission, GuildGrant Grant,
     GuildSignetOwnerBinding Owners, Guid OriginPrincipalId, GuildStoredAgentCardPayload? GeneratedCard,
@@ -59,3 +59,24 @@ internal sealed record GuildQuestDispatchAdmission(GuildQuestDispatchRecord Disp
 /// <summary>Host adapter evidence for one already journaled dispatch; it cannot set execution state.</summary>
 internal sealed record GuildQuestDispatchEvidence(Guid DispatchId, long ExpectedRevision, GuildDispatchEvidence Evidence,
     Guid? LocalChildId = null, string? RemoteTaskId = null, string? RemoteContextId = null, bool NoDispatchProven = false);
+
+/// <summary>Host-resolved award identity; every field is revalidated in the issuing transaction.</summary>
+internal sealed record GuildAwardIssue(
+    Guid OfferId,
+    Guid BidId,
+    Guid CohortId,
+    Guid RootQuestId,
+    Guid IssuerQuestId,
+    long ExpectedOfferRevision,
+    long ExpectedCohortRevision,
+    Guid MemberId,
+    Guid PrimaryQuestId,
+    Guid PrimarySignetId,
+    long PrimaryRevocationGeneration,
+    Guid AgentId,
+    Guid CardId,
+    long CardRevision,
+    GuildMutationIdentity Mutation,
+    AwardWorkRequest Request,
+    bool BudgetHint,
+    GuildGrant PrimaryCeiling);

@@ -35775,7 +35775,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             output.WriteLine(line);
         }
 
-        string expected = HostedGrimoireProducerInventory.RenderCapsuleManifest(discovery.Items);
+        HostedProducerDiscovery<HostedProducerSite> additional = HostedGrimoireProducerInventory.AdditionalProductionSiteDiscovery;
+
+        HostedProducerDiscovery<HostedProducerSite> reviewed = ReviewedCombinedDiscovery(discovery, additional);
+
+        string expected = HostedGrimoireProducerInventory.RenderCapsuleManifest(reviewed.Items);
 
         bool updateRequested =
             global::System.Environment.GetEnvironmentVariable(
@@ -35785,12 +35789,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             .ReadOrUpdateCapsuleManifest(
                 HostedGrimoireProducerInventory.CapsuleManifestPath,
                 expected,
-                discovery.Diagnostics,
+                reviewed.Diagnostics,
                 updateRequested,
                 output.WriteLine);
 
         Assert.True(
-            discovery.Diagnostics.Count == 0
+            reviewed.Diagnostics.Count == 0
                 && string.Equals(expected, update.Reviewed, StringComparison.Ordinal),
             update.Report);
     }

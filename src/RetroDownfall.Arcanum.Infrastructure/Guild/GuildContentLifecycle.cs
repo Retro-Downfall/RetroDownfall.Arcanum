@@ -45,19 +45,35 @@ internal static class GuildContentLifecycle
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
             || !OwnerMatches(reader, 0, label.SessionId) || !OwnerMatches(reader, 1, label.CampaignId)
             || reader.GetInt64(2) < 1 || (ulong)reader.GetInt64(2) != label.ArtifactRevision
-            || reader.GetInt32(4) != (int)label.Sensitivity
-            || reader.GetInt32(5) != (int)label.Provenance.Mode
             || reader.GetInt64(8) is < 0 or > GuildStore.MaximumContentBytes
             || reader.GetValue(3) is not byte[] digest || !digest.AsSpan().SequenceEqual(label.ArtifactContentDigest.Bytes))
         {
             return Invalid();
         }
 
-        byte[]? exact = label.Provenance.Mode == GenerationProvenanceMode.Exact ? label.Provenance.ToCanonicalExactBytes() : null;
+        object originalSensitivity = reader.GetValue(4);
 
-        byte[]? bloom = label.Provenance.Mode == GenerationProvenanceMode.BloomOverflow ? label.Provenance.ToCanonicalBloomBytes() : null;
+        object originalMode = reader.GetValue(5);
 
-        if (!BytesMatch(reader, 6, exact) || !BytesMatch(reader, 7, bloom)
+        bool exactAbsent = reader.IsDBNull(6);
+
+        bool bloomAbsent = reader.IsDBNull(7);
+
+        // A first current protection label may promote bytes originally stored clean. Read
+        // scalar/null metadata once; unneeded or unexpectedly present BLOBs stay unmaterialized.
+        bool originalHeaderMatches = originalSensitivity is 0L && originalMode is 0L && exactAbsent && bloomAbsent;
+
+        if (!originalHeaderMatches && originalSensitivity is long sensitivity && sensitivity == (int)label.Sensitivity
+            && originalMode is long mode && mode == (int)label.Provenance.Mode)
+        {
+            originalHeaderMatches = label.Provenance.Mode == GenerationProvenanceMode.Exact
+                ? bloomAbsent && !exactAbsent && reader.GetValue(6) is byte[] exact
+                    && exact.AsSpan().SequenceEqual(label.Provenance.ToCanonicalExactBytes())
+                : exactAbsent && !bloomAbsent && reader.GetValue(7) is byte[] bloom
+                    && bloom.AsSpan().SequenceEqual(label.Provenance.ToCanonicalBloomBytes());
+        }
+
+        if (!originalHeaderMatches
             || reader.GetValue(9) is not byte[] body || !SHA256.HashData(body).AsSpan().SequenceEqual(digest))
         {
             return Invalid();
@@ -210,10 +226,6 @@ internal static class GuildContentLifecycle
     private static bool OwnerMatches(SqliteDataReader reader, int ordinal, Guid? owner) => owner is { } id
         ? !reader.IsDBNull(ordinal) && Guid.TryParse(reader.GetString(ordinal), out Guid stored) && stored == id
         : reader.IsDBNull(ordinal);
-
-    private static bool BytesMatch(SqliteDataReader reader, int ordinal, byte[]? expected) => expected is null
-        ? reader.IsDBNull(ordinal)
-        : reader.GetValue(ordinal) is byte[] actual && actual.AsSpan().SequenceEqual(expected);
 
     private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
 

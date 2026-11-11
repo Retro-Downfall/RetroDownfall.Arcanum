@@ -176,6 +176,12 @@ public sealed partial class DataRetentionServiceTests
 
         bool readingCatalog = false;
 
+        string catalogClass = "other";
+
+        Dictionary<string, long> writerCatalogSteps = new(StringComparer.Ordinal);
+
+        Dictionary<string, int> writerCatalogStatements = new(StringComparer.Ordinal);
+
         raw.sqlite3_trace(connection.Handle, (strdelegate_trace)((_, sql) =>
         {
             if (sql.StartsWith("--", StringComparison.Ordinal)) return;
@@ -186,7 +192,19 @@ public sealed partial class DataRetentionServiceTests
 
             insideTransaction = raw.sqlite3_get_autocommit(connection.Handle) == 0;
 
-            if (readingCatalog) catalogStatements++;
+            if (readingCatalog)
+            {
+                catalogStatements++;
+
+                catalogClass = sql.Contains("LEFT JOIN main.sqlite_master", StringComparison.OrdinalIgnoreCase) ? "catalog census"
+                    : sql.Contains("COUNT(*)", StringComparison.OrdinalIgnoreCase) ? "catalog count"
+                    : sql.Contains("EXISTS", StringComparison.OrdinalIgnoreCase) ? "catalog exists"
+                    : sql.Contains("schema_version", StringComparison.OrdinalIgnoreCase) ? "schema version"
+                    : "other catalog";
+
+                if (insideTransaction)
+                    writerCatalogStatements[catalogClass] = writerCatalogStatements.GetValueOrDefault(catalogClass) + 1;
+            }
         }), null);
 
         raw.sqlite3_progress_handler(connection.Handle, 1, (object _) =>
@@ -196,6 +214,7 @@ public sealed partial class DataRetentionServiceTests
                 catalogSteps++;
 
                 if (!insideTransaction) outsideSteps++;
+                else writerCatalogSteps[catalogClass] = writerCatalogSteps.GetValueOrDefault(catalogClass) + 1;
             }
 
             return 0;
@@ -237,6 +256,11 @@ public sealed partial class DataRetentionServiceTests
 
         Console.WriteLine($"RV237 metadata family={family} phase={(apply ? "apply" : "plan")} candidates={count} statements={catalogStatements} vmSteps={catalogSteps} outsideVmSteps={outsideSteps} transactionVmSteps={catalogSteps - outsideSteps}");
 
+        foreach ((string category, long steps) in writerCatalogSteps.OrderByDescending(static item => item.Value))
+        {
+            Console.WriteLine($"RV237 writer-catalog category={category} statements={writerCatalogStatements.GetValueOrDefault(category)} vmSteps={steps}");
+        }
+
         if (apply)
         {
             Assert.Equal(0, await CountAllAsync(family == "embeddings" ? "entry_embeddings" : family == "sessions" ? "Sessions" : "Entries"));
@@ -258,11 +282,12 @@ public sealed partial class DataRetentionServiceTests
 
         if (apply && family == "sessions")
         {
-            // Guild V12/Core39 add Cohort objects and mutation-clock triggers. The same
-            // 921 metadata statements measured 408,891 -> 433,470 writer steps against V11;
-            // retain a small margin without caching across writers or increasing the
-            // candidate-dependent work allowance.
-            Assert.True(catalogSteps - outsideSteps < 438_000,
+            // The same 921 metadata statements on eight Sessions measured 433,470 writer
+            // steps at Guild V12 and 444,782 at V13. Matched one/eight/sixteen-candidate
+            // runs showed exactly 1,414 extra steps per existing writer, with unchanged
+            // statement counts. Add the measured 11,312 to the old 438,000 ceiling and
+            // round up; the outside-work bound and writer freshness remain unchanged.
+            Assert.True(catalogSteps - outsideSteps < 450_000,
                 $"Session writer metadata used {catalogSteps - outsideSteps:N0} native VM steps.");
         }
     }

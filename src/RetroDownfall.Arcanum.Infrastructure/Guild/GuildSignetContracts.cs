@@ -29,7 +29,7 @@ internal enum GuildSignetIssuanceEdge
 }
 
 internal sealed record GuildSignetAdmissionEvidence(GuildSignetOwnerBinding Owners, GuildSignetIssuanceEdge Edge,
-    GuildGrantScopeEvidence? ScopeEvidence = null);
+    GuildGrantScopeEvidence? ScopeEvidence = null, Guid? OperatorIssuerQuestId = null);
 
 /// <summary>
 /// Authentication and coordinator participant boundary. An implementation must recognize host-issued

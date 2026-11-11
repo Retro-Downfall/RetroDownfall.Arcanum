@@ -1795,6 +1795,8 @@ internal static partial class HostedGrimoireProducerInventory
                 GrimoireWorkKind.GuildStorage), "work"),
             Handoff(Operation("Guild", "GuildLocalQuestScheduler", "RunLocalPortAdmittedAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
                 GrimoireWorkKind.GuildStorage), "work"),
+            Handoff(Operation("Guild", "GuildLocalQuestScheduler", "RunLocalCompletionAdmittedAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
+                GrimoireWorkKind.GuildStorage), "work"),
             Handoff(Operation("Guild", "GuildLocalQuestScheduler", "RunRemoteAdmittedAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,
                 GrimoireWorkKind.GuildStorage), "work"),
             Handoff(Operation("Guild", "GuildLocalQuestScheduler", "DrainCancellationAsync", HostedProducerAuthorityKind.OrdinaryHostedWork,

@@ -1,0 +1,1 @@
+ALTER TABLE guild_cohorts ADD COLUMN NoteSequence INTEGER NOT NULL DEFAULT 0 CHECK(NoteSequence>=0);

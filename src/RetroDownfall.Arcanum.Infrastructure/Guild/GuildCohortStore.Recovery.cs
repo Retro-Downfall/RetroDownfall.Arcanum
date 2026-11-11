@@ -83,6 +83,12 @@ internal sealed partial class GuildCohortStore
                     }
                 }
 
+                Result<bool> authorityWork = await ScanAwardAuthorityWithinAsync(connection, transaction, signets, cohort, token).ConfigureAwait(false);
+
+                if (authorityWork.IsFailure) return authorityWork.Error;
+
+                if (authorityWork.Value) return new RecoveryProgress(null);
+
                 Result<bool> advanced = await AdvanceStopFrontierWithinAsync(connection, transaction, cohortId, time.GetUtcNow(), token).ConfigureAwait(false);
 
                 if (advanced.IsFailure) return advanced.Error;
@@ -254,6 +260,10 @@ internal sealed partial class GuildCohortStore
         CohortDto cohort, DateTimeOffset now, CancellationToken ct)
     {
         if (cohort.Revision == long.MaxValue) return Unavailable;
+
+        Result closedOffers = await CloseOffersWithinAsync(connection, transaction, cohort.Id, null, "issuer_unavailable", now, ct).ConfigureAwait(false);
+
+        if (closedOffers.IsFailure) return closedOffers.Error;
 
         Result<long> projected = await GuildPortalEvents.AppendWithinAsync(connection, transaction, cohort.RootQuestId,
             cohort.IssuerQuestId, GuildEventKind.CohortChanged, cohort.Id, cohort.Revision + 1, null, now, ct).ConfigureAwait(false);

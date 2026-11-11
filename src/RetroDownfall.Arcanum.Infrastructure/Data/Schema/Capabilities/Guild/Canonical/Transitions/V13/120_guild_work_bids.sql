@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS guild_work_bids (
+    Id TEXT NOT NULL PRIMARY KEY,
+    OfferId TEXT NOT NULL REFERENCES guild_work_offers(Id) ON DELETE RESTRICT,
+    MemberId TEXT NOT NULL REFERENCES guild_cohort_members(Id) ON DELETE RESTRICT,
+    AgentId TEXT NOT NULL,
+    AuthorQuestId TEXT NOT NULL REFERENCES guild_quests(Id) ON DELETE RESTRICT,
+    CardRevision INTEGER NOT NULL CHECK(typeof(CardRevision)='integer' AND CardRevision>=1),
+    BidSequence INTEGER NOT NULL CHECK(typeof(BidSequence)='integer' AND BidSequence>=1),
+    Revision INTEGER NOT NULL CHECK(typeof(Revision)='integer' AND Revision>=1),
+    StateCode INTEGER NOT NULL CHECK(StateCode IN (1,2)),
+    NoteContentId TEXT NOT NULL,
+    ClaimedCostUsd TEXT NULL,
+    UNIQUE(OfferId,MemberId),
+    UNIQUE(OfferId,BidSequence),
+    CHECK(typeof(Id)='text' AND Id=upper(Id) AND length(Id)=36 AND substr(Id,9,1)='-' AND substr(Id,14,1)='-' AND substr(Id,19,1)='-' AND substr(Id,24,1)='-' AND length(replace(Id,'-',''))=32 AND replace(Id,'-','') NOT GLOB '*[^0-9A-F]*' AND Id<>'00000000-0000-0000-0000-000000000000'),
+    CHECK(typeof(OfferId)='text' AND OfferId=upper(OfferId) AND length(OfferId)=36 AND substr(OfferId,9,1)='-' AND substr(OfferId,14,1)='-' AND substr(OfferId,19,1)='-' AND substr(OfferId,24,1)='-' AND length(replace(OfferId,'-',''))=32 AND replace(OfferId,'-','') NOT GLOB '*[^0-9A-F]*' AND OfferId<>'00000000-0000-0000-0000-000000000000'),
+    CHECK(typeof(MemberId)='text' AND MemberId=upper(MemberId) AND length(MemberId)=36 AND substr(MemberId,9,1)='-' AND substr(MemberId,14,1)='-' AND substr(MemberId,19,1)='-' AND substr(MemberId,24,1)='-' AND length(replace(MemberId,'-',''))=32 AND replace(MemberId,'-','') NOT GLOB '*[^0-9A-F]*' AND MemberId<>'00000000-0000-0000-0000-000000000000'),
+    CHECK(typeof(AgentId)='text' AND AgentId=upper(AgentId) AND length(AgentId)=36 AND substr(AgentId,9,1)='-' AND substr(AgentId,14,1)='-' AND substr(AgentId,19,1)='-' AND substr(AgentId,24,1)='-' AND length(replace(AgentId,'-',''))=32 AND replace(AgentId,'-','') NOT GLOB '*[^0-9A-F]*' AND AgentId<>'00000000-0000-0000-0000-000000000000'),
+    CHECK(typeof(AuthorQuestId)='text' AND AuthorQuestId=upper(AuthorQuestId) AND length(AuthorQuestId)=36 AND substr(AuthorQuestId,9,1)='-' AND substr(AuthorQuestId,14,1)='-' AND substr(AuthorQuestId,19,1)='-' AND substr(AuthorQuestId,24,1)='-' AND length(replace(AuthorQuestId,'-',''))=32 AND replace(AuthorQuestId,'-','') NOT GLOB '*[^0-9A-F]*' AND AuthorQuestId<>'00000000-0000-0000-0000-000000000000'),
+    CHECK(typeof(NoteContentId)='text' AND NoteContentId=upper(NoteContentId) AND length(NoteContentId)=36 AND substr(NoteContentId,9,1)='-' AND substr(NoteContentId,14,1)='-' AND substr(NoteContentId,19,1)='-' AND substr(NoteContentId,24,1)='-' AND length(replace(NoteContentId,'-',''))=32 AND replace(NoteContentId,'-','') NOT GLOB '*[^0-9A-F]*' AND NoteContentId<>'00000000-0000-0000-0000-000000000000')
+);

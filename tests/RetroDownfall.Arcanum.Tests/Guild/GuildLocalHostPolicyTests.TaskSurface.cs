@@ -90,6 +90,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.Null(child.ResultReceiptId);
     }
+
     [Theory]
     [InlineData("get_agent_task")]
     [InlineData("cancel_agent_task")]
@@ -172,6 +173,24 @@ public sealed partial class GuildLocalHostPolicyTests
         var read = Assert.IsType<GuildLocalChildToolResult>(await Invoke("get_agent_task", new() { ["questId"] = created.Quest.Id.ToString() }));
 
         Assert.Equal(created.Quest.Id, read.Projection!.Value.GetProperty("id").GetGuid());
+
+        GuildToolGrant get = tools.Single(item => item.Name == "get_agent_task");
+
+        var getFunction = await context.AdvertiseAsync(new InertChildTool(get.Name), get, default);
+
+        Assert.NotNull(getFunction);
+
+        using (registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), get))
+        {
+            var output = await RetroDownfall.Arcanum.Tests.Intelligence.ToolExecutionPipelineTests.CreatePipeline().ProcessSingleToolCallAsync(
+                new FunctionCallContent("child-read", get.Name, new Dictionary<string, object?> { ["questId"] = created.Quest.Id.ToString() }),
+                new RetroDownfall.Arcanum.Core.Intelligence.PingRequest("read"), new ChatOptions { Tools = [getFunction] }, null, null,
+                new RetroDownfall.Arcanum.Api.Intelligence.ToolExecutionPipeline.TurnContext { GuildTools = context }, true, default);
+
+            Assert.False(output.Denied);
+
+            Assert.Contains("Authority: Child", output.ResultText);
+        }
 
         string denied = Assert.IsType<string>(await Invoke("get_agent_task", new() { ["questId"] = foreign.Value.Quest.Id.ToString() }));
 
@@ -479,5 +498,4 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.Equal(remote ? 1 : 0, http.Requests);
     }
-
 }

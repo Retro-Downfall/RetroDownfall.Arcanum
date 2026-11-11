@@ -7,6 +7,7 @@ WHEN NEW.Id<>OLD.Id OR NEW.RootQuestId<>OLD.RootQuestId OR NEW.IssuerQuestId<>OL
  OR NEW.Quorum IS NOT OLD.Quorum OR NEW.MimeType<>OLD.MimeType OR NEW.GrantJson<>OLD.GrantJson
  OR NEW.AllocationAccountId<>OLD.AllocationAccountId OR NEW.Revision<>OLD.Revision+1
  OR NEW.MembershipVersion<OLD.MembershipVersion OR NEW.ResultSequence<OLD.ResultSequence
+ OR NEW.OfferSequence<OLD.OfferSequence OR NEW.NoteSequence<OLD.NoteSequence
  OR (OLD.FrozenMemberCount IS NOT NULL AND NEW.FrozenMemberCount IS NOT OLD.FrozenMemberCount)
  OR (OLD.ClosedMembershipVersion IS NOT NULL AND NEW.ClosedMembershipVersion IS NOT OLD.ClosedMembershipVersion)
  OR (OLD.DecisionCode IS NOT NULL AND NEW.DecisionCode IS NOT OLD.DecisionCode)

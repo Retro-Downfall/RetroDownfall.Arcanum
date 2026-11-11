@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS guild_cohorts (
     ReasonCode TEXT NULL,
     EventWatermark INTEGER NOT NULL DEFAULT 0 CHECK(EventWatermark>=0),
     Retired INTEGER NOT NULL DEFAULT 0 CHECK(typeof(Retired)='integer' AND Retired IN(0,1)),
+    OfferSequence INTEGER NOT NULL DEFAULT 0 CHECK(OfferSequence>=0),
+    NoteSequence INTEGER NOT NULL DEFAULT 0 CHECK(NoteSequence>=0),
     CHECK((Retired=0 AND Name IS NOT NULL) OR (Retired=1 AND Name IS NULL)),
     CHECK((StateCode=1 AND ClosedMembershipVersion IS NULL) OR StateCode<>1)
 );

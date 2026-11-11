@@ -30,15 +30,24 @@ internal sealed partial class GuildQuestStore
                 return grant.IsFailure ? grant.Error : true;
             }, ct);
 
-    internal async Task<Result<GuildQuestStored>> ReadTaskTargetAsync(GuildChildToolAdmission admission, Guid target,
-        bool relationship, CancellationToken ct) => await authority.InQuestTransactionAsync<GuildQuestStored>(
+    internal sealed record GuildTaskTarget(GuildQuestDto Quest, GuildAuthorityKind Authority);
+
+    internal async Task<Result<GuildTaskTarget>> ReadTaskTargetAsync(GuildChildToolAdmission admission, Guid target,
+        bool relationship, CancellationToken ct) => await authority.InQuestTransactionAsync<GuildTaskTarget>(
         admission.Registry.Parent.Driver.Execution.RootQuestId, async (connection, transaction, signets, token) =>
         {
             Result allowed = await AuthorizeTaskToolWithinAsync(connection, transaction, signets, admission,
                 target, relationship, token).ConfigureAwait(false);
 
-            return allowed.IsFailure ? allowed.Error
-                : await ReadTaskTargetWithinAsync(connection, transaction, admission, target, relationship, token).ConfigureAwait(false);
+            if (allowed.IsFailure) return allowed.Error;
+
+            bool peer = false;
+
+            var found = await ReadTaskTargetWithinAsync(connection, transaction, signets, admission, target, relationship, token,
+                () => peer = true).ConfigureAwait(false);
+
+            return found.IsFailure ? found.Error : new GuildTaskTarget(found.Value.Quest,
+                peer ? GuildAuthorityKind.Peer : GuildAuthorityKind.Child);
         }, ct).ConfigureAwait(false);
 
     internal async Task<Result> AuthorizeTaskToolWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
@@ -51,13 +60,14 @@ internal sealed partial class GuildQuestStore
 
         if (live.IsFailure) return live.Error;
 
-        var visible = await ReadTaskTargetWithinAsync(connection, transaction, admission, target, relationship, ct).ConfigureAwait(false);
+        var visible = await ReadTaskTargetWithinAsync(connection, transaction, signets, admission, target, relationship, ct).ConfigureAwait(false);
 
         return visible.IsFailure ? visible.Error : Result.Success();
     }
 
     private async Task<Result<GuildQuestStored>> ReadTaskTargetWithinAsync(SqliteConnection connection,
-        SqliteTransaction transaction, GuildChildToolAdmission admission, Guid target, bool relationship, CancellationToken ct)
+        SqliteTransaction transaction, SignetAuthority.QuestTransaction signets, GuildChildToolAdmission admission, Guid target, bool relationship, CancellationToken ct,
+        Action? onAwardPeer = null)
     {
         var found = await ReadWithinAsync(connection, transaction, target, ct).ConfigureAwait(false);
 
@@ -84,7 +94,64 @@ internal sealed partial class GuildQuestStore
 
         Result visible = await RequireVisibleAsync(connection, transaction, admission.Registry.Parent.Driver.Caller!, found.Value, ct).ConfigureAwait(false);
 
-        return visible.IsFailure ? TaskVisibilityError(visible.Error) : found;
+        if (visible.IsSuccess) return found;
+
+        if (relationship || admission.Kind != GuildLocalChildToolKind.GetAgentTask) return TaskVisibilityError(visible.Error);
+
+        Result peer = await RequireAwardPeerReadWithinAsync(connection, transaction, signets, parent, found.Value.Quest, ct).ConfigureAwait(false);
+
+        if (peer.IsFailure) return TaskVisibilityError(peer.Error);
+
+        onAwardPeer?.Invoke();
+
+        return found;
+    }
+
+    private async Task<Result> RequireAwardPeerReadWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        SignetAuthority.QuestTransaction signets, GuildQuestDto actor, GuildQuestDto target, CancellationToken ct)
+    {
+        Guid award;
+        Guid primary;
+
+        await using (SqliteCommand relationship = Command(connection, transaction, """
+            SELECT w.QuestId,w.PrimaryQuestId FROM guild_work_awards w
+            JOIN guild_cohort_member_quests a ON a.QuestId=w.QuestId AND a.MemberId=w.MemberId AND a.AssociationKindCode=2 AND a.Active=1
+            JOIN guild_cohort_members m ON m.Id=w.MemberId AND m.PrimaryVotingQuestId=w.PrimaryQuestId AND m.StateCode=1
+            JOIN guild_cohorts c ON c.Id=m.CohortId AND c.RootQuestId=$root AND c.StateCode IN (1,2)
+            WHERE (w.QuestId=$actor AND w.PrimaryQuestId=$target) OR (w.QuestId=$target AND w.PrimaryQuestId=$actor)
+            """))
+        {
+            Add(relationship, "$root", Id(actor.RootQuestId));
+            Add(relationship, "$actor", Id(actor.Id));
+            Add(relationship, "$target", Id(target.Id));
+
+            await using SqliteDataReader reader = await relationship.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+            if (!await reader.ReadAsync(ct).ConfigureAwait(false) || !Guid.TryParse(reader.GetString(0), out award)
+                || !Guid.TryParse(reader.GetString(1), out primary) || await reader.ReadAsync(ct).ConfigureAwait(false)) return TaskNotFound;
+        }
+
+        Result owner = await GuildStore.RequireOwnerWithinAsync(connection, transaction, target.SessionId, target.CampaignId, ct).ConfigureAwait(false);
+
+        if (owner.IsFailure) return owner.Error;
+
+        var awardSignet = await GuildSignetStore.ReadAsync(connection, transaction, award, true, ct).ConfigureAwait(false);
+
+        if (awardSignet.IsFailure) return awardSignet.Error;
+
+        var binding = await GuildCohortStore.ReadAwardPrimaryWithinAsync(connection, transaction, awardSignet.Value, ct).ConfigureAwait(false);
+
+        if (binding.IsFailure) return binding.Error;
+
+        if (binding.Value?.Binding.QuestId != primary) return TaskNotFound;
+
+        var live = await signets.ValidateCurrentGrantAsync(award, ct).ConfigureAwait(false);
+
+        if (live.IsFailure) return live.Error;
+
+        var primaryLive = await signets.ValidateCurrentGrantAsync(primary, ct).ConfigureAwait(false);
+
+        return primaryLive.IsFailure ? primaryLive.Error : Result.Success();
     }
 
     internal Task<Result<GuildAgentCardPageDto>> ListTaskAgentsAsync(GuildChildToolAdmission admission,

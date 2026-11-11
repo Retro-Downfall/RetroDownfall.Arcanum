@@ -861,6 +861,13 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
             "admit_cohort_member",
             "close_cohort",
             "remove_cohort_member",
+            "post_work_offer",
+            "submit_bid",
+            "withdraw_bid",
+            "award_work",
+            "withdraw_work_offer",
+            "append_shared_note",
+            "read_shared_notes",
         ]);
 
         Assert.Equal(registeredNames, listedNames);
@@ -4593,7 +4600,8 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         using JsonDocument arguments = JsonDocument.Parse("{\"goal\":\"inspect\",\"agent\":\"peer\"}");
 
         foreach (string name in new[] { "cast_sending", "dispatch_sending", "continue_sending", "create_agent_task",
-            "send_agent_message", "get_agent_task", "cancel_agent_task", "list_agents" })
+            "send_agent_message", "get_agent_task", "cancel_agent_task", "list_agents",
+            "post_work_offer", "submit_bid", "withdraw_bid", "award_work", "withdraw_work_offer", "append_shared_note", "read_shared_notes" })
         {
             Assert.DoesNotContain(tools.Tools, tool => tool.Name == name);
 
@@ -4605,6 +4613,24 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         Assert.False(client.Called);
 
         Assert.Null(archmage.Observed);
+    }
+
+    [Fact]
+    public async Task Distribution_tools_refuse_unbound_calls_when_guild_is_enabled()
+    {
+        await using TestMcpSession session = await CreateSessionAsync(guildEnabled: true);
+
+        using JsonDocument arguments = JsonDocument.Parse("{}");
+
+        foreach (string name in new[] { "post_work_offer", "submit_bid", "withdraw_bid", "award_work",
+            "withdraw_work_offer", "append_shared_note", "read_shared_notes" })
+        {
+            McpToolsCallResultWire result = await session.CallToolAsync(name, arguments.RootElement);
+
+            Assert.True(result.IsError);
+
+            Assert.Contains("Guild.ToolBoundaryUnavailable", result.Content![0].Text!);
+        }
     }
 
     private sealed class FakeA2AClientService(Func<string, string?, string, Result<A2ADispatchResult>> respond) : IA2AClientService
@@ -4921,6 +4947,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 
     private async Task<TestMcpSession> CreateSessionAsync(
         bool configureWorkspace = true,
+        bool guildEnabled = false,
         IntelligenceSettings? intelligenceSettings = null,
         long maxFileReadSizeBytes = 1024 * 1024,
         int maxJsonRpcLineBytes = 2_097_152,
@@ -4965,6 +4992,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
                 new ArcanumSettings
                 {
                     Security = new SecuritySettings { AllowUnsandboxedToolChildren = true },
+                    Features = new FeatureSettings { Guild = guildEnabled },
                 }));
 
         services.AddSingleton<ILexiconService>(lexiconService ?? new FakeLexiconService());

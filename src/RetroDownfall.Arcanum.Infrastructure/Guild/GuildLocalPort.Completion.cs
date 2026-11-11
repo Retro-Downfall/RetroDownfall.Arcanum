@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 internal sealed partial class GuildLocalPort
 {
-    private async Task<Result<GuildDispatchObservation>> CompleteAsync(LocalRun running, GuildLocalPortState before,
+    internal async Task<Result<GuildDispatchObservation>> CompleteAsync(LocalRun running, GuildLocalPortState before,
         GuildDispatchRequest request, Result<PromptTurnResult> result, CancellationToken ct)
     {
         if (result.IsFailure)

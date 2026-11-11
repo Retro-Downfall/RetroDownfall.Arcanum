@@ -10,10 +10,10 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 internal enum GuildLocalChildToolKind { DelegateTask, CreateAgentTask, SendAgentMessage, GetAgentTask, CancelAgentTask, ListAgents, SearchMemory,
-    CreateCohort, AdmitCohortMember, CloseCohort, RemoveCohortMember }
+    CreateCohort, AdmitCohortMember, CloseCohort, RemoveCohortMember, PostWorkOffer, SubmitBid, WithdrawBid, AwardWork, WithdrawWorkOffer, AppendSharedNote, ReadSharedNotes }
 
 /// <summary>Host output consumed before generic model-tool stringification.</summary>
-internal sealed record GuildLocalChildToolResult(GuildQuestDto Quest, string? Summary = null, ProviderCallSensitivity? Sensitivity = null, JsonElement? Projection = null);
+internal sealed record GuildLocalChildToolResult(GuildQuestDto Quest, string? Summary = null, ProviderCallSensitivity? Sensitivity = null, JsonElement? Projection = null, GuildAuthorityKind Authority = GuildAuthorityKind.Child);
 
 internal interface IGuildLocalChildToolDispatcher
 {
@@ -87,6 +87,13 @@ internal sealed class GuildChildToolAdmission(GuildLocalToolRegistry registry, G
             "admit_cohort_member" => GuildLocalChildToolKind.AdmitCohortMember,
             "close_cohort" => GuildLocalChildToolKind.CloseCohort,
             "remove_cohort_member" => GuildLocalChildToolKind.RemoveCohortMember,
+            "post_work_offer" => GuildLocalChildToolKind.PostWorkOffer,
+            "submit_bid" => GuildLocalChildToolKind.SubmitBid,
+            "withdraw_bid" => GuildLocalChildToolKind.WithdrawBid,
+            "award_work" => GuildLocalChildToolKind.AwardWork,
+            "withdraw_work_offer" => GuildLocalChildToolKind.WithdrawWorkOffer,
+            "append_shared_note" => GuildLocalChildToolKind.AppendSharedNote,
+            "read_shared_notes" => GuildLocalChildToolKind.ReadSharedNotes,
             _ => throw new InvalidOperationException("Unknown task tool."),
         };
 
@@ -170,7 +177,14 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
             new(GuildToolSourceKind.InternalMcp, "arcanum", "create_cohort"),
             new(GuildToolSourceKind.InternalMcp, "arcanum", "admit_cohort_member"),
             new(GuildToolSourceKind.InternalMcp, "arcanum", "close_cohort"),
-            new(GuildToolSourceKind.InternalMcp, "arcanum", "remove_cohort_member")];
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "remove_cohort_member"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "post_work_offer"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "submit_bid"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "withdraw_bid"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "award_work"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "withdraw_work_offer"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "append_shared_note"),
+            new(GuildToolSourceKind.InternalMcp, "arcanum", "read_shared_notes")];
 
     internal GuildLocalInferenceExecution Parent { get; } = parent;
 
@@ -188,7 +202,9 @@ internal sealed class GuildLocalToolRegistry(GuildLocalInferenceExecution parent
         && (!IsCohortTool(tool.Name) || ChildDispatcher.SupportsCohorts)
         && (tool.Name is not ("create_agent_task" or "admit_cohort_member") || ChildDispatcher.SupportsLocal || ChildDispatcher.SupportsRemote);
 
-    internal static bool IsCohortTool(string name) => name is "create_cohort" or "admit_cohort_member" or "close_cohort" or "remove_cohort_member";
+    internal static bool IsCohortTool(string name) => name is "create_cohort" or "admit_cohort_member" or "close_cohort" or "remove_cohort_member" || IsMarketTool(name);
+
+    internal static bool IsMarketTool(string name) => name is "post_work_offer" or "submit_bid" or "withdraw_bid" or "award_work" or "withdraw_work_offer" or "append_shared_note" or "read_shared_notes";
 
     internal bool Matches(GuildExecutionHandle execution, IGuildToolAuthority authority) =>
         Parent?.Driver is { } driver && Parent.Store is not null && ReferenceEquals(driver.Execution, execution)

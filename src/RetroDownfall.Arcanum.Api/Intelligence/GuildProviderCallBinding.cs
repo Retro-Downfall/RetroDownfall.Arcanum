@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// <summary>One host-built turn and one physical call. Retained or copied request ids confer no authority.</summary>
 internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution execution, GuildLocalExecutionInput input,
     PingRequest request, BudgetReservationService daily, ModelPricingEntry pricing,
-    GuildProviderPayload? roundPayload = null) : IGuildInvocationBinding, IDisposable
+    GuildProviderPayload? roundPayload = null, IReadOnlyList<GuildCircleInputBatch>? circleInputs = null) : IGuildInvocationBinding, IDisposable
 {
     private int _closed;
 
@@ -35,8 +35,9 @@ internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution exec
 
     internal Guid SourceId { get; } = Guid.NewGuid();
 
-    internal GuildProviderCallBinding CreateRound(IReadOnlyList<ChatMessage> messages, IReadOnlyList<AIFunction> functions) =>
-        IsActive ? new(execution, input, request, daily, pricing, new(messages, functions))
+    internal GuildProviderCallBinding CreateRound(IReadOnlyList<ChatMessage> messages, IReadOnlyList<AIFunction> functions,
+        IReadOnlyList<GuildCircleInputBatch>? circle = null) =>
+        IsActive ? new(execution, input, request, daily, pricing, new(messages, functions), circle?.ToArray())
             : throw new InvalidOperationException("The Guild turn has ended.");
 
     internal bool Matches(PingRequest candidate) => IsActive && ReferenceEquals(request, candidate);
@@ -112,7 +113,7 @@ internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution exec
                 using IDisposable? wire = prepared?.Enter();
 
                 return await client.GetResponseAsync(payload, providerOptions, token).ConfigureAwait(false);
-            }, ct, input).ConfigureAwait(false);
+            }, ct, input, circleInputs).ConfigureAwait(false);
 
         if (response.IsFailure) return response.Error;
 

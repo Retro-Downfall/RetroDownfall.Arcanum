@@ -26,6 +26,9 @@ internal sealed partial class ConclaveArchmage : IGuildLocalChildToolDispatcher
         if (call.Kind == GuildLocalChildToolKind.SearchMemory)
             return await SearchGuildMemoryAsync(call, cancellationToken).ConfigureAwait(false);
 
+        if (GuildLocalToolRegistry.IsMarketTool(call.Admission.Tool.Name))
+            return await DispatchMarketToolAsync(call, cancellationToken).ConfigureAwait(false);
+
         if (GuildLocalToolRegistry.IsCohortTool(call.Admission.Tool.Name))
             return await DispatchCohortToolAsync(call, cancellationToken).ConfigureAwait(false);
 
