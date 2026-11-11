@@ -2069,16 +2069,37 @@ internal static partial class HostedGrimoireProducerInventory
         }
     }
 
-    private static IReadOnlyList<HostedProducerInventoryDiagnostic> ValidateManifestRoots(IReadOnlyList<HostedProducerSite> sites)
+    private static IReadOnlyList<HostedProducerInventoryDiagnostic> ValidateManifestRoots(IReadOnlyList<HostedProducerSite> sites) =>
+        ValidateManifestRoots(sites, CatalogRoots, NonHostedCatalogRoots, AdditionalProductionRoots);
+
+    internal static IReadOnlyList<HostedProducerInventoryDiagnostic> ValidateManifestRoots(
+        IReadOnlyList<HostedProducerSite> sites, IReadOnlyList<HostedProducerServiceEntry> hostedRoots,
+        IReadOnlyList<NonHostedProducerChainEntry> nonHostedRoots, IReadOnlyList<NonHostedProducerChainEntry> additionalRoots)
     {
-        HashSet<(string RootType, string OperationId)> roots = CatalogRoots.SelectMany(service => service.Operations.Select(operation => (service.ServiceType, operation.OperationId)))
-            .Concat(NonHostedCatalogRoots.Select(static chain => (chain.EnclosingType, chain.ChainId)))
+        HashSet<(string RootType, string OperationId)> roots = hostedRoots.SelectMany(service => service.Operations.Select(operation => (service.ServiceType, operation.OperationId)))
+            .Concat(nonHostedRoots.Select(static chain => (chain.EnclosingType, chain.ChainId)))
             .ToHashSet();
 
-        return sites
+        const string recoveryType = "RetroDownfall.Arcanum.Infrastructure.Guild.GuildQuestRecoveryHandler";
+
+        const string recoveryOperation = recoveryType + ".RecoverAsync";
+
+        NonHostedProducerChainEntry[] recoveryRoots = [.. additionalRoots.Where(static chain =>
+            chain.EnclosingType == recoveryType && chain.ChainId == recoveryOperation && chain.Member == "RecoverAsync")];
+
+        List<HostedProducerInventoryDiagnostic> diagnostics = [];
+
+        if (recoveryRoots.Length == 1)
+            roots.Add((recoveryRoots[0].EnclosingType, recoveryRoots[0].ChainId));
+        else
+            diagnostics.Add(new("HOSTED_MANIFEST_ADDITIONAL_ROOT_INVALID", recoveryOperation,
+                "The reviewed additional recovery operation must have exactly one source-derived declaration."));
+
+        diagnostics.AddRange(sites
             .Where(site => !roots.Contains((site.RootType, site.AuthorityOperationId)))
-            .Select(site => new HostedProducerInventoryDiagnostic("HOSTED_MANIFEST_ROOT_UNRESOLVED", StableSiteIdentity(site), "The manifest row must map to one exact declared hosted operation or non-hosted authority chain."))
-            .ToArray();
+            .Select(site => new HostedProducerInventoryDiagnostic("HOSTED_MANIFEST_ROOT_UNRESOLVED", StableSiteIdentity(site), "The manifest row must map to one exact declared hosted operation or non-hosted authority chain.")));
+
+        return diagnostics;
     }
 
     private static IReadOnlyList<HostedProducerServiceEntry> AttachHostedSites(IReadOnlyList<HostedProducerServiceEntry> roots, IReadOnlyList<HostedProducerSite> sites) => roots

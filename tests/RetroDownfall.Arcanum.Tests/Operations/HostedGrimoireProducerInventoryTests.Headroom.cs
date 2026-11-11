@@ -111,7 +111,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     // Additional: 2015 matching rows, 31 roots, SHA-256 235C59378A34198A929078DB912394F2A2FAE209D8186EBEB8F86963F3DA0B58, zero diagnostics.
     // All three primary exact-manifest tests passed; additional reports zero diagnostics; largest observed root 6990.
     // These measurements used the primary-only manifest before the combined-manifest test-harness correction.
-    // The harness correction changes no production behavior or checker engine; verify the final combined manifest separately.
+    // The combined-manifest harness and exact recovery-declaration census change no production behavior or traversal engine.
+    // Verify the final combined manifest and source-derived census authority separately after those corrections.
     // Later calibration, test/qualification and blank-line formatting changes require separate verification.
     // These measured hashes do not claim byte identity with the final source or rebuilt assembly.
     private static readonly HeadroomCeiling[] ProductionRootCeilings =

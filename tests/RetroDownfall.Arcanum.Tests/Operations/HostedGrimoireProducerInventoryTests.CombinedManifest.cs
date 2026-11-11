@@ -25,6 +25,70 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         return new([.. primary.Items, .. recovery], diagnostics, primary.AnalysisMetrics);
     }
 
+    private static HostedProducerSite RecoveryCensusSite() =>
+        new(ReviewedRecoveryType, "RecoverAsync", "recovery.cs", ReviewedRecoveryType, "RecoverAsync",
+            HostedProducerSiteKind.DatabaseAccess, "read", ReviewedRecoveryOperation);
+
+    private static NonHostedProducerChainEntry RecoveryCensusRoot() =>
+        new(ReviewedRecoveryOperation, "recovery.cs", ReviewedRecoveryType, "RecoverAsync",
+            HostedProducerAuthorityKind.FiniteRequest, "recovery", []);
+
+    [Fact]
+    public void Reviewed_combined_manifest_census_accepts_real_recovery_authority()
+    {
+        NonHostedProducerChainEntry root = Assert.Single(HostedGrimoireProducerInventory.AdditionalProductionRoots,
+            static candidate => candidate.EnclosingType == ReviewedRecoveryType && candidate.ChainId == ReviewedRecoveryOperation);
+
+        Assert.Equal("RecoverAsync", root.Member);
+
+        Assert.EndsWith("GuildQuestRecoveryHandler.cs", root.SourcePath, StringComparison.Ordinal);
+
+        Assert.Empty(HostedGrimoireProducerInventory.ValidateManifestRoots([RecoveryCensusSite()], [], [],
+            HostedGrimoireProducerInventory.AdditionalProductionRoots));
+    }
+
+    [Fact]
+    public void Reviewed_combined_manifest_census_requires_one_exact_recovery_declaration()
+    {
+        NonHostedProducerChainEntry root = RecoveryCensusRoot();
+
+        NonHostedProducerChainEntry[][] invalid = [[], [root, root],
+            [root with { EnclosingType = "Other" }], [root with { ChainId = ReviewedRecoveryOperation + "Other" }],
+            [root with { Member = "Other" }]];
+
+        foreach (NonHostedProducerChainEntry[] declarations in invalid)
+        {
+            Assert.Contains(HostedGrimoireProducerInventory.ValidateManifestRoots([], [], [], declarations),
+                static diagnostic => diagnostic.Code == "HOSTED_MANIFEST_ADDITIONAL_ROOT_INVALID");
+
+            Assert.Contains(HostedGrimoireProducerInventory.ValidateManifestRoots([RecoveryCensusSite()], [], [], declarations),
+                static diagnostic => diagnostic.Code == "HOSTED_MANIFEST_ROOT_UNRESOLVED");
+        }
+    }
+
+    [Fact]
+    public void Reviewed_combined_manifest_census_rejects_unrelated_additional_rows()
+    {
+        NonHostedProducerChainEntry root = RecoveryCensusRoot();
+
+        HostedProducerSite other = RecoveryCensusSite() with { RootType = "Other", AuthorityOperationId = "Other.Run" };
+
+        NonHostedProducerChainEntry otherRoot = root with { EnclosingType = "Other", ChainId = "Other.Run", Member = "Run" };
+
+        HostedProducerSite wrongType = RecoveryCensusSite() with { RootType = "Other" };
+
+        HostedProducerSite wrongOperation = RecoveryCensusSite() with { AuthorityOperationId = "Other.Run" };
+
+        var diagnostics = HostedGrimoireProducerInventory.ValidateManifestRoots(
+            [RecoveryCensusSite(), other, wrongType, wrongOperation], [], [], [root, otherRoot]);
+
+        Assert.Equal(3, diagnostics.Count);
+
+        foreach (HostedProducerSite invalid in new[] { other, wrongType, wrongOperation })
+            Assert.Contains(diagnostics, diagnostic => diagnostic.Code == "HOSTED_MANIFEST_ROOT_UNRESOLVED"
+                && diagnostic.Identity == HostedGrimoireProducerInventory.StableSiteIdentity(invalid));
+    }
+
     [Fact]
     public void Reviewed_combined_manifest_uses_primary_and_exact_additional_recovery_only()
     {
