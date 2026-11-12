@@ -188,7 +188,7 @@ internal sealed partial class GuildQuestStore
             SELECT CASE WHEN typeof(r.OriginalResult)='blob' AND length(r.OriginalResult)<=4096 THEN r.OriginalResult END,
                 r.OriginalEventSequence,r.EvidenceRevision,r.OriginCode,r.AcceptedAtUtc,
                 e.KnownUsd,e.KnownTokens,e.UnknownUsd,e.UnknownTokens,e.Complete,e.NoDispatchProven,
-                r.RequestIdentity,r.RequestDigest,f.DispatchId,f.AccountingAssociationId,f.SourceId,s.OriginPrincipalId,s.InstallationGeneration
+                r.RequestIdentity,r.RequestDigest,f.DispatchId,f.AccountingAssociationId,f.SourceId,s.OriginPrincipalId,s.InstallationGeneration,e.Digest
             FROM guild_spend_receipts r JOIN guild_budget_evidence e ON e.ReceiptId=r.EvidenceReceiptId
                 AND e.EffectId=r.EffectId AND e.AppliedRevision=r.EvidenceRevision
             JOIN guild_budget_effects f ON f.EffectId=r.EffectId
@@ -213,12 +213,18 @@ internal sealed partial class GuildQuestStore
         if (!ValidSpendReceipt(receipt) || receipt!.QuestId != questId || receipt.EffectId != effectId || receipt.ReceiptId != receiptId
             || receipt.EventSequence != reader.GetInt64(1) || receipt.EvidenceRevision != reader.GetInt64(2)
             || (int)receipt.Origin != reader.GetInt32(3) || receipt.AcceptedAt != acceptedAt || !ReceiptMatchesEvidence(reader, 5, receipt)
+            || !SpendDigestsMatch(reader, 12, 18)
             || !((byte[])reader.GetValue(0)).AsSpan().SequenceEqual(JsonSerializer.SerializeToUtf8Bytes(receipt, GuildSpendStorageJsonContext.Default.GuildSpendReceiptDto))) return Conflict;
 
         if (receipt.Origin == GuildSpendOrigin.OperatorAttested && !OperatorReceiptMatchesIdentity(reader, receipt)) return Conflict;
 
         return receipt;
     }
+
+    private static bool SpendDigestsMatch(SqliteDataReader reader, int requestIndex, int evidenceIndex) =>
+        reader.GetValue(requestIndex) is byte[] request && request.Length == 32
+        && reader.GetValue(evidenceIndex) is byte[] evidence && evidence.Length == 32
+        && CryptographicOperations.FixedTimeEquals(request, evidence);
 
     private static bool OperatorReceiptMatchesIdentity(SqliteDataReader reader, GuildSpendReceiptDto receipt)
     {

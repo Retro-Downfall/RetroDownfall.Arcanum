@@ -91,7 +91,7 @@ internal sealed partial class GuildQuestStore
 
         await using (SqliteCommand prior = Command(connection, transaction, """
             SELECT r.EffectId,r.RequestDigest,CASE WHEN typeof(r.OriginalResult)='blob' AND length(r.OriginalResult)<=4096 THEN r.OriginalResult END,
-                r.OriginalEventSequence,r.ReceiptId,r.EvidenceRevision,r.AcceptedAtUtc,e.KnownUsd,e.KnownTokens,e.UnknownUsd,e.UnknownTokens,e.Complete,e.NoDispatchProven
+                r.OriginalEventSequence,r.ReceiptId,r.EvidenceRevision,r.AcceptedAtUtc,e.KnownUsd,e.KnownTokens,e.UnknownUsd,e.UnknownTokens,e.Complete,e.NoDispatchProven,e.Digest
             FROM guild_spend_receipts r JOIN guild_budget_evidence e ON e.ReceiptId=r.EvidenceReceiptId
                 AND e.EffectId=r.EffectId AND e.AppliedRevision=r.EvidenceRevision
             WHERE r.OriginCode=$origin AND r.RequestIdentity=$identity
@@ -106,7 +106,8 @@ internal sealed partial class GuildQuestStore
             if (await reader.ReadAsync(ct).ConfigureAwait(false))
             {
                 if (reader.GetString(0) != Id(binding.EffectId) || reader.GetValue(1) is not byte[] savedDigest
-                    || !CryptographicOperations.FixedTimeEquals(identity.RequestDigest, savedDigest)) return Conflict;
+                    || !CryptographicOperations.FixedTimeEquals(identity.RequestDigest, savedDigest)
+                    || !SpendDigestsMatch(reader, 1, 13)) return Conflict;
 
                 if (reader.IsDBNull(2) || !UtcInstantText.TryParse(reader.GetString(6), out DateTimeOffset acceptedAt)) return Conflict;
 

@@ -33,6 +33,66 @@ public sealed partial class GuildQuestStoreTests
         GuildSpendCorrectionRequest correction = new(Guid.NewGuid(), read.Value.EvidenceRevision, GuildSpendOrigin.OperatorAttested,
             new(41, 0, 0, 0, 1.30m), new string('A', 64));
         Assert.True((await f.Store.CorrectOperatorSpendAsync(f.Caller, quest.Quest.Id, quest.Quest.Id, correction, default)).IsFailure);
+
+        await using SqliteConnection connection = await f.OpenAsync();
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT ReceiptId,AppliedRevision,Digest FROM guild_budget_evidence WHERE EffectId=$effect";
+
+        command.Parameters.AddWithValue("$effect", quest.Quest.Id.ToString("D").ToUpperInvariant());
+
+        string evidenceId;
+        long revision;
+        byte[] digest;
+
+        await using (SqliteDataReader evidence = await command.ExecuteReaderAsync())
+        {
+            Assert.True(await evidence.ReadAsync());
+            evidenceId = evidence.GetString(0);
+            revision = evidence.GetInt64(1);
+            digest = (byte[])evidence.GetValue(2);
+        }
+
+        Guid receiptId = Guid.NewGuid();
+
+        DateTimeOffset acceptedAt = DateTimeOffset.UtcNow;
+
+        GuildSpendReceiptDto receipt = new(receiptId, quest.Quest.Id, quest.Quest.Id, GuildSpendOrigin.RemoteReport,
+            null, new(1.25m, 40, false, false, true, null), revision, 1, acceptedAt);
+
+        command.CommandText = """
+            INSERT INTO guild_spend_receipts(ReceiptId,EffectId,EvidenceReceiptId,EvidenceRevision,OriginCode,RequestIdentity,
+                RequestDigest,OriginalResult,OriginalEventSequence,AcceptedAtUtc)
+            VALUES($receipt,$effect,$evidence,$revision,1,'remote-evidence-test',$digest,$result,1,$accepted)
+            """;
+
+        command.Parameters.AddWithValue("$receipt", receiptId.ToString("D").ToUpperInvariant());
+        command.Parameters.AddWithValue("$evidence", evidenceId);
+        command.Parameters.AddWithValue("$revision", revision);
+        command.Parameters.AddWithValue("$digest", digest);
+        command.Parameters.AddWithValue("$result", JsonSerializer.SerializeToUtf8Bytes(receipt, GuildSpendStorageJsonContext.Default.GuildSpendReceiptDto));
+        command.Parameters.AddWithValue("$accepted", UtcInstantText.Format(acceptedAt));
+        Assert.Equal(1, await command.ExecuteNonQueryAsync());
+
+        var validReceipt = await f.Store.ReadOperatorSpendReceiptAsync(f.Caller, quest.Quest.Id, quest.Quest.Id, receiptId, default);
+        Assert.True(validReceipt.IsSuccess, validReceipt.Error.Message);
+        Assert.Null(validReceipt.Value.Facts.LocalTokens);
+
+        command.CommandText = "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='guild_budget_evidence_guard_update'";
+        string guard = (string)(await command.ExecuteScalarAsync())!;
+        command.CommandText = "DROP TRIGGER guild_budget_evidence_guard_update";
+        await command.ExecuteNonQueryAsync();
+        byte[] forged = (byte[])digest.Clone();
+        forged[0] ^= 1;
+        command.CommandText = "UPDATE guild_budget_evidence SET Digest=$forged WHERE ReceiptId=$evidence";
+        command.Parameters.AddWithValue("$forged", forged);
+        Assert.Equal(1, await command.ExecuteNonQueryAsync());
+        command.CommandText = guard;
+        await command.ExecuteNonQueryAsync();
+
+        var corrupt = await f.Store.ReadOperatorSpendReceiptAsync(f.Caller, quest.Quest.Id, quest.Quest.Id, receiptId, default);
+        Assert.True(corrupt.IsFailure);
     }
 
     [Theory]
@@ -244,6 +304,33 @@ public sealed partial class GuildQuestStoreTests
             Assert.Equal(1, await corruptReceipt.ExecuteNonQueryAsync());
             corruptReceipt.CommandText = guard;
             await corruptReceipt.ExecuteNonQueryAsync();
+        }
+        await using (SqliteCommand corruptEvidence = connection.CreateCommand())
+        {
+            corruptEvidence.CommandText = "SELECT Digest FROM guild_budget_evidence WHERE ReceiptId=$receipt";
+            corruptEvidence.Parameters.AddWithValue("$receipt", result.Value.Receipt.ReceiptId.ToString("D").ToUpperInvariant());
+            byte[] original = (byte[])(await corruptEvidence.ExecuteScalarAsync())!;
+            byte[] forged = (byte[])original.Clone();
+            forged[0] ^= 1;
+            corruptEvidence.CommandText = "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='guild_budget_evidence_guard_update'";
+            string guard = (string)(await corruptEvidence.ExecuteScalarAsync())!;
+            corruptEvidence.CommandText = "DROP TRIGGER guild_budget_evidence_guard_update";
+            await corruptEvidence.ExecuteNonQueryAsync();
+            corruptEvidence.CommandText = "UPDATE guild_budget_evidence SET Digest=$forged WHERE ReceiptId=$receipt";
+            corruptEvidence.Parameters.AddWithValue("$forged", forged);
+            Assert.Equal(1, await corruptEvidence.ExecuteNonQueryAsync());
+            corruptEvidence.CommandText = guard;
+            await corruptEvidence.ExecuteNonQueryAsync();
+            var badRead = await f.Store.ReadOperatorSpendReceiptAsync(f.Caller, quest.Quest.Id, effect.EffectId, result.Value.Receipt.ReceiptId, default);
+            var badReplay = await f.Store.CorrectOperatorSpendAsync(f.Caller, quest.Quest.Id, effect.EffectId, request, default);
+            Assert.True(badRead.IsFailure && badReplay.IsFailure, $"Read refused: {badRead.IsFailure}; replay refused: {badReplay.IsFailure}.");
+            corruptEvidence.CommandText = "DROP TRIGGER guild_budget_evidence_guard_update";
+            await corruptEvidence.ExecuteNonQueryAsync();
+            corruptEvidence.CommandText = "UPDATE guild_budget_evidence SET Digest=$original WHERE ReceiptId=$receipt";
+            corruptEvidence.Parameters.AddWithValue("$original", original);
+            Assert.Equal(1, await corruptEvidence.ExecuteNonQueryAsync());
+            corruptEvidence.CommandText = guard;
+            await corruptEvidence.ExecuteNonQueryAsync();
         }
         await using (SqliteCommand physical = connection.CreateCommand())
         {
