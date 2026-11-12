@@ -403,4 +403,56 @@ public sealed partial class GuildQuestStoreTests
 
         await Assert.ThrowsAsync<SqliteException>(() => check.ExecuteNonQueryAsync());
     }
+    [Fact]
+    public async Task Provider_settlement_rejects_undefined_bill_operation_type_before_persisting_evidence()
+    {
+        await using Fixture f = await Fixture.CreateAsync();
+
+        await using SqliteConnection connection = await f.OpenAsync();
+
+        await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection);
+
+        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(new()));
+
+        f.UseBudgetParticipant(new GuildBudgetLedger(daily));
+
+        GuildQuestStored quest = (await f.Store.IssueAsync(f.Caller, f.Identity, f.Request, default)).Value;
+
+        GuildQuestDriver driver = await f.DriverAsync(quest);
+
+        GuildQuestDispatchRecord dispatch = (await f.Store.PrepareDispatchAsync(driver, Guid.NewGuid(),
+            ReceiptDigest("invalid-operation-type"), quest.Quest.RunId, false, default)).Value;
+
+        GuildLocalInferenceExecution execution = new(f.Store, driver, dispatch);
+
+        GuildBudgetEffectRequest effect = new(Guid.NewGuid(), quest.Quest.Id, dispatch.DispatchId, quest.Quest.RunId,
+            GuildBudgetEffectKind.LocalProvider, Guid.NewGuid(), null, null, null);
+
+        Assert.True((await f.Store.ExecuteProviderEffectAsync(execution, daily, effect,
+            _ => Task.FromResult(Result<string>.Success("answer")), default)).IsSuccess);
+
+        DateTimeOffset now = new(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
+
+        BillableOperationRecord bill = new(quest.Quest.RunId, (BillableOperationType)int.MaxValue, "provider", "model", "guild",
+            now, now.AddSeconds(1), 7, 3, 1, 2, "{}", 0.125m, BillableOperationStatus.Completed, null);
+
+        Assert.True((await f.Store.SettleProviderEffectAsync(execution, daily, effect, bill, default)).IsFailure);
+
+        Assert.Equal(0L, await f.CountAsync("BillableOperations"));
+
+        Assert.Equal(0L, await f.CountAsync("guild_budget_evidence"));
+
+        Assert.Equal(0L, await f.CountAsync("guild_spend_sources"));
+
+        await using SqliteCommand events = connection.CreateCommand();
+
+        events.CommandText = "SELECT count(*) FROM guild_events WHERE EventKindCode=12";
+
+        Assert.Equal(0L, await events.ExecuteScalarAsync());
+
+        Result<GuildBudgetEffect> accepted = await f.Store.SettleProviderEffectAsync(execution, daily, effect,
+            bill with { OperationType = BillableOperationType.Chat }, default);
+
+        Assert.True(accepted.IsSuccess, accepted.Error.Message);
+    }
 }

@@ -122,7 +122,8 @@ internal sealed partial class GuildQuestStore
             || !ReferenceEquals(owner, execution) || daily is null || allocations is not GuildBudgetLedger ledger
             || bill is null || bill.RunId != effect.AccountingAssociationId || bill.InputTokens < 0 || bill.OutputTokens < 0
             || bill.CachedTokens < 0 || bill.CachedTokens > bill.InputTokens || bill.ReasoningTokens < 0
-            || bill.ReasoningTokens > bill.OutputTokens || bill.ActualCostUsd < 0 || !Enum.IsDefined(bill.Status))
+            || bill.ReasoningTokens > bill.OutputTokens || bill.ActualCostUsd < 0
+            || !Enum.IsDefined(bill.OperationType) || !Enum.IsDefined(bill.Status))
             return Task.FromResult(Result<GuildBudgetEffect>.Failure(InvalidReceipt));
 
         // Evidence is allowed after revocation. It grants no new send and must not be discarded because authority ended.
