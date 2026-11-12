@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Tower;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Memory;
 
@@ -26,7 +27,9 @@ internal sealed class MemorySearchService(
     ILexiconCurationService lexicon,
     ILexiconService lexiconRecall,
     ISagaMemoryStore sagaStore,
-    IOptionsMonitor<ArcanumSettings> options) : IMemorySearchService
+    IOptionsMonitor<ArcanumSettings> options,
+    GuildLocalHostPolicy? workspacePolicy = null,
+    PhysicalCampaignRootOpener? workspaceOpener = null) : IMemorySearchService
 {
     internal const int SearchResultLimit = 10_000;
 
@@ -62,6 +65,18 @@ internal sealed class MemorySearchService(
             }
 
             return true;
+        }
+    }
+
+    private sealed class WorkspaceEvidence : IDisposable
+    {
+        internal List<GuildWorkspaceAuthority.RetainedRead> Files { get; } = [];
+
+        internal List<Func<CancellationToken, Task<Result>>> Checks { get; } = [];
+
+        public void Dispose()
+        {
+            foreach (GuildWorkspaceAuthority.RetainedRead file in Files) file.Dispose();
         }
     }
 
@@ -125,6 +140,8 @@ internal sealed class MemorySearchService(
         {
             return new Error(ErrorCodes.Guild.AuthorityUnavailable, "Memory search requires a host-bound Session while Campaign scoping is enabled.");
         }
+
+        using WorkspaceEvidence workspaceEvidence = new();
 
         await using IGrimoireOrdinaryConnectionLease lease = await OpenMemorySearchLeaseAsync(db, connections, cancellationToken).ConfigureAwait(false);
 
@@ -199,6 +216,32 @@ internal sealed class MemorySearchService(
 
         if (availability.IsFailure) return availability.Error;
 
+        if (modelInvocation && invocation is not null && initialGrant is not null && workspace is not null
+            && Includes(request.Scope, MemorySearchScope.Workspace) && !unavailable.ContainsKey(MemorySearchScope.Workspace))
+        {
+            await using DbCommand workspaceIdCommand = connection.CreateCommand();
+
+            workspaceIdCommand.CommandText = "SELECT Id FROM Campaigns WHERE Path=@path";
+
+            AddParameter(workspaceIdCommand, "@path", workspace.Value.Path);
+
+            if (await workspaceIdCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not string workspaceIdText
+                || !Guid.TryParse(workspaceIdText, out Guid workspaceId) || workspaceId == Guid.Empty)
+                return new Error(ErrorCodes.Guild.AuthorityUnavailable, "Workspace registration is unavailable.");
+
+            if (!initialGrant.Workspaces.Any(scope => scope.WorkspaceId == workspaceId))
+            {
+                unavailable[MemorySearchScope.Workspace] = new(ErrorCodes.Guild.Forbidden, "Workspace read authority is unavailable.");
+            }
+            else
+            {
+                Result<NativeMemorySearchPage> probe = await ReadGuildWorkspaceAsync(invocation, connection, workspace.Value,
+                    query, new(3), 0, allocationBytes, workspaceEvidence, cancellationToken).ConfigureAwait(false);
+
+                if (probe.IsFailure) return probe.Error;
+            }
+        }
+
         MemorySearchTruncationReason? reason = null;
 
         bool protectedContent = false;
@@ -258,7 +301,7 @@ internal sealed class MemorySearchService(
                         continue;
                     }
 
-                    if ((source == MemorySearchScope.Workspace && (GuildMemoryAccess.IsGuildInvocation || workspace is null))
+                    if ((source == MemorySearchScope.Workspace && workspace is null)
                         || (source != MemorySearchScope.Workspace && request.SessionId is null))
                     {
                         unavailable[source] = new(ErrorCodes.Guild.AuthorityUnavailable, "This memory source requires a host-bound Session or a qualified physical workspace source adapter.");
@@ -268,13 +311,20 @@ internal sealed class MemorySearchService(
                         continue;
                     }
 
-                    Result<NativeMemorySearchPage> native = await GuildMemoryAccess.RunResultAsync(store, GuildMemoryOperation.Read,
-                        ct => NativeMemorySearchReader.ReadAsync(connection, query, source, request.SessionId, workspace,
-                            position.Phase < first ? new(first) : position, budget - results.Count, ct, options.CurrentValue, modelDisclosure: true, contentByteLimit: 1024, pageByteLimit: allocationBytes), cancellationToken).ConfigureAwait(false);
+                    Result<NativeMemorySearchPage> native = source == MemorySearchScope.Workspace && invocation is not null
+                        ? await ReadGuildWorkspaceAsync(invocation, connection, workspace!.Value, query,
+                            position.Phase < first ? new(first) : position, budget - results.Count,
+                            Math.Max(0, allocationBytes - results.Sum(item => (long)System.Text.Encoding.UTF8.GetByteCount(item.Content))),
+                            workspaceEvidence, cancellationToken).ConfigureAwait(false)
+                        : await GuildMemoryAccess.RunResultAsync(store, GuildMemoryOperation.Read,
+                            ct => NativeMemorySearchReader.ReadAsync(connection, query, source, request.SessionId, workspace,
+                                position.Phase < first ? new(first) : position, budget - results.Count, ct, options.CurrentValue, modelDisclosure: true, contentByteLimit: 1024, pageByteLimit: allocationBytes), cancellationToken).ConfigureAwait(false);
 
                     if (native.IsFailure)
                     {
-                        if (IsAuthorityFailure(native.Error)) return native.Error;
+                        if (IsAuthorityFailure(native.Error)
+                            && !(source == MemorySearchScope.Workspace && request.Scope == MemorySearchScope.All
+                                && native.Error.Code == ErrorCodes.Guild.Forbidden)) return native.Error;
 
                         unavailable[source] = native.Error;
 
@@ -454,6 +504,10 @@ internal sealed class MemorySearchService(
                 !unavailable.ContainsKey(source), unavailable.ContainsKey(source) ? error.Code : null));
         }
 
+        if (invocation is not null && workspaceEvidence.Checks.Count > 0)
+            await GrimoireScopedConsumerTestSeam.PauseAsync("GuildWorkspaceMemorySearchReader.Disclosure:" + invocation.Execution.SignetId.ToString("D"),
+                GrimoireScopedConsumerFinalUseKind.ReaderMaterialized, workspaceEvidence.Files.Count, cancellationToken).ConfigureAwait(false);
+
         if (initialGrant is not null && invocation is not null)
         {
             Result<GuildGrant> current = await invocation.Authority.RevalidateMemoryAsync(invocation, connection, null, cancellationToken).ConfigureAwait(false);
@@ -463,6 +517,33 @@ internal sealed class MemorySearchService(
             if (initialGrant.Memory.Any(grant => grant.Operation == GuildMemoryOperation.Read && !current.Value.Memory.Contains(grant)))
             {
                 return new Error(ErrorCodes.Guild.MemoryNotGranted, "Memory authority narrowed before search disclosure.");
+            }
+        }
+
+        if (initialGrant is not null && invocation is not null && workspaceEvidence.Checks.Count > 0)
+        {
+            Result<GuildGrant> current = await invocation.Authority.RevalidateMemoryAsync(invocation, connection, null, cancellationToken).ConfigureAwait(false);
+
+            if (current.IsFailure) return current.Error;
+
+            if (initialGrant.Workspaces.Any(scope => !current.Value.Workspaces.Contains(scope)))
+                return new Error(ErrorCodes.Guild.Forbidden, "Workspace authority narrowed before search disclosure.");
+
+            foreach (Func<CancellationToken, Task<Result>> check in workspaceEvidence.Checks)
+            {
+                Result valid = await check(cancellationToken).ConfigureAwait(false);
+
+                if (valid.IsFailure) return valid.Error;
+            }
+
+            foreach (GuildWorkspaceAuthority.RetainedRead file in workspaceEvidence.Files)
+            {
+                Result valid = await file.ValidateAsync(cancellationToken).ConfigureAwait(false);
+
+                if (valid.IsFailure) return valid.Error;
+
+                if (!file.IsIndexEligible(WorkspaceExtensions()))
+                    return new Error(ErrorCodes.Guild.Forbidden, "Workspace source is no longer eligible for disclosure.");
             }
         }
 
@@ -489,6 +570,79 @@ internal sealed class MemorySearchService(
         }
     }
 
+    private async Task<Result<NativeMemorySearchPage>> ReadGuildWorkspaceAsync(GuildMemoryInvocationContext invocation,
+        DbConnection connection, (string Path, string Label) workspace, string query, MemorySearchPosition position,
+        int limit, long allocationBytes, WorkspaceEvidence retained, CancellationToken cancellationToken)
+    {
+        if (workspacePolicy is null || workspaceOpener is null || !GuildMemoryInvocationAmbient.IsActive
+            || !ReferenceEquals(GuildMemoryInvocationAmbient.Current, invocation))
+            return new Error(ErrorCodes.Guild.AuthorityUnavailable, "Workspace search authority is unavailable.");
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT Id FROM Campaigns WHERE Path=@path";
+
+        AddParameter(command, "@path", workspace.Path);
+
+        if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not string raw
+            || !Guid.TryParse(raw, out Guid workspaceId) || workspaceId == Guid.Empty)
+            return new Error(ErrorCodes.Guild.AuthorityUnavailable, "Workspace registration is unavailable.");
+
+        return await invocation.Authority.AdmitWorkspaceAsync(invocation.Execution, workspaceId, GuildAuthorityAction.WorkspaceRead,
+            async (row, proof, ct) =>
+            {
+                Result<GuildWorkspaceRegistration> Convert(Result<GuildWorkspaceHostEvidence> evidence)
+                {
+                    if (evidence.IsFailure) return evidence.Error;
+
+                    GuildWorkspaceHostEvidence host = evidence.Value;
+
+                    if (host.RootIdentity is not { Length: 32 } || host.IdentityPolicyVersion == 0 || host.IdentityRevision <= 0)
+                        return new Error(ErrorCodes.Guild.AuthorityUnavailable, "Workspace registration is unavailable.");
+
+                    return new GuildWorkspaceRegistration(workspaceId, host.WorkspaceRoot, host.IdentityPolicyVersion,
+                        host.IdentityRevision, new CovenantDigest(host.RootIdentity));
+                }
+
+                async Task<Result<GuildWorkspaceRegistration>> Resolve(CancellationToken token) =>
+                    Convert(await workspacePolicy.ResolveAsync(workspaceId, token).ConfigureAwait(false));
+
+                Result<GuildWorkspaceRegistration> registration = await Resolve(ct).ConfigureAwait(false);
+
+                if (registration.IsFailure) return registration.Error;
+
+                if (!string.Equals(workspace.Path, registration.Value.RootPath, StringComparison.Ordinal)
+                    || row.Owners.WorkspaceIdentityPolicyVersion != registration.Value.PolicyVersion
+                    || row.Owners.WorkspaceIdentityRevision != registration.Value.Revision
+                    || row.Owners.WorkspaceRootIdentity is not { Length: 32 } pin
+                    || !CryptographicOperations.FixedTimeEquals(pin, registration.Value.RootIdentity.Bytes))
+                    return new Error(ErrorCodes.Guild.AuthorityUnavailable, "Workspace registration no longer matches the run.");
+
+                GuildGrant grant = proof.EffectiveGrant! with
+                {
+                    Workspaces = [.. proof.EffectiveGrant!.Workspaces.Where(item => item.WorkspaceId == workspaceId)],
+                };
+
+                GuildWorkspaceAuthority physical = new(registration.Value, workspaceOpener, Resolve);
+
+                Result<NativeMemorySearchPage> page = await GuildWorkspaceMemorySearchReader.ReadAsync(connection, query, workspace, workspaceId, grant,
+                    physical, position, limit, allocationBytes, WorkspaceExtensions(), retained.Files, ct).ConfigureAwait(false);
+
+                if (page.IsFailure) return page.Error;
+
+                Result valid = await physical.ValidateAsync(grant, ct).ConfigureAwait(false);
+
+                if (valid.IsFailure) return valid.Error;
+
+                retained.Checks.Add(token => physical.ValidateAsync(grant, token));
+
+                return page;
+            }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private IReadOnlySet<string> WorkspaceExtensions() => new HashSet<string>(
+        (options.CurrentValue.ResolveEmbeddings().Codebase ?? new CodebaseEmbeddingSettings()).FileExtensions, StringComparer.OrdinalIgnoreCase);
+
     private async Task<Result> ProbeAvailabilityAsync(DbConnection connection, MemorySearchRequest request,
         (string Path, string Label)? workspace, bool modelInvocation, Dictionary<MemorySearchScope, Error> unavailable,
         CancellationToken cancellationToken)
@@ -512,7 +666,7 @@ internal sealed class MemorySearchService(
                     new(ErrorCodes.Guild.AuthorityUnavailable, "Saga retrieval is disabled."),
                 MemorySearchScope.Lexicon when !settings.Features.Lexicon =>
                     new(ErrorCodes.MemorySearch.IndexUnavailable, "Lexicon retrieval is disabled."),
-                MemorySearchScope.Workspace when GuildMemoryAccess.IsGuildInvocation || workspace is null =>
+                MemorySearchScope.Workspace when workspace is null || GuildMemoryAccess.IsGuildInvocation && (workspacePolicy is null || workspaceOpener is null) =>
                     new(ErrorCodes.Guild.AuthorityUnavailable, "This memory source requires a qualified physical workspace source adapter."),
                 MemorySearchScope.Session or MemorySearchScope.Attachments when request.SessionId is null =>
                     new(ErrorCodes.Guild.AuthorityUnavailable, "This memory source requires a host-bound Session."),
@@ -536,7 +690,7 @@ internal sealed class MemorySearchService(
 
             // These probes read capability/schema metadata only. They neither inspect protected
             // payloads nor hydrate candidates, and model probes retain each store's own admission.
-            Result<bool> available = modelInvocation
+            Result<bool> available = modelInvocation && source != MemorySearchScope.Workspace
                 ? await GuildMemoryAccess.RunResultAsync(store, GuildMemoryOperation.Read, ProbeAsync, cancellationToken).ConfigureAwait(false)
                 : await ProbeAsync(cancellationToken).ConfigureAwait(false);
 
@@ -583,9 +737,12 @@ internal sealed class MemorySearchService(
     {
         await using DbCommand command = connection.CreateCommand();
 
-        command.CommandText = "SELECT Path,Name FROM Campaigns WHERE Path=@path LIMIT 1";
+        bool isId = Guid.TryParse(path, out Guid workspaceId);
 
-        AddParameter(command, "@path", path);
+        command.CommandText = isId ? "SELECT Path,Name FROM Campaigns WHERE Id=@path LIMIT 1"
+            : "SELECT Path,Name FROM Campaigns WHERE Path=@path LIMIT 1";
+
+        AddParameter(command, "@path", isId ? workspaceId.ToString("D").ToUpperInvariant() : path);
 
         await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 

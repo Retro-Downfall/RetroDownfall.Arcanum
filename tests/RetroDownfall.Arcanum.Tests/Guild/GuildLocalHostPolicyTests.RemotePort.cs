@@ -89,6 +89,19 @@ public sealed partial class GuildLocalHostPolicyTests
 
         GuildQuestDto quest = issued.Value.Quest;
 
+        GuildPortalStore portal = new(f.Store, f.Authority, f.Policy, TimeProvider.System);
+
+        GuildTreeSnapshotDto? spendSnapshot = null;
+
+        if (mode == A2ADispatchMode.Blocking && scenario == "complete")
+        {
+            var snapshot = await portal.CaptureTreeSnapshotAsync(caller, quest.Id, default);
+
+            Assert.True(snapshot.IsSuccess, snapshot.Error.Message);
+
+            spendSnapshot = snapshot.Value;
+        }
+
         var recovery = await f.Policy.CreateRecoveryAsync(caller, quest.Id, quest.OperationId, quest.SignetRevision, default);
 
         var execution = await f.Authority.RebindAsync(recovery.Value, default);
@@ -715,6 +728,35 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.True(replay.IsSuccess, replay.Error.Message);
 
         if (scenario == "continuation-disconnect") Assert.Equal(QuestState.Completed, replay.Value.State);
+
+        if (mode == A2ADispatchMode.Blocking && scenario == "complete")
+        {
+            var events = await portal.ReadScopedReplayAsync(caller, quest.Id, quest.Id, null,
+                spendSnapshot!.ResumeCursor, default);
+
+            Assert.True(events.IsSuccess, events.Error.Message);
+
+            var spendEvents = events.Value.Page.Items.Where(item => item.EventKind == GuildEventKind.SpendChanged).ToArray();
+
+            var physical = Assert.Single(spendEvents, item => item.ObjectId != quest.Id);
+
+            Assert.NotEqual(Guid.Empty, physical.ObjectId);
+
+            Assert.All(spendEvents, item =>
+            {
+                Assert.Equal(quest.Id, item.QuestId);
+
+                Assert.True(item.EventSequence > spendSnapshot!.Watermark);
+            });
+
+            var again = await portal.ReadScopedReplayAsync(caller, quest.Id, quest.Id, null,
+                spendSnapshot!.ResumeCursor, default);
+
+            Assert.True(again.IsSuccess, again.Error.Message);
+
+            Assert.Equal(spendEvents.Select(item => item.EventSequence),
+                again.Value.Page.Items.Where(item => item.EventKind == GuildEventKind.SpendChanged).Select(item => item.EventSequence));
+        }
 
         var retained = (await f.Store.GetAsync(caller, quest.Id, default)).Value.Quest;
 

@@ -45,7 +45,7 @@ internal sealed partial class ConclaveArchmage
         using IDisposable invocation = call.Admission.Registry.Parent.Store.EnterProviderInvocation(call.Admission.Registry.Parent);
 
         var result = await memorySearch.SearchForInvocationAsync(new(query, scope, call.ParentQuest.SessionId,
-            WorkspaceId: null, Limit: limit, Continuation: continuation), allocation, ct).ConfigureAwait(false);
+            WorkspaceId: call.ParentQuest.WorkspaceId?.ToString("D"), Limit: limit, Continuation: continuation), allocation, ct).ConfigureAwait(false);
 
         if (result.IsFailure) return result.Error;
 

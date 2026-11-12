@@ -1277,6 +1277,7 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
             "Selects synchronous Data Protection key-ring refresh before providers are constructed, keeping refresh I/O on an active caller covered by reset's caller drain. Registers no callback."),
         ("System.Console.CancelKeyPress subscription in " + P + "Cli.CommandCenter.CommandCenterHost.StartUpAsync", "The command center's interrupt handler: it cancels a token."),
         ("System.Console.CancelKeyPress subscription in " + P + "Cli.Commands.AskCommand.Ask", "The ask command's interrupt handler: it cancels a token."),
+        ("System.Console.CancelKeyPress subscription in " + P + "Cli.Commands.Guild.GuildCommands.WatchAsync", "The Guild watch client cancels its linked token on interrupt and removes the handler in finally; it does not run in the serving host."),
         ("System.Console.CancelKeyPress subscription in " + P + "Cli.Commands.WatchCommands.WithCancellationAsync", "The watch commands' interrupt handler: it cancels a token."),
         ("System.Diagnostics.Metrics.MeterListener constructed in " + P + "Infrastructure.Telemetry.PrometheusMetricsExporter.EnsureListenerStarted",
             "The metrics exporter's listener. Its callback runs on the thread that records a measurement and only adds the measurement to in-memory series (OnMeasurementRecorded reaches no producer site, pinned below)."),

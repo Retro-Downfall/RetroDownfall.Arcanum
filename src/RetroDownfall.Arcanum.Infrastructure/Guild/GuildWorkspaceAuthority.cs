@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Runtime.InteropServices;
 using System.Collections.Immutable;
 using Microsoft.Win32.SafeHandles;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -6,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Tower;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
@@ -16,6 +19,10 @@ internal sealed record GuildWorkspaceRegistration(Guid WorkspaceId, string RootP
 internal sealed class GuildWorkspaceAuthority(GuildWorkspaceRegistration registration, PhysicalCampaignRootOpener opener,
     Func<CancellationToken, Task<Result<GuildWorkspaceRegistration>>> resolveCurrent)
 {
+    private GuildWorkspaceRegistration Registration => registration;
+
+    private PhysicalCampaignRootOpener Opener => opener;
+
     private static Error Unavailable => new(ErrorCodes.Guild.WorkspaceIdentityUnavailable,
         "The granted physical workspace identity is unavailable.");
 
@@ -178,6 +185,188 @@ internal sealed class GuildWorkspaceAuthority(GuildWorkspaceRegistration registr
         }
     }
 
+    /// <summary>Retains root, granted-directory and file handles until the caller completes disclosure.</summary>
+    internal async Task<Result<RetainedRead>> OpenRetainedReadAsync(GuildGrant grant, Guid workspaceId, string relativePath,
+        CancellationToken cancellationToken)
+    {
+        if (workspaceId != registration.WorkspaceId || !IsRelativePath(relativePath)) return Forbidden;
+
+        string resource = Path.Combine(registration.RootPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
+
+        foreach (GuildWorkspaceGrant scope in grant.Workspaces)
+        {
+            if (scope.WorkspaceId != workspaceId || !TryResolveDirectory(scope.RelativeRoot, out string path)
+                || !WorkspacePathPolicy.IsPathUnderWorkspace(path, resource) || !TryOpenScope(scope.RelativeRoot, out ScopeHandles? openedScope)) continue;
+
+            ScopeHandles handles = openedScope!;
+
+            FileStream? stream = null;
+
+            bool transferred = false;
+
+            try
+            {
+                Result<FileStream> opened = await OpenReadAsync(grant, workspaceId, relativePath, cancellationToken).ConfigureAwait(false);
+
+                if (opened.IsFailure) return opened.Error;
+
+                stream = opened.Value;
+
+                RetainedRead evidence = new(this, grant, relativePath, resource, handles, stream);
+
+                Result valid = await evidence.ValidateAsync(cancellationToken).ConfigureAwait(false);
+
+                if (valid.IsFailure) return valid.Error;
+
+                transferred = true;
+
+                return evidence;
+            }
+            finally
+            {
+                if (!transferred)
+                {
+                    stream?.Dispose();
+                    handles.Dispose();
+                }
+            }
+        }
+
+        return Forbidden;
+    }
+
+    internal sealed class RetainedRead : IDisposable
+    {
+        private readonly GuildWorkspaceAuthority _owner;
+
+        private readonly GuildGrant _grant;
+
+        private readonly string _relativePath;
+
+        private readonly string _resource;
+
+        private readonly ScopeHandles _handles;
+
+        private readonly FileStream _stream;
+
+        private long _contentOffset;
+
+        private long _contentLength;
+
+        private byte[]? _contentDigest;
+
+        internal RetainedRead(GuildWorkspaceAuthority owner, GuildGrant grant, string relativePath, string resource,
+            ScopeHandles handles, FileStream stream)
+        {
+            _owner = owner;
+            _grant = grant;
+            _relativePath = relativePath;
+            _resource = resource;
+            _handles = handles;
+            _stream = stream;
+        }
+
+        internal FileStream Stream => _stream;
+
+        internal bool IsIndexEligible(IReadOnlySet<string> extensions)
+        {
+            try
+            {
+                return WorkspaceIndexEligibility.IsEligible(_relativePath,
+                    prefix => File.GetAttributes(Path.Combine(_owner.Registration.RootPath, prefix)), extensions);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+
+        internal void RecordContentEvidence(long offset, long length, byte[] digest)
+        {
+            _contentOffset = offset;
+            _contentLength = length;
+            _contentDigest = digest;
+        }
+
+        internal async Task<Result> ValidateAsync(CancellationToken cancellationToken)
+        {
+            Result current = await _owner.ValidateAsync(_grant, cancellationToken).ConfigureAwait(false);
+
+            if (current.IsFailure) return current;
+
+            if (!PhysicalMatches()) return Forbidden;
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (_contentDigest is not null)
+            {
+                try
+                {
+                    _stream.Position = 0;
+
+                    using StreamReader reader = new(_stream, leaveOpen: true);
+
+                    char[] buffer = new char[4096];
+
+                    long skip = _contentOffset;
+
+                    while (skip > 0)
+                    {
+                        int read = await reader.ReadBlockAsync(buffer.AsMemory(0, (int)Math.Min(skip, buffer.Length)), cancellationToken).ConfigureAwait(false);
+
+                        if (read == 0) return Forbidden;
+
+                        skip -= read;
+                    }
+
+                    using IncrementalHash digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+                    long remaining = _contentLength;
+
+                    while (remaining > 0)
+                    {
+                        int read = await reader.ReadBlockAsync(buffer.AsMemory(0, (int)Math.Min(remaining, buffer.Length)), cancellationToken).ConfigureAwait(false);
+
+                        if (read == 0) return Forbidden;
+
+                        digest.AppendData(MemoryMarshal.AsBytes(buffer.AsSpan(0, read)));
+
+                        remaining -= read;
+                    }
+
+                    if (!CryptographicOperations.FixedTimeEquals(digest.GetHashAndReset(), _contentDigest)) return Forbidden;
+                }
+                catch (IOException)
+                {
+                    return Forbidden;
+                }
+            }
+
+            current = await _owner.ValidateAsync(_grant, cancellationToken).ConfigureAwait(false);
+
+            return current.IsFailure ? current : PhysicalMatches() ? Result.Success() : Forbidden;
+        }
+
+        private bool PhysicalMatches()
+        {
+            string? directory = Path.GetDirectoryName(_relativePath.Replace('/', Path.DirectorySeparatorChar));
+
+            return _owner.TryResolveDirectory(directory?.Replace(Path.DirectorySeparatorChar, '/') ?? ".", out _)
+                && FileHandleIdentityInterop.TryGetPathMetadataNoFollow(_resource, out FileHandleMetadata metadata)
+                && metadata.Kind == FileSystemObjectKind.RegularFile
+                && SecureFileReader.TryValidateRegularFileHandle(_stream.SafeFileHandle, metadata.Identity, out _)
+                && _owner.Opener.IdentifyOpenedDirectory(_handles.Root) == _owner.Registration.RootIdentity
+                && IsHandleContained(_handles.Root, _handles.Granted)
+                && IsHandleContained(_handles.Granted, _stream.SafeFileHandle);
+        }
+
+        public void Dispose()
+        {
+            _stream.Dispose();
+            _handles.Dispose();
+        }
+    }
+
     private async Task<Result> ValidateRegistrationAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -312,7 +501,7 @@ internal sealed class GuildWorkspaceAuthority(GuildWorkspaceRegistration registr
         && FileHandleIdentityInterop.TryGetHandleKernelPath(child, out string? childPath)
         && WorkspacePathPolicy.IsPathUnderWorkspace(rootPath, childPath);
 
-    private sealed class ScopeHandles(SafeFileHandle root, SafeFileHandle granted) : IDisposable
+    internal sealed class ScopeHandles(SafeFileHandle root, SafeFileHandle granted) : IDisposable
     {
         internal SafeFileHandle Root { get; } = root;
 

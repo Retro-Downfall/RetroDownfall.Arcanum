@@ -125,6 +125,16 @@ python3 scripts/validate_guild_workspace_evidence.py "$results/guild-execution.t
   RetroDownfall.Arcanum.Tests.Guild.WorkspaceLeaseDirectoryCreationTests \
   RetroDownfall.Arcanum.Tests.Guild.WorkspaceLeaseDirectoryRemovalTests \
   RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceMutationFenceWriterTests \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Workspace_search_reads_current_granted_file_without_transcript_authority_or_foreign_candidates \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Workspace_search_skips_stale_and_ungranted_files_and_continues_without_losing_the_next_hit \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Bound_memory_tool_uses_its_host_owned_workspace_without_transcript_grant \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.All_scope_preserves_granted_lexicon_when_bound_workspace_is_not_granted \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.All_scope_marks_ungranted_workspace_unavailable_even_when_prior_source_fills_page \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Workspace_search_streams_long_utf16_prefix_and_bounds_unicode_excerpt \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildPortalStoreTests.Initial_provider_settlement_advances_the_snapshot_with_one_replayable_spend_invalidation \
+  --required-case RetroDownfall.Arcanum.Tests.Api.GuildEndpointTests.Stalled_tree_response_replays_retained_history_or_signals_a_removed_event \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Completed_member_award_is_not_a_primary_vote_but_the_primary_result_selects_once \
+  --required-case RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Encrypted_restore_makes_real_peer_task_inert_and_keeps_uncertain_evidence \
   --required-case RetroDownfall.Arcanum.Tests.Data.Covenant.CovenantErasureSameProcessTests.Factory_reset_refuses_a_Guild_identity_created_after_its_preview_without_erasing_data \
   --required-case RetroDownfall.Arcanum.Tests.Api.GrimoireMaintenanceAdmissionTests.Authenticated_direct_reset_drains_the_full_host_and_reopens_only_the_next_generation \
   --required-case RetroDownfall.Arcanum.Tests.Api.GrimoireMaintenanceAdmissionTests.Authenticated_standalone_factory_erasure_drains_the_full_host_and_reopens_only_the_next_generation \
