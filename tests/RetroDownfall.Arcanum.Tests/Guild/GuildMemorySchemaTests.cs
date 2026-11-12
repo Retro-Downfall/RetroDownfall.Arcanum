@@ -28,7 +28,7 @@ public sealed class GuildMemorySchemaTests(ITestOutputHelper output)
 
         Assert.True(upgraded.GuildCanonical.IsHealthy, upgraded.GuildCanonical.ToString());
 
-        Assert.Equal(14, upgraded.GuildCanonical.SchemaVersion);
+        Assert.Equal(15, upgraded.GuildCanonical.SchemaVersion);
 
         Assert.Equal(epoch, await command.ExecuteScalarAsync());
 

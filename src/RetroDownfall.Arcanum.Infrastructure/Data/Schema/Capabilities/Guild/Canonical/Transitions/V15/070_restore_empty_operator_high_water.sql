@@ -1,0 +1,1 @@
+INSERT INTO sqlite_sequence(name,seq) SELECT 'guild_operator_sequences',Value FROM guild_v15_operator_high_water WHERE Value>0 AND NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='guild_operator_sequences');

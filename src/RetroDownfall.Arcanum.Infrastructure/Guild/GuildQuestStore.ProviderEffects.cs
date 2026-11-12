@@ -136,28 +136,55 @@ internal sealed partial class GuildQuestStore
                 if (found.Value.Request with { ReservationId = effect.ReservationId } != effect
                     || found.Value.State is GuildBudgetEffectState.Prepared or GuildBudgetEffectState.ProvenNoDispatch) return Conflict;
 
-                bool replay;
+                Result<GuildBudgetEffect?> initial = await GuildSpendSourceStore.ReadInitialWithinAsync(connection,
+                    transaction, effect, bill, token).ConfigureAwait(false);
 
-                await using (SqliteCommand prior = Command(connection, transaction, "SELECT EXISTS(SELECT 1 FROM BillableOperations WHERE Id=$id)"))
+                if (initial.IsFailure) return initial.Error;
+
+                // Saved evidence is independent of a later mutable bill or pruned Portal event.
+                if (initial.Value is { } saved) return saved;
+
+                bool legacy;
+
+                bool hasEvidence;
+
+                await using (SqliteCommand prior = Command(connection, transaction, """
+                    SELECT EXISTS(SELECT 1 FROM guild_budget_evidence WHERE ReceiptId=$receipt),
+                        EXISTS(SELECT 1 FROM guild_budget_evidence WHERE EffectId=$effect)
+                    """))
                 {
-                    Add(prior, "$id", effect.SourceId.ToString("N"));
+                    Add(prior, "$receipt", Id(effect.SourceId));
 
-                    replay = Equals(1L, await prior.ExecuteScalarAsync(token).ConfigureAwait(false));
+                    Add(prior, "$effect", Id(effect.EffectId));
+
+                    await using SqliteDataReader reader = await prior.ExecuteReaderAsync(token).ConfigureAwait(false);
+
+                    if (!await reader.ReadAsync(token).ConfigureAwait(false)) return Conflict;
+
+                    legacy = reader.GetBoolean(0);
+
+                    hasEvidence = reader.GetBoolean(1);
                 }
 
-                if (replay)
+                if (legacy)
                 {
+                    // A legacy receipt cannot supply a complete initial snapshot. Its old exact replay
+                    // remains available only while the unique original bill is still present.
                     if (!await ProviderBillMatchesWithinAsync(connection, transaction, effect.SourceId, bill, token).ConfigureAwait(false)) return Conflict;
                 }
                 else
                 {
+                    if (hasEvidence || found.Value.State != GuildBudgetEffectState.PossiblyDispatched) return Conflict;
+
+                    // The accounting adapter checks normalized aliases after this insert. Any duplicate
+                    // causes the caller-owned transaction, including this insert, to roll back.
                     _ = await TurnRunWriter.RecordBillableOperationWithinAsync(connection, transaction, effect.SourceId, bill, token).ConfigureAwait(false);
                 }
 
                 Result<GuildBudgetEffect> applied = await GuildBudgetPhysicalAccounting.ApplyLocalBillWithinAsync(connection,
                     transaction, ledger, effect.EffectId, effect.SourceId, token, daily).ConfigureAwait(false);
 
-                if (applied.IsFailure || replay) return applied;
+                if (applied.IsFailure || legacy) return applied;
 
                 Result<GuildQuestStored> quest = await ReadWithinAsync(connection, transaction, effect.QuestId, token).ConfigureAwait(false);
 
@@ -180,7 +207,12 @@ internal sealed partial class GuildQuestStore
                     execution.Driver.Execution.RootQuestId, effect.QuestId, GuildEventKind.SpendChanged,
                     effect.QuestId, quest.Value.Quest.Revision + 1, null, time.GetUtcNow(), token).ConfigureAwait(false);
 
-                return projected.IsFailure ? projected.Error : applied;
+                if (projected.IsFailure) return projected.Error;
+
+                Result captured = await GuildSpendSourceStore.CaptureInitialWithinAsync(connection, transaction,
+                    effect, bill, applied.Value, projected.Value, token).ConfigureAwait(false);
+
+                return captured.IsFailure ? captured.Error : applied;
             }, ct);
     }
 
@@ -236,13 +268,17 @@ internal sealed partial class GuildQuestStore
         Guid sourceId, BillableOperationRecord bill, CancellationToken ct)
     {
         await using SqliteCommand command = Command(connection, transaction, """
-            SELECT EXISTS(SELECT 1 FROM BillableOperations WHERE Id=$id AND RunId=$run AND OperationType=$type
+            SELECT count(*),coalesce(sum(CASE WHEN RunId=$run AND OperationType=$type
                 AND Provider=$provider AND Model=$model AND Purpose=$purpose AND StartedAt=$started AND CompletedAt=$completed
                 AND InputTokens=$input AND OutputTokens=$output AND ReasoningTokens=$reasoning AND CachedTokens=$cached
-                AND PricingSnapshotJson=$pricing AND ActualCostUsd=$cost AND Status=$status AND ProviderRequestId IS $request)
+                AND PricingSnapshotJson=$pricing AND ActualCostUsd=$cost AND Status=$status AND ProviderRequestId IS $request
+                THEN 1 ELSE 0 END),0)
+            FROM BillableOperations WHERE Id=$compact COLLATE NOCASE OR Id=$dashed COLLATE NOCASE
             """);
 
-        Add(command, "$id", sourceId.ToString("N"));
+        Add(command, "$compact", sourceId.ToString("N"));
+
+        Add(command, "$dashed", sourceId.ToString("D"));
 
         Add(command, "$run", bill.RunId.ToString("N"));
 
@@ -274,6 +310,8 @@ internal sealed partial class GuildQuestStore
 
         Add(command, "$request", bill.ProviderRequestId);
 
-        return Equals(1L, await command.ExecuteScalarAsync(ct).ConfigureAwait(false));
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+        return await reader.ReadAsync(ct).ConfigureAwait(false) && reader.GetInt64(0) == 1 && reader.GetInt64(1) == 1;
     }
 }

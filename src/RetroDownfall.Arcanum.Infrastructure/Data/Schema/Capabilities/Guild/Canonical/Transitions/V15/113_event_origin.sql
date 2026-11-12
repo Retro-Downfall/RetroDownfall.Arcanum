@@ -1,0 +1,1 @@
+ALTER TABLE guild_events ADD COLUMN SpendOriginCode INTEGER NULL CHECK((SpendEffectId IS NULL AND SpendReceiptId IS NULL AND SpendEvidenceRevision IS NULL AND SpendOriginCode IS NULL) OR (SpendEffectId IS NOT NULL AND SpendReceiptId IS NOT NULL AND SpendEvidenceRevision IS NOT NULL AND typeof(SpendOriginCode)='integer' AND SpendOriginCode BETWEEN 0 AND 3));

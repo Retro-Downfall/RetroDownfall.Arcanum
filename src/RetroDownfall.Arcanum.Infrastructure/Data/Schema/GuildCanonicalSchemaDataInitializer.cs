@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 
@@ -23,6 +24,31 @@ internal sealed class GuildCanonicalSchemaDataInitializer : IGrimoireSchemaDataI
                 epoch.Parameters.AddWithValue("$epoch", Guid.NewGuid().ToString("D").ToUpperInvariant());
 
                 _ = await epoch.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        await using (SqliteCommand spend = connection.CreateCommand())
+        {
+            spend.Transaction = transaction;
+
+            spend.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='guild_spend_authority_state'";
+
+            if (Equals(1L, await spend.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)))
+            {
+                // Never replace a lost key while a previously captured provider binding remains.
+                spend.CommandText = """
+                    INSERT INTO guild_spend_authority_state(StateKey,KeyId,AuthorityEpoch,CredentialKey)
+                    SELECT 1,$keyId,$epoch,$key WHERE NOT EXISTS(SELECT 1 FROM guild_spend_sources WHERE SourceKindCode=1)
+                    ON CONFLICT(StateKey) DO NOTHING
+                    """;
+
+                spend.Parameters.AddWithValue("$keyId", Guid.NewGuid().ToString("D").ToUpperInvariant());
+
+                spend.Parameters.AddWithValue("$epoch", Guid.NewGuid().ToString("D").ToUpperInvariant());
+
+                spend.Parameters.AddWithValue("$key", RandomNumberGenerator.GetBytes(32));
+
+                _ = await spend.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
         }
 

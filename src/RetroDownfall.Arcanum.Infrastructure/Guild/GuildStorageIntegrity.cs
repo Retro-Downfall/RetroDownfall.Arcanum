@@ -128,7 +128,7 @@ internal static partial class GuildStorageIntegrity
 
         if (declaredSchemaVersion >= 14)
         {
-            await ValidateOperatorSequencesAsync(connection, transaction, ct).ConfigureAwait(false);
+            await ValidateOperatorSequencesAsync(connection, transaction, ct, declaredSchemaVersion).ConfigureAwait(false);
         }
 
         if (declaredSchemaVersion >= 8)

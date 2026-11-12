@@ -35,6 +35,7 @@ internal static class UtcInstantColumnInventory
         new("guild_portal_receipts", ["CreatedAtUtc"]),
         new("guild_portal_inputs", ["CreatedAtUtc"]),
         new("guild_events", ["CreatedAtUtc"]),
+        new("guild_spend_receipts", ["AcceptedAtUtc"]),
         new("guild_portal_cursors", ["CreatedAtUtc"]),
         new("guild_portal_outbox", ["CreatedAtUtc"]),
         new("guild_workspace_leases", ["HeartbeatAtUtc", "ExpiresAtUtc"]),

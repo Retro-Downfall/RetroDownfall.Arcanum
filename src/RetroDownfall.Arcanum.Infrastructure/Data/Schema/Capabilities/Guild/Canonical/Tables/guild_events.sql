@@ -8,6 +8,10 @@ CREATE TABLE IF NOT EXISTS guild_events (
     EnvelopeId TEXT NULL CHECK(EnvelopeId IS NULL OR (EnvelopeId=upper(EnvelopeId) AND length(EnvelopeId)=36 AND substr(EnvelopeId,9,1)='-' AND substr(EnvelopeId,14,1)='-' AND substr(EnvelopeId,19,1)='-' AND substr(EnvelopeId,24,1)='-' AND length(replace(EnvelopeId,'-',''))=32 AND replace(EnvelopeId,'-','') NOT GLOB '*[^0-9A-F]*' AND EnvelopeId<>'00000000-0000-0000-0000-000000000000')),
     CreatedAtUtc TEXT NOT NULL,
     SourceKindCode INTEGER NOT NULL DEFAULT 0 CHECK(typeof(SourceKindCode)='integer' AND SourceKindCode BETWEEN 0 AND 6),
+    SpendEffectId TEXT NULL CHECK(SpendEffectId IS NULL OR (typeof(SpendEffectId)='text' AND SpendEffectId=upper(SpendEffectId) AND length(SpendEffectId)=36 AND substr(SpendEffectId,9,1)='-' AND substr(SpendEffectId,14,1)='-' AND substr(SpendEffectId,19,1)='-' AND substr(SpendEffectId,24,1)='-' AND length(replace(SpendEffectId,'-',''))=32 AND replace(SpendEffectId,'-','') NOT GLOB '*[^0-9A-F]*' AND SpendEffectId<>'00000000-0000-0000-0000-000000000000')),
+    SpendReceiptId TEXT NULL CHECK(SpendReceiptId IS NULL OR (typeof(SpendReceiptId)='text' AND SpendReceiptId=upper(SpendReceiptId) AND length(SpendReceiptId)=36 AND substr(SpendReceiptId,9,1)='-' AND substr(SpendReceiptId,14,1)='-' AND substr(SpendReceiptId,19,1)='-' AND substr(SpendReceiptId,24,1)='-' AND length(replace(SpendReceiptId,'-',''))=32 AND replace(SpendReceiptId,'-','') NOT GLOB '*[^0-9A-F]*' AND SpendReceiptId<>'00000000-0000-0000-0000-000000000000')),
+    SpendEvidenceRevision INTEGER NULL CHECK(SpendEvidenceRevision IS NULL OR (typeof(SpendEvidenceRevision)='integer' AND SpendEvidenceRevision>=1)),
+    SpendOriginCode INTEGER NULL CHECK((SpendEffectId IS NULL AND SpendReceiptId IS NULL AND SpendEvidenceRevision IS NULL AND SpendOriginCode IS NULL) OR (SpendEffectId IS NOT NULL AND SpendReceiptId IS NOT NULL AND SpendEvidenceRevision IS NOT NULL AND typeof(SpendOriginCode)='integer' AND SpendOriginCode BETWEEN 0 AND 3)),
     PRIMARY KEY(RootQuestId,EventSequence),
     UNIQUE(RootQuestId,SourceKindCode,EventKindCode,ObjectId,Revision)
 );

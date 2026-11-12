@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 internal static partial class GuildStorageIntegrity
 {
-    private static async Task ValidateOperatorSequencesAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken ct)
+    private static async Task ValidateOperatorSequencesAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken ct, int declaredSchemaVersion)
     {
         await using SqliteCommand command = connection.CreateCommand();
 
@@ -24,6 +24,20 @@ internal static partial class GuildStorageIntegrity
                 OR EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='guild_operator_sequences' AND (typeof(seq)<>'integer' OR seq<0))
                 OR coalesce((SELECT seq FROM sqlite_sequence WHERE name='guild_operator_sequences'),0)
                     < coalesce((SELECT max(Sequence) FROM guild_operator_sequences),0)
+            """;
+
+        if (!Equals(0L, await command.ExecuteScalarAsync(ct).ConfigureAwait(false))) throw new GuildStorageIntegrityException();
+
+        if (declaredSchemaVersion < 15) return;
+
+        command.CommandText = """
+            SELECT EXISTS(SELECT 1 FROM guild_budget_effects e WHERE NOT EXISTS(
+                    SELECT 1 FROM guild_operator_sequences s WHERE s.KindCode=4 AND s.ObjectId=e.EffectId AND s.ScopeId=e.QuestId))
+                OR EXISTS(SELECT 1 FROM guild_spend_receipts r WHERE NOT EXISTS(
+                    SELECT 1 FROM guild_operator_sequences s WHERE s.KindCode=5 AND s.ObjectId=r.ReceiptId AND s.ScopeId=r.EffectId))
+                OR EXISTS(SELECT 1 FROM guild_operator_sequences s WHERE
+                    (s.KindCode=4 AND NOT EXISTS(SELECT 1 FROM guild_budget_effects e WHERE e.EffectId=s.ObjectId AND e.QuestId=s.ScopeId))
+                    OR (s.KindCode=5 AND NOT EXISTS(SELECT 1 FROM guild_spend_receipts r WHERE r.ReceiptId=s.ObjectId AND r.EffectId=s.ScopeId)))
             """;
 
         if (!Equals(0L, await command.ExecuteScalarAsync(ct).ConfigureAwait(false))) throw new GuildStorageIntegrityException();
