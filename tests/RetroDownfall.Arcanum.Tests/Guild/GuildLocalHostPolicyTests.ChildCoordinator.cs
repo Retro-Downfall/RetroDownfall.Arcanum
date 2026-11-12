@@ -366,7 +366,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         object? result = await context.InvokeBoundAsync(function, new() { ["prompt"] = "child" }, default);
 
-        Assert.Contains("Guild.", Assert.IsType<string>(result));
+        Assert.StartsWith("Guild.AuthorityRevoked:", Assert.IsType<string>(result));
 
         Assert.False(queue.Pending.Reader.TryRead(out _));
 
