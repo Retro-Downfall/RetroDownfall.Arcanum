@@ -155,6 +155,15 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.Single(first.RootElement.GetProperty("tools").EnumerateArray());
 
+            JsonElement schema = first.RootElement.GetProperty("tools")[0].GetProperty("function").GetProperty("parameters");
+
+            Assert.Equal("prompt", Assert.Single(schema.GetProperty("required").EnumerateArray()).GetString());
+
+            Assert.False(schema.TryGetProperty("anyOf", out _));
+
+            Assert.False(schema.GetProperty("properties").GetProperty("files").GetProperty("items")
+                .GetProperty("properties").TryGetProperty("attachment_id", out _));
+
             Assert.Contains("UNTRUSTED DATA", transport.Bodies[1], StringComparison.Ordinal);
         }
         finally
@@ -195,6 +204,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal Func<int, Task>? BeforeResponse;
 
+        internal bool PromptOnly;
+
         public HttpClient CreateClient(string name) => new(this, disposeHandler: false);
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
@@ -203,7 +214,9 @@ public sealed partial class GuildLocalHostPolicyTests
 
             if (BeforeResponse is not null) await BeforeResponse(Bodies.Count);
 
-            string message = Bodies.Count == 1
+            string message = Bodies.Count == 1 && PromptOnly
+                ? """{"role":"assistant","content":null,"tool_calls":[{"id":"call-child","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\"}"}}]}"""
+                : Bodies.Count == 1
                 ? """{"role":"assistant","content":null,"tool_calls":[{"id":"call-child","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\",\"max_cost_usd\":1}"}}]}"""
                 : """{"role":"assistant","content":"final parent answer"}""";
 

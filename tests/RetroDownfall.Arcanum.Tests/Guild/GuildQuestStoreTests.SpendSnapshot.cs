@@ -139,11 +139,21 @@ public sealed partial class GuildQuestStoreTests
 
         snapshots.Parameters.AddWithValue("$evidence", effect.SourceId.ToString("D").ToUpperInvariant());
 
-        await Assert.ThrowsAsync<SqliteException>(() => snapshots.ExecuteNonQueryAsync());
+        SqliteException invalidRevision = await Assert.ThrowsAsync<SqliteException>(() => snapshots.ExecuteNonQueryAsync());
+
+        Assert.Contains("Guild spend receipt requires its exact physical evidence", invalidRevision.Message);
 
         snapshots.CommandText = snapshots.CommandText.Replace("999", initial.Value.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
-        Assert.Equal(1, await snapshots.ExecuteNonQueryAsync());
+        SqliteException duplicateRevision = await Assert.ThrowsAsync<SqliteException>(() => snapshots.ExecuteNonQueryAsync());
+
+        Assert.Contains("UNIQUE constraint failed: guild_spend_receipts.EffectId, guild_spend_receipts.EvidenceRevision", duplicateRevision.Message);
+
+        snapshots.CommandText = "SELECT count(*) FROM guild_spend_receipts WHERE EffectId=$effect AND EvidenceReceiptId=$evidence AND EvidenceRevision=$revision";
+
+        snapshots.Parameters.AddWithValue("$revision", initial.Value.Revision);
+
+        Assert.Equal(1L, await snapshots.ExecuteScalarAsync());
 
         snapshots.CommandText = "UPDATE guild_spend_receipts SET OriginalResult=X'02'";
 
@@ -300,7 +310,17 @@ public sealed partial class GuildQuestStoreTests
 
         fault.CommandText = "DELETE FROM guild_budget_evidence";
 
-        await fault.ExecuteNonQueryAsync();
+        SqliteException evidenceReferenced = await Assert.ThrowsAsync<SqliteException>(() => fault.ExecuteNonQueryAsync());
+
+        Assert.Contains("FOREIGN KEY constraint failed", evidenceReferenced.Message);
+
+        fault.CommandText = "DELETE FROM guild_spend_receipts";
+
+        Assert.Equal(1, await fault.ExecuteNonQueryAsync());
+
+        fault.CommandText = "DELETE FROM guild_budget_evidence";
+
+        Assert.Equal(1, await fault.ExecuteNonQueryAsync());
 
         Assert.True((await f.Store.SettleProviderEffectAsync(execution, daily, effect, bill, default)).IsFailure);
 

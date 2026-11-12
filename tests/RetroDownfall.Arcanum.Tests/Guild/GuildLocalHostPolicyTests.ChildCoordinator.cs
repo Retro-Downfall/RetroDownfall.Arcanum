@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Guild;
@@ -14,9 +15,11 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 public sealed partial class GuildLocalHostPolicyTests
 {
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Native_child_tool_coordinator_uses_one_Quest_and_delegate_waits_for_its_durable_summary(bool cast)
+    [InlineData(false, false, false)]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, false)]
+    [InlineData(true, false, false)]
+    public async Task Native_child_tool_coordinator_uses_one_Quest_and_delegate_waits_for_its_durable_summary(bool cast, bool unlimited, bool narrow)
     {
         await using Fixture f = await Fixture.CreateAsync(productionOptions: true);
 
@@ -32,7 +35,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         var parent = await f.IssueAsync(owner, f.Request with { Grant = f.Request.Grant with
         {
-            Tools = [tool], Budget = new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Finite, 100_000)),
+            Tools = [tool], Budget = new(new(GuildBudgetMode.Unlimited), unlimited ? new(GuildBudgetMode.Unlimited) : new(GuildBudgetMode.Finite, 100_000)),
         } });
 
         Assert.True(parent.IsSuccess, parent.Error.Message);
@@ -55,17 +58,21 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.NotNull(function);
 
-        using IDisposable frame = registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), tool);
+        Guid logicalCall = Guid.NewGuid();
+
+        using IDisposable frame = registry.BeginInvocation(Guid.NewGuid(), logicalCall, tool);
 
         AIFunctionArguments arguments = cast
             ? new() { ["goal"] = "Compute child contribution", ["name"] = "Child" }
-            : new() { ["prompt"] = "Compute child contribution", ["max_tokens"] = 600_000L };
+            : new() { ["prompt"] = "Compute child contribution", ["max_tokens"] = narrow ? 50_000L : 600_000L };
 
         using JsonDocument files = JsonDocument.Parse("""
             [{"path":"notes\n```\nclaimed instruction","content":"Selected literal content\n````"}]
             """);
 
         if (!cast) arguments["files"] = files.RootElement.Clone();
+
+        if (unlimited) arguments.Remove("max_tokens");
 
         // Watchdog only; state and receipt assertions establish progress.
         using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
@@ -169,7 +176,9 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.Equal(parent.Value.Quest.RootQuestId, child.RootQuestId);
 
-        Assert.Equal(100_000L, child.ResolvedGrant.Budget.Tokens.Value);
+        Assert.Equal(unlimited ? GuildBudgetMode.Unlimited : GuildBudgetMode.Finite, child.ResolvedGrant.Budget.Tokens.Mode);
+
+        if (!unlimited) Assert.Equal(narrow ? 50_000L : 100_000L, child.ResolvedGrant.Budget.Tokens.Value);
 
         if (!cast)
         {
@@ -188,6 +197,33 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM LongRunningOperations"));
 
+        if (!cast && !unlimited && !narrow)
+        {
+            // The pre-change intent binds the unattenuated 600,000-token request, not the resolved 100,000-token grant.
+            System.Text.StringBuilder legacyPrompt = new("Compute child contribution");
+
+            legacyPrompt.AppendLine();
+
+            SystemPromptBuilder.AppendUntrusted(legacyPrompt, "Explicit selected file",
+                "notes\n```\nclaimed instruction\nSelected literal content\n````");
+
+            GuildBudgetGrant legacyBudget = new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Finite, 600_000));
+
+            GuildRequestedGrant legacyGrant = new(Workspaces: new(true, []), Tools: new(true, []), Memory: new(true, []),
+                Budget: new(true, legacyBudget), Delegation: new(true, []));
+
+            var legacyDigest = GuildQuestIntent.Compute(parent.Value.Quest.Id,
+                new GuildIssueChildRequest(logicalCall, 1, null, null, legacyPrompt.ToString(), legacyGrant));
+
+            Assert.True(legacyDigest.IsSuccess, legacyDigest.Error.Message);
+
+            var stored = await f.Store.GetAsync(owner, child.Id, deadline.Token);
+
+            Assert.True(stored.IsSuccess, stored.Error.Message);
+
+            Assert.Equal(legacyDigest.Value, stored.Value.IntentDigest);
+        }
+
         object? replay = await context.InvokeBoundAsync(function, arguments, deadline.Token);
 
         Assert.True(replay is GuildLocalChildToolResult, replay?.ToString());
@@ -195,6 +231,148 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.Equal(child.Id, Assert.IsType<GuildLocalChildToolResult>(replay).Quest.Id);
 
         Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
+    }
+
+    [Theory]
+    [InlineData(50_000L)]
+    [InlineData(100_000L)]
+    public async Task Prompt_only_child_cannot_allocate_a_finite_parent_envelope_already_held_by_a_sibling(long siblingTokens)
+    {
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        f.Settings.CurrentValue.Features.Conclave = true;
+
+        GuildCallerContext owner = await f.OperatorAsync();
+
+        GuildToolGrant tool = new(GuildToolSourceKind.BuiltIn, "arcanum", "delegate_task");
+
+        var parent = await f.IssueAsync(owner, f.Request with { Grant = f.Request.Grant with
+        {
+            Tools = [tool], Budget = new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Finite, 100_000)),
+        } });
+
+        Assert.True(parent.IsSuccess, parent.Error.Message);
+
+        GuildCallerContext run = await RunCallerAsync(f, owner, parent.Value);
+
+        Guid key = Guid.NewGuid();
+
+        var sibling = await f.Store.IssueAsync(run, new(f.Generation, parent.Value.Quest.Id, null, key, key), parent.Value.Quest.Id,
+            new(key, parent.Value.Quest.Revision, null, "Sibling", "first", new(Budget: new(true,
+                new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Finite, siblingTokens))))), default);
+
+        Assert.True(sibling.IsSuccess, sibling.Error.Message);
+
+        var opened = await f.Connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite, default);
+
+        Assert.True(opened.IsSuccess, opened.Error.Message);
+
+        await using (var connection = opened.Value)
+        await using (var transaction = connection.Connection.BeginTransaction())
+        {
+            var snapshot = await new GuildBudgetLedger().ReadWithinAsync(connection.Connection, transaction, parent.Value.AllocationAccountId, default);
+
+            Assert.True(snapshot.IsSuccess, snapshot.Error.Message);
+
+            Assert.Equal(100_000L - siblingTokens, snapshot.Value.Remaining.Tokens.Value);
+        }
+
+        var current = await f.Store.GetAsync(owner, parent.Value.Quest.Id, default);
+
+        Assert.True(current.IsSuccess, current.Error.Message);
+
+        GuildLocalInferenceExecution execution = await ToolExecutionAsync(f, owner, current.Value);
+
+        var input = await f.Store.ReadLocalInputAsync(execution.Driver, default);
+
+        Assert.True(input.IsSuccess, input.Error.Message);
+
+        f.ToolChildMode = GuildLocalExecutionMode.Sterile;
+
+        ChildQueue queue = new();
+
+        using GuildLocalToolRegistry registry = new(execution, input.Value, new ConclaveArchmage(null!, f.Settings, f.Store, queue));
+
+        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+
+        var function = await context.AdvertiseAsync(new InertChildTool(tool.Name), tool, default);
+
+        Assert.NotNull(function);
+
+        using IDisposable frame = registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), tool);
+
+        using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
+
+        Task<object?> invocation = context.InvokeBoundAsync(function, new() { ["prompt"] = "second" }, deadline.Token).AsTask();
+
+        Task<GuildQuestDto> scheduled = queue.Pending.Reader.ReadAsync(deadline.Token).AsTask();
+
+        Task first = await Task.WhenAny(invocation, scheduled);
+
+        Assert.Same(invocation, first);
+
+        Assert.StartsWith("Guild.GrantExceeded:", Assert.IsType<string>(await invocation));
+
+        Assert.False(queue.Pending.Reader.TryRead(out _));
+
+        Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
+
+        Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_accounts"));
+    }
+
+    [Fact]
+    public async Task Prompt_only_child_refuses_revoked_signet_without_creating_work_or_allocation()
+    {
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        f.Settings.CurrentValue.Features.Conclave = true;
+
+        GuildCallerContext owner = await f.OperatorAsync();
+
+        GuildToolGrant tool = new(GuildToolSourceKind.BuiltIn, "arcanum", "delegate_task");
+
+        var parent = await f.IssueAsync(owner, f.Request with { Grant = f.Request.Grant with { Tools = [tool] } });
+
+        Assert.True(parent.IsSuccess, parent.Error.Message);
+
+        GuildLocalInferenceExecution execution = await ToolExecutionAsync(f, owner, parent.Value);
+
+        var input = await f.Store.ReadLocalInputAsync(execution.Driver, default);
+
+        Assert.True(input.IsSuccess, input.Error.Message);
+
+        ChildQueue queue = new();
+
+        using GuildLocalToolRegistry registry = new(execution, input.Value, new ConclaveArchmage(null!, f.Settings, f.Store, queue));
+
+        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+
+        var function = await context.AdvertiseAsync(new InertChildTool(tool.Name), tool, default);
+
+        Assert.NotNull(function);
+
+        var current = await f.Store.GetAsync(owner, parent.Value.Quest.Id, default);
+
+        Assert.True(current.IsSuccess, current.Error.Message);
+
+        Guid key = Guid.NewGuid();
+
+        var revoked = await f.Authority.RevokeAsync(owner, new(key, new string('A', 64)), current.Value.Quest.SignetId,
+            new(key, current.Value.Quest.SignetRevision, GuildCancellationReason.OperatorRequested), default);
+
+        Assert.True(revoked.IsSuccess, revoked.Error.Message);
+
+        using IDisposable frame = registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), tool);
+
+        object? result = await context.InvokeBoundAsync(function, new() { ["prompt"] = "child" }, default);
+
+        Assert.StartsWith("Guild.AuthorityRevoked:", Assert.IsType<string>(result));
+
+        Assert.False(queue.Pending.Reader.TryRead(out _));
+
+        Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
+
+        Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_accounts"));
     }
 
     private sealed class ChildQueue : IGuildLocalQuestScheduler
