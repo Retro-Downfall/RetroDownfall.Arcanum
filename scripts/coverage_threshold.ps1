@@ -70,6 +70,7 @@ $securityTypes = [System.Collections.Generic.HashSet[string]]::new(
         "WardGate",
         "WorkspacePathPolicy",
         # These policies restrict Guild grants, intersect authority and clamp allocations to remaining authority.
+        "GuildSpendCorrectionPolicy",
         "GuildGrantPolicy",
         "GuildBudgetAllocationPolicy",
         "GuildSignetGrantComposition",

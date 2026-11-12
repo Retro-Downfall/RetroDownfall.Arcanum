@@ -6,6 +6,18 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 
 /// <summary>AOT-safe data graph only. Verified host capabilities and raw Signets have no JSON path.</summary>
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(GuildSpendAmountsRequest))]
+[JsonSerializable(typeof(GuildSpendAmountsRequest[]))]
+[JsonSerializable(typeof(ImmutableArray<GuildSpendAmountsRequest>))]
+[JsonSerializable(typeof(GuildSpendFacts))]
+[JsonSerializable(typeof(GuildSpendFacts[]))]
+[JsonSerializable(typeof(ImmutableArray<GuildSpendFacts>))]
+[JsonSerializable(typeof(GuildSpendOrigin))]
+[JsonSerializable(typeof(GuildSpendOrigin[]))]
+[JsonSerializable(typeof(ImmutableArray<GuildSpendOrigin>))]
+[JsonSerializable(typeof(GuildSpendCorrectionRequest))]
+[JsonSerializable(typeof(GuildSpendCorrectionRequest[]))]
+[JsonSerializable(typeof(ImmutableArray<GuildSpendCorrectionRequest>))]
 [JsonSerializable(typeof(string[]))]
 [JsonSerializable(typeof(ImmutableArray<string>))]
 [JsonSerializable(typeof(AcquireWorkspaceLeaseRequest))]

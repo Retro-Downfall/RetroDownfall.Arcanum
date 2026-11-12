@@ -52,6 +52,7 @@ SECURITY_TYPES = {
     "WardGate",
     "WorkspacePathPolicy",
     # These policies restrict Guild grants, intersect authority and clamp allocations to remaining authority.
+    "GuildSpendCorrectionPolicy",
     "GuildGrantPolicy",
     "GuildBudgetAllocationPolicy",
     "GuildSignetGrantComposition",
