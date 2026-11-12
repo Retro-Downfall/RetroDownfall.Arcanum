@@ -247,11 +247,13 @@ public sealed partial class GuildQuestStoreTests
         }
     }
 
-    private sealed class GuildWireCapture(string model) : HttpMessageHandler, IHttpClientFactory
+    private sealed class GuildWireCapture(string model, Func<Task>? beforeSend = null, string responseId = "chatcmpl-qualified") : HttpMessageHandler, IHttpClientFactory
     {
         internal int Calls { get; private set; }
 
         internal string? Body { get; private set; }
+
+        internal string? Credential { get; private set; }
 
         public HttpClient CreateClient(string name) => new(this, disposeHandler: false);
 
@@ -259,15 +261,19 @@ public sealed partial class GuildQuestStoreTests
         {
             Calls++;
 
+            Credential = request.Headers.Authorization?.Parameter;
+
+            if (beforeSend is not null) await beforeSend();
+
             Body = await request.Content!.ReadAsStringAsync(ct);
 
             return new(HttpStatusCode.OK)
             {
                 Content = new StringContent("""
-                    {"id":"chatcmpl-qualified","object":"chat.completion","created":1700000000,"model":"MODEL",
+                    {"id":"RESPONSE_ID","object":"chat.completion","created":1700000000,"model":"MODEL",
                      "choices":[{"index":0,"message":{"role":"assistant","content":"qualified answer"},"finish_reason":"stop"}],
                      "usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10},"service_tier":"default"}
-                    """.Replace("MODEL", model, StringComparison.Ordinal), System.Text.Encoding.UTF8, "application/json"),
+                    """.Replace("MODEL", model, StringComparison.Ordinal).Replace("RESPONSE_ID", responseId, StringComparison.Ordinal), System.Text.Encoding.UTF8, "application/json"),
             };
         }
     }

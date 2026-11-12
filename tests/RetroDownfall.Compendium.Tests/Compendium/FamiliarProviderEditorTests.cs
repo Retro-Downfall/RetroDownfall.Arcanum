@@ -18,6 +18,29 @@ public sealed class FamiliarProviderEditorTests
 {
 
     [Fact]
+    public void Guild_source_survives_ordinary_edits_but_is_cleared_when_switching_to_a_Familiar()
+    {
+        ProvidersSectionViewModel section = new(new StubDialogService());
+
+        section.LoadFrom([new ProviderSettings { Name = "router", Endpoint = "https://openrouter.ai/api/v1", Models = ["model"],
+            GuildUsageReconciliation = GuildUsageReconciliationSource.OpenRouterGeneration }], null, null);
+
+        var row = Assert.Single(section.Providers);
+
+        row.Name = "renamed";
+
+        Assert.Equal(GuildUsageReconciliationSource.OpenRouterGeneration, Assert.Single(section.BuildProviders()).GuildUsageReconciliation);
+
+        row.Type = AiProviderKind.CodexCli;
+
+        Assert.Equal(GuildUsageReconciliationSource.None, Assert.Single(section.BuildProviders()).GuildUsageReconciliation);
+
+        row.Type = AiProviderKind.OpenAICompatible;
+
+        Assert.Equal(GuildUsageReconciliationSource.None, Assert.Single(section.BuildProviders()).GuildUsageReconciliation);
+    }
+
+    [Fact]
     public void HTTP_output_limit_contract_is_editable_and_resets_when_switched_to_a_Familiar()
     {
         ProvidersSectionViewModel section = new(new StubDialogService());

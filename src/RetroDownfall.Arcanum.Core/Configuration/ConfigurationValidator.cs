@@ -1000,6 +1000,15 @@ public sealed class ConfigurationValidator(
                     "OutputTokenLimitWireDialect must be MaxCompletionTokens or MaxTokens."));
             }
 
+            if (!Enum.IsDefined(provider.GuildUsageReconciliation)
+                || provider.GuildUsageReconciliation == GuildUsageReconciliationSource.OpenRouterGeneration
+                    && (provider.Type != AiProviderKind.OpenAICompatible || !ProviderSettings.IsCanonicalOpenRouterEndpoint(provider.Endpoint)))
+            {
+                errors.Add(new ConfigurationValidationError(
+                    $"{providerPointer}.guildUsageReconciliation",
+                    "Guild usage reconciliation must be None or OpenRouterGeneration with the canonical OpenRouter HTTPS endpoint."));
+            }
+
             bool isFamiliar = FamiliarProviders.IsFamiliar(provider.Type);
 
             ModelEntry[] models = provider.Models ?? [];

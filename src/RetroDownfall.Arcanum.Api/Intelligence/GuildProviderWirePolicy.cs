@@ -11,7 +11,7 @@ using RetroDownfall.Arcanum.Infrastructure.Guild;
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 /// <summary>Seals the actual SDK transport and the final text-only request before physical admission.</summary>
-internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string model) : PipelinePolicy
+internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string model, GuildSpendSourceCredential? spendSource = null) : PipelinePolicy
 {
     private static readonly ConditionalWeakTable<IChatClient, GuildProviderWirePolicy> Clients = new();
 
@@ -20,6 +20,8 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
     private readonly ProviderSettings _provider = PromptCacheClientIdentity.Freeze(provider);
 
     private readonly string _model = model;
+
+    private readonly GuildSpendSourceCredential? _spendSource = spendSource;
 
     internal void Bind(IChatClient client) => Clients.Add(client, this);
 
@@ -97,6 +99,8 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
         private int _sent;
 
         internal GuildProviderWirePolicy Policy { get; }
+
+        internal GuildSpendSourceCredential? SpendSource => Policy._spendSource;
 
         internal decimal? UsdBound { get; }
 

@@ -79,6 +79,7 @@ R	src/RetroDownfall.Arcanum.Core/Configuration/FilesSettings.cs
 R	src/RetroDownfall.Arcanum.Core/Configuration/GrimoireSettings.cs
 R	src/RetroDownfall.Arcanum.Core/Configuration/GuardrailsSettings.cs
 R	src/RetroDownfall.Arcanum.Core/Configuration/GuardrailsStreamingMode.cs
+R	src/RetroDownfall.Arcanum.Core/Configuration/GuildUsageReconciliationSource.cs
 R	src/RetroDownfall.Arcanum.Core/Configuration/HostSettings.cs
 R	src/RetroDownfall.Arcanum.Core/Configuration/HttpsCertificatePathResolver.cs
 R	src/RetroDownfall.Arcanum.Core/Configuration/HttpsSettings.cs
@@ -2794,6 +2795,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildNativeLeaseService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildNativeMessageService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildNativeRoster.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOpenRouterSpendParser.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOpenRouterSpendReader.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOperatorVisibility.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOwnerCleanupCoordinator.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortRouter.cs
@@ -2886,6 +2888,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetGrantJson.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetRootGate.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendReceiptIdentity.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendSourceAuthority.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendSourceStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendStorageContracts.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStorageAvailability.cs

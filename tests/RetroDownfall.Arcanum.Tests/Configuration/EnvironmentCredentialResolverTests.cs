@@ -21,6 +21,7 @@ public sealed class EnvironmentCredentialResolverTests : IDisposable
                 nameof(ProviderSettings.ContextWindowLimit),
                 nameof(ProviderSettings.CredentialEnvironmentVariable),
                 nameof(ProviderSettings.Endpoint),
+                nameof(ProviderSettings.GuildUsageReconciliation),
                 nameof(ProviderSettings.HiddenModels),
                 nameof(ProviderSettings.Models),
                 nameof(ProviderSettings.Name),

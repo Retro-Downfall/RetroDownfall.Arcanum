@@ -14,7 +14,8 @@ internal sealed partial class GuildQuestStore
     internal Task<Result<T>> ExecuteProviderEffectAsync<T>(GuildLocalInferenceExecution execution,
         BudgetReservationService daily, GuildBudgetEffectRequest effect,
         Func<CancellationToken, Task<Result<T>>> send, CancellationToken ct, GuildLocalExecutionInput? expectedInput = null,
-        IReadOnlyList<GuildCircleInputBatch>? circleInputs = null)
+        IReadOnlyList<GuildCircleInputBatch>? circleInputs = null, GuildSpendSourceCredential? spendSource = null,
+        string? spendPricing = null)
     {
         if (!ProviderIdentityMatches(execution, effect) || daily is null || send is null || allocations is not GuildBudgetLedger ledger)
             return Task.FromResult(Result<T>.Failure(InvalidReceipt));
@@ -81,6 +82,14 @@ internal sealed partial class GuildQuestStore
                     transaction, ledger, daily, effect, time.GetUtcNow().AddHours(1), token).ConfigureAwait(false);
 
                 if (prepared.IsFailure) return prepared.Error;
+
+                if (spendSource is not null)
+                {
+                    Result captured = await spendSource.CaptureWithinAsync(connection, transaction, effect,
+                        admitted.Value.Row.Issuance.InstallationGeneration, spendPricing ?? string.Empty, token).ConfigureAwait(false);
+
+                    if (captured.IsFailure) return captured.Error;
+                }
 
                 if (dispatch.Evidence == GuildDispatchEvidence.Prepared)
                 {
