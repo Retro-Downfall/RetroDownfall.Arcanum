@@ -50,7 +50,7 @@ using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
-[Collection("ProcessEnvironment")]
+[Collection("WorkspacePathPolicy")]
 public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 {
     private readonly TempWorkspace _workspace = new();

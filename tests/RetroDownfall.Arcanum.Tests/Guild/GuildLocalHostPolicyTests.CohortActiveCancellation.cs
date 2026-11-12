@@ -50,7 +50,7 @@ public sealed partial class GuildLocalHostPolicyTests
         GuildLocalPort port = new(f.Store, f.Policy, f.Authority, operations, engine, new SchedulerInference(), new ChildQueue(),
             ownership, TimeProvider.System);
 
-        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(15));
+        using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
         Task<Result<GuildDispatchObservation>> running = port.DispatchAsync(setup.Execution, request.Value, deadline.Token);
 

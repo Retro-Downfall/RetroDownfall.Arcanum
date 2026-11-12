@@ -52,14 +52,17 @@ public sealed partial class GuildLocalHostPolicyTests
 
         DeterministicLocalEngine engine = new() { Outcome = "heartbeat" };
 
+        CancellationDrainObservationClock clock = new();
+
         GuildLocalPort port = new(store, f.Policy, f.Authority, operations, engine, new UnusedInference(),
-            new ReadyPortHost(), ownership, TimeProvider.System);
+            new ReadyPortHost(), ownership, clock);
 
         var pending = await store.ReadLocalPendingAsync(caller, parent.Id, default);
 
         Assert.True(pending.IsSuccess, pending.Error.Message);
 
-        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10));
+        // A watchdog detects a stuck test; elapsed execution time is not an assertion.
+        using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
         var dispatch = port.DispatchAsync(execution.Value, pending.Value.Request!, deadline.Token);
 
@@ -120,7 +123,9 @@ public sealed partial class GuildLocalHostPolicyTests
 
             engine.Release.TrySetResult();
 
-            await Task.Delay(150, deadline.Token);
+            // The parent has actually checked its unfinished children and entered its
+            // retry wait. A fixed sleep could assert before the parent reached this boundary.
+            await clock.ChildrenWaitEntered.Task.WaitAsync(deadline.Token);
 
             Assert.False(dispatch.IsCompleted);
 
@@ -184,6 +189,20 @@ public sealed partial class GuildLocalHostPolicyTests
             if (childDispatch is not null) _ = await childDispatch;
 
             _ = await dispatch;
+        }
+    }
+
+    private sealed class CancellationDrainObservationClock : TimeProvider
+    {
+        internal TaskCompletionSource ChildrenWaitEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            ITimer timer = System.CreateTimer(callback, state, dueTime, period);
+
+            if (dueTime == TimeSpan.FromMilliseconds(250)) ChildrenWaitEntered.TrySetResult();
+
+            return timer;
         }
     }
 }

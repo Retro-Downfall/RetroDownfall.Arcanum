@@ -71,6 +71,43 @@ public sealed class CoverageDenominatorTests
     }
 
     /// <summary>
+    /// The Apprentice service includes Guild execution and effect decisions in its partials.
+    /// An exclusion on any declaration would hide the complete type from the coverage gate.
+    /// </summary>
+    [Fact]
+    public void The_apprentice_service_is_inside_the_coverage_denominator()
+    {
+        string directory = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src",
+            "RetroDownfall.Arcanum.Infrastructure", "Hosting");
+
+        List<string> parts = [];
+
+        List<string> offenders = [];
+
+        foreach (string file in Directory.EnumerateFiles(directory, "*.cs", SearchOption.AllDirectories))
+        {
+            SyntaxNode root = CSharpSyntaxTree.ParseText(File.ReadAllText(file)).GetRoot();
+
+            foreach (ClassDeclarationSyntax type in root.DescendantNodes().OfType<ClassDeclarationSyntax>()
+                .Where(static type => type.Identifier.Text == "ApprenticeService"))
+            {
+                parts.Add(Path.GetRelativePath(directory, file));
+
+                if (HasTypeLevelExclusion(type))
+                {
+                    offenders.Add(Path.GetRelativePath(directory, file));
+                }
+            }
+        }
+
+        Assert.True(parts.Count > 1, "The scan did not find the partial parts of ApprenticeService.");
+
+        Assert.True(offenders.Count == 0,
+            "A type-level coverage exclusion hides every ApprenticeService partial: "
+            + string.Join(", ", offenders));
+    }
+
+    /// <summary>
     /// The design says every type excluded through <c>ExcludeFromCodeCoverage</c> carries an inline
     /// reason, and a coverage reviewer trusts that rather than auditing each exclusion. A bare
     /// attribute removes a whole type from the 80/70 denominator with no recorded justification, so

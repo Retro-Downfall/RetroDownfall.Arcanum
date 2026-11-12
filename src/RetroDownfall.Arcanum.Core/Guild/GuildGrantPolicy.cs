@@ -151,7 +151,7 @@ public static class GuildGrantPolicy
             return false;
         }
 
-        return root is "" or "." || root.Split('/').All(segment => segment.Length > 0 && segment is not "." and not "..");
+        return root.Length == 0 || root == "." || root.Split('/').All(segment => segment.Length > 0 && segment is not "." and not "..");
     }
 
     private static bool IsExactName(string value) => !string.IsNullOrWhiteSpace(value)
@@ -159,13 +159,13 @@ public static class GuildGrantPolicy
 
     private static bool IsMemoryGrant(GuildMemoryGrant item)
     {
-        if (item is null || !Enum.IsDefined(item.Store) || !Enum.IsDefined(item.Operation) || item.Scope is null
+        if (item is null || !Enum.IsDefined(item.Operation) || item.Scope is null
             || !Enum.IsDefined(item.Scope.Kind))
         {
             return false;
         }
 
-        if (item.Scope.Kind == GuildMemoryScopeKind.Global ? item.Scope.Id is not null : item.Scope.Id is null || item.Scope.Id == Guid.Empty)
+        if (item.Scope.Kind == GuildMemoryScopeKind.Global ? item.Scope.Id is not null : item.Scope.Id is not Guid id || id == Guid.Empty)
         {
             return false;
         }

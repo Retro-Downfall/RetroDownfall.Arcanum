@@ -58,12 +58,12 @@ def matrix_hosts(body, platform):
     return json.loads(fallback.group(1))
 
 
-def selected_inventory(event, qualification, platform, full="true"):
+def selected_inventory(event, qualification, platform, full="true", win_x64="verified", win_arm64="verified"):
     """Execute the simple job guards and matrix values declared in this workflow."""
     context = {"github.event_name": event, "inputs.qualification": qualification,
                "inputs.execution-platform": platform, "needs.scope.outputs.full": full,
-               "needs.native-sqlcipher-assets.outputs.win-x64": "verified",
-               "needs.native-sqlcipher-assets.outputs.win-arm64": "verified"}
+               "needs.native-sqlcipher-assets.outputs.win-x64": win_x64,
+               "needs.native-sqlcipher-assets.outputs.win-arm64": win_arm64}
 
     def atom(value):
         if value == "always()":
@@ -88,6 +88,91 @@ def selected_inventory(event, qualification, platform, full="true"):
 
 
 class CiScopeWorkflowTests(unittest.TestCase):
+    def test_final_native_qualification_reuses_full_windows_authority(self):
+        self.assertNotIn("  guild-final-native:", WORKFLOW.read_text())
+        for name, rid in (("windows-suite", "win-x64"), ("windows-arm64-suite", "win-arm64")):
+            body = job(name)
+            self.assertIn("ARCANUM_EXPECTED_WINDOWS_RID: " + rid, body)
+            self.assertIn("ARCANUM_PUBLISHED_EXECUTABLE", body)
+            self.assertIn("WindowsAppContainerBrokerTests", step(body, "Test Arcanum"))
+            for command in ("./scripts/qualify-guild-execution.sh",
+                            "./scripts/verify-native-sqlcipher.sh --rid " + rid + " --strict"):
+                self.assertIn(command, body)
+            self.assertIn("./scripts/verify-aot-il-warnings.sh " + rid, body)
+            self.assertIn("./scripts/verify-guild-aot.sh --rid " + rid, body)
+            self.assertIn("./scripts/verify-shipping-publish.sh --rid " + rid, body)
+            self.assertIn("--retain-publish-dir", body)
+            self.assertIn("if: inputs.qualification == 'guild-final'", step(body, "Qualify Guild execution and lifecycle"))
+            self.assertIn("if: always()", step(body, "Preserve final Guild evidence"))
+
+    def test_final_windows_shipping_receipts_bind_retained_smoked_apphosts(self):
+        for name, rid in (("windows-suite", "win-x64"), ("windows-arm64-suite", "win-arm64")):
+            with self.subTest(job=name):
+                body = job(name)
+                evidence = step(body, "Record final Windows shipping identity")
+                self.assertIn("if: inputs.qualification == 'guild-final'", evidence)
+                for witness in ("$env:ARCANUM_PUBLISHED_EXECUTABLE", "$env:GITHUB_SHA", "git rev-parse HEAD",
+                                "git status --porcelain --untracked-files=all", "--version", "Get-FileHash",
+                                "Get-ChildItem", "-Recurse", "dotnet --info", "dotnet --version",
+                                "expectedRid = '" + rid + "'", "executableSha256", "publishFiles",
+                                ".tmp/guild-final-native/"):
+                    self.assertIn(witness, evidence)
+                self.assertLess(body.index("--retain-publish-dir"), body.index("name: Record final Windows shipping identity"))
+                self.assertIn(".tmp/guild-final-native/", step(body, "Preserve final Guild evidence"))
+
+    def test_final_windows_forge_acl_witnesses_are_executed_and_counted(self):
+        for name in ("windows-suite", "windows-arm64-suite"):
+            witness = step(job(name), "Test final Windows Forge permissions")
+            self.assertIn("if: inputs.qualification == 'guild-final'", witness)
+            self.assertIn("RetroDownfall.TheForge.Tests.csproj", witness)
+            self.assertIn("FullyQualifiedName~RetroDownfall.TheForge.Tests.TheForgeOwnerOnlyPermissionsTests", witness)
+            self.assertIn("$results.Count -ne 2", witness)
+            self.assertIn("$_.outcome -ne 'Passed'", witness)
+            self.assertIn("forge-windows.trx", witness)
+            self.assertIn("RetroDownfall.TheForge.Tests.TheForgeOwnerOnlyPermissionsTests.$name", witness)
+            self.assertIn(".tmp/windows-forge/", step(job(name), "Preserve final Guild evidence"))
+
+    def test_final_guild_qualification_requires_both_native_jobs_and_authority(self):
+        selected, _ = selected_inventory("workflow_dispatch", "guild-final", "both")
+        self.assertEqual({("scope", None), ("sdk", None),
+                          ("native-sqlcipher-assets", None), ("static-analysis", None),
+                          ("windows-suite", None), ("windows-arm64-suite", None),
+                          ("guild-final-authority", None)}, set(selected))
+        for x64, arm in (("pending", "verified"), ("verified", "pending"), ("", "")):
+            selected, _ = selected_inventory("workflow_dispatch", "guild-final", "both", full="false",
+                                             win_x64=x64, win_arm64=arm)
+            self.assertTrue({("windows-suite", None), ("windows-arm64-suite", None),
+                             ("guild-final-authority", None)} <= set(selected))
+
+        authority = job("guild-final-authority")
+        self.assertIn("always()", authority)
+        self.assertIn("windows-suite", authority)
+        self.assertIn("windows-arm64-suite", authority)
+        for required in ("needs.windows-suite.result", "needs.windows-arm64-suite.result",
+                         "needs.native-sqlcipher-assets.outputs.win-x64", "needs.native-sqlcipher-assets.outputs.win-arm64"):
+            self.assertIn(required, authority)
+        for profile in ("full", "guild-memory", "guild-budget", "guild-workspace",
+                        "guild-execution", "guild-operator", "guild-a2a"):
+            selected, _ = selected_inventory("workflow_dispatch", profile, "both")
+            self.assertFalse(any(name == "guild-final-authority" for name, _ in selected))
+
+    def test_final_authority_fails_when_any_native_job_or_asset_is_missing(self):
+        body = step(job("guild-final-authority"), "Require both Windows qualification results")
+        script = body.split("run: |\n", 1)[1]
+        script = "\n".join(line[10:] for line in script.splitlines() if line.startswith("          "))
+        keys = ("windows-suite.result", "windows-arm64-suite.result",
+                "native-sqlcipher-assets.outputs.win-x64", "native-sqlcipher-assets.outputs.win-arm64")
+        def evaluate(values):
+            code = re.sub(r"\$\{\{ needs\.([\w.-]+) \}\}", lambda match: values[match.group(1)], script)
+            self.assertNotIn("${{", code)
+            return subprocess.run(["bash", "-c", code], capture_output=True, text=True).returncode
+        good = dict(zip(keys, ("success", "success", "verified", "verified")))
+        self.assertEqual(0, evaluate(good))
+        for key in keys:
+            for bad in ("", "skipped", "failure", "cancelled", "pending"):
+                with self.subTest(key=key, value=bad):
+                    self.assertNotEqual(0, evaluate({**good, key: bad}))
+
     def test_execution_platform_choice_defaults_to_both_without_affecting_other_jobs(self):
         source = WORKFLOW.read_text()
         match = re.search(r"^      execution-platform:\n(.*?)(?=^      [^ ]|^permissions:)", source, re.M | re.S)
@@ -110,7 +195,7 @@ class CiScopeWorkflowTests(unittest.TestCase):
                 selected, skipped = selected_inventory("workflow_dispatch", "guild-execution", platform)
                 self.assertEqual(support | {("guild-execution", host) for host in hosts}, set(selected))
                 self.assertEqual(4 + len(hosts), len(selected))
-                self.assertEqual(16, len(skipped))
+                self.assertEqual(17, len(skipped))
 
     def test_execution_platform_choice_does_not_change_full_pr_or_other_focused_inventories(self):
         for event, profile, full in (("pull_request", "", "true"), ("pull_request", "", "false"),
@@ -318,6 +403,13 @@ class CiScopeWorkflowTests(unittest.TestCase):
             "Guild.GuildLocalHostPolicyTests.Native_operator_lease_renewal_refuses_a_replacement_physical_root",
         ):
             self.assertIn("--required-case RetroDownfall.Arcanum.Tests." + case, harness)
+
+    def test_guild_final_checks_both_coverage_threshold_engines_on_windows(self):
+        for lane in ("windows-suite", "windows-arm64-suite"):
+            source = job(lane)
+            self.assertIn("name: Test coverage threshold engine parity", source)
+            self.assertIn("python -m unittest scripts/coverage_threshold_test.py", source)
+            self.assertIn("assert shutil.which('pwsh')", source)
 
     def test_focused_guild_profile_is_explicit_and_does_not_claim_full_authority(self):
         source = WORKFLOW.read_text()

@@ -273,8 +273,9 @@ internal static class BackupRestoreDatabaseWorker
     }
 
     /// <summary>
-    /// Drops durable operations captured mid-flight. Their leases, in-process state, and peer
-    /// connections died with the source machine, so resuming them here would invent progress.
+    /// Interrupts ordinary operations captured mid-flight. Guild-linked operations retain their
+    /// recovery evidence and state, but lose leases owned by the source host. A retained operation's
+    /// ancestors cannot be deleted while its foreign-key links still name them.
     /// </summary>
     public static async Task<long> ClearPendingOperationsAsync(
         SqliteConnection connection,
@@ -285,14 +286,51 @@ internal static class BackupRestoreDatabaseWorker
             return 0;
         }
 
+        bool hasGuildQuests = await TableExistsAsync(connection, "guild_quests", cancellationToken).ConfigureAwait(false);
+
+        if (hasGuildQuests)
+        {
+            // Refuse before changing any operation: SQLite promotes an exhausted integer increment
+            // to REAL, which cannot be used as a durable operation revision.
+            await using SqliteCommand revisionCheck = connection.CreateCommand();
+
+            revisionCheck.CommandText = """
+                SELECT EXISTS(SELECT 1 FROM "LongRunningOperations" o
+                    WHERE o."State" NOT IN ($completed, $failed, $abandoned)
+                      AND (o."LeaseOwner" IS NOT NULL OR o."LeaseExpiresAt" IS NOT NULL)
+                      AND EXISTS (SELECT 1 FROM guild_quests q WHERE q.OperationId=o."Id")
+                      AND (typeof(o."Revision") <> 'integer' OR o."Revision" < 0 OR o."Revision" >= $maxRevision));
+                """;
+
+            _ = revisionCheck.Parameters.AddWithValue("$completed", (int)LongRunningOperationState.Completed);
+
+            _ = revisionCheck.Parameters.AddWithValue("$failed", (int)LongRunningOperationState.Failed);
+
+            _ = revisionCheck.Parameters.AddWithValue("$abandoned", (int)LongRunningOperationState.Abandoned);
+
+            _ = revisionCheck.Parameters.AddWithValue("$maxRevision", long.MaxValue);
+
+            if ((long)(await revisionCheck.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! != 0)
+            {
+                throw new InvalidDataException("A retained Guild operation has an invalid or exhausted revision.");
+            }
+        }
+
+        string retainedGuild = hasGuildQuests
+            ? """ AND NOT EXISTS (SELECT 1 FROM guild_quests q WHERE q.OperationId="LongRunningOperations"."Id")"""
+            : string.Empty;
+
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = """
             DELETE FROM "LongRunningOperations"
             WHERE "State" NOT IN ($completed, $failed, $abandoned)
               AND "RootOperationId" IS NULL
-              AND "ParentOperationId" IS NULL;
-            """;
+              AND "ParentOperationId" IS NULL
+              AND NOT EXISTS (SELECT 1 FROM "LongRunningOperations" child
+                  WHERE child."RootOperationId"="LongRunningOperations"."Id"
+                     OR child."ParentOperationId"="LongRunningOperations"."Id")
+            """ + retainedGuild + ";";
 
         _ = command.Parameters.AddWithValue(
             "$completed",
@@ -316,8 +354,8 @@ internal static class BackupRestoreDatabaseWorker
                 "LeaseOwner" = NULL,
                 "LeaseExpiresAt" = NULL,
                 "TerminalErrorCode" = 'backup.restore_interrupted_elsewhere'
-            WHERE "State" NOT IN ($completed, $failed, $abandoned);
-            """;
+            WHERE "State" NOT IN ($completed, $failed, $abandoned)
+            """ + retainedGuild + ";";
 
         _ = children.Parameters.AddWithValue(
             "$completed",
@@ -331,8 +369,32 @@ internal static class BackupRestoreDatabaseWorker
             "$abandoned",
             (int)LongRunningOperationState.Abandoned);
 
-        return deleted
-            + await children.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        long interrupted = await children.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        if (hasGuildQuests)
+        {
+            await using SqliteCommand guild = connection.CreateCommand();
+
+            // Retain the Quest/LRO link and its unresolved accounting evidence. The archived lease
+            // belonged to another host; Signet sanitation independently makes the Quest inert.
+            guild.CommandText = """
+                UPDATE "LongRunningOperations"
+                SET "LeaseOwner"=NULL, "LeaseExpiresAt"=NULL, "Revision"="Revision"+1
+                WHERE "State" NOT IN ($completed, $failed, $abandoned)
+                  AND ("LeaseOwner" IS NOT NULL OR "LeaseExpiresAt" IS NOT NULL)
+                  AND EXISTS (SELECT 1 FROM guild_quests q WHERE q.OperationId="LongRunningOperations"."Id");
+                """;
+
+            _ = guild.Parameters.AddWithValue("$completed", (int)LongRunningOperationState.Completed);
+
+            _ = guild.Parameters.AddWithValue("$failed", (int)LongRunningOperationState.Failed);
+
+            _ = guild.Parameters.AddWithValue("$abandoned", (int)LongRunningOperationState.Abandoned);
+
+            _ = await guild.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        return deleted + interrupted;
     }
 
     /// <summary>

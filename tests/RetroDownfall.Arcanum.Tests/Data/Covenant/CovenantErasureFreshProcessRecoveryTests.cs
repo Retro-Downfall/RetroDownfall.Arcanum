@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -26,7 +27,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 /// <summary>
-/// A process boundary over one real encrypted Grimoire and the shipped recovery composition.
+/// Recreated host service providers over one real encrypted Grimoire and the shipped recovery composition.
 /// </summary>
 [Collection("ProcessEnvironment")]
 [Trait("Category", "Integration")]
@@ -267,6 +268,10 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
         builder.Services.AddSingleton<IModelTokenEstimator>(static _ => null!);
 
+        // The API owns Guild inference; this Infrastructure-only recovery fixture must never run it.
+        builder.Services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Guild.IGuildLocalInferenceRuntime,
+            UnreachedGuildInferenceRuntime>();
+
         builder.Services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
 
         // Inference is outside this fixture; fail explicitly if Long Rest provider work is reached.
@@ -312,6 +317,20 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
             .SetPassphrase(passphrase);
 
         return provider;
+    }
+
+    private sealed class UnreachedGuildInferenceRuntime : RetroDownfall.Arcanum.Infrastructure.Guild.IGuildLocalInferenceRuntime
+    {
+        public Task<Result<PromptTurnResult>> ExecuteAsync(
+            RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalInferenceExecution execution,
+            RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalExecutionInput input,
+            CancellationToken cancellationToken) => throw new InvalidOperationException("Guild inference is outside this recovery fixture.");
+
+        public Task<Result<PromptTurnResult>> ExecuteTurnAsync(
+            RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalInferenceExecution execution,
+            RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalExecutionInput input,
+            RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalInferenceTurn turn,
+            CancellationToken cancellationToken) => throw new InvalidOperationException("Guild inference is outside this recovery fixture.");
     }
 
     private static async Task<SqliteConnection> InitializeProcessAsync(ServiceProvider provider)

@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Diagnostics.CodeAnalysis;
 using System.Runtime.ExceptionServices;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
@@ -21,7 +20,6 @@ using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
-[ExcludeFromCodeCoverage] // Reason: IHostedService + IApprenticeRuntime long-running orchestration
 internal sealed partial class ApprenticeService(
     IServiceScopeFactory scopeFactory,
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
@@ -3755,7 +3753,6 @@ internal sealed partial class ApprenticeService(
 
                     stepError = frame.Data;
                 }
-
             }
         }
         catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)

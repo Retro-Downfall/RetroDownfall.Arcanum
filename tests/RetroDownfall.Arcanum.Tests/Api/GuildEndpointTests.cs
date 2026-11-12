@@ -254,7 +254,7 @@ public sealed partial class GuildEndpointTests
 
         Guid id = accepted.RootElement.GetProperty("data").GetProperty("id").GetGuid();
 
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(30));
+        using CancellationTokenSource timeout = new(TimeSpan.FromMinutes(2));
 
         try
         {

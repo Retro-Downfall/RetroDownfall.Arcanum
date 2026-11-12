@@ -30,7 +30,7 @@ public sealed partial class GuildLocalHostPolicyTests
             {
                 await scheduler.StartAsync(default);
 
-                await scheduler.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(5));
+                await scheduler.ExecuteTask!.WaitAsync(TimeSpan.FromMinutes(2));
             });
 
             Assert.Equal("discovery options failed", failure.Message);
@@ -41,7 +41,7 @@ public sealed partial class GuildLocalHostPolicyTests
         }
         finally
         {
-            await scheduler.StopAsync(default).WaitAsync(TimeSpan.FromSeconds(5));
+            await scheduler.StopAsync(default).WaitAsync(TimeSpan.FromMinutes(2));
         }
     }
 

@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -52,6 +53,10 @@ public sealed class RecoveryHandlerServingCompositionTests
         builder.Services.AddSingleton<IHumanPromptRegistry>(static _ => null!);
 
         builder.Services.AddSingleton<IModelTokenEstimator>(static _ => null!);
+
+        // The API owns Guild inference; recovery composition must never execute it.
+        builder.Services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Guild.IGuildLocalInferenceRuntime,
+            UnreachedGuildInferenceRuntime>();
 
         builder.Services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
 
@@ -146,6 +151,20 @@ public sealed class RecoveryHandlerServingCompositionTests
 
         // The holder is gone from the composition: nothing can be asked to bind a lease.
         Assert.DoesNotContain(services, static descriptor => descriptor.ServiceType.Name == "LongRestWorkAdmission");
+    }
+
+    private sealed class UnreachedGuildInferenceRuntime : RetroDownfall.Arcanum.Infrastructure.Guild.IGuildLocalInferenceRuntime
+    {
+        public Task<RetroDownfall.Arcanum.Core.Primitives.Result<PromptTurnResult>> ExecuteAsync(
+            RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalInferenceExecution execution,
+            RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalExecutionInput input,
+            CancellationToken cancellationToken) => throw new InvalidOperationException("Guild inference is outside this composition fixture.");
+
+        public Task<RetroDownfall.Arcanum.Core.Primitives.Result<PromptTurnResult>> ExecuteTurnAsync(
+            RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalInferenceExecution execution,
+            RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalExecutionInput input,
+            RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalInferenceTurn turn,
+            CancellationToken cancellationToken) => throw new InvalidOperationException("Guild inference is outside this composition fixture.");
     }
 
     private static async Task AssertOneHandlerPerRegistryKindAsync(

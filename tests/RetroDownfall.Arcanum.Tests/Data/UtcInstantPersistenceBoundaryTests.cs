@@ -28,6 +28,77 @@ public sealed class UtcInstantPersistenceBoundaryTests
     }
 
     [Theory]
+    [InlineData("RetroDownfall.Arcanum.Infrastructure.Data.UtcInstantText.Format(now)", true)]
+    [InlineData("Other.UtcInstantText.Format(now)", false)]
+    public void Per_binding_guard_recognizes_only_the_exact_qualified_instant_codec(string value, bool canonical)
+    {
+        string source = $$"""
+            using Microsoft.Data.Sqlite;
+            internal static class Fixture
+            {
+                internal static void Write(SqliteCommand command, DateTimeOffset now)
+                {
+                    command.CommandText = "INSERT INTO Entries (CreatedAt) VALUES ($value);";
+                    _ = command.Parameters.AddWithValue("$value", {{value}});
+                }
+            }
+            """;
+
+        IReadOnlyList<InstantBindingViolation> violations = FindInstantBindingViolations([new ProductionSource("Fixture.cs", source)]);
+
+        Assert.Equal(canonical, violations.Count == 0);
+    }
+
+    [Theory]
+    [InlineData("", true)]
+    [InlineData("command.Parameters.Clear();", false)]
+    [InlineData("command.Parameters[\"$value\"].Value = imported;", false)]
+    public void Per_binding_guard_proves_retained_values_only_without_intervening_mutation(string mutation, bool canonical)
+    {
+        string source = $$"""
+            using Microsoft.Data.Sqlite;
+            internal static class Fixture
+            {
+                internal static void Write(SqliteCommand command, DateTimeOffset now, string imported)
+                {
+                    command.CommandText = "INSERT INTO Entries (CreatedAt) VALUES ($value);";
+                    _ = command.Parameters.AddWithValue("$value", UtcInstantText.Format(now));
+                    command.ExecuteNonQuery();
+                    {{mutation}}
+                    command.CommandText = "INSERT INTO Entries (UpdatedAt) VALUES ($value);";
+                    command.ExecuteNonQuery();
+                }
+            }
+            """;
+
+        IReadOnlyList<InstantBindingViolation> violations = FindInstantBindingViolations([new ProductionSource("Fixture.cs", source)]);
+
+        Assert.Equal(canonical, violations.Count == 0);
+    }
+
+    [Fact]
+    public void Retained_binding_proof_rejects_an_execution_embedded_in_other_work()
+    {
+        const string source = """
+            using Microsoft.Data.Sqlite;
+            internal static class Fixture
+            {
+                internal static void Write(SqliteCommand command, DateTimeOffset now)
+                {
+                    bool changed = false;
+                    command.CommandText = "INSERT INTO Entries (CreatedAt) VALUES ($value);";
+                    _ = command.Parameters.AddWithValue("$value", UtcInstantText.Format(now));
+                    _ = (changed = true) && command.ExecuteNonQuery() > 0;
+                    command.CommandText = "INSERT INTO Entries (UpdatedAt) VALUES ($value);";
+                    command.ExecuteNonQuery();
+                }
+            }
+            """;
+
+        Assert.NotEmpty(FindInstantBindingViolations([new ProductionSource("Fixture.cs", source)]));
+    }
+
+    [Theory]
     [InlineData("CreatedAt < $value")]
     [InlineData("createdat < $value")]
     [InlineData("e.\"CreatedAt\" <= $value")]
@@ -695,6 +766,46 @@ public sealed class UtcInstantPersistenceBoundaryTests
     {
         string[] expectedOwners =
         [
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetReservationService.GuildTransactions.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.Market.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.MarketBids.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.MarketReads.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.Mutations.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.Notes.Reads.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.Notes.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.Operator.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.OperatorContributions.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.OperatorList.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.OperatorMemberQuests.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.OperatorMembers.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortStore.WithdrawOffer.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalExecutionStore.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalHostPolicy.Inbound.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Cohorts.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalStore.Distribution.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Awards.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Cancellation.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.CancellationWork.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.CohortCancellation.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.LocalLifecycle.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.LocalPending.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.LocalPort.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.OperatorList.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.PreDispatchRecovery.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.ProviderEffects.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.ProviderInput.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Remote.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.RemoteCallbackReceiver.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.RemoteCancellationFrontier.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.RemoteProtocolStop.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.RemoteWait.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.TreeCursors.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.WaitCancellation.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildWorkspaceLeaseStore.Mutations.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildWorkspaceLeaseStore.cs",
+            // Canonical market validation and a search cursor fallback format stored/DTO values.
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildMarketStorage.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Memory/MemorySearchService.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GuildCanonicalSchemaDataInitializer.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOwnerCleanupCoordinator.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalEvents.cs",
@@ -711,8 +822,6 @@ public sealed class UtcInstantPersistenceBoundaryTests
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetStore.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.SourceClaims.cs",
-            // The inspection continuation fallback formats a DTO instant, not a new database write.
-            "src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/A2A/A2AExternalSpendLedger.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupCovenantRestoreReconciler.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreErasureEvidenceApplier.cs",
@@ -829,7 +938,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
         string[] expectedOwners =
         [
             // Memory search formats parsed Guid workspace identities only; it writes no timestamp.
-            "src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Memory/MemorySearchService.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantCampaignScopeProbe.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/BatchRepository.cs",
             // Native memory inspection formats a parsed Session Guid, never a timestamp.
@@ -838,6 +947,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
             "src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/UploadedFileRepository.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/ApprenticeRepository.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Repositories/ApprenticeRepository.Inspection.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/CampaignRepository.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/EntryTemporalQueries.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.cs",
@@ -1195,7 +1305,8 @@ public sealed class UtcInstantPersistenceBoundaryTests
                             continue;
                         }
 
-                        if (!InspectTransitiveContractBinding(
+                        if (!ProvesImmediatelyRetainedBinding(contract, parameterName, methods, memberTypes)
+                            && !InspectTransitiveContractBinding(
                                 source.Source,
                                 contract,
                                 parameterName,
@@ -1218,6 +1329,101 @@ public sealed class UtcInstantPersistenceBoundaryTests
         }
 
         return violations;
+    }
+
+    // SqliteCommand retains its parameter collection across execution and CommandText changes.
+    // Accept only the adjacent bind/execute/reassign shape: an intervening statement could clear,
+    // replace, or leak the parameter, so every other shape remains unproven.
+    private static bool ProvesImmediatelyRetainedBinding(
+        SqlInstantContract contract,
+        string parameterName,
+        IReadOnlyDictionary<string, List<MethodDeclarationSyntax>> methods,
+        IReadOnlyDictionary<string, HashSet<string>> memberTypes)
+    {
+        if (contract.CommandKey is null
+            || contract.Origin is not AssignmentExpressionSyntax assignment
+            || assignment.Parent is not ExpressionStatementSyntax sqlStatement
+            || sqlStatement.Parent is not BlockSyntax block)
+        {
+            return false;
+        }
+
+        int index = block.Statements.IndexOf(sqlStatement);
+
+        if (index < 2 || block.Statements[index - 2] is not ExpressionStatementSyntax bindStatement
+            || block.Statements[index - 1] is not ExpressionStatementSyntax executeStatement)
+        {
+            return false;
+        }
+
+        if (UnwrapDiscard(bindStatement.Expression) is not InvocationExpressionSyntax bind
+            || !IsParameterBindingInvocation(bind))
+        {
+            return false;
+        }
+
+        SeparatedSyntaxList<ArgumentSyntax> arguments = bind.ArgumentList.Arguments;
+        int parameterIndex = -1;
+
+        for (int i = 0; i < arguments.Count - 1; i++)
+        {
+            if (TryReadParameterName(arguments[i].Expression, out string candidate) && candidate == parameterName)
+            {
+                parameterIndex = i;
+                break;
+            }
+        }
+
+        if (parameterIndex < 0 || BindingCommandKey(bind, parameterIndex) != contract.CommandKey
+            || !IsCanonicalExpression(arguments[parameterIndex + 1].Expression, bind, methods, memberTypes, []))
+        {
+            return false;
+        }
+
+        ExpressionSyntax execution = UnwrapDiscard(executeStatement.Expression);
+
+        if (execution is AwaitExpressionSyntax awaited)
+        {
+            execution = Unwrap(awaited.Expression);
+        }
+
+        if (execution is InvocationExpressionSyntax
+            {
+                Expression: MemberAccessExpressionSyntax
+                {
+                    Name.Identifier.ValueText: "ConfigureAwait",
+                    Expression: InvocationExpressionSyntax configured,
+                },
+            } configure
+            && configure.ArgumentList.Arguments.Count == 1
+            && configure.ArgumentList.Arguments[0].Expression.IsKind(SyntaxKind.FalseLiteralExpression))
+        {
+            execution = configured;
+        }
+
+        return execution is InvocationExpressionSyntax
+        {
+            Expression: MemberAccessExpressionSyntax member,
+        } call
+            && member.Name.Identifier.ValueText is "ExecuteNonQuery" or "ExecuteNonQueryAsync"
+            && CommandIdentity(member.Expression) == contract.CommandKey
+            && (call.ArgumentList.Arguments.Count == 0
+                || call.ArgumentList.Arguments.Count == 1
+                && call.ArgumentList.Arguments[0].Expression is IdentifierNameSyntax);
+    }
+
+    private static ExpressionSyntax UnwrapDiscard(ExpressionSyntax expression)
+    {
+        expression = Unwrap(expression);
+
+        if (expression is AssignmentExpressionSyntax assignment
+            && assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
+            && assignment.Left is IdentifierNameSyntax { Identifier.ValueText: "_" })
+        {
+            expression = Unwrap(assignment.Right);
+        }
+
+        return expression;
     }
 
     private static void InspectBinding(
@@ -2598,7 +2804,9 @@ public sealed class UtcInstantPersistenceBoundaryTests
         {
             string name = InvocationName(invocation);
 
-            if (name is "UtcInstantText.Format" or "UtcInstantText.Normalize")
+            if (name is "UtcInstantText.Format" or "UtcInstantText.Normalize"
+                || invocation.Expression.ToString() is "RetroDownfall.Arcanum.Infrastructure.Data.UtcInstantText.Format"
+                    or "RetroDownfall.Arcanum.Infrastructure.Data.UtcInstantText.Normalize")
             {
                 return true;
             }

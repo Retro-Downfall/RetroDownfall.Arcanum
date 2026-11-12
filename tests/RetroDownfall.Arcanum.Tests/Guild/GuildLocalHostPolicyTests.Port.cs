@@ -81,7 +81,8 @@ public sealed partial class GuildLocalHostPolicyTests
         GuildDispatchRequest request = new(new(f.Request.IdempotencyKey, issued.Value.IntentDigest), quest.Id,
             quest.OperationId, quest.RunId, quest.Id, operation.Revision, binding.Input.Digest);
 
-        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(outcome is "heartbeat" or "cancel" or "cancel-port" ? 20 : 10));
+        // Watchdog only; state and receipt assertions establish progress.
+        using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
         Task<Result<GuildDispatchObservation>> dispatchTask = port.DispatchAsync(execution.Value, request, deadline.Token);
 

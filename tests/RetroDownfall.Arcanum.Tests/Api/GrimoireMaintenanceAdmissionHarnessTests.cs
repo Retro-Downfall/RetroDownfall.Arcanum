@@ -46,6 +46,8 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 using RetroDownfall.Arcanum.Core.Weave;
@@ -441,6 +443,10 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
             await first.Admission.WaitUntilEffectCompletedAsync(GrimoireWorkKind.GuildMaintenance);
 
+            var identity = await first.Factory.Services.GetRequiredService<GuildLocalHostPolicy>().InitializeIdentityAsync(CancellationToken.None);
+
+            Assert.True(identity.IsSuccess, identity.Error.Message);
+
             beforeGuildState = await GuildStateAsync(first);
 
             const string epochPrefix = "authority-epoch:";
@@ -455,8 +461,22 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
             Assert.Equal(epoch.ToString("D").ToUpperInvariant(), epochText);
 
-            Assert.Equal(GuildTableNames.Select(name => $"table:{name}:{(name == "guild_signet_authority_state" ? 1 : 0)}")
-                .Append("cursor:0:0:0").Append(epochState).Order(StringComparer.Ordinal).ToArray(), beforeGuildState);
+            string identityState = Assert.Single(beforeGuildState, state => state.StartsWith("operator-identity:", StringComparison.Ordinal));
+
+            string[] identityParts = identityState.Split(':');
+
+            Assert.Equal(3, identityParts.Length);
+
+            Assert.True(Guid.TryParseExact(identityParts[1], "D", out Guid generation));
+
+            Assert.True(Guid.TryParseExact(identityParts[2], "D", out Guid principal));
+
+            Assert.NotEqual(Guid.Empty, generation);
+
+            Assert.NotEqual(Guid.Empty, principal);
+
+            Assert.Equal(GuildTableNames.Select(name => $"table:{name}:{(name is "guild_signet_authority_state" or "guild_workspace_authority_state" ? 1 : 0)}")
+                .Append("cursor:0:0:0").Append(epochState).Append(identityState).Order(StringComparer.Ordinal).ToArray(), beforeGuildState);
 
             beforeRows = await ParticipantRowsAsync(first);
 
@@ -469,6 +489,8 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
         await recovered.Admission.WaitUntilEffectCompletedAsync(GrimoireWorkKind.ProviderHealthProbe);
 
         await recovered.Admission.WaitUntilEffectCompletedAsync(GrimoireWorkKind.GuildMaintenance);
+
+        await recovered.Admission.WaitUntilEffectCompletedAsync(GrimoireWorkKind.GuildStorage);
 
         Assert.Equal(sessionId, recovered.SessionId);
 
@@ -484,12 +506,21 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         Assert.Equal(beforeGuildState, await GuildStateAsync(recovered));
 
-        // Both legitimate startup effects are required exactly once. Retained-closed recovery
-        // tests keep these same workers installed and still require no ordinary effects at all.
-        Assert.Equal(new[] { GrimoireWorkKind.ProviderHealthProbe, GrimoireWorkKind.GuildMaintenance }.Order().ToArray(),
-            recovered.Admission.Effects.Select(effect => effect.Kind).Order().ToArray());
+        // The two one-shot startup effects occur once. The disabled Guild scheduler also
+        // performs periodic storage discovery; its count depends on elapsed time. The exact
+        // Guild state above proves discovery did not reseed identity or domain evidence.
+        GrimoireEffectObservation[] effects = recovered.Admission.Effects.ToArray();
 
-        Assert.All(recovered.Admission.Effects, effect =>
+        Assert.All(effects, effect => Assert.Contains(effect.Kind,
+            new[] { GrimoireWorkKind.ProviderHealthProbe, GrimoireWorkKind.GuildMaintenance, GrimoireWorkKind.GuildStorage }));
+
+        Assert.Single(effects, effect => effect.Kind == GrimoireWorkKind.ProviderHealthProbe);
+
+        Assert.Single(effects, effect => effect.Kind == GrimoireWorkKind.GuildMaintenance);
+
+        Assert.Contains(effects, effect => effect.Kind == GrimoireWorkKind.GuildStorage && effect.Disposals == 1 && effect.TerminalCount == 1);
+
+        Assert.All(effects.Where(effect => effect.Kind != GrimoireWorkKind.GuildStorage), effect =>
         {
             Assert.Equal(1, effect.Disposals);
 
@@ -535,6 +566,7 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
              UNION ALL SELECT 'cursor:' || AppliedCampaignSequence || ':' || AppliedSessionSequence || ':' || FullSweepRequired AS Value
              FROM capability_cleanup_state WHERE CapabilityFamilyCode=2
              UNION ALL SELECT 'authority-epoch:' || Epoch AS Value FROM guild_signet_authority_state WHERE StateKey=1
+             UNION ALL SELECT 'operator-identity:' || InstallationGeneration || ':' || NativeOperatorPrincipalId AS Value FROM guild_workspace_authority_state
              ORDER BY Value
             """;
 

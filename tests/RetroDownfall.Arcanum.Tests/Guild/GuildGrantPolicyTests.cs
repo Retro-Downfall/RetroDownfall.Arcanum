@@ -292,4 +292,88 @@ public sealed class GuildGrantPolicyTests
 
         Assert.All(invalid, scope => Assert.True(GuildGrantPolicy.Validate(Empty with { Memory = [new(GuildMemoryStore.Transcript, GuildMemoryOperation.Read, scope)] }).IsFailure));
     }
+
+    [Fact]
+    public void Attenuation_rejects_invalid_parent_null_inputs_and_invalid_child_before_subset_checks()
+    {
+        Assert.True(GuildGrantPolicy.Validate(null!).IsFailure);
+
+        Assert.True(GuildGrantPolicy.Attenuate(Empty with { Tools = default }, new(), NoScopeEvidence).IsFailure);
+
+        Assert.True(GuildGrantPolicy.Attenuate(Empty, null!, NoScopeEvidence).IsFailure);
+
+        Assert.True(GuildGrantPolicy.Attenuate(Empty, new(), null!).IsFailure);
+
+        GuildRequestedGrant invalidChild = new(Delegation: new(true, [(GuildDelegationKind)999]));
+
+        Assert.Equal(ErrorCodes.Guild.InvalidRequest, GuildGrantPolicy.Attenuate(Empty, invalidChild, NoScopeEvidence).Error.Code);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("a\\b")]
+    [InlineData("C:folder")]
+    [InlineData("a/?")]
+    [InlineData("a/\n")]
+    [InlineData("a//b")]
+    [InlineData("a/./b")]
+    [InlineData("a/")]
+    [InlineData("a/.")]
+    [InlineData("a/..")]
+    public void Workspace_roots_refuse_invalid_separators_segments_and_control_characters(string? root)
+    {
+        GuildGrant grant = Empty with { Workspaces = [new(Guid.NewGuid(), root!, GuildWorkspaceAccess.Read)] };
+
+        Assert.Equal(ErrorCodes.Guild.InvalidRequest, GuildGrantPolicy.Validate(grant).Error.Code);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(".")]
+    [InlineData("a/b")]
+    public void Workspace_roots_accept_explicit_canonical_forms(string root)
+    {
+        Assert.True(GuildGrantPolicy.Validate(Empty with { Workspaces = [new(Guid.NewGuid(), root, GuildWorkspaceAccess.Read)] }).IsSuccess);
+    }
+
+    [Fact]
+    public void Memory_rejects_null_unknown_and_invalid_scope_values_and_accepts_supported_lexicon_operations()
+    {
+        GuildMemoryGrant valid = new(GuildMemoryStore.Transcript, GuildMemoryOperation.Read, new(GuildMemoryScopeKind.Global));
+        GuildMemoryGrant[] invalid =
+        [
+            null!,
+            valid with { Store = (GuildMemoryStore)999 },
+            valid with { Operation = (GuildMemoryOperation)999 },
+            valid with { Scope = null! },
+            valid with { Scope = new(GuildMemoryScopeKind.Campaign, Guid.Empty) },
+            valid with { Scope = new(GuildMemoryScopeKind.Session) },
+        ];
+
+        Assert.All(invalid, item => Assert.True(GuildGrantPolicy.Validate(Empty with { Memory = [item] }).IsFailure));
+
+        foreach (GuildMemoryOperation operation in Enum.GetValues<GuildMemoryOperation>())
+        {
+            Assert.True(GuildGrantPolicy.Validate(Empty with { Memory = [new(GuildMemoryStore.Lexicon, operation, new(GuildMemoryScopeKind.Global))] }).IsSuccess);
+        }
+
+        Assert.True(GuildGrantPolicy.Validate(Empty with { Memory = [new(GuildMemoryStore.Saga, GuildMemoryOperation.Read, new(GuildMemoryScopeKind.Global))] }).IsSuccess);
+
+        Assert.True(GuildGrantPolicy.Validate(Empty with { Memory = [valid with { Scope = new(GuildMemoryScopeKind.Campaign, Guid.NewGuid()) }] }).IsSuccess);
+    }
+
+    [Fact]
+    public void Unknown_token_budget_mode_is_rejected_and_token_widening_does_not_depend_on_dollar_mode()
+    {
+        GuildBudgetGrant invalid = new(new(GuildBudgetMode.Unlimited), new((GuildBudgetMode)999));
+
+        Assert.True(GuildGrantPolicy.Validate(Empty with { Budget = invalid }).IsFailure);
+
+        GuildGrant parent = Empty with { Budget = new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Finite, 4)) };
+
+        GuildBudgetGrant widened = new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited));
+
+        Assert.Equal(ErrorCodes.Guild.GrantWidening,
+            GuildGrantPolicy.Attenuate(parent, new(Budget: new(true, widened)), NoScopeEvidence).Error.Code);
+    }
 }

@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
@@ -327,7 +328,13 @@ public sealed class CovenantResetBootstrapBarrierTests
 
         Assert.True(pid >= 0, "The PID hosted service is not registered.");
         Assert.Equal(pid + 1, validator);
-        Assert.Equal(validator + 1, firstProducer);
+        // Guild readiness and peer-denial reconciliation must follow file-key validation too.
+        // Both are installation-reset-aware and must complete before general LRO recovery.
+        Assert.Equal(
+            new[] { nameof(GuildLocalHostReadiness), nameof(GuildInboundPeerReloadService) },
+            hosted.Skip(validator + 1).Take(firstProducer - validator - 1));
+
+        Assert.True(firstProducer > validator);
     }
 
     [Fact]

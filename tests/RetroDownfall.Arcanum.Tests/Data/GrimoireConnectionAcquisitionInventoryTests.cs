@@ -12,13 +12,14 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
-    private const int ExpectedProductionAcquisitionCount = 561;
+    private const int ExpectedProductionAcquisitionCount = 571;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
         ("src/RetroDownfall.Arcanum.Api/Health/GrimoireLivenessProbe.cs", "ExecuteProbeAsync(1)"),
         ("src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs", "JoinWorkspaceChunkMetadataAsync(5)"),
         ("src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs", "OpenConnectionAsync(3)"),
+        ("src/RetroDownfall.Arcanum.Infrastructure/Memory/MemorySearchService.cs", "OpenMemorySearchLeaseAsync(3)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionDivinationService.cs", "SearchAsync(6)"),
         ("src/RetroDownfall.Arcanum.Api/Workspaces/WorkspaceDivinationEndpoints.cs", "JoinWorkspaceChunksAsync(6)"),
         ("src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantCampaignScopeProbe.cs", "HasDeletionEventAsync(4)"),

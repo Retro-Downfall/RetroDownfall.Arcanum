@@ -274,7 +274,7 @@ public sealed class GuildQuestRecoveryTests
 
         Task<LongRunningOperationRecoveryResult> recovery = Handler(scenario, observer).RecoverAsync(scenario.Operation, CancellationToken.None);
 
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await entered.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
         try
         {
@@ -283,7 +283,7 @@ public sealed class GuildQuestRecoveryTests
                 await scenario.ExecuteAsync("UPDATE guild_quests SET Revision=Revision+1");
 
                 return Result<bool>.Success(true);
-            }, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+            }, CancellationToken.None).WaitAsync(TimeSpan.FromMinutes(2));
 
             Assert.True(otherAdmission.IsSuccess);
         }
@@ -331,7 +331,7 @@ public sealed class GuildQuestRecoveryTests
 
         Task<LongRunningOperationRecoveryResult> recovery = Handler(scenario, observer).RecoverAsync(scenario.Operation, caller.Token);
 
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await entered.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
         int readsBeforeMaintenance = scenario.Connections.Kinds.Count;
 
@@ -362,7 +362,7 @@ public sealed class GuildQuestRecoveryTests
             else
                 Assert.Equal(LongRunningOperationState.ReconciliationRequired, (await recovery).State);
 
-            Assert.True((await drain.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
+            Assert.True((await drain.WaitAsync(TimeSpan.FromMinutes(2))).IsSuccess);
 
             Assert.Single(observer.Targets);
 

@@ -58,7 +58,7 @@ internal static class GuildSignetGrantComposition
                 ? left.Budget.Tokens : right.Budget.Tokens;
 
         DateTimeOffset? expiry = left.ExpiresAtUtc is null ? right.ExpiresAtUtc
-            : right.ExpiresAtUtc is null || left.ExpiresAtUtc <= right.ExpiresAtUtc ? left.ExpiresAtUtc : right.ExpiresAtUtc;
+            : right.ExpiresAtUtc is null || left.ExpiresAtUtc.Value <= right.ExpiresAtUtc.Value ? left.ExpiresAtUtc : right.ExpiresAtUtc;
 
         return new(workspaces.Distinct().ToImmutableArray(), left.Tools.Intersect(right.Tools).ToImmutableArray(),
             memory.Distinct().ToImmutableArray(), new(usd, tokens), left.Delegation.Intersect(right.Delegation).ToImmutableArray(), expiry);

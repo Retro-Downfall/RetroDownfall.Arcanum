@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Guild;
 
+[Collection("WorkspacePathPolicy")]
 public sealed partial class GuildQuestStoreTests
 {
     [Fact]
@@ -89,6 +90,8 @@ public sealed partial class GuildQuestStoreTests
 
         internal readonly FixtureOrdinaryConnectionFactory Connections;
 
+        private readonly IGrimoireOrdinaryConnectionFactory _storeConnections;
+
         internal readonly HostPolicy Host = new();
 
         internal readonly BudgetParticipant Budget = new();
@@ -103,11 +106,14 @@ public sealed partial class GuildQuestStoreTests
 
         internal readonly GuildIssueRootRequest Request;
 
-        private Fixture(EvolutionScratchDatabase file)
+        private Fixture(EvolutionScratchDatabase file,
+            Func<FixtureOrdinaryConnectionFactory, IGrimoireOrdinaryConnectionFactory>? wrapConnections)
         {
             _file = file;
 
             Connections = new(file.ConnectionString);
+
+            _storeConnections = wrapConnections?.Invoke(Connections) ?? Connections;
 
             Caller = new(GuildCallerKind.Operator, Guid.NewGuid(), Guid.NewGuid(), Host.InstallationGeneration);
 
@@ -119,12 +125,13 @@ public sealed partial class GuildQuestStoreTests
 
             Request = new(key, null, "Child", "Summarize the selected material", Host.Grant);
 
-            Authority = new(new(Connections), Gate, Host, TimeProvider.System);
+            Authority = new(new(_storeConnections), Gate, Host, TimeProvider.System);
 
             Store = NewStore();
         }
 
-        internal static async Task<Fixture> CreateAsync()
+        internal static async Task<Fixture> CreateAsync(
+            Func<FixtureOrdinaryConnectionFactory, IGrimoireOrdinaryConnectionFactory>? wrapConnections = null)
         {
             EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
@@ -142,7 +149,7 @@ public sealed partial class GuildQuestStoreTests
 
             _ = await command.ExecuteNonQueryAsync();
 
-            return new(file);
+            return new(file, wrapConnections);
         }
 
         private IGuildQuestAllocationParticipant? _allocationParticipant;
@@ -163,14 +170,14 @@ public sealed partial class GuildQuestStoreTests
             Store = NewStore();
         }
 
-        private GuildQuestStore NewStore() => new(new(Connections, Gate, TimeProvider.System), Authority, Host,
+        private GuildQuestStore NewStore() => new(new(_storeConnections, Gate, TimeProvider.System), Authority, Host,
             _allocationParticipant ?? Budget, TimeProvider.System, _localAdmission, new TestGuildLocalHostReadiness());
 
         internal void Restart()
         {
             Authority.Dispose();
 
-            Authority = new(new(Connections), Gate, Host, TimeProvider.System);
+            Authority = new(new(_storeConnections), Gate, Host, TimeProvider.System);
 
             Store = NewStore();
         }

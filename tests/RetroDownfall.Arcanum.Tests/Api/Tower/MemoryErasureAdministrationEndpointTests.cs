@@ -265,6 +265,8 @@ public sealed class MemoryErasureAdministrationEndpointTests
 
         MemoryErasureRouteDriver driver = new(factory.CreateClient());
 
+        await QuiesceGuildWorkersAsync(factory);
+
         MemoryErasureRoundTrip<SagaEraseRequest> erased = await driver.EraseSagaAsync(
             await MemoryErasureRouteDriver.InsertSagaAsync(factory, Vault));
 
@@ -303,6 +305,8 @@ public sealed class MemoryErasureAdministrationEndpointTests
         {
             MemoryErasureRouteDriver driver = new(first.CreateClient());
 
+            await QuiesceGuildWorkersAsync(first);
+
             string memory = await MemoryErasureRouteDriver.InsertSagaAsync(first, Vault);
 
             await using (await MemoryErasureRouteDriver.HoldReaderAsync(first))
@@ -324,6 +328,8 @@ public sealed class MemoryErasureAdministrationEndpointTests
         await using ArcanumWebApplicationFactory factory = Host(inner, credentials, profile);
 
         Assert.Equal(1, (await StatusAsync(factory)).PendingScrubReceipts);
+
+        await QuiesceGuildWorkersAsync(factory);
 
         Assert.Equal(
             new MemoryErasureScrubResultDto(MemoryErasureWalCheckpointAttempt.Truncated, 1, 0),
@@ -771,6 +777,17 @@ public sealed class MemoryErasureAdministrationEndpointTests
             ErrorCodes.MemoryErasure.InvalidPreflight);
 
         Assert.Equal(0, credentials.SetCount(Account));
+    }
+
+    // These checkpoint tests control their own held reader. Drain background Guild recovery so it
+    // cannot supply an unrelated lock during the Busy phase or the later quiet checkpoint.
+    private static async Task QuiesceGuildWorkersAsync(ArcanumWebApplicationFactory factory)
+    {
+        await factory.Services.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalQuestScheduler>()
+            .StopAsync(CancellationToken.None);
+
+        await factory.Services.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Guild.GuildMaintenanceHostedService>()
+            .StopAsync(CancellationToken.None);
     }
 
     private static ArcanumWebApplicationFactory Host(

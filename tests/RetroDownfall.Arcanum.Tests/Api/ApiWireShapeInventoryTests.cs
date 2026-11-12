@@ -49,8 +49,8 @@ public sealed class ApiWireShapeInventoryTests
     /// </summary>
     private static readonly Dictionary<string, BodylessOrRawFile> BodylessOrRawAnswers = new(StringComparer.Ordinal)
     {
-        // A peer agent's push notification: a bodyless 202 when accepted, a bodyless 503 when the ledger is unavailable.
-        ["A2A/A2ACallbackEndpoints.cs"] = new(3, [("POST /api/conclave/a2a/callbacks/{configId}", "**202**")]),
+        // Three accepted arms and two unavailable arms: the Guild receipt path and the legacy Sending path share this callback.
+        ["A2A/A2ACallbackEndpoints.cs"] = new(5, [("POST /api/conclave/a2a/callbacks/{configId}", "**202**")]),
 
         ["Conclave/ApprenticeEndpoints.cs"] = new(1, [("DELETE /api/apprentices/{id}", "**204**")]),
 
@@ -102,9 +102,9 @@ public sealed class ApiWireShapeInventoryTests
     };
 
     /// <summary>
-    /// The non-envelope routes that no discovery in this class can see: none carries stream metadata, none
-    /// answers through a result factory the source count reads, and the table-derived reading would pass
-    /// with the row deleted. <c>GET /metrics</c> writes the Prometheus text from a handler and lives
+    /// Non-envelope routes whose table rows cannot be inferred by stream discovery. The callback is
+    /// counted as a bodyless answer, but its own route row does not guarantee a non-envelope table row.
+    /// For each route the table-derived reading would pass with the row deleted. <c>GET /metrics</c> writes the Prometheus text from a handler and lives
     /// outside <c>/api</c>; the OpenAPI document and the Scalar UI are mapped by library calls; the Agent
     /// Card is the SDK's own JSON. Each is asserted mapped (the Scalar UI excepted, see
     /// <see cref="RoutesMappedOnlyFromRawConfiguration"/>) and named in the table.
@@ -115,6 +115,7 @@ public sealed class ApiWireShapeInventoryTests
         "GET /api/openapi/v1.json",
         "GET /api/scalar",
         "GET /api/conclave/a2a/agent-card",
+        "POST /api/conclave/a2a/callbacks/{configId}",
     ];
 
     /// <summary>
@@ -352,12 +353,13 @@ public sealed class ApiWireShapeInventoryTests
     private static ArcanumWebApplicationFactory CreateHostWithA2AServer() =>
         new()
         {
-            SettingsOverride = settings => settings with
+            SettingsOverride = settings =>
             {
-                Features = (settings.Features ?? new FeatureSettings()) with
-                {
-                    A2AServer = true,
-                },
+                settings.Features.A2AServer = true;
+
+                settings.Integrations.A2A.PushNotifications = true;
+
+                return settings;
             },
         };
 

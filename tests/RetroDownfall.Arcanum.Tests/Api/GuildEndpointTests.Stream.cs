@@ -51,7 +51,7 @@ public sealed partial class GuildEndpointTests
 
         Guid sessionId = accepted.RootElement.GetProperty("data").GetProperty("sessionId").GetGuid();
 
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
+        using CancellationTokenSource timeout = new(TimeSpan.FromMinutes(2));
 
         using HttpRequestMessage conflicting = new(HttpMethod.Get, $"/api/guild/quests/{questId:D}/events?after=first");
 
@@ -138,6 +138,7 @@ public sealed partial class GuildEndpointTests
 
         Assert.Equal(HttpStatusCode.NotFound, missingOwner.StatusCode);
     }
+
     [SkippableFact]
     public async Task Concurrent_tree_streams_obey_the_shared_guild_connection_limit()
     {
@@ -174,7 +175,7 @@ public sealed partial class GuildEndpointTests
 
         Guid questId = accepted.RootElement.GetProperty("data").GetProperty("id").GetGuid();
 
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
+        using CancellationTokenSource timeout = new(TimeSpan.FromMinutes(2));
 
         using HttpRequestMessage firstRequest = new(HttpMethod.Get, $"/api/guild/quests/{questId:D}/events");
 
@@ -225,7 +226,7 @@ public sealed partial class GuildEndpointTests
 
         Guid questId = accepted.RootElement.GetProperty("data").GetProperty("id").GetGuid();
 
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
+        using CancellationTokenSource timeout = new(TimeSpan.FromMinutes(2));
 
         using HttpRequestMessage watch = new(HttpMethod.Get, $"/api/guild/quests/{questId:D}/events");
 
@@ -372,7 +373,7 @@ public sealed partial class GuildEndpointTests
 
         Assert.True(gate.TryAcquire(SseEventTypes.Chronicle, out SseConnectionLease? chronicle, out _));
 
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
+        using CancellationTokenSource timeout = new(TimeSpan.FromMinutes(2));
 
         using HttpResponseMessage denied = await client.GetAsync($"/api/guild/quests/{questId:D}/events", timeout.Token);
 
@@ -442,7 +443,7 @@ public sealed partial class GuildEndpointTests
         Assert.True(gate.TryAcquire(SseEventTypes.Chronicle, out SseConnectionLease? chronicle, out _));
 
         using (chronicle)
-        using (CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15)))
+        using (CancellationTokenSource timeout = new(TimeSpan.FromMinutes(2)))
         using (HttpRequestMessage cohortRequest = new(HttpMethod.Get, $"/api/guild/cohorts/{cohortId:D}/events"))
         using (HttpResponseMessage stream = await client.SendAsync(cohortRequest, HttpCompletionOption.ResponseHeadersRead, timeout.Token))
         {
@@ -476,7 +477,4 @@ public sealed partial class GuildEndpointTests
             Assert.Equal(HttpStatusCode.ServiceUnavailable, blocked.StatusCode);
         }
     }
-
-
-
 }

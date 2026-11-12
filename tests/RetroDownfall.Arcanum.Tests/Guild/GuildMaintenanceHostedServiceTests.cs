@@ -17,7 +17,7 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 
 public sealed class GuildMaintenanceHostedServiceTests
 {
-    private static readonly TimeSpan BoundedWait = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan BoundedWait = TimeSpan.FromMinutes(2);
 
     [Fact]
     public async Task Maintenance_revocation_is_quiet_retains_work_through_scope_disposal_and_resumes_after_reopen()

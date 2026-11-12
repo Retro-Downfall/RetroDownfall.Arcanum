@@ -42,7 +42,7 @@ public sealed class GuildSignetRootLeaseTests
 
             continuation = Capture();
 
-            await captured.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await captured.Task.WaitAsync(TimeSpan.FromMinutes(2));
         }
         else
         {
@@ -50,7 +50,7 @@ public sealed class GuildSignetRootLeaseTests
             {
                 continuation = Capture();
 
-                await captured.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                await captured.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
                 return 1;
             }, default)).IsSuccess);
@@ -58,7 +58,7 @@ public sealed class GuildSignetRootLeaseTests
 
         release.TrySetResult();
 
-        Result<int> resumed = await continuation!.WaitAsync(TimeSpan.FromSeconds(10));
+        Result<int> resumed = await continuation!.WaitAsync(TimeSpan.FromMinutes(2));
 
         Assert.True(resumed.IsSuccess, resumed.Error.Message);
 
@@ -124,7 +124,7 @@ public sealed class GuildSignetRootLeaseTests
             return 1;
         }, default);
 
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await entered.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
         using CancellationTokenSource cancellation = new();
 

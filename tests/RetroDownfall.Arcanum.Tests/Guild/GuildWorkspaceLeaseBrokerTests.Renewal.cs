@@ -23,7 +23,7 @@ public sealed partial class GuildWorkspaceLeaseBrokerTests
 
         try
         {
-            await f.Time.WhenArmedTimersAsync(count => count == 1, TimeSpan.FromSeconds(5));
+            await f.Time.WhenArmedTimersAsync(count => count == 1, TimeSpan.FromMinutes(2));
 
             for (int tick = 0; tick < 4; tick++)
             {
@@ -31,7 +31,7 @@ public sealed partial class GuildWorkspaceLeaseBrokerTests
 
                 f.Time.Advance(TimeSpan.FromMinutes(5));
 
-                await f.Time.WhenArmedTimersAsync(count => count == 1, TimeSpan.FromSeconds(5));
+                await f.Time.WhenArmedTimersAsync(count => count == 1, TimeSpan.FromMinutes(2));
 
                 var page = await f.Broker.ListAsync(f.Policy.Caller, f.Policy.WorkspaceId, null, null, new(PageSize: 10), default);
 

@@ -126,7 +126,7 @@ internal sealed class MemorySearchService(
             return new Error(ErrorCodes.Guild.AuthorityUnavailable, "Memory search requires a host-bound Session while Campaign scoping is enabled.");
         }
 
-        await using IGrimoireOrdinaryConnectionLease lease = await OpenConnectionAsync(db, connections, cancellationToken).ConfigureAwait(false);
+        await using IGrimoireOrdinaryConnectionLease lease = await OpenMemorySearchLeaseAsync(db, connections, cancellationToken).ConfigureAwait(false);
 
         SqliteConnection connection = lease.Connection;
 
@@ -830,7 +830,8 @@ internal sealed class MemorySearchService(
         return value is long exists && exists == 1;
     }
 
-    private static async Task<IGrimoireOrdinaryConnectionLease> OpenConnectionAsync(
+    [GrimoireConnectionAcquisitionRoute]
+    private static async Task<IGrimoireOrdinaryConnectionLease> OpenMemorySearchLeaseAsync(
         ArcanumDbContext db,
         IGrimoireOrdinaryConnectionFactory connections,
         CancellationToken cancellationToken)

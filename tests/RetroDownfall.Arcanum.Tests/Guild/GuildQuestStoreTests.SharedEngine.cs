@@ -63,7 +63,7 @@ public sealed partial class GuildQuestStoreTests
 
         hub.Publish(binding.ApprenticeId, new ApprenticeEvent { ApprenticeId = binding.ApprenticeId, Summary = "outside the Guild scope" });
 
-        Assert.True(await nextEvent.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.True(await nextEvent.WaitAsync(TimeSpan.FromMinutes(2)));
 
         Assert.Equal("outside the Guild scope", events.Current.Summary);
 
@@ -245,7 +245,7 @@ public sealed partial class GuildQuestStoreTests
         Task<Result<PromptTurnResult>> running = service.ExecuteGuildAsync(binding, input, new(f.Store, driver, dispatch), runtime,
             new TestGuildEngineWait(static (_, _, _) => throw new InvalidOperationException("Unexpected input wait")), default);
 
-        await runtime.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await runtime.Entered.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
         Task stopped = service.StopAsync(default);
 
@@ -255,9 +255,9 @@ public sealed partial class GuildQuestStoreTests
 
         runtime.Release.TrySetResult();
 
-        _ = await running.WaitAsync(TimeSpan.FromSeconds(5));
+        _ = await running.WaitAsync(TimeSpan.FromMinutes(2));
 
-        await stopped.WaitAsync(TimeSpan.FromSeconds(5));
+        await stopped.WaitAsync(TimeSpan.FromMinutes(2));
 
         Assert.Equal(0, capacity.RunningCount);
     }

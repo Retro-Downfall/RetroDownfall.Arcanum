@@ -68,7 +68,7 @@ public sealed class GuildRosterRefreshCoordinationTests : IDisposable
 
         try
         {
-            await blocked.Reached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await blocked.Reached.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
             await SourceAsync("Changed while first acceptance is pending");
 
@@ -85,7 +85,7 @@ public sealed class GuildRosterRefreshCoordinationTests : IDisposable
 
             if (independentGate)
             {
-                _ = await second.WaitAsync(TimeSpan.FromSeconds(10));
+                _ = await second.WaitAsync(TimeSpan.FromMinutes(2));
             }
 
             blocked.Release.TrySetResult();

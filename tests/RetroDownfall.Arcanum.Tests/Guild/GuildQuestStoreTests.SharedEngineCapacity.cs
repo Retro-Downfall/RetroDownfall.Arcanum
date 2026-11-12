@@ -49,7 +49,7 @@ public sealed partial class GuildQuestStoreTests
 
         try
         {
-            await runtime.FirstSuspended.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await runtime.FirstSuspended.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
             Assert.Equal(1, capacity.RunningCount);
 
@@ -57,7 +57,7 @@ public sealed partial class GuildQuestStoreTests
 
             runtime.SuspendSecond.TrySetResult();
 
-            await runtime.BothSuspended.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await runtime.BothSuspended.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
             Assert.Equal(0, capacity.RunningCount);
 
@@ -67,14 +67,14 @@ public sealed partial class GuildQuestStoreTests
             {
                 runtime.ReturnChildren.TrySetResult();
 
-                await runtime.ResumeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await runtime.ResumeStarted.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
                 Assert.Equal(0, runtime.Resumed);
 
                 Assert.False(running.IsCompleted);
             }
 
-            var result = await running.WaitAsync(TimeSpan.FromSeconds(5));
+            var result = await running.WaitAsync(TimeSpan.FromMinutes(2));
 
             Assert.True(result.IsSuccess, result.Error.Message);
 

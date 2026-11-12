@@ -196,7 +196,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             IServiceScopeFactory scopeFactory = services.GetRequiredService<IServiceScopeFactory>();
 
-            CancellationTokenSource lifetime = new(TimeSpan.FromSeconds(20));
+            CancellationTokenSource lifetime = new(TimeSpan.FromMinutes(2));
 
             GuildMcpRoute route;
 

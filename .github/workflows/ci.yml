@@ -27,6 +27,7 @@ on:
           - guild-execution
           - guild-operator
           - guild-a2a
+          - guild-final
       execution-platform:
         description: Platform for focused Guild execution or operator qualification only
         type: choice
@@ -114,7 +115,7 @@ jobs:
 
   build-test:
     needs: [sdk, scope]
-    if: inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a'
+    if: inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a' && inputs.qualification != 'guild-final'
     name: Build, test, coverage
     # macOS arm64, not ubuntu: the Grimoire's SQLCipher library is now built by Arcanum and shipped
     # per RID, and Linux is not a shipping RID. A Linux runner has no native asset, so the build
@@ -227,7 +228,7 @@ jobs:
 
   hosted-producer-primary-analysis:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a' && inputs.qualification != 'guild-final'
     name: Hosted producer primary analysis
     runs-on: macos-26
     timeout-minutes: 80
@@ -279,7 +280,7 @@ jobs:
 
   hosted-producer-additional-analysis:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a' && inputs.qualification != 'guild-final'
     name: Hosted producer additional analysis
     runs-on: macos-26
     timeout-minutes: 80
@@ -328,7 +329,7 @@ jobs:
 
   hosted-producer-fixture-analysis:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a' && inputs.qualification != 'guild-final'
     name: Hosted producer fixture analysis
     # One fixture process per job, whatever the slot count: the process keeps the bound production compilations in memory and a
     # standard macos-26 runner has about 7 GB, so --jobs 1 and the runner's own one-process plan agree.
@@ -379,7 +380,7 @@ jobs:
 
   hosted-producer-fixture-build-analysis:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a' && inputs.qualification != 'guild-final'
     name: Hosted producer fixture build analysis
     # The fixtures marked HostedProducerBuildAnalysis: the Build scan classes and the Serve worker theories, each of which reads the production
     # source as a whole (docs/Arcanum.DESIGN.md, Verification Lanes).
@@ -432,7 +433,7 @@ jobs:
 
   hosted-producer-serve-host-analysis:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a' && inputs.qualification != 'guild-final'
     name: Hosted producer serve host analysis
     # One fixture process per job, whatever the slot count: the process keeps the bound production compilations in memory and a
     # standard macos-26 runner has about 7 GB, so --jobs 1 and the runner's own one-process plan agree.
@@ -491,7 +492,7 @@ jobs:
       - hosted-producer-fixture-analysis
       - hosted-producer-fixture-build-analysis
       - hosted-producer-serve-host-analysis
-    if: always() && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a'
+    if: always() && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a' && inputs.qualification != 'guild-final'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -580,7 +581,7 @@ jobs:
 
   macos-workspace-check:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a' && inputs.qualification != 'guild-final'
     name: macOS workspace-check runtime
     runs-on: macos-26
     timeout-minutes: 120
@@ -714,11 +715,11 @@ jobs:
     # The gate stays now that win-x64's asset is checked in: nothing in the job would run without
     # it, so the condition is the honest statement of the prerequisite rather than a leftover.
     needs: [sdk, native-sqlcipher-assets, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && needs.native-sqlcipher-assets.outputs.win-x64 == 'verified' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && needs.native-sqlcipher-assets.outputs.win-x64 == 'verified' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a' && inputs.qualification != 'guild-final' || github.event_name == 'workflow_dispatch' && inputs.qualification == 'guild-final'
     runs-on: windows-latest
     # Budget for native builds, separate diagnostic and shipping AOT publishes, executable
     # smokes and the Windows/Long Rest suites, with headroom for hosted-runner variability.
-    timeout-minutes: 270
+    timeout-minutes: 360
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -757,12 +758,41 @@ jobs:
             throw "This lane must run a win-x64 SDK; actual host RID: $($match.Groups['rid'].Value)."
           }
 
+      - name: Verify final native candidate and asset
+        if: inputs.qualification == 'guild-final'
+        shell: pwsh
+        env:
+          ASSET_STATUS: ${{ needs.native-sqlcipher-assets.outputs.win-x64 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:ASSET_STATUS -ne 'verified') { throw 'The native SQLCipher asset is not verified.' }
+          if ((git rev-parse HEAD).Trim() -ne $env:GITHUB_SHA) { throw 'Checkout does not match the candidate SHA.' }
+          if (git status --porcelain --untracked-files=all) { throw 'Candidate checkout is not clean.' }
+
+      - name: Prepare final native inspection tools
+        if: inputs.qualification == 'guild-final'
+        shell: pwsh
+        env:
+          MSVC_ARCH: amd64
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts/setup_msvc_environment.py --arch "$env:MSVC_ARCH"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Get-Command jq -CommandType Application -ErrorAction SilentlyContinue)) {
+            choco install jq --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Verify final SQLCipher asset
+        if: inputs.qualification == 'guild-final'
+        shell: bash
+        run: ./scripts/verify-native-sqlcipher.sh --rid win-x64 --strict
+
       - name: Restore and build Arcanum + Compendium
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # The Forge's suite runs once, on build-test; this lane exists for the Windows-gated
-          # Arcanum surface, so re-running a platform-agnostic suite here would buy nothing.
+          # The main Forge suite runs on build-test; final qualification adds its Windows ACL tests below.
           foreach ($project in @(
             'tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj',
             'tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj'
@@ -819,6 +849,53 @@ jobs:
           fi
           windows_executable="$(cygpath -w "$executable")"
           printf 'ARCANUM_PUBLISHED_EXECUTABLE=%s\n' "$windows_executable" >> "$GITHUB_ENV"
+
+      - name: Record final Windows shipping identity
+        if: inputs.qualification == 'guild-final'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expectedRid = 'win-x64'
+          if ($env:ARCANUM_EXPECTED_WINDOWS_RID -ne $expectedRid) { throw 'Native lane RID mismatch.' }
+          $head = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -ne $env:GITHUB_SHA) { throw 'Checkout does not match the candidate SHA.' }
+          $status = @(git status --porcelain --untracked-files=all)
+          if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) { throw 'Candidate checkout is not clean.' }
+          if (-not $env:ARCANUM_PUBLISHED_EXECUTABLE -or -not (Test-Path -LiteralPath $env:ARCANUM_PUBLISHED_EXECUTABLE -PathType Leaf)) {
+            throw 'The retained, provider-smoked shipping apphost is missing.'
+          }
+          $executable = (Resolve-Path -LiteralPath $env:ARCANUM_PUBLISHED_EXECUTABLE).ProviderPath
+          $version = (& $executable --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch ('\+' + [regex]::Escape($env:GITHUB_SHA) + '$')) {
+            throw 'The retained shipping apphost version does not identify the candidate commit.'
+          }
+          $sdkVersion = (& dotnet --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $sdkVersion) { throw 'Unable to capture the selected SDK version.' }
+          $sdkInfo = (& dotnet --info | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $sdkInfo) { throw 'Unable to capture SDK information.' }
+          $publishRoot = Split-Path -Parent $executable
+          $publishFiles = @(Get-ChildItem -LiteralPath $publishRoot -File -Recurse | Sort-Object FullName | ForEach-Object {
+            [ordered]@{
+              path = [IO.Path]::GetRelativePath($publishRoot, $_.FullName).Replace('\', '/')
+              length = $_.Length
+              sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+          })
+          if ($publishFiles.Count -eq 0) { throw 'The retained publish directory is empty.' }
+          $executableSha256 = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant()
+          $apphost = @($publishFiles | Where-Object { $_.path -eq [IO.Path]::GetFileName($executable) })
+          if ($apphost.Count -ne 1 -or $apphost[0].sha256 -ne $executableSha256) { throw 'Publish manifest does not bind the apphost.' }
+          New-Item -ItemType Directory -Force '.tmp/guild-final-native/' | Out-Null
+          [ordered]@{
+            commit = $head
+            expectedRid = $expectedRid
+            executable = [IO.Path]::GetFileName($executable)
+            executableVersion = $version
+            executableSha256 = $executableSha256
+            sdkVersion = $sdkVersion
+            sdkInfo = $sdkInfo
+            publishFiles = $publishFiles
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath '.tmp/guild-final-native/shipping-identity.json' -Encoding utf8
 
       - name: Test Arcanum
         shell: pwsh
@@ -946,6 +1023,56 @@ jobs:
             -c Release --no-build --no-restore --blame-hang-timeout 15m --blame-hang-dump-type none --filter "FullyQualifiedName=RetroDownfall.Compendium.Ux.Tests.Compendium.ConfigurationStoreSmokeTests.WriteAsync_hardens_the_destination_that_arrived_with_loose_permissions"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Test final Windows Forge permissions
+        if: inputs.qualification == 'guild-final'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test tests/RetroDownfall.TheForge.Tests/RetroDownfall.TheForge.Tests.csproj `
+            -c Release --filter "FullyQualifiedName~RetroDownfall.TheForge.Tests.TheForgeOwnerOnlyPermissionsTests" `
+            --blame-hang-timeout 15m --blame-hang-dump-type none `
+            --logger "trx;LogFileName=forge-windows.trx" --results-directory .tmp/windows-forge
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          [xml]$trx = Get-Content -LiteralPath '.tmp/windows-forge/forge-windows.trx' -Raw
+          $results = @($trx.SelectNodes("//*[local-name()='UnitTestResult']"))
+          if ($results.Count -ne 2 -or @($results | Where-Object { $_.outcome -ne 'Passed' }).Count -ne 0) {
+            throw 'Expected exactly two passing Windows Forge permission tests.'
+          }
+          foreach ($name in @('TrySetFile_OnWindows_RestrictsTheDaclToTheCurrentUserOnly', 'TrySetDirectory_OnWindows_RestrictsTheDaclToTheCurrentUserOnly')) {
+            if (@($results | Where-Object { $_.testName -eq "RetroDownfall.TheForge.Tests.TheForgeOwnerOnlyPermissionsTests.$name" }).Count -ne 1) {
+              throw "Missing or duplicated Windows Forge permission test: $name"
+            }
+          }
+
+      - name: Test coverage threshold engine parity
+        if: inputs.qualification == 'guild-final'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -c "import shutil; assert shutil.which('pwsh'), 'PowerShell is required for coverage engine parity'"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest scripts/coverage_threshold_test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Qualify Guild execution and lifecycle
+        if: inputs.qualification == 'guild-final'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/qualify-guild-execution.sh
+
+      - name: Preserve final Guild evidence
+        if: always() && inputs.qualification == 'guild-final'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guild-final-win-x64-${{ github.sha }}
+          path: |
+            .tmp/guild-execution-qualification/
+            .tmp/guild-final-native/
+            .tmp/windows-forge/
+          if-no-files-found: error
+          retention-days: 14
+
   windows-arm64-suite:
     # The release ships win-arm64 alongside win-x64 and osx-arm64: it is built, packaged, signed and
     # handed to operators. Until this lane, not one test had ever executed on it. Three things it
@@ -970,7 +1097,7 @@ jobs:
     # `dotnet build` with ARCSQLC002 rather than skip honestly, which is the property the manifest
     # gate exists to preserve.
     needs: [sdk, native-sqlcipher-assets, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && needs.native-sqlcipher-assets.outputs.win-arm64 == 'verified' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && needs.native-sqlcipher-assets.outputs.win-arm64 == 'verified' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a' && inputs.qualification != 'guild-final' || github.event_name == 'workflow_dispatch' && inputs.qualification == 'guild-final'
     # A whole job rather than a matrix leg of windows-suite, deliberately, for two reasons that both
     # fail silently. `needs:` names a job id and waits for every leg of that job's matrix, so folding
     # arm64 into windows-suite would put this lane behind anything that gates on that job id, without
@@ -984,7 +1111,7 @@ jobs:
     runs-on: windows-11-arm
     # Budget for native ARM64 builds, separate diagnostic and shipping AOT publishes,
     # executable smokes and the Windows/Long Rest suites, with hosted-runner headroom.
-    timeout-minutes: 270
+    timeout-minutes: 360
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -1041,12 +1168,41 @@ jobs:
               throw "This lane must run a win-arm64 SDK; this runner's host RID is $($match.Groups['rid'].Value), so the suite would exercise win-x64 a second time under emulation."
           }
 
+      - name: Verify final native candidate and asset
+        if: inputs.qualification == 'guild-final'
+        shell: pwsh
+        env:
+          ASSET_STATUS: ${{ needs.native-sqlcipher-assets.outputs.win-arm64 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:ASSET_STATUS -ne 'verified') { throw 'The native SQLCipher asset is not verified.' }
+          if ((git rev-parse HEAD).Trim() -ne $env:GITHUB_SHA) { throw 'Checkout does not match the candidate SHA.' }
+          if (git status --porcelain --untracked-files=all) { throw 'Candidate checkout is not clean.' }
+
+      - name: Prepare final native inspection tools
+        if: inputs.qualification == 'guild-final'
+        shell: pwsh
+        env:
+          MSVC_ARCH: arm64
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts/setup_msvc_environment.py --arch "$env:MSVC_ARCH"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Get-Command jq -CommandType Application -ErrorAction SilentlyContinue)) {
+            choco install jq --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Verify final SQLCipher asset
+        if: inputs.qualification == 'guild-final'
+        shell: bash
+        run: ./scripts/verify-native-sqlcipher.sh --rid win-arm64 --strict
+
       - name: Restore and build Arcanum + Compendium
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # The same two projects the x64 lane builds, for the same reason: The Forge's suite is
-          # platform-agnostic and runs once, on build-test.
+          # The main Forge suite runs on build-test; final qualification adds its Windows ACL tests below.
           foreach ($project in @(
             'tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj',
             'tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj'
@@ -1103,6 +1259,53 @@ jobs:
           fi
           windows_executable="$(cygpath -w "$executable")"
           printf 'ARCANUM_PUBLISHED_EXECUTABLE=%s\n' "$windows_executable" >> "$GITHUB_ENV"
+
+      - name: Record final Windows shipping identity
+        if: inputs.qualification == 'guild-final'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expectedRid = 'win-arm64'
+          if ($env:ARCANUM_EXPECTED_WINDOWS_RID -ne $expectedRid) { throw 'Native lane RID mismatch.' }
+          $head = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -ne $env:GITHUB_SHA) { throw 'Checkout does not match the candidate SHA.' }
+          $status = @(git status --porcelain --untracked-files=all)
+          if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) { throw 'Candidate checkout is not clean.' }
+          if (-not $env:ARCANUM_PUBLISHED_EXECUTABLE -or -not (Test-Path -LiteralPath $env:ARCANUM_PUBLISHED_EXECUTABLE -PathType Leaf)) {
+            throw 'The retained, provider-smoked shipping apphost is missing.'
+          }
+          $executable = (Resolve-Path -LiteralPath $env:ARCANUM_PUBLISHED_EXECUTABLE).ProviderPath
+          $version = (& $executable --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch ('\+' + [regex]::Escape($env:GITHUB_SHA) + '$')) {
+            throw 'The retained shipping apphost version does not identify the candidate commit.'
+          }
+          $sdkVersion = (& dotnet --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $sdkVersion) { throw 'Unable to capture the selected SDK version.' }
+          $sdkInfo = (& dotnet --info | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $sdkInfo) { throw 'Unable to capture SDK information.' }
+          $publishRoot = Split-Path -Parent $executable
+          $publishFiles = @(Get-ChildItem -LiteralPath $publishRoot -File -Recurse | Sort-Object FullName | ForEach-Object {
+            [ordered]@{
+              path = [IO.Path]::GetRelativePath($publishRoot, $_.FullName).Replace('\', '/')
+              length = $_.Length
+              sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+          })
+          if ($publishFiles.Count -eq 0) { throw 'The retained publish directory is empty.' }
+          $executableSha256 = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant()
+          $apphost = @($publishFiles | Where-Object { $_.path -eq [IO.Path]::GetFileName($executable) })
+          if ($apphost.Count -ne 1 -or $apphost[0].sha256 -ne $executableSha256) { throw 'Publish manifest does not bind the apphost.' }
+          New-Item -ItemType Directory -Force '.tmp/guild-final-native/' | Out-Null
+          [ordered]@{
+            commit = $head
+            expectedRid = $expectedRid
+            executable = [IO.Path]::GetFileName($executable)
+            executableVersion = $version
+            executableSha256 = $executableSha256
+            sdkVersion = $sdkVersion
+            sdkInfo = $sdkInfo
+            publishFiles = $publishFiles
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath '.tmp/guild-final-native/shipping-identity.json' -Encoding utf8
 
       - name: Test Arcanum
         shell: pwsh
@@ -1238,9 +1441,59 @@ jobs:
             -c Release --no-build --no-restore --blame-hang-timeout 15m --blame-hang-dump-type none --filter "FullyQualifiedName=RetroDownfall.Compendium.Ux.Tests.Compendium.ConfigurationStoreSmokeTests.WriteAsync_hardens_the_destination_that_arrived_with_loose_permissions"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Test final Windows Forge permissions
+        if: inputs.qualification == 'guild-final'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet test tests/RetroDownfall.TheForge.Tests/RetroDownfall.TheForge.Tests.csproj `
+            -c Release --filter "FullyQualifiedName~RetroDownfall.TheForge.Tests.TheForgeOwnerOnlyPermissionsTests" `
+            --blame-hang-timeout 15m --blame-hang-dump-type none `
+            --logger "trx;LogFileName=forge-windows.trx" --results-directory .tmp/windows-forge
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          [xml]$trx = Get-Content -LiteralPath '.tmp/windows-forge/forge-windows.trx' -Raw
+          $results = @($trx.SelectNodes("//*[local-name()='UnitTestResult']"))
+          if ($results.Count -ne 2 -or @($results | Where-Object { $_.outcome -ne 'Passed' }).Count -ne 0) {
+            throw 'Expected exactly two passing Windows Forge permission tests.'
+          }
+          foreach ($name in @('TrySetFile_OnWindows_RestrictsTheDaclToTheCurrentUserOnly', 'TrySetDirectory_OnWindows_RestrictsTheDaclToTheCurrentUserOnly')) {
+            if (@($results | Where-Object { $_.testName -eq "RetroDownfall.TheForge.Tests.TheForgeOwnerOnlyPermissionsTests.$name" }).Count -ne 1) {
+              throw "Missing or duplicated Windows Forge permission test: $name"
+            }
+          }
+
+      - name: Test coverage threshold engine parity
+        if: inputs.qualification == 'guild-final'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -c "import shutil; assert shutil.which('pwsh'), 'PowerShell is required for coverage engine parity'"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest scripts/coverage_threshold_test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Qualify Guild execution and lifecycle
+        if: inputs.qualification == 'guild-final'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/qualify-guild-execution.sh
+
+      - name: Preserve final Guild evidence
+        if: always() && inputs.qualification == 'guild-final'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guild-final-win-arm64-${{ github.sha }}
+          path: |
+            .tmp/guild-execution-qualification/
+            .tmp/guild-final-native/
+            .tmp/windows-forge/
+          if-no-files-found: error
+          retention-days: 14
+
   aot-il:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator' && inputs.qualification != 'guild-a2a' && inputs.qualification != 'guild-final'
     name: Native AOT IL and executable gates
     # Both executable smokes open the Grimoire, so this host RID needs its verified native
     # SQLCipher asset just like build-test.
@@ -1537,6 +1790,22 @@ jobs:
           path: .tmp/guild-a2a-qualification/
           if-no-files-found: error
           retention-days: 14
+
+  guild-final-authority:
+    name: Guild final native qualification authority
+    needs: [native-sqlcipher-assets, windows-suite, windows-arm64-suite]
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.qualification == 'guild-final'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require both Windows qualification results
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ needs.windows-suite.result }}" = success
+          test "${{ needs.windows-arm64-suite.result }}" = success
+          test "${{ needs.native-sqlcipher-assets.outputs.win-x64 }}" = verified
+          test "${{ needs.native-sqlcipher-assets.outputs.win-arm64 }}" = verified
 
   static-analysis:
     # These tools ship in the repository, so their own regression tests and checks must run here.

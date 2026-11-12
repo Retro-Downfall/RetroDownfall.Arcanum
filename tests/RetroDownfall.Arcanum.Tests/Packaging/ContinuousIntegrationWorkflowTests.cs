@@ -857,11 +857,16 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         IReadOnlyList<TestMethodIdentity> arcanum = ArcanumTestMethods();
 
+        IReadOnlyList<TestMethodIdentity> forge = SourceTestMethods(repositoryRoot, "RetroDownfall.TheForge.Tests");
+
         List<string> offenders = [];
 
         foreach (string name in containsNames)
         {
-            if (!arcanum.Any(candidate => candidate.FullName.Contains(name, StringComparison.Ordinal)))
+            IReadOnlyList<TestMethodIdentity> candidates = name.StartsWith("RetroDownfall.TheForge.Tests.", StringComparison.Ordinal)
+                ? forge : arcanum;
+
+            if (!candidates.Any(candidate => candidate.FullName.Contains(name, StringComparison.Ordinal)))
             {
                 offenders.Add(name);
             }
@@ -1132,13 +1137,16 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// <summary>
     /// The Compendium suite is a separate assembly this project does not reference, so its test
     /// methods are read from source: every method carrying a fact or theory attribute inside a
-    /// namespace-qualified class under the Compendium test project.
+    /// namespace-qualified class. The Forge suite is inventoried the same way.
     /// </summary>
-    private static IReadOnlyList<TestMethodIdentity> CompendiumTestMethods(string repositoryRoot)
-    {
-        string directory = Path.Combine(repositoryRoot, "tests", "RetroDownfall.Compendium.Tests");
+    private static IReadOnlyList<TestMethodIdentity> CompendiumTestMethods(string repositoryRoot) =>
+        SourceTestMethods(repositoryRoot, "RetroDownfall.Compendium.Tests");
 
-        Assert.True(Directory.Exists(directory), $"Missing Compendium test project: {directory}");
+    private static IReadOnlyList<TestMethodIdentity> SourceTestMethods(string repositoryRoot, string project)
+    {
+        string directory = Path.Combine(repositoryRoot, "tests", project);
+
+        Assert.True(Directory.Exists(directory), $"Missing test project: {directory}");
 
         string[] attributeNames = ["Fact", "SkippableFact", "Theory", "SkippableTheory"];
 
@@ -1781,9 +1789,14 @@ public sealed class ContinuousIntegrationWorkflowTests
                     .Select(static line => line.Trim()["timeout-minutes:".Length..].Trim())
                     .FirstOrDefault();
 
+                // These two lanes also run the final Guild execution profile; retain the smaller
+                // bound for every other job rather than widening the repository-wide allowance.
+                int maximum = Path.GetFileName(workflow) == "ci.yml"
+                    && job.Id is "windows-suite" or "windows-arm64-suite" ? 360 : MaximumJobTimeoutMinutes;
+
                 if (declared is null
                     || !int.TryParse(declared, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int minutes)
-                    || minutes is < 1 or > MaximumJobTimeoutMinutes)
+                    || minutes < 1 || minutes > maximum)
                 {
                     offenders.Add($"{Path.GetFileName(workflow)}: {job.Id} (timeout-minutes: {declared ?? "absent"})");
                 }
@@ -1792,7 +1805,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         Assert.True(
             offenders.Count == 0,
-            $"A workflow job declares no job-level timeout-minutes between 1 and {MaximumJobTimeoutMinutes}, "
+            $"A workflow job exceeds its reviewed job-level timeout (normally {MaximumJobTimeoutMinutes} minutes; the two Windows CI lanes allow 360), "
             + "so a hang holds it for the platform default of six hours:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
@@ -1864,7 +1877,8 @@ public sealed class ContinuousIntegrationWorkflowTests
             }
         }
 
-        Assert.Equal(17, setups);
+        // The final profile reuses the two existing native Windows SDK setups.
+        Assert.Equal(18, setups);
 
         Assert.Equal(1, pairedSetups);
 
@@ -2161,7 +2175,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     private static bool IsFullQualificationOnly(WorkflowJob job) =>
         job.IsConditional && Regex.IsMatch(job.Body,
-            @"(?m)^    if: needs\.scope\.outputs\.full == 'true'(?: && inputs\.qualification != '(?:guild-memory|guild-budget|guild-workspace|guild-execution|guild-operator)')*\r?$");
+            @"(?m)^    if: needs\.scope\.outputs\.full == 'true'(?: && inputs\.qualification != '(?:guild-memory|guild-budget|guild-workspace|guild-execution|guild-operator|guild-a2a|guild-final)')*\r?$");
 
     private static IReadOnlyList<string> WorkflowFiles(string repositoryRoot)
     {

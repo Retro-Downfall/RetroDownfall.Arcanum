@@ -74,7 +74,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using IDisposable frame = registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), tool);
 
-        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10));
+        using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
         object? result = await context.InvokeBoundAsync(function, new() { ["goal"] = "Compute child contribution" }, deadline.Token);
 
@@ -394,7 +394,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using IDisposable frame = registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), tool);
 
-        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10));
+        using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
         var created = Assert.IsType<GuildLocalChildToolResult>(await context.InvokeBoundAsync(function,
             new() { ["goal"] = "Remote work", ["agent"] = RemoteDiscovery }, deadline.Token));

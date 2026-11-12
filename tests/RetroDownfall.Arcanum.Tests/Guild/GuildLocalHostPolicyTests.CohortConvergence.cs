@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
@@ -691,7 +692,9 @@ public sealed partial class GuildLocalHostPolicyTests
     }
 
     private static async Task CommitConvergenceResultAsync(Fixture f, GuildCallerContext owner, GuildQuestStored quest, string value,
-        GuildCallerContext? retainedRun = null, QuestState outcome = QuestState.Completed, bool recordBilling = true)
+        GuildCallerContext? retainedRun = null, QuestState outcome = QuestState.Completed, bool recordBilling = true,
+        Func<Task>? beforeCommit = null, decimal knownUsd = 0m, long knownTokens = 0,
+        Action<Result<GuildResultReceipt>>? observeCommit = null)
     {
         GuildCallerContext run = retainedRun ?? await BindCohortRunAsync(f, owner, quest);
 
@@ -745,7 +748,7 @@ public sealed partial class GuildLocalHostPolicyTests
             await using var transaction = connection.BeginTransaction(deferred: false);
 
             var evidence = await ledger.ApplyEvidenceWithinAsync(connection, transaction, effectId,
-                new(Guid.NewGuid(), invocation, 0m, 0, !recordBilling, !recordBilling, true), default);
+                new(Guid.NewGuid(), invocation, knownUsd, knownTokens, !recordBilling, !recordBilling, true), default);
 
             Assert.True(evidence.IsSuccess, evidence.Error.Message);
 
@@ -756,6 +759,22 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.True(current.IsSuccess, current.Error.Message);
 
+        if (outcome == QuestState.Canceled)
+        {
+            GuildCancelQuestRequest cancel = new(Guid.NewGuid(), current.Value.Quest.Revision, GuildCancellationReason.OperatorRequested);
+
+            var requested = await f.Store.RequestCancellationAsync(owner,
+                new(cancel.IdempotencyKey, GuildQuestIntent.Compute(quest.Quest.Id, cancel).Value), quest.Quest.Id, cancel, default);
+
+            Assert.True(requested.IsSuccess, requested.Error.Message);
+
+            driver = driver with { OperationRevision = (await operations.GetAsync(quest.Quest.OperationId))!.Revision };
+
+            current = await f.Store.GetAsync(owner, quest.Quest.Id, default);
+
+            Assert.True(current.IsSuccess, current.Error.Message);
+        }
+
         byte[] bytes = Encoding.UTF8.GetBytes(value);
 
         string digest = Convert.ToHexString(SHA256.HashData(bytes));
@@ -763,11 +782,15 @@ public sealed partial class GuildLocalHostPolicyTests
         GuildDataRef content = new(Guid.NewGuid(), GuildContentKind.QuestResult, 1, digest, "text/plain", bytes.Length, false);
 
         GuildQuestResult result = new(new(quest.Quest.Id, Guid.NewGuid(), digest, content, outcome,
-            outcome == QuestState.Failed ? ErrorCodes.Sending.TaskRejected : null), bytes,
+            outcome == QuestState.Failed ? ErrorCodes.Sending.TaskRejected
+                : outcome == QuestState.Canceled ? LongRunningOperationRecoveryOutcomes.Cancelled : null), bytes,
             WorkStoppedProven: true, DesignatedResultCount: 1, DesignatedResultUtf8: bytes, DesignatedResultMimeType: "text/plain");
+
+        if (beforeCommit is not null) await beforeCommit();
 
         var committed = await f.Store.CommitResultAsync(driver, new(Guid.NewGuid(), digest), current.Value.Quest.Revision, result, default);
 
-        Assert.True(committed.IsSuccess, committed.Error.Message);
+        if (observeCommit is null) Assert.True(committed.IsSuccess, committed.Error.Message);
+        else observeCommit(committed);
     }
 }

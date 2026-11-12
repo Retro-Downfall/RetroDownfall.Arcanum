@@ -214,6 +214,10 @@ public sealed partial class GuildWorkspaceLeaseBrokerTests
 
         internal string Root => _directory;
 
+        internal string ConnectionString => _database.ConnectionString;
+
+        internal Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken) => _database.OpenAsync(cancellationToken);
+
         internal ManualWallClockTimeProvider Time { get; } = new(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
 
         internal GuildWorkspaceLeaseHostLock Host { get; }

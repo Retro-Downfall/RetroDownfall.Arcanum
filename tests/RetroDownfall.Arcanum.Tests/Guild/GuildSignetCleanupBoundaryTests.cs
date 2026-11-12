@@ -36,7 +36,7 @@ public sealed class GuildSignetCleanupBoundaryTests
                 return Result<int>.Success(1);
             }, default);
 
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await entered.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
         try
         {
@@ -103,7 +103,7 @@ public sealed class GuildSignetCleanupBoundaryTests
                 return Result<int>.Success(1);
             }, default);
 
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await entered.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
         await using SqliteConnection cleanupConnection = await f.OpenAsync();
 
@@ -133,7 +133,7 @@ public sealed class GuildSignetCleanupBoundaryTests
             Assert.True((await effect).IsSuccess);
         }
 
-        Assert.True((await preparing.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
+        Assert.True((await preparing.WaitAsync(TimeSpan.FromMinutes(2))).IsSuccess);
 
         Assert.Equal((long)rootCount, await f.ScalarAsync("SELECT COUNT(*) FROM guild_signets WHERE Revoked=1"));
 

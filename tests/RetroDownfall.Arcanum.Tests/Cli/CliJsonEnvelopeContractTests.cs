@@ -130,7 +130,10 @@ public sealed class CliJsonEnvelopeContractTests
 
                 foreach (string file in files)
                 {
-                    typedHandlers.UnionWith(TypedHandlerMethods(ReadCliSource(file)));
+                    // The public Apprentice single-resource verb is `show`; its C# handler
+                    // retains Get, as wired by CliCommandTree.Conclave and pinned by shape tests.
+                    typedHandlers.UnionWith(TypedHandlerMethods(ReadCliSource(file)).Select(method =>
+                        family == "apprentice" && method == "Get" ? "show" : method));
                 }
 
                 foreach (string method in typedHandlers.Where(method => !typedLeaves.Contains(method)).Order(StringComparer.Ordinal))

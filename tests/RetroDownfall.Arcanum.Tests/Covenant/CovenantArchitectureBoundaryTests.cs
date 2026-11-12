@@ -9,6 +9,7 @@ using Microsoft.Extensions.Hosting;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -1118,6 +1119,11 @@ public sealed class CovenantArchitectureBoundaryTests
 
         builder.Services.AddSingleton<IArcanumIntelligenceProvider>(static _ => null!);
 
+        // This fixture validates Infrastructure composition; API supplies this inference port.
+        // Refuse any accidental invocation instead of installing an execution fallback.
+        builder.Services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Guild.IGuildLocalInferenceRuntime,
+            UnreachedGuildInferenceRuntime>();
+
         builder.Services.AddSingleton<IHumanPromptRegistry>(static _ => null!);
 
         builder.Services.AddSingleton<IModelTokenEstimator>(static _ => null!);
@@ -1826,6 +1832,20 @@ public sealed class CovenantArchitectureBoundaryTests
             PublicSummary: "architecture-test",
             TerminalErrorCode: null,
             Revision: 1);
+
+    private sealed class UnreachedGuildInferenceRuntime : RetroDownfall.Arcanum.Infrastructure.Guild.IGuildLocalInferenceRuntime
+    {
+        public Task<RetroDownfall.Arcanum.Core.Primitives.Result<PromptTurnResult>> ExecuteAsync(
+            RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalInferenceExecution execution,
+            RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalExecutionInput input,
+            CancellationToken cancellationToken) => throw new InvalidOperationException("Guild inference is outside this composition fixture.");
+
+        public Task<RetroDownfall.Arcanum.Core.Primitives.Result<PromptTurnResult>> ExecuteTurnAsync(
+            RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalInferenceExecution execution,
+            RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalExecutionInput input,
+            RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalInferenceTurn turn,
+            CancellationToken cancellationToken) => throw new InvalidOperationException("Guild inference is outside this composition fixture.");
+    }
 
     private sealed record SourceMethod(
         IMethodSymbol Symbol,

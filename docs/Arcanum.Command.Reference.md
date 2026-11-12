@@ -109,7 +109,7 @@ The families below emit the text envelope for every verb except the typed ones n
 | `arcanum saga` | none |
 | `arcanum data encryption` | none |
 | `arcanum look` | none |
-| `arcanum apprentice` | none |
+| `arcanum apprentice` | `arcanum apprentice list`, `arcanum apprentice show` |
 | `arcanum trial` | none |
 | `arcanum tool` | none |
 | `arcanum mcp` | none |
@@ -913,7 +913,7 @@ Runs Proving Grounds evaluation against a spell, prompt, or Apprentice goal. It 
 
 Apprentice orchestration (requires arcanum serve).
 
-Manages durable Apprentice orchestration, intervention, replanning, child delegation, and Chronicle streaming. Lifecycle commands resolve an Apprentice selector before mutation. `create` and `intervene` use the native authenticated API, which records Operator provenance; their supplied goals and guidance are still fenced task data. Legacy A2A continuations retain unknown provenance until peer identity is verified. No command option can select a trusted authority label or expand an execution grant.
+Manages durable Apprentice orchestration, intervention, replanning, child delegation, and Chronicle streaming. Under `--json`, `list` emits an `ApprenticeSummaryDto` array and `show` emits one `ApprenticeDetailDto`; early failures use the standard text envelope. Lifecycle commands resolve an Apprentice selector before mutation. `create` and `intervene` use the native authenticated API, which records Operator provenance; their supplied goals and guidance are still fenced task data. Legacy A2A continuations retain unknown provenance until peer identity is verified. No command option can select a trusted authority label or expand an execution grant.
 
 | Command | Explanation | Additional command options |
 |---|---|---|

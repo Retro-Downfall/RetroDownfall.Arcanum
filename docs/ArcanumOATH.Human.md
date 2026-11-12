@@ -457,8 +457,8 @@ The idea to carry forward is simple:
 
 > Every memory travels with its papers. Search may make it easier to find. A model may make it shorter or more useful. Only authenticated authority can make a new claim more powerful.
 
-## Planned Guild collaboration
+## Guild collaboration
 
-The shared Core data and grant contracts now have a storage foundation: Cards and Guild payloads keep immutable revisions, ownership and sensitivity evidence, and cleanup uses the existing protected-erasure boundary. This does not activate Guild execution, expand memory access or change current recall behavior.
+Cards and Guild payloads keep immutable revisions, ownership and sensitivity evidence, and cleanup uses the existing protected-erasure boundary. Guild execution is opt-in and does not expand memory access or change existing recall authority.
 
-The [proposed Guild design](Arcanum.DESIGN.md#23-the-guild--sealed-delegation-proposed) keeps delegated memory access within the original source and Campaign permissions, then narrows it through each job's private Signet. Peer messages and shared notes do not grant memory access or turn an agent into the operator. Protected excerpts keep their provenance, and the design does not grant child agents fresh Covenant recall. This is a future implementation contract; it does not change current memory behavior.
+The [Guild design](Arcanum.DESIGN.md#23-the-guild--sealed-delegation) keeps delegated memory access within the original source and Campaign permissions, then narrows it through each job's private Signet. Peer messages and shared notes do not grant memory access or turn an agent into the operator. Protected excerpts keep their provenance, and the design does not grant child agents fresh Covenant recall. Protected-source selection and other paths without a complete source boundary remain unavailable to Guild execution.

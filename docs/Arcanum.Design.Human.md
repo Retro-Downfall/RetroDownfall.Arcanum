@@ -507,8 +507,8 @@ The fantasy names are functional labels:
 
 The full vocabulary and cross-references are in[`Arcanum.DESIGN.md` §17](Arcanum.DESIGN.md#17-glossary).
 
-## Planned Guild delegation
+## Guild delegation
 
-The [Guild design](Arcanum.DESIGN.md#23-the-guild--sealed-delegation-proposed) defines the sealed-delegation architecture. Core contracts, storage, Roster discovery, dormant Signet authority and Quest transaction/recovery foundations are implemented; executable delegation and public Guild commands remain planned. The complete design gives each local or remote job a durable Quest, a private host-held Signet with bounded authority, and addressed Circle messages. Cohorts add explicit membership, deterministic result collection and shared work; workspace leases coordinate participating host writers. Budget, memory and mutation checks must be implemented before the local port is enabled.
+The [Guild design](Arcanum.DESIGN.md#23-the-guild--sealed-delegation) defines the sealed-delegation architecture. The default-off Guild feature provides executable delegation and public Guild commands using Core contracts, storage, Roster discovery, live Signet authority and Quest transaction/recovery. The complete design gives each local or remote job a durable Quest, a private host-held Signet with bounded authority, and addressed Circle messages. Cohorts add explicit membership, deterministic result collection and shared work; workspace leases coordinate participating host writers. The local port applies budget, memory and participating workspace mutation checks; unsupported source and effect boundaries refuse rather than silently widening authority.
 
 The proposed feature defaults off. Restart reconciles the same work; restored authority stays inactive. Cancellation is visibly pending until work is confirmed stopped, and unknown remote costs remain unknown. Agent text never supplies credentials or operator authority. The [dormant Core foundation](Arcanum.DESIGN.md#232-components-and-core-contract-boundary) now defines the shared data, grants and service boundaries. It does not turn on delegation or change the current user experience.

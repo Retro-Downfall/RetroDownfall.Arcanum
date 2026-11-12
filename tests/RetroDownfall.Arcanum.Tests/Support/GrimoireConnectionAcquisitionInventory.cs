@@ -1062,6 +1062,237 @@ internal static class GrimoireConnectionAcquisitionScanner
         BindProofEvidence(
         [
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/DivinationService.cs", "DivinationService", "SearchCoreAsync(7)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/DivinationService.cs", "DivinationService", "SearchScopedCoreAsync(11)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/DivinationService.cs", "DivinationService", "SearchCampaignScopedCoreAsync(8)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexRepository.cs", "SessionAttachmentIndexRepository", "GetStateAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(guildToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexRepository.cs", "SessionAttachmentIndexRepository", "GetStatusesAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(guildToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexRepository.cs", "SessionAttachmentIndexRepository", "GetChunksForAttachmentAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(guildToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexRepository.cs", "SessionAttachmentIndexRepository", "GetRetrievedChunksAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(guildToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Memory/MemorySearchService.cs", "MemorySearchService", "OpenMemorySearchLeaseAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "AcquireScopedAsync", 3, "connections.AcquireScopedAsync(scopedConnection,CovenantSqliteConnectionMode.ReadOnly,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.MemorySearch.cs", "LexiconService", "SearchMemoryPageAsync(6)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs", "LexiconService", "FindAllLifecycleIdentityForDeletionCoreAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs", "LexiconService", "FindAgentDeletionTargetCoreAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs", "LexiconService", "DeleteByNameCoreAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs", "LexiconService", "HasEligibleEntriesCoreAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs", "LexiconService", "GetByNameCoreAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs", "LexiconService", "GetByNameInScopeCoreAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs", "SagaMemoryStore", "InsertAdmittedAsync(9)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs", "SagaMemoryStore", "ReadLongRestSnapshotCoreAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs", "SessionAttachmentStore", "GetByIdAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(guildToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs", "SessionAttachmentStore", "GetByLogicalAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(guildToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs", "SessionAttachmentStore", "ReadBoundPageAsync(5)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(guildToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs", "SessionAttachmentStore", "ListLatestBoundAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(guildToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFileStore.cs", "GrimoireOfflineTransitionJournalFileStore", "ResolveLocation(1)", AcquisitionConstructKind.ProviderOpen, "GrimoireOfflineTransitionJournalFilePrimitives.Open", 2, "GrimoireOfflineTransitionJournalFilePrimitives.Open(parent,expectedParentDigest:null)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "GrimoireOfflineTransitionJournalFileStore.ResolveLocation(1)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildWorkspaceLeaseStore.cs", "GuildWorkspaceLeaseStore", "ExecuteAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(write?GrimoireOrdinaryFreshConnectionKind.ReadWrite:GrimoireOrdinaryFreshConnectionKind.ReadOnly,ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildCohortCleanupParticipant.cs", "GuildCohortCleanupParticipant", "ReconcileAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite,ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildInboundPeerDenialJournal.cs", "GuildInboundPeerDenialJournal", "EnsureDirectory(1)", AcquisitionConstructKind.ProviderOpen, "GrimoireOfflineTransitionJournalFilePrimitives.Open", 1, "GrimoireOfflineTransitionJournalFilePrimitives.Open(_path)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "GuildInboundPeerDenialJournal.EnsureDirectory(1)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalHostPolicy.Inbound.cs", "GuildLocalHostPolicy", "ReadInboundExistenceAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,lifetime.Token)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestCleanupParticipant.cs", "GuildQuestCleanupParticipant", "ReconcileAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildWorkspaceLeaseCleanupParticipant.cs", "GuildWorkspaceLeaseCleanupParticipant", "ReconcileAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildNativeHost.cs", "GuildNativeHost", "GetStatusAsync(1)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.RemoteCallbackReceiver.cs", "GuildStore", "FindRemoteCallbackAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,lifetime.Token)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalQuestScheduler.cs", "GuildLocalQuestScheduler", "ReadPendingIdsWithinAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Memory/MemorySearchService.cs", "MemorySearchService", "SearchCoreAsync(5)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenMemorySearchLeaseAsync", 3, "OpenMemorySearchLeaseAsync(db,connections,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Memory/MemorySearchService.cs", "MemorySearchService", "OpenMemorySearchLeaseAsync(3)", AcquisitionConstructKind.MarkedRouteDeclaration, "OpenMemorySearchLeaseAsync", 3, "OpenMemorySearchLeaseAsync(3)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Guild.cs", "DataRetentionService", "AddGuildCandidatesAsync(5)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
@@ -1070,13 +1301,6 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Guild.cs", "DataRetentionService", "DeleteGuildCandidateAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestCleanupParticipant.cs", "GuildQuestCleanupParticipant", "ReconcileAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -1426,13 +1650,6 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs", "MemoryEndpoints", "HandleSearchAsync(6)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 3, "OpenConnectionAsync(db,connections,context.RequestAborted)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
             new("src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs", "MemoryEndpoints", "BuildStatusAsync(8)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 3, "OpenConnectionAsync(db,connections,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
@@ -1455,13 +1672,6 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         new(
             new("src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs", "MemoryEndpoints", "HandleStatusAsync(4)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenConnectionAsync", 3, "OpenConnectionAsync(db,connections,context.RequestAborted)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs", "MemoryEndpoints", "HandleSearchAsync(6)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenConnectionAsync", 3, "OpenConnectionAsync(db,connections,context.RequestAborted)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -1518,27 +1728,6 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Weave/EmbeddingsResetService.cs", "EmbeddingsResetService", "OpenConnectionAsync(1)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/DivinationService.cs", "DivinationService", "SearchAsync(7)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/DivinationService.cs", "DivinationService", "SearchScopedAsync(11)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/DivinationService.cs", "DivinationService", "SearchCampaignScopedAsync(8)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -1826,34 +2015,6 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexRepository.cs", "SessionAttachmentIndexRepository", "CompleteReplaceAsync(7)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexRepository.cs", "SessionAttachmentIndexRepository", "GetStateAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexRepository.cs", "SessionAttachmentIndexRepository", "GetStatusesAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexRepository.cs", "SessionAttachmentIndexRepository", "GetChunksForAttachmentAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexRepository.cs", "SessionAttachmentIndexRepository", "GetRetrievedChunksAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -2239,35 +2400,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs", "LexiconService", "DeleteByNameAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs", "LexiconService", "HasEligibleEntriesAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs", "LexiconService", "MatchEntitiesCoreAsync(5)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs", "LexiconService", "GetByNameAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs", "LexiconService", "GetByNameInScopeAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -2289,20 +2422,6 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.Lifecycle.cs", "LexiconService", "ChangeLifecycleAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs", "LexiconService", "FindAllLifecycleIdentityForDeletionAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs", "LexiconService", "FindAgentDeletionTargetAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -2666,13 +2785,6 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs", "SagaMemoryStore", "InsertCoreAsync(9)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs", "SagaMemoryStore", "CountAsync(1)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
@@ -2681,13 +2793,6 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs", "SagaMemoryStore", "CountBySessionAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs", "SagaMemoryStore", "ReadLongRestSnapshotAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -3297,34 +3402,6 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs", "SessionAttachmentStore", "PromotePendingAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs", "SessionAttachmentStore", "GetByIdAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs", "SessionAttachmentStore", "GetByLogicalAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs", "SessionAttachmentStore", "ReadBoundPageAsync(5)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs", "SessionAttachmentStore", "ListLatestBoundAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -4185,13 +4262,6 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireAcquisitionKind.NonGrimoireCandidate,
             GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
             new(ExactNonServingProofKind.NegativeNonDatabaseProof, "GrimoireOfflineTransitionJournalStore.Open(3)", 0)),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFileStore.cs", "GrimoireOfflineTransitionJournalFileStore", "ResolveLocation(1)", AcquisitionConstructKind.ProviderOpen, "GrimoireOfflineTransitionJournalFilePrimitives.Open", 1, "GrimoireOfflineTransitionJournalFilePrimitives.Open(parent)"),
-            GrimoirePathAuthority.NotGrimoire,
-            GrimoireAcquisitionKind.NonGrimoireCandidate,
-            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
-            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "GrimoireOfflineTransitionJournalFileStore.ResolveLocation(1)", 0)),
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFileStore.cs", "GrimoireOfflineTransitionJournalFileStore", "InspectEvidenceAsync(2)", AcquisitionConstructKind.ProviderOpen, "Open", 1, "Open(location)"),

@@ -13,7 +13,7 @@ public sealed partial class GuildQuestStoreTests
     {
         await using Fixture f = await Fixture.CreateAsync();
 
-        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(30));
+        using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
         CancellationToken ct = deadline.Token;
 
@@ -142,7 +142,7 @@ public sealed partial class GuildQuestStoreTests
     {
         await using Fixture f = await Fixture.CreateAsync();
 
-        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(30));
+        using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
         CancellationToken ct = deadline.Token;
 

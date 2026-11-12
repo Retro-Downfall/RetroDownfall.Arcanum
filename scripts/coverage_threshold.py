@@ -51,6 +51,10 @@ SECURITY_TYPES = {
     "BudgetReservationService",
     "WardGate",
     "WorkspacePathPolicy",
+    # These policies restrict Guild grants, intersect authority and clamp allocations to remaining authority.
+    "GuildGrantPolicy",
+    "GuildBudgetAllocationPolicy",
+    "GuildSignetGrantComposition",
     # The authenticated-envelope codec. It seals and opens every Covenant fragment, so a branch it
     # never exercises is an authentication path nothing has proved refuses. Held to the security
     # target rather than the general one for the same reason GrimoireKeyDerivation is.

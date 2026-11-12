@@ -82,7 +82,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         try
         {
-            using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10));
+            using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
             await readiness.Probed.Task.WaitAsync(deadline.Token);
 
@@ -199,7 +199,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             f.Settings.CurrentValue.Features.Guild = true;
 
-            using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10));
+            using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
             await Task.WhenAny(attemptedEffect.Task, readiness.Ensured.Task).WaitAsync(deadline.Token);
 

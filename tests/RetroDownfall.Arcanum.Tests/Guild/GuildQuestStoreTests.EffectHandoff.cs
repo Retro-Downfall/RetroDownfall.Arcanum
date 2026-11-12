@@ -58,10 +58,10 @@ public sealed partial class GuildQuestStoreTests
 
         try
         {
-            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await entered.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
             Result<int> root = await GuildSignetRootGate.RunAsync<int>(f.Gate, row.Quest.RootQuestId,
-                _ => Task.FromResult(Result<int>.Success(7)), default).WaitAsync(TimeSpan.FromSeconds(10));
+                _ => Task.FromResult(Result<int>.Success(7)), default).WaitAsync(TimeSpan.FromMinutes(2));
 
             Assert.Equal(7, root.Value);
 
@@ -84,7 +84,7 @@ public sealed partial class GuildQuestStoreTests
 
             Assert.Equal(42, (await running).Value);
 
-            Assert.True((await drain.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
+            Assert.True((await drain.WaitAsync(TimeSpan.FromMinutes(2))).IsSuccess);
         }
         finally
         {

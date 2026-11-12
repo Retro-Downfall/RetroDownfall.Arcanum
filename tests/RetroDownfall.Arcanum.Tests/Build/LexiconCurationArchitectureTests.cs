@@ -18,6 +18,8 @@ public sealed class LexiconCurationArchitectureTests
 
     private const string CleanRecall = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.CleanRecall.cs";
 
+    private const string MemorySearch = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.MemorySearch.cs";
+
     private const string Inspection = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.CurationInspection.cs";
 
     private const string Projection = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.InspectionProjection.cs";
@@ -131,6 +133,7 @@ public sealed class LexiconCurationArchitectureTests
     public static TheoryData<string, string, string> Readers => new()
     {
         { Service, "ReadEntry", "GetString:0,GetString:1,GetString:2,GetString:3,GetString:4,GetString:5,GetString:6,GetString:7,ReadPositiveInteger:8" },
+        { MemorySearch, "SearchMemoryPageAsync", "GetString:5" },
         { Service, "ReadAgentDeletionTargetAsync", "GetString:0" },
         { Service, "ReadFactProvenanceCoreAsync", "GetString:2,GetString:3,GetString:4,ReadCode:5,GetString:6,GetString:7,GetString:8,GetInt32:9,GetString:0,GetString:1" },
         { Review, "ReadOrCreateReviewMarkerAsync", "GetValue:0,GetInt64:1,GetInt64:2,GetInt64:1,GetInt64:2" },
@@ -170,7 +173,7 @@ public sealed class LexiconCurationArchitectureTests
 
         string[] readers = [.. methods.Where(method => ReaderSlots(method).Length > 0).Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
-        Assert.Equal(Readers.Where(row => (string)row[0] is Service or Guild or Inspection or Projection or Review or Erasure).Select(row => (string)row[1]).Order(StringComparer.Ordinal), readers);
+        Assert.Equal(Readers.Where(row => (string)row[0] is Service or Guild or MemorySearch or Inspection or Projection or Review or Erasure).Select(row => (string)row[1]).Order(StringComparer.Ordinal), readers);
 
         string[] executed = [.. methods.Where(method => Calls(method, "ExecuteReaderAsync")).Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
@@ -181,7 +184,7 @@ public sealed class LexiconCurationArchitectureTests
             "ReadFactProvenanceCoreAsync", "ReadHistoricalSourcesAsync", "ReadInspectionHistoryAsync",
             "ReadInspectionIdentitiesAsync", "ReadInspectionRowAsync", "ReadNamedEntryAsync", "ReadOrCreateReviewMarkerAsync",
             "ReadReviewEventAsync", "ReadReviewEventsAsync", "ReadStoredReceiptsAsync", "ReadStoredReviewEventAsync",
-            "ReadVerifiedHeadAsync", "ReadVerifiedLabelAsync",
+            "ReadVerifiedHeadAsync", "ReadVerifiedLabelAsync", "SearchMemoryPageAsync",
             "StreamInspectionAsync", "VerifyInspectionAuthorityAsync",
             "ValidateResultingVersionAsync",
         }.Order(StringComparer.Ordinal), executed);
@@ -190,8 +193,8 @@ public sealed class LexiconCurationArchitectureTests
             && !new[] { "DeleteByNameCoreAsync", "ShowExactAsync", "ShowEffectiveAsync" }.Contains(method.Identifier.ValueText, StringComparer.Ordinal))
             .Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
-        Assert.Equal(Projections.Where(row => (string)row[0] is Service or Guild or Inspection or Projection or Review or Erasure).Select(row => (string)row[1])
-            .Append("VersionColumnsFor").Append("InspectionEvidenceColumns").Append("CleanRecallPredicate")
+        Assert.Equal(Projections.Where(row => (string)row[0] is Service or Guild or MemorySearch or Inspection or Projection or Review or Erasure).Select(row => (string)row[1])
+            .Append("VersionColumnsFor").Append("InspectionEvidenceColumns").Append("CleanRecallPredicate").Append("SearchMemoryPageAsync")
             .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal), projected);
 
         foreach (string method in new[] { "FillExactMatchesAsync", "FillFtsMatchesViaMatchAsync", "FillFtsMatchesViaLikeAsync", "ReadNamedEntryAsync" })
@@ -226,6 +229,77 @@ public sealed class LexiconCurationArchitectureTests
         {
             Assert.Equal(Enumerable.Range(0, count), Ordinals(path, method).Order());
         }
+    }
+
+    [Fact]
+    public void Memory_search_projection_and_continuation_apply_clean_scope_before_page_limit()
+    {
+        MethodDeclarationSyntax method = Method(MemorySearch, "SearchMemoryPageAsync");
+
+        string tokens = Tokens(method);
+
+        Assert.Contains("RecallMatchColumns(curation,true,\"e\")", tokens, StringComparison.Ordinal);
+
+        Assert.Contains("ReadEntry(reader)", tokens, StringComparison.Ordinal);
+
+        Assert.Contains("reader.GetString(reader.FieldCount-1)", tokens, StringComparison.Ordinal);
+
+        Assert.Contains("reader.GetString(5)", tokens, StringComparison.Ordinal);
+
+        AssignmentExpressionSyntax[] statements = [.. method.DescendantNodes().OfType<AssignmentExpressionSyntax>()
+            .Where(assignment => assignment.Left.ToString() is "resume.CommandText" or "command.CommandText")];
+
+        Assert.Equal(2, statements.Length);
+
+        string resume = statements.Single(statement => statement.Left.ToString() == "resume.CommandText").Right.ToString();
+
+        string page = statements.Single(statement => statement.Left.ToString() == "command.CommandText").Right.ToString();
+
+        Assert.Contains("SELECT r.NameNormalized FROM lexicon_entries r", resume, StringComparison.Ordinal);
+
+        Assert.Contains("r.Id=@after AND r.ScopeCampaignId=@afterScope", resume, StringComparison.Ordinal);
+
+        Assert.Contains("{resumeGranted}", resume, StringComparison.Ordinal);
+
+        Assert.Contains("{resumeShadowGranted}", resume, StringComparison.Ordinal);
+
+        Assert.Contains("{CleanRecallPredicate(\"r\")}", resume, StringComparison.Ordinal);
+
+        Assert.Contains("{CleanRecallPredicate(\"shadow\")}", resume, StringComparison.Ordinal);
+
+        Assert.Contains("SELECT {columns}, e.NameNormalized", page, StringComparison.Ordinal);
+
+        Assert.Contains("{granted}", page, StringComparison.Ordinal);
+
+        Assert.Contains("{shadowGranted}", page, StringComparison.Ordinal);
+
+        Assert.Contains("{CleanRecallPredicate(\"e\")}", page, StringComparison.Ordinal);
+
+        Assert.Contains("{CleanRecallPredicate(\"shadow\")}", page, StringComparison.Ordinal);
+
+        Assert.Contains("ORDER BY e.NameNormalized,e.ScopeCampaignId,e.Id LIMIT @limit", page, StringComparison.Ordinal);
+
+        Assert.True(page.IndexOf("{granted}", StringComparison.Ordinal) < page.IndexOf("LIMIT @limit", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Memory_search_routes_operator_to_verified_inspection_and_model_to_clean_recall()
+    {
+        MethodDeclarationSyntax search = Method("RetroDownfall.Arcanum.Infrastructure/Memory/MemorySearchService.cs", "SearchCoreAsync");
+
+        IfStatementSyntax branch = Assert.Single(search.DescendantNodes().OfType<IfStatementSyntax>(), conditional =>
+            conditional.Condition.ToString() == "modelInvocation"
+            && conditional.Statement.ToString().Contains("lexiconRecall.SearchMemoryPageAsync", StringComparison.Ordinal));
+
+        Assert.NotNull(branch.Else);
+
+        Assert.Contains("lexicon.SearchInspectionPageAsync(query,left+1,after,readLease,cancellationToken)", Tokens(branch.Else!), StringComparison.Ordinal);
+
+        MethodDeclarationSyntax endpoint = Method("RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs", "HandleSearchAsync");
+
+        Assert.Contains("RespondToLexiconReadAsync", Tokens(endpoint), StringComparison.Ordinal);
+
+        Assert.Contains("search.SearchAsync(request,lease,context.RequestAborted)", Tokens(endpoint), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -302,7 +376,7 @@ public sealed class LexiconCurationArchitectureTests
     {
         foreach ((string path, string method) in new (string, string)[]
         {
-            (Service, "HasEligibleEntriesCoreAsync"),
+            (Service, "HasEligibleEntriesCoreAsync"), (MemorySearch, "SearchMemoryPageAsync"),
             (Service, "MatchEntitiesCoreAsync"), (Service, "GetByNameCoreAsync"), (Service, "GetByNameInScopeCoreAsync"),
             (Annals, "GetVersionsAsync"), (Annals, "GetLexiconFactProvenanceAsync"),
             ("RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Pruning.cs", "AddLexiconCandidatesAsync"),
@@ -333,8 +407,9 @@ public sealed class LexiconCurationArchitectureTests
             ["RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs"] = ["HasEligibleEntriesAsync", "MatchEntitiesAsync"],
             ["RetroDownfall.Arcanum.Infrastructure/Daemons/UnseenServantDaemonJob.cs"] = ["GetByNameAsync"],
             ["RetroDownfall.Arcanum.Infrastructure/Memory/MemoryRecallCandidateReader.cs"] = ["MatchCleanEntitiesAsync"],
+            ["RetroDownfall.Arcanum.Infrastructure/Memory/MemorySearchService.cs"] = ["SearchInspectionPageAsync", "SearchMemoryPageAsync"],
             ["RetroDownfall.Arcanum.Infrastructure/Mcp/InternalTools/ArcanumInternalToolServer.LexiconTools.cs"] = ["DeleteByNameAsync", "FindAgentDeletionTargetAsync", "FindAllLifecycleIdentityForDeletionAsync", "UpsertAsync", "UpsertAsync"],
-            ["RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs"] = ["CountInspectionAsync", "DeleteByNameAsync", "FindAllLifecycleIdentityForDeletionAsync", "ListInspectionAsync", "SearchInspectionAsync", "SearchInspectionPageAsync", "ShowEffectiveAsync"],
+            ["RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs"] = ["CountInspectionAsync", "DeleteByNameAsync", "FindAllLifecycleIdentityForDeletionAsync", "ListInspectionAsync", "SearchInspectionAsync", "ShowEffectiveAsync"],
             ["RetroDownfall.Arcanum.Api/Tower/LexiconCurationEndpoints.cs"] = ["CorrectAsync", "PinAsync", "ReinstateAsync", "RetireAsync", "ShowExactAsync", "UnpinAsync"],
         };
 

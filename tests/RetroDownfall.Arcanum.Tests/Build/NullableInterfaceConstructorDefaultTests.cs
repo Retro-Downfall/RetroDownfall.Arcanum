@@ -5,6 +5,13 @@ using System.Text;
 using System.Text.RegularExpressions;
 
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
@@ -223,6 +230,22 @@ public sealed class NullableInterfaceConstructorDefaultTests
         ["src/RetroDownfall.Arcanum.Cli/Services/Setup/SetupPrompt.cs:ConsoleSetupPrompt:secretPrompt"] = "the null coalesces to a constructed default at the use site, so no host runs without a IBackupPassphrasePrompt",
 
         ["src/RetroDownfall.Arcanum.Core/Configuration/ConfigurationValidator.cs:ConfigurationValidator:logger"] = "diagnostic sink; absence degrades logging, not a guard",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/A2A/ArcanumA2AServer.cs:ArcanumA2AServer:scopeFactory"] = "the production A2AServer factory supplies the required scope factory to both server and task store; the server can otherwise borrow the task store scope, while neither scope nor settings means legacy mode, so the factory binding is security-relevant and pinned",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/A2A/ArcanumA2AServer.cs:ArcanumA2AServer:settings"] = "the production A2AServer factory supplies the required options monitor; without it mode detection uses the scoped options monitor and missing both settings and scope selects legacy mode, so the required production wiring is pinned",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/A2A/ArcanumA2ATaskStore.cs:ArcanumA2ATaskStore:settings"] = "the production A2AServer factory supplies required options to its task store; omitted settings fall back to scoped options, and an absent scope and options selects legacy mode, making production composition essential",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Contracts.cs:GuildQuestAdmissionPlan:Lifetime"] = "optional per-plan cleanup data, not a service: production GuildLocalHostPolicy supplies its pending admission and GuildQuestStore disposes it with the plan; fixture policies can have no retained lifetime",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.cs:GuildQuestStore:localExecution"] = "the host registers IGuildLocalExecutionAdmission; test stores can omit it for non-tool storage, while ConclaveArchmage refuses executable issuance without HasLocalExecutionAdmission and a tool-bound issuance refuses a missing participant",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.cs:GuildQuestStore:readiness"] = "the host registers IGuildLocalHostReadiness; omission makes RequireLocalExecutionReady return GuildLocalHostReadiness.Unavailable rather than admitting local execution",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Hosting/ConclaveArchmage.cs:ConclaveArchmage:guildScheduler"] = "the host registers IGuildLocalQuestScheduler; CanIssueGuild refuses when it is absent or unavailable, and cancellation refuses before it can schedule",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Hosting/ConclaveArchmage.cs:ConclaveArchmage:memorySearch"] = "the host registers scoped IMemorySearchService; without it SupportsMemory is false and the Guild memory tool returns unavailable before searching",
 
         ["src/RetroDownfall.Arcanum.Infrastructure/A2A/A2AClientService.cs:A2AClientService:scopeFactory"] = "every use of the IServiceScopeFactory is null-safe; absence disables an observation, not a refusal",
 
@@ -475,6 +498,73 @@ public sealed class NullableInterfaceConstructorDefaultTests
         Assert.True(
             offenders.Count == 0,
             string.Join("\n", offenders.Order(StringComparer.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Missing_Guild_scheduler_or_execution_admission_refuses_before_issuing(bool missingScheduler)
+    {
+        ServiceCollection services = new();
+
+        services.AddOptions<ArcanumSettings>().Configure(static settings => settings.Features.Guild = true);
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        IOptionsMonitor<ArcanumSettings> options = provider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
+
+        GuildQuestStore store = new(null!, null!, null!, null!, TimeProvider.System,
+            missingScheduler ? new GuildLocalExecutionAdmission(options) : null);
+
+        ConclaveArchmage coordinator = new(null!, options, store, missingScheduler ? null : new RefusingScheduleProbe());
+
+        Guid key = Guid.NewGuid();
+
+        GuildGrant grant = new([], [], [], new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited)), [], null);
+
+        GuildIssueRootRequest request = new(key, null, "test", "Compute", grant);
+
+        GuildCallerContext caller = new(GuildCallerKind.Operator, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+
+        GuildMutationIdentity mutation = new(key, GuildQuestIntent.Compute(request).Value);
+
+        Result<GuildQuestDto> result = await coordinator.IssueAsync(caller, mutation, request, default);
+
+        Assert.Equal(ErrorCodes.Guild.Unavailable, result.Error.Code);
+
+        Assert.False(coordinator.SupportsMemory);
+    }
+
+    private sealed class RefusingScheduleProbe : IGuildLocalQuestScheduler
+    {
+        public bool IsAvailable => true;
+
+        public void Schedule(GuildQuestDto quest) => throw new InvalidOperationException("Unadmitted work must never be scheduled.");
+    }
+
+    [Fact]
+    public void The_A2A_host_factory_requires_mode_detection_dependencies_for_server_and_store()
+    {
+        string file = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src", "RetroDownfall.Arcanum.Infrastructure",
+            "DependencyInjection", "ServiceCollectionExtensions.cs");
+
+        Microsoft.CodeAnalysis.SyntaxNode root = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(File.ReadAllText(file)).GetRoot();
+
+        Microsoft.CodeAnalysis.CSharp.Syntax.ObjectCreationExpressionSyntax[] constructions = [.. root.DescendantNodes()
+            .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ObjectCreationExpressionSyntax>()];
+
+        var server = Assert.Single(constructions, static creation => creation.Type.ToString() == "ArcanumA2AServer");
+
+        var store = Assert.Single(server.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ObjectCreationExpressionSyntax>(),
+            static creation => creation.Type.ToString() == "ArcanumA2ATaskStore");
+
+        Assert.Equal("sp.GetRequiredService<IServiceScopeFactory>()", server.ArgumentList!.Arguments[6].Expression.ToString());
+
+        Assert.Equal("sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()", server.ArgumentList.Arguments[7].Expression.ToString());
+
+        Assert.Equal("sp.GetRequiredService<IServiceScopeFactory>()", store.ArgumentList!.Arguments[0].Expression.ToString());
+
+        Assert.Equal("sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()", store.ArgumentList.Arguments[2].Expression.ToString());
     }
 
     /// <summary>

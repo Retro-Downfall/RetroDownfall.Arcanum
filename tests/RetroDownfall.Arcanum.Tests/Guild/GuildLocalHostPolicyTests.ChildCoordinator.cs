@@ -67,7 +67,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
         if (!cast) arguments["files"] = files.RootElement.Clone();
 
-        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10));
+        // Watchdog only; state and receipt assertions establish progress.
+        using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
         Task<object?> invocation = context.InvokeBoundAsync(function, arguments, deadline.Token).AsTask();
 

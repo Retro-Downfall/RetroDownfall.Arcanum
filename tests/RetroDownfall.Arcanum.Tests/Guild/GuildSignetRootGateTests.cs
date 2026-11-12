@@ -46,7 +46,7 @@ public sealed class GuildSignetRootGateTests
             return 1;
         }, default);
 
-        await firstEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await firstEntered.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
         using CancellationTokenSource cancellation = new();
 

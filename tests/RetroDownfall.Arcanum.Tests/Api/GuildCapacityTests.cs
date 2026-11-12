@@ -14,12 +14,127 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
+using RetroDownfall.Arcanum.Tests.Guild;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
 [Collection("WorkspacePathPolicy")]
 public sealed partial class GuildCapacityTests
 {
+    [SkippableFact]
+    [Trait("Category", "Perf")]
+    public async Task Performance_native_delegation_roundtrip()
+    {
+        GuildPerformanceMeasurement.RequireOptIn();
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using IDisposable workload = await GuildPerformanceMeasurement.AcquireAsync();
+
+        using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
+
+        using DelegatingTransport transport = new();
+
+        TaskCompletionSource<GuildPerformanceMeasurement> started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        transport.DelegationStarting = () => started.SetResult(new("delegation-native-roundtrip", 1, 1,
+            "real HTTP and scheduler; controlled provider; one parent and child; result polling"));
+
+        // Do not inject a delay in the child response into the measured interval.
+        transport.AllowChildReturn.TrySetResult();
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings =>
+            {
+                settings.Features.Guild = true;
+
+                settings.Features.Apprentices = true;
+
+                settings.Execution.MaxConcurrentApprentices = 1;
+
+                settings.DefaultModel = "gpt-5.4-mini-2026-03-17";
+
+                settings.Providers = [new() { Name = "qualified", Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "https://api.openai.com/v1", Models = ["gpt-5.4-mini-2026-03-17"] }];
+
+                return settings;
+            },
+            ServiceOverrides = services =>
+            {
+                services.AddHttpClient("OpenAiCompatibleProvider").ConfigurePrimaryHttpMessageHandler(() => transport);
+
+                services.AddScoped<IGuildLocalInferenceRuntime>(provider =>
+                    new RecordingRuntime(provider.GetRequiredService<WizardIntelligenceProvider>(), transport));
+            },
+        };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        GuildIssueRootRequest request = new(Guid.NewGuid(), null, "Delegating parent", "Use a child to produce the answer",
+            new([], [new(GuildToolSourceKind.BuiltIn, "arcanum", "delegate_task")], [],
+                new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited)), [GuildDelegationKind.Local], null));
+
+        using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
+
+        using HttpResponseMessage issued = await client.PostAsync("/api/guild/quests",
+            Json(JsonSerializer.Serialize(request, GuildJsonContext.Default.GuildIssueRootRequest)), deadline.Token);
+
+        Assert.Equal(HttpStatusCode.Created, issued.StatusCode);
+
+        using JsonDocument accepted = JsonDocument.Parse(await issued.Content.ReadAsStringAsync(deadline.Token));
+
+        Guid id = accepted.RootElement.GetProperty("data").GetProperty("id").GetGuid();
+
+        GuildPerformanceMeasurement measure = await started.Task.WaitAsync(deadline.Token);
+
+        while (true)
+        {
+            using HttpResponseMessage result = await client.GetAsync($"/api/guild/quests/{id:D}/result", deadline.Token);
+
+            if (result.StatusCode == HttpStatusCode.OK) break;
+
+            Assert.Equal(HttpStatusCode.NotFound, result.StatusCode);
+
+            await Task.Delay(25, deadline.Token);
+        }
+
+        measure.Stop();
+
+        Assert.True(transport.ChildCalled.Task.IsCompletedSuccessfully);
+
+        Assert.Equal(5, transport.Calls);
+
+        using HttpResponseMessage content = await client.GetAsync($"/api/guild/quests/{id:D}/result/content", deadline.Token);
+
+        Assert.Equal(HttpStatusCode.OK, content.StatusCode);
+
+        using JsonDocument body = JsonDocument.Parse(await content.Content.ReadAsStringAsync(deadline.Token));
+
+        Assert.Equal("parent finished", body.RootElement.GetProperty("data").GetProperty("body").GetString());
+
+        await using AsyncServiceScope scope = factory.Services.CreateAsyncScope();
+
+        var opened = await scope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()
+            .OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, deadline.Token);
+
+        Assert.True(opened.IsSuccess, opened.Error.Message);
+
+        await using var connection = opened.Value;
+
+        await using var command = connection.Connection.CreateCommand();
+
+        command.CommandText = "SELECT count(*) FROM guild_result_receipts";
+
+        Assert.Equal(2L, await command.ExecuteScalarAsync(deadline.Token));
+
+        command.CommandText = "SELECT count(*) FROM guild_result_applications";
+
+        Assert.Equal(1L, await command.ExecuteScalarAsync(deadline.Token));
+
+        measure.Write();
+    }
+
     [SkippableFact]
     public async Task Native_blocking_delegation_releases_shared_capacity_and_resumes_parent_at_capacity_one()
     {
@@ -78,7 +193,7 @@ public sealed partial class GuildCapacityTests
 
         // Bound a stalled integration test, without imposing a 20-second latency contract on
         // five physical calls and their durable child/parent accounting on hosted Windows.
-        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(60));
+        using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
         try
         {
@@ -285,6 +400,8 @@ public sealed partial class GuildCapacityTests
 
         internal int Calls => Volatile.Read(ref _calls);
 
+        internal Action? DelegationStarting { get; set; }
+
         internal string ToolResultDiagnostic = "none";
 
         internal string RuntimeDiagnostic = "none";
@@ -332,6 +449,8 @@ public sealed partial class GuildCapacityTests
             };
 
             string json = $$$"""{"id":"capacity-{{{ordinal}}}","object":"chat.completion","created":1700000000,"model":"gpt-5.4-mini-2026-03-17","choices":[{"index":0,"message":{{{message}}},"finish_reason":"{{{(ordinal == 2 ? "tool_calls" : "stop")}}}"}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}""";
+
+            if (ordinal == 2) DelegationStarting?.Invoke();
 
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = Json(json) };
         }

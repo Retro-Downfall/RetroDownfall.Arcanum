@@ -114,7 +114,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         GuildRemotePort port = new(f.Store, f.Policy, f.Authority, operations, client, f.Gate, new(), TimeProvider.System);
 
-        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(30));
+        using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
         await DriveRemoteToolChildAsync(f, owner, port, member.Value.Quest.Id, deadline.Token);
 

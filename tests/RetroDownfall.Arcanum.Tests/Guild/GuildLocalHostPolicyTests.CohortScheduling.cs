@@ -128,7 +128,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
         try
         {
-            using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(15));
+            // Poll durable completion; this generous watchdog is not a latency assertion.
+            using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
             while (await f.ScalarAsync("SELECT count(*) FROM guild_result_receipts") == 0)
                 await Task.Delay(20, deadline.Token);

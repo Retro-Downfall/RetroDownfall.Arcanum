@@ -21,6 +21,8 @@ public sealed partial class GuildPortalStoreTests
 
         internal readonly FixtureOrdinaryConnectionFactory Connections;
 
+        private readonly IGrimoireOrdinaryConnectionFactory _storeConnections;
+
         internal readonly HostPolicy Host = new();
 
         internal readonly BudgetParticipant Budget = new();
@@ -37,11 +39,14 @@ public sealed partial class GuildPortalStoreTests
 
         internal readonly GuildIssueRootRequest Request;
 
-        private Fixture(EvolutionScratchDatabase file)
+        private Fixture(EvolutionScratchDatabase file,
+            Func<FixtureOrdinaryConnectionFactory, IGrimoireOrdinaryConnectionFactory>? wrapConnections)
         {
             _file = file;
 
             Connections = new(new SqliteConnectionStringBuilder(file.ConnectionString) { DefaultTimeout = 1 }.ToString());
+
+            _storeConnections = wrapConnections?.Invoke(Connections) ?? Connections;
 
             Caller = new(GuildCallerKind.Operator, Guid.NewGuid(), Guid.NewGuid(), Host.InstallationGeneration);
 
@@ -53,14 +58,15 @@ public sealed partial class GuildPortalStoreTests
 
             Request = new(key, null, "Child", "Summarize the selected material", Host.Grant);
 
-            Authority = new(new(Connections), Gate, Host, TimeProvider.System);
+            Authority = new(new(_storeConnections), Gate, Host, TimeProvider.System);
 
             Store = NewStore();
 
             Portal = new(Store, Authority, Host, TimeProvider.System);
         }
 
-        internal static async Task<Fixture> CreateAsync()
+        internal static async Task<Fixture> CreateAsync(
+            Func<FixtureOrdinaryConnectionFactory, IGrimoireOrdinaryConnectionFactory>? wrapConnections = null)
         {
             EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
@@ -78,16 +84,16 @@ public sealed partial class GuildPortalStoreTests
 
             _ = await command.ExecuteNonQueryAsync();
 
-            return new(file);
+            return new(file, wrapConnections);
         }
 
-        private GuildQuestStore NewStore() => new(new(Connections, Gate, TimeProvider.System), Authority, Host, Budget, TimeProvider.System);
+        private GuildQuestStore NewStore() => new(new(_storeConnections, Gate, TimeProvider.System), Authority, Host, Budget, TimeProvider.System);
 
         internal void Restart()
         {
             Authority.Dispose();
 
-            Authority = new(new(Connections), Gate, Host, TimeProvider.System);
+            Authority = new(new(_storeConnections), Gate, Host, TimeProvider.System);
 
             Store = NewStore();
 

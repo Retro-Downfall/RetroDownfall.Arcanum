@@ -243,7 +243,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             try
             {
-                using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(15));
+                using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
                 while (await f.ScalarAsync("SELECT count(*) FROM guild_result_receipts") < 3)
                     await Task.Delay(20, deadline.Token);

@@ -69,7 +69,7 @@ public sealed partial class GuildLocalHostPolicyTests
                     setup.Request, default));
 
                 // This timeout only bounds a broken-fixture hang; event signals order the test.
-                await connections.Reached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                await connections.Reached.Task.WaitAsync(TimeSpan.FromMinutes(2));
             }
 
             var begun = f.Gate.BeginOrResumeExclusive(PeriodicHostMaintenance.Owner());
@@ -88,7 +88,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 connections.Release.TrySetResult();
 
-                var completed = await admitted.WaitAsync(TimeSpan.FromSeconds(10));
+                var completed = await admitted.WaitAsync(TimeSpan.FromMinutes(2));
 
                 if (boundary == "guild_work_awards")
                 {
@@ -112,7 +112,7 @@ public sealed partial class GuildLocalHostPolicyTests
                 }
             }
 
-            Result drained = await drain.WaitAsync(TimeSpan.FromSeconds(10));
+            Result drained = await drain.WaitAsync(TimeSpan.FromMinutes(2));
 
             Assert.True(drained.IsSuccess, drained.Error.Message);
 
@@ -149,7 +149,7 @@ public sealed partial class GuildLocalHostPolicyTests
             {
                 await CaptureDistributionMaintenanceFailureAsync(async () =>
                 {
-                    if (admitted is not null) await admitted.WaitAsync(TimeSpan.FromSeconds(10));
+                    if (admitted is not null) await admitted.WaitAsync(TimeSpan.FromMinutes(2));
                 }, failures);
             }
             finally

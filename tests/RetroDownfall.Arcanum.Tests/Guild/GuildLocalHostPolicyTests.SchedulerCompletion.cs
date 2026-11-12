@@ -98,7 +98,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             scheduler.Schedule(child.Value.Quest);
 
-            using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
+            using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
             try
             {

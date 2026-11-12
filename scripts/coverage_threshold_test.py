@@ -711,6 +711,12 @@ class CoverageThresholdParserTests(unittest.TestCase):
                 powershell,
             )
 
+    def test_guild_authority_policies_have_security_branch_gates(self) -> None:
+        # These pure policies prevent authority widening and clamp delegated spending.
+        for name in ("GuildGrantPolicy", "GuildBudgetAllocationPolicy", "GuildSignetGrantComposition"):
+            self.assertIn(name, coverage_threshold.SECURITY_TYPES)
+            self.assertEqual(coverage_threshold.security_branch_target(name), 100.0)
+
     def test_security_type_lists_are_in_parity(self) -> None:
         powershell = (Path(__file__).parent / "coverage_threshold.ps1").read_text(
             encoding="utf-8"

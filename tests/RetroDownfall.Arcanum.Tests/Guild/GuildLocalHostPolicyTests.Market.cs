@@ -31,6 +31,66 @@ public sealed partial class GuildLocalHostPolicyTests
     }
 
     [Fact]
+    public async Task Offer_refuses_an_active_member_without_the_requested_card_skill()
+    {
+        await using Fixture f = await Fixture.CreateAsync();
+
+        var setup = await ConvergenceFixtureAsync(f, GuildConvergenceKind.All, null, "text/plain", 0);
+
+        GuildStore cards = new(f.Connections, f.Gate, TimeProvider.System);
+
+        GuildAgentCard card = new(Guid.Empty, Guid.Empty, 0, "Reviewer", "Reviewer", "1",
+            [new("review", "Review", "Review work", [], ["text/plain"], ["text/plain"])],
+            ["text/plain"], ["text/plain"], new(false, false, false),
+            new(GuildAgentSourceKind.DeclaredGlobal, null, null, true, null));
+
+        var saved = await cards.UpsertCardAsync(new("market-skill-reviewer", null, null, null,
+            new(card, "Review work", [], RequestedToolsSpecified: true), new string('A', 64)), default);
+
+        Assert.True(saved.IsSuccess, saved.Error.Message);
+
+        Guid memberKey = Guid.NewGuid();
+
+        var member = await f.Store.IssueCohortMemberAsync(setup.Issuer,
+            new(f.Generation, setup.Root.Quest.Id, null, memberKey, memberKey), setup.Cohort.Id, setup.Cohort.Revision,
+            new(memberKey, setup.Root.Quest.Revision, null, "Reviewer", "Review", new(), CardId: saved.Value.Payload.Card.CardId), default);
+
+        Assert.True(member.IsSuccess, member.Error.Message);
+
+        var cohort = await setup.Cohorts.GetAsync(setup.Issuer, setup.Cohort.Id, default);
+
+        Assert.True(cohort.IsSuccess, cohort.Error.Message);
+
+        Guid wrongKey = Guid.NewGuid();
+
+        PostWorkOfferRequest wrong = new(wrongKey, cohort.Value.Revision, "forged-skill", "Do work", null, new("text/plain"));
+
+        string wrongDigest = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(wrong, GuildJsonContext.Default.PostWorkOfferRequest)));
+
+        var refused = await setup.Cohorts.PostOfferAsync(setup.Issuer, new(wrongKey, wrongDigest), setup.Cohort.Id, wrong, default);
+
+        Assert.Equal(ErrorCodes.Guild.NoEligibleBidder, refused.Error.Code);
+
+        Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_work_offers"));
+
+        Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_work_offer_recipients"));
+
+        Guid correctKey = Guid.NewGuid();
+
+        PostWorkOfferRequest correct = new(correctKey, cohort.Value.Revision, "review", "Review work", null, new("text/plain"));
+
+        string correctDigest = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(correct, GuildJsonContext.Default.PostWorkOfferRequest)));
+
+        var accepted = await setup.Cohorts.PostOfferAsync(setup.Issuer, new(correctKey, correctDigest), setup.Cohort.Id, correct, default);
+
+        Assert.True(accepted.IsSuccess, accepted.Error.Message);
+
+        Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_work_offers"));
+
+        Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_work_offer_recipients"));
+    }
+
+    [Fact]
     public async Task Offer_freezes_eligible_card_and_exact_replay_creates_no_additional_offer()
     {
         await using Fixture f = await Fixture.CreateAsync();
@@ -207,6 +267,7 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.True(replay.Value.Receipt!.Replayed);
         Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_work_awards"));
     }
+
     [Fact]
     public async Task Operator_can_post_inspect_and_withdraw_an_offer_with_exact_replay()
     {
@@ -276,5 +337,4 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.Equal(GuildWorkOfferState.Withdrawn, removed.Value.State);
     }
-
 }

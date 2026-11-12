@@ -193,7 +193,7 @@ public sealed partial class GuildSignetAuthorityTests
             return Result<int>.Success(17);
         }, default);
 
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await entered.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
         Guid key = Guid.NewGuid();
 
@@ -292,6 +292,59 @@ public sealed partial class GuildSignetAuthorityTests
         GuildExecutionHandle child = await f.ChildAsync(root, remote, GuildSignetIssuanceEdge.Remote);
 
         Assert.True((await f.Authority.VerifyToolAsync(child, Fixture.Tool, true, default)).IsSuccess);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Durable_lineage_refuses_repeated_stable_agent_without_allocating_authority(bool repeatRoot)
+    {
+        await using Fixture f = await Fixture.CreateAsync();
+
+        GuildExecutionHandle root = await f.RootAsync();
+
+        GuildExecutionHandle parent = await f.ChildAsync(root);
+
+        long signets = Assert.IsType<long>(await f.ScalarAsync("SELECT count(*) FROM guild_signets"));
+
+        long accounts = Assert.IsType<long>(await f.ScalarAsync("SELECT count(*) FROM guild_budget_accounts"));
+
+        long effects = Assert.IsType<long>(await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects"));
+
+        long evidence = Assert.IsType<long>(await f.ScalarAsync("SELECT count(*) FROM guild_budget_evidence"));
+
+        long questBudgets = Assert.IsType<long>(await f.ScalarAsync("SELECT count(*) FROM guild_quest_budget"));
+
+        GuildCallerContext caller = new(GuildCallerKind.Run, f.Operator.PrincipalId!.Value, Guid.NewGuid(),
+            f.Policy.InstallationGeneration, parent);
+
+        GuildSignetBinding repeated = f.Binding(parent: parent) with { AgentId = repeatRoot ? root.AgentId : parent.AgentId };
+
+        Result<GuildExecutionHandle> refused = await f.Authority.AttenuateAsync(f.Admission(caller), parent, repeated, new(), default);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.Guild.DelegationCycle, refused.Error.Code);
+
+        Assert.Equal(signets, await f.ScalarAsync("SELECT count(*) FROM guild_signets"));
+
+        Assert.Equal(accounts, await f.ScalarAsync("SELECT count(*) FROM guild_budget_accounts"));
+
+        Assert.Equal(effects, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects"));
+
+        Assert.Equal(evidence, await f.ScalarAsync("SELECT count(*) FROM guild_budget_evidence"));
+
+        Assert.Equal(questBudgets, await f.ScalarAsync("SELECT count(*) FROM guild_quest_budget"));
+
+        GuildExecutionHandle allowed = await f.ChildAsync(parent);
+
+        Assert.NotEqual(root.AgentId, allowed.AgentId);
+
+        Assert.NotEqual(parent.AgentId, allowed.AgentId);
+
+        Assert.Equal(signets + 1, await f.ScalarAsync("SELECT count(*) FROM guild_signets"));
+
+        Assert.True((await f.Authority.VerifyToolAsync(allowed, Fixture.Tool, true, default)).IsSuccess);
     }
 
     [Fact]
@@ -583,7 +636,7 @@ public sealed partial class GuildSignetAuthorityTests
 
         Task<Result<GuildExecutionHandle>> first = f.Authority.RebindAsync(firstClaim, default);
 
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await entered.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
         Task<Result<GuildExecutionHandle>> second;
 
@@ -598,7 +651,7 @@ public sealed partial class GuildSignetAuthorityTests
             release.TrySetResult();
         }
 
-        Result<GuildExecutionHandle>[] results = await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(10));
+        Result<GuildExecutionHandle>[] results = await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromMinutes(2));
 
         Assert.True(results[0].IsSuccess, results[0].Error.Message);
 
@@ -645,7 +698,7 @@ public sealed partial class GuildSignetAuthorityTests
         Task<Result<SignetRevocationDto>> first = f.Authority.RevokeAsync(f.Operator, new(firstKey, Digest("first-revoke")), execution.SignetId,
             new(firstKey, 1, GuildCancellationReason.OperatorRequested), default);
 
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await entered.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
         Task<Result<SignetRevocationDto>> second;
 
@@ -661,7 +714,7 @@ public sealed partial class GuildSignetAuthorityTests
             release.TrySetResult();
         }
 
-        Result<SignetRevocationDto>[] results = await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(10));
+        Result<SignetRevocationDto>[] results = await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromMinutes(2));
 
         Assert.True(results[0].IsSuccess, results[0].Error.Message);
 

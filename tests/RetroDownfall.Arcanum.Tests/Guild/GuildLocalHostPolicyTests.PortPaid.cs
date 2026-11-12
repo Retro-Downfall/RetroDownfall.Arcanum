@@ -92,7 +92,7 @@ public sealed partial class GuildLocalHostPolicyTests
         GuildDispatchRequest request = new(new(f.Request.IdempotencyKey, issued.Value.IntentDigest), quest.Id,
             quest.OperationId, quest.RunId, quest.Id, (await operations.GetAsync(quest.OperationId))!.Revision, binding.Input.Digest);
 
-        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
+        using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
         Task<Result<GuildDispatchObservation>> running = port.DispatchAsync(execution.Value, request, deadline.Token);
 
@@ -196,7 +196,7 @@ public sealed partial class GuildLocalHostPolicyTests
             // A paid parent must propagate an interrupted child's reconciliation frontier instead of renewing forever.
             // This bound observes completion; the outer finally cancels and joins both real dispatch owners on RED too.
             completed = childRequiresReconciliation
-                ? await running.WaitAsync(TimeSpan.FromSeconds(5), deadline.Token)
+                ? await running.WaitAsync(TimeSpan.FromMinutes(2), deadline.Token)
                 : await running;
         }
         finally

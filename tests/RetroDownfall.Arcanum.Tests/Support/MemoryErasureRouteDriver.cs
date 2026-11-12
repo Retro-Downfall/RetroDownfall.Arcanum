@@ -503,7 +503,8 @@ internal sealed class MemoryErasureRouteDriver
     {
         using HttpResponseMessage applied = await PostAsync(path, request, info, ct);
 
-        Assert.Equal(HttpStatusCode.OK, applied.StatusCode);
+        if (applied.StatusCode != HttpStatusCode.OK)
+            Assert.Fail($"{path} returned {(int)applied.StatusCode}: {await applied.Content.ReadAsStringAsync(ct)}");
 
         return await ReadDataAsync(applied, ArcanumJsonContext.Default.ApiResponseMemoryErasureResultDto);
     }
