@@ -152,45 +152,66 @@ internal sealed class GuildSpendSourceCredential
         internal static async Task<Result<VerifiedSource>> VerifyWithinAsync(GuildSpendSourceCredential credential, SqliteConnection connection, SqliteTransaction transaction,
             Guid effectId, Guid generation, CancellationToken ct)
         {
-            if (credential._type != AiProviderKind.OpenAICompatible || credential._source != GuildUsageReconciliationSource.OpenRouterGeneration || !ProviderSettings.IsCanonicalOpenRouterEndpoint(credential._endpoint)
-                || !ValidSecret(credential._secret) || string.IsNullOrWhiteSpace(credential._provider) || string.IsNullOrWhiteSpace(credential._model)
-                || generation == Guid.Empty) return Unavailable;
+            if (credential._type != AiProviderKind.OpenAICompatible
+                || credential._source != GuildUsageReconciliationSource.OpenRouterGeneration
+                || !ProviderSettings.IsCanonicalOpenRouterEndpoint(credential._endpoint)
+                || string.IsNullOrWhiteSpace(credential._provider) || string.IsNullOrWhiteSpace(credential._model))
+                return GuildSpendSourceFailure.ConfigurationChanged;
+
+            if (!ValidSecret(credential._secret)) return GuildSpendSourceFailure.CredentialChanged;
+
+            if (generation == Guid.Empty) return GuildSpendSourceFailure.AuthorityRetired;
 
             await using SqliteCommand command = connection.CreateCommand();
 
             command.Transaction = transaction;
 
             command.CommandText = """
-                SELECT s.Provider,s.Model,s.GenerationId,s.CredentialFingerprint,a.CredentialKey
+                SELECT s.SourceKindCode,s.SourceVersion,s.InstallationGeneration,q.InstallationGeneration,
+                    s.Endpoint,s.Provider,s.Model,s.GenerationId,s.CredentialFingerprint,s.InitialSnapshot,
+                    s.AuthorityKeyId,s.AuthorityEpoch,a.KeyId,a.AuthorityEpoch,a.CredentialKey
                 FROM guild_spend_sources s JOIN guild_budget_effects e ON e.EffectId=s.EffectId
                 JOIN guild_quests q ON q.Id=e.QuestId
-                JOIN guild_spend_authority_state a ON a.StateKey=1 AND a.KeyId=s.AuthorityKeyId AND a.AuthorityEpoch=s.AuthorityEpoch
-                WHERE s.EffectId=$effect AND s.SourceKindCode=1 AND s.SourceVersion=1
-                  AND s.InstallationGeneration=$generation AND q.InstallationGeneration=$generation
-                  AND s.Endpoint='https://openrouter.ai:443/api/v1' AND s.InitialSnapshot IS NOT NULL
+                LEFT JOIN guild_spend_authority_state a ON a.StateKey=1
+                WHERE s.EffectId=$effect
                 """;
 
             command.Parameters.AddWithValue("$effect", Id(effectId));
 
-            command.Parameters.AddWithValue("$generation", Id(generation));
-
             await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
 
-            if (!await reader.ReadAsync(ct).ConfigureAwait(false) || reader.IsDBNull(2)
-                || reader.GetString(0) != credential._provider || reader.GetString(1) != credential._model) return Unavailable;
+            if (!await reader.ReadAsync(ct).ConfigureAwait(false) || reader.GetInt64(0) != 1)
+                return GuildSpendSourceFailure.SourceMissing;
 
-            string generationId = reader.GetString(2);
+            if (reader.GetInt64(1) != 1) return GuildSpendSourceFailure.SourceInvalid;
 
-            if (!ValidGenerationId(generationId)) return Unavailable;
+            if (reader.GetString(2) != Id(generation) || reader.GetString(3) != Id(generation)
+                || reader.IsDBNull(12) || reader.IsDBNull(13) || reader.IsDBNull(14)
+                || reader.GetString(10) != reader.GetString(12) || reader.GetString(11) != reader.GetString(13))
+                return GuildSpendSourceFailure.AuthorityRetired;
 
-            byte[] saved = (byte[])reader.GetValue(3);
+            if (reader.GetString(4) != "https://openrouter.ai:443/api/v1"
+                || reader.GetString(5) != credential._provider || reader.GetString(6) != credential._model)
+                return GuildSpendSourceFailure.ConfigurationChanged;
 
-            byte[] key = (byte[])reader.GetValue(4);
+            if (reader.IsDBNull(7)) return GuildSpendSourceFailure.GenerationMissing;
+
+            string generationId = reader.GetString(7);
+
+            if (!ValidGenerationId(generationId)) return GuildSpendSourceFailure.GenerationInvalid;
+
+            if (reader.IsDBNull(9)) return GuildSpendSourceFailure.InitialEvidenceUnavailable;
+
+            byte[] saved = (byte[])reader.GetValue(8);
+
+            byte[] key = (byte[])reader.GetValue(14);
 
             try
             {
-                if (key.Length != 32 || saved.Length != 32
-                    || !CryptographicOperations.FixedTimeEquals(saved, Fingerprint(key, credential._secret!))) return Unavailable;
+                if (key.Length != 32 || saved.Length != 32) return GuildSpendSourceFailure.SourceInvalid;
+
+                if (!CryptographicOperations.FixedTimeEquals(saved, Fingerprint(key, credential._secret!)))
+                    return GuildSpendSourceFailure.CredentialChanged;
             }
             finally
             {
@@ -229,4 +250,24 @@ internal sealed class GuildSpendSourceCredential
     private static string Id(Guid id) => id.ToString("D").ToUpperInvariant();
 
     private static Error Unavailable => new(ErrorCodes.Guild.AuthorityUnavailable, "The provider spend source is unavailable.");
+}
+
+/// <summary>Stable secret-free eligibility reasons for an authorized refresh caller.</summary>
+internal static class GuildSpendSourceFailure
+{
+    internal static Error SourceMissing => new("Guild.SpendSourceMissing", "The provider spend source is missing.");
+
+    internal static Error SourceInvalid => new("Guild.SpendSourceInvalid", "The provider spend source is invalid.");
+
+    internal static Error GenerationMissing => new("Guild.SpendGenerationMissing", "The provider generation is missing.");
+
+    internal static Error GenerationInvalid => new("Guild.SpendGenerationInvalid", "The provider generation is invalid.");
+
+    internal static Error ConfigurationChanged => new("Guild.SpendConfigurationChanged", "The provider source configuration changed.");
+
+    internal static Error CredentialChanged => new("Guild.SpendCredentialChanged", "The provider credential is unavailable or changed.");
+
+    internal static Error AuthorityRetired => new("Guild.SpendAuthorityRetired", "The provider spend authority is unavailable or retired.");
+
+    internal static Error InitialEvidenceUnavailable => new("Guild.InitialEvidenceUnavailable", "The initial spend evidence is unavailable.");
 }

@@ -51,6 +51,8 @@ public sealed partial class GuildQuestStoreTests
         GuildQuestDispatchRecord dispatch = (await f.Store.PrepareDispatchAsync(driver, Guid.NewGuid(),
             ReceiptDigest("provider-spend"), quest.Quest.RunId, false, default)).Value;
 
+        string? pendingReason = null;
+
         using GuildWireCapture transport = new(model, async () =>
         {
             await using SqliteConnection observed = await f.OpenAsync();
@@ -60,6 +62,19 @@ public sealed partial class GuildQuestStoreTests
             check.CommandText = "SELECT COUNT(*) FROM guild_spend_sources WHERE SourceKindCode=1 AND GenerationId IS NULL";
 
             Assert.Equal(1L, await check.ExecuteScalarAsync());
+
+            check.CommandText = "SELECT EffectId FROM guild_spend_sources WHERE SourceKindCode=1";
+
+            Guid pendingEffect = Guid.Parse((string)(await check.ExecuteScalarAsync())!);
+
+            await using SqliteTransaction pendingTransaction = observed.BeginTransaction();
+
+            var pendingSource = await new GuildSpendSourceCredential(settings.Providers[0], model, "private-provider-key-sentinel")
+                .VerifyWithinAsync(observed, pendingTransaction, pendingEffect, f.Host.InstallationGeneration, default);
+
+            pendingReason = pendingSource.Error.Code;
+
+            await pendingTransaction.RollbackAsync();
         }, "gen-test-123");
 
         ChatClientFactory clients = new(transport, new TestOptionsMonitor<ArcanumSettings>(settings), new SpendCaptureKeys());
@@ -75,6 +90,8 @@ public sealed partial class GuildQuestStoreTests
             Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
 
             Assert.Equal(1, transport.Calls);
+
+            Assert.Equal("Guild.SpendGenerationMissing", pendingReason);
 
             Assert.Equal("private-provider-key-sentinel", transport.Credential);
 
@@ -112,21 +129,32 @@ public sealed partial class GuildQuestStoreTests
 
             GuildSpendSourceCredential changed = new(settings.Providers[0], model, "different-key");
 
-            Assert.True((await changed.VerifyWithinAsync(connection, transaction, effect, f.Host.InstallationGeneration, default)).IsFailure);
+            var changedResult = await changed.VerifyWithinAsync(connection, transaction, effect, f.Host.InstallationGeneration, default);
+
+            Assert.Equal("Guild.SpendCredentialChanged", changedResult.Error.Code);
+
+            Assert.DoesNotContain("different-key", changedResult.Error.Message);
+
+            Assert.DoesNotContain(effect.ToString(), changedResult.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+            Assert.Equal("Guild.SpendCredentialChanged", (await new GuildSpendSourceCredential(settings.Providers[0], model, null)
+                .VerifyWithinAsync(connection, transaction, effect, f.Host.InstallationGeneration, default)).Error.Code);
+
+            Assert.Equal("Guild.SpendSourceMissing", (await same.VerifyWithinAsync(connection, transaction, Guid.NewGuid(), f.Host.InstallationGeneration, default)).Error.Code);
 
             GuildSpendSourceCredential changedModel = new(settings.Providers[0], "other-model", "private-provider-key-sentinel");
 
-            Assert.True((await changedModel.VerifyWithinAsync(connection, transaction, effect, f.Host.InstallationGeneration, default)).IsFailure);
+            Assert.Equal("Guild.SpendConfigurationChanged", (await changedModel.VerifyWithinAsync(connection, transaction, effect, f.Host.InstallationGeneration, default)).Error.Code);
 
             ProviderSettings familiar = settings.Providers[0] with { Type = AiProviderKind.CodexCli };
 
-            Assert.True((await new GuildSpendSourceCredential(familiar, model, "private-provider-key-sentinel")
-                .VerifyWithinAsync(connection, transaction, effect, f.Host.InstallationGeneration, default)).IsFailure);
+            Assert.Equal("Guild.SpendConfigurationChanged", (await new GuildSpendSourceCredential(familiar, model, "private-provider-key-sentinel")
+                .VerifyWithinAsync(connection, transaction, effect, f.Host.InstallationGeneration, default)).Error.Code);
 
             ProviderSettings disabled = settings.Providers[0] with { GuildUsageReconciliation = GuildUsageReconciliationSource.None };
 
-            Assert.True((await new GuildSpendSourceCredential(disabled, model, "private-provider-key-sentinel")
-                .VerifyWithinAsync(connection, transaction, effect, f.Host.InstallationGeneration, default)).IsFailure);
+            Assert.Equal("Guild.SpendConfigurationChanged", (await new GuildSpendSourceCredential(disabled, model, "private-provider-key-sentinel")
+                .VerifyWithinAsync(connection, transaction, effect, f.Host.InstallationGeneration, default)).Error.Code);
 
             await transaction.RollbackAsync();
 
@@ -143,10 +171,10 @@ public sealed partial class GuildQuestStoreTests
 
                 ProviderSettings changedEndpoint = settings.Providers[0] with { Endpoint = "https://other.example/v1" };
 
-                Assert.True((await new GuildSpendSourceCredential(changedEndpoint, model, "private-provider-key-sentinel")
-                    .VerifyWithinAsync(reopened, restarted, effect, f.Host.InstallationGeneration, default)).IsFailure);
+                Assert.Equal("Guild.SpendConfigurationChanged", (await new GuildSpendSourceCredential(changedEndpoint, model, "private-provider-key-sentinel")
+                    .VerifyWithinAsync(reopened, restarted, effect, f.Host.InstallationGeneration, default)).Error.Code);
 
-                Assert.True((await same.VerifyWithinAsync(reopened, restarted, effect, Guid.NewGuid(), default)).IsFailure);
+                Assert.Equal("Guild.SpendAuthorityRetired", (await same.VerifyWithinAsync(reopened, restarted, effect, Guid.NewGuid(), default)).Error.Code);
 
                 await using SqliteCommand retire = reopened.CreateCommand();
 
@@ -158,7 +186,13 @@ public sealed partial class GuildQuestStoreTests
 
                 await retire.ExecuteNonQueryAsync();
 
-                Assert.True((await same.VerifyWithinAsync(reopened, restarted, effect, f.Host.InstallationGeneration, default)).IsFailure);
+                Assert.Equal("Guild.SpendAuthorityRetired", (await same.VerifyWithinAsync(reopened, restarted, effect, f.Host.InstallationGeneration, default)).Error.Code);
+
+                retire.CommandText = "DELETE FROM guild_spend_authority_state WHERE StateKey=1";
+
+                await retire.ExecuteNonQueryAsync();
+
+                Assert.Equal("Guild.SpendAuthorityRetired", (await same.VerifyWithinAsync(reopened, restarted, effect, f.Host.InstallationGeneration, default)).Error.Code);
 
                 await restarted.RollbackAsync();
             }
