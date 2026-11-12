@@ -29,6 +29,59 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// </summary>
 internal static class CliTestHarness
 {
+    // A stuck-phase diagnostic, independent of the command's caller cancellation policy.
+    internal static readonly TimeSpan PhaseWatchdog = TimeSpan.FromMinutes(2);
+
+    internal static async Task JoinOwnedInvocationAsync(Task invocation, Exception? precedingFailure, Func<Task>? requestStop = null)
+    {
+        Exception? cleanupFailure = null;
+
+        if (requestStop is not null)
+        {
+            try
+            {
+                await requestStop().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                cleanupFailure = exception;
+            }
+        }
+
+        try
+        {
+            await invocation.ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            if (cleanupFailure is null)
+            {
+                cleanupFailure = exception;
+            }
+            else if (!ReferenceEquals(cleanupFailure, exception))
+            {
+                cleanupFailure.Data["CliFixtureJoinCleanup"] = exception;
+            }
+        }
+
+        if (cleanupFailure is null)
+        {
+            return;
+        }
+
+        if (precedingFailure is not null)
+        {
+            if (!ReferenceEquals(precedingFailure, cleanupFailure))
+            {
+                precedingFailure.Data["CliFixtureCleanup"] = cleanupFailure;
+            }
+
+            return;
+        }
+
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(cleanupFailure).Throw();
+    }
+
     /// <summary>
     /// Explicitly gives a CLI test a local responder that proves knowledge of
     /// <paramref name="serverKey"/> before the real credential lease exposes

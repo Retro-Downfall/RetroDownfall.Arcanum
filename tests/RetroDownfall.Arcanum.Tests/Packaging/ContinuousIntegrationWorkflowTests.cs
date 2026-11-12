@@ -1737,21 +1737,24 @@ public sealed class ContinuousIntegrationWorkflowTests
     {
         WorkflowJob[] jobs = ContinuousIntegrationJobs(FindRepositoryRoot()).ToArray();
 
-        WorkflowJob execution = Assert.Single(jobs, job => job.Id == "guild-execution");
+        foreach (string profile in new[] { "guild-execution", "guild-operator" })
+        {
+            WorkflowJob focused = Assert.Single(jobs, job => job.Id == profile);
 
-        Assert.Contains("timeout-minutes: 90", execution.Body, StringComparison.Ordinal);
+            Assert.Contains("timeout-minutes: 90", focused.Body, StringComparison.Ordinal);
 
-        Assert.Contains("inputs.execution-platform", execution.Body, StringComparison.Ordinal);
+            Assert.Contains("inputs.execution-platform", focused.Body, StringComparison.Ordinal);
 
-        Assert.Contains("run: ./scripts/qualify-guild-execution.sh", execution.Body, StringComparison.Ordinal);
+            Assert.Contains($"run: ./scripts/qualify-{profile}.sh", focused.Body, StringComparison.Ordinal);
 
-        Assert.Contains("fail-fast: false", execution.Body, StringComparison.Ordinal);
+            Assert.Contains("fail-fast: false", focused.Body, StringComparison.Ordinal);
 
-        Assert.Contains("if: always()", execution.Body, StringComparison.Ordinal);
+            Assert.Contains("if: always()", focused.Body, StringComparison.Ordinal);
 
-        Assert.DoesNotContain("continue-on-error", execution.Body, StringComparison.Ordinal);
+            Assert.DoesNotContain("continue-on-error", focused.Body, StringComparison.Ordinal);
+        }
 
-        Assert.All(jobs.Where(job => job.Id != "guild-execution"),
+        Assert.All(jobs.Where(job => job.Id is not ("guild-execution" or "guild-operator")),
             job => Assert.DoesNotContain("inputs.execution-platform", job.Body, StringComparison.Ordinal));
     }
 
@@ -1861,7 +1864,7 @@ public sealed class ContinuousIntegrationWorkflowTests
             }
         }
 
-        Assert.Equal(16, setups);
+        Assert.Equal(17, setups);
 
         Assert.Equal(1, pairedSetups);
 
@@ -2158,7 +2161,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
     private static bool IsFullQualificationOnly(WorkflowJob job) =>
         job.IsConditional && Regex.IsMatch(job.Body,
-            @"(?m)^    if: needs\.scope\.outputs\.full == 'true'(?: && inputs\.qualification != '(?:guild-memory|guild-budget|guild-workspace|guild-execution)')*\r?$");
+            @"(?m)^    if: needs\.scope\.outputs\.full == 'true'(?: && inputs\.qualification != '(?:guild-memory|guild-budget|guild-workspace|guild-execution|guild-operator)')*\r?$");
 
     private static IReadOnlyList<string> WorkflowFiles(string repositoryRoot)
     {

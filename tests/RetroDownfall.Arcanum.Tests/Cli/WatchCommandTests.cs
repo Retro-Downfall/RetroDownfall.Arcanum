@@ -561,15 +561,12 @@ public sealed class WatchCommandTests
 
         WatchCommands commands = provider.GetRequiredService<WatchCommands>();
 
-        using CancellationTokenSource cancellation = new(
-            TimeSpan.FromMilliseconds(200));
-
-        int exitCode = await commands.Logs(
+        int exitCode = await ObserveWatchResultAsync(token => commands.Logs(
             null,
             null,
             null,
             new WatchCommandOptions(true, [], []),
-            cancellation.Token);
+            token));
 
         Assert.Equal(1, exitCode);
 
@@ -739,13 +736,10 @@ public sealed class WatchCommandTests
 
         WatchCommands commands = provider.GetRequiredService<WatchCommands>();
 
-        using CancellationTokenSource cancellation = new(
-            TimeSpan.FromMilliseconds(200));
-
-        int exitCode = await commands.Health(
+        int exitCode = await ObserveWatchResultAsync(token => commands.Health(
             1,
             new WatchCommandOptions(true, [], []),
-            cancellation.Token);
+            token));
 
         Assert.Equal(1, exitCode);
 
@@ -985,38 +979,75 @@ public sealed class WatchCommandTests
 
         TextWriter originalOutput = Console.Out;
 
-        LiveCaptureWriter liveOutput = new();
+        LiveCaptureWriter liveOutput = new("\"sequence\":12");
+
+        Task<int>? invocation = null;
+
+        Exception? failure = null;
 
         Console.SetOut(liveOutput);
 
         try
         {
-            Task<int> invocation = CliApplicationFactory.RunAsync(
+            invocation = CliApplicationFactory.RunAsync(
                 ["--json", "watch", "logs"],
                 provider);
 
-            await stream.FirstChunkRead.WaitAsync(TimeSpan.FromSeconds(5));
+            await stream.FirstChunkRead.WaitAsync(CliTestHarness.PhaseWatchdog);
 
-            bool observedBeforeCompletion = await WaitForOutputAsync(
-                liveOutput,
-                "\"sequence\":12",
-                TimeSpan.FromSeconds(1));
+            await liveOutput.ExpectedEventFlushed.WaitAsync(CliTestHarness.PhaseWatchdog);
 
             Assert.False(invocation.IsCompleted);
 
             stream.Release();
 
-            Assert.Equal(0, await invocation.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal(0, await invocation.WaitAsync(CliTestHarness.PhaseWatchdog));
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
 
-            Assert.True(
-                observedBeforeCompletion,
-                "The first NDJSON event was buffered until the watch completed.");
+            throw;
         }
         finally
         {
             stream.Release();
 
-            Console.SetOut(originalOutput);
+            try
+            {
+                if (invocation is not null)
+                {
+                    await CliTestHarness.JoinOwnedInvocationAsync(invocation, failure);
+                }
+            }
+            finally
+            {
+                Console.SetOut(originalOutput);
+            }
+        }
+    }
+
+    private static async Task<int> ObserveWatchResultAsync(Func<CancellationToken, Task<int>> action)
+    {
+        using CancellationTokenSource cancellation = new();
+
+        Task<int> invocation = action(cancellation.Token);
+
+        Exception? failure = null;
+
+        try
+        {
+            return await invocation.WaitAsync(CliTestHarness.PhaseWatchdog);
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+
+            throw;
+        }
+        finally
+        {
+            await CliTestHarness.JoinOwnedInvocationAsync(invocation, failure, cancellation.CancelAsync);
         }
     }
 
@@ -1048,26 +1079,6 @@ public sealed class WatchCommandTests
             "test-key");
 
         return services;
-    }
-
-    private static async Task<bool> WaitForOutputAsync(
-        LiveCaptureWriter writer,
-        string expected,
-        TimeSpan timeout)
-    {
-        DateTimeOffset deadline = DateTimeOffset.UtcNow + timeout;
-
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (writer.ToString().Contains(expected, StringComparison.Ordinal))
-            {
-                return true;
-            }
-
-            await Task.Delay(10);
-        }
-
-        return false;
     }
 
     private static HttpResponseMessage Sse(string content) => new(HttpStatusCode.OK)
@@ -1212,13 +1223,28 @@ public sealed class WatchCommandTests
             throw new NotSupportedException();
     }
 
-    private sealed class LiveCaptureWriter : TextWriter
+    private sealed class LiveCaptureWriter(string expected) : TextWriter
     {
         private readonly object _gate = new();
 
         private readonly StringBuilder _buffer = new();
 
+        private readonly TaskCompletionSource _expectedFlushed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task ExpectedEventFlushed => _expectedFlushed.Task;
+
         public override Encoding Encoding => Encoding.UTF8;
+
+        public override void Flush()
+        {
+            lock (_gate)
+            {
+                if (_buffer.ToString().Contains(expected, StringComparison.Ordinal))
+                {
+                    _expectedFlushed.TrySetResult();
+                }
+            }
+        }
 
         public override void Write(char value)
         {

@@ -606,15 +606,40 @@ public sealed class GuildCommandTests
 
         Task<int> running = commands.ExecuteAsync("watch tree", new([Id], new Dictionary<string, object?> { ["ndjson"] = true }), cancellation.Token);
 
-        await stream.Reading.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Exception? failure = null;
 
-        cancellation.Cancel();
+        try
+        {
+            await stream.Reading.Task.WaitAsync(CliTestHarness.PhaseWatchdog);
 
-        Assert.Equal(130, await running.WaitAsync(TimeSpan.FromSeconds(10)));
+            await cancellation.CancelAsync();
 
-        Assert.True(stream.Disposed);
+            Assert.Equal(130, await running.WaitAsync(CliTestHarness.PhaseWatchdog));
 
-        Assert.True(string.IsNullOrWhiteSpace(stdout.ToString()));
+            Assert.True(stream.Disposed);
+
+            Assert.True(string.IsNullOrWhiteSpace(stdout.ToString()));
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+
+            throw;
+        }
+        finally
+        {
+            await CliTestHarness.JoinOwnedInvocationAsync(running, failure, async () =>
+            {
+                try
+                {
+                    await cancellation.CancelAsync();
+                }
+                finally
+                {
+                    stream.Release();
+                }
+            });
+        }
     }
 
     private const string GrantJson = """{"workspaces":[],"tools":[],"memory":[],"budget":{"usd":{"mode":"unlimited"},"tokens":{"mode":"unlimited"}},"delegation":[],"expiresAtUtc":null}""";
@@ -678,6 +703,10 @@ public sealed class GuildCommandTests
 
     private sealed class CancellationReadStream : Stream
     {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Release() => _release.TrySetResult();
+
         public TaskCompletionSource<bool> Reading { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public bool Disposed { get; private set; }
@@ -696,7 +725,7 @@ public sealed class GuildCommandTests
         {
             Reading.TrySetResult(true);
 
-            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            await _release.Task.WaitAsync(cancellationToken);
 
             return 0;
         }

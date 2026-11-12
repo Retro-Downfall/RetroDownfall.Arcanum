@@ -1,5 +1,4 @@
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -86,6 +85,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
         SchedulerEngine engine = new();
 
+        TestCapturingLogger<GuildLocalQuestScheduler> logger = new();
+
         GuildLocalQuestScheduler? scheduler = null;
 
         ServiceCollection registration = new();
@@ -113,7 +114,74 @@ public sealed partial class GuildLocalHostPolicyTests
         await using ServiceProvider services = registration.BuildServiceProvider();
 
         scheduler = new(services.GetRequiredService<IServiceScopeFactory>(), f.Settings, f.Connections,
-            ownership, TimeProvider.System, NullLogger<GuildLocalQuestScheduler>.Instance, new SchedulerReadiness(unavailable), f.Gate);
+            ownership, TimeProvider.System, logger, new SchedulerReadiness(unavailable), f.Gate);
+
+        // These waits observe owned lifecycle transitions. Their watchdog only diagnoses a stuck
+        // fixture; it is not a ten-second performance requirement shared by every phase.
+        TimeSpan watchdog = TimeSpan.FromMinutes(2);
+
+        async Task<string> DescribeSchedulerAsync()
+        {
+            try
+            {
+                return $"Available={scheduler.IsAvailable}; Background={scheduler.ExecuteTask?.Status}; "
+                    + $"BackgroundError={scheduler.ExecuteTask?.Exception?.GetBaseException().GetType().Name}; "
+                    + $"EngineCalls={engine.Calls}; Claimed={ownership.IsClaimed(issued.Value.Quest.OperationId)}; "
+                    + $"Attempts={await f.ScalarAsync("SELECT COALESCE(MAX(AttemptCount),0) FROM LongRunningOperations")}; "
+                    + $"Leases={await f.ScalarAsync("SELECT count(*) FROM LongRunningOperations WHERE LeaseOwner IS NOT NULL")}; "
+                    + $"OperationState={await f.ScalarAsync("SELECT COALESCE(MAX(State),-1) FROM LongRunningOperations")}; "
+                    + $"OperationRevision={await f.ScalarAsync("SELECT COALESCE(MAX(Revision),-1) FROM LongRunningOperations")}; "
+                    + $"Bindings={await f.ScalarAsync("SELECT count(*) FROM guild_local_executions")}; "
+                    + $"Dispatches={await f.ScalarAsync("SELECT count(*) FROM guild_dispatches")}; "
+                    + $"Results={await f.ScalarAsync("SELECT count(*) FROM guild_result_receipts")}; "
+                    + $"Cancellations={await f.ScalarAsync("SELECT count(*) FROM guild_quest_cancellations")}; "
+                    + string.Join(" | ", logger.Entries.Select(entry => $"{entry.Level}: {entry.Message}"));
+            }
+            catch (Exception error)
+            {
+                return $"Scheduler diagnostics unavailable ({error.GetType().Name}).";
+            }
+        }
+
+        async Task AwaitSignalAsync(Task signal, string phase, bool stopping = false)
+        {
+            try
+            {
+                if (!stopping && scheduler.ExecuteTask is { } background)
+                {
+                    await Task.WhenAny(signal, background).WaitAsync(watchdog);
+
+                    if (!signal.IsCompleted)
+                        throw new InvalidOperationException("The scheduler exited before the required transition.");
+                }
+
+                await signal.WaitAsync(watchdog);
+            }
+            catch (Exception error)
+            {
+                throw new Xunit.Sdk.XunitException($"Scheduler phase '{phase}' failed ({error.GetType().Name}): {error.Message}\n{await DescribeSchedulerAsync()}");
+            }
+        }
+
+        async Task AwaitStateAsync(Func<Task<bool>> condition, string phase)
+        {
+            using CancellationTokenSource watchdogCancellation = new(watchdog);
+
+            try
+            {
+                while (!await condition())
+                {
+                    if (scheduler.ExecuteTask?.IsCompleted == true)
+                        throw new InvalidOperationException("The scheduler exited before the required durable transition.");
+
+                    await Task.Delay(20, watchdogCancellation.Token);
+                }
+            }
+            catch (Exception error)
+            {
+                throw new Xunit.Sdk.XunitException($"Scheduler phase '{phase}' failed ({error.GetType().Name}): {error.Message}\n{await DescribeSchedulerAsync()}");
+            }
+        }
 
         using (scheduler)
         {
@@ -140,10 +208,8 @@ public sealed partial class GuildLocalHostPolicyTests
                 {
                     Assert.Equal(!initiallyDisabled, scheduler.IsAvailable);
 
-                    using CancellationTokenSource cancellationDeadline = new(TimeSpan.FromSeconds(10));
-
-                    while (await f.ScalarAsync("SELECT count(*) FROM guild_result_receipts") != (canceledAncestor ? 2L : 1L))
-                        await Task.Delay(20, cancellationDeadline.Token);
+                    await AwaitStateAsync(async () => await f.ScalarAsync("SELECT count(*) FROM guild_result_receipts") == (canceledAncestor ? 2L : 1L),
+                        "initial cancellation receipts");
 
                     Assert.Equal(0, engine.Calls);
 
@@ -165,9 +231,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 Assert.True(scheduler.IsAvailable);
 
-                using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10));
-
-                await engine.Entered.Task.WaitAsync(deadline.Token);
+                await AwaitSignalAsync(engine.Entered.Task, "committed start enters engine");
 
                 Assert.True(ownership.IsClaimed(issued.Value.Quest.OperationId));
 
@@ -175,7 +239,7 @@ public sealed partial class GuildLocalHostPolicyTests
                 {
                     Task stopped = scheduler.StopAsync(default);
 
-                    await Task.Delay(50, deadline.Token);
+                    await AwaitSignalAsync(engine.CancellationObserved.Task, "stop reaches engine");
 
                     Assert.False(stopped.IsCompleted);
 
@@ -185,7 +249,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
                     engine.Release.TrySetResult();
 
-                    await stopped.WaitAsync(deadline.Token);
+                    await AwaitSignalAsync(stopped, "stop joins engine", stopping: true);
 
                     Assert.False(ownership.IsClaimed(issued.Value.Quest.OperationId));
 
@@ -202,26 +266,40 @@ public sealed partial class GuildLocalHostPolicyTests
 
                     await using IGrimoireClosingOwner closing = begun.Value;
 
-                    Task<Result> drained = f.Gate.DrainRequestAndWorkAsync(closing, deadline.Token).AsTask();
+                    Task<Result> drained = f.Gate.DrainRequestAndWorkAsync(closing, CancellationToken.None).AsTask();
 
-                    await Task.Delay(50, deadline.Token);
+                    try
+                    {
+                        await AwaitSignalAsync(engine.CancellationObserved.Task, "maintenance reaches engine");
 
-                    Assert.False(drained.IsCompleted);
+                        Assert.False(drained.IsCompleted);
 
-                    Assert.True(engine.InvocationToken.IsCancellationRequested);
+                        Assert.True(engine.InvocationToken.IsCancellationRequested);
 
-                    engine.Release.TrySetResult();
+                        engine.Release.TrySetResult();
 
-                    Assert.True((await drained.WaitAsync(deadline.Token)).IsSuccess);
+                        await AwaitSignalAsync(drained, "maintenance joins engine");
+
+                        Assert.True((await drained).IsSuccess);
+                    }
+                    finally
+                    {
+                        // Release before the closing owner is disposed, including assertion failures.
+                        engine.Release.TrySetResult();
+
+                        await drained;
+                    }
 
                     return;
                 }
 
                 long revision = await f.ScalarAsync("SELECT Revision FROM guild_signets");
 
-                for (int i = 0; i < 20; i++) scheduler.Schedule(issued.Value.Quest);
+                Assert.True(scheduler.IsAvailable);
 
-                await Task.Delay(100, deadline.Token);
+                for (int i = 0; i < 20; i++) Assert.False(scheduler.TrySchedule(issued.Value.Quest));
+
+                Assert.True(scheduler.IsAvailable);
 
                 Assert.Equal(revision, await f.ScalarAsync("SELECT Revision FROM guild_signets"));
 
@@ -233,8 +311,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
                     Assert.False(scheduler.IsAvailable);
 
-                    while (await f.ScalarAsync("SELECT CancellationRequested FROM guild_quests") == 0)
-                        await Task.Delay(20, deadline.Token);
+                    await AwaitStateAsync(async () => await f.ScalarAsync("SELECT CancellationRequested FROM guild_quests") != 0,
+                        "disabled Guild requests cancellation");
 
                     Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_quest_cancellations"));
                 }
@@ -243,8 +321,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 if (!disable)
                 {
-                    while (await f.ScalarAsync("SELECT count(*) FROM guild_result_receipts") == 0)
-                        await Task.Delay(20, deadline.Token);
+                    await AwaitStateAsync(async () => await f.ScalarAsync("SELECT count(*) FROM guild_result_receipts") != 0,
+                        "engine completion commits receipt");
                 }
 
                 Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM Apprentices"));
@@ -261,6 +339,8 @@ public sealed partial class GuildLocalHostPolicyTests
             Assert.False(scheduler.IsAvailable);
 
             Assert.False(ownership.IsClaimed(issued.Value.Quest.OperationId));
+
+            Assert.Equal(1, engine.Calls);
         }
     }
 
@@ -289,6 +369,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        internal TaskCompletionSource CancellationObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         internal int Calls;
 
         internal string Output { get; set; } = "scheduled public output";
@@ -302,6 +384,8 @@ public sealed partial class GuildLocalHostPolicyTests
             Interlocked.Increment(ref Calls);
 
             InvocationToken = cancellationToken;
+
+            using CancellationTokenRegistration cancellation = cancellationToken.Register(() => CancellationObserved.TrySetResult());
 
             Entered.TrySetResult();
 

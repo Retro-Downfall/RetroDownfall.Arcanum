@@ -98,7 +98,7 @@ class CiScopeWorkflowTests(unittest.TestCase):
         self.assertEqual(["both", "macos", "windows"], re.findall(r"^          - ([\w-]+)$", declaration, re.M))
         names = re.findall(r"^  ([\w-]+):", source.split("\njobs:\n", 1)[1], re.M)
         for name in names:
-            if name != "guild-execution":
+            if name not in ("guild-execution", "guild-operator"):
                 self.assertNotIn("inputs.execution-platform", job(name), name)
 
     def test_execution_matrix_selects_only_the_requested_platform_and_preserves_default_inventory(self):
@@ -110,7 +110,7 @@ class CiScopeWorkflowTests(unittest.TestCase):
                 selected, skipped = selected_inventory("workflow_dispatch", "guild-execution", platform)
                 self.assertEqual(support | {("guild-execution", host) for host in hosts}, set(selected))
                 self.assertEqual(4 + len(hosts), len(selected))
-                self.assertEqual(14, len(skipped))
+                self.assertEqual(15, len(skipped))
 
     def test_execution_platform_choice_does_not_change_full_pr_or_other_focused_inventories(self):
         for event, profile, full in (("pull_request", "", "true"), ("pull_request", "", "false"),

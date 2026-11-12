@@ -91,16 +91,38 @@ internal sealed partial class GuildLocalPort(GuildQuestStore quests, GuildLocalH
 
         GuildQuestDriver driver = new(execution, leaseOwner, lease.Operation.Revision, caller);
 
-        var input = await quests.ReadLocalInputAsync(driver, cancellationToken).ConfigureAwait(false);
+        bool prepared = false;
 
-        if (input.IsFailure) return input.Error;
+        try
+        {
+            var input = await quests.ReadLocalInputAsync(driver, cancellationToken).ConfigureAwait(false);
 
-        var dispatch = await quests.PrepareDispatchAsync(driver, request.DispatchId, request.InvocationDigest,
-            execution.RunId, continuation, cancellationToken).ConfigureAwait(false);
+            if (input.IsFailure) return input.Error;
 
-        if (dispatch.IsFailure) return dispatch.Error;
+            var dispatch = await quests.PrepareDispatchAsync(driver, request.DispatchId, request.InvocationDigest,
+                execution.RunId, continuation, cancellationToken).ConfigureAwait(false);
 
-        return new LocalDispatchPrepared(input.Value, new GuildLocalInferenceExecution(quests, driver, dispatch.Value));
+            if (dispatch.IsFailure) return dispatch.Error;
+
+            prepared = true;
+
+            return new LocalDispatchPrepared(input.Value, new GuildLocalInferenceExecution(quests, driver, dispatch.Value));
+        }
+        finally
+        {
+            if (!prepared)
+            {
+                try
+                {
+                    _ = await quests.ReleaseUnexposedLocalLeaseAsync(execution.RootQuestId, execution.QuestId,
+                        request.OperationId, request.DispatchId, leaseOwner, lease.Operation.Revision, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    // Cleanup is best effort; unavailable evidence keeps the original lease.
+                }
+            }
+        }
     }
 
     private async Task<Result<GuildDispatchObservation>> DispatchDirectCoreAsync(GuildExecutionHandle execution, GuildDispatchRequest request,

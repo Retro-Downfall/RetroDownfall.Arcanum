@@ -25,8 +25,9 @@ on:
           - guild-budget
           - guild-workspace
           - guild-execution
+          - guild-operator
       execution-platform:
-        description: Platform for focused Guild execution qualification only
+        description: Platform for focused Guild execution or operator qualification only
         type: choice
         required: true
         default: both
@@ -61,7 +62,7 @@ jobs:
           fetch-depth: 0
 
       - name: Test qualification selection and authority
-        run: python3 -m unittest scripts/tests/test_ci_scope.py scripts/tests/test_ci_scope_workflow.py
+        run: python3 -m unittest scripts/tests/test_ci_scope.py scripts/tests/test_ci_scope_workflow.py scripts/tests/test_guild_operator_qualification.py
 
       - name: Classify tested change
         id: classify
@@ -112,7 +113,7 @@ jobs:
 
   build-test:
     needs: [sdk, scope]
-    if: inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution'
+    if: inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator'
     name: Build, test, coverage
     # macOS arm64, not ubuntu: the Grimoire's SQLCipher library is now built by Arcanum and shipped
     # per RID, and Linux is not a shipping RID. A Linux runner has no native asset, so the build
@@ -225,7 +226,7 @@ jobs:
 
   hosted-producer-primary-analysis:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator'
     name: Hosted producer primary analysis
     runs-on: macos-26
     timeout-minutes: 80
@@ -277,7 +278,7 @@ jobs:
 
   hosted-producer-additional-analysis:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator'
     name: Hosted producer additional analysis
     runs-on: macos-26
     timeout-minutes: 80
@@ -326,7 +327,7 @@ jobs:
 
   hosted-producer-fixture-analysis:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator'
     name: Hosted producer fixture analysis
     # One fixture process per job, whatever the slot count: the process keeps the bound production compilations in memory and a
     # standard macos-26 runner has about 7 GB, so --jobs 1 and the runner's own one-process plan agree.
@@ -377,7 +378,7 @@ jobs:
 
   hosted-producer-fixture-build-analysis:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator'
     name: Hosted producer fixture build analysis
     # The fixtures marked HostedProducerBuildAnalysis: the Build scan classes and the Serve worker theories, each of which reads the production
     # source as a whole (docs/Arcanum.DESIGN.md, Verification Lanes).
@@ -430,7 +431,7 @@ jobs:
 
   hosted-producer-serve-host-analysis:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator'
     name: Hosted producer serve host analysis
     # One fixture process per job, whatever the slot count: the process keeps the bound production compilations in memory and a
     # standard macos-26 runner has about 7 GB, so --jobs 1 and the runner's own one-process plan agree.
@@ -489,7 +490,7 @@ jobs:
       - hosted-producer-fixture-analysis
       - hosted-producer-fixture-build-analysis
       - hosted-producer-serve-host-analysis
-    if: always() && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution'
+    if: always() && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -578,7 +579,7 @@ jobs:
 
   macos-workspace-check:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator'
     name: macOS workspace-check runtime
     runs-on: macos-26
     timeout-minutes: 120
@@ -712,7 +713,7 @@ jobs:
     # The gate stays now that win-x64's asset is checked in: nothing in the job would run without
     # it, so the condition is the honest statement of the prerequisite rather than a leftover.
     needs: [sdk, native-sqlcipher-assets, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && needs.native-sqlcipher-assets.outputs.win-x64 == 'verified'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && needs.native-sqlcipher-assets.outputs.win-x64 == 'verified' && inputs.qualification != 'guild-operator'
     runs-on: windows-latest
     # Budget for native builds, separate diagnostic and shipping AOT publishes, executable
     # smokes and the Windows/Long Rest suites, with headroom for hosted-runner variability.
@@ -968,7 +969,7 @@ jobs:
     # `dotnet build` with ARCSQLC002 rather than skip honestly, which is the property the manifest
     # gate exists to preserve.
     needs: [sdk, native-sqlcipher-assets, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && needs.native-sqlcipher-assets.outputs.win-arm64 == 'verified'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && needs.native-sqlcipher-assets.outputs.win-arm64 == 'verified' && inputs.qualification != 'guild-operator'
     # A whole job rather than a matrix leg of windows-suite, deliberately, for two reasons that both
     # fail silently. `needs:` names a job id and waits for every leg of that job's matrix, so folding
     # arm64 into windows-suite would put this lane behind anything that gates on that job id, without
@@ -1238,7 +1239,7 @@ jobs:
 
   aot-il:
     needs: [sdk, scope]
-    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution'
+    if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution' && inputs.qualification != 'guild-operator'
     name: Native AOT IL and executable gates
     # Both executable smokes open the Grimoire, so this host RID needs its verified native
     # SQLCipher asset just like build-test.
@@ -1445,6 +1446,53 @@ jobs:
         with:
           name: guild-execution-qualification-${{ matrix.os }}
           path: .tmp/guild-execution-qualification/
+          if-no-files-found: error
+          retention-days: 14
+
+  guild-operator:
+    name: Focused Guild operator qualification
+    needs: sdk
+    if: github.event_name == 'workflow_dispatch' && inputs.qualification == 'guild-operator'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.execution-platform == 'windows' && '["windows-latest"]' || inputs.execution-platform == 'macos' && '["macos-26"]' || '["macos-26","windows-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    # This opt-in profile keeps the existing platform choices and job ceiling. Its explicit
+    # witness manifest retains operator, complete port/scheduler/recovery and shared-store checks;
+    # the broader guild-execution profile remains available without a scope change.
+    timeout-minutes: 90
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: ./.github/actions/setup-dotnet
+        with:
+          sdk-version: ${{ needs.sdk.outputs.version }}
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+            **/*.csproj
+            **/Directory.Packages.props
+
+      - name: Qualify explicit Guild operator witnesses
+        run: ./scripts/qualify-guild-operator.sh
+
+      - name: Upload focused evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guild-operator-qualification-${{ matrix.os }}
+          path: .tmp/guild-operator-qualification/
           if-no-files-found: error
           retention-days: 14
 

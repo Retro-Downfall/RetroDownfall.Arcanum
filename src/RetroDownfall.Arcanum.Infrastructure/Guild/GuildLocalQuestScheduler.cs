@@ -75,25 +75,24 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public void Schedule(GuildQuestDto quest)
-    {
-        if (quest is null || quest.Id == Guid.Empty || !IsAvailable) return;
+    public void Schedule(GuildQuestDto quest) => _ = TrySchedule(quest);
 
-        Enqueue(quest.Id);
-    }
+    internal bool TrySchedule(GuildQuestDto quest) =>
+        quest is not null && quest.Id != Guid.Empty && IsAvailable && Enqueue(quest.Id);
 
-    private void Enqueue(Guid questId)
+    private bool Enqueue(Guid questId)
     {
-        if (!IsAvailable) return;
+        if (!IsAvailable) return false;
 
         object completion = new();
 
-        if (!_pending.TryAdd(questId, completion)) return;
+        if (!_pending.TryAdd(questId, completion)) return false;
 
-        if (!_wakes.Writer.TryWrite(questId))
-        {
-            _pending.TryRemove(new KeyValuePair<Guid, object>(questId, completion));
-        }
+        if (_wakes.Writer.TryWrite(questId)) return true;
+
+        _pending.TryRemove(new KeyValuePair<Guid, object>(questId, completion));
+
+        return false;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

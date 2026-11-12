@@ -914,7 +914,7 @@ Download both `native-pair-<rid>-<candidate-sha>` artifacts and require successf
 
 ### Release-qualification evidence
 
-A release is qualified by the artifacts a CI run leaves behind, not by a reviewer's recollection that the run was green. This is the complete inventory of artifacts `.github/workflows/ci.yml` can upload. Full qualification produces the release evidence below except for `guild-memory-qualification`, `guild-budget-qualification`, `guild-workspace-qualification-${{ matrix.os }}` and `guild-execution-qualification-${{ matrix.os }}`, which belong only to their explicit focused Guild profiles. Documentation-only and focused qualification do not produce the full release evidence and cannot stand in for it:
+A release is qualified by the artifacts a CI run leaves behind, not by a reviewer's recollection that the run was green. This is the complete inventory of artifacts `.github/workflows/ci.yml` can upload. Full qualification produces the release evidence below except for `guild-memory-qualification`, `guild-budget-qualification`, `guild-workspace-qualification-${{ matrix.os }}`, `guild-execution-qualification-${{ matrix.os }}` and `guild-operator-qualification-${{ matrix.os }}`, which belong only to their explicit focused Guild profiles. Documentation-only and focused qualification do not produce the full release evidence and cannot stand in for it:
 
 ```text
 arcanum-coverage-report
@@ -922,6 +922,7 @@ guild-memory-qualification
 guild-budget-qualification
 guild-workspace-qualification-${{ matrix.os }}
 guild-execution-qualification-${{ matrix.os }}
+guild-operator-qualification-${{ matrix.os }}
 hosted-producer-primary-analysis
 hosted-producer-additional-analysis
 hosted-producer-fixture-analysis
@@ -943,6 +944,8 @@ The `guild-memory-qualification` bundle carries the focused profile's TRX, SDK i
 The `guild-budget-qualification` bundle carries the budget profile's TRX, SDK information, source commit and worktree status. It requires the named hierarchy, schema, Quest integration, daily reservation, physical accounting and delegated accounting suites to execute without failures or skips. This is focused regression evidence; full coverage, hosted producer analysis and native platform qualification remain separate.
 
 The `guild-workspace-qualification-${{ matrix.os }}` bundles carry the workspace profile's TRX, SDK information, source commit and worktree status separately for macOS and Windows. They require the named workspace lease, broker, identity, Signet policy, directory mutation and writer fence suites, plus each platform's native host-lock case and the named process and hosted-producer boundary contracts, to execute without failures or skips. These artifacts provide focused regression evidence; full release qualification remains separate.
+
+The `guild-operator-qualification-${{ matrix.os }}` bundles contain the explicit operator witness manifest, exact filters/runsettings, source commit, worktree status, SDK, TRX and validated evidence summaries for each selected platform. They require complete operator/shared-store/recovery suites and named port/scheduler methods, including every declared scheduler scenario identity exactly once. Unexpected skips and incomplete evidence refuse qualification; four exact POSIX-only Campaign import variants may skip on Windows. This is focused evidence with the manifest's stated omissions, and does not claim full source-worker, Native AOT/provenance, coverage or platform qualification.
 
 The `windows-quantized-search-win-x64` and `windows-quantized-search-win-arm64` bundles carry the native RID's focused exact-search, codec, transaction, lifecycle, allocation and query-plan TRX plus the asserted SDK information. Each lane requires every named fixture to execute with zero failures or skips.
 
