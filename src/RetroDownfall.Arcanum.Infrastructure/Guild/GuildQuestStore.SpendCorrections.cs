@@ -292,17 +292,21 @@ internal sealed partial class GuildQuestStore
     }
 
     private static async Task<Result<GuildSpendBill?>> ReadCorrectionBillWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
-        GuildBudgetEffectRequest binding, CancellationToken ct)
+        GuildBudgetEffectRequest binding, CancellationToken ct, string? exactId = null)
     {
         await using SqliteCommand command = Command(connection, transaction, """
             SELECT Id,RunId,OperationType,Provider,Model,Purpose,StartedAt,CompletedAt,InputTokens,OutputTokens,
                 ReasoningTokens,CachedTokens,PricingSnapshotJson,Status,ProviderRequestId,ActualCostUsd FROM BillableOperations
-            WHERE Id=$compact COLLATE NOCASE OR Id=$dashed COLLATE NOCASE
-            """);
+            """ + (exactId is null
+                ? " WHERE Id COLLATE NOCASE=$compact OR Id COLLATE NOCASE=$dashed"
+                : " WHERE Id=$exact COLLATE BINARY"));
 
-        Add(command, "$compact", binding.SourceId.ToString("N"));
-
-        Add(command, "$dashed", binding.SourceId.ToString("D"));
+        if (exactId is null)
+        {
+            Add(command, "$compact", binding.SourceId.ToString("N"));
+            Add(command, "$dashed", binding.SourceId.ToString("D"));
+        }
+        else Add(command, "$exact", exactId);
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
 
