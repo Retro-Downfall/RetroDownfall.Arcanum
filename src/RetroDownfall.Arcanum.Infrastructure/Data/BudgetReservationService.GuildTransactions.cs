@@ -184,6 +184,22 @@ internal sealed partial class BudgetReservationService
             knownCostUsd, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Adjusts an existing physical reservation without changing an uncertain disposition.</summary>
+    internal async Task<Result> CorrectUsageWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        Guid reservationId, Guid runId, decimal knownCostUsd, bool completeKnown, CancellationToken cancellationToken = default)
+    {
+        BudgetReservation? owned = await ReadOwnedWithinAsync(connection, transaction, reservationId, runId, cancellationToken).ConfigureAwait(false);
+
+        if (owned is null || knownCostUsd < owned.ReconciledUsd) return UnavailableGuildReservation;
+
+        return owned.Status switch
+        {
+            BudgetReservationStatus.UncertainPaid => await RecordPartialUsageWithinAsync(connection, transaction, reservationId, runId, knownCostUsd, cancellationToken).ConfigureAwait(false),
+            BudgetReservationStatus.Reconciled when completeKnown => await ReconcileWithinAsync(connection, transaction, reservationId, runId, knownCostUsd, true, cancellationToken).ConfigureAwait(false),
+            _ => UnavailableGuildReservation,
+        };
+    }
+
     /// <summary>Only the trusted accounting owner with complete measured evidence may reconcile an uncertain hold.</summary>
     internal async Task<Result> ReconcileWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         Guid reservationId, Guid runId, decimal actualCostUsd, bool completeUsageProven,

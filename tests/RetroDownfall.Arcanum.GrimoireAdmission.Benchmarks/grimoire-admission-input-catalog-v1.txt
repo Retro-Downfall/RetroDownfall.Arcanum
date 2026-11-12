@@ -2859,6 +2859,8 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.RemoteQuestions
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.RemoteTools.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.RemoteWait.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Results.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.SpendCorrections.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.SpendReads.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.TaskTools.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.ToolEffects.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Tree.cs
@@ -2883,6 +2885,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetContracts.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetGrantJson.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetRootGate.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetStore.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendReceiptIdentity.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendSourceStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendStorageContracts.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStorageAvailability.cs

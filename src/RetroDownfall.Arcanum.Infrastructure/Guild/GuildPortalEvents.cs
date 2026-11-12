@@ -22,6 +22,8 @@ internal enum GuildPortalEventSource
     Signet = 6,
 }
 
+internal sealed record GuildSpendEventIdentity(Guid EffectId, Guid ReceiptId, long EvidenceRevision, GuildSpendOrigin Origin);
+
 internal static class GuildPortalEvents
 {
     internal static async Task<Result<long>> RecordSourceWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
@@ -57,10 +59,13 @@ internal static class GuildPortalEvents
 
     internal static async Task<Result<long>> AppendWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         Guid root, Guid quest, GuildEventKind kind, Guid objectId, long revision, Guid? envelopeId,
-        DateTimeOffset now, CancellationToken ct, GuildPortalEventSource source = GuildPortalEventSource.Quest)
+        DateTimeOffset now, CancellationToken ct, GuildPortalEventSource source = GuildPortalEventSource.Quest,
+        GuildSpendEventIdentity? spend = null)
     {
         if (root == Guid.Empty || quest == Guid.Empty || objectId == Guid.Empty || revision < 1
-            || !Enum.IsDefined(kind) || !Enum.IsDefined(source) || envelopeId == Guid.Empty)
+            || !Enum.IsDefined(kind) || !Enum.IsDefined(source) || envelopeId == Guid.Empty
+            || spend is not null && (kind != GuildEventKind.SpendChanged || spend.EffectId == Guid.Empty
+                || spend.ReceiptId == Guid.Empty || spend.EvidenceRevision < 1 || !Enum.IsDefined(spend.Origin)))
             return new Error(ErrorCodes.Guild.InvalidRequest, "The Portal event source binding is incomplete.");
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -68,7 +73,7 @@ internal static class GuildPortalEvents
         command.Transaction = transaction;
 
         command.CommandText = """
-            SELECT EventSequence,QuestId,EnvelopeId FROM guild_events
+            SELECT EventSequence,QuestId,EnvelopeId,SpendEffectId,SpendReceiptId,SpendEvidenceRevision,SpendOriginCode FROM guild_events
             WHERE RootQuestId=$root AND EventKindCode=$kind AND SourceKindCode=$source AND ObjectId=$object AND Revision=$revision
             """;
 
@@ -91,7 +96,10 @@ internal static class GuildPortalEvents
             if (await prior.ReadAsync(ct).ConfigureAwait(false))
             {
                 bool matches = prior.GetString(1) == Id(quest)
-                    && (envelopeId is { } id ? !prior.IsDBNull(2) && prior.GetString(2) == Id(id) : prior.IsDBNull(2));
+                    && (envelopeId is { } id ? !prior.IsDBNull(2) && prior.GetString(2) == Id(id) : prior.IsDBNull(2))
+                    && (spend is null ? prior.IsDBNull(3) : !prior.IsDBNull(3) && prior.GetString(3) == Id(spend.EffectId)
+                        && prior.GetString(4) == Id(spend.ReceiptId) && prior.GetInt64(5) == spend.EvidenceRevision
+                        && prior.GetInt32(6) == (int)spend.Origin);
 
                 return matches ? prior.GetInt64(0)
                     : new Error(ErrorCodes.Guild.IdempotencyConflict, "The event source identity has already committed different scope.");
@@ -116,11 +124,20 @@ internal static class GuildPortalEvents
         command.Parameters.AddWithValue("$sequence", sequence);
 
         command.CommandText = """
-            INSERT INTO guild_events(RootQuestId,EventSequence,EventKindCode,ObjectId,Revision,QuestId,EnvelopeId,CreatedAtUtc,SourceKindCode)
-            VALUES($root,$sequence,$kind,$object,$revision,$quest,$envelope,$now,$source)
+            INSERT INTO guild_events(RootQuestId,EventSequence,EventKindCode,ObjectId,Revision,QuestId,EnvelopeId,CreatedAtUtc,SourceKindCode,
+                SpendEffectId,SpendReceiptId,SpendEvidenceRevision,SpendOriginCode)
+            VALUES($root,$sequence,$kind,$object,$revision,$quest,$envelope,$now,$source,$spendEffect,$spendReceipt,$spendRevision,$spendOrigin)
             """;
 
         command.Parameters.AddWithValue("$now", UtcInstantText.Format(now));
+
+        command.Parameters.AddWithValue("$spendEffect", spend is null ? DBNull.Value : Id(spend.EffectId));
+
+        command.Parameters.AddWithValue("$spendReceipt", spend is null ? DBNull.Value : Id(spend.ReceiptId));
+
+        command.Parameters.AddWithValue("$spendRevision", spend is null ? DBNull.Value : spend.EvidenceRevision);
+
+        command.Parameters.AddWithValue("$spendOrigin", spend is null ? DBNull.Value : (int)spend.Origin);
 
         _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 

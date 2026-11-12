@@ -65,6 +65,10 @@ public static class ErrorCodes
 
         public const string ReconciliationRequired = "Guild.ReconciliationRequired";
 
+        public const string SourceExpired = "Guild.SourceExpired";
+
+        public const string InitialEvidenceUnavailable = "Guild.InitialEvidenceUnavailable";
+
         public const string LocalExecutionInterrupted = "Guild.LocalExecutionInterrupted";
 
         public const string AwaitingInput = "Guild.AwaitingInput";

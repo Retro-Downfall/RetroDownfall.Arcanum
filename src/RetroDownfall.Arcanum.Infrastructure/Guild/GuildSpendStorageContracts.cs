@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Guild;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
@@ -14,4 +15,5 @@ internal sealed record GuildStoredInitialSpend(GuildInitialBillSnapshot Snapshot
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(GuildInitialBillSnapshot))]
 [JsonSerializable(typeof(GuildBudgetEffect))]
+[JsonSerializable(typeof(GuildSpendReceiptDto))]
 internal sealed partial class GuildSpendStorageJsonContext : JsonSerializerContext;
