@@ -83,7 +83,20 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
 
     public override string Name => ArcanumBuiltInToolNames.DelegateTask;
 
-    internal static JsonElement GuildSchema => SchemaDocument.RootElement;
+    private static readonly JsonDocument GuildSchemaDocument = CreateGuildSchema();
+
+    internal static JsonElement GuildSchema => GuildSchemaDocument.RootElement;
+
+    private static JsonDocument CreateGuildSchema()
+    {
+        var schema = System.Text.Json.Nodes.JsonNode.Parse(SchemaDocument.RootElement.GetRawText())!;
+
+        schema.AsObject().Remove("anyOf");
+
+        schema["properties"]!["files"]!["items"]!["properties"]!.AsObject().Remove("attachment_id");
+
+        return JsonDocument.Parse(schema.ToJsonString());
+    }
 
     public override string Description =>
         "Runs a self-contained task in one isolated child agent with an explicit token or cost budget and returns only its final summary.";

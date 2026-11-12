@@ -14,6 +14,23 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class ArcanumDelegateTaskToolTests
 {
     [Fact]
+    public async Task Ordinary_delegation_requires_an_explicit_cap_in_schema_and_invocation()
+    {
+        CapturingSubagentRunner runner = new(new SubagentRunResult(true, "effect", Guid.NewGuid(),
+            new DelegatedManaUsage(1, 0m, 1, Exhausted: false), null));
+
+        ArcanumDelegateTaskTool tool = new(runner, inheritedModel: null);
+
+        Assert.Equal(2, tool.JsonSchema.GetProperty("anyOf").GetArrayLength());
+
+        object? result = await tool.InvokeAsync(new AIFunctionArguments { ["prompt"] = "task" });
+
+        Assert.Equal("Subagent task failed: A delegated token or cost budget is required.", result);
+
+        Assert.Null(runner.Request);
+    }
+
+    [Fact]
     public async Task Guild_direct_native_delegation_refuses_before_starting_a_subagent()
     {
         CapturingSubagentRunner runner = new(new SubagentRunResult(true, "effect", Guid.NewGuid(),

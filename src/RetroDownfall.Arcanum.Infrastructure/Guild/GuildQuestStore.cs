@@ -269,7 +269,7 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
                 if (toolAdmission is not null && cohortIssue is null && awardIssue is null)
                 {
                     Result<GuildIssueChildRequest> resolved = await ResolveToolBudgetWithinAsync(connection, transaction,
-                        parent, child!, token).ConfigureAwait(false);
+                        parent, child!, token, strict: toolAdmission.Tool.Name == "delegate_task").ConfigureAwait(false);
 
                     if (resolved.IsFailure) return resolved.Error;
 

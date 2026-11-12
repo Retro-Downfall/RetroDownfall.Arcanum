@@ -115,7 +115,7 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
         foreach (GuildToolGrant tool in GuildLocalToolRegistry.SupportedTools)
         {
             GuildSchemaFunction template = tool.Name == ArcanumBuiltInToolNames.DelegateTask
-                ? new(tool.Name, "Run a self-contained task in an isolated child with an explicit budget and return its result.", ArcanumDelegateTaskTool.GuildSchema)
+                ? new(tool.Name, "Run a self-contained task in an isolated child and return its result. Optional token and cost caps narrow inherited authority.", ArcanumDelegateTaskTool.GuildSchema)
                 : new(tool.Name, ArcanumInternalToolServer.DescribeGuildTool(tool.Name), tool.Name == "search_memory" ? ArcanumInternalToolServer.BuildSearchMemorySchema()
                     : ArcanumInternalToolServer.BuildTaskToolSchema(tool.Name));
 

@@ -56,7 +56,7 @@ internal sealed partial class GuildQuestStore
 
     private async Task<Result<GuildIssueChildRequest>> ResolveToolBudgetWithinAsync(SqliteConnection connection,
         SqliteTransaction transaction, GuildQuestStored parent, GuildIssueChildRequest request, CancellationToken ct,
-        Guid? fundingAccountId = null, GuildGrant? ceiling = null)
+        Guid? fundingAccountId = null, GuildGrant? ceiling = null, bool strict = false)
     {
         if (allocations is not GuildBudgetLedger ledger) return Unavailable;
 
@@ -69,8 +69,24 @@ internal sealed partial class GuildQuestStore
 
         GuildBudgetGrant? budget = requested.Budget.IsSpecified ? requested.Budget.Value : null;
 
-        Result<GuildBudgetGrant> resolved = GuildBudgetAllocationPolicy.ResolveHint(
-            budget is null ? null : new(budget.Usd, budget.Tokens), available.Value.Remaining, (ceiling ?? parent.Quest.ResolvedGrant).Budget);
+        GuildBudgetGrant policy = (ceiling ?? parent.Quest.ResolvedGrant).Budget;
+
+        Result<GuildBudgetGrant> resolved;
+
+        if (strict)
+        {
+            Result<GuildBudgetGrant> attenuated = budget is null ? policy
+                : GuildBudgetAllocationPolicy.ResolveHint(new(budget.Usd, budget.Tokens), policy, policy);
+
+            if (attenuated.IsFailure) return attenuated.Error;
+
+            resolved = GuildBudgetAllocationPolicy.ResolveStrict(attenuated.Value, available.Value.Remaining, policy);
+        }
+        else
+        {
+            resolved = GuildBudgetAllocationPolicy.ResolveHint(
+                budget is null ? null : new(budget.Usd, budget.Tokens), available.Value.Remaining, policy);
+        }
 
         return resolved.IsFailure ? resolved.Error : request with
         {
