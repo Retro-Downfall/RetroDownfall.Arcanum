@@ -124,6 +124,10 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
 
         internal long? ObservedOutputTokens { get; private set; }
 
+        internal long? ObservedCachedTokens { get; private set; }
+
+        internal long? ObservedReasoningTokens { get; private set; }
+
         internal PreparedCall(GuildProviderWirePolicy policy, string prompt, int? maxOutput, ModelPricingEntry configured,
             GuildProviderPayload? structured = null)
         {
@@ -322,7 +326,7 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
 
                     if (reader.TokenType != JsonTokenType.StartObject) { InvalidUsage = true; return; }
 
-                    bool inputSeen = false, outputSeen = false;
+                    bool inputSeen = false, outputSeen = false, inputDetailsSeen = false, outputDetailsSeen = false;
 
                     while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
                     {
@@ -330,8 +334,21 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
 
                         bool input = reader.ValueTextEquals("prompt_tokens"u8);
                         bool output = reader.ValueTextEquals("completion_tokens"u8);
+                        bool inputDetails = reader.ValueTextEquals("prompt_tokens_details"u8);
+                        bool outputDetails = reader.ValueTextEquals("completion_tokens_details"u8);
 
                         if (!reader.Read()) { InvalidUsage = true; return; }
+
+                        if (inputDetails || outputDetails)
+                        {
+                            if (inputDetails && inputDetailsSeen || outputDetails && outputDetailsSeen
+                                || !ReadUsageDetail(ref reader, inputDetails, out long? detail)) { InvalidUsage = true; return; }
+
+                            if (inputDetails) { inputDetailsSeen = true; ObservedCachedTokens = detail; }
+                            else { outputDetailsSeen = true; ObservedReasoningTokens = detail; }
+
+                            continue;
+                        }
 
                         if (!input && !output) { reader.Skip(); continue; }
 
@@ -358,6 +375,40 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
                 // No in-memory response is available at this pipeline stage. Its
                 // usage remains unknown; the transport is never read a second time.
             }
+        }
+
+        private static bool ReadUsageDetail(ref Utf8JsonReader reader, bool input, out long? value)
+        {
+            value = null;
+
+            if (reader.TokenType == JsonTokenType.Null) return true;
+
+            if (reader.TokenType != JsonTokenType.StartObject) return false;
+
+            bool seen = false;
+
+            while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+            {
+                if (reader.TokenType != JsonTokenType.PropertyName) return false;
+
+                bool relevant = input ? reader.ValueTextEquals("cached_tokens"u8) : reader.ValueTextEquals("reasoning_tokens"u8);
+
+                if (!reader.Read()) return false;
+
+                if (!relevant) { reader.Skip(); continue; }
+
+                if (seen) return false;
+
+                seen = true;
+
+                if (reader.TokenType == JsonTokenType.Null) continue;
+
+                if (reader.TokenType != JsonTokenType.Number || !reader.TryGetInt64(out long count) || count < 0) return false;
+
+                value = count;
+            }
+
+            return reader.TokenType == JsonTokenType.EndObject;
         }
 
         internal string PricingSnapshotJson()

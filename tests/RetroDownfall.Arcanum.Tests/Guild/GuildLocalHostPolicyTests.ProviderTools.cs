@@ -23,6 +23,16 @@ public sealed partial class GuildLocalHostPolicyTests
     [InlineData("missing-usage")]
     [InlineData("partial-usage")]
     [InlineData("partial-output")]
+    [InlineData("cached-only")]
+    [InlineData("reasoning-only")]
+    [InlineData("both-details")]
+    [InlineData("bad-cached")]
+    [InlineData("bad-reasoning")]
+    [InlineData("duplicate-detail")]
+    [InlineData("duplicate-reasoning")]
+    [InlineData("duplicate-detail-object")]
+    [InlineData("negative-token")]
+    [InlineData("overflow-token")]
     [InlineData("zero-usage")]
     public async Task Qualified_provider_tool_loop_uses_closed_registry_and_one_bill_per_actual_round(string? readinessLoss)
     {
@@ -82,7 +92,9 @@ public sealed partial class GuildLocalHostPolicyTests
 
         BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
 
-        using ChildToolTransport transport = new() { UsageVariant = readinessLoss, PromptOnly = readinessLoss is "missing-usage" or "partial-usage" or "partial-output" or "zero-usage" };
+        using ChildToolTransport transport = new() { UsageVariant = readinessLoss, PromptOnly = readinessLoss is "missing-usage" or "partial-usage" or "partial-output" or "zero-usage"
+            or "cached-only" or "reasoning-only" or "both-details" or "bad-cached" or "bad-reasoning" or "duplicate-detail"
+            or "duplicate-reasoning" or "duplicate-detail-object" or "negative-token" or "overflow-token" };
 
         ChatClientFactory clients = new(transport, new TestOptionsMonitor<ArcanumSettings>(settings));
 
@@ -119,7 +131,21 @@ public sealed partial class GuildLocalHostPolicyTests
                 return;
             }
 
-            if (readinessLoss is not null and not "missing-usage" and not "partial-usage" and not "partial-output" and not "zero-usage")
+            if (readinessLoss is "bad-cached" or "bad-reasoning" or "duplicate-detail" or "duplicate-reasoning"
+                or "duplicate-detail-object" or "negative-token" or "overflow-token")
+            {
+                Assert.True(result.IsFailure);
+
+                Assert.Single(transport.Bodies);
+
+                Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BillableOperations"));
+
+                Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=1"));
+
+                return;
+            }
+
+            if (readinessLoss is "before-child" or "after-child")
             {
                 Assert.True(readiness.RequireExecutionReady().IsFailure);
 
@@ -149,15 +175,27 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM BillableOperations"));
 
-            if (readinessLoss is "missing-usage" or "partial-usage" or "partial-output" or "zero-usage")
+            if (readinessLoss is "missing-usage" or "partial-usage" or "partial-output" or "zero-usage"
+                or "cached-only" or "reasoning-only" or "both-details")
             {
                 long unknownTokens = readinessLoss == "zero-usage" ? 0 : 1;
 
                 Assert.Equal(2L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd=1 AND UnknownTokens={unknownTokens}"));
 
-                long observedTokens = readinessLoss == "partial-usage" ? 7 : readinessLoss == "partial-output" ? 3 : 0;
+                long observedTokens = readinessLoss switch
+                {
+                    "partial-usage" => 7,
+                    "partial-output" => 3,
+                    "cached-only" => 5,
+                    "reasoning-only" => 9,
+                    "both-details" => 3,
+                    _ => 0,
+                };
 
                 Assert.Equal(2L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE KnownTokens={observedTokens}"));
+
+                if (readinessLoss is "cached-only" or "reasoning-only" or "both-details")
+                    Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM BillableOperations WHERE Status=1"));
             }
 
             if (readinessLoss is null)
@@ -244,12 +282,24 @@ public sealed partial class GuildLocalHostPolicyTests
 
             const string usage = ",\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}";
 
-            if (UsageVariant is "missing-usage" or "partial-usage" or "partial-output" or "zero-usage")
+            if (UsageVariant is "missing-usage" or "partial-usage" or "partial-output" or "zero-usage"
+                or "cached-only" or "reasoning-only" or "both-details" or "bad-cached" or "bad-reasoning" or "duplicate-detail"
+            or "duplicate-reasoning" or "duplicate-detail-object" or "negative-token" or "overflow-token")
             {
                 string replacement = UsageVariant switch
                 {
                     "partial-usage" => ",\"usage\":{\"prompt_tokens\":7}",
                     "partial-output" => ",\"usage\":{\"completion_tokens\":3}",
+                    "cached-only" => ",\"usage\":{\"completion_tokens\":3,\"prompt_tokens_details\":{\"cached_tokens\":2}}",
+                    "reasoning-only" => ",\"usage\":{\"prompt_tokens\":7,\"completion_tokens_details\":{\"reasoning_tokens\":2}}",
+                    "both-details" => ",\"usage\":{\"prompt_tokens_details\":{\"cached_tokens\":2},\"completion_tokens_details\":{\"reasoning_tokens\":1}}",
+                    "bad-cached" => ",\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":3,\"prompt_tokens_details\":{\"cached_tokens\":2}}",
+                    "bad-reasoning" => ",\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":0,\"completion_tokens_details\":{\"reasoning_tokens\":2}}",
+                    "duplicate-detail" => ",\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"prompt_tokens_details\":{\"cached_tokens\":1,\"cached_tokens\":2}}",
+                    "duplicate-reasoning" => ",\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"completion_tokens_details\":{\"reasoning_tokens\":1,\"reasoning_tokens\":2}}",
+                    "duplicate-detail-object" => ",\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"prompt_tokens_details\":{\"cached_tokens\":1},\"prompt_tokens_details\":{\"cached_tokens\":2}}",
+                    "negative-token" => ",\"usage\":{\"prompt_tokens\":-1,\"completion_tokens\":3}",
+                    "overflow-token" => ",\"usage\":{\"prompt_tokens\":9223372036854775808,\"completion_tokens\":3}",
                     "zero-usage" => ",\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}",
                     _ => "",
                 };

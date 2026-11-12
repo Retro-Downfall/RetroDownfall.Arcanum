@@ -42,7 +42,7 @@ public sealed partial class GuildQuestStoreTests
         DateTimeOffset started = new(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
 
         BillableOperationRecord bill = new(quest.Quest.RunId, BillableOperationType.Chat, "provider", "model", "guild",
-            started, started.AddSeconds(2), 7, 0, 0, 0, "{}", 0m, BillableOperationStatus.Failed, "request-id");
+            started, started.AddSeconds(2), 2, 3, 0, 2, "{}", 0m, BillableOperationStatus.Failed, "request-id");
 
         Result<string> received = await f.Store.ExecuteAndSettleProviderResponseAsync(execution, daily, effect,
             _ => Task.FromResult(Result<string>.Success("answer")), _ => bill, default);
@@ -59,10 +59,10 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.True(initial.Value.UnknownTokens);
 
-        Assert.Equal(7, initial.Value.KnownTokens);
+        Assert.Equal(5, initial.Value.KnownTokens);
 
         GuildSpendCorrectionRequest correction = new(Guid.NewGuid(), initial.Value.Revision, GuildSpendOrigin.OperatorAttested,
-            new(8, 2, 0, 0, .1m), new string('A', 64));
+            new(8, 4, 2, 1, .1m), new string('A', 64));
 
         var corrected = await f.Store.CorrectOperatorSpendAsync(f.Caller, quest.Quest.Id, effect.EffectId, correction, default);
 
@@ -74,7 +74,18 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.True(corrected.Value.Receipt.Facts.UnknownTokens);
 
+        Assert.Equal(2, corrected.Value.Receipt.Facts.LocalTokens!.CachedTokens);
+
+        await using (SqliteCommand status = connection.CreateCommand())
+        {
+            status.CommandText = "SELECT Status FROM BillableOperations";
+
+            Assert.Equal((long)BillableOperationStatus.Failed, await status.ExecuteScalarAsync());
+        }
+
         await f.ExecuteAsync("DELETE FROM guild_events");
+
+        await f.ExecuteAsync("DELETE FROM BillableOperations");
 
         Result<GuildBudgetEffect> replay = await f.Store.SettleProviderEffectAsync(execution, daily, effect, bill, default);
 
@@ -93,10 +104,20 @@ public sealed partial class GuildQuestStoreTests
         Assert.True(retained.IsSuccess, retained.Error.Message);
 
         Assert.Equal(initial.Value, retained.Value!.Outcome);
+
+        Assert.Equal(BillableOperationStatus.Failed, retained.Value.Snapshot.Status);
+
+        Assert.Equal(2, retained.Value.Snapshot.InputTokens);
+
+        Assert.Equal(3, retained.Value.Snapshot.OutputTokens);
+
+        Assert.Equal(2, retained.Value.Snapshot.CachedTokens);
     }
 
-    [Fact]
-    public async Task Lost_provider_response_never_invokes_projection_or_mints_completion()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Lost_provider_response_never_invokes_projection_or_mints_completion(bool canceled)
     {
         await using Fixture f = await Fixture.CreateAsync();
 
@@ -122,13 +143,16 @@ public sealed partial class GuildQuestStoreTests
 
         bool projected = false;
 
-        await Assert.ThrowsAsync<IOException>(() => f.Store.ExecuteAndSettleProviderResponseAsync<string>(execution, daily, effect,
-            _ => throw new IOException("lost response"), _ =>
+        Task<Result<string>> Invoke() => f.Store.ExecuteAndSettleProviderResponseAsync<string>(execution, daily, effect,
+            _ => canceled ? throw new OperationCanceledException("canceled after handoff") : throw new IOException("lost response"), _ =>
             {
                 projected = true;
 
                 return new Error(ErrorCodes.Guild.ReconciliationRequired, "unexpected");
-            }, default));
+            }, default);
+
+        if (canceled) await Assert.ThrowsAnyAsync<OperationCanceledException>(Invoke);
+        else await Assert.ThrowsAsync<IOException>(Invoke);
 
         Assert.False(projected);
 
@@ -139,9 +163,68 @@ public sealed partial class GuildQuestStoreTests
         state.CommandText = "SELECT StateCode FROM guild_budget_effects";
 
         Assert.Equal(1L, await state.ExecuteScalarAsync());
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        BillableOperationRecord bill = new(quest.Quest.RunId, BillableOperationType.Chat, "provider", "model", "guild",
+            now, now, 0, 0, 0, 0, "{}", 0m, BillableOperationStatus.Failed, null);
+
+        Assert.True((await f.Store.SettleProviderEffectAsync(execution, daily, effect with { }, bill, default)).IsFailure);
+
+        Assert.True((await f.Store.SettleProviderEffectAsync(execution, daily, effect with { SourceId = Guid.NewGuid() }, bill, default)).IsFailure);
+
+        Assert.True((await f.Store.SettleProviderEffectAsync(new(f.Store, driver, dispatch), daily, effect, bill, default)).IsFailure);
+
+        Result<GuildBudgetEffect> billOnly = await f.Store.SettleProviderEffectAsync(execution, daily, effect, bill, default);
+
+        Assert.True(billOnly.IsSuccess, billOnly.Error.Message);
+
+        Assert.Equal(GuildBudgetEffectState.PossiblyDispatched, billOnly.Value.State);
+
+        Assert.True(billOnly.Value.UnknownTokens);
+
+        int sends = 0;
+
+        Result<string> retry = await f.Store.ExecuteAndSettleProviderResponseAsync(execution, daily,
+            effect with { EffectId = Guid.NewGuid(), SourceId = Guid.NewGuid() },
+            _ => { sends++; return Task.FromResult(Result<string>.Success("unexpected")); }, _ => bill, default);
+
+        Assert.True(retry.IsFailure);
+
+        Assert.Equal(0, sends);
+
+        await f.ExecuteAsync("DELETE FROM guild_events");
+
+        Result<GuildBudgetEffect> replay = await f.Store.SettleProviderEffectAsync(execution, daily, effect, bill, default);
+
+        Assert.True(replay.IsSuccess, replay.Error.Message);
+
+        Assert.Equal(billOnly.Value, replay.Value);
+
+        f.Restart();
+
+        await using SqliteConnection reopened = await f.OpenAsync();
+
+        await using SqliteTransaction transaction = reopened.BeginTransaction();
+
+        Result<GuildStoredInitialSpend?> retained = await GuildSpendSourceStore.LoadInitialWithinAsync(reopened, transaction, effect.EffectId, default);
+
+        Assert.True(retained.IsSuccess, retained.Error.Message);
+
+        Assert.Equal(GuildBudgetEffectState.PossiblyDispatched, retained.Value!.Outcome.State);
+
+        Assert.Equal(BillableOperationStatus.Failed, retained.Value.Snapshot.Status);
     }
-    [Fact]
-    public async Task Received_response_settlement_failure_rolls_back_and_cannot_authorize_resend()
+
+    [Theory]
+    [InlineData("INSERT ON BillableOperations")]
+    [InlineData("INSERT ON guild_budget_evidence")]
+    [InlineData("UPDATE ON guild_budget_effects")]
+    [InlineData("UPDATE ON guild_quests")]
+    [InlineData("INSERT ON guild_events")]
+    [InlineData("INSERT ON guild_spend_sources")]
+    [InlineData("INSERT ON guild_spend_receipts")]
+    public async Task Received_response_settlement_failure_rolls_back_and_cannot_authorize_resend(string target)
     {
         await using Fixture f = await Fixture.CreateAsync();
 
@@ -170,12 +253,17 @@ public sealed partial class GuildQuestStoreTests
         BillableOperationRecord bill = new(quest.Quest.RunId, BillableOperationType.Chat, "provider", "model", "guild",
             now, now, 7, 0, 0, 0, "{}", 0m, BillableOperationStatus.Failed, null);
 
-        await f.ExecuteAsync("CREATE TRIGGER fixture_abort_received BEFORE INSERT ON guild_spend_receipts BEGIN SELECT RAISE(ABORT,'injected'); END");
-
         int sends = 0;
 
         Result<string> failed = await f.Store.ExecuteAndSettleProviderResponseAsync(execution, daily, effect,
-            _ => { sends++; return Task.FromResult(Result<string>.Success("answer")); }, _ => bill, default);
+            async _ =>
+            {
+                sends++;
+
+                await f.ExecuteAsync($"CREATE TRIGGER fixture_abort_received BEFORE {target} BEGIN SELECT RAISE(ABORT,'injected'); END");
+
+                return Result<string>.Success("answer");
+            }, _ => bill, default);
 
         Assert.True(failed.IsFailure);
 

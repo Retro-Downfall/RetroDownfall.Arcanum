@@ -129,12 +129,18 @@ internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution exec
                 long? observedOutput = prepared is null ? usage?.OutputTokenCount
                     : prepared.UsageObserved ? prepared.ObservedOutputTokens : null;
 
-                long inputTokens = observedInput ?? 0, outputTokens = observedOutput ?? 0;
+                long cached = prepared?.UsageObserved == true ? prepared.ObservedCachedTokens ?? 0 : usage?.CachedInputTokenCount ?? 0;
 
-                long cached = usage?.CachedInputTokenCount ?? 0, reasoning = usage?.ReasoningTokenCount ?? 0;
+                long reasoning = prepared?.UsageObserved == true ? prepared.ObservedReasoningTokens ?? 0 : usage?.ReasoningTokenCount ?? 0;
 
-                if (inputTokens < 0 || outputTokens < 0 || cached < 0 || cached > inputTokens || reasoning < 0 || reasoning > outputTokens)
+                if (observedInput < 0 || observedOutput < 0 || cached < 0 || reasoning < 0
+                    || observedInput is { } inputTotal && cached > inputTotal
+                    || observedOutput is { } outputTotal && reasoning > outputTotal)
                     return new Error(ErrorCodes.Guild.ReconciliationRequired, "The provider returned invalid physical usage; its exposure remains held.");
+
+                // With an absent aggregate, its observed subset is a known lower bound.
+                // Original aggregate presence still decides whether usage is complete.
+                long inputTokens = observedInput ?? cached, outputTokens = observedOutput ?? reasoning;
 
                 ModelPricingEntry snapshot = prepared?.Pricing ?? pricing with { };
 
