@@ -135,8 +135,6 @@ internal sealed partial class ConclaveArchmage : IGuildLocalChildToolDispatcher
 
             bool usd = arguments.TryGetProperty("max_cost_usd", out JsonElement usdLimit);
 
-            if (!tokens && !usd) return InvalidChildTool;
-
             if (tokens)
             {
                 if (tokenLimit.ValueKind != JsonValueKind.Number || !tokenLimit.TryGetInt64(out long value) || value <= 0) return InvalidChildTool;
