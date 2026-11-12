@@ -11,7 +11,7 @@ public sealed class GuildDistributionSchemaTests
         Assert.Equal(GuildCanonicalSchemaVersionTwelveFixture.PublishedFingerprint,
             GuildCanonicalSchemaVersionTwelveFixture.Fingerprint);
 
-        Assert.Equal(13, GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion);
+        Assert.Contains(GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.GuildCanonical).Steps, step => step.FromVersion == 12 && step.ToVersion == 13);
 
         await using var upgraded = await GrimoireSchemaTestInstaller.OpenAsync("Data Source=:memory:", default);
 

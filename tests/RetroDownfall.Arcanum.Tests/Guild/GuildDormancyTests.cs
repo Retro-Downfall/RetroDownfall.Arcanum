@@ -56,12 +56,12 @@ public sealed class GuildDormancyTests
     {
         Type[] native = [typeof(GuildIssueRootRequest), typeof(GuildCancelQuestRequest), typeof(GuildContinueRequest),
             typeof(GuildQuestDto), typeof(GuildQuestInputDto), typeof(GuildStatusDto), typeof(GuildCancellationDto), typeof(GuildResultReceipt), typeof(GuildContentDto),
-            typeof(GuildResolveRemoteAgentRequest), typeof(GuildAgentCard), typeof(GuildRemoteInvocationOptions)];
+            typeof(GuildResolveRemoteAgentRequest), typeof(GuildAgentCard), typeof(GuildRemoteInvocationOptions), typeof(CohortDto)];
 
         Assert.All(native, type => Assert.NotNull(ArcanumJsonContext.Default.GetTypeInfo(type)));
 
         Type[] privateAuthority = [typeof(GuildCallerContext), typeof(GuildExecutionHandle), typeof(GuildRecoveryContext),
-            typeof(GuildAdmissionContext), typeof(CohortDto), typeof(GuildCircleInboxItem)];
+            typeof(GuildAdmissionContext), typeof(GuildCircleInboxItem)];
 
         Assert.All(privateAuthority, type => Assert.Null(ArcanumJsonContext.Default.GetTypeInfo(type)));
 

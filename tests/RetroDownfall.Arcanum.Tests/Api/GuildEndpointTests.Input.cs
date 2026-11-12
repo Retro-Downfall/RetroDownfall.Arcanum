@@ -2,6 +2,8 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.AspNetCore.Http;
+using RetroDownfall.Arcanum.Api.Conclave;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Operations;
@@ -43,7 +45,29 @@ public sealed partial class GuildEndpointTests
 
         var identity = await CreateNativeQuestionAsync(factory, client, mode == "protected");
 
-        if (mode == "erased") await EraseNativeQuestionAsync(factory, identity.Quest);
+        if (mode == "erased")
+        {
+            await using AsyncServiceScope scope = factory.Services.CreateAsyncScope();
+
+            DefaultHttpContext queuedContext = new() { RequestServices = scope.ServiceProvider };
+
+            queuedContext.Response.Body = new MemoryStream();
+
+            IResult queued = await GuildEndpoints.ReadQuestInputAsync(identity.Quest,
+                scope.ServiceProvider.GetRequiredService<GuildNativeHost>(), scope.ServiceProvider.GetRequiredService<GuildQuestStore>(), queuedContext);
+
+            await EraseNativeQuestionAsync(factory, identity.Quest);
+
+            await queued.ExecuteAsync(queuedContext);
+
+            Assert.Equal(StatusCodes.Status410Gone, queuedContext.Response.StatusCode);
+
+            queuedContext.Response.Body.Position = 0;
+
+            using StreamReader reader = new(queuedContext.Response.Body);
+
+            Assert.DoesNotContain("Which option should I choose?", await reader.ReadToEndAsync(), StringComparison.Ordinal);
+        }
 
         using HttpResponseMessage metadata = await client.GetAsync($"/api/guild/quests/{identity.Quest:D}");
 

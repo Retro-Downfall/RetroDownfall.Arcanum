@@ -65,7 +65,8 @@ public sealed record ResourceSelectionRequest<T>(
     bool IsInteractive,
     ResourceDescriptor<T> Descriptor,
     Func<string?, CancellationToken, Task<Result<ResourcePage<T>>>> FetchPageAsync,
-    bool PickAmbiguousIdentifiers = false)
+    bool PickAmbiguousIdentifiers = false,
+    bool MatchIdPrefixes = false)
     where T : class;
 
 public sealed record ResourcePickerRequest<T>(
@@ -302,7 +303,7 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
                 request,
                 identifier,
                 matches.Prefixes,
-                value => descriptor.GetName(value).StartsWith(identifier, StringComparison.OrdinalIgnoreCase),
+                value => (request.MatchIdPrefixes ? descriptor.GetId(value) : descriptor.GetName(value)).StartsWith(identifier, StringComparison.OrdinalIgnoreCase),
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -358,7 +359,7 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
                     scan.ExactNames.Add(value);
                 }
 
-                if (name.StartsWith(identifier, StringComparison.OrdinalIgnoreCase))
+                if ((request.MatchIdPrefixes ? request.Descriptor.GetId(value) : name).StartsWith(identifier, StringComparison.OrdinalIgnoreCase))
                 {
                     scan.Prefixes.Add(value);
                 }

@@ -17,6 +17,17 @@ public interface IApprenticeRepository
         DateTimeOffset? beforeUpdatedAt = null,
         CancellationToken cancellationToken = default);
 
+    async Task<Result<Apprentice?>> GetLinkedByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        Result<Apprentice?>.Success(await GetByIdAsync(id, cancellationToken).ConfigureAwait(false));
+
+    async Task<Result<ListPageResult<Apprentice>>> ListLinkedAsync(
+        Guid? campaignId, string? status, Guid? parentId, Guid? rootId, int? limit = null,
+        DateTimeOffset? beforeUpdatedAt = null, CancellationToken cancellationToken = default) =>
+        parentId is not null || rootId is not null
+            ? Result<ListPageResult<Apprentice>>.Success(new([], false))
+            : Result<ListPageResult<Apprentice>>.Success(await ListAsync(campaignId, status, limit,
+                beforeUpdatedAt, cancellationToken).ConfigureAwait(false));
+
     Task<Apprentice> AddAsync(Apprentice apprentice, CancellationToken cancellationToken = default);
 
     Task<Apprentice> UpdateAsync(Apprentice apprentice, CancellationToken cancellationToken = default);

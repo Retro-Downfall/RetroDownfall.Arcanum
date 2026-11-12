@@ -59,7 +59,7 @@ internal enum StreamingEntryProofKind : byte
 /// <summary>One authored streaming construct, normalized so a catalog can name it exactly.</summary>
 /// <remarks>
 /// The route literal is part of the identity rather than only of the catalog's description, because
-/// three of the five SSE routes are lambdas inside one <c>MapEventEndpoints</c> and are otherwise
+/// three SSE routes are lambdas inside one <c>MapEventEndpoints</c> and are otherwise
 /// indistinguishable: same file, same enclosing member, same construct, same fingerprint. Without it
 /// they would collapse into one discovery and the inventory would report a duplicate instead of three
 /// routes. It is also what the parent design names first among the keys.
@@ -136,6 +136,8 @@ internal static class GrimoireStreamingRouteScanner
         "/api/events/daemon",
         "/api/events/logs",
         "/api/events/mcp",
+        "/api/guild/cohorts/{cohortId:guid}/events",
+        "/api/guild/quests/{questId:guid}/events",
         "/api/sessions/{id:guid}/stream",
     ];
 
@@ -297,7 +299,7 @@ internal static class GrimoireStreamingRouteScanner
                     failures.Add(new(
                         StreamingInventoryFailureCode.QuiesceableRouteNotDeclared,
                         entry.Identity,
-                        "Only the five routes the parent design declares may be quiesceable."));
+                        "Only routes the design declares may be quiesceable."));
                 }
 
                 if (entry.Proof is not null)
@@ -327,7 +329,7 @@ internal static class GrimoireStreamingRouteScanner
     /// The catalog: every streaming construct this repository authors, and what it is.
     /// </summary>
     /// <remarks>
-    /// Fifteen entries — thirteen surfaces and the two shared writers' own declarations. A writer
+    /// Seventeen entries — fifteen surfaces and the two shared writers' own declarations. A writer
     /// serves whichever routes call it and carries no route pattern of its own, which is why its entry
     /// names one rather than inventing a fictional route for it; it is classified <c>FiniteDrain</c>
     /// because a declaration frames nothing on its own, and its proof records that it is a writer
@@ -335,7 +337,7 @@ internal static class GrimoireStreamingRouteScanner
     /// </remarks>
     internal static IReadOnlyList<StreamingCatalogEntry> Catalog() =>
     [
-        // ── The five declared quiesceable SSE routes ────────────────────────────────────────────
+        // ── The declared quiesceable SSE routes ────────────────────────────────────────────
         new(
             new("src/RetroDownfall.Arcanum.Api/Streaming/EventEndpoints.cs", "EventEndpoints", "MapEventEndpoints(1)", StreamingConstructKind.SseWriterInvocation, "/events/daemon", "SseStreamWriter.PrepareResponse(httpContext)"),
             "/api/events/daemon",
@@ -376,6 +378,25 @@ internal static class GrimoireStreamingRouteScanner
             new("src/RetroDownfall.Arcanum.Api/Conclave/ApprenticeEndpoints.cs", "ApprenticeEndpoints", "MapApprenticeEndpoints(1)", StreamingConstructKind.SseWriterInvocation, "/apprentices/{id:guid}/chronicle", "SseStreamWriter.PrepareResponse(httpContext)"),
             "/api/apprentices/{id:guid}/chronicle",
             "GetApprenticeChronicle",
+            "SSE",
+            GrimoireStreamAuthority.LiveGrimoire,
+            GrimoireStreamClass.GrimoireQuiesceableStream,
+            null),
+
+        // Guild subscriptions read the live durable index until cancellation or maintenance.
+        new(
+            new("src/RetroDownfall.Arcanum.Api/Conclave/GuildStreamEndpoints.cs", "GuildEndpoints", "WatchGuildTreeAsync(7)", StreamingConstructKind.SseWriterInvocation, "<none>", "SseStreamWriter.PrepareResponse(context)"),
+            "/api/guild/quests/{questId:guid}/events",
+            "GuildWatchTree",
+            "SSE",
+            GrimoireStreamAuthority.LiveGrimoire,
+            GrimoireStreamClass.GrimoireQuiesceableStream,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Api/Conclave/GuildStreamEndpoints.cs", "GuildEndpoints", "WatchGuildCohortAsync(8)", StreamingConstructKind.SseWriterInvocation, "<none>", "SseStreamWriter.PrepareResponse(context)"),
+            "/api/guild/cohorts/{cohortId:guid}/events",
+            "GuildWatchCohort",
             "SSE",
             GrimoireStreamAuthority.LiveGrimoire,
             GrimoireStreamClass.GrimoireQuiesceableStream,

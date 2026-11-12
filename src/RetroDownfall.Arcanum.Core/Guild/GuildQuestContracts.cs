@@ -5,7 +5,7 @@ using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.Guild;
 
-public sealed record GuildMutationReceiptDto(Guid Id, Guid IdempotencyKey, bool Replayed, DateTimeOffset AcceptedAt, long AcceptedRevision);
+public sealed record GuildMutationReceiptDto(Guid Id, Guid IdempotencyKey, bool Replayed, DateTimeOffset? AcceptedAt, long AcceptedRevision);
 
 /// <summary>Immutable content locator and integrity observation; not a disclosure capability.</summary>
 public sealed record GuildDataRef(Guid ContentId, GuildContentKind Kind, long Revision, string Digest, string MimeType, long ByteLength, bool ContentErased);

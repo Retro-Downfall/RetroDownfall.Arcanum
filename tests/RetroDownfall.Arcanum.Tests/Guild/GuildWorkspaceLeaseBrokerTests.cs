@@ -302,6 +302,10 @@ public sealed partial class GuildWorkspaceLeaseBrokerTests
 
         internal GuildVerifiedAuthority Authority { get; }
 
+        internal GuildCallerContext RunCaller { get; }
+
+        internal GuildVerifiedAuthority RunAuthority { get; }
+
         internal ImmutableArray<GuildPathScope> AllowedScopes { get; set; } = [new(".", GuildPathScopeKind.Subtree)];
 
         private readonly string _root;
@@ -311,19 +315,33 @@ public sealed partial class GuildWorkspaceLeaseBrokerTests
             _root = root;
 
             Authority = new(Caller, GuildAuthorityAction.WorkspaceMutate, WorkspaceId, 1);
+
+            Guid questId = Guid.NewGuid();
+
+            GuildExecutionHandle execution = new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), questId, questId, 1, 0);
+
+            RunCaller = new(GuildCallerKind.Run, Caller.PrincipalId!.Value, Guid.NewGuid(), Caller.InstallationGeneration, execution);
+
+            RunAuthority = new(execution, GuildAuthorityAction.WorkspaceMutate, WorkspaceId, 1);
         }
 
         private GuildWorkspaceLeaseBinding Binding => new(new(GuildWorkspaceLeaseOwnerKind.Operator, Caller.PrincipalId!.Value,
             null, null, null, null, WorkspaceId, Caller.InstallationGeneration), _root, Authority, AllowedScopes);
 
+        private GuildWorkspaceLeaseBinding RunBinding => new(new(GuildWorkspaceLeaseOwnerKind.Quest, Caller.PrincipalId!.Value,
+            RunCaller.Execution!.QuestId, RunCaller.Execution.RootQuestId, null, null, WorkspaceId, Caller.InstallationGeneration),
+            _root, RunAuthority, AllowedScopes);
+
         public Task<Result<T>> AuthorizeAsync<T>(GuildCallerContext caller, Guid workspaceId, GuildAuthorityAction action,
             Func<GuildWorkspaceLeaseBinding, CancellationToken, Task<Result<T>>> effect, CancellationToken ct) =>
             ReferenceEquals(caller, Caller) && workspaceId == WorkspaceId
-                ? effect(Binding, ct) : Task.FromResult(Result<T>.Failure(new(ErrorCodes.Guild.Forbidden, "Unknown caller.")));
+                ? effect(Binding, ct) : ReferenceEquals(caller, RunCaller) && workspaceId == WorkspaceId
+                    ? effect(RunBinding, ct) : Task.FromResult(Result<T>.Failure(new(ErrorCodes.Guild.Forbidden, "Unknown caller.")));
 
         public Task<Result<T>> RevalidateAsync<T>(GuildVerifiedAuthority authority, Guid workspaceId,
             Func<GuildWorkspaceLeaseBinding, CancellationToken, Task<Result<T>>> effect, CancellationToken ct) =>
             ReferenceEquals(authority, Authority) && workspaceId == WorkspaceId
-                ? effect(Binding, ct) : Task.FromResult(Result<T>.Failure(new(ErrorCodes.Guild.Forbidden, "Unknown authority.")));
+                ? effect(Binding, ct) : ReferenceEquals(authority, RunAuthority) && workspaceId == WorkspaceId
+                    ? effect(RunBinding, ct) : Task.FromResult(Result<T>.Failure(new(ErrorCodes.Guild.Forbidden, "Unknown authority.")));
     }
 }

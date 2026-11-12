@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Conclave;
@@ -104,7 +105,8 @@ public sealed class ApprenticeCommands(
     WatchCommands watchCommands,
     IConfirmationPrompt confirmationPrompt,
     IOptions<ArcanumSettings> settings,
-    ICliResourceCatalog resourceCatalog)
+    ICliResourceCatalog resourceCatalog,
+    IConsoleDispatcher dispatcher)
 {
     private void WriteError(Error error) =>
         CliErrorOutput.WriteMarkupLine(
@@ -158,6 +160,18 @@ public sealed class ApprenticeCommands(
         }
 
         ApprenticeSummaryDto[] apprentices = result.Value.Items;
+
+        if (CliInvocationContext.Current.Json)
+        {
+            dispatcher.WriteJson(apprentices, ArcanumJsonContext.Default.ApprenticeSummaryDtoArray);
+
+            if (result.Value.MoreAvailable)
+            {
+                dispatcher.WriteDiagnostic("More Apprentices are available; omit --limit to list them all.");
+            }
+
+            return 0;
+        }
 
         // The whole identifier, never wrapped: the listing is where an operator reads what to hand to
         // show, cancel or delete, and a fragment of it is not an ID, a name or a name prefix. What gives way
@@ -230,6 +244,13 @@ public sealed class ApprenticeCommands(
             WriteError(result.Error);
 
             return CliFailureExit.ExitCode(result.Error);
+        }
+
+        if (CliInvocationContext.Current.Json)
+        {
+            dispatcher.WriteJson(result.Value, ArcanumJsonContext.Default.ApprenticeDetailDto);
+
+            return 0;
         }
 
         ApprenticeCommandSupport.WriteApprenticeDetailPanel(result.Value, themePalette);

@@ -1,0 +1,1 @@
+DROP TRIGGER IF EXISTS guild_signet_revocations_guard_update;

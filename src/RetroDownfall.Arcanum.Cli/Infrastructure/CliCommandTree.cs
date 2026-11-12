@@ -91,6 +91,7 @@ internal static partial class CliCommandTree
         Command trial = BuildTrial(serviceProvider);
         Command apprentice = BuildApprentice(serviceProvider);
         Command conclave = BuildConclave(serviceProvider);
+        Command guild = BuildGuild(serviceProvider);
 
         Command budget = BuildBudget(serviceProvider);
         Command modelCmd = BuildModel(serviceProvider);
@@ -152,6 +153,7 @@ internal static partial class CliCommandTree
         root.Add(trial);
         root.Add(apprentice);
         root.Add(conclave);
+        root.Add(guild);
         root.Add(budget);
         root.Add(modelCmd);
         root.Add(provider);

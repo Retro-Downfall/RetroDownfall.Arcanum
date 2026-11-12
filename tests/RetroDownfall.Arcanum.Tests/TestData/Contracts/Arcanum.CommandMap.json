@@ -6227,6 +6227,2063 @@
       ]
     },
     {
+      "path": "guild",
+      "name": "guild",
+      "description": "Inspect and manage sealed Guild work through the authenticated host.",
+      "runnable": false,
+      "aliases": [],
+      "arguments": [],
+      "options": [],
+      "examples": [],
+      "commands": [
+        {
+          "path": "guild status",
+          "name": "status",
+          "description": "Inspect feature, schema and capability state.",
+          "runnable": true,
+          "aliases": [],
+          "arguments": [],
+          "options": [],
+          "examples": [
+            "arcanum guild status"
+          ],
+          "commands": []
+        },
+        {
+          "path": "guild agent",
+          "name": "agent",
+          "description": "Discover visible pinned Agent Cards.",
+          "runnable": false,
+          "aliases": [],
+          "arguments": [],
+          "options": [],
+          "examples": [],
+          "commands": [
+            {
+              "path": "guild agent list",
+              "name": "list",
+              "description": "List one page of visible Agent Cards.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [],
+              "options": [
+                {
+                  "name": "--source",
+                  "aliases": [],
+                  "description": "source selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [
+                    "declaredGlobal",
+                    "declaredWorkspace",
+                    "derived",
+                    "remote"
+                  ]
+                },
+                {
+                  "name": "--skill",
+                  "aliases": [],
+                  "description": "skill selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--cursor",
+                  "aliases": [],
+                  "description": "Opaque cursor for the next bounded page or refresh batch.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--page-size",
+                  "aliases": [],
+                  "description": "Requested records per page, 1 through 100; the byte limit may return fewer.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild agent list --source declaredGlobal --skill review --page-size 2"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild agent show",
+              "name": "show",
+              "description": "Show one exact Agent Card.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "agent",
+                  "description": "Visible agent UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-agent"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--card-revision",
+                  "aliases": [],
+                  "description": "Exact retained content or Card revision to inspect.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild agent show agent --card-revision 2"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild agent refresh",
+              "name": "refresh",
+              "description": "Refresh a selected Agent or one source batch.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "agent",
+                  "description": "Visible agent UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-agent"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--cursor",
+                  "aliases": [],
+                  "description": "Opaque cursor for the next bounded page or refresh batch.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild agent refresh --cursor next"
+              ],
+              "commands": []
+            }
+          ]
+        },
+        {
+          "path": "guild task",
+          "name": "task",
+          "description": "Issue and inspect Quests and exact subtrees.",
+          "runnable": false,
+          "aliases": [],
+          "arguments": [],
+          "options": [],
+          "examples": [],
+          "commands": [
+            {
+              "path": "guild task create",
+              "name": "create",
+              "description": "Issue a root Quest with an explicit grant.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [],
+              "options": [
+                {
+                  "name": "--goal",
+                  "aliases": [],
+                  "description": "Authored task data; mutually exclusive with its UTF-8 file option.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--goal-file",
+                  "aliases": [],
+                  "description": "Bounded UTF-8 input file, or - to read stdin; mutually exclusive with inline text.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--grant-file",
+                  "aliases": [],
+                  "description": "Bounded JSON grant file; complete GuildGrant at a root, GuildRequestedGrant when narrowing.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--agent",
+                  "aliases": [],
+                  "description": "agent selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "guild-agent"
+                },
+                {
+                  "name": "--name",
+                  "aliases": [],
+                  "description": "name selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--session",
+                  "aliases": [],
+                  "description": "session selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "session"
+                },
+                {
+                  "name": "--campaign",
+                  "aliases": [],
+                  "description": "campaign selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "campaign"
+                },
+                {
+                  "name": "--workspace",
+                  "aliases": [],
+                  "description": "workspace selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "workspace"
+                },
+                {
+                  "name": "--predecessor",
+                  "aliases": [],
+                  "description": "predecessor selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "guild-task"
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild task create --goal goal --grant-file grant.json"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild task delegate",
+              "name": "delegate",
+              "description": "Issue an attenuated child under a live parent.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "parent",
+                  "description": "Visible parent UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-task"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--goal",
+                  "aliases": [],
+                  "description": "Authored task data; mutually exclusive with its UTF-8 file option.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--goal-file",
+                  "aliases": [],
+                  "description": "Bounded UTF-8 input file, or - to read stdin; mutually exclusive with inline text.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "Required current resource revision; conflicts are reported without retrying the changed action.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--agent",
+                  "aliases": [],
+                  "description": "agent selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "guild-agent"
+                },
+                {
+                  "name": "--name",
+                  "aliases": [],
+                  "description": "name selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--grant-file",
+                  "aliases": [],
+                  "description": "Bounded JSON grant file; complete GuildGrant at a root, GuildRequestedGrant when narrowing.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild task delegate parent --goal goal --expected-revision 1"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild task list",
+              "name": "list",
+              "description": "List one bounded page of Quests.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [],
+              "options": [
+                {
+                  "name": "--root",
+                  "aliases": [],
+                  "description": "root selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "guild-task"
+                },
+                {
+                  "name": "--parent",
+                  "aliases": [],
+                  "description": "parent selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "guild-task"
+                },
+                {
+                  "name": "--state",
+                  "aliases": [],
+                  "description": "state selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--cursor",
+                  "aliases": [],
+                  "description": "Opaque cursor for the next bounded page or refresh batch.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--page-size",
+                  "aliases": [],
+                  "description": "Requested records per page, 1 through 100; the byte limit may return fewer.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild task list --root root --parent parent --state working --cursor next --page-size 2"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild task show",
+              "name": "show",
+              "description": "Show Quest metadata and explicitly requested content.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "task",
+                  "description": "Visible task UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-task"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--show-content",
+                  "aliases": [],
+                  "description": "Explicitly fetch the authorized exact goal/result content revisions.",
+                  "recursive": false,
+                  "takesValue": false,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild task show task --show-content"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild task tree",
+              "name": "tree",
+              "description": "Read one page of an exact subtree.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "task",
+                  "description": "Visible task UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-task"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--cursor",
+                  "aliases": [],
+                  "description": "Opaque cursor for the next bounded page or refresh batch.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--page-size",
+                  "aliases": [],
+                  "description": "Requested records per page, 1 through 100; the byte limit may return fewer.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild task tree task --cursor next --page-size 2"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild task message",
+              "name": "message",
+              "description": "Send Operator-authored information or continuation.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "task",
+                  "description": "Visible task UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-task"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--text",
+                  "aliases": [],
+                  "description": "Authored task data; mutually exclusive with its UTF-8 file option.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--text-file",
+                  "aliases": [],
+                  "description": "Bounded UTF-8 input file, or - to read stdin; mutually exclusive with inline text.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "Required current resource revision; conflicts are reported without retrying the changed action.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--continue",
+                  "aliases": [],
+                  "description": "Answer the current input-required question instead of sending informational text.",
+                  "recursive": false,
+                  "takesValue": false,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild task message task --text hello --expected-revision 1 --continue"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild task cancel",
+              "name": "cancel",
+              "description": "Request durable subtree cancellation.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "task",
+                  "description": "Visible task UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-task"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "Required current resource revision; conflicts are reported without retrying the changed action.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild task cancel task --expected-revision 1"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild task spend",
+              "name": "spend",
+              "description": "Inspect exact subtree spend and remaining authority.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "task",
+                  "description": "Visible task UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-task"
+                }
+              ],
+              "options": [],
+              "examples": [
+                "arcanum guild task spend task"
+              ],
+              "commands": []
+            }
+          ]
+        },
+        {
+          "path": "guild signet",
+          "name": "signet",
+          "description": "Revoke stored authority without exposing credentials.",
+          "runnable": false,
+          "aliases": [],
+          "arguments": [],
+          "options": [],
+          "examples": [],
+          "commands": [
+            {
+              "path": "guild signet revoke",
+              "name": "revoke",
+              "description": "Revoke a stored Signet and request cancellation.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "signet",
+                  "description": "Visible signet UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-signet"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "Required current resource revision; conflicts are reported without retrying the changed action.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild signet revoke signet --expected-revision 1"
+              ],
+              "commands": []
+            }
+          ]
+        },
+        {
+          "path": "guild content",
+          "name": "content",
+          "description": "Explicitly disclose authorized content revisions.",
+          "runnable": false,
+          "aliases": [],
+          "arguments": [],
+          "options": [],
+          "examples": [],
+          "commands": [
+            {
+              "path": "guild content show",
+              "name": "show",
+              "description": "Read an exact authorized content revision.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "content-id",
+                  "description": "Visible content-id UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-content"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--revision",
+                  "aliases": [],
+                  "description": "Exact retained content or Card revision to inspect.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild content show content --revision 1"
+              ],
+              "commands": []
+            }
+          ]
+        },
+        {
+          "path": "guild watch",
+          "name": "watch",
+          "description": "Follow a projection or obtain one finite snapshot.",
+          "runnable": false,
+          "aliases": [],
+          "arguments": [],
+          "options": [],
+          "examples": [],
+          "commands": [
+            {
+              "path": "guild watch tree",
+              "name": "tree",
+              "description": "Watch an exact Quest subtree.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "task",
+                  "description": "Visible task UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-task"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--after",
+                  "aliases": [],
+                  "description": "Opaque stream resume cursor; incompatible with finite --json snapshots.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--ndjson",
+                  "aliases": [],
+                  "description": "Live machine output: one event/id/data JSON record per SSE frame; incompatible with --json.",
+                  "recursive": false,
+                  "takesValue": false,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild watch tree task --ndjson --after next"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild watch cohort",
+              "name": "cohort",
+              "description": "Watch a Cohort and its admitted work.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "cohort",
+                  "description": "Visible cohort UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-cohort"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--after",
+                  "aliases": [],
+                  "description": "Opaque stream resume cursor; incompatible with finite --json snapshots.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--ndjson",
+                  "aliases": [],
+                  "description": "Live machine output: one event/id/data JSON record per SSE frame; incompatible with --json.",
+                  "recursive": false,
+                  "takesValue": false,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild watch cohort cohort --json"
+              ],
+              "commands": []
+            }
+          ]
+        },
+        {
+          "path": "guild cohort",
+          "name": "cohort",
+          "description": "Manage Cohort membership and deterministic convergence.",
+          "runnable": false,
+          "aliases": [],
+          "arguments": [],
+          "options": [],
+          "examples": [],
+          "commands": [
+            {
+              "path": "guild cohort create",
+              "name": "create",
+              "description": "Create a Cohort under a live issuer.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [],
+              "options": [
+                {
+                  "name": "--issuer",
+                  "aliases": [],
+                  "description": "issuer selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "guild-task"
+                },
+                {
+                  "name": "--name",
+                  "aliases": [],
+                  "description": "name selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--policy",
+                  "aliases": [],
+                  "description": "policy selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [
+                    "all",
+                    "first",
+                    "quorum"
+                  ]
+                },
+                {
+                  "name": "--result-type",
+                  "aliases": [],
+                  "description": "result type selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [
+                    "application/json",
+                    "text/plain"
+                  ]
+                },
+                {
+                  "name": "--quorum",
+                  "aliases": [],
+                  "description": "Positive quorum size; required only with --policy quorum.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--grant-file",
+                  "aliases": [],
+                  "description": "Bounded JSON grant file; complete GuildGrant at a root, GuildRequestedGrant when narrowing.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild cohort create --issuer task --name team --policy quorum --quorum 2 --result-type application/json"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild cohort list",
+              "name": "list",
+              "description": "List one page of visible Cohorts.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [],
+              "options": [
+                {
+                  "name": "--root",
+                  "aliases": [],
+                  "description": "root selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "guild-task"
+                },
+                {
+                  "name": "--state",
+                  "aliases": [],
+                  "description": "state selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--cursor",
+                  "aliases": [],
+                  "description": "Opaque cursor for the next bounded page or refresh batch.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--page-size",
+                  "aliases": [],
+                  "description": "Requested records per page, 1 through 100; the byte limit may return fewer.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild cohort list --root root --state open --cursor next --page-size 2"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild cohort show",
+              "name": "show",
+              "description": "Show Cohort metadata.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "cohort",
+                  "description": "Visible cohort UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-cohort"
+                }
+              ],
+              "options": [],
+              "examples": [
+                "arcanum guild cohort show cohort"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild cohort admit",
+              "name": "admit",
+              "description": "Admit a child Quest to a Cohort.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "cohort",
+                  "description": "Visible cohort UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-cohort"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--goal",
+                  "aliases": [],
+                  "description": "Authored task data; mutually exclusive with its UTF-8 file option.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--goal-file",
+                  "aliases": [],
+                  "description": "Bounded UTF-8 input file, or - to read stdin; mutually exclusive with inline text.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "Required current resource revision; conflicts are reported without retrying the changed action.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--agent",
+                  "aliases": [],
+                  "description": "agent selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "guild-agent"
+                },
+                {
+                  "name": "--name",
+                  "aliases": [],
+                  "description": "name selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--grant-file",
+                  "aliases": [],
+                  "description": "Bounded JSON grant file; complete GuildGrant at a root, GuildRequestedGrant when narrowing.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild cohort admit cohort --goal goal --expected-revision 1"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild cohort members",
+              "name": "members",
+              "description": "List one page of Cohort members.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "cohort",
+                  "description": "Visible cohort UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-cohort"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--cursor",
+                  "aliases": [],
+                  "description": "Opaque cursor for the next bounded page or refresh batch.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--page-size",
+                  "aliases": [],
+                  "description": "Requested records per page, 1 through 100; the byte limit may return fewer.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild cohort members cohort --cursor next --page-size 2"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild cohort remove",
+              "name": "remove",
+              "description": "Withdraw a member and drain its subtree.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "cohort",
+                  "description": "Visible cohort UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-cohort"
+                },
+                {
+                  "name": "member",
+                  "description": "Visible member UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "Required current resource revision; conflicts are reported without retrying the changed action.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild cohort remove cohort member --expected-revision 1"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild cohort close",
+              "name": "close",
+              "description": "Freeze Cohort membership.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "cohort",
+                  "description": "Visible cohort UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-cohort"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "Required current resource revision; conflicts are reported without retrying the changed action.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild cohort close cohort --expected-revision 1"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild cohort cancel",
+              "name": "cancel",
+              "description": "Request Cohort cancellation and drain.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "cohort",
+                  "description": "Visible cohort UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-cohort"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "Required current resource revision; conflicts are reported without retrying the changed action.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild cohort cancel cohort --expected-revision 1"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild cohort contributions",
+              "name": "contributions",
+              "description": "List one page of result references.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "cohort",
+                  "description": "Visible cohort UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-cohort"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--selected",
+                  "aliases": [],
+                  "description": "Only contributions selected by the stored convergence decision.",
+                  "recursive": false,
+                  "takesValue": false,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--cursor",
+                  "aliases": [],
+                  "description": "Opaque cursor for the next bounded page or refresh batch.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--page-size",
+                  "aliases": [],
+                  "description": "Requested records per page, 1 through 100; the byte limit may return fewer.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild cohort contributions cohort --selected --cursor next --page-size 2"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild cohort convergence",
+              "name": "convergence",
+              "description": "Inspect the stored convergence decision.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "cohort",
+                  "description": "Visible cohort UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-cohort"
+                }
+              ],
+              "options": [],
+              "examples": [
+                "arcanum guild cohort convergence cohort"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild cohort member-work",
+              "name": "member-work",
+              "description": "List primary and award Quest associations.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "cohort",
+                  "description": "Visible cohort UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-cohort"
+                },
+                {
+                  "name": "member",
+                  "description": "Visible member UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--cursor",
+                  "aliases": [],
+                  "description": "Opaque cursor for the next bounded page or refresh batch.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--page-size",
+                  "aliases": [],
+                  "description": "Requested records per page, 1 through 100; the byte limit may return fewer.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild cohort member-work cohort member --cursor next --page-size 2"
+              ],
+              "commands": []
+            }
+          ]
+        },
+        {
+          "path": "guild offer",
+          "name": "offer",
+          "description": "Inspect and award skill-routed work.",
+          "runnable": false,
+          "aliases": [],
+          "arguments": [],
+          "options": [],
+          "examples": [],
+          "commands": [
+            {
+              "path": "guild offer post",
+              "name": "post",
+              "description": "Post an offer under a Cohort issuer.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "cohort",
+                  "description": "Visible cohort UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-cohort"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--skill",
+                  "aliases": [],
+                  "description": "skill selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--goal",
+                  "aliases": [],
+                  "description": "Authored task data; mutually exclusive with its UTF-8 file option.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--goal-file",
+                  "aliases": [],
+                  "description": "Bounded UTF-8 input file, or - to read stdin; mutually exclusive with inline text.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--result-type",
+                  "aliases": [],
+                  "description": "result type selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [
+                    "application/json",
+                    "text/plain"
+                  ]
+                },
+                {
+                  "name": "--expected-cohort-revision",
+                  "aliases": [],
+                  "description": "Required current Cohort aggregate revision.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--grant-file",
+                  "aliases": [],
+                  "description": "Bounded JSON grant file; complete GuildGrant at a root, GuildRequestedGrant when narrowing.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild offer post cohort --skill review --goal goal --result-type text/plain --expected-cohort-revision 1"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild offer list",
+              "name": "list",
+              "description": "List one page of Cohort offers.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "cohort",
+                  "description": "Visible cohort UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-cohort"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--state",
+                  "aliases": [],
+                  "description": "state selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--cursor",
+                  "aliases": [],
+                  "description": "Opaque cursor for the next bounded page or refresh batch.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--page-size",
+                  "aliases": [],
+                  "description": "Requested records per page, 1 through 100; the byte limit may return fewer.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild offer list cohort --state open --cursor next --page-size 2"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild offer show",
+              "name": "show",
+              "description": "Show a visible offer.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "offer",
+                  "description": "Visible offer UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [],
+              "examples": [
+                "arcanum guild offer show offer"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild offer withdraw",
+              "name": "withdraw",
+              "description": "Withdraw a work offer.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "offer",
+                  "description": "Visible offer UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "Required current resource revision; conflicts are reported without retrying the changed action.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild offer withdraw offer --expected-revision 1"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild offer award",
+              "name": "award",
+              "description": "Award an offer to an existing member bid.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "offer",
+                  "description": "Visible offer UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--bid",
+                  "aliases": [],
+                  "description": "bid selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "Required current resource revision; conflicts are reported without retrying the changed action.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--expected-cohort-revision",
+                  "aliases": [],
+                  "description": "Required current Cohort aggregate revision.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild offer award offer --bid bid --expected-revision 1 --expected-cohort-revision 1"
+              ],
+              "commands": []
+            }
+          ]
+        },
+        {
+          "path": "guild bid",
+          "name": "bid",
+          "description": "Inspect member-authored bids.",
+          "runnable": false,
+          "aliases": [],
+          "arguments": [],
+          "options": [],
+          "examples": [],
+          "commands": [
+            {
+              "path": "guild bid list",
+              "name": "list",
+              "description": "List one page of bids for an offer.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "offer",
+                  "description": "Visible offer UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": []
+                }
+              ],
+              "options": [
+                {
+                  "name": "--cursor",
+                  "aliases": [],
+                  "description": "Opaque cursor for the next bounded page or refresh batch.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--page-size",
+                  "aliases": [],
+                  "description": "Requested records per page, 1 through 100; the byte limit may return fewer.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild bid list offer --cursor next --page-size 2"
+              ],
+              "commands": []
+            }
+          ]
+        },
+        {
+          "path": "guild note",
+          "name": "note",
+          "description": "Append and inspect the shared ledger.",
+          "runnable": false,
+          "aliases": [],
+          "arguments": [],
+          "options": [],
+          "examples": [],
+          "commands": [
+            {
+              "path": "guild note append",
+              "name": "append",
+              "description": "Append an Operator-authored observation or correction.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "cohort",
+                  "description": "Visible cohort UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-cohort"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--kind",
+                  "aliases": [],
+                  "description": "kind selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [
+                    "correction",
+                    "observation",
+                    "proposal"
+                  ]
+                },
+                {
+                  "name": "--text",
+                  "aliases": [],
+                  "description": "Authored task data; mutually exclusive with its UTF-8 file option.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--text-file",
+                  "aliases": [],
+                  "description": "Bounded UTF-8 input file, or - to read stdin; mutually exclusive with inline text.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--subject",
+                  "aliases": [],
+                  "description": "subject selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--corrects",
+                  "aliases": [],
+                  "description": "corrects selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "Required current resource revision; conflicts are reported without retrying the changed action.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild note append cohort --kind correction --text correction --corrects note --expected-revision 1"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild note list",
+              "name": "list",
+              "description": "List one page of authorized notes.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "cohort",
+                  "description": "Visible cohort UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-cohort"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--cursor",
+                  "aliases": [],
+                  "description": "Opaque cursor for the next bounded page or refresh batch.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--page-size",
+                  "aliases": [],
+                  "description": "Requested records per page, 1 through 100; the byte limit may return fewer.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild note list cohort --cursor next --page-size 2"
+              ],
+              "commands": []
+            }
+          ]
+        },
+        {
+          "path": "guild lease",
+          "name": "lease",
+          "description": "Manage host-derived Operator workspace leases.",
+          "runnable": false,
+          "aliases": [],
+          "arguments": [],
+          "options": [],
+          "examples": [],
+          "commands": [
+            {
+              "path": "guild lease acquire",
+              "name": "acquire",
+              "description": "Acquire a complete path-scope set atomically.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [],
+              "options": [
+                {
+                  "name": "--workspace",
+                  "aliases": [],
+                  "description": "workspace selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "workspace"
+                },
+                {
+                  "name": "--scope",
+                  "aliases": [],
+                  "description": "Repeatable relative-path:file or relative-path:subtree scope, acquired all together.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": true,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild lease acquire --workspace workspace --scope src:subtree --scope readme.md:file"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild lease list",
+              "name": "list",
+              "description": "List one page of authorized workspace leases.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [],
+              "options": [
+                {
+                  "name": "--workspace",
+                  "aliases": [],
+                  "description": "workspace selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "workspace"
+                },
+                {
+                  "name": "--quest",
+                  "aliases": [],
+                  "description": "quest selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": [],
+                  "completion": "guild-task"
+                },
+                {
+                  "name": "--state",
+                  "aliases": [],
+                  "description": "state selector or value, verified by the authenticated host.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--cursor",
+                  "aliases": [],
+                  "description": "Opaque cursor for the next bounded page or refresh batch.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--page-size",
+                  "aliases": [],
+                  "description": "Requested records per page, 1 through 100; the byte limit may return fewer.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild lease list --workspace workspace --quest task --state held --cursor next --page-size 2"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild lease renew",
+              "name": "renew",
+              "description": "Renew an exact Operator lease epoch and revision.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "lease",
+                  "description": "Visible lease UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-lease"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--epoch",
+                  "aliases": [],
+                  "description": "Exact current lease epoch.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "Required current resource revision; conflicts are reported without retrying the changed action.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild lease renew lease --epoch 1 --expected-revision 1"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild lease release",
+              "name": "release",
+              "description": "Release or drain an exact Operator lease.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "lease",
+                  "description": "Visible lease UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-lease"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--epoch",
+                  "aliases": [],
+                  "description": "Exact current lease epoch.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "Required current resource revision; conflicts are reported without retrying the changed action.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild lease release lease --epoch 1 --expected-revision 1"
+              ],
+              "commands": []
+            }
+          ]
+        }
+      ]
+    },
+    {
       "path": "budget",
       "name": "budget",
       "description": "Show today\u0027s spend against the daily budget, separating local from delegated (A2A) cost.",

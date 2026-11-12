@@ -1670,6 +1670,11 @@ internal static partial class HostedGrimoireProducerInventory
                 "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalHostPolicy",
                 "RetroDownfall.Arcanum.Infrastructure.Guild.UnavailableGuildWorkspaceLeaseHostEvidence",
             },
+            ["RetroDownfall.Arcanum.Infrastructure.Guild.IGuildWorkspaceLeaseHostEvidence.ResolveOperatorAsync"] = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "RetroDownfall.Arcanum.Infrastructure.Guild.GuildLocalHostPolicy",
+                "RetroDownfall.Arcanum.Infrastructure.Guild.UnavailableGuildWorkspaceLeaseHostEvidence",
+            },
             ["RetroDownfall.Arcanum.Infrastructure.Workspaces.IWorkspaceMutationLease.ValidateAsync"] = new HashSet<string>(StringComparer.Ordinal)
             {
                 "RetroDownfall.Arcanum.Infrastructure.Workspaces.WorkspaceMutationFence.CompositeLease",

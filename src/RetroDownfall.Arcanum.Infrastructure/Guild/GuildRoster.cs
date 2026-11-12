@@ -14,13 +14,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 /// <summary>Immutable host composition facts; callers and authored Cards cannot supply this scope.</summary>
 internal sealed record GuildRosterContext(Guid InstallationGeneration, string GlobalAgentsDirectory,
     Guid? WorkspaceId = null, string? WorkspaceRoot = null, Guid? SessionId = null, Guid? CampaignId = null,
-    ImmutableArray<GuildConfiguredRemoteSource> RemoteSources = default);
+    ImmutableArray<GuildConfiguredRemoteSource> RemoteSources = default, bool IncludeGlobalSources = true, bool ManageRemoteSources = true);
 
 /// <summary>Discovery stores immutable observations. It does not issue work, authenticate model claims or grant effects.</summary>
 internal sealed class GuildRoster(GuildStore store, GuildRosterRefreshStore refreshes, GuildRosterContext context,
     GuildDeclaredAgentSourceReader declared, GuildRemoteCardReader remote, TimeProvider time) : IGuildRoster
 {
-    private GuildCardReadScope Scope => new(context.WorkspaceId, context.SessionId, context.CampaignId, WorkspaceRoot: context.WorkspaceRoot);
+    private GuildCardReadScope Scope => new(context.WorkspaceId, context.SessionId, context.CampaignId, IncludeInstallation: context.IncludeGlobalSources, WorkspaceRoot: context.WorkspaceRoot);
 
     public async Task<Result<GuildAgentCard>> ResolveAsync(GuildCallerContext caller, Guid agentId, Guid? cardId, long? revision,
         CancellationToken cancellationToken)
@@ -412,7 +412,7 @@ internal sealed class GuildRoster(GuildStore store, GuildRosterRefreshStore refr
 
             state = decoded.Value;
 
-            if (state.GlobalDiscoveryId is null || context.WorkspaceId is not null && state.WorkspaceDiscoveryId is null)
+            if (context.IncludeGlobalSources && state.GlobalDiscoveryId is null || context.WorkspaceId is not null && state.WorkspaceDiscoveryId is null)
             {
                 return new Error(ErrorCodes.Guild.CursorGone, "The declared-source discovery is unavailable.");
             }
@@ -426,15 +426,15 @@ internal sealed class GuildRoster(GuildStore store, GuildRosterRefreshStore refr
         }
         else
         {
-            Result<Guid> global = await store.BeginDeclaredRootScanAsync(context.InstallationGeneration,
-                GuildAgentSourceKind.DeclaredGlobal, null, context.GlobalAgentsDirectory, token).ConfigureAwait(false);
-
-            if (global.IsFailure)
+            if (context.IncludeGlobalSources)
             {
-                return global.Error;
-            }
+                Result<Guid> global = await store.BeginDeclaredRootScanAsync(context.InstallationGeneration,
+                    GuildAgentSourceKind.DeclaredGlobal, null, context.GlobalAgentsDirectory, token).ConfigureAwait(false);
 
-            state = state with { GlobalDiscoveryId = global.Value };
+                if (global.IsFailure) return global.Error;
+
+                state = state with { GlobalDiscoveryId = global.Value };
+            }
 
             if (context.WorkspaceId is { } workspace)
             {
@@ -460,6 +460,13 @@ internal sealed class GuildRoster(GuildStore store, GuildRosterRefreshStore refr
         {
             if (state.Stage is 0 or 1)
             {
+                if (state.Stage == 0 && !context.IncludeGlobalSources)
+                {
+                    state = state with { Stage = 1, After = null, SnapshotSequence = null };
+
+                    continue;
+                }
+
                 if (state.Stage == 1 && context.WorkspaceId is null)
                 {
                     state = state with { Stage = 2, After = null, SnapshotSequence = null };
@@ -515,6 +522,13 @@ internal sealed class GuildRoster(GuildStore store, GuildRosterRefreshStore refr
                     return completed.Error;
                 }
 
+                if (!context.ManageRemoteSources)
+                {
+                    state = state with { Stage = 3, After = null, SnapshotSequence = null };
+
+                    continue;
+                }
+
                 int index = 0;
 
                 if (state.After is not null && (!int.TryParse(state.After, NumberStyles.None, CultureInfo.InvariantCulture, out index)
@@ -558,7 +572,7 @@ internal sealed class GuildRoster(GuildStore store, GuildRosterRefreshStore refr
                     GuildAgentSourceKind kind = item.Payload.Card.Source.Kind;
 
                     bool missing = kind == GuildAgentSourceKind.Remote
-                        ? !Remotes.Any(source => GuildRemoteCardReader.SourceIdentity(source) == item.SourceIdentity)
+                        ? context.ManageRemoteSources && !Remotes.Any(source => GuildRemoteCardReader.SourceIdentity(source) == item.SourceIdentity)
                         : kind is GuildAgentSourceKind.DeclaredGlobal or GuildAgentSourceKind.DeclaredWorkspace
                             && (!GuildDeclaredAgentSourceReader.TrySourcePath(item.SourceIdentity, out string path)
                                 || !FileHandleIdentityInterop.TryGetPathMetadataNoFollow(path, out FileHandleMetadata metadata)
@@ -743,7 +757,8 @@ internal sealed class GuildRoster(GuildStore store, GuildRosterRefreshStore refr
     {
         ImmutableArray<GuildDeclaredRootScan>.Builder scans = ImmutableArray.CreateBuilder<GuildDeclaredRootScan>();
 
-        scans.Add(new(GuildAgentSourceKind.DeclaredGlobal, null, context.GlobalAgentsDirectory, state.GlobalDiscoveryId!.Value));
+        if (context.IncludeGlobalSources)
+            scans.Add(new(GuildAgentSourceKind.DeclaredGlobal, null, context.GlobalAgentsDirectory, state.GlobalDiscoveryId!.Value));
 
         if (context.WorkspaceId is { } workspace)
         {
@@ -789,7 +804,8 @@ internal sealed class GuildRoster(GuildStore store, GuildRosterRefreshStore refr
         {
             foreach (string value in new[] { kind, context.InstallationGeneration.ToString("D"), context.WorkspaceId?.ToString("D") ?? "",
                          context.SessionId?.ToString("D") ?? "", context.CampaignId?.ToString("D") ?? "", context.GlobalAgentsDirectory,
-                         context.WorkspaceRoot ?? "", source?.ToString() ?? "", skill ?? "" })
+                         context.WorkspaceRoot ?? "", source?.ToString() ?? "", skill ?? "",
+                         context.IncludeGlobalSources ? "global" : "workspace-only", context.ManageRemoteSources ? "remote" : "native-remote" })
             {
                 writer.Write(value);
             }

@@ -25,8 +25,18 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
     internal Task<Result<GuildQuestStored>> IssueAsync(GuildCallerContext caller, GuildIssuanceIdentity issuance,
         GuildIssueRootRequest request, CancellationToken ct) => IssueAsync(caller, issuance, request, null, null, ct);
 
-    internal Task<Result<GuildQuestStored>> IssueAsync(GuildCallerContext caller, GuildIssuanceIdentity issuance,
-        Guid parent, GuildIssueChildRequest request, CancellationToken ct) => IssueAsync(caller, issuance, null, parent, request, ct);
+    internal async Task<Result<GuildQuestStored>> IssueAsync(GuildCallerContext caller, GuildIssuanceIdentity issuance,
+        Guid parent, GuildIssueChildRequest request, CancellationToken ct)
+    {
+        if (caller.Kind != GuildCallerKind.Operator)
+            return await IssueAsync(caller, issuance, null, parent, request, ct).ConfigureAwait(false);
+
+        Result<GuildQuestStored> located = await GetAsync(caller, parent, ct).ConfigureAwait(false);
+
+        if (located.IsFailure) return located.Error;
+
+        return await IssueAsync(caller, issuance, null, parent, request, ct, operatorRoot: located.Value.Quest.RootQuestId).ConfigureAwait(false);
+    }
 
     internal Task<Result<GuildQuestStored>> IssueInboundAsync(GuildCallerContext caller, GuildIssuanceIdentity issuance,
         GuildIssueRootRequest request, GuildInboundIssue inbound, CancellationToken ct) =>
@@ -34,7 +44,7 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
     private Task<Result<GuildQuestStored>> IssueAsync(GuildCallerContext caller, GuildIssuanceIdentity issuance,
         GuildIssueRootRequest? root, Guid? parentId, GuildIssueChildRequest? child, CancellationToken ct,
-        GuildChildToolAdmission? toolAdmission = null, GuildInboundIssue? inbound = null, GuildCohortIssue? cohortIssue = null, GuildAwardIssueState? awardIssue = null)
+        GuildChildToolAdmission? toolAdmission = null, GuildInboundIssue? inbound = null, GuildCohortIssue? cohortIssue = null, GuildAwardIssueState? awardIssue = null, Guid? operatorRoot = null)
     {
         Result<string> digest = root is not null ? GuildQuestIntent.Compute(root)
             : toolAdmission is not null && awardIssue is null ? ToolIssueIntent(parentId.GetValueOrDefault(), child!)
@@ -53,13 +63,13 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
             || (root is not null
                 ? caller.Kind is not (GuildCallerKind.Operator or GuildCallerKind.Peer) || issuance.IssuerQuestId is not null || issuance.RootInvocationId != caller.InvocationId
                 : (caller.Kind != GuildCallerKind.Run || caller.Execution?.QuestId != parentId)
-                    && (caller.Kind != GuildCallerKind.Operator || awardIssue is null || awardIssue.Context.IssuerQuestId != parentId)
+                    && (caller.Kind != GuildCallerKind.Operator || (awardIssue is null ? operatorRoot is null : awardIssue.Context.IssuerQuestId != parentId))
                     || issuance.IssuerQuestId != parentId || issuance.RootInvocationId is not null || child!.ExpectedRevision < 1))
             return Task.FromResult(Result<GuildQuestStored>.Failure(OwnerUnavailable));
 
         Guid id = Guid.NewGuid();
 
-        Guid rootId = caller.Execution?.RootQuestId ?? awardIssue?.Context.RootQuestId ?? id;
+        Guid rootId = caller.Execution?.RootQuestId ?? awardIssue?.Context.RootQuestId ?? operatorRoot ?? id;
 
         return InCohortIssueTransactionAsync(rootId, toolAdmission, cohortIssue, awardIssue, async (connection, transaction, signets, token) =>
         {
@@ -117,6 +127,63 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
                     digest.Value, toolAdmission, token).ConfigureAwait(false);
 
                 if (source.IsFailure) return source.Error;
+            }
+
+            if (cohortIssue?.OperatorDigest is { } operatorDigest)
+            {
+                if (caller.Kind != GuildCallerKind.Operator || caller.PrincipalId is not { } principal || parentId is not { } operatorIssuer)
+                    return OwnerUnavailable;
+
+                Result<GuildQuestStored> operatorIssuerRow = await ReadWithinAsync(connection, transaction, operatorIssuer, token).ConfigureAwait(false);
+
+                if (operatorIssuerRow.IsFailure) return operatorIssuerRow.Error;
+
+                Result visible = await RequireVisibleAsync(connection, transaction, caller, operatorIssuerRow.Value, token).ConfigureAwait(false);
+
+                if (visible.IsFailure) return visible.Error;
+
+                Result<GuildCohortStored> cohortOwner = await GuildCohortStore.ReadWithinAsync(connection, transaction, cohortIssue.Id, token).ConfigureAwait(false);
+
+                if (cohortOwner.IsFailure) return cohortOwner.Error;
+
+                if (cohortOwner.Value.Cohort.RootQuestId != rootId || cohortOwner.Value.Cohort.IssuerQuestId != operatorIssuer) return OwnerUnavailable;
+
+                Result<GuildGrant> currentGrant = await signets.ValidateCurrentGrantAsync(operatorIssuer, token).ConfigureAwait(false);
+
+                if (currentGrant.IsFailure) return currentGrant.Error;
+
+                if (!currentGrant.Value.Delegation.Contains(GuildDelegationKind.Cohort)) return new Error(ErrorCodes.Guild.Forbidden, "Cohort delegation is unavailable.");
+
+                await using SqliteCommand prior = Command(connection, transaction, """
+                    SELECT ResultObjectId,ReceiptId,AcceptedAtUtc,AcceptedRevision,RequestDigest FROM guild_operator_cohort_mutations
+                    WHERE InstallationGeneration=$generation AND PrincipalId=$principal AND ActionCode=3 AND ParentId=$cohort AND IdempotencyKey=$key
+                    """);
+
+                Add(prior, "$generation", Id(caller.InstallationGeneration)); Add(prior, "$principal", Id(principal));
+                Add(prior, "$cohort", Id(cohortIssue.Id)); Add(prior, "$key", Id(key));
+
+                await using SqliteDataReader reader = await prior.ExecuteReaderAsync(token).ConfigureAwait(false);
+
+                if (await reader.ReadAsync(token).ConfigureAwait(false))
+                {
+                    if (reader.GetValue(4) is not byte[] priorDigest || !CryptographicOperations.FixedTimeEquals(priorDigest, operatorDigest)) return Conflict;
+
+                    if (reader.IsDBNull(0) || !Guid.TryParse(reader.GetString(0), out Guid operatorAcceptedId) || operatorAcceptedId == Guid.Empty) return Unavailable;
+
+                    Guid receiptId = Guid.Parse(reader.GetString(1));
+                    DateTimeOffset acceptedAt = UtcInstantText.Parse(reader.GetString(2));
+                    long acceptedRevision = reader.GetInt64(3);
+                    await reader.DisposeAsync().ConfigureAwait(false);
+
+                    Result<GuildQuestStored> accepted = await ReadWithinAsync(connection, transaction, operatorAcceptedId, token).ConfigureAwait(false);
+                    if (accepted.IsFailure) return accepted.Error;
+                    Result allowed = await RequireVisibleAsync(connection, transaction, caller, accepted.Value, token).ConfigureAwait(false);
+                    if (allowed.IsFailure) return allowed.Error;
+                    Result<CohortMemberDto> member = await ReadCohortMemberWithinAsync(connection, transaction, cohortIssue.Id, accepted.Value, token).ConfigureAwait(false);
+                    if (member.IsFailure) return member.Error;
+                    cohortIssue.Member = member.Value with { Receipt = new(receiptId, key, true, acceptedAt, acceptedRevision) };
+                    return Replay(accepted.Value);
+                }
             }
 
             if (inbound is not null)
@@ -194,7 +261,7 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
                 if (visible.IsFailure) return visible.Error;
 
-                if (parent.Quest.Revision != child!.ExpectedRevision) return RevisionConflict;
+                if (cohortIssue?.OperatorDigest is null && parent.Quest.Revision != child!.ExpectedRevision) return RevisionConflict;
 
                 if (parent.Quest.RootQuestId != rootId || await HasClosedAncestorAsync(connection, transaction, issuer, token).ConfigureAwait(false))
                     return new Error(ErrorCodes.Guild.Forbidden, "The issuing Quest is closed to new descendants.");
@@ -202,7 +269,7 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
                 if (toolAdmission is not null && cohortIssue is null && awardIssue is null)
                 {
                     Result<GuildIssueChildRequest> resolved = await ResolveToolBudgetWithinAsync(connection, transaction,
-                        parent, child, token).ConfigureAwait(false);
+                        parent, child!, token).ConfigureAwait(false);
 
                     if (resolved.IsFailure) return resolved.Error;
 
@@ -360,7 +427,7 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
                 1, GuildQuestCheckpoint.Encode(id), Id(id), token).ConfigureAwait(false);
 
             GuildSignetBinding binding = new(Guid.NewGuid(), destination.Value.AgentId, proposal.RunId, id, rootId,
-                caller.Execution?.SignetId ?? (awardIssue is not null ? parent?.Quest.SignetId : null), plan.Grant, now, plan.OriginPrincipalId);
+                caller.Execution?.SignetId ?? (caller.Kind == GuildCallerKind.Operator && child is not null ? parent?.Quest.SignetId : null), plan.Grant, now, plan.OriginPrincipalId);
 
             GuildRequestedGrant? signingRequest = child?.RequestedGrant ?? (child is null ? null : new());
 
@@ -371,8 +438,8 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
             if (cohort is not null || awardIssue is not null) signingRequest = CohortGrantRequest(plan.Grant);
 
-            Result<GuildSignetRecord> signet = caller.Kind == GuildCallerKind.Operator && awardIssue is not null
-                ? await signets.IssueOperatorChildAsync(plan.Admission, binding, awardIssue.Context.IssuerQuestId, signingRequest!, token).ConfigureAwait(false)
+            Result<GuildSignetRecord> signet = caller.Kind == GuildCallerKind.Operator && parentId is { } operatorParent
+                ? await signets.IssueOperatorChildAsync(plan.Admission, binding, operatorParent, signingRequest!, token).ConfigureAwait(false)
                 : await signets.IssueAsync(plan.Admission, binding, caller.Execution, signingRequest, token).ConfigureAwait(false);
 
             if (signet.IsFailure) return signet.Error;
@@ -392,8 +459,14 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
             if (account.IsFailure || account.Value == Guid.Empty) return account.IsFailure ? account.Error : Unavailable;
 
+            await using SqliteCommand sequence = Command(connection, transaction,
+                "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='guild_operator_sequences'),0)");
+
+            if (await sequence.ExecuteScalarAsync(token).ConfigureAwait(false) is not long high || high < 0 || high == long.MaxValue)
+                return Unavailable;
+
             await InsertAsync(connection, transaction, proposal, issuance, destination.Value, goal.Value, binding, operationId, account.Value,
-                root?.Name ?? child?.Name, now, token).ConfigureAwait(false);
+                root?.Name ?? child?.Name, now, checked(high + 1), token).ConfigureAwait(false);
 
             Result<long> projected = await GuildPortalEvents.RecordSourceWithinAsync(connection, transaction, rootId, id,
                 GuildReceiptSourceKind.QuestIssue, id, 1, now, token).ConfigureAwait(false);
@@ -413,6 +486,23 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
                 cohortIssue!.Member = associated.Value with { Receipt = created.Value.Quest.Receipt! with
                     { AcceptedRevision = checked(cohort.Cohort.Revision + 1) } };
+
+                if (cohortIssue.OperatorDigest is { } acceptedDigest)
+                {
+                    GuildMutationReceiptDto receipt = cohortIssue.Member.Receipt!;
+
+                    await using SqliteCommand operatorReceiptCommand = Command(connection, transaction, """
+                        INSERT INTO guild_operator_cohort_mutations(InstallationGeneration,PrincipalId,ActionCode,ParentId,IdempotencyKey,
+                            ReceiptId,AcceptedAtUtc,RequestDigest,CohortId,ResultObjectId,AcceptedRevision)
+                        VALUES($generation,$principal,3,$cohort,$key,$receipt,$now,$digest,$cohort,$quest,$revision)
+                        """);
+
+                    Add(operatorReceiptCommand, "$generation", Id(caller.InstallationGeneration)); Add(operatorReceiptCommand, "$principal", Id(caller.PrincipalId));
+                    Add(operatorReceiptCommand, "$cohort", Id(cohortIssue.Id)); Add(operatorReceiptCommand, "$key", Id(key)); Add(operatorReceiptCommand, "$receipt", Id(receipt.Id));
+                    Add(operatorReceiptCommand, "$now", UtcInstantText.Format(now)); Add(operatorReceiptCommand, "$digest", acceptedDigest);
+                    Add(operatorReceiptCommand, "$quest", Id(id)); Add(operatorReceiptCommand, "$revision", receipt.AcceptedRevision);
+                    await operatorReceiptCommand.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+                }
             }
 
             if (awardIssue is not null)
@@ -568,7 +658,7 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
 
     private static async Task InsertAsync(SqliteConnection connection, SqliteTransaction transaction, GuildQuestProposal proposal,
         GuildIssuanceIdentity issuance, (Guid AgentId, Guid CardId, long Revision) card, GuildDataRef goal, GuildSignetBinding binding,
-        Guid operationId, Guid accountId, string? name, DateTimeOffset now, CancellationToken ct)
+        Guid operationId, Guid accountId, string? name, DateTimeOffset now, long issuedSequence, CancellationToken ct)
     {
         await using SqliteCommand command = Command(connection, transaction, """
             INSERT INTO guild_quests(Id,OperationId,InstallationGeneration,IssuerKindCode,IssuerIdentity,IssuingStepId,LogicalCallId,
@@ -576,13 +666,15 @@ internal sealed partial class GuildQuestStore(GuildStore guild, SignetAuthority 
               SessionId,CampaignId,WorkspaceId,GoalContentId,GoalRevision,GoalDigest,GoalMimeType,GoalByteLength,AllocationAccountId,
               CreatedAtUtc,UpdatedAtUtc,IssuedSequence,Revision,LastNonterminalStateCode,CancellationRequested,CancellationConverged,AccountingStateCode,Retired)
             VALUES($id,$operation,$generation,$kind,$issuer,$step,$call,$mutation,$intent,$resolution,$root,$parent,$agent,$card,$cardRevision,$run,$signet,$name,
-              $session,$campaign,$workspace,$goal,1,$goalDigest,$mime,$bytes,$account,$now,$now,(SELECT COALESCE(MAX(IssuedSequence),0)+1 FROM guild_quests),1,0,0,0,1,0);
+              $session,$campaign,$workspace,$goal,1,$goalDigest,$mime,$bytes,$account,$now,$now,$issuedSequence,1,0,0,0,1,0);
             INSERT INTO guild_quest_start_intents(QuestId,CreatedAtUtc) VALUES($id,$now);
             """);
 
         BindIdentity(command, issuance);
 
         Add(command, "$id", Id(proposal.QuestId));
+
+        Add(command, "$issuedSequence", issuedSequence);
 
         Add(command, "$operation", operationId.ToString("N"));
 

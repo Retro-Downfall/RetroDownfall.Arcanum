@@ -18,4 +18,6 @@ public static class SseEventTypes
 
     public const string Chronicle = "Chronicle";
 
+    public const string Guild = "Guild";
+
 }

@@ -31,6 +31,20 @@ public sealed partial class ApprenticeRepository
 
     private async Task<Result<bool>> IsGuildBoundWithinAsync(Guid id, CancellationToken cancellationToken)
     {
+        Result<bool> available = await GuildLinkageAvailableWithinAsync(cancellationToken).ConfigureAwait(false);
+
+        if (available.IsFailure || !available.Value) return available;
+
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(_db,
+            "SELECT EXISTS(SELECT 1 FROM guild_local_executions WHERE ApprenticeId=$id)", cancellationToken).ConfigureAwait(false);
+
+        command.Parameters.AddWithValue("$id", id.ToString("D").ToUpperInvariant());
+
+        return Equals(1L, await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false));
+    }
+
+    private async Task<Result<bool>> GuildLinkageAvailableWithinAsync(CancellationToken cancellationToken)
+    {
         await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(_db, """
             SELECT (SELECT count(*) FROM grimoire_feature_schemas WHERE FamilyCode=2),
                 (SELECT count(*) FROM sqlite_schema WHERE lower(name) GLOB 'guild_*' OR lower(name) GLOB 'idx_guild_*' OR lower(name) GLOB 'ux_guild_*')
@@ -84,11 +98,7 @@ public sealed partial class ApprenticeRepository
 
         if (available.IsFailure) return available.Error;
 
-        command.CommandText = "SELECT EXISTS(SELECT 1 FROM guild_local_executions WHERE ApprenticeId=$id)";
-
-        command.Parameters.AddWithValue("$id", id.ToString("D").ToUpperInvariant());
-
-        return Equals(1L, await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false));
+        return true;
     }
 
     private static Error GuildOwnershipUnavailable => new(ErrorCodes.Guild.Unavailable,

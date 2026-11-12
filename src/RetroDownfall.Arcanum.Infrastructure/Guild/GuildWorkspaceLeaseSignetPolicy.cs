@@ -8,6 +8,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 internal sealed record GuildWorkspaceHostEvidence(string WorkspaceRoot, uint IdentityPolicyVersion,
     long IdentityRevision, byte[] RootIdentity, ImmutableArray<GuildPathScope> OperatorScopes);
 
+/// <summary>Operator root selection only; the broker produces and retains the physical scope proof.</summary>
+internal sealed record GuildOperatorWorkspaceHostEvidence(string WorkspaceRoot, ImmutableArray<GuildPathScope> OperatorScopes);
+
 /// <summary>Host-issued authentication and current canonical registration; never derived from caller-selected identifiers.</summary>
 internal interface IGuildWorkspaceLeaseHostEvidence
 {
@@ -18,6 +21,10 @@ internal interface IGuildWorkspaceLeaseHostEvidence
     bool Authenticates(GuildCallerContext caller);
 
     Task<Result<GuildWorkspaceHostEvidence>> ResolveAsync(Guid workspaceId, CancellationToken cancellationToken);
+
+    Task<Result<GuildOperatorWorkspaceHostEvidence>> ResolveOperatorAsync(Guid workspaceId, CancellationToken cancellationToken) =>
+        Task.FromResult(Result<GuildOperatorWorkspaceHostEvidence>.Failure(new(ErrorCodes.Guild.AuthorityUnavailable,
+            "Native Operator workspace authority is unavailable.")));
 }
 
 internal sealed class GuildWorkspaceLeaseSignetPolicy(SignetAuthority authority, IGuildWorkspaceLeaseHostEvidence host)
@@ -86,11 +93,12 @@ internal sealed class GuildWorkspaceLeaseSignetPolicy(SignetAuthority authority,
         if (workspaceId == Guid.Empty || host.InstallationGeneration == Guid.Empty || host.OperatorPrincipalId == Guid.Empty
             || caller.Kind != GuildCallerKind.Operator || caller.PrincipalId != host.OperatorPrincipalId) return Forbidden;
 
-        Result<GuildWorkspaceHostEvidence> resolved = await host.ResolveAsync(workspaceId, ct).ConfigureAwait(false);
+        Result<GuildOperatorWorkspaceHostEvidence> resolved = await host.ResolveOperatorAsync(workspaceId, ct).ConfigureAwait(false);
 
         if (resolved.IsFailure) return resolved.Error;
 
-        if (!Valid(resolved.Value) || resolved.Value.OperatorScopes.IsDefaultOrEmpty) return Forbidden;
+        if (string.IsNullOrWhiteSpace(resolved.Value.WorkspaceRoot) || !Path.IsPathFullyQualified(resolved.Value.WorkspaceRoot)
+            || resolved.Value.OperatorScopes.IsDefaultOrEmpty) return Forbidden;
 
         GuildVerifiedAuthority proof = new(caller, action, workspaceId, 1);
 
@@ -120,4 +128,7 @@ internal sealed class UnavailableGuildWorkspaceLeaseHostEvidence : IGuildWorkspa
 
     public Task<Result<GuildWorkspaceHostEvidence>> ResolveAsync(Guid workspaceId, CancellationToken cancellationToken) =>
         Task.FromResult(Result<GuildWorkspaceHostEvidence>.Failure(new(ErrorCodes.Guild.AuthorityUnavailable, "Workspace authority is unavailable.")));
+
+    public Task<Result<GuildOperatorWorkspaceHostEvidence>> ResolveOperatorAsync(Guid workspaceId, CancellationToken cancellationToken) =>
+        Task.FromResult(Result<GuildOperatorWorkspaceHostEvidence>.Failure(new(ErrorCodes.Guild.AuthorityUnavailable, "Native Operator workspace authority is unavailable.")));
 }

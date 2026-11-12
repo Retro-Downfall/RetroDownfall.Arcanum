@@ -1,3 +1,6 @@
+using System.Text.Json.Serialization.Metadata;
+using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Cli.Infrastructure.Surface;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -140,8 +143,37 @@ public sealed class CliCompletionResolver(
                 await apiClient.GetMcpServersAsync(cancellationToken).ConfigureAwait(false),
                 static servers => servers.Select(static server => server.Name)),
 
+            CliCompletionProviders.GuildAgent => Names(
+                await GuildCatalog<GuildAgentCardPageDto>("api/guild/agents?pageSize=100", cancellationToken).ConfigureAwait(false),
+                static page => page.Items.Select(static item => item.AgentId.ToString("D"))),
+
+            CliCompletionProviders.GuildTask => Names(
+                await GuildCatalog<GuildQuestPageDto>("api/guild/quests?pageSize=100", cancellationToken).ConfigureAwait(false),
+                static page => page.Items.Select(static item => item.Id.ToString("D"))),
+
+            CliCompletionProviders.GuildCohort => Names(
+                await GuildCatalog<CohortPageDto>("api/guild/cohorts?pageSize=100", cancellationToken).ConfigureAwait(false),
+                static page => page.Items.Select(static item => item.Id.ToString("D"))),
+
+            CliCompletionProviders.GuildLease => Names(
+                await GuildCatalog<WorkspaceLeasePageDto>("api/guild/workspace-leases?pageSize=100", cancellationToken).ConfigureAwait(false),
+                static page => page.Items.Select(static item => item.Id.ToString("D"))),
+
+            CliCompletionProviders.GuildSignet => Names(
+                await GuildCatalog<GuildQuestPageDto>("api/guild/quests?pageSize=100", cancellationToken).ConfigureAwait(false),
+                static page => page.Items.Select(static item => item.SignetId.ToString("D"))),
+
+            CliCompletionProviders.GuildContent => Names(
+                await GuildCatalog<GuildQuestPageDto>("api/guild/quests?pageSize=100", cancellationToken).ConfigureAwait(false),
+                static page => page.Items.SelectMany(static item => item.ResultRef is null
+                    ? new[] { item.GoalRef.ContentId.ToString("D") }
+                    : new[] { item.GoalRef.ContentId.ToString("D"), item.ResultRef.ContentId.ToString("D") })),
+
             _ => [],
         };
+
+    private Task<Result<T>> GuildCatalog<T>(string path, CancellationToken cancellationToken) =>
+        apiClient.GetGuildAsync(path, (JsonTypeInfo<ApiResponse<T>>)ArcanumJsonContext.Default.GetTypeInfo(typeof(ApiResponse<T>))!, cancellationToken);
 
     /// <summary>
     /// Projects a catalog result to completion words. Anything containing whitespace or a shell

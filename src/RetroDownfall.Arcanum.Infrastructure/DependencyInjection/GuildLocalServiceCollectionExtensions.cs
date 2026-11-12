@@ -71,6 +71,12 @@ internal static class GuildLocalServiceCollectionExtensions
 
         services.AddScoped<GuildNativeHost>();
 
+        services.AddScoped<GuildNativeRoster>();
+
+        services.AddScoped<GuildNativeLeaseService>();
+
+        services.AddScoped<GuildNativeMessageService>();
+
         services.AddScoped<GuildLocalPort>();
 
         services.AddScoped<GuildRemotePort>();

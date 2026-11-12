@@ -447,7 +447,7 @@ internal sealed partial class GuildWorkspaceLeaseBroker(GuildWorkspaceLeaseStore
         }
     }
 
-    private static Result<WorkspaceLeaseDto> ToDto(GuildWorkspaceLeaseRecord row, GuildMutationReceiptDto? receipt = null)
+    internal static Result<WorkspaceLeaseDto> ToDto(GuildWorkspaceLeaseRecord row, GuildMutationReceiptDto? receipt = null)
     {
         Result<WorkspaceLeaseIdentitySet> identity = WorkspaceLeaseIdentitySet.FromJson(row.IdentityJson);
 

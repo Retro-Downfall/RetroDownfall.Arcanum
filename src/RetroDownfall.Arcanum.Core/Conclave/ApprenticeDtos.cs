@@ -21,7 +21,8 @@ public sealed record ApprenticeSummaryDto(
     int CurrentStep,
     int PlanStepCount,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    Guid? GuildQuestId = null);
 
 public sealed record ApprenticeDetailDto(
     Guid Id,
@@ -37,4 +38,5 @@ public sealed record ApprenticeDetailDto(
     ApprenticeCheckpoint? Checkpoint,
     string? ErrorMessage,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    Guid? GuildQuestId = null);

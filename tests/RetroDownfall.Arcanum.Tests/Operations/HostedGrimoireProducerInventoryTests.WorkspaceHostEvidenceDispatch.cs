@@ -8,12 +8,16 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Theory]
     [InlineData("Authenticates", "complete")]
     [InlineData("ResolveAsync", "complete")]
+    [InlineData("ResolveOperatorAsync", "complete")]
     [InlineData("Authenticates", "missing-policy")]
     [InlineData("ResolveAsync", "missing-policy")]
+    [InlineData("ResolveOperatorAsync", "missing-policy")]
     [InlineData("Authenticates", "missing-unavailable")]
     [InlineData("ResolveAsync", "missing-unavailable")]
+    [InlineData("ResolveOperatorAsync", "missing-unavailable")]
     [InlineData("Authenticates", "extra")]
     [InlineData("ResolveAsync", "extra")]
+    [InlineData("ResolveOperatorAsync", "extra")]
     public void Workspace_host_evidence_dispatch_traverses_both_bodies_and_refuses_census_drift(string operation, string census)
     {
         const string policy = """
@@ -29,6 +33,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                     await Task.CompletedTask.ConfigureAwait(false);
                     System.IO.File.Delete("policy-resolution-effect");
                     return RetroDownfall.Arcanum.Core.Primitives.Result<GuildWorkspaceHostEvidence>.Success(new());
+                }
+                public async Task<RetroDownfall.Arcanum.Core.Primitives.Result<GuildOperatorWorkspaceHostEvidence>> ResolveOperatorAsync(Guid workspaceId, CancellationToken token)
+                {
+                    await Task.CompletedTask.ConfigureAwait(false);
+                    System.IO.File.Delete("policy-operator-resolution-effect");
+                    return RetroDownfall.Arcanum.Core.Primitives.Result<GuildOperatorWorkspaceHostEvidence>.Success(new());
                 }
             }
             """;
@@ -47,6 +57,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                     System.IO.File.Delete("unavailable-resolution-effect");
                     return RetroDownfall.Arcanum.Core.Primitives.Result<GuildWorkspaceHostEvidence>.Success(new());
                 }
+                public async Task<RetroDownfall.Arcanum.Core.Primitives.Result<GuildOperatorWorkspaceHostEvidence>> ResolveOperatorAsync(Guid workspaceId, CancellationToken token)
+                {
+                    await Task.CompletedTask.ConfigureAwait(false);
+                    System.IO.File.Delete("unavailable-operator-resolution-effect");
+                    return RetroDownfall.Arcanum.Core.Primitives.Result<GuildOperatorWorkspaceHostEvidence>.Success(new());
+                }
             }
             """;
 
@@ -56,16 +72,18 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         string invocation = operation == "Authenticates"
             ? "host.Authenticates(null!); await Task.CompletedTask;"
-            : "await host.ResolveAsync(Guid.Empty, token).ConfigureAwait(false);";
+            : $"await host.{operation}(Guid.Empty, token).ConfigureAwait(false);";
 
         string source = R2Source("RetroDownfall.Arcanum.Infrastructure.Guild.IGuildWorkspaceLeaseHostEvidence host = null!; " + invocation, """
             namespace RetroDownfall.Arcanum.Infrastructure.Guild
             {
                 internal sealed record GuildWorkspaceHostEvidence;
+                internal sealed record GuildOperatorWorkspaceHostEvidence;
                 internal interface IGuildWorkspaceLeaseHostEvidence
                 {
                     bool Authenticates(RetroDownfall.Arcanum.Core.Guild.GuildCallerContext caller);
                     Task<RetroDownfall.Arcanum.Core.Primitives.Result<GuildWorkspaceHostEvidence>> ResolveAsync(Guid workspaceId, CancellationToken token);
+                    Task<RetroDownfall.Arcanum.Core.Primitives.Result<GuildOperatorWorkspaceHostEvidence>> ResolveOperatorAsync(Guid workspaceId, CancellationToken token);
                 }
                 /* IMPLEMENTATIONS */
             }

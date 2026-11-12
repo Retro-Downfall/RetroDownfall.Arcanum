@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
@@ -12,6 +13,8 @@ internal interface IGuildLocalHostReadiness
     Result RequireExecutionReady();
 
     Task<Result> EnsureReadyAsync(CancellationToken cancellationToken);
+
+    Result<IGuildWorkspaceLeaseService> GetWorkspaceLeaseService() => GuildLocalHostReadiness.Unavailable;
 }
 
 /// <summary>Host-lifetime ownership of the existing process-wide physical mutation fence.</summary>
@@ -38,6 +41,16 @@ internal sealed class GuildLocalHostReadiness(IOptionsMonitor<ArcanumSettings> s
             && installed.Generation == policy.InstallationGeneration && installed.Principal == policy.OperatorPrincipalId
             && installed.HostLock.Validate().IsSuccess
             ? Result.Success() : Unavailable;
+    }
+
+    public Result<IGuildWorkspaceLeaseService> GetWorkspaceLeaseService()
+    {
+        Installation? installed = Volatile.Read(ref _installed);
+
+        return !_stopping && _identityReady && installed is not null
+            && installed.Generation == policy.InstallationGeneration && installed.Principal == policy.OperatorPrincipalId
+            && installed.HostLock.Validate().IsSuccess
+            ? Result<IGuildWorkspaceLeaseService>.Success(installed.Broker) : Unavailable;
     }
 
     public async Task<Result> EnsureReadyAsync(CancellationToken cancellationToken)

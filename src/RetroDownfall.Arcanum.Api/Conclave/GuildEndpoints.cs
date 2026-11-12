@@ -11,7 +11,7 @@ using RetroDownfall.Arcanum.Infrastructure.Guild;
 
 namespace RetroDownfall.Arcanum.Api.Conclave;
 
-internal static class GuildEndpoints
+internal static partial class GuildEndpoints
 {
     internal static RouteGroupBuilder MapGuildEndpoints(this RouteGroupBuilder api)
     {
@@ -66,19 +66,11 @@ internal static class GuildEndpoints
             Result<GuildQuestStored> found = caller.IsFailure ? caller.Error
                 : await store.GetAsync(caller.Value, questId, context.RequestAborted).ConfigureAwait(false);
 
-            return Reply(found.IsFailure ? Result<GuildQuestDto>.Failure(found.Error) : found.Value.Quest,
+            return Reply(found.IsFailure ? Result<GuildQuestDto>.Failure(found.Error) : found.Value.Quest with { Receipt = null },
                 context, ArcanumJsonContext.Default.ApiResponseGuildQuestDto);
         }).WithName("GuildGetQuest");
 
-        api.MapGet("/guild/quests/{questId:guid}/input", async (Guid questId, GuildNativeHost host, GuildQuestStore store, HttpContext context) =>
-        {
-            Result<GuildCallerContext> caller = await host.CreateCallerAsync(Guid.NewGuid(), context.RequestAborted).ConfigureAwait(false);
-
-            Result<GuildQuestInputDto> result = caller.IsFailure ? caller.Error
-                : await store.ReadLocalQuestionAsync(caller.Value, questId, context.RequestAborted).ConfigureAwait(false);
-
-            return Reply(result, context, ArcanumJsonContext.Default.ApiResponseGuildQuestInputDto);
-        }).WithName("GuildGetQuestInput");
+        api.MapGet("/guild/quests/{questId:guid}/input", ReadQuestInputAsync).WithName("GuildGetQuestInput");
 
         api.MapPost("/guild/quests/{questId:guid}/cancel", async (Guid questId, GuildCancelQuestRequest? request,
             GuildNativeHost host, IGuildQuestCoordinator coordinator, HttpContext context) =>
@@ -138,19 +130,17 @@ internal static class GuildEndpoints
             return Reply(result, context, ArcanumJsonContext.Default.ApiResponseGuildResultReceipt);
         }).WithName("GuildGetQuestResult");
 
-        api.MapGet("/guild/quests/{questId:guid}/result/content", async (Guid questId, GuildNativeHost host, GuildQuestStore store, HttpContext context) =>
-        {
-            Result<GuildCallerContext> caller = await host.CreateCallerAsync(Guid.NewGuid(), context.RequestAborted).ConfigureAwait(false);
+        api.MapGet("/guild/quests/{questId:guid}/result/content", ReadQuestResultContent).WithName("GuildGetQuestResultContent");
 
-            Result<GuildLocalResultObservation> found = caller.IsFailure ? caller.Error
-                : await store.ReadLocalResultAsync(caller.Value, questId, true, context.RequestAborted).ConfigureAwait(false);
+        api.MapGuildOperatorEndpoints();
 
-            Result<GuildContentDto> result = found.IsFailure ? found.Error
-                : found.Value.Receipt?.Content is { } reference && found.Value.Body is { } body
-                    ? new GuildContentDto(reference, body) : MissingResult;
+        api.MapGuildContentEndpoints();
 
-            return Reply(result, context, ArcanumJsonContext.Default.ApiResponseGuildContentDto);
-        }).WithName("GuildGetQuestResultContent");
+        api.MapGuildStreamEndpoints();
+
+        api.MapGuildRosterEndpoints();
+
+        api.MapGuildLeaseEndpoints();
 
         return api;
     }

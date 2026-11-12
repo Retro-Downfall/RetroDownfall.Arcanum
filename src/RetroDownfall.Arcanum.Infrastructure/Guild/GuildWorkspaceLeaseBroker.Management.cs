@@ -47,7 +47,7 @@ internal sealed partial class GuildWorkspaceLeaseBroker
 
                     GuildWorkspaceLeaseRecord row = read.Value;
 
-                    if (row.Owner != binding.Owner) return Forbidden;
+                    if (!GuildWorkspaceLeaseStore.CanManageOwner(row.Owner, binding.Owner, action)) return Forbidden;
 
                     if (row.Epoch != epoch || row.Revision != revision) return RevisionConflict;
 
@@ -97,7 +97,7 @@ internal sealed partial class GuildWorkspaceLeaseBroker
 
                     if (changed.IsFailure) return changed.Error;
 
-                    return await GuildWorkspaceLeaseStore.RecordMutationWithinAsync(connection, transaction, changed.Value, mutation, action, now, admitted).ConfigureAwait(false);
+                    return await GuildWorkspaceLeaseStore.RecordMutationWithinAsync(connection, transaction, changed.Value, mutation, action, now, admitted, binding.Owner).ConfigureAwait(false);
                 }, token).ConfigureAwait(false);
 
                 if (result.IsFailure) return Result<WorkspaceLeaseDto>.Failure(result.Error);

@@ -16,7 +16,7 @@ internal sealed partial class GuildPortalStore(GuildQuestStore quests, SignetAut
 
     internal async Task<Result<GuildMessageReceipt>> PublishAsync(GuildCallerContext caller, Guid questId, GuildPublishRequest request, CancellationToken ct, GuildChildToolAdmission? toolAdmission = null)
     {
-        Result<GuildPublishRequest> normalized = Normalize(request, caller?.Kind == GuildCallerKind.HostReceipt);
+        Result<GuildPublishRequest> normalized = Normalize(request, caller?.Kind is GuildCallerKind.HostReceipt or GuildCallerKind.Operator);
 
         if (normalized.IsFailure) return normalized.Error;
 

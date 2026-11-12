@@ -80,6 +80,21 @@ internal static class CliCompletionBindings
 
         ArgumentNullException.ThrowIfNull(commandPath);
 
+        if (commandPath.StartsWith("guild ", StringComparison.Ordinal))
+        {
+            if (symbolName is "--agent" or "agent") return CliCompletionProviders.GuildAgent;
+
+            if (symbolName is "task" or "parent" or "--parent" or "--root" or "--issuer" or "--quest" or "--predecessor") return CliCompletionProviders.GuildTask;
+
+            if (symbolName == "cohort") return CliCompletionProviders.GuildCohort;
+
+            if (symbolName == "lease") return CliCompletionProviders.GuildLease;
+
+            if (symbolName == "signet") return CliCompletionProviders.GuildSignet;
+
+            if (symbolName == "content-id") return CliCompletionProviders.GuildContent;
+        }
+
         if (Bindings.TryGetValue(symbolName, out string? provider))
         {
 
@@ -147,6 +162,18 @@ internal static class CliCompletionProviders
 
     public const string McpServer = "mcp-server";
 
+    public const string GuildAgent = "guild-agent";
+
+    public const string GuildTask = "guild-task";
+
+    public const string GuildCohort = "guild-cohort";
+
+    public const string GuildLease = "guild-lease";
+
+    public const string GuildSignet = "guild-signet";
+
+    public const string GuildContent = "guild-content";
+
     public static readonly string[] All =
     [
         Model,
@@ -158,6 +185,12 @@ internal static class CliCompletionProviders
         Prompt,
         Apprentice,
         McpServer,
+        GuildAgent,
+        GuildTask,
+        GuildCohort,
+        GuildLease,
+        GuildSignet,
+        GuildContent,
     ];
 
 }

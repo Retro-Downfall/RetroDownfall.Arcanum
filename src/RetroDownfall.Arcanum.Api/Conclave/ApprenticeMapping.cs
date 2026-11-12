@@ -19,7 +19,8 @@ internal static class ApprenticeMapping
             apprentice.CurrentStep,
             plan.Count,
             apprentice.CreatedAt,
-            apprentice.UpdatedAt);
+            apprentice.UpdatedAt,
+            apprentice.GuildQuestId);
     }
 
     public static ApprenticeDetailDto ToDetailDto(Apprentice apprentice)
@@ -42,7 +43,8 @@ internal static class ApprenticeMapping
             checkpoint,
             apprentice.ErrorMessage,
             apprentice.CreatedAt,
-            apprentice.UpdatedAt);
+            apprentice.UpdatedAt,
+            apprentice.GuildQuestId);
     }
 
 }

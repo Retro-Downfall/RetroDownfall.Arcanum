@@ -97,7 +97,11 @@ public sealed partial class GuildSignetAuthorityTests
 
         Result<SignetRevocationDto> replay = await f.Authority.RevokeAsync(f.Operator, new(key, Digest("revoke-child")), child.SignetId, request, default);
 
-        Assert.Equal(revoked.Value, replay.Value);
+        Assert.False(revoked.Value.Receipt!.Replayed);
+
+        Assert.True(replay.Value.Receipt!.Replayed);
+
+        Assert.Equal(revoked.Value, replay.Value with { Receipt = replay.Value.Receipt! with { Replayed = false } });
 
         Assert.Equal(ErrorCodes.Guild.IdempotencyConflict,
             (await f.Authority.RevokeAsync(f.Operator, new(key, Digest("different-intent")), child.SignetId, request, default)).Error.Code);

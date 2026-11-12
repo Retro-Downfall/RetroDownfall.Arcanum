@@ -77,6 +77,8 @@ internal static class WatchSseParser
 
         string? eventName = null;
 
+        string? eventId = null;
+
         Task<BoundedLine?>? pendingRead = null;
 
         CancellationTokenSource? idleWindow = null;
@@ -149,7 +151,8 @@ internal static class WatchSseParser
                     {
                         WatchSseFrame finalFrame = CreateEventFrame(
                             eventName,
-                            dataLines);
+                            dataLines,
+                            eventId);
 
                         yield return finalFrame;
 
@@ -200,7 +203,7 @@ internal static class WatchSseParser
                         continue;
                     }
 
-                    WatchSseFrame frame = CreateEventFrame(eventName, dataLines);
+                    WatchSseFrame frame = CreateEventFrame(eventName, dataLines, eventId);
 
                     ResetEvent(dataLines, ref eventName, ref dataLength, ref oversized);
 
@@ -245,6 +248,13 @@ internal static class WatchSseParser
                     continue;
                 }
 
+                if (string.Equals(field, "id", StringComparison.Ordinal))
+                {
+                    if (!value.Contains('\0')) eventId = value;
+
+                    continue;
+                }
+
                 if (!string.Equals(field, "data", StringComparison.Ordinal)
                     || oversized)
                 {
@@ -284,7 +294,8 @@ internal static class WatchSseParser
 
     private static WatchSseFrame CreateEventFrame(
         string? eventName,
-        List<string> dataLines)
+        List<string> dataLines,
+        string? eventId)
     {
         string rawJson = string.Join('\n', dataLines);
 
@@ -338,7 +349,9 @@ internal static class WatchSseParser
         return new WatchSseFrame(
             WatchSseFrameType.Data,
             Data: data,
-            RawJson: rawJson);
+            RawJson: rawJson,
+            EventName: eventName,
+            EventId: eventId);
     }
 
     private static bool IsControlFrame(

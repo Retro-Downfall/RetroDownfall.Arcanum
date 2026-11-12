@@ -89,7 +89,7 @@ internal sealed class GrimoireStreamRouteMetadata
 
     }
 
-    /// <summary>The one unbounded class, carried by exactly the five declared SSE routes.</summary>
+    /// <summary>The unbounded class carried by the declared quiesceable SSE routes.</summary>
     internal static GrimoireStreamRouteMetadata Quiesceable { get; } =
         new(GrimoireStreamClass.GrimoireQuiesceableStream);
 

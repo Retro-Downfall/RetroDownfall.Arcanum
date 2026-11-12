@@ -83,6 +83,6 @@ internal sealed partial class GuildStore
 
             return await command.ExecuteScalarAsync(token).ConfigureAwait(false) is string text
                 && Guid.TryParseExact(text, "D", out Guid root) && root != Guid.Empty
-                ? Result<Guid>.Success(root) : Result<Guid>.Failure(Unavailable());
+                ? Result<Guid>.Success(root) : Result<Guid>.Failure(new Error(ErrorCodes.Guild.NotFound, "The Cohort is unavailable."));
         }, ct);
 }

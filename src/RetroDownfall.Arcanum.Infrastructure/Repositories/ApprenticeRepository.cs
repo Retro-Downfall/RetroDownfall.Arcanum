@@ -47,12 +47,17 @@ public sealed partial class ApprenticeRepository : IApprenticeRepository
         return apprentice;
     }
 
-    public async Task<ListPageResult<Apprentice>> ListAsync(
+    public Task<ListPageResult<Apprentice>> ListAsync(
         Guid? campaignId,
         string? status,
         int? limit = null,
         DateTimeOffset? beforeUpdatedAt = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        ListWithinAsync(campaignId, status, limit, beforeUpdatedAt, null, null, false, cancellationToken);
+
+    private async Task<ListPageResult<Apprentice>> ListWithinAsync(
+        Guid? campaignId, string? status, int? limit, DateTimeOffset? beforeUpdatedAt,
+        Guid? parentId, Guid? rootId, bool guildAvailable, CancellationToken cancellationToken)
     {
         int pageSize = ArcanumSettingClamps.ListQueryLimit(limit ?? DefaultListLimit);
 
@@ -86,6 +91,26 @@ public sealed partial class ApprenticeRepository : IApprenticeRepository
             parameters.Add(("$before", GrimoireEntitySql.Format(beforeCutoff.ToUniversalTime())));
         }
 
+        if (parentId is { } parent)
+        {
+            conditions.Add("\"Id\" IN (SELECT child.ApprenticeId FROM guild_quests q "
+                + "JOIN guild_local_executions child ON child.QuestId=q.Id "
+                + "WHERE q.ParentQuestId=(SELECT QuestId FROM guild_local_executions WHERE ApprenticeId=$parent))");
+
+            parameters.Add(("$parent", GrimoireEntitySql.Format(parent)));
+        }
+
+        if (rootId is { } root)
+        {
+            conditions.Add("\"Id\" IN (SELECT child.ApprenticeId FROM guild_quests q "
+                + "JOIN guild_local_executions child ON child.QuestId=q.Id "
+                + "WHERE q.RootQuestId=(SELECT QuestId FROM guild_local_executions WHERE ApprenticeId=$root))");
+
+            parameters.Add(("$root", GrimoireEntitySql.Format(root)));
+        }
+
+        string columns = guildAvailable ? LinkedApprenticeColumns : GrimoireEntitySql.ApprenticeColumns;
+
         string where = conditions.Count == 0
             ? string.Empty
             : $" WHERE {string.Join(" AND ", conditions)}";
@@ -95,7 +120,7 @@ public sealed partial class ApprenticeRepository : IApprenticeRepository
         // tie straddling a page boundary would be ordered differently on each query and the keyset
         // cursor below could not reason about it at all. One extra row says whether another page exists.
         List<Apprentice> ordered = await ReadManyAsync(
-            $"SELECT {GrimoireEntitySql.ApprenticeColumns} FROM \"Apprentices\"{where} "
+            $"SELECT {columns} FROM \"Apprentices\"{where} "
             + "ORDER BY \"UpdatedAt\" DESC, \"Id\" DESC LIMIT $take;",
             command =>
             {
@@ -140,7 +165,7 @@ public sealed partial class ApprenticeRepository : IApprenticeRepository
                     + "\"UpdatedAt\" = $boundary";
 
                 page = await ReadManyAsync(
-                    $"SELECT {GrimoireEntitySql.ApprenticeColumns} FROM \"Apprentices\"{tieWhere} "
+                    $"SELECT {columns} FROM \"Apprentices\"{tieWhere} "
                     + "ORDER BY \"Id\" DESC LIMIT $take;",
                     command =>
                     {
@@ -496,7 +521,7 @@ public sealed partial class ApprenticeRepository : IApprenticeRepository
             .ConfigureAwait(false);
 
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-            ? GrimoireEntitySql.ReadApprentice(reader)
+            ? ReadInspectedApprentice(reader)
             : null;
     }
 
@@ -542,7 +567,7 @@ public sealed partial class ApprenticeRepository : IApprenticeRepository
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            apprentices.Add(GrimoireEntitySql.ReadApprentice(reader));
+            apprentices.Add(ReadInspectedApprentice(reader));
         }
 
         return apprentices;

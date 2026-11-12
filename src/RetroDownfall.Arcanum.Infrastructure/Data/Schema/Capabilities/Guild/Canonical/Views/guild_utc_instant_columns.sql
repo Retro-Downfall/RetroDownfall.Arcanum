@@ -34,4 +34,6 @@ UNION ALL SELECT 'guild_remote_effects' AS TableName, 'SettledAtUtc' AS ColumnNa
 UNION ALL SELECT 'guild_remote_callbacks' AS TableName, 'CallbackReceivedAtUtc' AS ColumnName
 UNION ALL SELECT 'guild_work_mutations' AS TableName, 'AcceptedAtUtc' AS ColumnName
 UNION ALL SELECT 'guild_cohort_ledger' AS TableName, 'CreatedAtUtc' AS ColumnName
-UNION ALL SELECT 'guild_cohort_mutations' AS TableName, 'AcceptedAtUtc' AS ColumnName;
+UNION ALL SELECT 'guild_cohort_mutations' AS TableName, 'AcceptedAtUtc' AS ColumnName
+UNION ALL SELECT 'guild_signet_revocations' AS TableName, 'AcceptedAtUtc' AS ColumnName
+UNION ALL SELECT 'guild_operator_cohort_mutations' AS TableName, 'AcceptedAtUtc' AS ColumnName;

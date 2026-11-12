@@ -29,7 +29,9 @@ public sealed partial class DataRetentionServiceTests
 
         DataRetentionPlan after = await service.PlanAsync(new(DataRetentionOperation.FactoryReset));
 
-        Assert.Equal(previous + 1, Assert.Single(after.Items, item => item.DataClass == RetentionDataClass.GuildEvidence).DerivedRecords);
+        Assert.Equal(1, await CampaignScalarCountAsync("SELECT COUNT(*) FROM guild_operator_sequences WHERE KindCode=1 AND ObjectId='EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE'"));
+
+        Assert.Equal(previous + 2, Assert.Single(after.Items, item => item.DataClass == RetentionDataClass.GuildEvidence).DerivedRecords);
     }
     [SkippableFact]
     public async Task Factory_reset_clears_settled_Cohort_before_its_account_and_issuer()

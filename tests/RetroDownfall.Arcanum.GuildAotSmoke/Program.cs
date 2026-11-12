@@ -129,6 +129,10 @@ internal static class GuildAotSmoke
 
         Exercise(SampleGuildContentDto(), GuildJsonContext.Default.GuildContentDto);
 
+        Exercise(new GuildContentResolutionDto([SampleGuildDataRef()]), GuildJsonContext.Default.GuildContentResolutionDto);
+
+        Exercise(new GuildResolveContentRequest("a1111111"), GuildJsonContext.Default.GuildResolveContentRequest);
+
         Exercise(SampleGuildContinueRequest(), GuildJsonContext.Default.GuildContinueRequest);
 
         Exercise(SampleGuildConvergencePolicy(), GuildJsonContext.Default.GuildConvergencePolicy);

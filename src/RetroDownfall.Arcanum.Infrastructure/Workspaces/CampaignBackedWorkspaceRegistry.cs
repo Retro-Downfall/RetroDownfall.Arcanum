@@ -154,29 +154,6 @@ public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
             UpdatedAt = now,
         };
 
-        try
-        {
-            Result marker = await WorkspaceMutationPlan.CreateDirectoryAsync(normalizedPath,
-                Path.Combine(normalizedPath, ".arcanum"), ct).ConfigureAwait(false);
-
-            if (marker.IsFailure)
-            {
-                return marker.Error;
-            }
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return new Error(
-                ErrorCodes.Workspace.AccessDenied,
-                "Insufficient permissions to create the workspace .arcanum directory at the requested path.");
-        }
-        catch (IOException)
-        {
-            return new Error(
-                ErrorCodes.Workspace.WriteFailed,
-                "Could not create the workspace .arcanum directory at the requested path.");
-        }
-
         Result<Campaign> addResult = await repo
             .AddAsync(campaign, ct)
             .ConfigureAwait(false);

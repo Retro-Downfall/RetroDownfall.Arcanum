@@ -150,7 +150,7 @@ internal sealed partial class GuildPortalStore
             Add(insert, "$stream", Id(streamId));
             Add(insert, "$request", Id(producer.Kind == GuildProducerKind.HostReceipt ? producer.ReceiptId!.Value : publicationId));
             Add(insert, "$digest", IntentDigest(new(publicationId, envelope.Address, GuildEnvelopeKind.Progress,
-                "application/json", StrictUtf8.GetString(bytes), null)));
+                "application/json", StrictUtf8.GetString(bytes), null), bindRevision: false));
             Add(insert, "$quest", Id(source.Quest.Id));
             Add(insert, "$root", Id(cohort.RootQuestId));
             Add(insert, "$session", Id(source.Quest.SessionId));

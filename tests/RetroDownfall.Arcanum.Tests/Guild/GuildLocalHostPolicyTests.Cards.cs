@@ -117,15 +117,6 @@ public sealed partial class GuildLocalHostPolicyTests
             return accepted.Value;
         }
 
-        if (native)
-        {
-            var operatorRefusal = await coordinator.IssueAsync(owner,
-                new(nativeRequest.IdempotencyKey, GuildQuestIntent.Compute(parent.Value.Quest.Id, nativeRequest).Value),
-                parent.Value.Quest.Id, nativeRequest, default);
-
-            Assert.True(operatorRefusal.IsFailure);
-        }
-
         GuildQuestDto child = await IssueSelectedAsync();
 
         Assert.Equal([allowed], child.ResolvedGrant.Tools.ToArray());

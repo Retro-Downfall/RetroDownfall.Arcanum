@@ -45,7 +45,8 @@ internal sealed partial class SignetAuthority
                 if (authorized.IsFailure) return authorized.Error;
 
                 if (authorized.Value.OperatorIssuerQuestId != issuerQuestId
-                    || authorized.Value.Edge is not (GuildSignetIssuanceEdge.LocalCohort or GuildSignetIssuanceEdge.RemoteCohort)) return Mismatch;
+                    || authorized.Value.Edge is not (GuildSignetIssuanceEdge.Local or GuildSignetIssuanceEdge.Remote
+                        or GuildSignetIssuanceEdge.LocalCohort or GuildSignetIssuanceEdge.RemoteCohort)) return Mismatch;
 
                 var live = await _authority.LiveRowAsync(_connection, _transaction, issuer.Value, linked.Token).ConfigureAwait(false);
 

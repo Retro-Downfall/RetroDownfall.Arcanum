@@ -574,7 +574,15 @@ public sealed partial class GuildPortalStoreTests
 
         Assert.True(replayed.IsSuccess, replayed.Error.Message);
 
-        Assert.Equal(revoked.Value, replayed.Value);
+        Assert.NotNull(revoked.Value.Receipt);
+
+        Assert.NotNull(replayed.Value.Receipt);
+
+        Assert.False(revoked.Value.Receipt.Replayed);
+
+        Assert.True(replayed.Value.Receipt.Replayed);
+
+        Assert.Equal(revoked.Value with { Receipt = revoked.Value.Receipt with { Replayed = true } }, replayed.Value);
 
         Assert.Equal(1L, await PortalLifecycleScalarAsync(f, "SELECT COUNT(*) FROM guild_events WHERE EventKindCode=3"));
     }

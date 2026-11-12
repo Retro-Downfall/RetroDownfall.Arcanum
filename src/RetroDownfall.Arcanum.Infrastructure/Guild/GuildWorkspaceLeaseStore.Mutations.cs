@@ -75,7 +75,7 @@ internal sealed partial class GuildWorkspaceLeaseStore
 
             Result<GuildWorkspaceLeaseRecord> current = await ReadWithinAsync(connection, transaction, leaseId, ct).ConfigureAwait(false);
 
-            if (current.IsFailure || current.Value.Owner != owner || snapshot.Epoch > current.Value.Epoch || snapshot.Revision > current.Value.Revision) return Unavailable;
+            if (current.IsFailure || !CanManageOwner(current.Value.Owner, owner, action) || snapshot.Epoch > current.Value.Epoch || snapshot.Revision > current.Value.Revision) return Unavailable;
 
             GuildWorkspaceLeaseRecord original = snapshot.Apply(current.Value);
 
@@ -89,7 +89,7 @@ internal sealed partial class GuildWorkspaceLeaseStore
 
     internal static async Task<Result<GuildWorkspaceLeaseMutationReceipt>> RecordMutationWithinAsync(SqliteConnection connection,
         SqliteTransaction transaction, GuildWorkspaceLeaseRecord row, GuildMutationIdentity mutation, GuildAuthorityAction action,
-        DateTimeOffset acceptedAt, CancellationToken ct)
+        DateTimeOffset acceptedAt, CancellationToken ct, GuildWorkspaceLeaseOwner? actor = null)
     {
         if (!Valid(row) || mutation.IdempotencyKey == Guid.Empty || !Digest(mutation.CanonicalRequestDigest) || ActionCode(action) == 0) return Invalid;
 
@@ -97,7 +97,11 @@ internal sealed partial class GuildWorkspaceLeaseStore
             || row.RequestDigest != mutation.CanonicalRequestDigest || row.Epoch != 1 || row.Revision != 1
             || row.State != GuildWorkspaceLeaseState.Held || row.InFlightMutationCount != 0 || acceptedAt != row.HeartbeatAt)) return Invalid;
 
-        var existing = await FindMutationReplayWithinAsync(connection, transaction, row.Owner, mutation.IdempotencyKey,
+        GuildWorkspaceLeaseOwner receiptOwner = actor ?? row.Owner;
+
+        if (!CanManageOwner(row.Owner, receiptOwner, action)) return new Error(ErrorCodes.Guild.Forbidden, "The lease mutation actor does not own or manage this lease.");
+
+        var existing = await FindMutationReplayWithinAsync(connection, transaction, receiptOwner, mutation.IdempotencyKey,
             mutation.CanonicalRequestDigest, action, row.Id, ct).ConfigureAwait(false);
 
         if (existing.IsSuccess) return existing.Value.Result == row ? existing : Conflict;
@@ -121,9 +125,9 @@ internal sealed partial class GuildWorkspaceLeaseStore
 
         Add(command, "$id", Id(receipt.Id));
 
-        Add(command, "$principal", Id(row.Owner.PrincipalId));
+        Add(command, "$principal", Id(receiptOwner.PrincipalId));
 
-        Add(command, "$quest", Id(row.Owner.QuestId));
+        Add(command, "$quest", Id(receiptOwner.QuestId));
 
         Add(command, "$key", Id(mutation.IdempotencyKey));
 
@@ -180,7 +184,8 @@ internal sealed partial class GuildWorkspaceLeaseStore
                 CASE WHEN typeof(l.Revision)='integer' THEN l.Revision ELSE NULL END,
                 CASE WHEN typeof(m.AcceptedAtUtc)='text' AND length(CAST(m.AcceptedAtUtc AS BLOB))=28 THEN m.AcceptedAtUtc ELSE NULL END,
                 CASE WHEN {identities} AND (m.QuestId IS NULL OR ({GuidSql("m.QuestId")}))
-                    AND m.PrincipalId=l.PrincipalId AND m.QuestId IS l.QuestId
+                    AND m.PrincipalId=l.PrincipalId AND (m.QuestId IS l.QuestId
+                        OR (m.QuestId IS NULL AND m.ActionCode=2 AND l.OwnerKindCode=1))
                     AND typeof(m.RequestDigest)='text' AND length(CAST(m.RequestDigest AS BLOB))=64 AND m.RequestDigest NOT GLOB '*[^0-9A-F]*'
                     AND typeof(m.ActionCode)='integer' AND m.ActionCode IN(1,2,3)
                     AND (m.ActionCode<>3 OR (m.IdempotencyKey=l.IdempotencyKey AND m.RequestDigest=l.RequestDigest)) THEN 1 ELSE 0 END,
@@ -212,6 +217,15 @@ internal sealed partial class GuildWorkspaceLeaseStore
             return Result.Failure(Unavailable);
         }
     }
+
+    // Management cancellation records the authenticated Operator as actor while retaining the
+    // Quest's physical holder identity. This exception never permits renewal or adoption.
+    internal static bool CanManageOwner(GuildWorkspaceLeaseOwner holder, GuildWorkspaceLeaseOwner actor, GuildAuthorityAction action) =>
+        holder == actor || action == GuildAuthorityAction.LeaseRelease
+            && actor.Kind == GuildWorkspaceLeaseOwnerKind.Operator && holder.Kind == GuildWorkspaceLeaseOwnerKind.Quest
+            && actor.PrincipalId == holder.PrincipalId && actor.InstallationGeneration == holder.InstallationGeneration
+            && actor.WorkspaceId == holder.WorkspaceId && actor.QuestId is null && actor.RootQuestId is null
+            && actor.SessionId is null && actor.CampaignId is null;
 
     private static bool IsAcquisitionSnapshot(GuildWorkspaceLeaseMutationSnapshot snapshot, DateTimeOffset acceptedAt) =>
         snapshot.Epoch == 1 && snapshot.Revision == 1 && snapshot.State == GuildWorkspaceLeaseState.Held

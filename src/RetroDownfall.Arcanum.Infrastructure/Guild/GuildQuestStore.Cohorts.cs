@@ -79,6 +79,41 @@ internal sealed partial class GuildQuestStore
         return accepted;
     }
 
+    internal async Task<Result<GuildOperatorMemberAdmission>> IssueOperatorCohortMemberAsync(GuildCallerContext caller,
+        CohortDto cohort, AdmitCohortMemberRequest request, CancellationToken ct)
+    {
+        if (caller is null || caller.Kind != GuildCallerKind.Operator || caller.PrincipalId is not { } principal
+            || cohort is null || request is null || request.Quest is null || request.IdempotencyKey == Guid.Empty
+            || request.ExpectedRevision < 1 || request.ExpectedRevision == long.MaxValue) return InvalidReceipt;
+
+        Result<GuildQuestStored> issuer = await GetAsync(caller, cohort.IssuerQuestId, ct).ConfigureAwait(false);
+
+        if (issuer.IsFailure) return issuer.Error;
+
+        byte[] requestBytes = JsonSerializer.SerializeToUtf8Bytes(request, GuildJsonContext.Default.AdmitCohortMemberRequest);
+
+        if (requestBytes.Length > 65_536) return new Error(ErrorCodes.Guild.PayloadTooLarge, "The Cohort admission exceeds its record boundary.");
+
+        byte[] intent = SHA256.HashData(requestBytes);
+
+        byte[] stepHash = SHA256.HashData(Encoding.ASCII.GetBytes("guild-operator-member-v1:" + Id(principal) + ":" + Id(cohort.Id) + ":" + Id(request.IdempotencyKey)));
+
+        Guid step = new(stepHash.AsSpan(0, 16));
+
+        GuildIssuanceIdentity issuance = new(caller.InstallationGeneration, cohort.IssuerQuestId, null, step, request.IdempotencyKey);
+
+        GuildIssueChildRequest child = new(request.IdempotencyKey, issuer.Value.Quest.Revision, request.Quest.AgentId,
+            request.Quest.Name, request.Quest.Goal, request.Quest.RequestedGrant);
+
+        GuildCohortIssue context = new(cohort.Id, request.ExpectedRevision, intent);
+
+        Result<GuildQuestStored> accepted = await IssueAsync(caller, issuance, null, cohort.IssuerQuestId, child, ct,
+            cohortIssue: context, operatorRoot: cohort.RootQuestId).ConfigureAwait(false);
+
+        return accepted.IsFailure ? accepted.Error : context.Member is null ? Unavailable
+            : new GuildOperatorMemberAdmission(context.Member, accepted.Value.Quest);
+    }
+
     private sealed class GuildAwardIssueState(GuildAwardIssue context)
     {
         internal GuildAwardIssue Context { get; set; } = context;
@@ -109,11 +144,13 @@ internal sealed partial class GuildQuestStore
         return state.Award;
     }
 
-    private sealed class GuildCohortIssue(Guid id, long expectedRevision)
+    private sealed class GuildCohortIssue(Guid id, long expectedRevision, byte[]? operatorDigest = null)
     {
         internal Guid Id { get; } = id;
 
         internal long ExpectedRevision { get; } = expectedRevision;
+
+        internal byte[]? OperatorDigest { get; } = operatorDigest;
 
         internal CohortMemberDto? Member { get; set; }
     }
@@ -154,3 +191,5 @@ internal sealed partial class GuildQuestStore
             closed is { } version && reader.GetInt64(2) <= version && (removed is null || removed > version), removed, reader.GetInt64(6));
     }
 }
+
+internal sealed record GuildOperatorMemberAdmission(CohortMemberDto Member, GuildQuestDto Quest);

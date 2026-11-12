@@ -121,7 +121,7 @@ internal sealed partial class GuildStore(IGrimoireOrdinaryConnectionFactory conn
 
     internal async Task<Result<GuildStoredCardPage>> ListWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         GuildCardReadScope scope, GuildAgentSourceKind? source, string? skill, string? afterCardId, int pageSize,
-        CancellationToken token, long? snapshotSequence = null, long maximumBytes = 1_048_576)
+        CancellationToken token, long? snapshotSequence = null, long maximumBytes = 1_048_576, bool operatorInspection = false)
     {
         if (maximumBytes < 4096)
             return new Error(ErrorCodes.Guild.PayloadTooLarge, "The Roster page has no usable response allocation.");
@@ -166,7 +166,7 @@ internal sealed partial class GuildStore(IGrimoireOrdinaryConnectionFactory conn
             SELECT {ReadColumns} FROM guild_agent_cards a
             JOIN guild_agent_card_revisions r ON r.CardId=a.CardId AND r.Revision=a.CurrentRevision
             JOIN guild_content c ON c.ContentId=r.ContentId
-            WHERE {LiveOwners} AND {LiveContent} AND {ScopePredicate}
+            WHERE {LiveOwners} AND {LiveContent} AND {(operatorInspection ? "1=1" : ScopePredicate)}
               AND ($source IS NULL OR a.SourceKindCode=$source)
               AND ($skill IS NULL OR EXISTS(SELECT 1 FROM guild_agent_card_skills k WHERE k.CardId=a.CardId AND k.Revision=a.CurrentRevision AND k.SkillId=$skill))
               AND a.IssuedSequence>$after AND a.IssuedSequence<=$snapshot AND c.SensitivityCode=0 AND NOT EXISTS(SELECT 1 FROM artifact_sensitivity l WHERE l.ArtifactKindCode=17 AND lower(replace(l.ArtifactId,'-',''))=lower(replace(c.ContentId,'-','')))

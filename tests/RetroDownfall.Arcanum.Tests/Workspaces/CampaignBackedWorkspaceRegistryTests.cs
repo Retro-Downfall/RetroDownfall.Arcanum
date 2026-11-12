@@ -64,7 +64,7 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task RegisterAsync_conflict_precedes_marker_creation_and_campaign_persistence()
+    public async Task RegisterAsync_metadata_registration_creates_no_marker_and_duplicate_path_preserves_original_campaign()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -82,26 +82,47 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
 
         using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
 
-        using IDisposable registration = WorkspaceMutationFence.Install(new MarkerFence(_workspaceRoot));
+        MarkerFence fence = new(_workspaceRoot);
 
-        Result<WorkspaceInfo> result = await registry.RegisterAsync(
-            new CreateWorkspaceRequest("Blocked", _workspaceRoot, WorkspaceType.Campaign), CancellationToken.None);
+        using IDisposable registration = WorkspaceMutationFence.Install(fence);
 
-        Assert.True(result.IsFailure);
+        Result<WorkspaceInfo> accepted = await registry.RegisterAsync(
+            new CreateWorkspaceRequest("Original", _workspaceRoot, WorkspaceType.Campaign), CancellationToken.None);
 
-        Assert.Equal(ErrorCodes.Guild.LeaseConflict, result.Error.Code);
+        Assert.True(accepted.IsSuccess, accepted.Error.Message);
+
+        Result<WorkspaceInfo> conflict = await registry.RegisterAsync(
+            new CreateWorkspaceRequest("Duplicate path", _workspaceRoot, WorkspaceType.Campaign), CancellationToken.None);
+
+        Assert.True(conflict.IsFailure);
+
+        Assert.Equal("Workspace.PathDuplicate", conflict.Error.Code);
+
+        WorkspaceInfo persisted = Assert.Single(await registry.GetAllAsync(CancellationToken.None));
+
+        Assert.Equal(accepted.Value.Id, persisted.Id);
+
+        Assert.Equal("Original", persisted.Name);
 
         Assert.False(Directory.Exists(Path.Combine(_workspaceRoot, ".arcanum")));
 
-        Assert.Empty(await registry.GetAllAsync(CancellationToken.None));
+        Assert.False(File.Exists(Path.Combine(_workspaceRoot, ".arcanum")));
+
+        Assert.Equal(0, fence.AdmissionCount);
     }
 
     private sealed class MarkerFence(string root) : IWorkspaceMutationFence
     {
-        public ValueTask<Result<IWorkspaceMutationLease>> AdmitAsync(string workspaceRoot, ImmutableArray<GuildPathScope> scopes, CancellationToken cancellationToken) =>
-            ValueTask.FromResult<Result<IWorkspaceMutationLease>>(workspaceRoot == root
+        public int AdmissionCount { get; private set; }
+
+        public ValueTask<Result<IWorkspaceMutationLease>> AdmitAsync(string workspaceRoot, ImmutableArray<GuildPathScope> scopes, CancellationToken cancellationToken)
+        {
+            AdmissionCount++;
+
+            return ValueTask.FromResult<Result<IWorkspaceMutationLease>>(workspaceRoot == root
                 ? Result<IWorkspaceMutationLease>.Failure(new(ErrorCodes.Guild.LeaseConflict, "Protected workspace."))
                 : Result<IWorkspaceMutationLease>.Success(new UnprotectedLease()));
+        }
     }
 
     private sealed class UnprotectedLease : IWorkspaceMutationLease, IDisposable
@@ -245,8 +266,10 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
             result.Error.Message);
     }
 
-    [Fact]
-    public async Task RegisterAsync_does_not_persist_campaign_when_arcanum_directory_cannot_be_created()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RegisterAsync_persists_only_metadata_without_creating_or_overwriting_arcanum(bool occupied)
     {
         ArcanumSettings settings = new()
         {
@@ -268,17 +291,22 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
 
         Directory.CreateDirectory(workspaceDir);
 
-        await File.WriteAllTextAsync(Path.Combine(workspaceDir, ".arcanum"), "occupied by a regular file");
+        string metadataPath = Path.Combine(workspaceDir, ".arcanum");
+
+        if (occupied) await File.WriteAllTextAsync(metadataPath, "occupied by a regular file");
 
         Result<WorkspaceInfo> result = await registry.RegisterAsync(
             new CreateWorkspaceRequest("Blocked", workspaceDir, WorkspaceType.Campaign),
             CancellationToken.None);
 
-        Assert.True(result.IsFailure);
+        Assert.True(result.IsSuccess, result.Error.Message);
 
-        Assert.Equal(ErrorCodes.Workspace.WriteFailed, result.Error.Code);
+        Assert.Single(repository.Added);
 
-        Assert.Empty(repository.Added);
+        Assert.False(Directory.Exists(metadataPath));
+
+        if (occupied) Assert.Equal("occupied by a regular file", await File.ReadAllTextAsync(metadataPath));
+        else Assert.False(File.Exists(metadataPath));
     }
 
     [Fact]

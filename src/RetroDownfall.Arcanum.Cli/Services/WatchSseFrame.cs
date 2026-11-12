@@ -26,7 +26,9 @@ public sealed record WatchSseFrame(
     Error? Error = null,
     string? Diagnostic = null,
     bool Recoverable = false,
-    bool Retryable = false);
+    bool Retryable = false,
+    string? EventName = null,
+    string? EventId = null);
 
 internal readonly record struct HealthWatchResult(
     Result<RetroDownfall.Arcanum.Api.Models.HealthReportDto> Report,

@@ -207,4 +207,74 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.True(replay.Value.Receipt!.Replayed);
         Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_work_awards"));
     }
+    [Fact]
+    public async Task Operator_can_post_inspect_and_withdraw_an_offer_with_exact_replay()
+    {
+        await using Fixture f = await Fixture.CreateAsync();
+
+        var setup = await ConvergenceFixtureAsync(f, GuildConvergenceKind.All, null, "text/plain", 0);
+
+        GuildStore cards = new(f.Connections, f.Gate, TimeProvider.System);
+
+        GuildAgentCard card = new(Guid.Empty, Guid.Empty, 0, "Reviewer", "Reviewer", "1",
+            [new("review", "Review", "Review work", [], ["text/plain"], ["text/plain"])],
+            ["text/plain"], ["text/plain"], new(false, false, false),
+            new(GuildAgentSourceKind.DeclaredGlobal, null, null, true, null));
+
+        var saved = await cards.UpsertCardAsync(new("operator-reviewer", null, null, null,
+            new(card, "Review work", [], RequestedToolsSpecified: true), new string('A', 64)), default);
+
+        Assert.True(saved.IsSuccess, saved.Error.Message);
+
+        Guid memberKey = Guid.NewGuid();
+
+        var member = await f.Store.IssueCohortMemberAsync(setup.Issuer,
+            new(f.Generation, setup.Root.Quest.Id, null, memberKey, memberKey), setup.Cohort.Id, setup.Cohort.Revision,
+            new(memberKey, setup.Root.Quest.Revision, null, "Reviewer", "Review", new(), CardId: saved.Value.Payload.Card.CardId), default);
+
+        Assert.True(member.IsSuccess, member.Error.Message);
+
+        var current = await setup.Cohorts.GetAsync(setup.Issuer, setup.Cohort.Id, default);
+
+        Assert.True(current.IsSuccess, current.Error.Message);
+
+        Guid key = Guid.NewGuid();
+
+        PostWorkOfferRequest request = new(key, current.Value.Revision, "review", "Review this work", null, new("text/plain"));
+
+        string digest = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(request, GuildJsonContext.Default.PostWorkOfferRequest)));
+
+        var created = await setup.Cohorts.PostOfferAsync(setup.Owner, new(key, digest), setup.Cohort.Id, request, default);
+
+        Assert.True(created.IsSuccess, created.Error.Message);
+
+        var replay = await setup.Cohorts.PostOfferAsync(setup.Owner, new(key, digest), setup.Cohort.Id, request, default);
+
+        Assert.True(replay.IsSuccess, replay.Error.Message);
+
+        Assert.Equal(created.Value.Id, replay.Value.Id);
+
+        Assert.True(replay.Value.Receipt!.Replayed);
+
+        var found = await setup.Cohorts.GetOfferAsync(setup.Owner, created.Value.Id, default);
+
+        Assert.True(found.IsSuccess, found.Error.Message);
+
+        var page = await setup.Cohorts.ListOffersAsync(setup.Owner, setup.Cohort.Id, null, new(), default);
+
+        Assert.True(page.IsSuccess, page.Error.Message);
+
+        Assert.Equal(created.Value.Id, Assert.Single(page.Value.Items).Id);
+
+        GuildRevisionRequest withdraw = new(Guid.NewGuid(), created.Value.Revision);
+
+        string withdrawalDigest = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(withdraw, GuildJsonContext.Default.GuildRevisionRequest)));
+
+        var removed = await setup.Cohorts.WithdrawOfferAsync(setup.Owner, new(withdraw.IdempotencyKey, withdrawalDigest), created.Value.Id, withdraw, default);
+
+        Assert.True(removed.IsSuccess, removed.Error.Message);
+
+        Assert.Equal(GuildWorkOfferState.Withdrawn, removed.Value.State);
+    }
+
 }

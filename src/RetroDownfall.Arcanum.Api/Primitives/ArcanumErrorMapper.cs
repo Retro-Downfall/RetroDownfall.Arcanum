@@ -19,6 +19,9 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Guild.AuthorityRevoked
                 or ErrorCodes.Guild.AuthorityExpired
                 or ErrorCodes.Guild.AuthorityMismatch
+                or ErrorCodes.Guild.ToolNotGranted
+                or ErrorCodes.Guild.MemoryNotGranted
+                or ErrorCodes.Guild.PeerGrantRequired
                 or ErrorCodes.Guild.ToolBoundaryUnavailable
                 or ErrorCodes.Guild.LeaseNotHeld => StatusCodes.Status403Forbidden,
 
@@ -31,6 +34,16 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Guild.GrantExceeded
                 or ErrorCodes.Guild.PriceUnavailable
                 or ErrorCodes.Guild.BudgetCapabilityUnavailable
+                or ErrorCodes.Guild.DelegationCycle
+                or ErrorCodes.Guild.LegacyRunUnavailable
+                or ErrorCodes.Guild.UnsupportedTransportState
+                or ErrorCodes.Guild.MembershipConflict
+                or ErrorCodes.Guild.CohortClosed
+                or ErrorCodes.Guild.NoEligibleBidder
+                or ErrorCodes.Guild.BidConflict
+                or ErrorCodes.Guild.OfferClosed
+                or ErrorCodes.Guild.DestinationChanged
+                or ErrorCodes.Guild.LeaseReconciliationRequired
                 or ErrorCodes.Guild.SequenceExhausted
                 or ErrorCodes.Guild.SourceConflict
                 or ErrorCodes.Guild.ReconciliationRequired
@@ -40,7 +53,7 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Guild.LeaseLapsed
                 or ErrorCodes.Guild.WorkspaceIdentityUnavailable => StatusCodes.Status409Conflict,
 
-            ErrorCodes.Guild.ContentErased => StatusCodes.Status410Gone,
+            ErrorCodes.Guild.ContentErased or ErrorCodes.Guild.CursorGone => StatusCodes.Status410Gone,
 
             ErrorCodes.Guild.PayloadTooLarge => StatusCodes.Status413PayloadTooLarge,
 

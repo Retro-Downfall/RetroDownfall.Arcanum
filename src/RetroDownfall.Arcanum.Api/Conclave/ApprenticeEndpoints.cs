@@ -32,6 +32,8 @@ internal static class ApprenticeEndpoints
             async (
                 Guid? campaignId,
                 string? status,
+                Guid? parentId,
+                Guid? rootId,
                 int? limit,
                 DateTimeOffset? beforeUpdatedAt,
                 IApprenticeRepository repo,
@@ -39,9 +41,17 @@ internal static class ApprenticeEndpoints
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                ListPageResult<Apprentice> page = await repo
-                    .ListAsync(campaignId, status, limit, beforeUpdatedAt, ctx.RequestAborted)
+                Result<ListPageResult<Apprentice>> found = await repo
+                    .ListLinkedAsync(campaignId, status, parentId, rootId, limit, beforeUpdatedAt, ctx.RequestAborted)
                     .ConfigureAwait(false);
+
+                if (found.IsFailure)
+                    return Results.Json(ApiResponse<ListPageResult<ApprenticeSummaryDto>>.FromResult(
+                        Result<ListPageResult<ApprenticeSummaryDto>>.Failure(found.Error), traceId),
+                        ArcanumJsonContext.Default.ApiResponseListPageResultApprenticeSummaryDto,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(found.Error.Code));
+
+                ListPageResult<Apprentice> page = found.Value;
 
                 ApprenticeSummaryDto[] dtos = page.Items.Select(ApprenticeMapping.ToSummaryDto).ToArray();
 
@@ -63,7 +73,15 @@ internal static class ApprenticeEndpoints
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                Apprentice? apprentice = await repo.GetByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false);
+                Result<Apprentice?> found = await repo.GetLinkedByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false);
+
+                if (found.IsFailure)
+                    return Results.Json(ApiResponse<ApprenticeDetailDto>.FromResult(
+                        Result<ApprenticeDetailDto>.Failure(found.Error), traceId),
+                        ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(found.Error.Code));
+
+                Apprentice? apprentice = found.Value;
 
                 if (apprentice is null)
                 {

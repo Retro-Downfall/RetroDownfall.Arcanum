@@ -19,6 +19,7 @@ internal static class UtcInstantColumnInventory
         new("guild_content_erasure_receipts", ["ErasedAtUtc"]),
         new("guild_owner_cleanup", ["CreatedAtUtc", "UpdatedAtUtc"]),
         new("guild_signets", ["IssuedAtUtc"]),
+        new("guild_signet_revocations", ["AcceptedAtUtc"]),
         new("guild_quests", ["CreatedAtUtc", "UpdatedAtUtc"]),
         new("guild_dispatches", ["CreatedAtUtc", "UpdatedAtUtc"]),
         new("guild_result_receipts", ["CreatedAtUtc"]),
@@ -40,6 +41,7 @@ internal static class UtcInstantColumnInventory
         new("guild_workspace_lease_mutations", ["AcceptedAtUtc"]),
         new("guild_quest_cancellations", ["AcceptedAtUtc"]),
         new("guild_cohort_mutations", ["AcceptedAtUtc"]),
+        new("guild_operator_cohort_mutations", ["AcceptedAtUtc"]),
         new("guild_work_mutations", ["AcceptedAtUtc"]),
         new("guild_cohort_ledger", ["CreatedAtUtc"]),
     ];

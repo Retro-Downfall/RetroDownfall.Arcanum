@@ -466,12 +466,34 @@ internal sealed partial class GuildPortalStore
     }
 
     private async Task<Result<PortalReadBinding>> ReadBindingWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
-        GuildCallerContext caller, CancellationToken ct)
+        GuildCallerContext caller, CancellationToken ct, bool operatorMetadataOnly = false)
     {
         if (caller is null || caller.Kind is not (GuildCallerKind.Operator or GuildCallerKind.Run)) return Forbidden;
 
-        if (policy is not IGuildPortalDisclosurePolicy disclosure || string.IsNullOrWhiteSpace(disclosure.VisibilityEpoch)
-            || Encoding.UTF8.GetByteCount(disclosure.VisibilityEpoch) > 65_536) return Unavailable;
+        string? visibility = policy is IGuildPortalDisclosurePolicy disclosure ? disclosure.VisibilityEpoch
+            : operatorMetadataOnly && caller.Kind == GuildCallerKind.Operator ? "operator-metadata-v1" : null;
+
+        if (string.IsNullOrWhiteSpace(visibility) || Encoding.UTF8.GetByteCount(visibility) > 65_536) return Unavailable;
+
+        if (operatorMetadataOnly && caller.Kind == GuildCallerKind.Operator)
+        {
+            await using SqliteCommand clocks = Command(connection, transaction, """
+                SELECT COALESCE((SELECT CASE WHEN typeof(Revision)='integer' AND Revision>=1 THEN Revision ELSE -1 END
+                    FROM guild_cohort_content_clock WHERE Id=1),0),
+                    COALESCE((SELECT CASE WHEN typeof(Revision)='integer' AND Revision>=1 THEN Revision ELSE -1 END
+                    FROM artifact_sensitivity_clock WHERE Id=1),0),
+                    COALESCE((SELECT MAX(Sequence) FROM owner_deletion_events),0)
+                """);
+
+            await using SqliteDataReader reader = await clocks.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+            if (!await reader.ReadAsync(ct).ConfigureAwait(false) || reader.GetValue(0) is not long content || content < 0
+                || reader.GetValue(1) is not long sensitivity || sensitivity < 0
+                || reader.GetValue(2) is not long owners || owners < 0) return Unavailable;
+
+            visibility += ":" + content.ToString(CultureInfo.InvariantCulture) + ":"
+                + sensitivity.ToString(CultureInfo.InvariantCulture) + ":" + owners.ToString(CultureInfo.InvariantCulture);
+        }
 
         await using SqliteCommand command = Command(connection, transaction,
             "SELECT CASE WHEN typeof(Epoch)='text' AND length(CAST(Epoch AS BLOB))=36 THEN Epoch ELSE NULL END FROM guild_signet_authority_state WHERE StateKey=1");
@@ -486,7 +508,7 @@ internal sealed partial class GuildPortalStore
                 + ":" + run.CredentialGeneration.ToString(CultureInfo.InvariantCulture) + ":" + run.RevocationGeneration.ToString(CultureInfo.InvariantCulture));
 
         return new PortalReadBinding(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))), epoch,
-            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(disclosure.VisibilityEpoch))));
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(visibility))));
     }
 
     private async Task<Result<PortalReadScope>> RequireReadScopeWithinAsync(SqliteConnection connection, SqliteTransaction transaction,

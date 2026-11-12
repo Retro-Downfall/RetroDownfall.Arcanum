@@ -236,7 +236,7 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
         if (root ? caller.Kind is not (GuildCallerKind.Operator or GuildCallerKind.Peer) || proposal.ParentQuestId is not null
             : proposal.Child is null || (caller.Kind == GuildCallerKind.Run
                 ? caller.Execution?.QuestId != proposal.ParentQuestId
-                : caller.Kind != GuildCallerKind.Operator || proposal.Award is null || proposal.Award.IssuerQuestId != proposal.ParentQuestId)) return Forbidden;
+                : caller.Kind != GuildCallerKind.Operator || proposal.Award is not null && proposal.Award.IssuerQuestId != proposal.ParentQuestId)) return Forbidden;
 
         Result ownersValid = await ValidateOwnersAsync(connection, transaction, root ? proposal.Root!.SessionId : null,
             proposal.CampaignId, proposal.WorkspaceId, ct).ConfigureAwait(false);
@@ -338,6 +338,15 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
             if (cohort.IsFailure) return cohort.Error;
 
             Guid rootQuest = caller.Execution?.RootQuestId ?? proposal.Award?.RootQuestId ?? Guid.Empty;
+
+            if (caller.Kind == GuildCallerKind.Operator && proposal.Award is null)
+            {
+                Result<GuildSignetRecord> operatorIssuer = await GuildSignetStore.ReadAsync(connection, transaction, issuer, true, ct).ConfigureAwait(false);
+
+                if (operatorIssuer.IsFailure) return operatorIssuer.Error;
+
+                rootQuest = operatorIssuer.Value.Binding.RootQuestId;
+            }
 
             if (cohort.Value.Cohort.RootQuestId != rootQuest || cohort.Value.Cohort.State != GuildCohortState.Open) return Forbidden;
 
@@ -469,9 +478,9 @@ internal sealed partial class GuildLocalHostPolicy(IGrimoireOrdinaryConnectionFa
 
             if (admission.Caller.Kind == GuildCallerKind.Operator)
             {
-                if (admission.Caller.Execution is not null || scope.Proposal.Award is not { } award
-                    || award.IssuerQuestId != parentId || award.RootQuestId != binding.RootQuestId
-                    || award.CohortId != scope.Proposal.CohortId || scope.Proposal.Root is not null) return Forbidden;
+                if (admission.Caller.Execution is not null || scope.Proposal.Root is not null
+                    || scope.Proposal.Award is { } award && (award.IssuerQuestId != parentId || award.RootQuestId != binding.RootQuestId
+                        || award.CohortId != scope.Proposal.CohortId)) return Forbidden;
 
                 operatorIssuer = parentId;
             }

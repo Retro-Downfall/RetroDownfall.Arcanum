@@ -39,4 +39,8 @@ public sealed class Apprentice
     [NotMapped]
     public Guid? ParentApprenticeId { get; set; }
 
+    /// <summary>Exact durable Guild association for operator inspection; null for legacy work.</summary>
+    [NotMapped]
+    public Guid? GuildQuestId { get; set; }
+
 }

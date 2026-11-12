@@ -18,7 +18,6 @@ using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Security;
-using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Api.Tower;
 
@@ -157,29 +156,6 @@ internal static class CampaignEndpoints
                 }
 
                 DateTimeOffset now = DateTimeOffset.UtcNow;
-
-                try
-                {
-                    Result marker = await WorkspaceMutationPlan.CreateDirectoryAsync(normalizedPath,
-                        Path.Combine(normalizedPath, ".arcanum"), ctx.RequestAborted).ConfigureAwait(false);
-
-                    if (marker.IsFailure)
-                    {
-                        return Results.Json(ApiResponse<CampaignDto>.FromResult(Result<CampaignDto>.Failure(marker.Error), traceId),
-                            ArcanumJsonContext.Default.ApiResponseCampaignDto,
-                            statusCode: ArcanumErrorMapper.ResolveStatusCode(marker.Error.Code));
-                    }
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    return Results.BadRequest(
-                        ApiResponse<CampaignDto>.FromResult(
-                            Result<CampaignDto>.Failure(
-                                new Error(
-                                    ErrorCodes.Campaign.DirectoryCreateFailed,
-                                    "Could not create the campaign .arcanum directory at the requested path.")),
-                            traceId));
-                }
 
                 Campaign campaign = new()
                 {

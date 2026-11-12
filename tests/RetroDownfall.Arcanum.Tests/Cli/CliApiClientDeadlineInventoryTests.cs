@@ -113,6 +113,7 @@ public sealed class CliApiClientDeadlineInventoryTests
         ExportSpellAsync
         ForkSessionAsync
         GetApiAsync
+        GetGuildAsync
         GetApprenticeAsync
         GetApprenticesAsync
         GetBatchAsync
@@ -177,6 +178,7 @@ public sealed class CliApiClientDeadlineInventoryTests
         PostBatchMutationAsync
         PostCovenantAsync
         PostReviewAsync
+        PostGuildAsync
         PreviewContextAsync
         PreviewMcpWorkspaceTrustAsync
         PreviewSessionForkAsync

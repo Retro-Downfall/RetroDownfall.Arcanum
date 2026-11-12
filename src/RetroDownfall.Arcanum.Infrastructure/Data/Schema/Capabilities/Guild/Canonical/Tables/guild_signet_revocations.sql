@@ -6,5 +6,6 @@ CREATE TABLE IF NOT EXISTS guild_signet_revocations (
     ReasonCode TEXT NOT NULL,
     Revision INTEGER NOT NULL CHECK(Revision>=1),
     Generation INTEGER NOT NULL CHECK(Generation>=1),
+    AcceptedAtUtc TEXT NULL,
     PRIMARY KEY(SignetId,IdempotencyKey)
 );

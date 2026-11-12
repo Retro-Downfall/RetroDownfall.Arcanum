@@ -154,6 +154,43 @@ public sealed class GuildWorkspaceLeaseSignetPolicyTests
         Assert.False(called);
     }
 
+    [Fact]
+    public async Task A_canonical_only_host_cannot_authorize_the_native_Operator_lane()
+    {
+        await using GuildSignetAuthorityTests.Fixture fixture = await GuildSignetAuthorityTests.Fixture.CreateAsync();
+
+        Guid workspace = Guid.NewGuid();
+
+        GuildCallerContext caller = fixture.Operator;
+
+        CanonicalOnlyHostEvidence host = new(fixture.Policy.InstallationGeneration, caller.PrincipalId!.Value, workspace, caller);
+
+        GuildWorkspaceLeaseSignetPolicy policy = new(fixture.Authority, host);
+
+        bool effectCalled = false;
+
+        Result<bool> result = await policy.AuthorizeAsync(caller, workspace, GuildAuthorityAction.LeaseAcquire,
+            (_, _) => { effectCalled = true; return Task.FromResult(Result<bool>.Success(true)); }, default);
+
+        Assert.True(result.IsFailure);
+
+        Assert.False(effectCalled);
+    }
+
+    private sealed class CanonicalOnlyHostEvidence(Guid generation, Guid principal, Guid workspace, GuildCallerContext caller)
+        : IGuildWorkspaceLeaseHostEvidence
+    {
+        public Guid InstallationGeneration => generation;
+
+        public Guid OperatorPrincipalId => principal;
+
+        public bool Authenticates(GuildCallerContext value) => ReferenceEquals(value, caller);
+
+        public Task<Result<GuildWorkspaceHostEvidence>> ResolveAsync(Guid id, CancellationToken cancellationToken) =>
+            Task.FromResult(id == workspace ? Result<GuildWorkspaceHostEvidence>.Success(new(Path.GetTempPath(), 1, 1, new byte[32], [new(".", GuildPathScopeKind.Subtree)]))
+                : new Error(ErrorCodes.Guild.NotFound, "Unknown workspace."));
+    }
+
     private sealed class HostEvidence(Guid generation, Guid principal, Guid workspace, GuildCallerContext caller, byte[] pin) : IGuildWorkspaceLeaseHostEvidence
     {
         public Guid InstallationGeneration => generation;
@@ -165,6 +202,11 @@ public sealed class GuildWorkspaceLeaseSignetPolicyTests
         internal long Revision { get; set; } = 1;
 
         public bool Authenticates(GuildCallerContext candidate) => ReferenceEquals(candidate, caller);
+
+        public Task<Result<GuildOperatorWorkspaceHostEvidence>> ResolveOperatorAsync(Guid id, CancellationToken cancellationToken) =>
+            Task.FromResult(id == workspace
+                ? Result<GuildOperatorWorkspaceHostEvidence>.Success(new(Path.GetTempPath(), [new(".", GuildPathScopeKind.Subtree)]))
+                : Result<GuildOperatorWorkspaceHostEvidence>.Failure(new(ErrorCodes.Guild.Forbidden, "Unknown workspace.")));
 
         public Task<Result<GuildWorkspaceHostEvidence>> ResolveAsync(Guid id, CancellationToken cancellationToken) =>
             Task.FromResult(id == workspace

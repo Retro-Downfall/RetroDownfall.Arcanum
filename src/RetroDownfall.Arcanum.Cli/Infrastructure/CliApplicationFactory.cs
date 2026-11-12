@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.CommandCenter;
 using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Commands.Conclave;
+using RetroDownfall.Arcanum.Cli.Commands.Guild;
 using RetroDownfall.Arcanum.Cli.Diagnostics;
 using RetroDownfall.Arcanum.Cli.Commands.Configuration;
 using RetroDownfall.Arcanum.Cli.Commands.Daemon;
@@ -292,6 +293,10 @@ internal static class CliApplicationFactory
         services.AddTransient<TrialCommands>();
 
         services.AddTransient<ApprenticeCommands>();
+
+        services.AddTransient<GuildCommands>();
+
+        services.AddTransient<GuildCliResourceCatalog>();
 
         services.AddTransient<ModelCommands>();
 

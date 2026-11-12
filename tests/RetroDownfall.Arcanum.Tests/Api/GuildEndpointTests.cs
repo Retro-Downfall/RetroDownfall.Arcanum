@@ -64,6 +64,9 @@ public sealed partial class GuildEndpointTests
 
         Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IGuildQuestCoordinator));
 
+        Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(GuildNativeMessageService)
+            && descriptor.Lifetime == ServiceLifetime.Scoped);
+
         Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(GuildLocalHostPolicy)
             && descriptor.Lifetime == ServiceLifetime.Singleton);
 

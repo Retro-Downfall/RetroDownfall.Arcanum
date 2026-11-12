@@ -1,4 +1,6 @@
 using System.Collections.Immutable;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Guild;
@@ -354,7 +356,7 @@ internal sealed class GuildSignetStore(IGrimoireOrdinaryConnectionFactory connec
     }
 
     internal static async Task<Result<SignetRevocationDto>> RevokeAsync(SqliteConnection connection, SqliteTransaction transaction,
-        GuildSignetRecord row, GuildMutationIdentity mutation, GuildRevokeSignetRequest request, CancellationToken ct)
+        GuildSignetRecord row, GuildMutationIdentity mutation, GuildRevokeSignetRequest request, DateTimeOffset now, CancellationToken ct)
     {
         await using (SqliteCommand replay = Command(connection, transaction, """
             SELECT CanonicalRequestDigest,ExpectedRevision,ReasonCode,Revision,Generation,
@@ -362,7 +364,7 @@ internal sealed class GuildSignetStore(IGrimoireOrdinaryConnectionFactory connec
                 AND CanonicalRequestDigest NOT GLOB '*[^0-9A-F]*'
                 AND typeof(ExpectedRevision)='integer' AND ExpectedRevision>=1
                 AND typeof(Revision)='integer' AND Revision>=1 AND typeof(Generation)='integer' AND Generation>=1
-                AND ReasonCode IN('operatorRequested','ownerDeleted') THEN 1 ELSE 0 END
+                AND ReasonCode IN('operatorRequested','ownerDeleted') THEN 1 ELSE 0 END,AcceptedAtUtc
             FROM guild_signet_revocations
             WHERE SignetId=$id AND IdempotencyKey=$key
             """))
@@ -382,7 +384,8 @@ internal sealed class GuildSignetStore(IGrimoireOrdinaryConnectionFactory connec
 
                 return reader.GetString(0) == mutation.CanonicalRequestDigest && reader.GetInt64(1) == request.ExpectedRevision
                     && reader.GetString(2) == Reason(request.ReasonCode)
-                    ? Result<SignetRevocationDto>.Success(Revocation(row.Binding.SignetId, reader.GetInt64(3), reader.GetInt64(4)))
+                    ? Result<SignetRevocationDto>.Success(Revocation(row.Binding.SignetId, request.IdempotencyKey, reader.GetInt64(3), reader.GetInt64(4),
+                        reader.IsDBNull(6) ? null : UtcInstantText.Parse(reader.GetString(6)), true))
                     : Result<SignetRevocationDto>.Failure(new(ErrorCodes.Guild.IdempotencyConflict, "The Guild mutation key already binds a different request."));
             }
         }
@@ -418,8 +421,8 @@ internal sealed class GuildSignetStore(IGrimoireOrdinaryConnectionFactory connec
         }
 
         await using SqliteCommand insert = Command(connection, transaction, """
-            INSERT INTO guild_signet_revocations(SignetId,IdempotencyKey,CanonicalRequestDigest,ExpectedRevision,ReasonCode,Revision,Generation)
-            VALUES($id,$key,$digest,$expected,$reason,$revision,$generation)
+            INSERT INTO guild_signet_revocations(SignetId,IdempotencyKey,CanonicalRequestDigest,ExpectedRevision,ReasonCode,Revision,Generation,AcceptedAtUtc)
+            VALUES($id,$key,$digest,$expected,$reason,$revision,$generation,$accepted)
             """);
 
         Add(insert, "$id", Id(row.Binding.SignetId));
@@ -436,12 +439,21 @@ internal sealed class GuildSignetStore(IGrimoireOrdinaryConnectionFactory connec
 
         Add(insert, "$generation", generation);
 
+        Add(insert, "$accepted", UtcInstantText.Format(now));
+
         _ = await insert.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
-        return Revocation(row.Binding.SignetId, revision, generation);
+        return Revocation(row.Binding.SignetId, request.IdempotencyKey, revision, generation, now, false);
     }
 
-    private static SignetRevocationDto Revocation(Guid id, long revision, long generation) => new(id, revision, generation, true, true, false, 0);
+    private static SignetRevocationDto Revocation(Guid id, Guid key, long revision, long generation, DateTimeOffset? accepted, bool replayed)
+    {
+        byte[] digest = SHA256.HashData(Encoding.ASCII.GetBytes("guild-signet-receipt-v1:" + Id(id) + ":" + Id(key)));
+
+        Guid receipt = new(digest.AsSpan(0, 16));
+
+        return new(id, revision, generation, true, true, false, 0, new(receipt, key, replayed, accepted, revision));
+    }
 
     private static string Reason(GuildCancellationReason reason) => reason switch
     {

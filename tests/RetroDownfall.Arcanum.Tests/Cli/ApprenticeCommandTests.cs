@@ -39,6 +39,44 @@ public sealed class ApprenticeCommandTests
         Assert.Equal("/api/apprentices", request.RequestUri!.AbsolutePath);
     }
 
+    [Fact]
+    public void Apprentice_list_json_emits_generated_records_instead_of_a_terminal_transcript()
+    {
+        ApprenticeSummaryDto summary = new(SampleId, null, "Task", "Do the thing", "Idle", 0, 0, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<ListPageResult<ApprenticeSummaryDto>>(new ListPageResult<ApprenticeSummaryDto>([summary], false), true, null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultApprenticeSummaryDto));
+
+        CliTestResult result = RunCommand(handler, ["apprentice", "list", "--json"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(JsonValueKind.Array, document.RootElement.ValueKind);
+
+        Assert.Equal(SampleId, document.RootElement[0].GetProperty("id").GetGuid());
+    }
+
+    [Fact]
+    public void Apprentice_show_json_emits_generated_detail_instead_of_a_terminal_transcript()
+    {
+        ApprenticeDetailDto detail = new(SampleId, null, null, "Task", "Goal", [], 0, "Idle", null, "/tmp/ws", null, null, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+
+        RecordingHandler handler = new(_ => CreateResponse(new ApiResponse<ApprenticeDetailDto>(detail, true, null), ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto));
+
+        CliTestResult result = RunCommand(handler, ["apprentice", "show", SampleId.ToString("D"), "--json"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(SampleId, document.RootElement.GetProperty("id").GetGuid());
+
+        Assert.Equal("Goal", document.RootElement.GetProperty("goal").GetString());
+    }
+
     /// <summary>
     /// Every <c>Result.IsFailure</c> exit in this file returned the generic exit code, so a
     /// server-down failure was indistinguishable from a real domain failure. Routed through

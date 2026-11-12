@@ -1,0 +1,1 @@
+DROP TRIGGER guild_workspace_lease_mutations_guard_insert;

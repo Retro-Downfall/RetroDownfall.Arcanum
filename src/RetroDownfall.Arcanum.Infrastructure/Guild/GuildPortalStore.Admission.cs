@@ -17,7 +17,7 @@ internal sealed partial class GuildPortalStore
     internal async Task<Result<GuildMessageReceipt>> PublishWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         SignetAuthority.QuestTransaction signets, GuildCallerContext caller, Guid questId, GuildPublishRequest request, CancellationToken ct, GuildChildToolAdmission? toolAdmission = null)
     {
-        Result<GuildPublishRequest> normalized = Normalize(request, caller.Kind == GuildCallerKind.HostReceipt);
+        Result<GuildPublishRequest> normalized = Normalize(request, caller.Kind is GuildCallerKind.HostReceipt or GuildCallerKind.Operator);
 
         if (normalized.IsFailure) return normalized.Error;
 
@@ -78,9 +78,9 @@ internal sealed partial class GuildPortalStore
             if (currentMembership.IsFailure) return currentMembership.Error;
         }
 
-        // A revision is a precondition for a new acceptance, not part of the logical message.
-        // Host outbox retries may omit it while retaining the exact immutable receipt identity.
-        byte[] intent = IntentDigest(request);
+        // Operator mutation bodies bind their revision as well as the exact submitted bytes.
+        // Host outbox retries may omit a revision while retaining their immutable receipt identity.
+        byte[] intent = IntentDigest(request, caller.Kind == GuildCallerKind.Operator);
 
         string producerKey = ProducerKey(producer);
 
@@ -140,7 +140,7 @@ internal sealed partial class GuildPortalStore
 
                     if (previous?.Address is not { Kind: GuildCircleAddressKind.Cohort, MembershipVersion: > 0 } savedAddress) return Unavailable;
 
-                    intent = IntentDigest(request with { Address = request.Address with { MembershipVersion = savedAddress.MembershipVersion } });
+                    intent = IntentDigest(request with { Address = request.Address with { MembershipVersion = savedAddress.MembershipVersion } }, caller.Kind == GuildCallerKind.Operator);
                 }
 
                 if (reader.GetValue(1) is not byte[] prior || !CryptographicOperations.FixedTimeEquals(prior, intent)) return Conflict;
@@ -153,6 +153,9 @@ internal sealed partial class GuildPortalStore
                     new(envelopeId, request.IdempotencyKey, true, UtcInstantText.Parse(reader.GetString(2)), 1));
             }
         }
+
+        if (caller.Kind == GuildCallerKind.Operator && policy is GuildLocalHostPolicy native && !native.IsExecutionEnabled)
+            return new Error(ErrorCodes.Guild.Unavailable, "Guild is disabled for new operator input.");
 
         if (caller.Kind == GuildCallerKind.Run && (source.Quest.CancellationRequested
             || source.Quest.State is QuestState.Completed or QuestState.Failed or QuestState.Rejected or QuestState.Canceled))
@@ -172,7 +175,7 @@ internal sealed partial class GuildPortalStore
 
             recipient = recipient with { Address = request.Address };
 
-            intent = IntentDigest(request);
+            intent = IntentDigest(request, caller.Kind == GuildCallerKind.Operator);
         }
 
         if (recipient.QuestId is { } recipientId)
@@ -411,6 +414,13 @@ internal sealed partial class GuildPortalStore
 
                 if (resolved.IsFailure) return resolved.Error;
             }
+            else if (caller.Kind == GuildCallerKind.Operator && policy is GuildLocalHostPolicy native
+                && native.Authenticates(caller))
+            {
+                // The native operator supplies these bytes directly. The producer and current
+                // recipient grant were proved above in this transaction; inherit the source goal's
+                // validated sensitivity without claiming permission to disclose protected content.
+            }
             else
             {
                 // The exact live task admission above materialized every accepted provider source.
@@ -465,8 +475,9 @@ internal sealed partial class GuildPortalStore
         return Forbidden;
     }
 
-    private static byte[] IntentDigest(GuildPublishRequest request) => SHA256.HashData(
-        JsonSerializer.SerializeToUtf8Bytes(request with { ExpectedRevision = null }, GuildJsonContext.Default.GuildPublishRequest));
+    private static byte[] IntentDigest(GuildPublishRequest request, bool bindRevision) => SHA256.HashData(
+        JsonSerializer.SerializeToUtf8Bytes(bindRevision ? request : request with { ExpectedRevision = null },
+            GuildJsonContext.Default.GuildPublishRequest));
 
     private sealed record Recipient(string Key, Guid? QuestId, GuildCircleAddress Address);
 }

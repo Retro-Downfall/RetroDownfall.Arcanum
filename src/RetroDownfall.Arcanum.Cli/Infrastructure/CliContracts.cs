@@ -1033,5 +1033,7 @@ internal static class CliFailureMapper
 
 [JsonSerializable(typeof(SessionBindingResultPayload))]
 
+[JsonSerializable(typeof(RetroDownfall.Arcanum.Cli.Commands.Guild.GuildTaskContentView))]
+[JsonSerializable(typeof(RetroDownfall.Arcanum.Cli.Commands.Guild.GuildWatchRecord))]
 [JsonSerializable(typeof(JsonElement))]
 internal sealed partial class CliJsonContext : JsonSerializerContext;

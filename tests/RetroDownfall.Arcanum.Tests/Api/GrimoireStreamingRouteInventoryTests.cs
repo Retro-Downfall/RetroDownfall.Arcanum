@@ -27,6 +27,8 @@ public sealed class GrimoireStreamingRouteInventoryTests
         "GetApprenticeChronicle",
         "GetDaemonEvents",
         "GetMcpEvents",
+        "GuildWatchCohort",
+        "GuildWatchTree",
         "StreamLogs",
         "StreamSession",
     ];
@@ -150,16 +152,16 @@ public sealed class GrimoireStreamingRouteInventoryTests
     }
 
     /// <summary>
-    /// Exactly five composed routes are quiesceable, and they are the five the parent design names.
+    /// The composed quiesceable routes are exactly those the design names.
     /// </summary>
     /// <remarks>
     /// Asserted over the composed host's own endpoints rather than over source, because what decides
-    /// a request's lease kind is the metadata that actually reached the route table. A sixth route
+    /// a request's lease kind is the metadata that actually reached the route table. An extra route
     /// marked quiesceable would be a stream a transition may cut, and that is a decision the parent
     /// design reserves to itself.
     /// </remarks>
     [Fact]
-    public void Exactly_five_composed_routes_are_quiesceable()
+    public void The_declared_composed_routes_are_quiesceable()
     {
 
         Assert.Equal(
@@ -293,15 +295,15 @@ public sealed class GrimoireStreamingRouteInventoryTests
     }
 
     /// <summary>
-    /// Only the five routes the parent design declares may carry the quiesceable class.
+    /// Only the routes the design declares may carry the quiesceable class.
     /// </summary>
     /// <remarks>
-    /// A sixth quiesceable route would be a stream a transition may cut at a frame boundary, and which
+    /// An undeclared quiesceable route would be a stream a transition may cut at a frame boundary, and which
     /// streams may be cut is a decision the parent design reserves to itself. The check is on the route
     /// pattern rather than on a count, so adding one and removing another still fails.
     /// </remarks>
     [Fact]
-    public void A_quiesceable_entry_outside_the_declared_five_fails()
+    public void A_quiesceable_entry_outside_the_declared_routes_fails()
     {
 
         StreamingCatalogEntry undeclared = GrimoireStreamingRouteScanner.Catalog()
@@ -389,17 +391,17 @@ public sealed class GrimoireStreamingRouteInventoryTests
             failures.Select(static failure =>
                 $"{failure.Code}: {failure.Identity?.RelativePath} {failure.Identity?.RouteLiteral} — {failure.Detail}"));
 
-        Assert.Equal(15, discovered.Count);
+        Assert.Equal(17, discovered.Count);
 
         Assert.Equal(discovered.Count, GrimoireStreamingRouteScanner.Catalog().Count);
 
     }
 
     /// <summary>
-    /// The catalog's five quiesceable entries are the five declared route patterns.
+    /// The catalog's quiesceable entries are the declared route patterns.
     /// </summary>
     [Fact]
-    public void The_catalog_names_exactly_the_five_declared_quiesceable_routes()
+    public void The_catalog_names_exactly_the_declared_quiesceable_routes()
     {
 
         string[] quiesceable =

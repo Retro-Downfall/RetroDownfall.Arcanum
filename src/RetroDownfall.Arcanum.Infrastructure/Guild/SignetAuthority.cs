@@ -351,7 +351,7 @@ internal sealed partial class SignetAuthority(GuildSignetStore store, IGrimoireC
                 }
 
                 Result<SignetRevocationDto> revoked = await GuildSignetStore.RevokeAsync(
-                    connection, transaction, current.Value, mutation, request, token).ConfigureAwait(false);
+                    connection, transaction, current.Value, mutation, request, time.GetUtcNow(), token).ConfigureAwait(false);
 
                 if (revoked.IsFailure)
                 {

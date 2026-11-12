@@ -298,6 +298,27 @@ class CiScopeWorkflowTests(unittest.TestCase):
 
         self.assertNotIn("FullyQualifiedName~BackupRestore", harness)
 
+    def test_focused_execution_requires_native_operator_surface_evidence(self):
+        harness = (ROOT / "scripts/qualify-guild-execution.sh").read_text()
+        for suite in ("Cli.GuildCommandTests", "Cli.ApprenticeCommandTests", "Cli.CliSurfaceTests",
+                      "Cli.CliCompletionTests", "Cli.CliCompletionResolverTests", "Cli.CliSuggestionTests",
+                      "Cli.ResourceSelectorTests", "Cli.ResourceSelectorCrossGenerationTests",
+                      "Cli.CliApiClientDeadlineInventoryTests", "Build.CliInfrastructureBoundaryTests",
+                      "Api.GrimoireStreamingRouteInventoryTests"):
+            self.assertRegex(harness, r"(?m)^\s*" + re.escape("RetroDownfall.Arcanum.Tests." + suite) + r"\s*\\\s*$")
+            if suite not in ("Cli.GuildCommandTests", "Cli.ApprenticeCommandTests"):
+                self.assertIn("FullyQualifiedName~" + suite.split(".")[-1], harness)
+        for case in (
+            "Cli.GuildCommandTests.Guild_owner_selectors_resolve_a_unique_uuid_prefix",
+            "Cli.GuildCommandTests.Guild_content_uuid_prefix_uses_authorized_metadata_resolution_for_message_content",
+            "Cli.GuildCommandTests.Guild_watch_cancellation_exits_130_and_disposes_the_active_subscription",
+            "Api.GuildEndpointTests.Operator_roster_refresh_pages_workspace_sources_and_refuses_changed_source_sets",
+            "Guild.GuildLocalHostPolicyTests.Native_operator_workspace_authority_uses_current_registration_without_minting_canonical_Run_pins",
+            "Guild.GuildLocalHostPolicyTests.Native_operator_leases_conflict_across_registered_aliases_without_canonical_Run_records",
+            "Guild.GuildLocalHostPolicyTests.Native_operator_lease_renewal_refuses_a_replacement_physical_root",
+        ):
+            self.assertIn("--required-case RetroDownfall.Arcanum.Tests." + case, harness)
+
     def test_focused_guild_profile_is_explicit_and_does_not_claim_full_authority(self):
         source = WORKFLOW.read_text()
         self.assertIn("default: full", source)

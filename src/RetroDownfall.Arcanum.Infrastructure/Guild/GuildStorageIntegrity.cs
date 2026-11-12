@@ -4,7 +4,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 /// <summary>Admission-time relational verification; ordinary reads validate their exact rows separately.</summary>
-internal static class GuildStorageIntegrity
+internal static partial class GuildStorageIntegrity
 {
     internal static async Task ValidateAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken ct, int declaredSchemaVersion = 3)
     {
@@ -124,6 +124,11 @@ internal static class GuildStorageIntegrity
                 """;
 
             if (!Equals(0L, await command.ExecuteScalarAsync(ct).ConfigureAwait(false))) throw new GuildStorageIntegrityException();
+        }
+
+        if (declaredSchemaVersion >= 14)
+        {
+            await ValidateOperatorSequencesAsync(connection, transaction, ct).ConfigureAwait(false);
         }
 
         if (declaredSchemaVersion >= 8)
