@@ -138,14 +138,93 @@ public sealed class ProviderCredentialIdentityTests : IDisposable
         Assert.False(await compatibility.IsCurrentAsync(Provider(), first.Stamp));
     }
 
+    [Fact]
+    public async Task Identity_peek_prefers_environment_and_changes_stamp_for_observed_changes()
+    {
+        Store store = new() { Result = SecretStoreReadResult.Ok("stored") };
+
+        IProviderApiKeyResolver resolver = new ProviderApiKeyResolver(store);
+
+        global::System.Environment.SetEnvironmentVariable(Variable, "first");
+
+        ResolvedProviderCredential first = await resolver.PeekWithIdentityAsync(Provider());
+
+        Assert.Equal("first", first.Secret);
+
+        Assert.NotNull(first.Stamp);
+
+        Assert.Equal(first.Stamp, (await resolver.PeekWithIdentityAsync(Provider())).Stamp);
+
+        global::System.Environment.SetEnvironmentVariable(Variable, "second");
+
+        Assert.NotEqual(first.Stamp, (await resolver.PeekWithIdentityAsync(Provider())).Stamp);
+
+        Assert.Equal(0, store.Reads + store.Peeks);
+    }
+
+    [Fact]
+    public async Task Compatibility_identity_peek_does_not_call_legacy_resolver()
+    {
+        LegacyResolver legacy = new();
+
+        IProviderApiKeyResolver resolver = legacy;
+
+        ResolvedProviderCredential observed = await resolver.PeekWithIdentityAsync(Provider());
+
+        Assert.Null(observed.Secret);
+
+        Assert.Null(observed.Stamp);
+
+        Assert.Equal(0, legacy.Calls);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => resolver.PeekWithIdentityAsync(Provider(), new CancellationToken(true)));
+
+        Assert.Equal(0, legacy.Calls);
+    }
+
+    [Fact]
+    public async Task Identity_peek_releases_gate_after_exception_and_cancellation()
+    {
+        Store store = new() { Result = SecretStoreReadResult.Ok("secret"), FailPeek = true };
+
+        IProviderApiKeyResolver resolver = new ProviderApiKeyResolver(store);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => resolver.PeekWithIdentityAsync(Provider()));
+
+        store.FailPeek = false;
+
+        store.CancelPeek = true;
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => resolver.PeekWithIdentityAsync(Provider()));
+
+        store.CancelPeek = false;
+
+        ResolvedProviderCredential result = await resolver.PeekWithIdentityAsync(Provider());
+
+        Assert.Equal("secret", result.Secret);
+
+        Assert.NotNull(result.Stamp);
+    }
+
     private sealed class LegacyResolver : IProviderApiKeyResolver
     {
-        public Task<string?> ResolveAsync(ProviderSettings provider, CancellationToken cancellationToken = default) => Task.FromResult<string?>("legacy");
+        public int Calls { get; private set; }
+
+        public Task<string?> ResolveAsync(ProviderSettings provider, CancellationToken cancellationToken = default)
+        {
+            Calls++;
+
+            return Task.FromResult<string?>("legacy");
+        }
     }
 
     private sealed class Store : IProviderCredentialStore
     {
         public SecretStoreReadResult Result { get; set; } = SecretStoreReadResult.Missing();
+
+        public bool FailPeek { get; set; }
+
+        public bool CancelPeek { get; set; }
 
         public int Reads { get; private set; }
 
@@ -161,6 +240,16 @@ public sealed class ProviderCredentialIdentityTests : IDisposable
         public Task<SecretStoreReadResult> PeekApiKeyReadResultAsync(string providerName, CancellationToken cancellationToken = default)
         {
             Peeks++;
+
+            if (FailPeek)
+            {
+                throw new InvalidOperationException("peek failed");
+            }
+
+            if (CancelPeek)
+            {
+                throw new OperationCanceledException();
+            }
 
             return Task.FromResult(Result);
         }

@@ -178,6 +178,105 @@ public sealed class ProviderCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Identity_peek_reads_legacy_mirror_without_migrating_it()
+    {
+        SetEnvironment("ARCANUM_TEST_PROOF_QUALITY", null);
+
+        using (ProviderCredentialStore writer = CreateStore(new UnavailableOsCredentialStore()))
+        {
+            await writer.SaveApiKeyAsync("proof-quality", "migration-secret");
+        }
+
+        string[] before = SnapshotFileTree();
+
+        RecordingOsCredentialStore os = new(OsCredentialStoreResult.NotFound());
+
+        using ProviderCredentialStore store = CreateStore(os);
+
+        IProviderApiKeyResolver resolver = new ProviderApiKeyResolver(store);
+
+        ProviderSettings provider = new() { Name = "proof-quality", CredentialEnvironmentVariable = "ARCANUM_TEST_PROOF_QUALITY" };
+
+        ResolvedProviderCredential observed = await resolver.PeekWithIdentityAsync(provider);
+
+        Assert.Equal("migration-secret", observed.Secret);
+
+        Assert.NotNull(observed.Stamp);
+
+        Assert.Equal(1, os.ReadCallCount);
+
+        Assert.Equal(0, os.SetCallCount);
+
+        Assert.Equal(0, os.DeleteCallCount);
+
+        Assert.Equal(before, SnapshotFileTree());
+
+        ResolvedProviderCredential repeated = await resolver.PeekWithIdentityAsync(provider);
+
+        Assert.Equal(observed.Stamp, repeated.Stamp);
+
+        await store.SaveApiKeyAsync(provider.Name, "other");
+
+        await store.SaveApiKeyAsync(provider.Name, "migration-secret");
+
+        Assert.NotEqual(observed.Stamp, (await resolver.PeekWithIdentityAsync(provider)).Stamp);
+    }
+
+    [Fact]
+    public async Task Identity_peek_missing_corrupt_and_unavailable_sources_does_not_repair()
+    {
+        SetEnvironment("ARCANUM_TEST_PROOF_QUALITY", null);
+
+        RecordingOsCredentialStore os = new(OsCredentialStoreResult.NotFound());
+
+        using ProviderCredentialStore store = CreateStore(os);
+
+        IProviderApiKeyResolver resolver = new ProviderApiKeyResolver(store);
+
+        ProviderSettings provider = new() { Name = "proof-quality", CredentialEnvironmentVariable = "ARCANUM_TEST_PROOF_QUALITY" };
+
+        string[] before = SnapshotFileTree();
+
+        ResolvedProviderCredential missing = await resolver.PeekWithIdentityAsync(provider);
+
+        Assert.Null(missing.Secret);
+
+        Assert.NotNull(missing.Stamp);
+
+        Assert.Equal(before, SnapshotFileTree());
+
+        string path = ArcanumPaths.InferenceProviderApiKeyStoreFile(provider.Name);
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+        await File.WriteAllBytesAsync(path, [1, 2, 3, 4]);
+
+        before = SnapshotFileTree();
+
+        ResolvedProviderCredential corrupt = await resolver.PeekWithIdentityAsync(provider);
+
+        Assert.Null(corrupt.Secret);
+
+        Assert.Null(corrupt.Stamp);
+
+        Assert.Equal(before, SnapshotFileTree());
+
+        Assert.Equal(0, os.SetCallCount);
+
+        Assert.Equal(0, os.DeleteCallCount);
+
+        using ProviderCredentialStore unavailable = CreateStore(new RecordingOsCredentialStore(OsCredentialStoreResult.Failed("locked")));
+
+        ResolvedProviderCredential failed = await new ProviderApiKeyResolver(unavailable).PeekWithIdentityAsync(provider);
+
+        Assert.Null(failed.Secret);
+
+        Assert.Null(failed.Stamp);
+
+        Assert.Equal(before, SnapshotFileTree());
+    }
+
+    [Fact]
     public async Task Successful_local_save_and_delete_ABA_revoke_captured_identity()
     {
         SetEnvironment("ARCANUM_TEST_LOCAL_IDENTITY", null);

@@ -32,6 +32,11 @@ public sealed class ProviderApiKeyResolver(
         ProviderSettings provider,
         CancellationToken cancellationToken = default) => (await CaptureIdentityAsync(provider, false, null, cancellationToken).ConfigureAwait(false)).Credential;
 
+    /// <summary>Observes the effective credential and its identity without migrating or repairing storage.</summary>
+    public async Task<ResolvedProviderCredential> PeekWithIdentityAsync(
+        ProviderSettings provider,
+        CancellationToken cancellationToken = default) => (await CaptureIdentityAsync(provider, true, null, cancellationToken).ConfigureAwait(false)).Credential;
+
     public async Task<bool> IsCurrentAsync(
         ProviderSettings provider,
         ProviderCredentialStamp stamp,
