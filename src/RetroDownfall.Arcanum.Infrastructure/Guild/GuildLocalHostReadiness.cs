@@ -15,6 +15,8 @@ internal interface IGuildLocalHostReadiness
     Task<Result> EnsureReadyAsync(CancellationToken cancellationToken);
 
     Result<IGuildWorkspaceLeaseService> GetWorkspaceLeaseService() => GuildLocalHostReadiness.Unavailable;
+
+    Result<IDisposable> RetainPhysicalWorkOwnership() => GuildLocalHostReadiness.Unavailable;
 }
 
 /// <summary>Host-lifetime ownership of the existing process-wide physical mutation fence.</summary>
@@ -51,6 +53,42 @@ internal sealed class GuildLocalHostReadiness(IOptionsMonitor<ArcanumSettings> s
             && installed.Generation == policy.InstallationGeneration && installed.Principal == policy.OperatorPrincipalId
             && installed.HostLock.Validate().IsSuccess
             ? Result<IGuildWorkspaceLeaseService>.Success(installed.Broker) : Unavailable;
+    }
+
+    public Result<IDisposable> RetainPhysicalWorkOwnership()
+    {
+        if (!_gate.Wait(0)) return Unavailable;
+
+        try
+        {
+            Installation? installed = Volatile.Read(ref _installed);
+
+            if (installed is null || RequireExecutionReady().IsFailure) return Unavailable;
+
+            Result<IDisposable> acquired = installed.HostLock.Pin();
+
+            if (acquired.IsFailure) return Unavailable;
+
+            bool retained = false;
+
+            try
+            {
+                if (!ReferenceEquals(installed, Volatile.Read(ref _installed)) || RequireExecutionReady().IsFailure || _stopping)
+                    return Unavailable;
+
+                retained = true;
+
+                return acquired;
+            }
+            finally
+            {
+                if (!retained) acquired.Value.Dispose();
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async Task<Result> EnsureReadyAsync(CancellationToken cancellationToken)
