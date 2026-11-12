@@ -110,7 +110,7 @@ class CiScopeWorkflowTests(unittest.TestCase):
                 selected, skipped = selected_inventory("workflow_dispatch", "guild-execution", platform)
                 self.assertEqual(support | {("guild-execution", host) for host in hosts}, set(selected))
                 self.assertEqual(4 + len(hosts), len(selected))
-                self.assertEqual(15, len(skipped))
+                self.assertEqual(16, len(skipped))
 
     def test_execution_platform_choice_does_not_change_full_pr_or_other_focused_inventories(self):
         for event, profile, full in (("pull_request", "", "true"), ("pull_request", "", "false"),

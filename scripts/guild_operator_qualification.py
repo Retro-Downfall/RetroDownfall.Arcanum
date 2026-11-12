@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select the explicit Guild operator witnesses and admit their completed TRX evidence."""
+"""Select explicit focused Guild witnesses and admit their completed TRX evidence."""
 import argparse
 from collections import Counter
 import hashlib
@@ -49,10 +49,11 @@ def load_manifest(path=MANIFEST):
     fields = {"schemaVersion", "profile", "projects", "platformCases", "allowedSkips", "omissions"}
     if not isinstance(manifest, dict) or set(manifest) != fields:
         raise ValueError("unknown or missing operator manifest fields")
-    if type(manifest["schemaVersion"]) is not int or manifest["schemaVersion"] != 1 or manifest["profile"] != "guild-operator":
+    if type(manifest["schemaVersion"]) is not int or manifest["schemaVersion"] != 1 or manifest["profile"] not in ("guild-operator", "guild-a2a"):
         raise ValueError("unsupported operator manifest version or profile")
-    if not isinstance(manifest["projects"], dict) or set(manifest["projects"]) != {"core", "compendium"}:
-        raise ValueError("operator manifest must declare both projects")
+    expected_projects = {"core", "compendium"} if manifest["profile"] == "guild-operator" else {"core"}
+    if not isinstance(manifest["projects"], dict) or set(manifest["projects"]) != expected_projects:
+        raise ValueError("manifest must declare the profile project inventory")
     for declaration in manifest["projects"].values():
         if not isinstance(declaration, dict) or set(declaration) != {"requiredClasses", "requiredCases", "caseSources", "requiredCaseRows", "requiredCaseDisplays"}:
             raise ValueError("unknown or missing project witness fields")
@@ -66,6 +67,8 @@ def load_manifest(path=MANIFEST):
         _strings(list(rows), names=True)
         if not set(rows) <= set(declaration["requiredCases"]) or any(type(count) is not int or count < 1 for count in rows.values()):
             raise ValueError("invalid required theory row inventory")
+        if manifest["profile"] == "guild-a2a" and (not declaration["requiredCases"] or set(rows) != set(declaration["requiredCases"])):
+            raise ValueError("A2A qualification requires a complete named case and row inventory")
         displays = declaration["requiredCaseDisplays"]
         if not isinstance(displays, dict) or not set(displays) <= set(rows):
             raise ValueError("invalid required case display inventory")
@@ -130,6 +133,10 @@ def validate_evidence(report_bytes, manifest, project, platform):
             if display not in allowed or not display.startswith(identity + "("):
                 raise ValueError(f"unexpected skipped operator witness {display!r}")
             skipped.append(display)
+    if manifest["profile"] == "guild-a2a":
+        displays = [row.get("testName", "") for row in root.findall(".//t:UnitTestResult", NS)]
+        if len(displays) != len(set(displays)):
+            raise ValueError("duplicate A2A scenario identity")
     for name, expected in manifest["projects"][project]["requiredCaseDisplays"].items():
         actual = [row.get("testName", "") for row in root.findall(".//t:UnitTestResult", NS)
             if definitions.get(row.get("testId")) == name]
@@ -147,7 +154,7 @@ def validate_evidence(report_bytes, manifest, project, platform):
         if expected is not None and len(outcomes) != expected:
             raise ValueError(f"required case {name!r} needs {expected} rows, found {len(outcomes)}")
     selection = make_filter(manifest, project, platform)
-    return {"qualification": "guild-operator", "project": project, "platform": platform,
+    return {"qualification": manifest["profile"], "project": project, "platform": platform,
         "reportSha256": hashlib.sha256(report_bytes).hexdigest(), "passedTests": evidence.passed_count,
         "requiredClasses": classes, "requiredCases": cases,
         "requiredCaseRows": manifest["projects"][project]["requiredCaseRows"],
@@ -198,7 +205,7 @@ def main(argv=None):
             summary["manifestSha256"] = hashlib.sha256(raw).hexdigest()
             if arguments.summary_json:
                 _write_summary(arguments.summary_json, summary)
-            print(f"Guild operator {arguments.project}: {summary['passedTests']} passed; all required witnesses admitted.")
+            print(f"{manifest['profile']} {arguments.project}: {summary['passedTests']} passed; all required witnesses admitted.")
     except (ValueError, OSError) as error:
         print(error, file=sys.stderr)
         return 1

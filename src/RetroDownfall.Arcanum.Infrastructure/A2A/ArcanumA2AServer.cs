@@ -202,8 +202,18 @@ public sealed class ArcanumA2AServer(
 
         }
 
+        PushNotificationConfig? supplied = request.Config;
+
+        PushNotificationConfig? config = supplied is null ? null : new()
+        {
+            Id = string.IsNullOrWhiteSpace(request.ConfigId) ? supplied.Id : request.ConfigId,
+            Url = supplied.Url,
+            Token = supplied.Token,
+            Authentication = supplied.Authentication,
+        };
+
         Result<PushNotificationConfig> registered = await pushNotifications
-            .RegisterAsync(request.TaskId, request.Config, cancellationToken)
+            .RegisterAsync(request.TaskId, config, cancellationToken)
             .ConfigureAwait(false);
 
         if (registered.IsFailure)
@@ -251,6 +261,7 @@ public sealed class ArcanumA2AServer(
         }
 
         return pushNotifications.Resolve(request.TaskId) is { } config
+            && string.Equals(config.Id, request.Id, StringComparison.Ordinal)
             ? new TaskPushNotificationConfig
             {
                 Id = config.Id ?? request.Id,
@@ -312,7 +323,7 @@ public sealed class ArcanumA2AServer(
 
         }
 
-        pushNotifications.Remove(request.TaskId);
+        pushNotifications.Remove(request.TaskId, request.Id);
 
     }
 

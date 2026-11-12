@@ -21,3 +21,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # The wire adapter and ASP.NET routing package are one compatibility unit.
+    # Review preview and stable candidates through the same transport/AOT gate.
+    groups:
+      a2a-sdk:
+        patterns:
+          - A2A
+          - A2A.AspNetCore

@@ -125,6 +125,17 @@ public sealed class A2APushNotificationRegistry(
     /// <summary>Forgets a task's callback. Idempotent: removing an unknown task is not an error.</summary>
     public void Remove(string taskId) => _byTask.TryRemove(taskId, out _);
 
+    /// <summary>Forgets only the exact registration named by the peer.</summary>
+    public void Remove(string taskId, string? configId)
+    {
+        if (_byTask.TryGetValue(taskId, out Registration current)
+            && string.Equals(current.Config.Id, configId, StringComparison.Ordinal))
+        {
+            // A replacement after the lookup must not be removed by a stale deletion.
+            _byTask.TryRemove(new KeyValuePair<string, Registration>(taskId, current));
+        }
+    }
+
     /// <summary>
     /// Applies the outbound URL policy to a callback target.
     /// </summary>

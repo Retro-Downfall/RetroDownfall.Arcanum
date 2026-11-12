@@ -111,6 +111,151 @@ public sealed class A2APushNotificationTests
     }
 
     [Fact]
+    public async Task PushConfig_CreateHonorsTheRequestedConfigId()
+    {
+        A2APushNotificationRegistry registry = CreateRegistry(pushEnabled: true);
+
+        using GateFirstAgentHandler handler = new();
+
+        await using ArcanumA2AServer server = new(handler, new InMemoryTaskStore(), new(), registry,
+            NullLogger<A2AServer>.Instance, new());
+
+        TaskPushNotificationConfig created = await server.CreateTaskPushNotificationConfigAsync(new()
+        {
+            TaskId = "task-1", ConfigId = "requested-config", Config = new() { Url = $"https://{PeerCallbackHost}/hook" },
+        });
+
+        Assert.Equal("requested-config", created.Id);
+
+        Assert.Equal("requested-config", Assert.Single((await server.ListTaskPushNotificationConfigAsync(new() { TaskId = "task-1" })).Configs!).Id);
+    }
+
+    [Fact]
+    public async Task PushConfig_StaleGetDoesNotDiscloseTheReplacement()
+    {
+        A2APushNotificationRegistry registry = CreateRegistry(pushEnabled: true);
+
+        using GateFirstAgentHandler handler = new();
+
+        await using ArcanumA2AServer server = new(handler, new InMemoryTaskStore(), new(), registry,
+            NullLogger<A2AServer>.Instance, new());
+
+        await server.CreateTaskPushNotificationConfigAsync(new()
+        {
+            TaskId = "task-1", ConfigId = "first", Config = new() { Id = "first", Url = $"https://{PeerCallbackHost}/hook" },
+        });
+
+        await server.CreateTaskPushNotificationConfigAsync(new()
+        {
+            TaskId = "task-1", ConfigId = "second", Config = new() { Id = "second", Url = $"https://{PeerCallbackHost}/hook", Token = "replacement-secret" },
+        });
+
+        await Assert.ThrowsAsync<A2AException>(() => server.GetTaskPushNotificationConfigAsync(new() { TaskId = "task-1", Id = "first" }));
+
+        TaskPushNotificationConfig current = await server.GetTaskPushNotificationConfigAsync(new() { TaskId = "task-1", Id = "second" });
+
+        Assert.Equal("replacement-secret", current.PushNotificationConfig.Token);
+    }
+
+    [Fact]
+    public async Task PushConfig_StaleDeleteDoesNotRemoveTheReplacement()
+    {
+        A2APushNotificationRegistry registry = CreateRegistry(pushEnabled: true);
+
+        using GateFirstAgentHandler handler = new();
+
+        await using ArcanumA2AServer server = new(handler, new InMemoryTaskStore(), new(), registry,
+            NullLogger<A2AServer>.Instance, new());
+
+        await server.CreateTaskPushNotificationConfigAsync(new()
+        {
+            TaskId = "task-1", ConfigId = "first", Config = new() { Id = "first", Url = $"https://{PeerCallbackHost}/hook" },
+        });
+
+        await server.CreateTaskPushNotificationConfigAsync(new()
+        {
+            TaskId = "task-1", ConfigId = "second", Config = new() { Id = "second", Url = $"https://{PeerCallbackHost}/hook" },
+        });
+
+        await server.DeleteTaskPushNotificationConfigAsync(new() { TaskId = "task-1", Id = "first" });
+
+        Assert.Equal("second", Assert.Single((await server.ListTaskPushNotificationConfigAsync(new() { TaskId = "task-1" })).Configs!).Id);
+
+        await server.DeleteTaskPushNotificationConfigAsync(new() { TaskId = "task-1", Id = "second" });
+
+        Assert.Empty((await server.ListTaskPushNotificationConfigAsync(new() { TaskId = "task-1" })).Configs!);
+    }
+
+    [Fact]
+    public async Task PushConfig_JsonRpcPreservesIdsAcrossReplacementAndDeletion()
+    {
+        using GateFirstAgentHandler handler = new();
+
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(handler, advertisesPush: true);
+
+        using HttpClient client = server.CreateClient();
+
+        async Task<JsonDocument> CallAsync(string request)
+        {
+            using StringContent body = new(request, System.Text.Encoding.UTF8, "application/json");
+
+            using HttpResponseMessage response = await client.PostAsync("/agent", body);
+
+            response.EnsureSuccessStatusCode();
+
+            return JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        }
+
+        using JsonDocument first = await CallAsync("""
+            {"jsonrpc":"2.0","id":1,"method":"CreateTaskPushNotificationConfig","params":{"taskId":"task-1","configId":"first","config":{"url":"https://peer-callback.example.test/hook","token":"first-secret"}}}
+            """);
+
+        Assert.Equal("first", first.RootElement.GetProperty("result").GetProperty("id").GetString());
+
+        using JsonDocument second = await CallAsync("""
+            {"jsonrpc":"2.0","id":2,"method":"CreateTaskPushNotificationConfig","params":{"taskId":"task-1","configId":"second","config":{"url":"https://peer-callback.example.test/hook","token":"second-secret"}}}
+            """);
+
+        Assert.Equal("second", second.RootElement.GetProperty("result").GetProperty("id").GetString());
+
+        using JsonDocument staleGet = await CallAsync("""
+            {"jsonrpc":"2.0","id":3,"method":"GetTaskPushNotificationConfig","params":{"taskId":"task-1","id":"first"}}
+            """);
+
+        Assert.True(staleGet.RootElement.TryGetProperty("error", out _));
+
+        using JsonDocument staleDelete = await CallAsync("""
+            {"jsonrpc":"2.0","id":4,"method":"DeleteTaskPushNotificationConfig","params":{"taskId":"task-1","id":"first"}}
+            """);
+
+        Assert.False(staleDelete.RootElement.TryGetProperty("error", out _));
+
+        using JsonDocument list = await CallAsync("""
+            {"jsonrpc":"2.0","id":5,"method":"ListTaskPushNotificationConfig","params":{"taskId":"task-1"}}
+            """);
+
+        Assert.Equal("second", Assert.Single(list.RootElement.GetProperty("result").GetProperty("configs").EnumerateArray()).GetProperty("id").GetString());
+
+        using JsonDocument current = await CallAsync("""
+            {"jsonrpc":"2.0","id":6,"method":"GetTaskPushNotificationConfig","params":{"taskId":"task-1","id":"second"}}
+            """);
+
+        Assert.Equal("second-secret", current.RootElement.GetProperty("result").GetProperty("pushNotificationConfig").GetProperty("token").GetString());
+
+        using JsonDocument delete = await CallAsync("""
+            {"jsonrpc":"2.0","id":7,"method":"DeleteTaskPushNotificationConfig","params":{"taskId":"task-1","id":"second"}}
+            """);
+
+        Assert.False(delete.RootElement.TryGetProperty("error", out _));
+
+        using JsonDocument empty = await CallAsync("""
+            {"jsonrpc":"2.0","id":8,"method":"ListTaskPushNotificationConfig","params":{"taskId":"task-1"}}
+            """);
+
+        Assert.Empty(empty.RootElement.GetProperty("result").GetProperty("configs").EnumerateArray());
+    }
+
+    [Fact]
     public async Task PushRegistry_UrlWithoutAScheme_IsRefused()
     {
         A2APushNotificationRegistry registry = CreateRegistry(pushEnabled: true);
