@@ -106,7 +106,7 @@ internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution exec
 
         DateTimeOffset started = DateTimeOffset.UtcNow;
 
-        Result<ChatResponse> response = await execution.Store.ExecuteProviderEffectAsync<ChatResponse>(execution, daily, effect,
+        return await execution.Store.ExecuteAndSettleProviderResponseAsync<ChatResponse>(execution, daily, effect,
             async token =>
             {
                 if (!IsActive) return new Error(ErrorCodes.Guild.AuthorityUnavailable, "The Guild turn ended before provider handoff.");
@@ -116,35 +116,36 @@ internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution exec
                 using IDisposable? wire = prepared?.Enter();
 
                 return await client.GetResponseAsync(payload, providerOptions, token).ConfigureAwait(false);
+            }, response =>
+            {
+                UsageDetails? usage = response.Usage;
+
+                if (prepared?.InvalidUsage == true)
+                    return new Error(ErrorCodes.Guild.ReconciliationRequired, "The provider returned invalid physical usage; its exposure remains held.");
+
+                long? observedInput = prepared is null ? usage?.InputTokenCount
+                    : prepared.UsageObserved ? prepared.ObservedInputTokens : null;
+
+                long? observedOutput = prepared is null ? usage?.OutputTokenCount
+                    : prepared.UsageObserved ? prepared.ObservedOutputTokens : null;
+
+                long inputTokens = observedInput ?? 0, outputTokens = observedOutput ?? 0;
+
+                long cached = usage?.CachedInputTokenCount ?? 0, reasoning = usage?.ReasoningTokenCount ?? 0;
+
+                if (inputTokens < 0 || outputTokens < 0 || cached < 0 || cached > inputTokens || reasoning < 0 || reasoning > outputTokens)
+                    return new Error(ErrorCodes.Guild.ReconciliationRequired, "The provider returned invalid physical usage; its exposure remains held.");
+
+                ModelPricingEntry snapshot = prepared?.Pricing ?? pricing with { };
+
+                return new BillableOperationRecord(driver.Execution.RunId, BillableOperationType.Chat, input.Provider, input.Model,
+                    "guild", started, DateTimeOffset.UtcNow, inputTokens, outputTokens, reasoning, cached,
+                    prepared?.PricingSnapshotJson() ?? JsonSerializer.Serialize(snapshot, ConfigurationJsonContext.Default.ModelPricingEntry),
+                    CostCalculator.CalculateCost(inputTokens, outputTokens, cached, reasoning, snapshot),
+                    observedInput is not null && observedOutput is not null
+                        ? BillableOperationStatus.Completed : BillableOperationStatus.Failed, response.ResponseId);
             }, ct, input, circleInputs, prepared?.SpendSource,
             prepared?.SpendSource is not null ? prepared.PricingSnapshotJson() : null).ConfigureAwait(false);
-
-        if (response.IsFailure) return response.Error;
-
-        UsageDetails? usage = response.Value.Usage;
-
-        long inputTokens = usage?.InputTokenCount ?? 0, outputTokens = usage?.OutputTokenCount ?? 0;
-
-        long cached = usage?.CachedInputTokenCount ?? 0, reasoning = usage?.ReasoningTokenCount ?? 0;
-
-        if (inputTokens < 0 || outputTokens < 0 || cached < 0 || cached > inputTokens || reasoning < 0 || reasoning > outputTokens)
-            return new Error(ErrorCodes.Guild.ReconciliationRequired, "The provider returned invalid physical usage; its exposure remains held.");
-
-        ModelPricingEntry snapshot = prepared?.Pricing ?? pricing with { };
-
-        BillableOperationRecord bill = new(driver.Execution.RunId, BillableOperationType.Chat, input.Provider, input.Model,
-            "guild", started, DateTimeOffset.UtcNow, inputTokens, outputTokens, reasoning, cached,
-            prepared?.PricingSnapshotJson() ?? JsonSerializer.Serialize(snapshot, ConfigurationJsonContext.Default.ModelPricingEntry),
-            CostCalculator.CalculateCost(inputTokens, outputTokens, cached, reasoning, snapshot),
-            usage?.InputTokenCount is not null && usage.OutputTokenCount is not null
-                ? BillableOperationStatus.Completed : BillableOperationStatus.Failed, response.Value.ResponseId);
-
-        // Transport cancellation never discards known physical usage. Installation admission can still
-        // refuse settlement, in which case the already committed exposure remains explicitly unresolved.
-        Result<GuildBudgetEffect> settled = await execution.Store.SettleProviderEffectAsync(execution, daily, effect, bill,
-            CancellationToken.None).ConfigureAwait(false);
-
-        return settled.IsFailure ? settled.Error : response;
     }
 
     public void Dispose() => Interlocked.Exchange(ref _closed, 1);

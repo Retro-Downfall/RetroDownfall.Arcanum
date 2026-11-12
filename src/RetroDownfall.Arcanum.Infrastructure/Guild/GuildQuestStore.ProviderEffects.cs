@@ -1,4 +1,7 @@
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Globalization;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -124,15 +127,62 @@ internal sealed partial class GuildQuestStore
             }, ct);
     }
 
+    // This capability never leaves the store: only a successful return from the admitted
+    // callback followed by a frozen, validated projection can create it.
+    private sealed record ReceivedProviderResponse(GuildQuestStore Store, GuildLocalInferenceExecution Execution,
+        GuildBudgetEffectRequest Effect, object Response, BillableOperationRecord Bill);
+
+    internal async Task<Result<T>> ExecuteAndSettleProviderResponseAsync<T>(GuildLocalInferenceExecution execution,
+        BudgetReservationService daily, GuildBudgetEffectRequest effect, Func<CancellationToken, Task<Result<T>>> send,
+        Func<T, Result<BillableOperationRecord>> project, CancellationToken ct, GuildLocalExecutionInput? expectedInput = null,
+        IReadOnlyList<GuildCircleInputBatch>? circleInputs = null, GuildSpendSourceCredential? spendSource = null,
+        string? spendPricing = null) where T : class
+    {
+        Result<T> received = await ExecuteProviderEffectAsync(execution, daily, effect, send, ct, expectedInput,
+            circleInputs, spendSource, spendPricing).ConfigureAwait(false);
+
+        if (received.IsFailure) return received.Error;
+
+        Result<BillableOperationRecord> projected = project(received.Value);
+
+        if (projected.IsFailure) return projected.Error;
+
+        BillableOperationRecord bill = projected.Value with { };
+
+        if (!ValidProviderBill(effect, bill)) return InvalidReceipt;
+
+        try
+        {
+            _ = checked(bill.InputTokens + bill.OutputTokens);
+        }
+        catch (OverflowException)
+        {
+            return InvalidReceipt;
+        }
+
+        ReceivedProviderResponse proof = new(this, execution, effect, received.Value, bill);
+
+        Result<GuildBudgetEffect> settled = await SettleProviderEffectCoreAsync(execution, daily, effect, bill,
+            proof, CancellationToken.None).ConfigureAwait(false);
+
+        return settled.IsFailure ? settled.Error : received;
+    }
+
     internal Task<Result<GuildBudgetEffect>> SettleProviderEffectAsync(GuildLocalInferenceExecution execution,
         BudgetReservationService daily, GuildBudgetEffectRequest effect, BillableOperationRecord bill, CancellationToken ct)
+        => SettleProviderEffectCoreAsync(execution, daily, effect, bill, null, ct);
+
+    private Task<Result<GuildBudgetEffect>> SettleProviderEffectCoreAsync(GuildLocalInferenceExecution execution,
+        BudgetReservationService daily, GuildBudgetEffectRequest effect, BillableOperationRecord bill,
+        ReceivedProviderResponse? proof, CancellationToken ct)
     {
+        if (proof is not null && (!ReferenceEquals(proof.Store, this) || !ReferenceEquals(proof.Execution, execution)
+            || !ReferenceEquals(proof.Effect, effect) || !ReferenceEquals(proof.Bill, bill) || proof.Response is null))
+            return Task.FromResult(Result<GuildBudgetEffect>.Failure(InvalidReceipt));
+
         if (!ProviderIdentityMatches(execution, effect) || !_providerReceipts.TryGetValue(effect, out var owner)
             || !ReferenceEquals(owner, execution) || daily is null || allocations is not GuildBudgetLedger ledger
-            || bill is null || bill.RunId != effect.AccountingAssociationId || bill.InputTokens < 0 || bill.OutputTokens < 0
-            || bill.CachedTokens < 0 || bill.CachedTokens > bill.InputTokens || bill.ReasoningTokens < 0
-            || bill.ReasoningTokens > bill.OutputTokens || bill.ActualCostUsd < 0
-            || !Enum.IsDefined(bill.OperationType) || !Enum.IsDefined(bill.Status))
+            || !ValidProviderBill(effect, bill))
             return Task.FromResult(Result<GuildBudgetEffect>.Failure(InvalidReceipt));
 
         // Evidence is allowed after revocation. It grants no new send and must not be discarded because authority ended.
@@ -191,8 +241,11 @@ internal sealed partial class GuildQuestStore
                     _ = await TurnRunWriter.RecordBillableOperationWithinAsync(connection, transaction, effect.SourceId, bill, token).ConfigureAwait(false);
                 }
 
-                Result<GuildBudgetEffect> applied = await GuildBudgetPhysicalAccounting.ApplyLocalBillWithinAsync(connection,
-                    transaction, ledger, effect.EffectId, effect.SourceId, token, daily).ConfigureAwait(false);
+                Result<GuildBudgetEffect> applied = proof is null || legacy
+                    ? await GuildBudgetPhysicalAccounting.ApplyLocalBillWithinAsync(connection,
+                        transaction, ledger, effect.EffectId, effect.SourceId, token, daily).ConfigureAwait(false)
+                    : await ApplyReceivedProviderBillWithinAsync(connection, transaction, ledger, found.Value,
+                        bill, daily, token).ConfigureAwait(false);
 
                 if (applied.IsFailure || legacy) return applied;
 
@@ -238,6 +291,59 @@ internal sealed partial class GuildQuestStore
                 return receiptSaved.IsFailure ? receiptSaved.Error : applied;
             }, ct);
     }
+
+    private static async Task<Result<GuildBudgetEffect>> ApplyReceivedProviderBillWithinAsync(SqliteConnection connection,
+        SqliteTransaction transaction, GuildBudgetLedger ledger, GuildBudgetEffect effect, BillableOperationRecord bill,
+        BudgetReservationService daily, CancellationToken ct)
+    {
+        GuildBudgetEffectRequest request = effect.Request;
+
+        if (!await ProviderBillMatchesWithinAsync(connection, transaction, request.SourceId, bill, ct).ConfigureAwait(false))
+            return Conflict;
+
+        try
+        {
+            long tokens = checked(bill.InputTokens + bill.OutputTokens);
+
+            bool unknownTokens = bill.Status != BillableOperationStatus.Completed;
+
+            bool unknownUsd = unknownTokens || request.UsdBound is null;
+
+            string identity = string.Join("|", request.SourceId.ToString("N"), request.AccountingAssociationId.ToString("N"),
+                ExactUsdText.Format(bill.ActualCostUsd), tokens.ToString(CultureInfo.InvariantCulture), true, unknownUsd, unknownTokens);
+
+            GuildBudgetEvidence evidence = new(request.SourceId, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))),
+                bill.ActualCostUsd, tokens, unknownUsd, unknownTokens, true);
+
+            Result<GuildBudgetEffect> applied = await ledger.ApplyEvidenceWithinAsync(connection, transaction,
+                request.EffectId, evidence, ct).ConfigureAwait(false);
+
+            if (applied.IsFailure) return applied.Error;
+
+            if (request.ReservationId is { } reservation)
+            {
+                Result disposition = !unknownUsd
+                    ? await daily.ReconcileWithinAsync(connection, transaction, reservation, request.AccountingAssociationId,
+                        bill.ActualCostUsd, true, ct).ConfigureAwait(false)
+                    : await daily.RecordPartialUsageWithinAsync(connection, transaction, reservation, request.AccountingAssociationId,
+                        bill.ActualCostUsd, ct).ConfigureAwait(false);
+
+                if (disposition.IsFailure) return disposition.Error;
+            }
+
+            return applied;
+        }
+        catch (OverflowException)
+        {
+            return InvalidReceipt;
+        }
+    }
+
+    private static bool ValidProviderBill(GuildBudgetEffectRequest effect, BillableOperationRecord bill) =>
+        bill is not null && bill.RunId == effect.AccountingAssociationId && bill.InputTokens >= 0 && bill.OutputTokens >= 0
+        && bill.CachedTokens >= 0 && bill.CachedTokens <= bill.InputTokens && bill.ReasoningTokens >= 0
+        && bill.ReasoningTokens <= bill.OutputTokens && bill.ActualCostUsd >= 0
+        && Enum.IsDefined(bill.OperationType) && Enum.IsDefined(bill.Status);
 
     private bool ProviderIdentityMatches(GuildLocalInferenceExecution execution, GuildBudgetEffectRequest effect) =>
         execution is not null && ReferenceEquals(execution.Store, this) && DriverShape(execution.Driver)

@@ -52,6 +52,8 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
         Apply(message);
 
         ProcessNext(message, pipeline, currentIndex);
+
+        Active.Value?.ObserveResponse(message);
     }
 
     public override async ValueTask ProcessAsync(PipelineMessage message, IReadOnlyList<PipelinePolicy> pipeline, int currentIndex)
@@ -59,6 +61,8 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
         Apply(message);
 
         await ProcessNextAsync(message, pipeline, currentIndex).ConfigureAwait(false);
+
+        Active.Value?.ObserveResponse(message);
     }
 
     private void Apply(PipelineMessage message)
@@ -111,6 +115,14 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
         internal ModelPricingEntry Pricing { get; }
 
         internal string ProofIdentity { get; }
+
+        internal bool UsageObserved { get; private set; }
+
+        internal bool InvalidUsage { get; private set; }
+
+        internal long? ObservedInputTokens { get; private set; }
+
+        internal long? ObservedOutputTokens { get; private set; }
 
         internal PreparedCall(GuildProviderWirePolicy policy, string prompt, int? maxOutput, ModelPricingEntry configured,
             GuildProviderPayload? structured = null)
@@ -276,6 +288,76 @@ internal sealed class GuildProviderWirePolicy(ProviderSettings provider, string 
 
             // These final bytes (including default service tier) were frozen and hashed before budget admission.
             message.Request.Content = BinaryContent.Create(BinaryData.FromBytes(_payload));
+        }
+
+        internal void ObserveResponse(PipelineMessage message)
+        {
+            // The SDK buffers non-streaming responses already. Do not force a second
+            // buffer or retain the response: inspect only its usage facts in place.
+            if (!message.BufferResponse || message.Response is not { } response || response.IsError) return;
+
+            try
+            {
+                Utf8JsonReader reader = new(response.Content.ToMemory().Span);
+
+                if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject) { InvalidUsage = true; return; }
+
+                bool foundUsage = false;
+
+                while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+                {
+                    if (reader.TokenType != JsonTokenType.PropertyName) { InvalidUsage = true; return; }
+
+                    bool usage = reader.ValueTextEquals("usage"u8);
+
+                    if (!reader.Read()) { InvalidUsage = true; return; }
+
+                    if (!usage) { reader.Skip(); continue; }
+
+                    if (foundUsage) { InvalidUsage = true; return; }
+
+                    foundUsage = true;
+
+                    if (reader.TokenType == JsonTokenType.Null) continue;
+
+                    if (reader.TokenType != JsonTokenType.StartObject) { InvalidUsage = true; return; }
+
+                    bool inputSeen = false, outputSeen = false;
+
+                    while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+                    {
+                        if (reader.TokenType != JsonTokenType.PropertyName) { InvalidUsage = true; return; }
+
+                        bool input = reader.ValueTextEquals("prompt_tokens"u8);
+                        bool output = reader.ValueTextEquals("completion_tokens"u8);
+
+                        if (!reader.Read()) { InvalidUsage = true; return; }
+
+                        if (!input && !output) { reader.Skip(); continue; }
+
+                        if (input && inputSeen || output && outputSeen || reader.TokenType != JsonTokenType.Number
+                            || !reader.TryGetInt64(out long value) || value < 0) { InvalidUsage = true; return; }
+
+                        if (input) { inputSeen = true; ObservedInputTokens = value; }
+                        else { outputSeen = true; ObservedOutputTokens = value; }
+                    }
+
+                    if (reader.TokenType != JsonTokenType.EndObject) { InvalidUsage = true; return; }
+                }
+
+                if (reader.TokenType != JsonTokenType.EndObject || reader.Read()) { InvalidUsage = true; return; }
+
+                UsageObserved = true;
+            }
+            catch (JsonException)
+            {
+                InvalidUsage = true;
+            }
+            catch (InvalidOperationException)
+            {
+                // No in-memory response is available at this pipeline stage. Its
+                // usage remains unknown; the transport is never read a second time.
+            }
         }
 
         internal string PricingSnapshotJson()

@@ -20,6 +20,10 @@ public sealed partial class GuildLocalHostPolicyTests
     [InlineData("before-child")]
     [InlineData("after-child")]
     [InlineData("absent")]
+    [InlineData("missing-usage")]
+    [InlineData("partial-usage")]
+    [InlineData("partial-output")]
+    [InlineData("zero-usage")]
     public async Task Qualified_provider_tool_loop_uses_closed_registry_and_one_bill_per_actual_round(string? readinessLoss)
     {
         using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
@@ -78,7 +82,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
 
-        using ChildToolTransport transport = new();
+        using ChildToolTransport transport = new() { UsageVariant = readinessLoss, PromptOnly = readinessLoss is "missing-usage" or "partial-usage" or "partial-output" or "zero-usage" };
 
         ChatClientFactory clients = new(transport, new TestOptionsMonitor<ArcanumSettings>(settings));
 
@@ -115,7 +119,7 @@ public sealed partial class GuildLocalHostPolicyTests
                 return;
             }
 
-            if (readinessLoss is not null)
+            if (readinessLoss is not null and not "missing-usage" and not "partial-usage" and not "partial-output" and not "zero-usage")
             {
                 Assert.True(readiness.RequireExecutionReady().IsFailure);
 
@@ -144,6 +148,20 @@ public sealed partial class GuildLocalHostPolicyTests
             Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
 
             Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM BillableOperations"));
+
+            if (readinessLoss is "missing-usage" or "partial-usage" or "partial-output" or "zero-usage")
+            {
+                long unknownTokens = readinessLoss == "zero-usage" ? 0 : 1;
+
+                Assert.Equal(2L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd=1 AND UnknownTokens={unknownTokens}"));
+
+                long observedTokens = readinessLoss == "partial-usage" ? 7 : readinessLoss == "partial-output" ? 3 : 0;
+
+                Assert.Equal(2L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE KnownTokens={observedTokens}"));
+            }
+
+            if (readinessLoss is null)
+                Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM BillableOperations WHERE Status=0 AND InputTokens=7 AND OutputTokens=3"));
 
             Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM InferenceRuns"));
 
@@ -206,6 +224,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal bool PromptOnly;
 
+        internal string? UsageVariant;
+
         public HttpClient CreateClient(string name) => new(this, disposeHandler: false);
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
@@ -221,6 +241,21 @@ public sealed partial class GuildLocalHostPolicyTests
                 : """{"role":"assistant","content":"final parent answer"}""";
 
             string json = $$$"""{"id":"response-{{{Bodies.Count}}}","object":"chat.completion","created":1700000000,"model":"accepted-model","choices":[{"index":0,"message":{{{message}}},"finish_reason":"{{{(Bodies.Count == 1 ? "tool_calls" : "stop")}}}"}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}""";
+
+            const string usage = ",\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}";
+
+            if (UsageVariant is "missing-usage" or "partial-usage" or "partial-output" or "zero-usage")
+            {
+                string replacement = UsageVariant switch
+                {
+                    "partial-usage" => ",\"usage\":{\"prompt_tokens\":7}",
+                    "partial-output" => ",\"usage\":{\"completion_tokens\":3}",
+                    "zero-usage" => ",\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}",
+                    _ => "",
+                };
+
+                json = json.Replace(usage, replacement, StringComparison.Ordinal);
+            }
 
             return new(HttpStatusCode.OK) { Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json") };
         }
