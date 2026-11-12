@@ -224,7 +224,7 @@ internal sealed partial class GuildPortalStore
 
                 if (visible.IsFailure) return visible.Error;
 
-                if (visible.Value) items.Add(new(row.Sequence, row.Kind, row.ObjectId, row.Revision, [], row.QuestId));
+                if (visible.Value) items.Add(new(row.Sequence, row.Kind, row.ObjectId, row.Revision, [], row.QuestId, row.SpendSource));
 
                 after = row.Sequence;
             }

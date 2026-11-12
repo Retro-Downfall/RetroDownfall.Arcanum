@@ -128,7 +128,7 @@ public sealed partial class GuildQuestStoreTests
         await f.ExecuteAsync("CREATE TRIGGER fixture_abort_daily BEFORE UPDATE ON BudgetReservations BEGIN SELECT RAISE(ABORT,'injected'); END");
         var failed = await f.Store.CorrectOperatorSpendAsync(f.Caller, quest.Quest.Id, effect.EffectId, request, default);
         Assert.True(failed.IsFailure);
-        Assert.Equal(0L, await f.CountAsync("guild_spend_receipts"));
+        Assert.Equal(1L, await f.CountAsync("guild_spend_receipts"));
         Assert.Equal(1L, await f.CountAsync("guild_budget_evidence"));
         await f.ExecuteAsync("DROP TRIGGER fixture_abort_daily");
         var result = await f.Store.CorrectOperatorSpendAsync(f.Caller, quest.Quest.Id, effect.EffectId, request, default);
@@ -182,7 +182,7 @@ public sealed partial class GuildQuestStoreTests
             Assert.True(unproved.IsFailure);
             var refused = await f.Store.CorrectOperatorSpendAsync(f.Caller, quest.Quest.Id, effect.EffectId, request, default);
             Assert.True(refused.IsFailure);
-            Assert.Equal(0L, await f.CountAsync("guild_spend_receipts"));
+            Assert.Equal(1L, await f.CountAsync("guild_spend_receipts"));
             corruptDimensions.CommandText = "UPDATE BillableOperations SET InputTokens=100,OutputTokens=20 WHERE Id=$id";
             Assert.Equal(1, await corruptDimensions.ExecuteNonQueryAsync());
         }
@@ -193,7 +193,7 @@ public sealed partial class GuildQuestStoreTests
             Assert.Equal(1, await corrupt.ExecuteNonQueryAsync());
             var refused = await f.Store.CorrectOperatorSpendAsync(f.Caller, quest.Quest.Id, effect.EffectId, request, default);
             Assert.True(refused.IsFailure);
-            Assert.Equal(0L, await f.CountAsync("guild_spend_receipts"));
+            Assert.Equal(1L, await f.CountAsync("guild_spend_receipts"));
             corrupt.CommandText = "UPDATE BillableOperations SET InputTokens=100 WHERE Id=$id";
             Assert.Equal(1, await corrupt.ExecuteNonQueryAsync());
         }
@@ -206,7 +206,7 @@ public sealed partial class GuildQuestStoreTests
             Assert.Equal(1, await epoch.ExecuteNonQueryAsync());
             var retired = await f.Store.CorrectOperatorSpendAsync(f.Caller, quest.Quest.Id, effect.EffectId, request, default);
             Assert.True(retired.IsFailure);
-            Assert.Equal(0L, await f.CountAsync("guild_spend_receipts"));
+            Assert.Equal(1L, await f.CountAsync("guild_spend_receipts"));
             epoch.Parameters["$epoch"].Value = originalEpoch;
             Assert.Equal(1, await epoch.ExecuteNonQueryAsync());
         }
@@ -224,7 +224,7 @@ public sealed partial class GuildQuestStoreTests
             Assert.Equal(1, await alias.ExecuteNonQueryAsync());
             var collision = await f.Store.CorrectOperatorSpendAsync(f.Caller, quest.Quest.Id, effect.EffectId, request, default);
             Assert.Equal(ErrorCodes.Guild.IdempotencyConflict, collision.Error.Code);
-            Assert.Equal(0L, await f.CountAsync("guild_spend_receipts"));
+            Assert.Equal(1L, await f.CountAsync("guild_spend_receipts"));
             alias.CommandText = "DELETE FROM BillableOperations WHERE Id=$alias";
             Assert.Equal(1, await alias.ExecuteNonQueryAsync());
         }
@@ -234,7 +234,7 @@ public sealed partial class GuildQuestStoreTests
             await f.ExecuteAsync($"CREATE TRIGGER fixture_abort_spend BEFORE {target} BEGIN SELECT RAISE(ABORT,'injected'); END");
             var failed = await f.Store.CorrectOperatorSpendAsync(f.Caller, quest.Quest.Id, effect.EffectId, request, default);
             Assert.True(failed.IsFailure, target);
-            Assert.Equal(0L, await f.CountAsync("guild_spend_receipts"));
+            Assert.Equal(1L, await f.CountAsync("guild_spend_receipts"));
             Assert.Equal(1L, await f.CountAsync("guild_budget_evidence"));
             await using SqliteCommand check = connection.CreateCommand();
             check.CommandText = "SELECT ActualCostUsd,InputTokens,OutputTokens FROM BillableOperations";
@@ -349,7 +349,7 @@ public sealed partial class GuildQuestStoreTests
         Assert.True((await f.Store.CorrectOperatorSpendAsync(f.Caller, quest.Quest.Id, Guid.NewGuid(), request, default)).IsFailure);
         Assert.True((await f.Store.CorrectOperatorSpendAsync(f.Caller, Guid.NewGuid(), effect.EffectId, request, default)).IsFailure);
         Assert.Equal(1L, await f.CountAsync("BillableOperations"));
-        Assert.Equal(1L, await f.CountAsync("guild_spend_receipts"));
+        Assert.Equal(2L, await f.CountAsync("guild_spend_receipts"));
         Assert.Equal(0L, await f.CountAsync("BudgetReservations"));
         Assert.Equal(2L, await f.CountAsync("guild_budget_evidence"));
         Assert.Equal(ErrorCodes.Guild.IdempotencyConflict, (await f.Store.CorrectOperatorSpendAsync(f.Caller, quest.Quest.Id,
@@ -371,7 +371,7 @@ public sealed partial class GuildQuestStoreTests
         Assert.Equal(ErrorCodes.Guild.RevisionConflict, Assert.Single(nextResults, value => value.IsFailure).Error.Code);
         var later = Assert.Single(nextResults, value => value.IsSuccess);
         Assert.True(later.IsSuccess, later.Error.Message);
-        Assert.Equal(2L, await f.CountAsync("guild_spend_receipts"));
+        Assert.Equal(3L, await f.CountAsync("guild_spend_receipts"));
         Assert.Equal(3L, await f.CountAsync("guild_budget_evidence"));
         await using (SqliteCommand checkEvent = connection.CreateCommand())
         {
@@ -412,7 +412,7 @@ public sealed partial class GuildQuestStoreTests
             new(Guid.NewGuid(), later.Value.Receipt.EvidenceRevision, GuildSpendOrigin.OperatorAttested,
                 new(130, 35, 55, 8, .40m), new string('D', 64)), default);
         Assert.Equal("Guild.InitialEvidenceUnavailable", snapshotless.Error.Code);
-        Assert.Equal(2L, await f.CountAsync("guild_spend_receipts"));
+        Assert.Equal(3L, await f.CountAsync("guild_spend_receipts"));
         await f.ExecuteAsync("DELETE FROM guild_events; DELETE FROM BillableOperations");
         var expired = await f.Store.CorrectOperatorSpendAsync(f.Caller, quest.Quest.Id, effect.EffectId,
             new(Guid.NewGuid(), later.Value.Receipt.EvidenceRevision, GuildSpendOrigin.OperatorAttested,

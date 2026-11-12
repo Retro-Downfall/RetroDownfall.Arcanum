@@ -24,7 +24,7 @@ internal sealed partial class GuildPortalStore
     private sealed record PortalCursor(long After, long Snapshot);
 
     private sealed record PortalEvent(long Sequence, GuildEventKind Kind, Guid ObjectId, long Revision, Guid QuestId,
-        Guid? EnvelopeId, GuildPortalEventSource Source);
+        Guid? EnvelopeId, GuildPortalEventSource Source, GuildSpendSourceDto? SpendSource);
 
     private sealed record PortalReadScope(PortalReadBinding Binding, GuildQuestStored? OwnQuest);
 
@@ -160,7 +160,7 @@ internal sealed partial class GuildPortalStore
 
                 if (visible.IsFailure) return visible.Error;
 
-                if (visible.Value) items.Add(new(row.Sequence, row.Kind, row.ObjectId, row.Revision, [], row.QuestId));
+                if (visible.Value) items.Add(new(row.Sequence, row.Kind, row.ObjectId, row.Revision, [], row.QuestId, row.SpendSource));
 
                 after = row.Sequence;
             }
@@ -265,7 +265,7 @@ internal sealed partial class GuildPortalStore
 
                 if (visible.IsFailure) return visible.Error;
 
-                if (visible.Value) items.Add(new(row.Sequence, row.Kind, row.ObjectId, row.Revision, [], row.QuestId));
+                if (visible.Value) items.Add(new(row.Sequence, row.Kind, row.ObjectId, row.Revision, [], row.QuestId, row.SpendSource));
 
                 after = row.Sequence;
             }
@@ -776,7 +776,8 @@ internal sealed partial class GuildPortalStore
             SELECT EventSequence,EventKindCode,Revision,
                 CASE WHEN length(CAST(ObjectId AS BLOB))=36 THEN ObjectId ELSE NULL END,
                 CASE WHEN length(CAST(QuestId AS BLOB))=36 THEN QuestId ELSE NULL END,
-                CASE WHEN length(CAST(EnvelopeId AS BLOB))=36 THEN EnvelopeId ELSE NULL END,SourceKindCode
+                CASE WHEN length(CAST(EnvelopeId AS BLOB))=36 THEN EnvelopeId ELSE NULL END,SourceKindCode,
+                SpendEffectId,SpendReceiptId,SpendEvidenceRevision,SpendOriginCode
             FROM guild_events WHERE RootQuestId=$root AND EventSequence>$after AND EventSequence<=$snapshot
             ORDER BY EventSequence LIMIT $take
             """);
@@ -813,7 +814,20 @@ internal sealed partial class GuildPortalStore
 
             Guid? envelopeId = reader.IsDBNull(5) ? null : Guid.TryParseExact(reader.GetString(5), "D", out Guid envelope) ? envelope : null;
 
-            rows.Add(new(sequence, kind, objectId, revision, questId, envelopeId, source));
+            GuildSpendSourceDto? spend = null;
+
+            if (!reader.IsDBNull(7) || !reader.IsDBNull(8) || !reader.IsDBNull(9) || !reader.IsDBNull(10))
+            {
+                if (kind != GuildEventKind.SpendChanged || reader.IsDBNull(7) || reader.IsDBNull(8)
+                    || reader.IsDBNull(9) || reader.IsDBNull(10)
+                    || !Guid.TryParseExact(reader.GetString(7), "D", out Guid effect) || effect == Guid.Empty
+                    || !Guid.TryParseExact(reader.GetString(8), "D", out Guid receipt) || receipt == Guid.Empty
+                    || reader.GetInt64(9) < 1 || !Enum.IsDefined((GuildSpendOrigin)reader.GetInt32(10))) return Unavailable;
+
+                spend = new(effect, receipt, reader.GetInt64(9), (GuildSpendOrigin)reader.GetInt32(10));
+            }
+
+            rows.Add(new(sequence, kind, objectId, revision, questId, envelopeId, source, spend));
 
             scanned = sequence;
         }

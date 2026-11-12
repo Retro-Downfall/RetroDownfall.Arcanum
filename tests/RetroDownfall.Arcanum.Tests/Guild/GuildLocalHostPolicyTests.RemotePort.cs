@@ -380,6 +380,51 @@ public sealed partial class GuildLocalHostPolicyTests
             Assert.Equal(firstQuestion.Value.Revision, sameQuestion.Value.Revision);
 
             Assert.Equal(1L, await f.ScalarAsync("SELECT COUNT(*) FROM guild_remote_questions"));
+
+            var observationCaller = await f.Policy.CreateRunCallerAsync(f.Authority, currentExecution, quest.Id, default);
+            Assert.True(observationCaller.IsSuccess, observationCaller.Error.Message);
+            var identity = await currentStore.ReadRemoteTaskIdentityAsync(new(currentExecution, "observe", 0, observationCaller.Value), default);
+            Assert.True(identity.IsSuccess, identity.Error.Message);
+
+            async Task ObserveCostAsync(long? tokens, decimal? usd, bool replay)
+            {
+                long beforeEvidence = await f.ScalarAsync("SELECT COUNT(*) FROM guild_budget_evidence");
+                long beforeEvents = await f.ScalarAsync("SELECT COUNT(*) FROM guild_events WHERE EventKindCode=" + (int)GuildEventKind.SpendChanged);
+                DateTimeOffset now = DateTimeOffset.UtcNow;
+                var lease = await operations.TryAcquireLeaseAsync(quest.OperationId, "test-observation", now, now.AddMinutes(2), default);
+                Assert.True(lease.Acquired);
+                GuildQuestDriver observationDriver = new(currentExecution, "test-observation", lease.Operation.Revision, observationCaller.Value);
+                A2AGuildTaskObservation observation = new(identity.Value.TaskId, identity.Value.ContextId, "input-required", "Which answer?",
+                    new A2ARemoteCost(usd.HasValue && tokens.HasValue, tokens, usd), now);
+                if (tokens == 20 && usd == 1m)
+                {
+                    await using var abort = connection.Connection.CreateCommand();
+                    abort.CommandText = "CREATE TRIGGER fixture_abort_remote_receipt BEFORE INSERT ON guild_spend_receipts BEGIN SELECT RAISE(ABORT,'injected'); END";
+                    await abort.ExecuteNonQueryAsync();
+                    var failed = await currentStore.WaitForRemoteInputAsync(observationDriver, quest.Id, observation, default);
+                    Assert.True(failed.IsFailure);
+                    Assert.Equal(beforeEvidence, await f.ScalarAsync("SELECT COUNT(*) FROM guild_budget_evidence"));
+                    Assert.Equal(beforeEvents, await f.ScalarAsync("SELECT COUNT(*) FROM guild_events WHERE EventKindCode=" + (int)GuildEventKind.SpendChanged));
+                    abort.CommandText = "DROP TRIGGER fixture_abort_remote_receipt";
+                    await abort.ExecuteNonQueryAsync();
+                }
+                var observed = await currentStore.WaitForRemoteInputAsync(observationDriver, quest.Id, observation, default);
+                Assert.True(observed.IsSuccess, observed.Error.Message);
+                Assert.Equal(beforeEvidence + (replay ? 0 : 1), await f.ScalarAsync("SELECT COUNT(*) FROM guild_budget_evidence"));
+                Assert.Equal(beforeEvents + (replay ? 0 : 1), await f.ScalarAsync("SELECT COUNT(*) FROM guild_events WHERE EventKindCode=" + (int)GuildEventKind.SpendChanged));
+            }
+
+            await ObserveCostAsync(20, 1m, false);
+            await ObserveCostAsync(null, null, true);
+            await ObserveCostAsync(30, null, false);
+            await ObserveCostAsync(40, 2m, false);
+            await ObserveCostAsync(30, null, true);
+            await ObserveCostAsync(null, 3m, false);
+            await ObserveCostAsync(50, 4m, false);
+            await ObserveCostAsync(null, 3m, true);
+            await ObserveCostAsync(60, 5m, false);
+            await ObserveCostAsync(70, 6m, false);
+            await ObserveCostAsync(60, 5m, true);
         }
 
         if (scenario == "maintenance-stall")
@@ -618,6 +663,24 @@ public sealed partial class GuildLocalHostPolicyTests
                 currentExecution = (await restartedAuthority!.RebindAsync(context.Value, default)).Value;
 
                 port = new(currentStore, restartedPolicy, restartedAuthority, operations, client, f.Gate, new(), TimeProvider.System);
+
+                var restartedCaller = await restartedPolicy.CreateRunCallerAsync(restartedAuthority!, currentExecution, quest.Id, default);
+                Assert.True(restartedCaller.IsSuccess, restartedCaller.Error.Message);
+                var persistedIdentity = await currentStore.ReadRemoteTaskIdentityAsync(new(currentExecution, "observe", 0, restartedCaller.Value), default);
+                Assert.True(persistedIdentity.IsSuccess, persistedIdentity.Error.Message);
+                long evidenceBeforeRestartReplay = await f.ScalarAsync("SELECT COUNT(*) FROM guild_budget_evidence");
+                long eventsBeforeRestartReplay = await f.ScalarAsync("SELECT COUNT(*) FROM guild_events");
+                DateTimeOffset replayTime = DateTimeOffset.UtcNow;
+                var restartedLease = await operations.TryAcquireLeaseAsync(quest.OperationId, "restart-replay", replayTime,
+                    replayTime.AddMinutes(2), default);
+                Assert.True(restartedLease.Acquired);
+                GuildQuestDriver restartedDriver = new(currentExecution, "restart-replay", restartedLease.Operation.Revision, restartedCaller.Value);
+                var oldObservation = new A2AGuildTaskObservation(persistedIdentity.Value.TaskId, persistedIdentity.Value.ContextId,
+                    "input-required", "Which answer?", new A2ARemoteCost(false, null, null), replayTime);
+                var restartedReplay = await currentStore.WaitForRemoteInputAsync(restartedDriver, quest.Id, oldObservation, default);
+                Assert.True(restartedReplay.IsSuccess, restartedReplay.Error.Message);
+                Assert.Equal(evidenceBeforeRestartReplay, await f.ScalarAsync("SELECT COUNT(*) FROM guild_budget_evidence"));
+                Assert.Equal(eventsBeforeRestartReplay, await f.ScalarAsync("SELECT COUNT(*) FROM guild_events"));
             }
 
             var question = await currentStore.ReadLocalQuestionAsync(currentCaller, quest.Id, default);
@@ -742,6 +805,54 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.NotEqual(Guid.Empty, physical.ObjectId);
 
+            var committedResult = await currentStore.ReadLocalResultAsync(caller, quest.Id, true, default);
+
+            Assert.True(committedResult.IsSuccess, committedResult.Error.Message);
+
+            var transportCaller = await f.Policy.CreateRunCallerAsync(f.Authority, currentExecution, quest.Id, default);
+
+            Assert.True(transportCaller.IsSuccess, transportCaller.Error.Message);
+
+            GuildQuestDriver replayDriver = new(currentExecution, "observe", 0, transportCaller.Value);
+
+            var taskIdentity = await currentStore.ReadRemoteTaskIdentityAsync(replayDriver, default);
+
+            Assert.True(taskIdentity.IsSuccess, taskIdentity.Error.Message);
+
+            var changedObservation = new A2AGuildTaskObservation(taskIdentity.Value.TaskId, taskIdentity.Value.ContextId,
+                "completed", committedResult.Value.Body!, new A2ARemoteCost(true, 50, 1m), DateTimeOffset.UtcNow);
+
+            GuildResultReceipt terminal = committedResult.Value.Receipt!;
+
+            GuildQuestResult changedResult = new(terminal, Encoding.UTF8.GetBytes(committedResult.Value.Body!), WorkStoppedProven: true,
+                RemoteEvidence: new(quest.Id, changedObservation));
+
+            var changedReplay = await currentStore.CommitResultAsync(replayDriver, new(terminal.ResultId, terminal.CanonicalContentDigest),
+                0, changedResult, default);
+
+            Assert.True(changedReplay.IsFailure, "Changed remote accounting cannot adopt an existing terminal result.");
+
+            GuildSpendSourceDto source = Assert.IsType<GuildSpendSourceDto>(physical.SpendSource);
+
+            Assert.Equal(quest.Id, source.EffectId);
+
+            Assert.Equal(GuildSpendOrigin.RemoteReport, source.Origin);
+
+            var remoteReceipt = await currentStore.ReadOperatorSpendReceiptAsync(caller, quest.Id, source.EffectId, source.ReceiptId, default);
+
+            Assert.True(remoteReceipt.IsSuccess, remoteReceipt.Error.Message);
+
+            Assert.Equal(physical.EventSequence, remoteReceipt.Value.EventSequence);
+
+            Assert.Null(remoteReceipt.Value.Facts.LocalTokens);
+
+            var remoteHistory = await currentStore.ListOperatorSpendReceiptsAsync(caller, quest.Id, source.EffectId, null, 10, default);
+
+            Assert.True(remoteHistory.IsSuccess, remoteHistory.Error.Message);
+
+            Assert.Contains(remoteHistory.Value.Items, item => item.ReceiptId == source.ReceiptId);
+
+
             Assert.All(spendEvents, item =>
             {
                 Assert.Equal(quest.Id, item.QuestId);
@@ -756,6 +867,101 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.Equal(spendEvents.Select(item => item.EventSequence),
                 again.Value.Page.Items.Where(item => item.EventKind == GuildEventKind.SpendChanged).Select(item => item.EventSequence));
+
+            A2AGuildTaskObservation originalObservation = changedObservation with { Cost = new A2ARemoteCost(false, null, null) };
+
+            GuildQuestResult exactResult = changedResult with { RemoteEvidence = new(quest.Id, originalObservation) };
+
+            var exactReplay = await currentStore.CommitResultAsync(replayDriver, new(terminal.ResultId, terminal.CanonicalContentDigest),
+                0, exactResult, default);
+
+            Assert.True(exactReplay.IsSuccess, exactReplay.Error.Message);
+
+            var missingReplay = await currentStore.CommitResultAsync(replayDriver, new(terminal.ResultId, terminal.CanonicalContentDigest),
+                0, exactResult with { RemoteEvidence = null }, default);
+
+            Assert.True(missingReplay.IsFailure);
+
+            var wrongContext = await currentStore.CommitResultAsync(replayDriver, new(terminal.ResultId, terminal.CanonicalContentDigest),
+                0, exactResult with { RemoteEvidence = new(quest.Id, originalObservation with { ContextId = "other-context" }) }, default);
+
+            Assert.True(wrongContext.IsFailure);
+
+            var wrongDispatch = await currentStore.CommitResultAsync(replayDriver, new(terminal.ResultId, terminal.CanonicalContentDigest),
+                0, exactResult with { RemoteEvidence = new(Guid.NewGuid(), originalObservation) }, default);
+
+            Assert.True(wrongDispatch.IsFailure);
+
+            await using (var transaction = connection.Connection.BeginTransaction())
+            {
+                GuildBudgetLedger ledger = new();
+
+                var higher = await ledger.ApplyEvidenceWithinAsync(connection.Connection, transaction, quest.Id,
+                    new(Guid.NewGuid(), new string('A', 64), 1m, 50, true, true, true), default);
+
+                Assert.True(higher.IsSuccess, higher.Error.Message);
+
+                await transaction.CommitAsync();
+            }
+
+            await using (var prune = connection.Connection.CreateCommand())
+            {
+                prune.CommandText = "DELETE FROM guild_events WHERE RootQuestId=$root AND EventSequence=$sequence";
+                prune.Parameters.AddWithValue("$root", quest.Id.ToString("D").ToUpperInvariant());
+                prune.Parameters.AddWithValue("$sequence", physical.EventSequence);
+                Assert.Equal(1, await prune.ExecuteNonQueryAsync());
+            }
+
+            long eventsBeforeReplay = await f.ScalarAsync("SELECT COUNT(*) FROM guild_events");
+
+            var retainedReplay = await currentStore.CommitResultAsync(replayDriver, new(terminal.ResultId, terminal.CanonicalContentDigest),
+                0, exactResult, default);
+
+            Assert.True(retainedReplay.IsSuccess, retainedReplay.Error.Message);
+
+            Assert.Equal(eventsBeforeReplay, await f.ScalarAsync("SELECT COUNT(*) FROM guild_events"));
+
+            var retainedReceipt = await currentStore.ReadOperatorSpendReceiptAsync(caller, quest.Id, source.EffectId, source.ReceiptId, default);
+
+            Assert.True(retainedReceipt.IsSuccess, retainedReceipt.Error.Message);
+
+            Assert.Equal(physical.EventSequence, retainedReceipt.Value.EventSequence);
+
+            // Model retained V14 evidence without manufacturing a public receipt or event.
+            await using (var transaction = connection.Connection.BeginTransaction())
+            {
+                await using var remove = connection.Connection.CreateCommand();
+                remove.Transaction = transaction;
+                remove.CommandText = "DELETE FROM guild_spend_receipts WHERE ReceiptId=$receipt";
+                remove.Parameters.AddWithValue("$receipt", source.ReceiptId.ToString("D").ToUpperInvariant());
+                Assert.Equal(1, await remove.ExecuteNonQueryAsync());
+
+                GuildBudgetLedger ledger = new();
+                for (int index = 1; index <= 130; index++)
+                {
+                    var unrelated = await ledger.ApplyEvidenceWithinAsync(connection.Connection, transaction, quest.Id,
+                        new(Guid.NewGuid(), index.ToString("X64"), 1m, 50, true, true, true), default);
+                    Assert.True(unrelated.IsSuccess, unrelated.Error.Message);
+                }
+
+                string oldIdentity = $"Guild.Remote:{quest.Id:D}:{quest.Id:D}:completed:1:50:True:False:False";
+                byte[] oldDigest = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(oldIdentity));
+                var legacy = await ledger.ApplyEvidenceWithinAsync(connection.Connection, transaction, quest.Id,
+                    new(new Guid(oldDigest.AsSpan(0, 16)), Convert.ToHexString(oldDigest), 1m, 50, true, true, true), default);
+                Assert.True(legacy.IsSuccess, legacy.Error.Message);
+                await transaction.CommitAsync();
+            }
+
+            long beforeLegacyReplay = await f.ScalarAsync("SELECT COUNT(*) FROM guild_events");
+            var noLegacyMatch = await currentStore.CommitResultAsync(replayDriver, new(terminal.ResultId, terminal.CanonicalContentDigest),
+                0, changedResult, default);
+            Assert.True(noLegacyMatch.IsFailure);
+            Assert.Equal(beforeLegacyReplay, await f.ScalarAsync("SELECT COUNT(*) FROM guild_events"));
+            var legacyReplay = await currentStore.CommitResultAsync(replayDriver, new(terminal.ResultId, terminal.CanonicalContentDigest),
+                0, exactResult, default);
+            Assert.True(legacyReplay.IsSuccess, legacyReplay.Error.Message);
+            Assert.Equal(beforeLegacyReplay, await f.ScalarAsync("SELECT COUNT(*) FROM guild_events"));
+            Assert.True((await currentStore.ReadOperatorSpendReceiptAsync(caller, quest.Id, source.EffectId, source.ReceiptId, default)).IsFailure);
         }
 
         var retained = (await f.Store.GetAsync(caller, quest.Id, default)).Value.Quest;

@@ -263,7 +263,7 @@ internal sealed partial class GuildQuestStore
             }, ct);
 
     private async Task<Result> ApplyRemoteEvidenceWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
-        GuildQuestStored row, GuildRemoteResultEvidence evidence, bool complete, CancellationToken ct)
+        GuildQuestStored row, GuildRemoteResultEvidence evidence, bool complete, CancellationToken ct, bool replayOnly = false)
     {
         if (allocations is not GuildBudgetLedger budget) return Unavailable;
 
@@ -278,6 +278,21 @@ internal sealed partial class GuildQuestStore
             || current.RemoteTaskId != observed.TaskId || current.RemoteContextId is not null && current.RemoteContextId != observed.ContextId
             || observed.TaskId is null && observed.State != "completed") return UncertainDispatch;
 
+        byte[] digest = RemoteObservationDigest(row.Quest.Id, evidence, complete);
+
+        Guid receiptId = new(digest.AsSpan(0, 16));
+
+        string identity = Convert.ToHexString(digest);
+
+        Result<bool> prior = await RemoteReceiptExistsWithinAsync(connection, transaction, row, current, evidence, complete,
+            receiptId, identity, digest, ct).ConfigureAwait(false);
+
+        if (prior.IsFailure) return prior.Error;
+
+        if (prior.Value) return Result.Success();
+
+        if (replayOnly) return Conflict;
+
         var found = await budget.ReadEffectWithinAsync(connection, transaction, row.Quest.Id, ct).ConfigureAwait(false);
 
         if (found.IsFailure) return found.Error;
@@ -289,12 +304,8 @@ internal sealed partial class GuildQuestStore
 
         if (usd < effect.KnownUsd || tokens < effect.KnownTokens) return UncertainDispatch;
 
-        string facts = $"Guild.Remote:{row.Quest.Id:D}:{evidence.DispatchId:D}:{observed.State}:{ExactUsdText.Format(usd)}:{tokens}:{complete}:{observed.Cost.CostUsd.HasValue}:{observed.Cost.TotalTokens.HasValue}";
-
-        byte[] digest = SHA256.HashData(Encoding.UTF8.GetBytes(facts));
-
         var applied = await budget.ApplyEvidenceWithinAsync(connection, transaction, row.Quest.Id,
-            new(new Guid(digest.AsSpan(0, 16)), Convert.ToHexString(digest), usd, tokens,
+            new(receiptId, identity, usd, tokens,
                 !complete || observed.Cost.CostUsd is null, !complete || observed.Cost.TotalTokens is null, complete), ct).ConfigureAwait(false);
 
         if (applied.IsFailure) return applied.Error;
@@ -323,10 +334,114 @@ internal sealed partial class GuildQuestStore
             if (await settle.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1) return Unavailable;
         }
 
-        var projected = await GuildPortalEvents.AppendWithinAsync(connection, transaction, row.Quest.RootQuestId, row.Quest.Id,
-            GuildEventKind.SpendChanged, new Guid(digest.AsSpan(0, 16)), applied.Value.Revision, null, time.GetUtcNow(), ct,
-            GuildPortalEventSource.Dispatch).ConfigureAwait(false);
+        DateTimeOffset now = time.GetUtcNow();
 
-        return projected.IsFailure ? projected.Error : Result.Success();
+        var projected = await GuildPortalEvents.AppendWithinAsync(connection, transaction, row.Quest.RootQuestId, row.Quest.Id,
+            GuildEventKind.SpendChanged, receiptId, applied.Value.Revision, null, now, ct,
+            GuildPortalEventSource.Dispatch, new(row.Quest.Id, receiptId, applied.Value.Revision, GuildSpendOrigin.RemoteReport)).ConfigureAwait(false);
+
+        if (projected.IsFailure) return projected.Error;
+
+        GuildSpendReceiptDto receipt = new(receiptId, row.Quest.Id, row.Quest.Id, GuildSpendOrigin.RemoteReport, null,
+            new(applied.Value.KnownUsd, applied.Value.KnownTokens, applied.Value.UnknownUsd, applied.Value.UnknownTokens,
+                applied.Value.State == GuildBudgetEffectState.Complete, null), applied.Value.Revision, projected.Value, now);
+
+        return await SavePhysicalSpendReceiptWithinAsync(connection, transaction, receipt, identity, ct).ConfigureAwait(false);
+    }
+
+    private static byte[] RemoteObservationDigest(Guid questId, GuildRemoteResultEvidence evidence, bool complete)
+    {
+        static string Field(string? value) => value is null ? "-1:" : $"{value.Length}:{value}";
+
+        A2AGuildTaskObservation observed = evidence.Observation;
+
+        string facts = string.Concat("Guild.Remote.Observation.v1|", Field(questId.ToString("D")),
+            Field(evidence.DispatchId.ToString("D")), Field(observed.TaskId), Field(observed.ContextId), Field(observed.State),
+            Field(complete ? "1" : "0"), Field(observed.Cost.CostUsd is { } usd ? ExactUsdText.Format(usd) : null),
+            Field(observed.Cost.TotalTokens?.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+
+        return SHA256.HashData(Encoding.UTF8.GetBytes(facts));
+    }
+
+    private static async Task<Result<bool>> RemoteReceiptExistsWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        GuildQuestStored row, GuildQuestDispatchRecord dispatch, GuildRemoteResultEvidence evidence, bool complete,
+        Guid receiptId, string identity, byte[] digest, CancellationToken ct)
+    {
+        await using (SqliteCommand lookup = Command(connection, transaction, """
+            SELECT RequestIdentity,RequestDigest FROM guild_spend_receipts WHERE ReceiptId=$receipt AND EffectId=$effect AND OriginCode=1
+            """))
+        {
+            Add(lookup, "$receipt", Id(receiptId));
+
+            Add(lookup, "$effect", Id(row.Quest.Id));
+
+            await using SqliteDataReader reader = await lookup.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+            if (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                if (reader.GetString(0) != identity || reader.GetValue(1) is not byte[] stored
+                    || stored.Length != 32 || !CryptographicOperations.FixedTimeEquals(stored, digest)) return Conflict;
+
+                await reader.DisposeAsync().ConfigureAwait(false);
+
+                Result<GuildSpendReceiptDto> saved = await ReadSpendReceiptWithinAsync(connection, transaction,
+                    row.Quest.Id, row.Quest.Id, receiptId, ct).ConfigureAwait(false);
+
+                return saved.IsFailure ? saved.Error : true;
+            }
+        }
+
+        // V14 did not retain task/context in its digest. A matching legacy row is
+        // unavailable if the durable dispatch cannot bind the observed context exactly.
+        long after = 0;
+
+        while (true)
+        {
+            await using SqliteCommand page = Command(connection, transaction, """
+                SELECT e.ReceiptId,e.Digest,e.KnownUsd,e.KnownTokens,e.UnknownUsd,e.UnknownTokens,e.Complete,e.NoDispatchProven,e.AppliedRevision
+                FROM guild_budget_evidence e WHERE e.EffectId=$effect AND e.AppliedRevision>$after
+                    AND NOT EXISTS(SELECT 1 FROM guild_spend_receipts r WHERE r.EvidenceReceiptId=e.ReceiptId)
+                ORDER BY e.AppliedRevision LIMIT 128
+                """);
+
+            Add(page, "$effect", Id(row.Quest.Id));
+
+            Add(page, "$after", after);
+
+            int count = 0;
+
+            await using SqliteDataReader reader = await page.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                count++;
+
+                after = reader.GetInt64(8);
+
+                decimal usd = ExactUsdText.Read(reader, 2);
+
+                long tokens = reader.GetInt64(3);
+
+                var observed = evidence.Observation;
+
+                if (observed.Cost.CostUsd is { } suppliedUsd && suppliedUsd != usd
+                    || observed.Cost.TotalTokens is { } suppliedTokens && suppliedTokens != tokens
+                    || reader.GetBoolean(4) != (!complete || observed.Cost.CostUsd is null)
+                    || reader.GetBoolean(5) != (!complete || observed.Cost.TotalTokens is null)
+                    || reader.GetBoolean(6) != complete || reader.GetBoolean(7)) continue;
+
+                string facts = $"Guild.Remote:{row.Quest.Id:D}:{evidence.DispatchId:D}:{observed.State}:{ExactUsdText.Format(usd)}:{tokens}:{complete}:{observed.Cost.CostUsd.HasValue}:{observed.Cost.TotalTokens.HasValue}";
+
+                byte[] legacyDigest = SHA256.HashData(Encoding.UTF8.GetBytes(facts));
+
+                if (reader.GetValue(1) is byte[] saved && saved.Length == 32
+                    && CryptographicOperations.FixedTimeEquals(saved, legacyDigest)
+                    && Guid.TryParseExact(reader.GetString(0), "D", out Guid legacyId)
+                    && legacyId == new Guid(legacyDigest.AsSpan(0, 16)))
+                    return dispatch.RemoteContextId == observed.ContextId ? true : Conflict;
+            }
+
+            if (count < 128) return false;
+        }
     }
 }

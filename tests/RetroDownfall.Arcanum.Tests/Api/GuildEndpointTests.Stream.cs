@@ -1,15 +1,19 @@
 using System.Net;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -30,9 +34,16 @@ public sealed partial class GuildEndpointTests
 
                 settings.Features.Apprentices = true;
 
+                settings.Execution.MaxSseConnectionsPerType = 2;
+
                 return settings;
             },
-            ServiceOverrides = HoldExecution,
+            ServiceOverrides = services =>
+            {
+                HoldExecution(services);
+                services.RemoveAll<IGuildLocalHostReadiness>();
+                services.AddSingleton<IGuildLocalHostReadiness, TestGuildLocalHostReadiness>();
+            },
         };
 
         using HttpClient client = factory.CreateAuthenticatedClient();
@@ -99,6 +110,83 @@ public sealed partial class GuildEndpointTests
         Assert.Equal(questId, snapshot.RootElement.GetProperty("summary").GetProperty("id").GetGuid());
 
         Assert.Equal(id, snapshot.RootElement.GetProperty("resumeCursor").GetString());
+
+        await stream.DisposeAsync();
+
+        response.Dispose();
+
+        await using AsyncServiceScope eventScope = factory.Services.CreateAsyncScope();
+        GuildLocalHostPolicy policy = eventScope.ServiceProvider.GetRequiredService<GuildLocalHostPolicy>();
+        SignetAuthority eventAuthority = eventScope.ServiceProvider.GetRequiredService<SignetAuthority>();
+        GuildQuestStore store = eventScope.ServiceProvider.GetRequiredService<GuildQuestStore>();
+        BudgetReservationService daily = Assert.IsType<BudgetReservationService>(eventScope.ServiceProvider.GetRequiredService<IBudgetReservationService>());
+        var owner = await policy.CreateNativeOperatorAsync(Guid.NewGuid(), timeout.Token);
+        Assert.True(owner.IsSuccess, owner.Error.Message);
+        var found = await store.GetAsync(owner.Value, questId, timeout.Token);
+        Assert.True(found.IsSuccess, found.Error.Message);
+        var recovery = await policy.CreateRecoveryAsync(owner.Value, questId, found.Value.Quest.OperationId,
+            found.Value.Quest.SignetRevision, timeout.Token);
+        Assert.True(recovery.IsSuccess, recovery.Error.Message);
+        var rebound = await eventAuthority.RebindAsync(recovery.Value, timeout.Token);
+        Assert.True(rebound.IsSuccess, rebound.Error.Message);
+        var run = await policy.CreateRunCallerAsync(eventAuthority, rebound.Value, questId, timeout.Token);
+        Assert.True(run.IsSuccess, run.Error.Message);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        var executionLease = await eventScope.ServiceProvider.GetRequiredService<ILongRunningOperationStore>()
+            .TryAcquireLeaseAsync(found.Value.Quest.OperationId, "stream-settlement", now, now.AddMinutes(5), timeout.Token);
+        Assert.True(executionLease.Acquired);
+        GuildQuestDriver driver = new(rebound.Value, "stream-settlement", executionLease.Operation.Revision, run.Value);
+        var local = await store.ReadLocalPortAsync(driver, questId, timeout.Token);
+        Assert.True(local.IsSuccess, local.Error.Message);
+        var prepared = await store.PrepareDispatchAsync(driver, questId, local.Value.Binding.Input.Digest,
+            found.Value.Quest.RunId, false, timeout.Token);
+        Assert.True(prepared.IsSuccess, prepared.Error.Message);
+        GuildLocalInferenceExecution execution = new(store, driver, prepared.Value);
+        Guid effectId = Guid.NewGuid();
+        Guid receiptId = Guid.NewGuid();
+        GuildBudgetEffectRequest effect = new(effectId, questId, prepared.Value.DispatchId, found.Value.Quest.RunId,
+            GuildBudgetEffectKind.LocalProvider, receiptId, null, null, null);
+        var sent = await store.ExecuteProviderEffectAsync(execution, daily, effect,
+            _ => Task.FromResult(Result<string>.Success("answer")), timeout.Token);
+        Assert.True(sent.IsSuccess, sent.Error.Message);
+        BillableOperationRecord bill = new(found.Value.Quest.RunId, BillableOperationType.Chat, "provider", "model", "guild",
+            now, now, 7, 3, 0, 0, "{}", 0m, BillableOperationStatus.Completed, null);
+        var settled = await store.SettleProviderEffectAsync(execution, daily, effect, bill, timeout.Token);
+        Assert.True(settled.IsSuccess, settled.Error.Message);
+        GuildSpendCorrectionRequest correction = new(Guid.NewGuid(), settled.Value.Revision, GuildSpendOrigin.OperatorAttested,
+            new(8, 4, 0, 0, .05m), new string('A', 64));
+        var corrected = await store.CorrectOperatorSpendAsync(owner.Value, questId, effectId, correction, timeout.Token);
+        Assert.True(corrected.IsSuccess, corrected.Error.Message);
+
+        using HttpRequestMessage reconnect = new(HttpMethod.Get, $"/api/guild/quests/{questId:D}/events");
+        reconnect.Headers.TryAddWithoutValidation("Last-Event-ID", id);
+
+        using HttpResponseMessage resumed = await client.SendAsync(reconnect, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        Assert.Equal(HttpStatusCode.OK, resumed.StatusCode);
+        await using Stream resumedStream = await resumed.Content.ReadAsStreamAsync(timeout.Token);
+        using StreamReader resumedReader = new(resumedStream);
+        List<(Guid Receipt, long Revision, string? Origin)> physical = [];
+
+        while (physical.Count < 2)
+        {
+            string? changeName = null;
+            string? changeData = null;
+            while (await resumedReader.ReadLineAsync(timeout.Token) is { Length: > 0 } changeLine)
+            {
+                if (changeLine.StartsWith("event: ", StringComparison.Ordinal)) changeName = changeLine[7..];
+                if (changeLine.StartsWith("data: ", StringComparison.Ordinal)) changeData = changeLine[6..];
+            }
+
+            Assert.Equal("change", changeName);
+            using JsonDocument change = JsonDocument.Parse(Assert.IsType<string>(changeData));
+            if (!change.RootElement.TryGetProperty("spendSource", out JsonElement source) || source.ValueKind == JsonValueKind.Null) continue;
+            Assert.Equal(effectId, source.GetProperty("effectId").GetGuid());
+            physical.Add((source.GetProperty("receiptId").GetGuid(), source.GetProperty("evidenceRevision").GetInt64(),
+                source.GetProperty("origin").GetString()));
+        }
+
+        Assert.Equal((receiptId, settled.Value.Revision, "localResponse"), physical[0]);
+        Assert.Equal((corrected.Value.Receipt.ReceiptId, corrected.Value.Receipt.EvidenceRevision, "operatorAttested"), physical[1]);
 
         using HttpResponseMessage wrongScope = await client.GetAsync(
             $"/api/guild/quests/{Guid.NewGuid():D}/events?after={Uri.EscapeDataString(id!)}", timeout.Token);

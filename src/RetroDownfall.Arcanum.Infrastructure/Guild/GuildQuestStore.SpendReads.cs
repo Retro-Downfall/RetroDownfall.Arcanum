@@ -221,6 +221,35 @@ internal sealed partial class GuildQuestStore
         return receipt;
     }
 
+    private static async Task<Result> SavePhysicalSpendReceiptWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        GuildSpendReceiptDto receipt, string identity, CancellationToken ct)
+    {
+        await using SqliteCommand command = Command(connection, transaction, """
+            INSERT INTO guild_spend_receipts(ReceiptId,EffectId,EvidenceReceiptId,EvidenceRevision,OriginCode,RequestIdentity,
+                RequestDigest,OriginalResult,OriginalEventSequence,AcceptedAtUtc)
+            SELECT $receipt,$effect,e.ReceiptId,$revision,$origin,$identity,e.Digest,$result,$sequence,$now
+            FROM guild_budget_evidence e WHERE e.ReceiptId=$receipt AND e.EffectId=$effect AND e.AppliedRevision=$revision
+            """);
+
+        Add(command, "$receipt", Id(receipt.ReceiptId));
+
+        Add(command, "$effect", Id(receipt.EffectId));
+
+        Add(command, "$revision", receipt.EvidenceRevision);
+
+        Add(command, "$origin", (int)receipt.Origin);
+
+        Add(command, "$identity", identity);
+
+        Add(command, "$result", JsonSerializer.SerializeToUtf8Bytes(receipt, GuildSpendStorageJsonContext.Default.GuildSpendReceiptDto));
+
+        Add(command, "$sequence", receipt.EventSequence);
+
+        Add(command, "$now", UtcInstantText.Format(receipt.AcceptedAt));
+
+        return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1 ? Result.Success() : Conflict;
+    }
+
     private static bool SpendDigestsMatch(SqliteDataReader reader, int requestIndex, int evidenceIndex) =>
         reader.GetValue(requestIndex) is byte[] request && request.Length == 32
         && reader.GetValue(evidenceIndex) is byte[] evidence && evidence.Length == 32

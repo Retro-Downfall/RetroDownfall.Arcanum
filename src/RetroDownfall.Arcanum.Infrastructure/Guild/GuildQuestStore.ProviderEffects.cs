@@ -213,16 +213,29 @@ internal sealed partial class GuildQuestStore
 
                 if (await update.ExecuteNonQueryAsync(token).ConfigureAwait(false) != 1) return RevisionConflict;
 
+                DateTimeOffset acceptedAt = time.GetUtcNow();
+
                 Result<long> projected = await GuildPortalEvents.AppendWithinAsync(connection, transaction,
                     execution.Driver.Execution.RootQuestId, effect.QuestId, GuildEventKind.SpendChanged,
-                    effect.QuestId, quest.Value.Quest.Revision + 1, null, time.GetUtcNow(), token).ConfigureAwait(false);
+                    effect.QuestId, quest.Value.Quest.Revision + 1, null, acceptedAt, token,
+                    spend: new(effect.EffectId, effect.SourceId, applied.Value.Revision, GuildSpendOrigin.LocalResponse)).ConfigureAwait(false);
 
                 if (projected.IsFailure) return projected.Error;
 
                 Result captured = await GuildSpendSourceStore.CaptureInitialWithinAsync(connection, transaction,
                     effect, bill, applied.Value, projected.Value, token).ConfigureAwait(false);
 
-                return captured.IsFailure ? captured.Error : applied;
+                if (captured.IsFailure) return captured.Error;
+
+                GuildSpendReceiptDto receipt = new(effect.SourceId, effect.QuestId, effect.EffectId, GuildSpendOrigin.LocalResponse,
+                    null, new(applied.Value.KnownUsd, applied.Value.KnownTokens, applied.Value.UnknownUsd, applied.Value.UnknownTokens,
+                        applied.Value.State == GuildBudgetEffectState.Complete,
+                        new(bill.InputTokens, bill.OutputTokens, bill.CachedTokens, bill.ReasoningTokens)),
+                    applied.Value.Revision, projected.Value, acceptedAt);
+
+                Result receiptSaved = await SavePhysicalSpendReceiptWithinAsync(connection, transaction, receipt, Id(effect.SourceId), token).ConfigureAwait(false);
+
+                return receiptSaved.IsFailure ? receiptSaved.Error : applied;
             }, ct);
     }
 

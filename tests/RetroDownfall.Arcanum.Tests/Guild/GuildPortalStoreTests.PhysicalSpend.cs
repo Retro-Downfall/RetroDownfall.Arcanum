@@ -56,8 +56,28 @@ public sealed partial class GuildPortalStoreTests
 
         Assert.True(snapshot.IsSuccess, snapshot.Error.Message);
 
+        var unscopedCursor = await f.Portal.CaptureReplayCursorAsync(f.Caller, quest.Quest.Id, default);
+
+        Assert.True(unscopedCursor.IsSuccess, unscopedCursor.Error.Message);
+
         BillableOperationRecord bill = new(quest.Quest.RunId, BillableOperationType.Chat, "provider", "model", "guild",
             DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 7, 3, 0, 0, "{}", 0m, BillableOperationStatus.Completed, null);
+
+        long beforeSettlement = await f.CountAsync("guild_events");
+
+        await f.ExecuteAsync("CREATE TRIGGER fixture_abort_initial_receipt BEFORE INSERT ON guild_spend_receipts BEGIN SELECT RAISE(ABORT,'injected'); END");
+
+        var interrupted = await f.Store.SettleProviderEffectAsync(execution, daily, effect, bill, default);
+
+        Assert.True(interrupted.IsFailure);
+
+        Assert.Equal(0L, await f.CountAsync("BillableOperations"));
+
+        Assert.Equal(0L, await f.CountAsync("guild_budget_evidence"));
+
+        Assert.Equal(beforeSettlement, await f.CountAsync("guild_events"));
+
+        await f.ExecuteAsync("DROP TRIGGER fixture_abort_initial_receipt");
 
         var settled = await f.Store.SettleProviderEffectAsync(execution, daily, effect, bill, default);
 
@@ -75,6 +95,30 @@ public sealed partial class GuildPortalStoreTests
 
         var spend = Assert.Single(replay.Value.Page.Items.Where(item => item.EventKind == GuildEventKind.SpendChanged));
 
+        GuildSpendSourceDto source = Assert.IsType<GuildSpendSourceDto>(spend.SpendSource);
+
+        Assert.Equal(effect.EffectId, source.EffectId);
+
+        Assert.Equal(effect.SourceId, source.ReceiptId);
+
+        Assert.Equal(settled.Value.Revision, source.EvidenceRevision);
+
+        Assert.Equal(GuildSpendOrigin.LocalResponse, source.Origin);
+
+        var receipt = await f.Store.ReadOperatorSpendReceiptAsync(f.Caller, quest.Quest.Id, effect.EffectId, source.ReceiptId, default);
+
+        Assert.True(receipt.IsSuccess, receipt.Error.Message);
+
+        Assert.Equal(spend.EventSequence, receipt.Value.EventSequence);
+
+        Assert.Equal(new GuildSpendLocalTokensDto(7, 3, 0, 0), receipt.Value.Facts.LocalTokens);
+
+        var history = await f.Store.ListOperatorSpendReceiptsAsync(f.Caller, quest.Quest.Id, effect.EffectId, null, 10, default);
+
+        Assert.True(history.IsSuccess, history.Error.Message);
+
+        Assert.Equal(source.ReceiptId, Assert.Single(history.Value.Items).ReceiptId);
+
         Assert.Equal(quest.Quest.Id, spend.QuestId);
 
         Assert.True(spend.EventSequence > snapshot.Value.Watermark);
@@ -89,8 +133,58 @@ public sealed partial class GuildPortalStoreTests
 
         Assert.Equal(spend.QuestId, repeated.QuestId);
 
+        GuildSpendCorrectionRequest correction = new(Guid.NewGuid(), settled.Value.Revision, GuildSpendOrigin.OperatorAttested,
+            new(8, 4, 0, 0, .05m), new string('A', 64));
+
+        var corrected = await f.Store.CorrectOperatorSpendAsync(f.Caller, quest.Quest.Id, effect.EffectId, correction, default);
+
+        Assert.True(corrected.IsSuccess, corrected.Error.Message);
+
+        var correctedReplay = await f.Portal.ReadScopedReplayAsync(f.Caller, quest.Quest.Id, quest.Quest.Id, null, snapshot.Value.ResumeCursor, default);
+
+        Assert.True(correctedReplay.IsSuccess, correctedReplay.Error.Message);
+
+        GuildChangeEventDto[] physicalEvents = correctedReplay.Value.Page.Items.Where(item => item.SpendSource is not null).ToArray();
+
+        Assert.Equal(2, physicalEvents.Length);
+
+        Assert.Equal(source, physicalEvents[0].SpendSource);
+
+        Assert.Equal(new GuildSpendSourceDto(effect.EffectId, corrected.Value.Receipt.ReceiptId,
+            corrected.Value.Receipt.EvidenceRevision, GuildSpendOrigin.OperatorAttested), physicalEvents[1].SpendSource);
+
+        var unscoped = await f.Portal.ReadReplayAsync(f.Caller, quest.Quest.Id, unscopedCursor.Value.Cursor, default);
+
+        Assert.True(unscoped.IsSuccess, unscoped.Error.Message);
+
+        Assert.Equal(physicalEvents.Select(item => item.SpendSource), unscoped.Value.Page.Items.Where(item => item.SpendSource is not null).Select(item => item.SpendSource));
+
+        var historyEvents = await f.Portal.ReadEventsAsync(f.Caller, new(quest.Quest.Id, null, null, null), default);
+
+        Assert.True(historyEvents.IsSuccess, historyEvents.Error.Message);
+
+        Assert.Equal(physicalEvents.Select(item => item.SpendSource), historyEvents.Value.Items.Where(item => item.SpendSource is not null).Select(item => item.SpendSource));
+
+        await f.ExecuteAsync($"DELETE FROM guild_events WHERE RootQuestId='{quest.Quest.Id.ToString("D").ToUpperInvariant()}' AND EventSequence={spend.EventSequence}");
+
+        long remainingEvents = await f.CountAsync("guild_events");
+
+        var initialReplay = await f.Store.SettleProviderEffectAsync(execution, daily, effect, bill, default);
+
+        Assert.True(initialReplay.IsSuccess, initialReplay.Error.Message);
+
+        Assert.Equal(settled.Value.Revision, initialReplay.Value.Revision);
+
+        Assert.Equal(remainingEvents, await f.CountAsync("guild_events"));
+
+        var retained = await f.Store.ReadOperatorSpendReceiptAsync(f.Caller, quest.Quest.Id, effect.EffectId, source.ReceiptId, default);
+
+        Assert.True(retained.IsSuccess, retained.Error.Message);
+
+        Assert.Equal(spend.EventSequence, retained.Value.EventSequence);
+
         Assert.Equal(1L, await f.CountAsync("BillableOperations"));
 
-        Assert.Equal(1L, await f.CountAsync("guild_budget_evidence"));
+        Assert.Equal(2L, await f.CountAsync("guild_budget_evidence"));
     }
 }

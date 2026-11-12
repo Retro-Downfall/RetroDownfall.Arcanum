@@ -44,6 +44,23 @@ internal sealed partial class GuildQuestStore
                 {
                     if (!SameTerminalResult(accepted, result.Receipt) || row.Quest.ReconciliationRequired) return Conflict;
 
+                    if (result.RemoteEvidence is { } replayEvidence)
+                    {
+                        Result remoteReplay = await ApplyRemoteEvidenceWithinAsync(connection, transaction, row, replayEvidence,
+                            true, token, replayOnly: true).ConfigureAwait(false);
+
+                        if (remoteReplay.IsFailure) return remoteReplay.Error;
+                    }
+                    else
+                    {
+                        await using SqliteCommand remoteProof = Command(connection, transaction,
+                            "SELECT EXISTS(SELECT 1 FROM guild_remote_effects WHERE QuestId=$quest AND SettledAtUtc IS NOT NULL)");
+
+                        Add(remoteProof, "$quest", Id(row.Quest.Id));
+
+                        if (Equals(1L, await remoteProof.ExecuteScalarAsync(token).ConfigureAwait(false))) return Conflict;
+                    }
+
                     Result captured = await GuildCohortStore.CapturePrimaryResultWithinAsync(connection, transaction,
                         row, result with { Receipt = accepted }, time.GetUtcNow(), token).ConfigureAwait(false);
 
