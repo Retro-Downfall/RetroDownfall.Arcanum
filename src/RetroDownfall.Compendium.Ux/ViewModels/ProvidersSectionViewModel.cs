@@ -181,7 +181,10 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
         partial void OnTypeChanged(AiProviderKind value)
         {
 
-            _ = value;
+            if (FamiliarProviders.IsFamiliar(value))
+            {
+                _snapshot = _snapshot with { GuildUsageReconciliation = GuildUsageReconciliationSource.None };
+            }
 
             OnPropertyChanged(nameof(IsFamiliar));
 

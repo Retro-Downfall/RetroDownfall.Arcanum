@@ -74,6 +74,9 @@ internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution exec
             || Interlocked.CompareExchange(ref _called, 1, 0) != 0)
             return new Error(ErrorCodes.Guild.AuthorityMismatch, "The physical payload does not bind its live accepted Guild turn.");
 
+        if (context.Provider.GuildUsageReconciliation != GuildUsageReconciliationSource.None && _prepared?.SpendSource is null)
+            return new Error(ErrorCodes.Guild.AuthorityUnavailable, "The provider spend source is unavailable.");
+
         // Parallel units share this exact live execution, while orphaned/unknown effects still
         // fail the durable store check. Keep the physical call serialized through settlement,
         // and release before the runtime processes tools or waits for a delegated child.
@@ -113,7 +116,8 @@ internal sealed class GuildProviderCallBinding(GuildLocalInferenceExecution exec
                 using IDisposable? wire = prepared?.Enter();
 
                 return await client.GetResponseAsync(payload, providerOptions, token).ConfigureAwait(false);
-            }, ct, input, circleInputs).ConfigureAwait(false);
+            }, ct, input, circleInputs, prepared?.SpendSource,
+            prepared?.SpendSource is not null ? prepared.PricingSnapshotJson() : null).ConfigureAwait(false);
 
         if (response.IsFailure) return response.Error;
 

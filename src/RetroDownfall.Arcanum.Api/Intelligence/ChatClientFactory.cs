@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Api.Intelligence.Familiars;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Familiars;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -215,7 +216,10 @@ public sealed class ChatClientFactory(
             options.AddPolicy(dispatchPolicy, PipelinePosition.BeforeTransport);
         }
 
-        GuildProviderWirePolicy guildPolicy = new(provider, resolvedModel);
+        GuildSpendSourceCredential? spendSource = provider.GuildUsageReconciliation == GuildUsageReconciliationSource.None
+            ? null : new(provider, resolvedModel, resolvedApiKey);
+
+        GuildProviderWirePolicy guildPolicy = new(provider, resolvedModel, spendSource);
 
         options.AddPolicy(guildPolicy, PipelinePosition.BeforeTransport);
 
