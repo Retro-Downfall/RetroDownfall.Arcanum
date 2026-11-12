@@ -15,251 +15,233 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 
 public sealed partial class GuildQuestStoreTests
 {
+    private const string SpendModel = "provider/model";
+
+    private const string SpendSecret = "private-provider-key-sentinel";
+
     [Fact]
-    public async Task Opted_in_actual_sdk_completion_binds_source_before_dispatch_and_saves_returned_id()
+    public async Task Opted_in_sdk_call_commits_binding_before_send_and_retains_completion_id()
     {
-        const string model = "provider/model";
+        await using SpendScenario scenario = await SpendScenario.CreateAsync();
 
-        await using Fixture f = await Fixture.CreateAsync();
+        Assert.Equal(1, scenario.Transport.Calls);
 
-        await using SqliteConnection connection = await f.OpenAsync();
+        Assert.Equal("Guild.SpendGenerationMissing", scenario.PendingReason);
 
-        await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection);
+        Assert.Equal(SpendSecret, scenario.Transport.Credential);
 
-        ArcanumSettings settings = new()
+        await using SqliteCommand command = scenario.Connection.CreateCommand();
+
+        command.CommandText = "SELECT SourceKindCode,Provider,Model,GenerationId,length(CredentialFingerprint) FROM guild_spend_sources";
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync();
+
+        Assert.True(await reader.ReadAsync());
+
+        Assert.Equal(1, reader.GetInt64(0));
+
+        Assert.Equal("router", reader.GetString(1));
+
+        Assert.Equal(SpendModel, reader.GetString(2));
+
+        Assert.Equal("gen-test-123", reader.GetString(3));
+
+        Assert.Equal(32, reader.GetInt64(4));
+    }
+
+    [Fact]
+    public async Task Source_verification_survives_reopened_connection_and_keeps_credential_private()
+    {
+        await using SpendScenario scenario = await SpendScenario.CreateAsync();
+
+        GuildSpendSourceCredential credential = scenario.Credential();
+
+        var verified = await scenario.VerifyAsync(credential);
+
+        Assert.True(verified.IsSuccess);
+
+        Assert.DoesNotContain(SpendSecret, credential.ToString());
+
+        Assert.DoesNotContain(SpendSecret, verified.Value.ToString());
+    }
+
+    [Theory]
+    [InlineData("credential", "Guild.SpendCredentialChanged")]
+    [InlineData("missingCredential", "Guild.SpendCredentialChanged")]
+    [InlineData("missingSource", "Guild.SpendSourceMissing")]
+    [InlineData("model", "Guild.SpendConfigurationChanged")]
+    [InlineData("type", "Guild.SpendConfigurationChanged")]
+    [InlineData("disabled", "Guild.SpendConfigurationChanged")]
+    [InlineData("endpoint", "Guild.SpendConfigurationChanged")]
+    public async Task Source_verification_reports_ineligibility_without_sensitive_values(string change, string expected)
+    {
+        await using SpendScenario scenario = await SpendScenario.CreateAsync();
+
+        ProviderSettings provider = scenario.Settings.Providers[0] with { };
+
+        string model = SpendModel;
+
+        string? secret = SpendSecret;
+
+        Guid effect = scenario.EffectId;
+
+        switch (change)
         {
-            DefaultModel = model,
-            Providers = [new() { Name = "router", Endpoint = "https://openrouter.ai/api/v1", Models = [model],
-                GuildUsageReconciliation = GuildUsageReconciliationSource.OpenRouterGeneration }],
-        };
+            case "credential": secret = "different-key"; break;
+            case "missingCredential": secret = null; break;
+            case "missingSource": effect = Guid.NewGuid(); break;
+            case "model": model = "other-model"; break;
+            case "type": provider.Type = AiProviderKind.CodexCli; break;
+            case "disabled": provider.GuildUsageReconciliation = GuildUsageReconciliationSource.None; break;
+            case "endpoint": provider.Endpoint = "https://other.example/v1"; break;
+            default: throw new InvalidOperationException("Unexpected fixture change.");
+        }
 
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
+        var result = await scenario.VerifyAsync(new GuildSpendSourceCredential(provider, model, secret), effect);
 
-        f.UseBudgetParticipant(new GuildBudgetLedger(daily));
+        Assert.True(result.IsFailure);
 
-        GuildQuestStored quest = (await f.Store.IssueAsync(f.Caller, f.Identity, f.Request, default)).Value;
+        Assert.Equal(expected, result.Error.Code);
 
-        GuildLocalExecutionInput input = new(1, GuildLocalExecutionMode.Sterile, quest.Quest.GoalRef, "router", model, [], 30);
+        Assert.DoesNotContain("different-key", result.Error.Message);
 
-        var bound = await f.Authority.InQuestTransactionAsync<GuildLocalExecutionBinding>(quest.Quest.RootQuestId,
-            (c, t, _, ct) => GuildLocalExecutionStore.CreateWithinAsync(c, t, quest, input, null, DateTimeOffset.UtcNow, ct), default);
+        Assert.DoesNotContain(effect.ToString(), result.Error.Message, StringComparison.OrdinalIgnoreCase);
+    }
 
-        Assert.True(bound.IsSuccess, bound.IsFailure ? bound.Error.Message : null);
+    [Theory]
+    [InlineData("generation")]
+    [InlineData("rotated")]
+    [InlineData("missing")]
+    public async Task Source_verification_refuses_retired_or_missing_authority(string change)
+    {
+        await using SpendScenario scenario = await SpendScenario.CreateAsync();
 
-        GuildQuestDriver driver = await f.DriverAsync(quest);
+        await using SqliteConnection reopened = await scenario.Fixture.OpenAsync();
 
-        GuildQuestDispatchRecord dispatch = (await f.Store.PrepareDispatchAsync(driver, Guid.NewGuid(),
-            ReceiptDigest("provider-spend"), quest.Quest.RunId, false, default)).Value;
+        await using SqliteTransaction transaction = reopened.BeginTransaction();
 
-        string? pendingReason = null;
-
-        using GuildWireCapture transport = new(model, async () =>
+        if (change is "rotated" or "missing")
         {
-            await using SqliteConnection observed = await f.OpenAsync();
+            await using SqliteCommand command = reopened.CreateCommand();
 
-            await using SqliteCommand check = observed.CreateCommand();
+            command.Transaction = transaction;
 
-            check.CommandText = "SELECT COUNT(*) FROM guild_spend_sources WHERE SourceKindCode=1 AND GenerationId IS NULL";
+            command.CommandText = change == "rotated"
+                ? "UPDATE guild_spend_authority_state SET AuthorityEpoch=$epoch WHERE StateKey=1"
+                : "DELETE FROM guild_spend_authority_state WHERE StateKey=1";
 
-            Assert.Equal(1L, await check.ExecuteScalarAsync());
+            if (change == "rotated") command.Parameters.AddWithValue("$epoch", Guid.NewGuid().ToString("D").ToUpperInvariant());
 
-            check.CommandText = "SELECT EffectId FROM guild_spend_sources WHERE SourceKindCode=1";
+            await command.ExecuteNonQueryAsync();
+        }
 
-            Guid pendingEffect = Guid.Parse((string)(await check.ExecuteScalarAsync())!);
+        Guid generation = change == "generation" ? Guid.NewGuid() : scenario.Fixture.Host.InstallationGeneration;
 
-            await using SqliteTransaction pendingTransaction = observed.BeginTransaction();
+        var result = await scenario.Credential().VerifyWithinAsync(reopened, transaction, scenario.EffectId, generation, default);
 
-            var pendingSource = await new GuildSpendSourceCredential(settings.Providers[0], model, "private-provider-key-sentinel")
-                .VerifyWithinAsync(observed, pendingTransaction, pendingEffect, f.Host.InstallationGeneration, default);
+        Assert.True(result.IsFailure);
 
-            pendingReason = pendingSource.Error.Code;
+        Assert.Equal("Guild.SpendAuthorityRetired", result.Error.Code);
 
-            await pendingTransaction.RollbackAsync();
-        }, "gen-test-123");
+        await transaction.RollbackAsync();
+    }
 
-        ChatClientFactory clients = new(transport, new TestOptionsMonitor<ArcanumSettings>(settings), new SpendCaptureKeys());
+    [Fact]
+    public async Task Metadata_reader_sends_bound_bearer_to_fixed_origin_and_uses_native_facts()
+    {
+        await using SpendScenario scenario = await SpendScenario.CreateAsync();
 
-        WizardIntelligenceProviderTests wizard = new();
+        var source = await scenario.VerifiedAsync();
+
+        using SpendMetadataHandler handler = new();
+
+        var observation = await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => handler).ReadAsync(source, default);
+
+        Assert.True(observation.IsSuccess, observation.IsFailure ? observation.Error.Message : null);
+
+        Assert.Equal(new GuildSpendAmountsRequest(100, 20, 40, 5, 0.25m), observation.Value.Amounts);
+
+        Assert.Equal("https://openrouter.ai/api/v1/generation?id=gen-test-123", handler.Uri);
+
+        Assert.Equal(SpendSecret, handler.Bearer);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Redirect)]
+    [InlineData(HttpStatusCode.NotFound)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    public async Task Metadata_reader_refuses_error_status_without_response_or_credential_diagnostics(HttpStatusCode status)
+    {
+        await using SpendScenario scenario = await SpendScenario.CreateAsync();
+
+        using SpendMetadataHandler handler = new() { Status = status, Body = "private-response-sentinel" };
+
+        var result = await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => handler).ReadAsync(await scenario.VerifiedAsync(), default);
+
+        Assert.True(result.IsFailure);
+
+        Assert.DoesNotContain(SpendSecret, result.Error.Message);
+
+        Assert.DoesNotContain("private-response-sentinel", result.Error.Message);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Metadata_reader_refuses_oversized_body_with_or_without_content_length(bool unknownLength)
+    {
+        await using SpendScenario scenario = await SpendScenario.CreateAsync();
+
+        using SpendMetadataHandler handler = new() { UnknownLength = unknownLength, Body = new string('x', 65537) };
+
+        var result = await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => handler).ReadAsync(await scenario.VerifiedAsync(), default);
+
+        Assert.True(result.IsFailure);
+    }
+
+    [Fact]
+    public async Task Metadata_reader_blocks_private_dns_before_sending_credentials()
+    {
+        await using SpendScenario scenario = await SpendScenario.CreateAsync();
+
+        using SpendMetadataHandler handler = new();
+
+        var result = await new GuildOpenRouterSpendReader(new PrivateSpendDns(), () => handler).ReadAsync(await scenario.VerifiedAsync(), default);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Null(handler.Uri);
+    }
+
+    [Fact]
+    public async Task Metadata_reader_joins_a_handler_that_ignores_cancellation()
+    {
+        await using SpendScenario scenario = await SpendScenario.CreateAsync();
+
+        using CancellationTokenSource cancel = new();
+
+        using BlockingSpendHandler handler = new();
+
+        Task<RetroDownfall.Arcanum.Core.Primitives.Result<GuildSpendObservation>> pending =
+            new GuildOpenRouterSpendReader(new PublicSpendDns(), () => handler).ReadAsync(await scenario.VerifiedAsync(), cancel.Token);
+
+        await handler.Entered.Task;
+
+        cancel.Cancel();
 
         try
         {
-            var runtime = await wizard.CreateGuildRuntimeAsync(daily, settings, clients);
-
-            var result = await runtime.Runtime.ExecuteAsync(new(f.Store, driver, dispatch), input, default);
-
-            Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
-
-            Assert.Equal(1, transport.Calls);
-
-            Assert.Equal("Guild.SpendGenerationMissing", pendingReason);
-
-            Assert.Equal("private-provider-key-sentinel", transport.Credential);
-
-            await using SqliteCommand source = connection.CreateCommand();
-
-            source.CommandText = "SELECT SourceKindCode,Provider,Model,GenerationId,length(CredentialFingerprint) FROM guild_spend_sources";
-
-            await using SqliteDataReader reader = await source.ExecuteReaderAsync();
-
-            Assert.True(await reader.ReadAsync());
-
-            Assert.Equal(1, reader.GetInt64(0));
-
-            Assert.Equal("router", reader.GetString(1));
-
-            Assert.Equal(model, reader.GetString(2));
-
-            Assert.Equal("gen-test-123", reader.GetString(3));
-
-            Assert.Equal(32, reader.GetInt64(4));
-
-            await reader.DisposeAsync();
-
-            source.CommandText = "SELECT EffectId FROM guild_spend_sources";
-
-            Guid effect = Guid.Parse((string)(await source.ExecuteScalarAsync())!);
-
-            await using SqliteTransaction transaction = connection.BeginTransaction();
-
-            GuildSpendSourceCredential same = new(settings.Providers[0], model, "private-provider-key-sentinel");
-
-            var verified = await same.VerifyWithinAsync(connection, transaction, effect, f.Host.InstallationGeneration, default);
-
-            Assert.True(verified.IsSuccess);
-
-            GuildSpendSourceCredential changed = new(settings.Providers[0], model, "different-key");
-
-            var changedResult = await changed.VerifyWithinAsync(connection, transaction, effect, f.Host.InstallationGeneration, default);
-
-            Assert.Equal("Guild.SpendCredentialChanged", changedResult.Error.Code);
-
-            Assert.DoesNotContain("different-key", changedResult.Error.Message);
-
-            Assert.DoesNotContain(effect.ToString(), changedResult.Error.Message, StringComparison.OrdinalIgnoreCase);
-
-            Assert.Equal("Guild.SpendCredentialChanged", (await new GuildSpendSourceCredential(settings.Providers[0], model, null)
-                .VerifyWithinAsync(connection, transaction, effect, f.Host.InstallationGeneration, default)).Error.Code);
-
-            Assert.Equal("Guild.SpendSourceMissing", (await same.VerifyWithinAsync(connection, transaction, Guid.NewGuid(), f.Host.InstallationGeneration, default)).Error.Code);
-
-            GuildSpendSourceCredential changedModel = new(settings.Providers[0], "other-model", "private-provider-key-sentinel");
-
-            Assert.Equal("Guild.SpendConfigurationChanged", (await changedModel.VerifyWithinAsync(connection, transaction, effect, f.Host.InstallationGeneration, default)).Error.Code);
-
-            ProviderSettings familiar = settings.Providers[0] with { Type = AiProviderKind.CodexCli };
-
-            Assert.Equal("Guild.SpendConfigurationChanged", (await new GuildSpendSourceCredential(familiar, model, "private-provider-key-sentinel")
-                .VerifyWithinAsync(connection, transaction, effect, f.Host.InstallationGeneration, default)).Error.Code);
-
-            ProviderSettings disabled = settings.Providers[0] with { GuildUsageReconciliation = GuildUsageReconciliationSource.None };
-
-            Assert.Equal("Guild.SpendConfigurationChanged", (await new GuildSpendSourceCredential(disabled, model, "private-provider-key-sentinel")
-                .VerifyWithinAsync(connection, transaction, effect, f.Host.InstallationGeneration, default)).Error.Code);
-
-            await transaction.RollbackAsync();
-
-            Assert.DoesNotContain("private-provider-key-sentinel", same.ToString());
-
-            Assert.DoesNotContain("private-provider-key-sentinel", verified.Value.ToString());
-
-            await using (SqliteConnection reopened = await f.OpenAsync())
-            {
-                await using SqliteTransaction restarted = reopened.BeginTransaction();
-
-                Assert.True((await new GuildSpendSourceCredential(settings.Providers[0], model, "private-provider-key-sentinel")
-                    .VerifyWithinAsync(reopened, restarted, effect, f.Host.InstallationGeneration, default)).IsSuccess);
-
-                ProviderSettings changedEndpoint = settings.Providers[0] with { Endpoint = "https://other.example/v1" };
-
-                Assert.Equal("Guild.SpendConfigurationChanged", (await new GuildSpendSourceCredential(changedEndpoint, model, "private-provider-key-sentinel")
-                    .VerifyWithinAsync(reopened, restarted, effect, f.Host.InstallationGeneration, default)).Error.Code);
-
-                Assert.Equal("Guild.SpendAuthorityRetired", (await same.VerifyWithinAsync(reopened, restarted, effect, Guid.NewGuid(), default)).Error.Code);
-
-                await using SqliteCommand retire = reopened.CreateCommand();
-
-                retire.Transaction = restarted;
-
-                retire.CommandText = "UPDATE guild_spend_authority_state SET AuthorityEpoch=$epoch WHERE StateKey=1";
-
-                retire.Parameters.AddWithValue("$epoch", Guid.NewGuid().ToString("D").ToUpperInvariant());
-
-                await retire.ExecuteNonQueryAsync();
-
-                Assert.Equal("Guild.SpendAuthorityRetired", (await same.VerifyWithinAsync(reopened, restarted, effect, f.Host.InstallationGeneration, default)).Error.Code);
-
-                retire.CommandText = "DELETE FROM guild_spend_authority_state WHERE StateKey=1";
-
-                await retire.ExecuteNonQueryAsync();
-
-                Assert.Equal("Guild.SpendAuthorityRetired", (await same.VerifyWithinAsync(reopened, restarted, effect, f.Host.InstallationGeneration, default)).Error.Code);
-
-                await restarted.RollbackAsync();
-            }
-
-            using SpendMetadataHandler metadata = new();
-
-            GuildOpenRouterSpendReader lookup = new(new PublicSpendDns(), () => metadata);
-
-            var observation = await lookup.ReadAsync(verified.Value, default);
-
-            Assert.True(observation.IsSuccess, observation.IsFailure ? observation.Error.Message : null);
-
-            Assert.Equal(new GuildSpendAmountsRequest(100, 20, 40, 5, 0.25m), observation.Value.Amounts);
-
-            Assert.Equal("https://openrouter.ai/api/v1/generation?id=gen-test-123", metadata.Uri);
-
-            Assert.Equal("private-provider-key-sentinel", metadata.Bearer);
-
-            foreach (HttpStatusCode code in new[] { HttpStatusCode.Redirect, HttpStatusCode.NotFound, HttpStatusCode.Unauthorized,
-                         HttpStatusCode.Forbidden, HttpStatusCode.TooManyRequests, HttpStatusCode.InternalServerError })
-            {
-                using SpendMetadataHandler rejected = new() { Status = code, Body = "private-response-sentinel" };
-
-                var failure = await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => rejected).ReadAsync(verified.Value, default);
-
-                Assert.True(failure.IsFailure);
-
-                Assert.DoesNotContain("private-provider-key-sentinel", failure.Error.Message);
-
-                Assert.DoesNotContain("private-response-sentinel", failure.Error.Message);
-            }
-
-            using SpendMetadataHandler oversized = new() { Body = new string('x', 65537) };
-
-            Assert.True((await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => oversized).ReadAsync(verified.Value, default)).IsFailure);
-
-            using SpendMetadataHandler streamedOversized = new() { UnknownLength = true, Body = new string('x', 65537) };
-
-            Assert.True((await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => streamedOversized).ReadAsync(verified.Value, default)).IsFailure);
-
-            using SpendMetadataHandler blocked = new();
-
-            Assert.True((await new GuildOpenRouterSpendReader(new PrivateSpendDns(), () => blocked).ReadAsync(verified.Value, default)).IsFailure);
-
-            Assert.Null(blocked.Uri);
-
-            using CancellationTokenSource cancel = new();
-
-            using BlockingSpendHandler blockedTransport = new();
-
-            Task<RetroDownfall.Arcanum.Core.Primitives.Result<GuildSpendObservation>> pending =
-                new GuildOpenRouterSpendReader(new PublicSpendDns(), () => blockedTransport).ReadAsync(verified.Value, cancel.Token);
-
-            await blockedTransport.Entered.Task;
-
-            cancel.Cancel();
-
             Assert.False(pending.IsCompleted);
-
-            blockedTransport.Release.SetResult();
-
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
         }
         finally
         {
-            await wizard.DisposeAsync();
+            handler.Release.TrySetResult();
         }
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
     }
 
     [Fact]
@@ -593,6 +575,152 @@ public sealed partial class GuildQuestStoreTests
         finally
         {
             await wizard.DisposeAsync();
+        }
+    }
+
+    /// <summary>Real Guild admission, SDK transport, SQLCipher settlement, and a reopened source verifier.</summary>
+    private sealed class SpendScenario : IAsyncDisposable
+    {
+        internal Fixture Fixture { get; private set; } = null!;
+
+        internal SqliteConnection Connection { get; private set; } = null!;
+
+        private ArcanumDbContext _db = null!;
+
+        private WizardIntelligenceProviderTests _wizard = null!;
+
+        internal GuildWireCapture Transport { get; private set; } = null!;
+
+        internal ArcanumSettings Settings { get; private set; } = null!;
+
+        internal Guid EffectId { get; private set; }
+
+        internal string? PendingReason { get; private set; }
+
+        internal static async Task<SpendScenario> CreateAsync()
+        {
+            SpendScenario scenario = new();
+
+            try
+            {
+                scenario.Fixture = await Fixture.CreateAsync();
+
+                scenario.Connection = await scenario.Fixture.OpenAsync();
+
+                scenario._db = GrimoireFixture.CreateContext(scenario.Connection);
+
+                scenario.Settings = new()
+                {
+                    DefaultModel = SpendModel,
+                    Providers = [new() { Name = "router", Endpoint = "https://openrouter.ai/api/v1", Models = [SpendModel],
+                        GuildUsageReconciliation = GuildUsageReconciliationSource.OpenRouterGeneration }],
+                };
+
+                BudgetReservationService daily = new(scenario._db, new TestOptionsMonitor<ArcanumSettings>(scenario.Settings));
+
+                scenario.Fixture.UseBudgetParticipant(new GuildBudgetLedger(daily));
+
+                GuildQuestStored quest = (await scenario.Fixture.Store.IssueAsync(scenario.Fixture.Caller, scenario.Fixture.Identity,
+                    scenario.Fixture.Request, default)).Value;
+
+                GuildLocalExecutionInput input = new(1, GuildLocalExecutionMode.Sterile, quest.Quest.GoalRef, "router", SpendModel, [], 30);
+
+                var bound = await scenario.Fixture.Authority.InQuestTransactionAsync<GuildLocalExecutionBinding>(quest.Quest.RootQuestId,
+                    (c, t, _, ct) => GuildLocalExecutionStore.CreateWithinAsync(c, t, quest, input, null, DateTimeOffset.UtcNow, ct), default);
+
+                Assert.True(bound.IsSuccess, bound.IsFailure ? bound.Error.Message : null);
+
+                GuildQuestDriver driver = await scenario.Fixture.DriverAsync(quest);
+
+                GuildQuestDispatchRecord dispatch = (await scenario.Fixture.Store.PrepareDispatchAsync(driver, Guid.NewGuid(),
+                    ReceiptDigest("provider-spend"), quest.Quest.RunId, false, default)).Value;
+
+                scenario.Transport = new(SpendModel, async () =>
+                {
+                    await using SqliteConnection observed = await scenario.Fixture.OpenAsync();
+
+                    await using SqliteCommand check = observed.CreateCommand();
+
+                    check.CommandText = "SELECT COUNT(*) FROM guild_spend_sources WHERE SourceKindCode=1 AND GenerationId IS NULL";
+
+                    Assert.Equal(1L, await check.ExecuteScalarAsync());
+
+                    check.CommandText = "SELECT EffectId FROM guild_spend_sources WHERE SourceKindCode=1";
+
+                    Guid pendingEffect = Guid.Parse((string)(await check.ExecuteScalarAsync())!);
+
+                    await using SqliteTransaction transaction = observed.BeginTransaction();
+
+                    var pending = await scenario.Credential().VerifyWithinAsync(observed, transaction, pendingEffect,
+                        scenario.Fixture.Host.InstallationGeneration, default);
+
+                    scenario.PendingReason = pending.Error.Code;
+
+                    await transaction.RollbackAsync();
+                }, "gen-test-123");
+
+                ChatClientFactory clients = new(scenario.Transport, new TestOptionsMonitor<ArcanumSettings>(scenario.Settings), new SpendCaptureKeys());
+
+                scenario._wizard = new();
+
+                var runtime = await scenario._wizard.CreateGuildRuntimeAsync(daily, scenario.Settings, clients);
+
+                var result = await runtime.Runtime.ExecuteAsync(new(scenario.Fixture.Store, driver, dispatch), input, default);
+
+                Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+                await using SqliteCommand source = scenario.Connection.CreateCommand();
+
+                source.CommandText = "SELECT EffectId FROM guild_spend_sources";
+
+                scenario.EffectId = Guid.Parse((string)(await source.ExecuteScalarAsync())!);
+
+                return scenario;
+            }
+            catch
+            {
+                await scenario.DisposeAsync();
+
+                throw;
+            }
+        }
+
+        internal GuildSpendSourceCredential Credential() => new(Settings.Providers[0], SpendModel, SpendSecret);
+
+        internal async Task<RetroDownfall.Arcanum.Core.Primitives.Result<GuildSpendSourceCredential.VerifiedSource>> VerifyAsync(
+            GuildSpendSourceCredential credential, Guid? effect = null)
+        {
+            await using SqliteConnection reopened = await Fixture.OpenAsync();
+
+            await using SqliteTransaction transaction = reopened.BeginTransaction();
+
+            var result = await credential.VerifyWithinAsync(reopened, transaction, effect ?? EffectId, Fixture.Host.InstallationGeneration, default);
+
+            await transaction.RollbackAsync();
+
+            return result;
+        }
+
+        internal async Task<GuildSpendSourceCredential.VerifiedSource> VerifiedAsync()
+        {
+            var result = await VerifyAsync(Credential());
+
+            Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+            return result.Value;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_wizard is not null) await _wizard.DisposeAsync();
+
+            Transport?.Dispose();
+
+            if (_db is not null) await _db.DisposeAsync();
+
+            if (Connection is not null) await Connection.DisposeAsync();
+
+            if (Fixture is not null) await Fixture.DisposeAsync();
         }
     }
 
