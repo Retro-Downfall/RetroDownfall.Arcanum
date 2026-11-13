@@ -163,11 +163,11 @@ public sealed class GuildSpendSchemaTests
 
         GrimoireSchemaVersionChain guild = standard.ForTier(GrimoireSchemaTransactionTier.GuildCanonical);
 
-        GrimoireSchemaVersionStep last = guild.Steps[^1];
+        GrimoireSchemaVersionStep v15 = guild.Steps.Single(step => step.ToVersion == 15);
 
-        GrimoireSchemaVersionStep fault = last with
+        GrimoireSchemaVersionStep fault = v15 with
         {
-            Statements = [.. last.Statements, new("fixture.failure", 35, "failure", "SELECT * FROM no_such_transition_table")],
+            Statements = [.. v15.Statements, new("fixture.failure", 35, "failure", "SELECT * FROM no_such_transition_table")],
         };
 
         GrimoireSchemaVersionChainSet interrupted = new(
@@ -175,7 +175,7 @@ public sealed class GuildSpendSchemaTests
             standard.ForTier(GrimoireSchemaTransactionTier.Core),
             standard.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
             standard.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
-            new GrimoireSchemaVersionChain(guild.HeadManifest, guild.HeadObjects, [.. guild.Steps.Take(13), fault]),
+            new GrimoireSchemaVersionChain(guild.HeadManifest, guild.HeadObjects, [.. guild.Steps.Select(step => step.ToVersion == 15 ? fault : step)]),
         ]);
 
         await using (SqliteConnection failed = await file.OpenAsync(default))
