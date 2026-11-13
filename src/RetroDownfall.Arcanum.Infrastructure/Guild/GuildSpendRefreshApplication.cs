@@ -114,6 +114,11 @@ internal sealed partial class GuildQuestStore
     {
         Guid principal = caller.PrincipalId!.Value;
 
+        Result ownerProof = await GuildSpendRefreshOwnerProof.RequireWithinAsync(connection, transaction, questId,
+            quest.Quest.RootQuestId, token).ConfigureAwait(false);
+
+        if (ownerProof.IsFailure) return ownerProof.Error;
+
         LongRunningOperation? operation = await LongRunningOperationStore.ReadWithinAsync(connection, transaction, operationId, token).ConfigureAwait(false);
 
         if (operation is null || operation.Kind != LongRunningOperationKinds.GuildSpendRefresh
