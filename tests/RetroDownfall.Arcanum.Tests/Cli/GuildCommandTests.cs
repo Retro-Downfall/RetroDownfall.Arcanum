@@ -30,6 +30,11 @@ public sealed class GuildCommandTests
     [InlineData("guild task message task --text hello --expected-revision 1 --continue")]
     [InlineData("guild task cancel task --expected-revision 1")]
     [InlineData("guild task spend task")]
+    [InlineData("guild spend list task --cursor next --page-size 2")]
+    [InlineData("guild spend show task --effect 33333333-3333-3333-3333-333333333333")]
+    [InlineData("guild spend correct task --effect 33333333-3333-3333-3333-333333333333 --idempotency-key 33333333-3333-3333-3333-333333333333 --expected-revision 1 --input-tokens 0 --output-tokens 0 --cached-tokens 0 --reasoning-tokens 0 --usd 1e-28 --evidence-digest aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    [InlineData("guild spend receipts task --effect 33333333-3333-3333-3333-333333333333")]
+    [InlineData("guild spend receipt task --effect 33333333-3333-3333-3333-333333333333 --receipt 33333333-3333-3333-3333-333333333333")]
     [InlineData("guild signet revoke signet --expected-revision 1")]
     [InlineData("guild content show content --revision 1")]
     [InlineData("guild watch tree task --ndjson --after next")]
@@ -185,6 +190,88 @@ public sealed class GuildCommandTests
     }
 
     [Fact]
+    public void Guild_spend_correction_sends_exact_attestation_and_explicit_key()
+    {
+        RecordingHandler handler = new(_ => DomainRefusal());
+
+        CliTestResult result = Run(handler, ["guild", "spend", "correct", Id, "--effect", Id, "--idempotency-key", Id,
+            "--expected-revision", "2", "--input-tokens", "3", "--output-tokens", "4", "--cached-tokens", "0",
+            "--reasoning-tokens", "0", "--usd", "1e-28", "--evidence-digest", new string('a', 64), "--json"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        RecordedRequest request = Assert.Single(handler.Requests);
+
+        Assert.Equal($"/api/guild/quests/{Id}/spend/effects/{Id}/corrections", request.Path);
+
+        using JsonDocument body = JsonDocument.Parse(request.Body!);
+
+        Assert.Equal("operatorAttested", body.RootElement.GetProperty("origin").GetString());
+
+        Assert.Equal(Id, body.RootElement.GetProperty("idempotencyKey").GetString());
+
+        Assert.Equal(0.0000000000000000000000000001m, body.RootElement.GetProperty("amounts").GetProperty("usd").GetDecimal());
+
+        using JsonDocument output = JsonDocument.Parse(result.Output);
+    }
+
+    [Fact]
+    public void Guild_spend_correction_success_writes_one_generated_json_document()
+    {
+        string response = "{\"data\":{\"receipt\":{\"receiptId\":\"" + Id + "\",\"questId\":\"" + Id
+            + "\",\"effectId\":\"" + Id + "\",\"origin\":\"operatorAttested\",\"evidenceDigest\":\"" + new string('a', 64)
+            + "\",\"facts\":{\"knownUsd\":0.1,\"knownTokens\":0,\"unknownUsd\":false,\"unknownTokens\":false,\"complete\":true,\"localTokens\":{\"inputTokens\":0,\"outputTokens\":0,\"cachedTokens\":0,\"reasoningTokens\":0}},\"evidenceRevision\":2,\"eventSequence\":3,\"acceptedAt\":\"2026-01-01T00:00:00Z\"},\"replayed\":false},\"isSuccess\":true,\"error\":null}";
+
+        RecordingHandler handler = new(_ => JsonResponse(response, HttpStatusCode.Created));
+
+        CliTestResult result = Run(handler, ["guild", "spend", "correct", Id, "--effect", Id, "--idempotency-key", Id,
+            "--expected-revision", "1", "--input-tokens", "0", "--output-tokens", "0", "--cached-tokens", "0",
+            "--reasoning-tokens", "0", "--usd", "0.1", "--evidence-digest", new string('a', 64), "--json"]);
+
+        Assert.True(result.ExitCode == 0, result.Error);
+
+        using JsonDocument output = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(Id, output.RootElement.GetProperty("receipt").GetProperty("receiptId").GetString());
+
+        Assert.False(output.RootElement.GetProperty("replayed").GetBoolean());
+
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public void Guild_spend_correction_requires_explicit_attestation_key()
+    {
+        RecordingHandler handler = new(_ => throw new InvalidOperationException("Missing key reached HTTP."));
+
+        CliTestResult result = Run(handler, ["guild", "spend", "correct", Id, "--effect", Id,
+            "--expected-revision", "1", "--input-tokens", "0", "--output-tokens", "0", "--cached-tokens", "0",
+            "--reasoning-tokens", "0", "--usd", "0", "--evidence-digest", new string('a', 64), "--json"]);
+
+        Assert.Equal(2, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData("1e-29")]
+    [InlineData("79228162514264337593543950336")]
+    [InlineData("null")]
+    [InlineData("-1")]
+    public void Guild_spend_correction_rejects_inexact_or_negative_usd_before_http(string usd)
+    {
+        RecordingHandler handler = new(_ => throw new InvalidOperationException("Invalid input reached HTTP."));
+
+        CliTestResult result = Run(handler, ["guild", "spend", "correct", Id, "--effect", Id, "--idempotency-key", Id,
+            "--expected-revision", "2", "--input-tokens", "3", "--output-tokens", "4", "--cached-tokens", "0",
+            "--reasoning-tokens", "0", "--usd", usd, "--evidence-digest", new string('a', 64), "--json"]);
+
+        Assert.Equal(2, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
     public void Guild_task_list_preserves_one_page_and_cursor_without_collecting_more()
     {
         RecordingHandler handler = new(_ => JsonResponse("{\"data\":{\"items\":[" + QuestJson + "],\"nextCursor\":\"next\",\"snapshotSequence\":7,\"stateConsistency\":\"livePerPage\"},\"isSuccess\":true,\"error\":null}"));
@@ -254,6 +341,8 @@ public sealed class GuildCommandTests
     }
 
     [Theory]
+    [InlineData("spend list ID --page-size 2 --cursor opaque", "/api/guild/quests/ID/spend/effects", "cursor=opaque")]
+    [InlineData("spend receipts ID --effect ID", "/api/guild/quests/ID/spend/effects/ID/receipts", "pageSize=100")]
     [InlineData("cohort list --root ID --state open", "/api/guild/cohorts", "rootId=ID")]
     [InlineData("cohort members ID", "/api/guild/cohorts/ID/members", "pageSize=100")]
     [InlineData("cohort contributions ID --selected", "/api/guild/cohorts/ID/contributions", "selected=true")]

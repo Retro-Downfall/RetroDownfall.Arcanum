@@ -45,6 +45,8 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Guild.DestinationChanged
                 or ErrorCodes.Guild.LeaseReconciliationRequired
                 or ErrorCodes.Guild.SequenceExhausted
+                or ErrorCodes.Guild.SourceExpired
+                or ErrorCodes.Guild.InitialEvidenceUnavailable
                 or ErrorCodes.Guild.SourceConflict
                 or ErrorCodes.Guild.ReconciliationRequired
                 or ErrorCodes.Guild.LocalExecutionInterrupted

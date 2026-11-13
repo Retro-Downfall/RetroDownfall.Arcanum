@@ -142,6 +142,8 @@ internal static partial class GuildEndpoints
 
         api.MapGuildLeaseEndpoints();
 
+        api.MapGuildSpendEndpoints();
+
         return api;
     }
 

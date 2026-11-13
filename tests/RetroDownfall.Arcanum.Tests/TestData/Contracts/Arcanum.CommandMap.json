@@ -6863,6 +6863,286 @@
           ]
         },
         {
+          "path": "guild spend",
+          "name": "spend",
+          "description": "Inspect physical spend and attest corrected local totals.",
+          "runnable": false,
+          "aliases": [],
+          "arguments": [],
+          "options": [],
+          "examples": [],
+          "commands": [
+            {
+              "path": "guild spend list",
+              "name": "list",
+              "description": "List one page of physical effects.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "task",
+                  "description": "Visible task UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-task"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--cursor",
+                  "aliases": [],
+                  "description": "Opaque cursor for the next bounded page or refresh batch.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--page-size",
+                  "aliases": [],
+                  "description": "Requested records per page, 1 through 100; the byte limit may return fewer.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild spend list task --page-size 2"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild spend show",
+              "name": "show",
+              "description": "Show one exact physical effect.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "task",
+                  "description": "Visible task UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-task"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--effect",
+                  "aliases": [],
+                  "description": "Exact nonempty UUID; selection does not grant authority.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild spend show task --effect 33333333-3333-3333-3333-333333333333"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild spend correct",
+              "name": "correct",
+              "description": "Attest corrected local physical totals.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "task",
+                  "description": "Visible task UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-task"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--effect",
+                  "aliases": [],
+                  "description": "Exact nonempty UUID; selection does not grant authority.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Required explicit attestation UUID; reused for exact replay.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--expected-revision",
+                  "aliases": [],
+                  "description": "Required current resource revision; conflicts are reported without retrying the changed action.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--input-tokens",
+                  "aliases": [],
+                  "description": "Explicit nonnegative token total.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--output-tokens",
+                  "aliases": [],
+                  "description": "Explicit nonnegative token total.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--cached-tokens",
+                  "aliases": [],
+                  "description": "Explicit nonnegative token total.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--reasoning-tokens",
+                  "aliases": [],
+                  "description": "Explicit nonnegative token total.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--usd",
+                  "aliases": [],
+                  "description": "Exact nonnegative JSON decimal number, without rounding.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--evidence-digest",
+                  "aliases": [],
+                  "description": "SHA-256 evidence digest as 64 hexadecimal characters.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild spend correct task --effect 33333333-3333-3333-3333-333333333333 --idempotency-key 33333333-3333-3333-3333-333333333333 --expected-revision 1 --input-tokens 0 --output-tokens 0 --cached-tokens 0 --reasoning-tokens 0 --usd 0 --evidence-digest aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild spend receipts",
+              "name": "receipts",
+              "description": "List one page of effect receipts.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "task",
+                  "description": "Visible task UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-task"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--effect",
+                  "aliases": [],
+                  "description": "Exact nonempty UUID; selection does not grant authority.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--cursor",
+                  "aliases": [],
+                  "description": "Opaque cursor for the next bounded page or refresh batch.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--page-size",
+                  "aliases": [],
+                  "description": "Requested records per page, 1 through 100; the byte limit may return fewer.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild spend receipts task --effect 33333333-3333-3333-3333-333333333333"
+              ],
+              "commands": []
+            },
+            {
+              "path": "guild spend receipt",
+              "name": "receipt",
+              "description": "Show one exact effect receipt.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "task",
+                  "description": "Visible task UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-task"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--effect",
+                  "aliases": [],
+                  "description": "Exact nonempty UUID; selection does not grant authority.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--receipt",
+                  "aliases": [],
+                  "description": "Exact nonempty UUID; selection does not grant authority.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild spend receipt task --effect 33333333-3333-3333-3333-333333333333 --receipt 33333333-3333-3333-3333-333333333333"
+              ],
+              "commands": []
+            }
+          ]
+        },
+        {
           "path": "guild signet",
           "name": "signet",
           "description": "Revoke stored authority without exposing credentials.",

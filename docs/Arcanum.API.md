@@ -1733,6 +1733,20 @@ All routes have the unique names below and use generated records. Every mutation
 
 `GuildQuestDto` contains `id`, `name?`, `operationId`, `agentId`, `cardId`, `cardRevision`, `runId`, `parentQuestId?`, `rootQuestId`, `sessionId?`, `campaignId?`, `workspaceId?`, `signetId`, `signetRevision`, `revision`, `issuedSequence`, `state`, `waitReason?`, `cancellationRequested`, `cancellationConverged`, `reconciliationRequired`, `deliveryState`, `accountingState`, `goalRef`, `resultRef?`, `resultReceiptId?`, `resolvedGrant`, `createdAt`, `updatedAt`, and `eventWatermark`. It contains no credential/digest or hidden reasoning. Domain states are the seven strings from DESIGN §23.5; `deliveryState` is `none`, `pending`, `applied`, `withheld`; `accountingState` is `settled`, `pending`, `uncertain`; `waitReason` is `input`, `maintenance`, `budget`, `transport`, `reconciliation` or null. `resultReceiptId` is separately nullable and, after a terminal result, is the immutable §23.6 `ResultId`, present on ordinary authorized GET/list projections even when mutation `receipt` is null. It is never inferred from output text.
 
+The authenticated native Operator physical-spend routes use `/api/guild/quests/{questId}/spend` as their base and the normal `ApiResponse<T>` envelope:
+
+| Method and suffix | Route name and payload |
+|---|---|
+| `GET /effects` | `GuildListSpendEffects` → `GuildSpendEffectPageDto` |
+| `GET /effects/{effectId}` | `GuildGetSpendEffect` → `GuildSpendEffectDto` |
+| `POST /effects/{effectId}/corrections` | `GuildCorrectSpendEffect`; `GuildSpendCorrectionRequest` → `GuildSpendCorrectionResultDto` |
+| `GET /effects/{effectId}/receipts` | `GuildListSpendReceipts` → `GuildSpendReceiptPageDto` |
+| `GET /effects/{effectId}/receipts/{receiptId}` | `GuildGetSpendReceipt` → `GuildSpendReceiptDto` |
+
+List routes accept `cursor?` and `pageSize?` (default 100, range 1–100), with bounded pages and an authenticated cursor. IDs are nonempty exact UUID selectors and do not confer authority. Current owner and installation visibility are checked by the host; missing and foreign objects are indistinguishable. Remote effects can be inspected but cannot be corrected through this local attestation route.
+
+A correction body supplies `idempotencyKey`, positive `expectedRevision`, `origin: "operatorAttested"`, `amounts` containing explicit nonnegative Int64 `inputTokens`, `outputTokens`, `cachedTokens` and `reasoningTokens`, exact nonnegative decimal `usd`, and a 64-hex-character `evidenceDigest`. Cached and reasoning totals cannot exceed input and output respectively, and input plus output must fit Int64. Missing, malformed, inexact, negative or forged-origin values return 400. New cumulative facts cannot decrease; stale revision or changed reuse of an idempotency key returns 409. A new receipt returns 201; exact replay returns 200 with the original receipt even after later corrections. Missing original bill or initial snapshot returns 409 with its source code. Other owner, authorization, cursor and availability failures retain their typed 404, 403, 400/410 and 503 mappings. Receipts preserve accepted facts, uncertainty and completion flags, provenance, revision and original event sequence; reads do not create a bill or perform inference. Provider refresh is not registered.
+
 `GuildCancellationDto` contains requested Quest/root, revision, requested/converged booleans, pending execution and unresolved external-effect counts, `accountingState` and event watermark. `GuildSpendDto` includes known USD/tokens, booleans for unknown USD/tokens, priced/unpriced/uncertain counts, outstanding allocation/holds and resolved remaining budget dimensions; unlimited/unknown is not encoded as numeric zero. `SignetRevocationDto` includes Signet id/revision/generation, revoked status, cancellation requested/converged and event watermark. Counts are Int64; lists of unresolved descendants use the paged tree route.
 
 

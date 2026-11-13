@@ -63,6 +63,9 @@ internal sealed partial class GuildCommands(
 
     private async Task<int> ExecuteFiniteAsync(string path, GuildCommandInput input, CancellationToken ct)
     {
+        if (path.StartsWith("spend ", StringComparison.Ordinal))
+            return await SpendAsync(path, input, ct).ConfigureAwait(false);
+
         Guid key = input.Text("idempotency-key") is { } requestedKey ? ExactGuid(requestedKey, "--idempotency-key") : Guid.NewGuid();
 
         long revision = input.Number("expected-revision") ?? 0;
