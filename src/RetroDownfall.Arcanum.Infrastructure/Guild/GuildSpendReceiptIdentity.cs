@@ -28,7 +28,7 @@ internal static class GuildSpendReceiptIdentity
         return SHA256.HashData(Encoding.UTF8.GetBytes(canonical));
     }
 
-    internal static byte[] ProviderDigest(GuildSpendSourceCredential.VerifiedSource source, GuildSpendObservation observation)
+    internal static byte[] ProviderDigest(GuildSpendObservation observation)
     {
         GuildSpendAmountsRequest amounts = observation.Amounts;
 
@@ -38,7 +38,7 @@ internal static class GuildSpendReceiptIdentity
         {
             writer.Write("Arcanum.Guild.ProviderObservation.v1");
 
-            source.WriteIdentity(writer);
+            observation.WriteSourceIdentity(writer);
 
             writer.Write(amounts.InputTokens!.Value);
 

@@ -2908,6 +2908,8 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetGrantJson.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetRootGate.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendReceiptIdentity.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshApplication.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshConfiguration.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendSourceAuthority.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendSourceStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendStorageContracts.cs

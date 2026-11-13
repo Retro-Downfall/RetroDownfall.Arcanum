@@ -291,7 +291,7 @@ internal sealed partial class GuildQuestStore
         return new GuildSpendCorrectionResultDto(receipt, false);
     }
 
-    private static async Task<Result<GuildSpendBill?>> ReadCorrectionBillWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+    internal static async Task<Result<GuildSpendBill?>> ReadCorrectionBillWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         GuildBudgetEffectRequest binding, CancellationToken ct, string? exactId = null)
     {
         await using SqliteCommand command = Command(connection, transaction, """
@@ -315,15 +315,24 @@ internal sealed partial class GuildQuestStore
         if (reader.GetValue(2) is not long || reader.GetValue(8) is not long || reader.GetValue(9) is not long
             || reader.GetValue(10) is not long || reader.GetValue(11) is not long || reader.GetValue(13) is not long) return Conflict;
 
-        GuildSpendBill bill = new(reader.GetString(0), reader.GetString(1), reader.GetInt32(2), reader.GetString(3), reader.GetString(4),
-            reader.GetString(5), UtcInstantText.Parse(reader.GetString(6)), UtcInstantText.Parse(reader.GetString(7)),
-            reader.GetInt64(8), reader.GetInt64(9), reader.GetInt64(10), reader.GetInt64(11), reader.GetString(12),
-            reader.GetInt32(13), reader.IsDBNull(14) ? null : reader.GetString(14), ExactUsdText.Read(reader, 15));
+        GuildSpendBill bill;
+
+        try
+        {
+            bill = new(reader.GetString(0), reader.GetString(1), reader.GetInt32(2), reader.GetString(3), reader.GetString(4),
+                reader.GetString(5), UtcInstantText.Parse(reader.GetString(6)), UtcInstantText.Parse(reader.GetString(7)),
+                reader.GetInt64(8), reader.GetInt64(9), reader.GetInt64(10), reader.GetInt64(11), reader.GetString(12),
+                reader.GetInt32(13), reader.IsDBNull(14) ? null : reader.GetString(14), ExactUsdText.Read(reader, 15));
+        }
+        catch (Exception error) when (error is FormatException or OverflowException or InvalidCastException)
+        {
+            return Conflict;
+        }
 
         return await reader.ReadAsync(ct).ConfigureAwait(false) ? Result<GuildSpendBill?>.Failure(Conflict) : Result<GuildSpendBill?>.Success(bill);
     }
 
-    private sealed record GuildSpendBill(string Id, string Run, int Type, string Provider, string Model, string Purpose,
+    internal sealed record GuildSpendBill(string Id, string Run, int Type, string Provider, string Model, string Purpose,
         DateTimeOffset Started, DateTimeOffset Completed, long Input, long Output, long Reasoning, long Cached,
         string Pricing, int Status, string? ProviderRequestId, decimal Usd)
     {

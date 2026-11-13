@@ -254,7 +254,8 @@ internal sealed class GuildSpendSourceCredential
 
             if (initial.IsFailure || initial.Value is not { } stored
                 || Id(stored.Snapshot.SourceId) != sourceId || stored.Snapshot.ProviderRequestId != generationId
-                || stored.Snapshot.PricingSnapshotJson != pricing)
+                || stored.Snapshot.PricingSnapshotJson != pricing || stored.Snapshot.Provider != provider
+                || stored.Snapshot.Model != credential._model)
                 return GuildSpendSourceFailure.SourceInvalid;
 
             GuildBudgetEffectRequest binding = stored.Outcome.Request;
@@ -265,6 +266,16 @@ internal sealed class GuildSpendSourceCredential
                 || (binding.ReservationId is { } reservation
                     ? reservationId is not string actual || actual != Id(reservation)
                     : reservationId is not DBNull)) return GuildSpendSourceFailure.SourceInvalid;
+
+            Result<GuildQuestStore.GuildSpendBill?> physical = await GuildQuestStore.ReadCorrectionBillWithinAsync(
+                connection, transaction, binding, ct).ConfigureAwait(false);
+
+            if (physical.IsFailure) return physical.Error;
+
+            if (physical.Value is not { } bill)
+                return new Error(ErrorCodes.Guild.SourceExpired, "The physical billing source is unavailable.");
+
+            if (!bill.Matches(stored.Snapshot)) return GuildSpendSourceFailure.SourceInvalid;
 
             return new VerifiedSource(generationId, credential._model, credential._secret!, generation,
                 authorityKeyId, authorityEpoch, endpoint, provider, pricing, saved, stored);

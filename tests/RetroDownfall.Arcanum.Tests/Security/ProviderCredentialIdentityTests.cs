@@ -139,6 +139,22 @@ public sealed class ProviderCredentialIdentityTests : IDisposable
     }
 
     [Fact]
+    public async Task Observed_local_currentness_is_unavailable_for_unsupported_and_compatibility_stores()
+    {
+        IProviderApiKeyResolver unsupported = new ProviderApiKeyResolver(new Store { Result = SecretStoreReadResult.Ok("secret") });
+
+        ResolvedProviderCredential captured = await unsupported.PeekWithIdentityAsync(Provider());
+
+        Assert.NotNull(captured.Stamp);
+
+        Assert.Equal(ProviderCredentialCurrentness.Unavailable, unsupported.GetObservedLocalCurrentness(Provider(), captured.Stamp));
+
+        IProviderApiKeyResolver compatibility = new LegacyResolver();
+
+        Assert.Equal(ProviderCredentialCurrentness.Unavailable, compatibility.GetObservedLocalCurrentness(Provider(), captured.Stamp));
+    }
+
+    [Fact]
     public async Task Identity_peek_prefers_environment_and_changes_stamp_for_observed_changes()
     {
         Store store = new() { Result = SecretStoreReadResult.Ok("stored") };

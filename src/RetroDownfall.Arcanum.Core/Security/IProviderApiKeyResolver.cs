@@ -31,6 +31,13 @@ public interface IProviderApiKeyResolver
         return Task.FromResult(new ResolvedProviderCredential(null, null));
     }
 
+    /// <summary>
+    /// Checks only the last observed local credential identity without secret I/O or waiting.
+    /// It does not detect unobserved external changes; implementations without a local mutation proof refuse.
+    /// </summary>
+    ProviderCredentialCurrentness GetObservedLocalCurrentness(ProviderSettings provider, ProviderCredentialStamp stamp) =>
+        ProviderCredentialCurrentness.Unavailable;
+
     /// <summary>Proves currentness without migrating or repairing credential storage.</summary>
     Task<bool> IsCurrentAsync(
         ProviderSettings provider,

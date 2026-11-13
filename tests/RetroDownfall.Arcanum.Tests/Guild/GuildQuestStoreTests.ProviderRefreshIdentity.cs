@@ -186,16 +186,29 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.True(observed.IsSuccess, observed.IsFailure ? observed.Error.Message : null);
 
-        byte[] Digest(GuildSpendSourceCredential.VerifiedSource source) =>
-            GuildSpendReceiptIdentity.ProviderDigest(source, observed.Value);
-
-        byte[] original = Digest(firstSource);
+        byte[] original = GuildSpendReceiptIdentity.ProviderDigest(observed.Value);
 
         Assert.Equal(32, original.Length);
 
-        Assert.Equal(original, Digest(firstAgain));
+        Assert.True(observed.Value.IsFrom(firstAgain));
 
-        Assert.NotEqual(original, Digest(otherSource));
+        Assert.False(observed.Value.IsFrom(otherSource));
+
+        using SpendMetadataHandler replayHandler = new();
+
+        var replay = await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => replayHandler).ReadAsync(firstAgain, default);
+
+        Assert.True(replay.IsSuccess, replay.IsFailure ? replay.Error.Message : null);
+
+        Assert.Equal(original, GuildSpendReceiptIdentity.ProviderDigest(replay.Value));
+
+        using SpendMetadataHandler otherHandler = new();
+
+        var other = await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => otherHandler).ReadAsync(otherSource, default);
+
+        Assert.True(other.IsSuccess, other.IsFailure ? other.Error.Message : null);
+
+        Assert.NotEqual(original, GuildSpendReceiptIdentity.ProviderDigest(other.Value));
 
         (int Input, int Output, int Cached, int Reasoning, string Usd)[] variants =
         [
@@ -221,7 +234,7 @@ public sealed partial class GuildQuestStoreTests
 
             Assert.True(changed.IsSuccess, changed.IsFailure ? changed.Error.Message : null);
 
-            Assert.NotEqual(original, GuildSpendReceiptIdentity.ProviderDigest(firstSource, changed.Value));
+            Assert.NotEqual(original, GuildSpendReceiptIdentity.ProviderDigest(changed.Value));
         }
     }
 
@@ -369,8 +382,16 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.True(verified.IsSuccess, verified.IsFailure ? verified.Error.Message : null);
 
-        Assert.NotEqual(GuildSpendReceiptIdentity.ProviderDigest(firstSource, observed.Value),
-            GuildSpendReceiptIdentity.ProviderDigest(verified.Value, observed.Value));
+        Assert.False(observed.Value.IsFrom(verified.Value));
+
+        using SpendMetadataHandler secondHandler = new();
+
+        var secondObservation = await new GuildOpenRouterSpendReader(new PublicSpendDns(), () => secondHandler).ReadAsync(verified.Value, default);
+
+        Assert.True(secondObservation.IsSuccess, secondObservation.IsFailure ? secondObservation.Error.Message : null);
+
+        Assert.NotEqual(GuildSpendReceiptIdentity.ProviderDigest(observed.Value),
+            GuildSpendReceiptIdentity.ProviderDigest(secondObservation.Value));
     }
 
     [Fact]
@@ -399,7 +420,7 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.Equal(first.Value.Amounts, equivalent.Value.Amounts);
 
-        Assert.Equal(GuildSpendReceiptIdentity.ProviderDigest(source, first.Value),
-            GuildSpendReceiptIdentity.ProviderDigest(source, equivalent.Value));
+        Assert.Equal(GuildSpendReceiptIdentity.ProviderDigest(first.Value),
+            GuildSpendReceiptIdentity.ProviderDigest(equivalent.Value));
     }
 }
