@@ -10,11 +10,11 @@
 
 Arcanum runs a long-lived HTTP host (`arcanum serve`) with a set of thin CLI clients over that same API. It exposes an **OpenAI-compatible Chat Completions API** for existing clients and scripts, and routes inference through configured **OpenAI-compatible providers**, including hosted services and local Ollama or other model servers. Optional Familiar transports also use the `Claude Code` and `Codex` CLIs you already have installed and signed in. Everything it learns lives in a **SQLCipher-encrypted** store on your disk, and the executable runs on **macOS and Windows**.
 
-This page describes the capabilities implemented on **`main`**, including features that require explicit configuration. Published releases may lag behind `main`. The [coming soon](#coming-soon) section separates projects in development and planned backlog work from the current runtime; the authoritative architecture, HTTP, CLI, and configuration references are linked below.
+This page describes the code on the branch you are viewing, including features that require explicit configuration. Published releases may lag behind the repository. The [coming soon](#coming-soon) section identifies capabilities still in development; the architecture, HTTP, CLI, and configuration references are linked below.
 
 Ordinary background work stays on the queue-free fast path. A destructive Grimoire transition closes host-wide admission and drains work already admitted before it takes exclusive control. If the process stops, startup resumes only from authenticated durable evidence; evidence it cannot verify keeps the Grimoire closed instead of guessing.
 
-## Recent additions on `main`
+## Recent additions
 
 - **Exact semantic search with compact indexes.** The Weave now uses quantized companion indexes to skip unnecessary full-vector reads while preserving exact cosine scores and result ordering. Applicable scope and visibility filters apply before ranking; missing or damaged companions fall back to the authoritative vectors.
 - **Memory you can inspect and correct.** Saga and Lexicon support exact-item inspection, correction, retirement, reinstatement, and pinning. Store-specific review queues cover Saga, Lexicon, and Covenant; Annals preserve version history, and selective erasure suppresses matching future extraction or agent writes within the erased scope.
@@ -22,7 +22,7 @@ Ordinary background work stays on the queue-free fast path. A destructive Grimoi
 - **The Long Rest.** Opt-in Saga maintenance discovers and consolidates eligible related memories, with resumable sweeps, retained provenance, and explainable usefulness and decay ranking. Billed maintenance and ranking changes are off by default.
 - **Document comprehension.** Opt-in extraction now covers PDF text layers, modern Office/OpenDocument/Visio files, and RTF. The supported formats and limits are described [below](#document-comprehension-opt-in); OCR and additional formats remain in development.
 - **Recovery and Native AOT hardening.** Destructive storage transitions coordinate with active work and resume only from authenticated durable evidence. The Microsoft.Extensions.AI 10.9 upgrade and compiled reflection guards preserve the Native AOT boundary.
-- **Guild foundations.** Dormant Core contracts and protected Roster storage are on `main`. Executable Guild collaboration remains [in development](#coming-soon).
+- **The Guild.** Opt-in local and remote A2A agents can work in the same Cohort, delegate Quests, and contribute results. The host also provides authorized shared-note and work-offer tools. Financial controls are optional, including when running local models. See [Guild collaboration](#guild-collaboration-opt-in) for setup and current boundaries.
 
 ## Functions and how Arcanum differs
 
@@ -36,6 +36,18 @@ Arcanum implements the OpenAI Chat Completions subset and can route inference to
 Unlike a chatbot that stops after a single exchange, Arcanum keeps working until the task is done or you cancel it. The loop can make repeated model calls and tool rounds, correct its own errors, and follow through on sub-tasks. It stops on completion, cancellation, client-tool forwarding, an operator budget, a provider or context boundary, a safety or integrity refusal, or repeated lack of progress. Per-call, per-frame, and concurrency limits are local safety rails, not a hard ceiling on a completed task.
 
 An instruction can use a **Spell** — a named, repeatable workflow — stored **Prompts**, a **Campaign** (a persistent authority scope for one body of work), and **Apprentices** for delegated work. Configured **Daemons** schedule recurring work, while registered **long-running operations** provide progress and recovery for supported workflows. Server tool calls produce informational **Ward** audit records; tool authority and **Sanctum** policy govern execution. A **Trial** compares model behavior.
+
+### Guild collaboration (opt-in)
+
+The **Guild** gives local agents and remote **A2A** agents one collaboration system. A **Quest** is a task with a recorded owner, permissions, progress, and result. A **Cohort** is a team of agents working toward a shared outcome: its members can take different tasks, contribute results, and finish according to the team's chosen completion policy. For example, a local agent can investigate a problem while an authenticated remote agent reviews its findings.
+
+A2A connects Arcanum to another running agent service. That service's network address identifies the peer; the model endpoint, such as Ollama, is a separate setting. Local and remote members use the same Quest and Cohort contracts, with explicit peer authentication and permissions. The Guild adds durable coordination to A2A, including scoped delegation, result collection, and cancellation. On the host, authorized tools also support work offers and shared notes.
+
+**The Guild works with all financial controls disabled.** Disable the host daily budget, set both USD and token grant limits to unlimited, and leave provider usage reconciliation at `None`. Local models need no price table, billing report, or financial metadata request to collaborate. Financial limits remain available for operators who choose to enable them. Workspace permissions, peer authentication, cancellation, and recovery continue to apply independently.
+
+Guild is disabled by default. Enable it together with the features needed for the chosen local or A2A transports, configure any peers explicitly, and grant only the tools, workspaces, memory, and delegation each task needs. Follow the [Guild configuration guide](docs/Compendium.README.md#guild-configuration), then use the [Guild CLI](docs/Arcanum.Command.Reference.md#guild-commands) or [operator API](docs/Arcanum.API.md#guild-operator-routes-and-records) to issue tasks and inspect teams.
+
+The model tool surface currently includes task and Cohort management, authorized memory operations, work offers, and shared notes. Direct workspace file tools, agent-owned workspace lease tools, and remote informational Portal delivery are still being integrated. External MCP servers and process tools remain unavailable while Guild is active; supported internal tools must pass the Guild's own authority checks.
 
 ### A governed memory system
 Arcanum remembers things about you and your projects across conversations. Its design follows one rule: **a memory may become shorter, simpler, or more useful — but it can never quietly become more authoritative.** What you told it is not treated the same as what the model inferred, which is not the same as a search result. Each subsystem has a role:
@@ -148,11 +160,11 @@ Pick from six workflow presets. Each shows what it changes, what might be needed
 
 ## Coming soon
 
-These are active development projects and planned backlog work, **not features available on `main` unless a baseline is explicitly described below**. “Coming soon” is a roadmap, not a release-date commitment. Scope and priorities may change as development continues.
+These are active development projects and planned extensions to the capabilities described above. “Coming soon” is a roadmap, not a release-date commitment. Scope and priorities may change as development continues.
 
 | Project | What is coming | Current availability |
 |---|---|---|
-| **The Guild** | A shared collaboration core for local and A2A agents: capability Cards, scoped Signet authority, durable Quests, addressed Portal messages, hierarchical budgets, cancellation trees, and Cohort swarms with skill-based work routing. | Only dormant Core/storage/Roster foundations are on `main`. Later authority, Quest, Portal, provenance, memory, budget, and workspace-fencing foundations are on `guild-implementation`; public Guild execution, Cohorts, and operator surfaces remain unavailable. |
+| **Guild workspace tools and peer messaging** | Extend real agent turns with managed file reads, search, edits, Quest-owned workspace leases, and informational Portal messages between A2A peers. | Local and remote Quest execution, mixed Cohorts, work offers, shared notes, and native operator controls are implemented. The model-facing workspace adapters and remote informational messaging remain in development. |
 | **The Geas and Familiars** | Run the operator's Claude Code or Codex agent loop as a governed delegated task, with tool containment, audit, budgets, cancellation, and run inspection. Improve reasoning/sampling controls, multi-turn and multimodal input, streaming, structured output, and usage reporting. | Current Familiars provide one-shot text completions; they do not run those vendor agent loops under Arcanum governance. |
 | **The Crucible** | Verify completed work against declared acceptance checks, retain durable outcomes and model/cost provenance, compare regressions, and admit learned Spells only after independent trials. | Existing Trials and exact-memory evaluation are present; the general Crucible runtime, outcome ledger, and learned-Spell admission gate are not. |
 | **Comprehension extensions** | Add legacy `.doc`/`.xls`/`.ppt`, EPUB, MIME email/web archives, OCR for images and scanned PDFs, and document-aware Tapestry summaries. | PDF text layers, modern Office/OpenDocument/Visio, and RTF are already available behind the current opt-in gates. |
@@ -162,7 +174,7 @@ These are active development projects and planned backlog work, **not features a
 | **Embedding model transitions** | Bind vectors to the provider/model recipe that produced them, detect incompatible embeddings, and rebuild resumably without deleting canonical Saga memories. | Current exact-search indexes do not establish compatibility between different embedding models. |
 | **Unseen Servant automation** | Campaign-bound jobs, durable execution outcomes, timezone-aware calendar schedules, scoped filesystem triggers, and authenticated inbound events. | Interval-based daemon jobs exist today; the complete durable calendar/event automation system does not. |
 | **Centralized installation and configuration** | Organize configuration, data, assets, security, logs, runtime, backups, and recovery beneath one installation root; split settings into domain files with one coherent, recoverable configuration contract. | Includes deliberate migration that preserves installation identity, encryption, settings, and content. |
-| **File-defined subagents** | Launch reusable Markdown/frontmatter agent definitions on demand through the delegation system. | Dormant file discovery exists in the Guild Roster; current model-only subagents require explicit task context and have child tools disabled. |
+| **File-defined subagents** | Launch complete reusable Markdown/frontmatter agent definitions on demand through the delegation system. | Declared local Agent Cards already provide pinned guidance and narrow the tools permitted to Guild children. The complete reusable-definition workflow remains in development. |
 | **Optional context compression** | Opt in to a separately installed local SuperCompress proxy for compatible inference requests, with explicit routing and failure behavior. | No guaranteed token savings or bundled proxy runtime. |
 | **Homebrew distribution** | A maintained tap for the CLI plus Compendium and Forge casks, updated from published release assets. | Use the release-download instructions below today. |
 
