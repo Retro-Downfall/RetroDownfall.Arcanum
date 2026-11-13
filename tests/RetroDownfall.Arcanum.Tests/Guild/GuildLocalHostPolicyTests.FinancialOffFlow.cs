@@ -30,17 +30,20 @@ public sealed partial class GuildLocalHostPolicyTests
     [InlineData("absent")]
     [InlineData("partial")]
     [InlineData("zero")]
+    [InlineData("explicit-zero-price")]
+    [InlineData("absent-price")]
     [InlineData("cap")]
     [InlineData("usd-cap")]
     [InlineData("qualified-cap")]
     [InlineData("qualified-usd")]
     [InlineData("qualified-breach")]
+    [InlineData("qualified-usd-breach")]
     [InlineData("fault")]
     public async Task Financial_off_real_child_inference_is_consumed_by_parent_provider_round(string usage)
     {
         using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
 
-        await using Fixture f = await Fixture.CreateAsync(localExecution: true, productionOptions: usage is "qualified-cap" or "qualified-breach" or "qualified-usd");
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true, productionOptions: usage is "qualified-cap" or "qualified-breach" or "qualified-usd" or "qualified-usd-breach");
 
         f.Settings.CurrentValue.Features.Conclave = true;
 
@@ -48,7 +51,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         f.Settings.CurrentValue.Cost.Budget.Enabled = false;
 
-        if (usage is "qualified-cap" or "qualified-breach" or "qualified-usd")
+        if (usage is "qualified-cap" or "qualified-breach" or "qualified-usd" or "qualified-usd-breach")
         {
             f.Settings.CurrentValue.DefaultModel = "gpt-5.4-mini-2026-03-17";
 
@@ -104,7 +107,10 @@ public sealed partial class GuildLocalHostPolicyTests
 
         settings.Cost.Budget.Enabled = false;
 
-        if (usage is "qualified-cap" or "qualified-breach" or "qualified-usd")
+        if (usage == "explicit-zero-price")
+            settings.Cost.Pricing.ModelPricing["accepted-model"] = new ModelPricingEntry { InputPer1M = 0m, OutputPer1M = 0m, CachedPer1M = 0m, ReasoningPer1M = 0m };
+
+        if (usage is "qualified-cap" or "qualified-breach" or "qualified-usd" or "qualified-usd-breach")
         {
             settings.DefaultModel = "gpt-5.4-mini-2026-03-17";
 
@@ -181,9 +187,9 @@ public sealed partial class GuildLocalHostPolicyTests
 
             GuildQuestDto child = await scheduled;
 
-            Assert.Equal(usage is "usd-cap" or "qualified-usd" ? GuildBudgetMode.Finite : GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Usd.Mode);
+            Assert.Equal(usage is "usd-cap" or "qualified-usd" or "qualified-usd-breach" ? GuildBudgetMode.Finite : GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Usd.Mode);
 
-            if (usage is "usd-cap" or "qualified-usd") Assert.Equal(1m, child.ResolvedGrant.Budget.Usd.Value);
+            if (usage is "usd-cap" or "qualified-usd" or "qualified-usd-breach") Assert.Equal(1m, child.ResolvedGrant.Budget.Usd.Value);
 
             Assert.Equal(usage is "cap" or "qualified-cap" or "qualified-breach" ? GuildBudgetMode.Finite : GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Tokens.Mode);
 
@@ -218,6 +224,21 @@ public sealed partial class GuildLocalHostPolicyTests
             Assert.True(completed.IsSuccess, completed.Error.Message);
 
             var result = await invocation;
+
+            if (usage == "qualified-usd-breach")
+            {
+                Assert.True(result.IsFailure);
+
+                Assert.Equal(ErrorCodes.Guild.GrantExceeded, result.Error.Code);
+
+                Assert.Equal(2, transport.Bodies.Count);
+
+                Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UsdBound IS NOT NULL AND CAST(KnownUsd AS NUMERIC)>CAST(UsdBound AS NUMERIC) AND KnownTokens<=TokenBound AND KnownTokens=200000 AND CAST(KnownUsd AS NUMERIC)=0.9"));
+
+                Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
+
+                return;
+            }
 
             if (usage == "qualified-breach")
             {
@@ -285,7 +306,18 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.NotNull(childResult.Value.Receipt);
 
-            Assert.Equal(3L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd={(usage is "qualified-cap" or "qualified-breach" or "qualified-usd" ? 0 : 1)} AND UnknownTokens={(usage is "zero" or "qualified-cap" or "qualified-usd" ? 0 : 1)} AND KnownTokens={(usage == "partial" ? 7 : 0)} AND CAST(KnownUsd AS NUMERIC)=0"));
+            long knownTokens = usage is "explicit-zero-price" or "absent-price" ? 10 : usage == "partial" ? 7 : 0;
+
+            int unknownTokens = usage is "zero" or "qualified-cap" or "qualified-usd" or "explicit-zero-price" or "absent-price" ? 0 : 1;
+
+            Assert.Equal(3L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd={(usage is "qualified-cap" or "qualified-breach" or "qualified-usd" or "qualified-usd-breach" ? 0 : 1)} AND UnknownTokens={unknownTokens} AND KnownTokens={knownTokens} AND CAST(KnownUsd AS NUMERIC)=0"));
+
+            if (usage is "explicit-zero-price" or "absent-price")
+            {
+                Assert.Equal(usage == "explicit-zero-price", settings.Cost.Pricing.ModelPricing.ContainsKey("accepted-model"));
+
+                Assert.Equal(3L, await f.ScalarAsync("SELECT count(*) FROM BillableOperations WHERE InputTokens=7 AND OutputTokens=3 AND CAST(ActualCostUsd AS NUMERIC)=0"));
+            }
 
             Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_result_applications"));
 
@@ -1694,7 +1726,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             int toolOrdinal = FullParent ? 2 : 1;
 
-            string message = ordinal == toolOrdinal && Usage is "usd-cap" or "qualified-usd"
+            string message = ordinal == toolOrdinal && Usage is "usd-cap" or "qualified-usd" or "qualified-usd-breach"
                 ? """{"role":"assistant","content":null,"tool_calls":[{"id":"call-child","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\",\"max_cost_usd\":1}"}}]}"""
                 : ordinal == toolOrdinal && Usage is "qualified-cap" or "qualified-breach"
                 ? """{"role":"assistant","content":null,"tool_calls":[{"id":"call-child","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\",\"max_tokens\":600000}"}}]}"""
@@ -1714,7 +1746,9 @@ public sealed partial class GuildLocalHostPolicyTests
             {
                 "partial" => ",\"usage\":{\"prompt_tokens\":7}",
                 "qualified-breach" when ordinal == 2 => ",\"usage\":{\"prompt_tokens\":500000,\"completion_tokens\":1,\"total_tokens\":500001}",
-                "zero" or "cap" or "usd-cap" or "qualified-cap" or "qualified-usd" or "qualified-breach" => ",\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}",
+                "qualified-usd-breach" when ordinal == 2 => ",\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":200000,\"total_tokens\":200000}",
+                "explicit-zero-price" or "absent-price" => ",\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}",
+                "zero" or "cap" or "usd-cap" or "qualified-cap" or "qualified-usd" or "qualified-breach" or "qualified-usd-breach" => ",\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}",
                 _ => "",
             };
 

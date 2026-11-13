@@ -58,6 +58,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
         f.Settings.CurrentValue.Features.A2AClient = true;
 
+        f.Settings.CurrentValue.Cost.Budget.Enabled = false;
+
         f.Settings.CurrentValue.Integrations ??= new();
 
         f.Settings.CurrentValue.Integrations.A2A ??= new();
@@ -88,6 +90,12 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.True(issued.IsSuccess, issued.Error.Message);
 
         GuildQuestDto quest = issued.Value.Quest;
+
+        Assert.False(f.Settings.CurrentValue.Cost.Budget.Enabled);
+
+        Assert.Equal(GuildBudgetMode.Unlimited, quest.ResolvedGrant.Budget.Usd.Mode);
+
+        Assert.Equal(GuildBudgetMode.Unlimited, quest.ResolvedGrant.Budget.Tokens.Mode);
 
         GuildPortalStore portal = new(f.Store, f.Authority, f.Policy, TimeProvider.System);
 
@@ -229,7 +237,6 @@ public sealed partial class GuildLocalHostPolicyTests
                     await Task.Delay(25, CancellationToken.None);
             }
             finally { await scheduler.StopAsync(default); }
-
         }
 
         async Task<Result<GuildDispatchObservation>> CompletePushAsync(Func<CancellationToken, Task<Result<GuildDispatchObservation>>> start)
@@ -408,6 +415,7 @@ public sealed partial class GuildLocalHostPolicyTests
                     abort.CommandText = "DROP TRIGGER fixture_abort_remote_receipt";
                     await abort.ExecuteNonQueryAsync();
                 }
+
                 var observed = await currentStore.WaitForRemoteInputAsync(observationDriver, quest.Id, observation, default);
                 Assert.True(observed.IsSuccess, observed.Error.Message);
                 Assert.Equal(beforeEvidence + (replay ? 0 : 1), await f.ScalarAsync("SELECT COUNT(*) FROM guild_budget_evidence"));
@@ -852,7 +860,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.Contains(remoteHistory.Value.Items, item => item.ReceiptId == source.ReceiptId);
 
-
             Assert.All(spendEvents, item =>
             {
                 Assert.Equal(quest.Id, item.QuestId);
@@ -966,7 +973,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         var retained = (await f.Store.GetAsync(caller, quest.Id, default)).Value.Quest;
 
-        if (!uncertain || scenario == "continuation-disconnect") Assert.Equal(GuildAccountingState.Uncertain, retained.AccountingState);
+        if (!uncertain || scenario == "continuation-disconnect") Assert.Equal(GuildAccountingState.Settled, retained.AccountingState);
 
         await using var count = connection.Connection.CreateCommand();
 

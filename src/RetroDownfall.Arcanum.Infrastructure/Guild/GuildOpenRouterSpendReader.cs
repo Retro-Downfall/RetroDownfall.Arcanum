@@ -8,14 +8,51 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
-internal sealed record GuildSpendObservation(GuildSpendAmountsRequest Amounts, string EvidenceDigest);
-
 /// <summary>One joined fixed-origin attempt. The caller retains its physical lease until this method returns.</summary>
 internal sealed class GuildOpenRouterSpendReader(IDnsResolver dns, Func<HttpMessageHandler>? transport = null)
 {
+    internal Task<Result<GuildSpendObservation>> ReadAsync(GuildSpendSourceCredential.VerifiedSource source, CancellationToken ct) =>
+        GuildSpendObservation.ReadAsync(source, dns, transport, ct);
+}
+
+/// <summary>Facts issued only by the fixed-origin reader and bound to the source used for that read.</summary>
+internal sealed class GuildSpendObservation
+{
     private const int MaximumBytes = 64 * 1024;
 
-    internal async Task<Result<GuildSpendObservation>> ReadAsync(GuildSpendSourceCredential.VerifiedSource source, CancellationToken ct)
+    private readonly GuildSpendSourceCredential.VerifiedSource _source;
+
+    private GuildSpendObservation(GuildSpendSourceCredential.VerifiedSource source, GuildSpendAmountsRequest amounts, string evidenceDigest)
+    {
+        _source = source;
+
+        Amounts = amounts;
+
+        EvidenceDigest = evidenceDigest;
+    }
+
+    internal GuildSpendAmountsRequest Amounts { get; }
+
+    internal string EvidenceDigest { get; }
+
+    internal void WriteSourceIdentity(BinaryWriter writer) => _source.WriteIdentity(writer);
+
+    internal bool IsFrom(GuildSpendSourceCredential.VerifiedSource source)
+    {
+        static byte[] Identity(GuildSpendSourceCredential.VerifiedSource candidate)
+        {
+            using MemoryStream bytes = new();
+
+            using (BinaryWriter writer = new(bytes, Encoding.UTF8, leaveOpen: true)) candidate.WriteIdentity(writer);
+
+            return SHA256.HashData(bytes.GetBuffer().AsSpan(0, checked((int)bytes.Length)));
+        }
+
+        return CryptographicOperations.FixedTimeEquals(Identity(_source), Identity(source));
+    }
+
+    internal static async Task<Result<GuildSpendObservation>> ReadAsync(GuildSpendSourceCredential.VerifiedSource source,
+        IDnsResolver dns, Func<HttpMessageHandler>? transport, CancellationToken ct)
     {
         using CancellationTokenSource attempt = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
@@ -75,7 +112,7 @@ internal sealed class GuildOpenRouterSpendReader(IDnsResolver dns, Func<HttpMess
                 amounts.ReasoningTokens!.Value.ToString(CultureInfo.InvariantCulture),
                 amounts.Usd!.Value.ToString("G29", CultureInfo.InvariantCulture));
 
-            return new GuildSpendObservation(amounts, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))));
+            return new GuildSpendObservation(source, amounts, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))));
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {

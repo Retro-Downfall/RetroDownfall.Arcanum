@@ -309,7 +309,81 @@ public sealed class ProviderCredentialStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task Failed_local_mutation_does_not_publish_a_new_identity()
+    public async Task Observed_local_currentness_rejects_completed_local_aba_without_another_secret_read()
+    {
+        SetEnvironment("ARCANUM_TEST_LOCAL_IDENTITY", null);
+
+        using ProviderCredentialStore store = CreateStore(new InMemoryOsCredentialStore());
+
+        IProviderApiKeyResolver resolver = new ProviderApiKeyResolver(store);
+
+        ProviderSettings provider = new() { Name = "identity", CredentialEnvironmentVariable = "ARCANUM_TEST_LOCAL_IDENTITY" };
+
+        await store.SaveApiKeyAsync(provider.Name, "first");
+
+        ResolvedProviderCredential captured = await resolver.PeekWithIdentityAsync(provider);
+
+        Assert.NotNull(captured.Stamp);
+
+        Assert.Equal(ProviderCredentialCurrentness.Current, resolver.GetObservedLocalCurrentness(provider, captured.Stamp));
+
+        Assert.NotEqual(ProviderCredentialCurrentness.Current, resolver.GetObservedLocalCurrentness(
+            provider with { Name = "different" }, captured.Stamp));
+
+        Assert.NotEqual(ProviderCredentialCurrentness.Current, resolver.GetObservedLocalCurrentness(
+            provider with { CredentialEnvironmentVariable = "ARCANUM_TEST_OTHER_IDENTITY" }, captured.Stamp));
+
+        Assert.NotEqual(ProviderCredentialCurrentness.Current, resolver.GetObservedLocalCurrentness(
+            provider, captured.Stamp with { ResolverBootId = Guid.NewGuid() }));
+
+        await store.SaveApiKeyAsync(provider.Name, "second");
+
+        await store.SaveApiKeyAsync(provider.Name, "first");
+
+        Assert.NotEqual(ProviderCredentialCurrentness.Current, resolver.GetObservedLocalCurrentness(provider, captured.Stamp));
+    }
+
+    [Fact]
+    public async Task Observed_local_currentness_returns_unavailable_while_real_peek_holds_the_gate()
+    {
+        SetEnvironment("ARCANUM_TEST_LOCAL_IDENTITY", "environment-secret");
+
+        using BlockingOsCredentialStore os = new();
+
+        using ProviderCredentialStore store = CreateStore(os);
+
+        IProviderApiKeyResolver resolver = new ProviderApiKeyResolver(store);
+
+        ProviderSettings provider = new() { Name = "identity", CredentialEnvironmentVariable = "ARCANUM_TEST_LOCAL_IDENTITY" };
+
+        ResolvedProviderCredential captured = await resolver.PeekWithIdentityAsync(provider);
+
+        Assert.NotNull(captured.Stamp);
+
+        Assert.Equal(ProviderCredentialCurrentness.Current, resolver.GetObservedLocalCurrentness(provider, captured.Stamp));
+
+        SetEnvironment("ARCANUM_TEST_LOCAL_IDENTITY", null);
+
+        Task<ResolvedProviderCredential> peek = Task.Run(() => resolver.PeekWithIdentityAsync(provider));
+
+        try
+        {
+            os.WaitForEntry();
+
+            Task<ProviderCredentialCurrentness> check = Task.Run(() => resolver.GetObservedLocalCurrentness(provider, captured.Stamp));
+
+            Assert.Equal(ProviderCredentialCurrentness.Unavailable, await check.WaitAsync(TimeSpan.FromSeconds(10)));
+        }
+        finally
+        {
+            os.Release();
+
+            await peek;
+        }
+    }
+
+    [Fact]
+    public async Task Failed_local_mutation_invalidates_observed_identity()
     {
         SetEnvironment("ARCANUM_TEST_LOCAL_IDENTITY", null);
 
@@ -332,7 +406,9 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveApiKeyAsync("identity", "second"));
 
-        Assert.True(await resolver.IsCurrentAsync(provider, first.Stamp));
+        Assert.NotEqual(ProviderCredentialCurrentness.Current, resolver.GetObservedLocalCurrentness(provider, first.Stamp));
+
+        Assert.False(await resolver.IsCurrentAsync(provider, first.Stamp));
     }
 
     [Fact]
