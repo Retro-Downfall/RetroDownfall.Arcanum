@@ -393,6 +393,10 @@ public sealed partial class GuildLocalHostPolicyTests
                 productionOptions ? new GuildLocalExecutionAdmission(Settings) : localExecution ? new ToolLocalAdmission(this) : null, Readiness);
         }
 
+        internal GuildQuestStore CreateDailyStore(BudgetReservationService daily) =>
+            new(new(Connections, Gate, TimeProvider.System), Authority, Policy, new GuildBudgetLedger(daily), TimeProvider.System,
+                new ToolLocalAdmission(this), Readiness);
+
         internal GuildLocalExecutionMode ToolChildMode { get; set; } = GuildLocalExecutionMode.Apprentice;
 
         internal string[]? ToolDelegationChain { get; set; }
