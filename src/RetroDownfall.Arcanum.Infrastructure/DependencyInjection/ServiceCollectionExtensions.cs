@@ -2449,7 +2449,8 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<GuildSpendRefreshCleanupParticipant>();
 
-        services.AddSingleton<IManagedFileCapabilityOpener>(static _ => new ManagedFileCapabilityOpener());
+        services.AddSingleton<IManagedFileCapabilityOpener>(
+            static sp => new ManagedFileCapabilityOpener(sp.GetRequiredService<PhysicalCampaignRootOpener>()));
 
         services.AddSingleton<IManagedFileOwnershipVerifier>(static _ => new ManagedFileOwnershipVerifier());
 

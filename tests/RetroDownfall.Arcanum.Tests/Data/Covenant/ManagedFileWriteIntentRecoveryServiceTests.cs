@@ -388,7 +388,7 @@ public sealed class ManagedFileWriteIntentRecoveryServiceTests
 
             Service = new ManagedFileWriteIntentRecoveryService(
                 CovenantSqliteConnectionInitializer.Instance,
-                new ManagedFileCapabilityOpener(),
+                new ManagedFileCapabilityOpener(ManagedFileTestRoots.Create()),
                 new ManagedFileOwnershipVerifier(),
                 TimeProvider.System);
 
@@ -494,7 +494,7 @@ public sealed class ManagedFileWriteIntentRecoveryServiceTests
 
             ManagedFileWriteDurableLocationEvidence location = new(
                 new ManagedFileDurableLocationEvidence(
-                    PathIdentity(_campaignRoot),
+                    ManagedFileTestRoots.Create().IdentifyExact(_campaignRoot)!.Value,
                     pathRevision: 1,
                     ["notes"],
                     PathIdentity(parent),
@@ -598,7 +598,7 @@ public sealed class ManagedFileWriteIntentRecoveryServiceTests
 
             _ = command.Parameters.AddWithValue(
                 "$identity",
-                PathIdentity(_campaignRoot).Bytes.ToArray());
+                ManagedFileTestRoots.Create().IdentifyExact(_campaignRoot)!.Value.Bytes.ToArray());
 
             _ = await command.ExecuteNonQueryAsync(Token);
 

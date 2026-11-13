@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Tower;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -296,7 +297,7 @@ internal interface IManagedFileOwnershipVerifier
 /// <summary>
 /// The production opener, over the shared no-follow filesystem primitives.
 /// </summary>
-internal sealed class ManagedFileCapabilityOpener : IManagedFileCapabilityOpener
+internal sealed class ManagedFileCapabilityOpener(PhysicalCampaignRootOpener roots) : IManagedFileCapabilityOpener
 {
 
     public ValueTask<Result<ManagedFileOpenOutcome>> OpenNoFollowAsync(
@@ -335,7 +336,7 @@ internal sealed class ManagedFileCapabilityOpener : IManagedFileCapabilityOpener
 
             parent = rootHandle;
 
-            if (rootIdentity != location.CampaignRootIdentityDigest)
+            if (roots.IdentifyOpenedDirectory(rootHandle) != location.CampaignRootIdentityDigest)
             {
 
                 return ValueTask.FromResult(Result<ManagedFileOpenOutcome>.Success(ManagedFileOpenOutcome.Mismatch));

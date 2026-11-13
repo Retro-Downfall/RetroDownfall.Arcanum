@@ -358,6 +358,11 @@ public sealed class InstallationIdentityRepairGrimoireTests : IAsyncLifetime
 
         _ = services.AddGrimoireSchemaInstallation();
 
+        services.AddSingleton<RetroDownfall.Arcanum.Infrastructure.Security.CampaignRootIdentityKeyProvider>();
+
+        services.AddSingleton(static sp => new RetroDownfall.Arcanum.Infrastructure.Tower.PhysicalCampaignRootOpener(
+            sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Security.CampaignRootIdentityKeyProvider>()));
+
         await using ServiceProvider scopes = services.BuildServiceProvider();
 
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);

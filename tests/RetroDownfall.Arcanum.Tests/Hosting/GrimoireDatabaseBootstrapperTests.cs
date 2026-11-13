@@ -27,6 +27,7 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Tower;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Covenant;
@@ -1179,6 +1180,11 @@ public sealed partial class GrimoireDatabaseBootstrapperTests : IDisposable
         services.AddSingleton<IMemoryErasureKeyProvider>(keyring);
 
         _ = services.AddGrimoireSchemaInstallation();
+
+        services.AddSingleton<CampaignRootIdentityKeyProvider>();
+
+        services.AddSingleton(static sp => new PhysicalCampaignRootOpener(
+            sp.GetRequiredService<CampaignRootIdentityKeyProvider>()));
 
         await using ServiceProvider provider = services.BuildServiceProvider();
 
@@ -3707,6 +3713,11 @@ public sealed partial class GrimoireDatabaseBootstrapperTests : IDisposable
 
         _ = services.AddGrimoireSchemaInstallation();
 
+        services.AddSingleton<CampaignRootIdentityKeyProvider>();
+
+        services.AddSingleton(static sp => new PhysicalCampaignRootOpener(
+            sp.GetRequiredService<CampaignRootIdentityKeyProvider>()));
+
         using ServiceProvider provider = services.BuildServiceProvider();
 
         using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
@@ -3850,6 +3861,11 @@ public sealed partial class GrimoireDatabaseBootstrapperTests : IDisposable
 
         _ = services.AddGrimoireSchemaInstallation();
 
+        services.AddSingleton<CampaignRootIdentityKeyProvider>();
+
+        services.AddSingleton(static sp => new PhysicalCampaignRootOpener(
+            sp.GetRequiredService<CampaignRootIdentityKeyProvider>()));
+
         _ = services.AddOptions<ArcanumSettings>()
             .Configure(settings => settings.Features.Covenant = covenantEnabled);
 
@@ -3911,6 +3927,11 @@ public sealed partial class GrimoireDatabaseBootstrapperTests : IDisposable
         services.AddSingleton<IOsCredentialStore>(credentials);
 
         _ = services.AddGrimoireSchemaInstallation();
+
+        services.AddSingleton<CampaignRootIdentityKeyProvider>();
+
+        services.AddSingleton(static sp => new PhysicalCampaignRootOpener(
+            sp.GetRequiredService<CampaignRootIdentityKeyProvider>()));
 
         if (chains is not null)
         {

@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.InstallationReset;
@@ -411,7 +412,7 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
 
             ManagedFileErasureStateMachine stateMachine = new(
                 CovenantSqliteConnectionInitializer.Instance,
-                new ManagedFileCapabilityOpener(),
+                new ManagedFileCapabilityOpener(ManagedFileTestRoots.Create()),
                 new ManagedFileOwnershipVerifier(),
                 TimeProvider.System);
 
@@ -424,7 +425,7 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
                     TimeProvider.System),
                 new ManagedFileWriteIntentRecoveryService(
                     CovenantSqliteConnectionInitializer.Instance,
-                    new ManagedFileCapabilityOpener(),
+                    new ManagedFileCapabilityOpener(ManagedFileTestRoots.Create()),
                     new ManagedFileOwnershipVerifier(),
                     TimeProvider.System));
         }
@@ -720,7 +721,7 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
             await File.WriteAllTextAsync(childPath, content, Token);
 
             ManagedFileDurableLocationEvidence target = new(
-                PathIdentity(_campaignRoot),
+                ManagedFileTestRoots.Create().IdentifyExact(_campaignRoot)!.Value,
                 pathRevision: 1,
                 ["notes"],
                 PathIdentity(parent),
@@ -766,7 +767,7 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
 
             _ = command.Parameters.AddWithValue(
                 "$identity",
-                PathIdentity(_campaignRoot).Bytes.ToArray());
+                ManagedFileTestRoots.Create().IdentifyExact(_campaignRoot)!.Value.Bytes.ToArray());
 
             _ = await command.ExecuteNonQueryAsync(Token);
 

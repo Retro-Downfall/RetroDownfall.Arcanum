@@ -572,6 +572,11 @@ public sealed partial class InstallationResetIdentityContinuityTests
 
         _ = services.AddGrimoireSchemaInstallation();
 
+        services.AddSingleton<RetroDownfall.Arcanum.Infrastructure.Security.CampaignRootIdentityKeyProvider>();
+
+        services.AddSingleton(static sp => new RetroDownfall.Arcanum.Infrastructure.Tower.PhysicalCampaignRootOpener(
+            sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Security.CampaignRootIdentityKeyProvider>()));
+
         ServiceProvider scopes = services.BuildServiceProvider();
 
         _providers.Add(scopes);

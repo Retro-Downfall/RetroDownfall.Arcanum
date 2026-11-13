@@ -22,6 +22,8 @@ using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Infrastructure.Tower;
+
 using RetroDownfall.Arcanum.Secrets.Security;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -773,6 +775,11 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
         services.AddSingleton<IOsCredentialStore>(_credentials);
 
         _ = services.AddGrimoireSchemaInstallation();
+
+        services.AddSingleton<CampaignRootIdentityKeyProvider>();
+
+        services.AddSingleton(static sp => new PhysicalCampaignRootOpener(
+            sp.GetRequiredService<CampaignRootIdentityKeyProvider>()));
 
         configure?.Invoke(services);
 

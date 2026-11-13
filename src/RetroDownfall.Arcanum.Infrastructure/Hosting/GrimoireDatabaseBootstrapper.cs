@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Secrets.Security;
 using Serilog;
@@ -1257,7 +1258,7 @@ public static class GrimoireDatabaseBootstrapper
         CovenantLocalErasureStartupRecovery localErasure = new(
             new ManagedFileErasureStateMachine(
                 initializer,
-                new ManagedFileCapabilityOpener(),
+                new ManagedFileCapabilityOpener(scope.ServiceProvider.GetRequiredService<PhysicalCampaignRootOpener>()),
                 new ManagedFileOwnershipVerifier(),
                 TimeProvider.System));
 

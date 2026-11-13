@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Tower;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -87,7 +88,14 @@ public sealed class GrimoireCliInitializationTests : IDisposable
             },
             CancellationToken.None);
 
-        await firstCallbackEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Task firstSignal = await Task.WhenAny(first, firstCallbackEntered.Task).WaitAsync(TimeSpan.FromSeconds(10));
+
+        if (firstSignal == first)
+        {
+            _ = await first;
+        }
+
+        Assert.True(firstCallbackEntered.Task.IsCompletedSuccessfully);
 
         int secondCallbackCount = 0;
 
@@ -732,6 +740,13 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         // The bootstrap resolves the whole schema-installation graph out of this container, and
         // WeaveIndexAvailability comes with it.
         _ = services.AddGrimoireSchemaInstallation();
+
+        services.AddSingleton<IOsCredentialStore>(new InMemoryOsCredentialStore());
+
+        services.AddSingleton<CampaignRootIdentityKeyProvider>();
+
+        services.AddSingleton(static sp => new PhysicalCampaignRootOpener(
+            sp.GetRequiredService<CampaignRootIdentityKeyProvider>()));
 
         services.AddLogging();
 

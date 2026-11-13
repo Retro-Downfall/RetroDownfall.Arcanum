@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Tower;
+using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -36,6 +38,173 @@ public sealed class CovenantManagedFileErasureKernelTests
     /// Every filesystem-outcome code is a literal that a durable row already carries, so a
     /// renumbering has to fail here rather than reinterpret rows an earlier build wrote.
     /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Keyed_campaign_root_opens_seeded_durable_location_with_physical_parent(bool directRoot)
+    {
+        await using ManagedFileFixture fixture = await ManagedFileFixture.CreateAsync();
+
+        await fixture.InstallMarkerTableAsync();
+
+        using CampaignRootIdentityKeyProvider keys = new(new ScratchCredentialStore());
+
+        Result ensured = await CampaignRootIdentityKeyRegistration.EnsureKeyForRegistrationAsync(
+            fixture.Connection, keys, Token);
+
+        Assert.True(ensured.IsSuccess);
+
+        PhysicalCampaignRootOpener roots = new(keys);
+
+        // The registration producer is not implemented yet. Seed the canonical row using the
+        // production key owner and derivation, then consume the durable writer evidence from SQLite.
+        SeededManagedFile file = await fixture.SeedAdoptedFileAsync("keyed.md", "owned bytes", roots, directRoot);
+
+        Result<IReadOnlyList<ManagedFileWriteIntentRow>> inventory =
+            await ManagedFileWriteIntentStore.ListInventoryAsync(fixture.Connection, 2, Token);
+
+        Assert.True(inventory.IsSuccess);
+
+        ManagedFileDurableLocationEvidence location = Assert.Single(inventory.Value).Location.Target;
+
+        Assert.Equal(file.Location, location);
+
+        Assert.Equal(await fixture.ReadCampaignIdentityAsync(), location.CampaignRootIdentityDigest);
+
+        Assert.NotEqual(location.CampaignRootIdentityDigest, fixture.PhysicalIdentity(fixture.CampaignRoot));
+
+        if (directRoot)
+        {
+            Assert.Equal(fixture.PhysicalIdentity(fixture.CampaignRoot), location.ParentPhysicalIdentityDigest);
+        }
+
+        Result<ManagedFileOpenOutcome> opened = await new ManagedFileCapabilityOpener(roots).OpenNoFollowAsync(
+            new ManagedFileResolvedRoot(fixture.CampaignRoot, 1), location, Token);
+
+        Assert.True(opened.IsSuccess);
+
+        Assert.Equal(ManagedFileOpenKind.Opened, opened.Value.Kind);
+
+        using ManagedFileOpenHandle handle = Assert.IsType<ManagedFileOpenHandle>(opened.Value.Handle);
+
+        Result<ManagedFileVerification> verification =
+            await new ManagedFileOwnershipVerifier().VerifyAsync(handle, await fixture.ReadOwnershipAsync(), Token);
+
+        Assert.Equal(ManagedFileVerification.Match, verification.Value);
+    }
+
+    [Theory]
+    [InlineData("missing-key")]
+    [InlineData("rotated-key")]
+    [InlineData("replaced-root")]
+    [InlineData("stale-revision")]
+    [InlineData("replaced-parent")]
+    public async Task Root_authority_or_parent_mismatch_refuses_without_exposing_a_child(string change)
+    {
+        await using ManagedFileFixture fixture = await ManagedFileFixture.CreateAsync();
+
+        SeededManagedFile file = await fixture.SeedAdoptedFileAsync("refuse.md", "owned bytes");
+
+        ScratchCredentialStore credentials = new();
+
+        using CampaignRootIdentityKeyProvider missingKeys = new(credentials);
+
+        PhysicalCampaignRootOpener roots = change switch
+        {
+            "missing-key" => new PhysicalCampaignRootOpener(missingKeys),
+            "rotated-key" => ManagedFileTestRoots.Create(0x43),
+            _ => ManagedFileTestRoots.Create(),
+        };
+
+        if (change == "replaced-root")
+        {
+            Directory.Move(fixture.CampaignRoot, fixture.CampaignRoot + "-old");
+
+            Directory.CreateDirectory(Path.Combine(fixture.CampaignRoot, "notes"));
+        }
+        else if (change == "replaced-parent")
+        {
+            string parent = Path.GetDirectoryName(file.FullPath)!;
+
+            Directory.Move(parent, parent + "-old");
+
+            Directory.CreateDirectory(parent);
+        }
+
+        Result<ManagedFileOpenOutcome> result = await new ManagedFileCapabilityOpener(roots).OpenNoFollowAsync(
+            new ManagedFileResolvedRoot(fixture.CampaignRoot, change == "stale-revision" ? 2 : 1),
+            file.Location,
+            Token);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(ManagedFileOpenKind.Mismatch, result.Value.Kind);
+
+        Assert.Null(result.Value.Handle);
+
+        Assert.Equal(0, credentials.SetCount);
+    }
+
+    [Fact]
+    public async Task Replaced_child_is_opened_but_never_verified_as_the_owned_file()
+    {
+        await using ManagedFileFixture fixture = await ManagedFileFixture.CreateAsync();
+
+        SeededManagedFile file = await fixture.SeedAdoptedFileAsync("child.md", "owned bytes");
+
+        File.Move(file.FullPath, file.FullPath + ".old");
+
+        await File.WriteAllTextAsync(file.FullPath, "owned bytes", Token);
+
+        Result<ManagedFileOpenOutcome> opened = await new ManagedFileCapabilityOpener(ManagedFileTestRoots.Create())
+            .OpenNoFollowAsync(new ManagedFileResolvedRoot(fixture.CampaignRoot, 1), file.Location, Token);
+
+        Assert.Equal(ManagedFileOpenKind.Opened, opened.Value.Kind);
+
+        ManagedFileOpenHandle handle = Assert.IsType<ManagedFileOpenHandle>(opened.Value.Handle);
+
+        Result<ManagedFileVerification> verified = await new ManagedFileOwnershipVerifier()
+            .VerifyAsync(handle, await fixture.ReadOwnershipAsync(), Token);
+
+        Assert.Equal(ManagedFileVerification.Mismatch, verified.Value);
+
+        handle.Dispose();
+
+        Assert.True(handle.IsDisposed);
+
+        Assert.Throws<ObjectDisposedException>(() => handle.Content);
+
+        Assert.True(File.Exists(file.FullPath));
+    }
+
+    private sealed class ScratchCredentialStore : IOsCredentialStore
+    {
+        private string? _value;
+
+        internal int SetCount { get; private set; }
+
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreResult TryGet(string service, string account) =>
+            _value is null ? OsCredentialStoreResult.NotFound() : OsCredentialStoreResult.Ok(_value);
+
+        public OsCredentialStoreResult Set(string service, string account, string secret)
+        {
+            SetCount++;
+
+            _value = secret;
+
+            return OsCredentialStoreResult.Ok(secret);
+        }
+
+        public OsCredentialStoreResult Delete(string service, string account)
+        {
+            _value = null;
+
+            return OsCredentialStoreResult.Ok(string.Empty);
+        }
+    }
+
     [Fact]
     public void Managed_file_outcome_codes_are_literal_and_exhaustive()
     {
@@ -562,7 +731,7 @@ public sealed class CovenantManagedFileErasureKernelTests
 
             StateMachine = new ManagedFileErasureStateMachine(
                 CovenantSqliteConnectionInitializer.Instance,
-                new ManagedFileCapabilityOpener(),
+                new ManagedFileCapabilityOpener(ManagedFileTestRoots.Create()),
                 new ManagedFileOwnershipVerifier(),
                 TimeProvider.System);
 
@@ -578,6 +747,35 @@ public sealed class CovenantManagedFileErasureKernelTests
         internal CovenantManagedFileErasureKernel Kernel { get; }
 
         internal SqliteConnection Connection => _database.Connection;
+
+        internal string CampaignRoot => Path.Combine(_workspaceRoot, "campaign");
+
+        internal CovenantDigest PhysicalIdentity(string path) => PathIdentity(path);
+
+        internal Task InstallMarkerTableAsync() =>
+            _database.InstallCoreObjectsAsync(["campaign_path_marker_intents"], Token);
+
+        internal async Task<CovenantDigest> ReadCampaignIdentityAsync()
+        {
+            await using SqliteCommand command = Connection.CreateCommand();
+
+            command.CommandText = "SELECT PhysicalIdentityDigest FROM campaign_path_identities;";
+
+            return new CovenantDigest((byte[])(await command.ExecuteScalarAsync(Token))!);
+        }
+
+        internal async Task<ManagedFileOwnershipEvidence> ReadOwnershipAsync()
+        {
+            await using SqliteCommand command = Connection.CreateCommand();
+
+            command.CommandText = "SELECT FinalOwnershipEvidence FROM managed_file_write_intents;";
+
+            byte[] bytes = (byte[])(await command.ExecuteScalarAsync(Token))!;
+
+            return ManagedFileEvidenceCodec.DecodeOwnership(bytes).Value;
+        }
+
+
 
         internal static async Task<ManagedFileFixture> CreateAsync()
         {
@@ -638,13 +836,14 @@ public sealed class CovenantManagedFileErasureKernelTests
         /// Creates a real file and the durable producer row that claims to own it, exactly as an
         /// adopted managed write leaves them.
         /// </summary>
-        internal async Task<SeededManagedFile> SeedAdoptedFileAsync(string leaf, string content)
+        internal async Task<SeededManagedFile> SeedAdoptedFileAsync(
+            string leaf, string content, PhysicalCampaignRootOpener? roots = null, bool directRoot = false)
         {
             Guid campaignId = CovenantOperationGateFixture.CampaignOne;
 
             string campaignRoot = Path.Combine(_workspaceRoot, "campaign");
 
-            string parent = Path.Combine(campaignRoot, "notes");
+            string parent = directRoot ? campaignRoot : Path.Combine(campaignRoot, "notes");
 
             _ = Directory.CreateDirectory(parent);
 
@@ -652,14 +851,14 @@ public sealed class CovenantManagedFileErasureKernelTests
 
             await File.WriteAllTextAsync(fullPath, content, Token);
 
-            CovenantDigest rootIdentity = PathIdentity(campaignRoot);
+            CovenantDigest rootIdentity = (roots ?? ManagedFileTestRoots.Create()).IdentifyExact(campaignRoot)!.Value;
 
             CovenantDigest parentIdentity = PathIdentity(parent);
 
             ManagedFileDurableLocationEvidence location = new(
                 rootIdentity,
                 pathRevision: 1,
-                ["notes"],
+                directRoot ? [] : ["notes"],
                 parentIdentity,
                 leaf);
 
@@ -932,5 +1131,25 @@ public sealed class CovenantManagedFileErasureKernelTests
         }
 
         private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
+    }
+}
+
+internal static class ManagedFileTestRoots
+{
+    internal static PhysicalCampaignRootOpener Create(byte? key = 0x42) => new(new KeySource(key));
+
+    private sealed class KeySource(byte? key) : RetroDownfall.Arcanum.Core.Security.ICampaignRootIdentityKeyProvider
+    {
+        public bool TryCopyRootIdentityKey(Span<byte> destination)
+        {
+            if (key is null || destination.Length < 32)
+            {
+                return false;
+            }
+
+            destination[..32].Fill(key.Value);
+
+            return true;
+        }
     }
 }
