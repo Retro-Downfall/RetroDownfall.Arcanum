@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -1311,8 +1312,10 @@ public sealed partial class GuildLocalHostPolicyTests
         }
     }
 
-    [Fact]
-    public async Task Financial_off_after_dispatch_does_not_release_a_real_daily_reservation()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Financial_daily_gate_changes_preserve_physical_obligations(bool enableBeforeDispatch)
     {
         using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
 
@@ -1363,7 +1366,11 @@ public sealed partial class GuildLocalHostPolicyTests
                 GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["gpt-5.4-mini-2026-03-17"] }],
         };
 
-        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
+        settings.Cost.Budget.Enabled = !enableBeforeDispatch;
+
+        FinancialOffGateFlipOptions? flip = enableBeforeDispatch ? new(settings) : null;
+
+        BudgetReservationService daily = new(db, flip is null ? new TestOptionsMonitor<ArcanumSettings>(settings) : flip);
 
         GuildQuestStore paidStore = new(new(f.Connections, f.Gate, TimeProvider.System), f.Authority, f.Policy,
             new GuildBudgetLedger(daily), TimeProvider.System, new GuildLocalExecutionAdmission(f.Settings), f.Readiness);
@@ -1372,6 +1379,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
         using FinancialOffDailyTransport transport = new(async () =>
         {
+            Assert.False(enableBeforeDispatch, "The dispatch-time gate must stop before the physical send.");
+
             Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
 
             settings.Cost.Budget.Enabled = false;
@@ -1388,6 +1397,25 @@ public sealed partial class GuildLocalHostPolicyTests
             using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
             var first = await runtime.Runtime.ExecuteTurnAsync(execution, input.Value, new("Answer the question.", DisableAllTools: true), deadline.Token);
+
+            if (enableBeforeDispatch)
+            {
+                Assert.True(first.IsFailure);
+
+                Assert.Equal(ErrorCodes.Guild.ReconciliationRequired, first.Error.Code);
+
+                Assert.Equal(2, flip!.Reads);
+
+                Assert.True(settings.Cost.Budget.Enabled);
+
+                Assert.Equal(0, transport.Posts);
+
+                Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
+
+                Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects"));
+
+                return;
+            }
 
             Assert.True(first.IsSuccess, first.Error.Message);
 
@@ -1456,6 +1484,26 @@ public sealed partial class GuildLocalHostPolicyTests
         {
             await wizard.DisposeAsync();
         }
+    }
+
+    private sealed class FinancialOffGateFlipOptions(ArcanumSettings settings) : IOptionsMonitor<ArcanumSettings>
+    {
+        internal int Reads;
+
+        public ArcanumSettings CurrentValue
+        {
+            get
+            {
+                // The daily service observes disabled during reservation preparation, then enabled at exposure.
+                if (Interlocked.Increment(ref Reads) == 2) settings.Cost.Budget.Enabled = true;
+
+                return settings;
+            }
+        }
+
+        public ArcanumSettings Get(string? name) => CurrentValue;
+
+        public IDisposable? OnChange(Action<ArcanumSettings, string?> listener) => null;
     }
 
     private sealed class FinancialOffDailyTransport(Func<Task> afterHandoff) : HttpMessageHandler, IHttpClientFactory
