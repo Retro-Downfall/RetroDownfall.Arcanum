@@ -7078,7 +7078,7 @@
                 {
                   "name": "--idempotency-key",
                   "aliases": [],
-                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "description": "Required explicit refresh UUID; reused for exact replay.",
                   "recursive": false,
                   "takesValue": true,
                   "repeatable": false,

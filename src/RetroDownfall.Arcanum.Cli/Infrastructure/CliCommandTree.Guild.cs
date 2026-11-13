@@ -181,8 +181,10 @@ internal static partial class CliCommandTree
                 }
                 else
                 {
-                    Option<string?> text = new(optionName) { Required = required, Description = parent.Name == "spend" && name == "correct" && key == "idempotency-key"
-                        ? "Required explicit attestation UUID; reused for exact replay." : Description(key) };
+                    Option<string?> text = new(optionName) { Required = required, Description = parent.Name == "spend" && key == "idempotency-key"
+                        ? name == "correct" ? "Required explicit attestation UUID; reused for exact replay."
+                            : name == "refresh" ? "Required explicit refresh UUID; reused for exact replay." : Description(key)
+                        : Description(key) };
 
                     if (key == "policy") text.AcceptOnlyFromAmong("all", "first", "quorum");
 

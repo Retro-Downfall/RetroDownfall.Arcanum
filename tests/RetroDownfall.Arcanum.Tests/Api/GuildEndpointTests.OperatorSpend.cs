@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Core.Operations;
@@ -166,6 +167,8 @@ public sealed partial class GuildEndpointTests
 
         RefreshHttpGate gate = new();
 
+        RefreshHttpCredential credential = new();
+
         await using ArcanumWebApplicationFactory factory = new()
         {
             SettingsOverride = settings =>
@@ -175,6 +178,13 @@ public sealed partial class GuildEndpointTests
                 settings.Features.Apprentices = true;
 
                 settings.DefaultModel = "provider/model";
+
+                settings.Features.A2AServer = true;
+
+                settings.Integrations.A2A.InboundPeers = [new() { PeerId = "refresh-peer", Enabled = true,
+                    CredentialEnvironmentVariable = "ARCANUM_REFRESH_TEST_PEER", CampaignId = null, Grant = new() { Workspaces = [], Tools = [], Memory = [],
+                        Delegation = [], ExpiresAtUtc = null, Budget = new() { Usd = new() { Mode = GuildBudgetMode.Unlimited },
+                            Tokens = new() { Mode = GuildBudgetMode.Unlimited } } } }];
 
                 settings.Providers = [new() { Name = "router", Endpoint = "https://openrouter.ai/api/v1", Models = ["provider/model"],
                     GuildUsageReconciliation = GuildUsageReconciliationSource.OpenRouterGeneration }];
@@ -187,7 +197,12 @@ public sealed partial class GuildEndpointTests
 
                 services.RemoveAll<IProviderApiKeyResolver>();
 
-                services.AddSingleton<IProviderApiKeyResolver>(new RefreshHttpCredential());
+                services.AddSingleton<IProviderApiKeyResolver>(credential);
+
+                services.RemoveAll<GuildInboundPeerRegistry>();
+
+                services.AddSingleton(sp => new GuildInboundPeerRegistry(sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+                    sp.GetRequiredService<IApiKeyDigestCache>(), _ => RefreshHttpCredential.Peer));
 
                 services.RemoveAll<GuildOpenRouterSpendReader>();
 
@@ -275,6 +290,15 @@ public sealed partial class GuildEndpointTests
             Assert.True(settled.IsSuccess, settled.Error.Message);
         }
 
+        using HttpResponseMessage otherIssued = await client.PostAsync("/api/guild/quests", Json(JsonSerializer.Serialize(
+            request with { IdempotencyKey = Guid.NewGuid() }, GuildJsonContext.Default.GuildIssueRootRequest)));
+
+        Assert.Equal(HttpStatusCode.Created, otherIssued.StatusCode);
+
+        using JsonDocument other = JsonDocument.Parse(await otherIssued.Content.ReadAsStringAsync());
+
+        Guid otherQuest = other.RootElement.GetProperty("data").GetProperty("id").GetGuid();
+
         string root = $"/api/guild/quests/{questId:D}/spend/effects/{effectId:D}/refreshes";
 
         string body = "{\"idempotencyKey\":\"" + Guid.NewGuid().ToString("D") + "\"}";
@@ -305,6 +329,14 @@ public sealed partial class GuildEndpointTests
 
         Guid receipt = completedBody.RootElement.GetProperty("data").GetProperty("receipt").GetProperty("receiptId").GetGuid();
 
+        (long bills, long events, long receipts) beforeReplay = await RefreshRowsAsync(factory);
+
+        int credentialReads = credential.Reads;
+
+        ProviderSettings configured = factory.Services.GetRequiredService<IOptionsMonitor<ArcanumSettings>>().CurrentValue.Providers[0];
+
+        configured.GuildUsageReconciliation = GuildUsageReconciliationSource.None;
+
         using HttpResponseMessage replay = await client.PostAsync(root, Json(body));
 
         Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
@@ -315,7 +347,49 @@ public sealed partial class GuildEndpointTests
 
         Assert.Equal(receipt, replayed.RootElement.GetProperty("data").GetProperty("receipt").GetProperty("receiptId").GetGuid());
 
-        Assert.Equal(1, gate.Reads);
+        Assert.Equal(credentialReads, credential.Reads);
+
+        Assert.Equal(beforeReplay, await RefreshRowsAsync(factory));
+
+        Assert.DoesNotContain(RefreshHttpCredential.Secret, replayed.RootElement.GetRawText(), StringComparison.Ordinal);
+
+        Assert.DoesNotContain("gen-test-123", replayed.RootElement.GetRawText(), StringComparison.Ordinal);
+
+        configured.GuildUsageReconciliation = GuildUsageReconciliationSource.OpenRouterGeneration;
+
+        using HttpResponseMessage differentBinding = await client.PostAsync($"/api/guild/quests/{questId:D}/spend/effects/{Guid.NewGuid():D}/refreshes", Json(body));
+
+        Assert.Equal(HttpStatusCode.Conflict, differentBinding.StatusCode);
+
+        using HttpResponseMessage wrongQuest = await client.PostAsync($"/api/guild/quests/{otherQuest:D}/spend/effects/{effectId:D}/refreshes", Json("{\"idempotencyKey\":\"" + Guid.NewGuid().ToString("D") + "\"}"));
+
+        Assert.Equal(HttpStatusCode.NotFound, wrongQuest.StatusCode);
+
+        using HttpClient invalidKey = factory.CreateClient();
+
+        Assert.NotNull(factory.Services.GetRequiredService<GuildInboundPeerRegistry>().Resolve(RefreshHttpCredential.Peer));
+
+        invalidKey.DefaultRequestHeaders.Add(RetroDownfall.Arcanum.Api.Security.ArcanumApiHeaders.ApiKey, RefreshHttpCredential.Peer);
+
+        using HttpResponseMessage deniedKey = await invalidKey.PostAsync(root, Json(body));
+
+        Assert.Equal(HttpStatusCode.Unauthorized, deniedKey.StatusCode);
+
+        string distinctBody = "{\"idempotencyKey\":\"" + Guid.NewGuid().ToString("D") + "\"}";
+
+        using HttpResponseMessage sameFacts = await client.PostAsync(root, Json(distinctBody));
+
+        Assert.Equal(HttpStatusCode.OK, sameFacts.StatusCode);
+
+        using JsonDocument converged = JsonDocument.Parse(await sameFacts.Content.ReadAsStringAsync());
+
+        Assert.True(converged.RootElement.GetProperty("data").GetProperty("replayed").GetBoolean());
+
+        Assert.Equal(receipt, converged.RootElement.GetProperty("data").GetProperty("receipt").GetProperty("receiptId").GetGuid());
+
+        Assert.Equal(beforeReplay, await RefreshRowsAsync(factory));
+
+        Assert.Equal(2, gate.Reads);
 
         gate.Fail = true;
 
@@ -341,14 +415,91 @@ public sealed partial class GuildEndpointTests
 
         Assert.Equal(parkedOperation, repeatedPark.RootElement.GetProperty("data").GetProperty("operationId").GetGuid());
 
-        Assert.Equal(2, gate.Reads);
+        Assert.Equal(3, gate.Reads);
+
+        gate.Fail = false;
+
+        gate.Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        gate.Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        gate.Cancelled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        string cancelledBody = "{\"idempotencyKey\":\"" + Guid.NewGuid().ToString("D") + "\"}";
+
+        (long bills, long events, long receipts) beforeCancel = await RefreshRowsAsync(factory);
+
+        using CancellationTokenSource disconnect = new();
+
+        Task<HttpResponseMessage> abandoned = client.PostAsync(root, Json(cancelledBody), disconnect.Token);
+
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        using HttpResponseMessage observed = await client.PostAsync(root, Json(cancelledBody));
+
+        Assert.Equal(HttpStatusCode.Accepted, observed.StatusCode);
+
+        using JsonDocument inFlight = JsonDocument.Parse(await observed.Content.ReadAsStringAsync());
+
+        Guid cancelledOperation = inFlight.RootElement.GetProperty("data").GetProperty("operationId").GetGuid();
+
+        await disconnect.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await abandoned);
+
+        await gate.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(30));
+
+        while (true)
+        {
+            using HttpResponseMessage retry = await client.PostAsync(root, Json(cancelledBody), deadline.Token);
+
+            Assert.Equal(HttpStatusCode.Accepted, retry.StatusCode);
+
+            using JsonDocument state = JsonDocument.Parse(await retry.Content.ReadAsStringAsync(deadline.Token));
+
+            Assert.Equal(cancelledOperation, state.RootElement.GetProperty("data").GetProperty("operationId").GetGuid());
+
+            if (state.RootElement.GetProperty("data").GetProperty("requiresAttention").GetBoolean()) break;
+
+            await Task.Delay(20, deadline.Token);
+        }
+
+        Assert.Equal(4, gate.Reads);
+
+        Assert.Equal(beforeCancel, await RefreshRowsAsync(factory));
+    }
+
+    private static async Task<(long Bills, long Events, long Receipts)> RefreshRowsAsync(ArcanumWebApplicationFactory factory)
+    {
+        await using AsyncServiceScope scope = factory.Services.CreateAsyncScope();
+
+        var opened = await scope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()
+            .OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, default);
+
+        Assert.True(opened.IsSuccess, opened.Error.Message);
+
+        await using IGrimoireOrdinaryConnectionLease lease = opened.Value;
+
+        await using var command = lease.Connection.CreateCommand();
+
+        command.CommandText = "SELECT (SELECT COUNT(*) FROM BillableOperations),(SELECT COUNT(*) FROM guild_events),(SELECT COUNT(*) FROM guild_spend_receipts)";
+
+        await using var reader = await command.ExecuteReaderAsync();
+
+        Assert.True(await reader.ReadAsync());
+
+        return (reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2));
     }
 
     private sealed class RefreshHttpGate
     {
-        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource Cancelled = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal int Reads;
 
@@ -365,12 +516,20 @@ public sealed partial class GuildEndpointTests
     {
         internal const string Secret = "private-refresh-test-key";
 
+        internal static readonly string Peer = Convert.ToBase64String(Enumerable.Repeat((byte)72, 32).ToArray()).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
         private readonly ProviderCredentialStamp _stamp = new(Guid.NewGuid(), Guid.NewGuid(), 1);
+
+        internal int Reads;
 
         public Task<string?> ResolveAsync(ProviderSettings provider, CancellationToken cancellationToken = default) => Task.FromResult<string?>(Secret);
 
-        public Task<ResolvedProviderCredential> PeekWithIdentityAsync(ProviderSettings provider, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new ResolvedProviderCredential(Secret, _stamp));
+        public Task<ResolvedProviderCredential> PeekWithIdentityAsync(ProviderSettings provider, CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref Reads);
+
+            return Task.FromResult(new ResolvedProviderCredential(Secret, _stamp));
+        }
 
         public ProviderCredentialCurrentness GetObservedLocalCurrentness(ProviderSettings provider, ProviderCredentialStamp stamp) =>
             stamp == _stamp ? ProviderCredentialCurrentness.Current : ProviderCredentialCurrentness.ConfirmedStale;
@@ -387,7 +546,16 @@ public sealed partial class GuildEndpointTests
 
             gate.Entered.TrySetResult();
 
-            await gate.Release.Task.WaitAsync(cancellationToken);
+            try
+            {
+                await gate.Release.Task.WaitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                gate.Cancelled.TrySetResult();
+
+                throw;
+            }
 
             if (gate.Fail) return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
 
