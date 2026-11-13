@@ -29,6 +29,7 @@ public sealed partial class GuildLocalHostPolicyTests
     [InlineData("partial")]
     [InlineData("zero")]
     [InlineData("cap")]
+    [InlineData("usd-cap")]
     [InlineData("qualified-cap")]
     [InlineData("qualified-breach")]
     [InlineData("fault")]
@@ -177,7 +178,9 @@ public sealed partial class GuildLocalHostPolicyTests
 
             GuildQuestDto child = await scheduled;
 
-            Assert.Equal(GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Usd.Mode);
+            Assert.Equal(usage == "usd-cap" ? GuildBudgetMode.Finite : GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Usd.Mode);
+
+            if (usage == "usd-cap") Assert.Equal(1m, child.ResolvedGrant.Budget.Usd.Value);
 
             Assert.Equal(usage is "cap" or "qualified-cap" or "qualified-breach" ? GuildBudgetMode.Finite : GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Tokens.Mode);
 
@@ -230,7 +233,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.True(result.IsSuccess, result.Error.Message);
 
-            if (usage == "cap")
+            if (usage is "cap" or "usd-cap")
             {
                 Assert.Equal(QuestState.Failed, completed.Value.State);
 
@@ -240,7 +243,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 Assert.NotNull(refused.Value.Receipt);
 
-                Assert.Equal(ErrorCodes.Guild.BudgetCapabilityUnavailable, refused.Value.Receipt!.ReasonCode);
+                Assert.Equal(usage == "usd-cap" ? ErrorCodes.Guild.PriceUnavailable : ErrorCodes.Guild.BudgetCapabilityUnavailable, refused.Value.Receipt!.ReasonCode);
 
                 Assert.Equal(2, transport.Bodies.Count);
 
@@ -1637,7 +1640,9 @@ public sealed partial class GuildLocalHostPolicyTests
 
             int toolOrdinal = FullParent ? 2 : 1;
 
-            string message = ordinal == toolOrdinal && Usage is "qualified-cap" or "qualified-breach"
+            string message = ordinal == toolOrdinal && Usage == "usd-cap"
+                ? """{"role":"assistant","content":null,"tool_calls":[{"id":"call-child","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\",\"max_cost_usd\":1}"}}]}"""
+                : ordinal == toolOrdinal && Usage is "qualified-cap" or "qualified-breach"
                 ? """{"role":"assistant","content":null,"tool_calls":[{"id":"call-child","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\",\"max_tokens\":600000}"}}]}"""
                 : ordinal == toolOrdinal && Usage == "cap"
                 ? """{"role":"assistant","content":null,"tool_calls":[{"id":"call-child","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\",\"max_tokens\":100000}"}}]}"""
@@ -1655,7 +1660,7 @@ public sealed partial class GuildLocalHostPolicyTests
             {
                 "partial" => ",\"usage\":{\"prompt_tokens\":7}",
                 "qualified-breach" when ordinal == 2 => ",\"usage\":{\"prompt_tokens\":500000,\"completion_tokens\":1,\"total_tokens\":500001}",
-                "zero" or "cap" or "qualified-cap" or "qualified-breach" => ",\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}",
+                "zero" or "cap" or "usd-cap" or "qualified-cap" or "qualified-breach" => ",\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}",
                 _ => "",
             };
 
