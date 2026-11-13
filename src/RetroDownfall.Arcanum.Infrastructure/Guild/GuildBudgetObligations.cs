@@ -41,13 +41,12 @@ internal static class GuildBudgetObligations
           UNION SELECT child.AccountId FROM guild_budget_accounts child JOIN subtree p ON child.ParentAccountId=p.Id),
         linked AS MATERIALIZED (
           SELECT EffectId,ReservationId,AccountingAssociationId,StateCode,UsdBound,KnownUsd,UnknownUsd
-          FROM guild_budget_effects WHERE AccountId IN(SELECT Id FROM subtree) AND ReservationId IS NOT NULL),
-        reservations AS MATERIALIZED (
-          SELECT lower(replace(Id,'-','')) AS NormalId,Id,RunId,Status,ReservedUsd,ReconciledUsd FROM BudgetReservations)
+          FROM guild_budget_effects WHERE AccountId IN(SELECT Id FROM subtree) AND ReservationId IS NOT NULL)
         SELECT l.EffectId,l.ReservationId,l.AccountingAssociationId,l.StateCode,l.UsdBound,l.KnownUsd,l.UnknownUsd,
           r.Id,r.RunId,r.Status,r.ReservedUsd,r.ReconciledUsd,
           typeof(r.Status)='integer' AND typeof(r.ReservedUsd)='text' AND typeof(r.ReconciledUsd)='text'
-        FROM linked l LEFT JOIN reservations r ON r.NormalId=lower(replace(l.ReservationId,'-',''))
+        FROM linked l LEFT JOIN BudgetReservations r INDEXED BY IX_BudgetReservations_Id_Norm
+          ON lower(replace(r.Id,'-',''))=lower(replace(l.ReservationId,'-',''))
         ORDER BY l.EffectId
         """;
 
@@ -65,7 +64,7 @@ internal static class GuildBudgetObligations
         // The effective all-off path never reads or materializes reservations.
         if (Equals(0L, await command.ExecuteScalarAsync(ct).ConfigureAwait(false))) return true;
 
-        // One database-owned census detects normalized aliases across all runs.
+        // The normalized identity index detects aliases across all runs without a global census.
         command.CommandText = ReservationValidationSql;
 
         try

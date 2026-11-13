@@ -258,8 +258,9 @@ public sealed partial class GuildQuestStoreTests
         await using (SqliteDataReader reader = await plan.ExecuteReaderAsync())
             while (await reader.ReadAsync()) details.Add(reader.GetString(3));
 
-        Assert.Contains(details, value => value.Contains("AUTOMATIC", StringComparison.OrdinalIgnoreCase)
-            && value.Contains("NormalId", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(details, value => value.Contains("IX_BudgetReservations_Id_Norm", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(details, value => value.Contains("MATERIALIZE reservations", StringComparison.OrdinalIgnoreCase));
     }
 
 }

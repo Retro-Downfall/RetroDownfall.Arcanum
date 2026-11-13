@@ -293,6 +293,9 @@ public sealed partial class GuildLocalHostPolicyTests
             command.Parameters.AddWithValue("$id", members[0].Quest.Id.ToString("D").ToUpperInvariant());
         }
 
+        Assert.True(await GuildQuestStore.ValidateAccountingOwnershipAsync(connection, transaction,
+            root.Quest.RootQuestId, target.AllocationAccountId, default));
+
         if (intermediate)
         {
             Assert.True(await GuildQuestStore.AccountingClearWithinAsync(connection, transaction,
@@ -301,12 +304,15 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.Equal(1, await command.ExecuteNonQueryAsync());
 
+        Assert.False(await GuildQuestStore.ValidateAccountingOwnershipAsync(connection, transaction,
+            root.Quest.RootQuestId, target.AllocationAccountId, default));
+
         GuildResultReceipt receipt = new(target.Quest.Id, result, new string('A', 64), null, QuestState.Completed, null);
 
         var settled = await new GuildBudgetLedger().SettleAsync(connection, transaction, target.Quest.Id,
             target.AllocationAccountId, receipt, default);
 
-        Assert.True(settled.IsFailure || settled.Value != GuildAccountingState.Settled);
+        Assert.True(settled.IsFailure);
 
         Assert.False(await GuildQuestStore.AccountingClearWithinAsync(connection, transaction,
             root.Quest.RootQuestId, target.Quest.Id, default));
