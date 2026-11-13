@@ -60,6 +60,36 @@ internal sealed class GuildSpendRefreshTracker
         return CancelAndJoinAsync(entries, ct);
     }
 
+    /// <summary>Signals only attempts bound to this operation; physical completion remains owned by the attempt.</summary>
+    internal Task CancelOperationAsync(Guid operationId)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(operationId, Guid.Empty);
+
+        Entry[] entries;
+
+        lock (_gate)
+        {
+            entries = _active.Values.SelectMany(static group => group)
+                .Where(entry => entry.OperationId == operationId).ToArray();
+        }
+
+        // Cancellation callbacks can re-enter the tracker, so never invoke them under its gate.
+        return Task.WhenAll(entries.Select(static entry => entry.CancelAsync()));
+    }
+
+    private void BindOperation(Entry entry, Guid operationId)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(operationId, Guid.Empty);
+
+        lock (_gate)
+        {
+            if (entry.OperationId is { } existing && existing != operationId)
+                throw new InvalidOperationException("A refresh attempt cannot change its operation identity.");
+
+            entry.OperationId = operationId;
+        }
+    }
+
     private static async Task CancelAndJoinAsync(Entry[] entries, CancellationToken ct)
     {
         await Task.WhenAll(entries.Select(static entry => entry.CancelAsync())).WaitAsync(ct).ConfigureAwait(false);
@@ -100,6 +130,10 @@ internal sealed class GuildSpendRefreshTracker
         private int _disposed;
 
         internal Guid Root { get; } = root;
+
+        internal Guid? OperationId { get; set; }
+
+        internal void BindOperation(Guid operationId) => owner.BindOperation(this, operationId);
 
         internal CancellationToken Stop => _stop.Token;
 
