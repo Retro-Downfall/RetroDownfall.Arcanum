@@ -429,6 +429,199 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.Null(receipt.Value.Facts.LocalTokens);
     }
+    [Fact]
+    public async Task Financial_off_actual_remote_cohort_member_settles_and_converges()
+    {
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        f.Settings.CurrentValue.Features.Conclave = true;
+
+        f.Settings.CurrentValue.Cost.Budget.Enabled = false;
+
+        f.Settings.CurrentValue.Features.A2AClient = true;
+
+        f.Settings.CurrentValue.Integrations.A2A.AllowedRemoteAgents = ["http://remote-port.example/"];
+
+        GuildRemoteTransportDescriptor target = new("remote-port", "http://remote-port.example/agent", "1.0", ["JSONRPC"], [], null, null, null);
+
+        GuildAgentCard card = new(Guid.Empty, Guid.Empty, 0, "Remote", "Remote peer", "1", [], ["text/plain"], ["text/plain"],
+            new(false, false, false), new(GuildAgentSourceKind.Remote, null, target.PeerId, true, null));
+
+        GuildStore roster = new(f.Connections, f.Gate, TimeProvider.System);
+
+        var stored = await roster.UpsertCardAsync(new("remote-port", null, null, null,
+            new(card, "", [], target, "http://remote-port.example/"), new string('A', 64)), default);
+
+        Assert.True(stored.IsSuccess, stored.Error.Message);
+
+        GuildCallerContext owner = await f.OperatorAsync();
+
+        var root = await f.IssueAsync(owner, f.Request with { Grant = f.Request.Grant with
+        {
+            Delegation = [GuildDelegationKind.Local, GuildDelegationKind.Remote, GuildDelegationKind.Cohort],
+        } });
+
+        Assert.True(root.IsSuccess, root.Error.Message);
+
+        GuildLocalInferenceExecution parentExecution = await ToolExecutionAsync(f, owner, root.Value);
+
+        GuildCallerContext issuer = parentExecution.Driver.Caller!;
+
+        GuildCohortStore cohorts = new(new(f.Connections, f.Gate, TimeProvider.System), f.Authority, f.Store,
+            new GuildBudgetLedger(), f.Policy, TimeProvider.System);
+
+        var cohort = await cohorts.CreateAsync(issuer, new(Guid.NewGuid(), root.Value.Quest.Id, "Remote vote",
+            new(GuildConvergenceKind.All, null), new("text/plain"), null), default);
+
+        Assert.True(cohort.IsSuccess, cohort.Error.Message);
+
+        Guid key = Guid.NewGuid();
+
+        var member = await f.Store.IssueCohortMemberAsync(issuer, new(f.Generation, root.Value.Quest.Id, null, key, key),
+            cohort.Value.Id, cohort.Value.Revision,
+            new(key, root.Value.Quest.Revision, stored.Value.Payload.Card.AgentId, "Remote member", "Contribute", new(),
+                new(GuildRemoteDispatchMode.Blocking)), default);
+
+        Assert.True(member.IsSuccess, member.Error.Message);
+
+        RemotePortAgent agent = new("complete");
+
+        FakeDnsResolver peerDns = new();
+
+        ArcanumSettings peerSettings = new() { Features = new() { Conclave = true, A2AServer = true } };
+
+        using IHost peer = await new HostBuilder().ConfigureWebHost(web =>
+        {
+            web.UseTestServer();
+
+            web.ConfigureServices(services => services.AddRouting().AddAdHocHttpJson());
+
+            web.Configure(app =>
+            {
+                app.UseRouting();
+
+                app.UseEndpoints(endpoints =>
+                {
+                    endpoints.MapWellKnownAgentCard(new AgentCard { Name = "Remote", Description = "Peer", Version = "1",
+                        SupportedInterfaces = [new() { Url = target.Endpoint, ProtocolBinding = "JSONRPC", ProtocolVersion = "1.0" }],
+                        Capabilities = new(), DefaultInputModes = ["text/plain"], DefaultOutputModes = ["text/plain"] });
+
+                    endpoints.MapA2A(new ArcanumA2AServer(agent, new InMemoryTaskStore(), new ChannelEventNotifier(),
+                        new A2APushNotificationRegistry(new TestOptionsMonitor<ArcanumSettings>(peerSettings), peerDns,
+                            NullLogger<A2APushNotificationRegistry>.Instance), NullLogger<A2AServer>.Instance, new A2AServerOptions()), "/agent");
+                });
+            });
+        }).StartAsync();
+
+        using HttpMessageHandler handler = peer.GetTestServer().CreateHandler();
+
+        FakeDnsResolver dns = new();
+
+        dns.Add("remote-port.example", IPAddress.Parse("93.184.216.34"));
+
+        A2AClientService client = new(new RemotePortHttp(handler), f.Settings, NullLogger<A2AClientService>.Instance, dns);
+
+        var opened = await f.Connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite, default);
+
+        Assert.True(opened.IsSuccess, opened.Error.Message);
+
+        await using var connection = opened.Value;
+
+        await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection.Connection);
+
+        LongRunningOperationStore operations = new(db, f.Connections);
+
+        GuildRemotePort port = new(f.Store, f.Policy, f.Authority, operations, client, f.Gate, new(), TimeProvider.System);
+
+        using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
+
+        await DriveRemoteToolChildAsync(f, owner, port, member.Value.Quest.Id, deadline.Token);
+
+        var result = await f.Store.ReadLocalResultAsync(owner, member.Value.Quest.Id, true, deadline.Token);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal("Remote answer", result.Value.Body);
+
+        Assert.NotNull(result.Value.Receipt);
+
+        var retained = await f.Store.GetAsync(owner, member.Value.Quest.Id, deadline.Token);
+
+        Assert.True(retained.IsSuccess, retained.Error.Message);
+
+        Assert.Equal(GuildAccountingState.Settled, retained.Value.Quest.AccountingState);
+
+        Assert.Equal(1, agent.Calls);
+
+        Assert.Single(agent.TaskIds.Distinct());
+
+        Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd=1 AND UnknownTokens=1"));
+
+        Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_portal_outbox WHERE SourceKindCode=2"));
+
+        GuildPortalStore portal = new(f.Store, f.Authority, f.Policy, TimeProvider.System);
+
+        var delivered = await portal.DrainOutboxAsync(owner, root.Value.Quest.Id, deadline.Token);
+
+        Assert.True(delivered.IsSuccess, delivered.Error.Message);
+
+        Assert.True(delivered.Value > 0);
+
+        for (int index = 0; index < 3; index++)
+        {
+            var claim = await portal.ClaimAsync(parentExecution.Driver, deadline.Token);
+
+            Assert.True(claim.IsSuccess, claim.Error.Message);
+
+            var applied = await portal.ApplyAsync(claim.Value, deadline.Token);
+
+            Assert.True(applied.IsSuccess, applied.Error.Message);
+        }
+
+        Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_result_applications"));
+
+        Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_result_inputs"));
+
+        Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_portal_outbox o JOIN guild_inbox i ON i.EnvelopeId=o.EnvelopeId WHERE o.SourceKindCode=2 AND o.DeliveryStateCode=2 AND i.DeliveryStateCode=2"));
+
+        Assert.Equal(1L, await f.ScalarAsync("""
+            SELECT count(*) FROM guild_cohort_contributions v JOIN guild_content c ON c.ContentId=v.ContentId
+            WHERE v.OutcomeCode=1 AND CAST(c.Body AS TEXT)='Remote answer'
+            """));
+
+        var current = await cohorts.GetAsync(issuer, cohort.Value.Id, deadline.Token);
+
+        Assert.True(current.IsSuccess, current.Error.Message);
+
+        var closed = await cohorts.CloseAsync(issuer, cohort.Value.Id, new(Guid.NewGuid(), current.Value.Revision), deadline.Token);
+
+        Assert.True(closed.IsSuccess, closed.Error.Message);
+
+        var draining = await WaitForConvergenceAsync(cohorts, owner, cohort.Value.Id, value => value.State == GuildCohortState.Draining);
+
+        Assert.Equal(GuildConvergenceDecision.Success, draining.Decision);
+
+        var stopped = await f.Store.RefreshCancellationConvergenceAsync(owner, member.Value.Quest.Id, deadline.Token);
+
+        Assert.True(stopped.IsSuccess, stopped.Error.Message);
+
+        Assert.True(stopped.Value);
+
+        var converged = await WaitForConvergenceAsync(cohorts, owner, cohort.Value.Id, value => value.State == GuildCohortState.Completed);
+
+        Assert.Equal(GuildConvergenceDecision.Success, converged.Decision);
+
+        Assert.True(converged.Spend.UnknownUsd);
+
+        Assert.True(converged.Spend.UnknownTokens);
+
+        Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
+
+        Assert.Equal(1, agent.Calls);
+
+        Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_portal_outbox WHERE SourceKindCode=2"));
+    }
+
     private sealed class FinancialOffCapturingAgent(RemotePortAgent inner) : IAgentHandler
     {
         internal List<string?> Messages { get; } = [];
