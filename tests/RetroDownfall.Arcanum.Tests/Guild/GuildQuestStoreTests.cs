@@ -84,7 +84,9 @@ public sealed partial class GuildQuestStoreTests
 
     private sealed class Fixture : IAsyncDisposable
     {
-        private readonly EvolutionScratchDatabase _file;
+        private readonly EvolutionScratchDatabase? _file;
+
+        private readonly string _connectionString;
 
         internal readonly GrimoireConnectionAdmissionGate Gate = new(TimeProvider.System);
 
@@ -106,12 +108,14 @@ public sealed partial class GuildQuestStoreTests
 
         internal readonly GuildIssueRootRequest Request;
 
-        private Fixture(EvolutionScratchDatabase file,
+        private Fixture(string connectionString, EvolutionScratchDatabase? file,
             Func<FixtureOrdinaryConnectionFactory, IGrimoireOrdinaryConnectionFactory>? wrapConnections)
         {
             _file = file;
 
-            Connections = new(file.ConnectionString);
+            _connectionString = connectionString;
+
+            Connections = new(connectionString);
 
             _storeConnections = wrapConnections?.Invoke(Connections) ?? Connections;
 
@@ -149,7 +153,7 @@ public sealed partial class GuildQuestStoreTests
 
             _ = await command.ExecuteNonQueryAsync();
 
-            return new(file, wrapConnections);
+            return new(file.ConnectionString, file, wrapConnections);
         }
 
         private IGuildQuestAllocationParticipant? _allocationParticipant;
@@ -182,7 +186,9 @@ public sealed partial class GuildQuestStoreTests
             Store = NewStore();
         }
 
-        internal Task<SqliteConnection> OpenAsync() => _file.OpenAsync(default);
+        internal static Fixture ForExistingDatabase(string connectionString) => new(connectionString, null, null);
+
+        internal Task<SqliteConnection> OpenAsync() => GrimoireSchemaTestInstaller.OpenAsync(_connectionString, default);
 
         internal async Task ExecuteAsync(string sql)
         {
@@ -246,7 +252,7 @@ public sealed partial class GuildQuestStoreTests
         {
             Authority.Dispose();
 
-            _file.Dispose();
+            _file?.Dispose();
 
             return ValueTask.CompletedTask;
         }
