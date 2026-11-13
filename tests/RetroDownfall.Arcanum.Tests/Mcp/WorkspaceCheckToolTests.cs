@@ -2122,7 +2122,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             """
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
-                <TargetFramework>net10.0</TargetFramework>
+                <TargetFramework>__FIXTURE_TARGET_FRAMEWORK__</TargetFramework>
               </PropertyGroup>
             </Project>
             """);
@@ -2178,7 +2178,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             """
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
-                <TargetFramework>net10.0</TargetFramework>
+                <TargetFramework>__FIXTURE_TARGET_FRAMEWORK__</TargetFramework>
               </PropertyGroup>
             </Project>
             """);
@@ -2230,7 +2230,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             """
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
-                <TargetFramework>net10.0</TargetFramework>
+                <TargetFramework>__FIXTURE_TARGET_FRAMEWORK__</TargetFramework>
               </PropertyGroup>
               <Target Name="ReportIsolation" BeforeTargets="BeforeBuild">
                 <Message Importance="High" Text="CHECK_PATHS|$(BaseOutputPath)|$(BaseIntermediateOutputPath)|$(MSBuildProjectExtensionsPath)|$(NUGET_PACKAGES)|$(NUGET_HTTP_CACHE_PATH)|$(DOTNET_CLI_HOME)|$(TMPDIR)" />
@@ -2303,7 +2303,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             $"""
              <Project Sdk="Microsoft.NET.Sdk">
                <PropertyGroup>
-                 <TargetFramework>net10.0</TargetFramework>
+                 <TargetFramework>__FIXTURE_TARGET_FRAMEWORK__</TargetFramework>
                </PropertyGroup>
                <ItemGroup>
                  <PackageReference Include="Microsoft.Bcl.Memory" Version="{version}" />
@@ -2348,7 +2348,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             """
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
-                <TargetFramework>net10.0</TargetFramework>
+                <TargetFramework>__FIXTURE_TARGET_FRAMEWORK__</TargetFramework>
               </PropertyGroup>
             </Project>
             """);
@@ -2401,7 +2401,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             $"""
              <Project Sdk="Microsoft.NET.Sdk">
                <PropertyGroup>
-                 <TargetFramework>net10.0</TargetFramework>
+                 <TargetFramework>__FIXTURE_TARGET_FRAMEWORK__</TargetFramework>
                  <IsTestProject>true</IsTestProject>
                  <IsPackable>false</IsPackable>
                </PropertyGroup>
@@ -2464,7 +2464,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             """
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
-                <TargetFramework>net10.0</TargetFramework>
+                <TargetFramework>__FIXTURE_TARGET_FRAMEWORK__</TargetFramework>
               </PropertyGroup>
               <Target Name="AttemptSourceWrite" BeforeTargets="BeforeBuild">
                 <WriteLinesToFile File="$(MSBuildProjectDirectory)/pwned.txt" Lines="owned" Overwrite="true" />
@@ -2515,7 +2515,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             """
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
-                <TargetFramework>net10.0</TargetFramework>
+                <TargetFramework>__FIXTURE_TARGET_FRAMEWORK__</TargetFramework>
               </PropertyGroup>
               <UsingTask TaskName="SlowTask" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
                 <Task>
@@ -2563,7 +2563,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             """
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
-                <TargetFramework>net10.0</TargetFramework>
+                <TargetFramework>__FIXTURE_TARGET_FRAMEWORK__</TargetFramework>
               </PropertyGroup>
               <UsingTask TaskName="SlowTask" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
                 <Task>
@@ -2697,46 +2697,191 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             .First()!;
     }
 
-    private static async Task RestoreAsync(
-        string dotnet,
-        string project)
+    [SkippableTheory]
+    [InlineData("10.0.402", "net10.0")]
+    [InlineData("11.0.100", "net11.0")]
+    public async Task Standalone_fixture_restore_targets_its_selected_trusted_sdk(string sdk, string framework)
     {
-        System.Diagnostics.ProcessStartInfo startInfo = new()
-        {
-            FileName = dotnet,
-            WorkingDirectory = Path.GetDirectoryName(project)!,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        startInfo.ArgumentList.Add("restore");
-        startInfo.ArgumentList.Add(project);
-        startInfo.ArgumentList.Add("--packages");
-        startInfo.ArgumentList.Add(CanonicalGlobalPackages());
-        startInfo.ArgumentList.Add("--ignore-failed-sources");
-        startInfo.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
-        startInfo.Environment["DOTNET_NOLOGO"] = "1";
-        startInfo.Environment["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"] = "1";
+        Skip.If(OperatingSystem.IsWindows(), "The controlled muxer uses a Unix shell.");
 
-        using System.Diagnostics.Process process = new()
-        {
-            StartInfo = startInfo,
-        };
-        Assert.True(process.Start());
-        Task<string> stdout = process.StandardOutput.ReadToEndAsync();
-        Task<string> stderr = process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
-        string output = await stdout;
-        string error = await stderr;
+        using TestTree tree = new();
 
-        Assert.True(
-            process.ExitCode == 0,
-            $"Restore setup failed with {process.ExitCode}."
-            + global::System.Environment.NewLine
-            + output
-            + global::System.Environment.NewLine
-            + error);
+        (string dotnet, string project, _) = CreateFixtureMuxer(tree, sdk, framework);
+
+        await RestoreAsync(dotnet, project);
+
+        Assert.Contains($"<TargetFramework>{framework}</TargetFramework>", File.ReadAllText(project), StringComparison.Ordinal);
+    }
+
+    [SkippableTheory]
+    [InlineData("11.0.100-preview.1")]
+    [InlineData("not-a-version")]
+    [InlineData("11.0.100\n12.0.100")]
+    [InlineData("11.0")]
+    public async Task Standalone_fixture_restore_refuses_malformed_sdk_selection_before_restore(string sdk)
+    {
+        Skip.If(OperatingSystem.IsWindows(), "The controlled muxer uses a Unix shell.");
+
+        using TestTree tree = new();
+
+        (string dotnet, string project, string invoked) = CreateFixtureMuxer(tree, sdk, null);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => RestoreAsync(dotnet, project));
+
+        Assert.False(File.Exists(invoked));
+    }
+
+    [SkippableFact]
+    public async Task Standalone_fixture_setup_does_not_inherit_a_foreign_msbuild_host_or_sdk_path()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "The controlled muxer uses a Unix shell.");
+
+        using TestTree tree = new();
+
+        (string dotnet, string project, _) = CreateFixtureMuxer(tree, "10.0.402", null, requireIsolatedEnvironment: true);
+
+        string[] names = ["MSBUILD_EXE_PATH", "MSBuildSDKsPath", "DOTNET_MSBUILD_SDK_RESOLVER_SDKS_DIR", "DOTNET_ROOT"];
+
+        Dictionary<string, string?> original = names.ToDictionary(static name => name,
+            static name => global::System.Environment.GetEnvironmentVariable(name), StringComparer.Ordinal);
+
+        try
+        {
+            foreach (string name in names)
+            {
+                global::System.Environment.SetEnvironmentVariable(name, "/foreign-sdk");
+            }
+
+            await RestoreAsync(dotnet, project);
+        }
+        finally
+        {
+            foreach ((string name, string? value) in original)
+            {
+                global::System.Environment.SetEnvironmentVariable(name, value);
+            }
+        }
+    }
+
+    private static (string Dotnet, string Project, string Invoked) CreateFixtureMuxer(
+        TestTree tree, string sdk, string? expectedFramework, bool requireIsolatedEnvironment = false)
+    {
+        string sdkRoot = tree.CreateDirectory("sdk");
+
+        string workspace = tree.CreateDirectory("workspace");
+
+        string project = Path.Combine(workspace, "Fixture.csproj");
+
+        File.WriteAllText(project, "<Project><PropertyGroup><TargetFramework>__FIXTURE_TARGET_FRAMEWORK__</TargetFramework></PropertyGroup></Project>");
+
+        File.WriteAllText(Path.Combine(sdkRoot, "sdk-version"), sdk);
+
+        string dotnet = Path.Combine(sdkRoot, "dotnet");
+
+        string environmentCheck = requireIsolatedEnvironment
+            ? """[ -z "${MSBUILD_EXE_PATH:-}${MSBuildSDKsPath:-}${DOTNET_MSBUILD_SDK_RESOLVER_SDKS_DIR:-}" ] && [ "${DOTNET_ROOT:-}" = "$root" ] || exit 91"""
+            : ":";
+
+        string targetCheck = expectedFramework is null ? ":"
+            : $$"""/usr/bin/grep -q '<TargetFramework>{{expectedFramework}}</TargetFramework>' "$2" || exit 92""";
+
+        File.WriteAllText(dotnet, $$"""
+            #!/bin/sh
+            root=$(/usr/bin/dirname "$0")
+            {{environmentCheck}}
+            case "$1" in
+              --version) /bin/cat "$root/sdk-version" ;;
+              restore)
+                : > "$root/restore-invoked"
+                {{targetCheck}}
+                ;;
+              *) exit 93 ;;
+            esac
+            """);
+
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(dotnet, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        return (dotnet, project, Path.Combine(sdkRoot, "restore-invoked"));
+    }
+
+    private static async Task RestoreAsync(string dotnet, string project)
+    {
+        string setup = Directory.CreateTempSubdirectory("arcanum-fixture-dotnet-").FullName;
+
+        try
+        {
+            string canonical = new FileInfo(dotnet).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? Path.GetFullPath(dotnet);
+
+            string root = Path.GetDirectoryName(canonical)!;
+
+            string home = Path.Combine(setup, "home");
+
+            string cli = Path.Combine(setup, "cli");
+
+            string http = Path.Combine(setup, "http");
+
+            string temp = Path.Combine(setup, "temp");
+
+            foreach (string directory in new[] { home, cli, http, temp })
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            WorkspaceCheckEnvironmentPaths paths = new(root, home, cli, http, temp, CanonicalGlobalPackages(), canonical);
+
+            async Task<CappedChildProcessRunResult> RunAsync(string[] arguments, TimeSpan timeout)
+            {
+                System.Diagnostics.ProcessStartInfo start = new()
+                {
+                    FileName = canonical,
+                    WorkingDirectory = Path.GetDirectoryName(project)!,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                };
+
+                foreach (string argument in arguments)
+                {
+                    start.ArgumentList.Add(argument);
+                }
+
+                WorkspaceCheckEnvironmentBuilder.Apply(start, paths);
+
+                return await CappedChildProcessRunner.RunAsync(start, ChildProcessEnvironmentProfile.WorkspaceCheck,
+                    totalOutputCapBytes: 64 * 1024, timeout, resourceLimits: null, resourceLimiter: null, CancellationToken.None);
+            }
+
+            CappedChildProcessRunResult selection = await RunAsync(["--version"], TimeSpan.FromSeconds(5));
+
+            string selected = selection.Stdout.Text.Trim();
+
+            if (selection.Outcome != CappedChildProcessOutcome.Completed || selection.ExitCode != 0 || selection.Stdout.Truncated
+                || !Version.TryParse(selected, out Version? version) || version.Major < 1 || version.Revision != -1
+                || version.Build is < 100 or > 999 || selected != version.ToString(3))
+            {
+                throw new InvalidDataException($"The standalone fixture muxer did not select a stable SDK: {selected} {selection.Stderr.Text}");
+            }
+
+            string framework = $"net{version.Major}.{version.Minor}";
+
+            string source = File.ReadAllText(project);
+
+            File.WriteAllText(project, source.Replace("__FIXTURE_TARGET_FRAMEWORK__", framework, StringComparison.Ordinal));
+
+            CappedChildProcessRunResult restored = await RunAsync(
+                ["restore", project, "--packages", CanonicalGlobalPackages(), "--ignore-failed-sources", "--disable-build-servers"], TimeSpan.FromMinutes(2));
+
+            Assert.True(restored.Outcome == CappedChildProcessOutcome.Completed && restored.ExitCode == 0,
+                $"Restore setup failed: {restored.Outcome}/{restored.ExitCode}.\n{restored.Stdout.Text}\n{restored.Stderr.Text}");
+        }
+        finally
+        {
+            Directory.Delete(setup, recursive: true);
+        }
     }
 
     private static string[] SnapshotWorkspaceFiles(string workspace) =>

@@ -143,7 +143,7 @@ class ActualSdkPublishingContextTests(unittest.TestCase):
             root = Path(temporary)
             project = root / "Fresh.csproj"
             project.write_text('''<Project Sdk="Microsoft.NET.Sdk">
-              <PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType><IsAotCompatible>true</IsAotCompatible></PropertyGroup>
+              <PropertyGroup><TargetFramework>net11.0</TargetFramework><OutputType>Exe</OutputType><IsAotCompatible>true</IsAotCompatible></PropertyGroup>
               <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''"><PublishAot>true</PublishAot><SelfContained>true</SelfContained><PublishSingleFile>false</PublishSingleFile></PropertyGroup>
             </Project>''')
             info = subprocess.check_output(["dotnet", "--info"], text=True)

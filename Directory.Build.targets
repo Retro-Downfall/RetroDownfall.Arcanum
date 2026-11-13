@@ -37,6 +37,8 @@
 
     <ArcanumPortableMacOsNativeAotPackageSha512 Condition="'$(ArcanumPortableMacOsNativeAotPackageVersion)' == '10.0.14'">SaeXGZoDmwJs/4kLtoaLvpFDl6lTOEytpx/ZR3jtqVRI44farCSXizx3K7QX5T4sBMgLptfLF1Z0lfdGO7qDpw==</ArcanumPortableMacOsNativeAotPackageSha512>
 
+    <ArcanumPortableMacOsNativeAotPackageSha512 Condition="'$(ArcanumPortableMacOsNativeAotPackageVersion)' == '11.0.0'">m+K+2uqcmGRUYCLuy3yhbPAEaggNQAn8nrYogADqf1MtnosytxLihutOeMZ5zSSSjvs9VhEyrbnfH5/VdAkcRQ==</ArcanumPortableMacOsNativeAotPackageSha512>
+
     <_ArcanumResolvedNuGetPackageRoot>$(NuGetPackageRoot)</_ArcanumResolvedNuGetPackageRoot>
 
     <_ArcanumResolvedNuGetPackageRoot Condition="'$(_ArcanumResolvedNuGetPackageRoot)' == ''">$(RestorePackagesPath)</_ArcanumResolvedNuGetPackageRoot>
@@ -182,7 +184,7 @@
     <Error
       Code="ARCAOT008"
       Condition="'$(_ArcanumRequiresLegacyMacOsLld)' == 'true' and !Exists('/opt/homebrew/opt/lld/bin/ld64.lld') and !Exists('/usr/local/opt/lld/bin/ld64.lld')"
-      Text="This pre-10.0.12 macOS Native AOT SDK requires LLVM ld64.lld. Install lld or update to the current .NET 10 SDK; Arcanum has no managed fallback." />
+      Text="This pre-10.0.12 macOS Native AOT SDK requires LLVM ld64.lld. Install lld or update to the current .NET SDK; Arcanum has no managed fallback." />
 
     <ItemGroup>
 
@@ -248,6 +250,13 @@
     <Copy
       SourceFiles="@(_ArcanumPortableNativeAotFile)"
       DestinationFiles="@(_ArcanumPortableNativeAotFile->'$(_ArcanumPreparedNativeAotPath)%(Filename)%(Extension)')" />
+
+    <!-- The audited 11.0.0 GC archive repeats a Darwin member name and timestamp, causing
+         dsymutil to choose the wrong pointer-data object. Authenticate the complete input/output
+         and change one staged timestamp byte; preserve all code, symbols, DWARF and index bytes. -->
+    <Exec
+      Condition="'$(ArcanumPortableMacOsNativeAotPackageVersion)' == '11.0.0'"
+      Command="python3 &quot;$(MSBuildThisFileDirectory)scripts/prepare_macos_nativeaot_gc.py&quot; --package-version &quot;$(ArcanumPortableMacOsNativeAotPackageVersion)&quot; --input &quot;$(_ArcanumPortableNativeAotPath)libRuntime.WorkstationGC.a&quot; --output &quot;$(_ArcanumPreparedNativeAotPath)libRuntime.WorkstationGC.a&quot;" />
 
     <Exec Command="xcrun strip -S &quot;$(_ArcanumCryptoArchivePrepared)&quot;" />
 

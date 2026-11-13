@@ -130,7 +130,7 @@ internal static class AiReflectionProductionClosure
                 + string.Join(", ", expected.Except(observedProjects, PathComparer).Order(StringComparer.Ordinal)));
         }
 
-        return [.. images.SelectMany(AiReflectionBoundaryScanner.FindForbiddenReferences)
+        return [.. AiReflectionBoundaryScanner.FindForbiddenReferencesInClosure(images)
             .OrderBy(static violation => violation.Assembly, StringComparer.Ordinal)
             .ThenBy(static violation => violation.Caller, StringComparer.Ordinal)
             .ThenBy(static violation => violation.Offset)

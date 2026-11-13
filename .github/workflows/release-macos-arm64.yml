@@ -177,7 +177,7 @@ jobs:
             exit 1
           fi
 
-      - name: Setup .NET 10
+      - name: Setup resolved .NET SDK
         uses: ./.github/actions/setup-dotnet
         with:
           sdk-version: ${{ needs.sdk.outputs.version }}

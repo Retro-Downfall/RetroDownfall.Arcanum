@@ -130,6 +130,7 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
             "Directory.Build.props",
             "Directory.Build.targets",
             "scripts/benchmark-grimoire-admission.sh",
+            "scripts/prepare_macos_nativeaot_gc.py",
             "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/grimoire-admission-workload-v1.json",
             "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/packages.lock.json",
             "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj",

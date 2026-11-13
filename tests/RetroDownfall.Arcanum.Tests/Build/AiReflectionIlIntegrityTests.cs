@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
@@ -81,6 +82,62 @@ public sealed class AiReflectionIlIntegrityTests
     }
 
     [Fact]
+    public void Runtime_init_setter_accessors_resolve_to_the_scanned_target_body()
+    {
+        byte[] image = AiReflectionFixtures.Compile("init_setter_accessor", """
+            [System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Method, Name = "set_Value")]
+            public static extern void Probe(Holder instance, string value);
+            public sealed class Holder { public string Value { get; init; } = ""; }
+            """);
+
+        Assert.Empty(AiReflectionBoundaryScanner.FindForbiddenReferences(image));
+    }
+
+    [Theory]
+    [InlineData("missing", "string")]
+    [InlineData("set_Value", "int")]
+    public void An_instance_method_accessor_requires_an_exact_target_name_and_parameter_shape(string target, string valueType)
+    {
+        byte[] image = AiReflectionFixtures.Compile("invalid_instance_accessor_" + target + valueType, $$"""
+            [System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Method, Name = "{{target}}")]
+            public static extern void Probe(Holder instance, {{valueType}} value);
+            public sealed class Holder { public string Value { get; init; } = ""; }
+            """);
+
+        Assert.Throws<InvalidDataException>(() => AiReflectionBoundaryScanner.FindForbiddenReferences(image));
+    }
+
+    [Fact]
+    public void An_uninventoried_foreign_method_accessor_is_refused()
+    {
+        byte[] image = AiReflectionFixtures.Compile("foreign_instance_accessor", """
+            [System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Method, Name = "ToString")]
+            public static extern string Probe(object instance);
+            """);
+
+        Assert.Throws<InvalidDataException>(() => AiReflectionBoundaryScanner.FindForbiddenReferences(image));
+    }
+
+    [Fact]
+    public void An_instance_accessor_does_not_hide_forbidden_calls_in_its_target()
+    {
+        byte[] image = AiReflectionFixtures.Compile("unsafe_instance_accessor_target", """
+            [System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Method, Name = "Execute")]
+            public static extern object Probe(Holder instance);
+            public sealed class Holder
+            {
+                public object Execute() => AIFunctionFactory.Create((Action)(() => { }), new AIFunctionFactoryOptions());
+            }
+            """);
+
+        AiReflectionViolation violation = Assert.Single(AiReflectionBoundaryScanner.FindForbiddenReferences(image));
+
+        Assert.Contains("Holder.Execute", violation.Caller, StringComparison.Ordinal);
+
+        Assert.Contains("AIFunctionFactory.Create", violation.Callee, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Method_accessors_cannot_claim_the_field_only_bodyless_exception()
     {
         byte[] image = AiReflectionFixtures.Compile("method_accessor", """
@@ -89,6 +146,181 @@ public sealed class AiReflectionIlIntegrityTests
             """);
 
         Assert.Throws<InvalidDataException>(() => AiReflectionBoundaryScanner.FindForbiddenReferences(image));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Instance_accessor_matching_compares_every_nested_modifier_identity(bool mismatchedInnerIdentity)
+    {
+        byte[] image = CreateModifierChainImage(mismatchedInnerIdentity);
+
+        if (mismatchedInnerIdentity)
+        {
+            Assert.Throws<InvalidDataException>(() => AiReflectionBoundaryScanner.FindForbiddenReferences(image));
+        }
+        else
+        {
+            Assert.Empty(AiReflectionBoundaryScanner.FindForbiddenReferences(image));
+        }
+    }
+
+    [Theory]
+    [InlineData("valid")]
+    [InlineData("version")]
+    [InlineData("token")]
+    [InlineData("culture")]
+    public void Init_setter_return_normalization_requires_the_actual_runtime_assembly_identity(string runtimeIdentity)
+    {
+        byte[] image = CreateModifierChainImage(false, initReturn: true, runtimeIdentity);
+
+        if (runtimeIdentity != "valid")
+        {
+            Assert.Throws<InvalidDataException>(() => AiReflectionBoundaryScanner.FindForbiddenReferences(image));
+        }
+        else
+        {
+            Assert.Empty(AiReflectionBoundaryScanner.FindForbiddenReferences(image));
+        }
+    }
+
+    private static byte[] CreateModifierChainImage(bool mismatchedInnerIdentity, bool initReturn = false, string runtimeIdentity = "valid")
+    {
+        MetadataBuilder metadata = new();
+
+        metadata.AddModule(0, metadata.GetOrAddString("ModifierChain.dll"), metadata.GetOrAddGuid(Guid.NewGuid()), default, default);
+
+        metadata.AddAssembly(metadata.GetOrAddString("ModifierChain"), new Version(1, 0), default, default, 0, 0);
+
+        AssemblyName core = typeof(object).Assembly.GetName();
+
+        AssemblyReferenceHandle runtime = metadata.AddAssemblyReference(metadata.GetOrAddString(core.Name!), core.Version!, default,
+            metadata.GetOrAddBlob(core.GetPublicKeyToken()!), 0, default);
+
+        AssemblyReferenceHandle modifierA = metadata.AddAssemblyReference(metadata.GetOrAddString("Modifier.A"), new Version(1, 0), default, default, 0, default);
+
+        AssemblyReferenceHandle modifierB = metadata.AddAssemblyReference(metadata.GetOrAddString("Modifier.B"), new Version(1, 0), default, default, 0, default);
+
+        TypeReferenceHandle objectType = metadata.AddTypeReference(runtime, metadata.GetOrAddString("System"), metadata.GetOrAddString("Object"));
+
+        TypeReferenceHandle innerA = metadata.AddTypeReference(modifierA, default, metadata.GetOrAddString("SameNameModifier"));
+
+        TypeReferenceHandle innerB = metadata.AddTypeReference(modifierB, default, metadata.GetOrAddString("SameNameModifier"));
+
+        byte[] modifierToken = core.GetPublicKeyToken()!;
+
+        if (runtimeIdentity == "token")
+        {
+            modifierToken[0] ^= 1;
+        }
+
+        AssemblyReferenceHandle modifierRuntime = runtimeIdentity == "valid" ? runtime
+            : metadata.AddAssemblyReference(metadata.GetOrAddString(core.Name!),
+                runtimeIdentity == "version" ? new Version(99, 0, 0, 0) : core.Version!,
+                runtimeIdentity == "culture" ? metadata.GetOrAddString("fr-FR") : default,
+                metadata.GetOrAddBlob(modifierToken), 0, default);
+
+        TypeReferenceHandle initModifier = metadata.AddTypeReference(modifierRuntime, metadata.GetOrAddString("System.Runtime.CompilerServices"), metadata.GetOrAddString("IsExternalInit"));
+
+        TypeReferenceHandle accessorType = metadata.AddTypeReference(runtime, metadata.GetOrAddString("System.Runtime.CompilerServices"), metadata.GetOrAddString("UnsafeAccessorAttribute"));
+
+        TypeReferenceHandle accessorKind = metadata.AddTypeReference(runtime, metadata.GetOrAddString("System.Runtime.CompilerServices"), metadata.GetOrAddString("UnsafeAccessorKind"));
+
+        metadata.AddTypeDefinition(TypeAttributes.NotPublic, default, metadata.GetOrAddString("<Module>"), default,
+            MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
+
+        TypeDefinitionHandle holder = metadata.AddTypeDefinition(TypeAttributes.Public, default, metadata.GetOrAddString("Holder"), objectType,
+            MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
+
+        metadata.AddTypeDefinition(TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed, default, metadata.GetOrAddString("Fixture"), objectType,
+            MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(2));
+
+        static void TypeToken(BlobBuilder blob, EntityHandle type) =>
+            blob.WriteCompressedInteger((MetadataTokens.GetRowNumber(type) << 2) | (type.Kind == HandleKind.TypeReference ? 1 : 0));
+
+        BlobHandle Signature(bool accessor)
+        {
+            BlobBuilder blob = new();
+
+            blob.WriteByte(accessor ? (byte)0 : (byte)0x20);
+
+            blob.WriteCompressedInteger(accessor ? 2 : 1);
+
+            if (initReturn && !accessor)
+            {
+                blob.WriteByte(0x1f); // required IsExternalInit return modifier
+
+                TypeToken(blob, initModifier);
+            }
+
+            blob.WriteByte(0x01); // void
+
+            if (accessor)
+            {
+                blob.WriteByte(0x12); // class receiver
+
+                TypeToken(blob, holder);
+            }
+
+            blob.WriteByte(0x20); // outer modopt
+
+            TypeToken(blob, objectType);
+
+            blob.WriteByte(0x20); // inner modopt with the same type name but a distinct assembly
+
+            TypeToken(blob, accessor && mismatchedInnerIdentity ? innerB : innerA);
+
+            blob.WriteByte(0x08); // int32
+
+            return metadata.GetOrAddBlob(blob);
+        }
+
+        BlobBuilder il = new();
+
+        BlobBuilder code = new();
+
+        code.WriteByte(0x2a); // ret
+
+        int body = new MethodBodyStreamEncoder(il).AddMethodBody(new InstructionEncoder(code));
+
+        metadata.AddMethodDefinition(MethodAttributes.Public | MethodAttributes.HideBySig | (initReturn ? MethodAttributes.SpecialName : 0), MethodImplAttributes.IL,
+            metadata.GetOrAddString(initReturn ? "set_Value" : "Target"), Signature(accessor: false), body, MetadataTokens.ParameterHandle(1));
+
+        MethodDefinitionHandle probe = metadata.AddMethodDefinition(MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig,
+            MethodImplAttributes.IL, metadata.GetOrAddString("Probe"), Signature(accessor: true), -1, MetadataTokens.ParameterHandle(1));
+
+        BlobBuilder constructor = new();
+
+        constructor.WriteBytes(new byte[] { 0x20, 0x01, 0x01, 0x11 }); // instance void(valuetype UnsafeAccessorKind)
+
+        TypeToken(constructor, accessorKind);
+
+        MemberReferenceHandle attributeConstructor = metadata.AddMemberReference(accessorType, metadata.GetOrAddString(".ctor"), metadata.GetOrAddBlob(constructor));
+
+        BlobBuilder attribute = new();
+
+        attribute.WriteUInt16(1);
+
+        attribute.WriteInt32(1); // UnsafeAccessorKind.Method
+
+        attribute.WriteUInt16(1);
+
+        attribute.WriteBytes(new byte[] { 0x54, 0x0e }); // string property
+
+        attribute.WriteSerializedString("Name");
+
+        attribute.WriteSerializedString(initReturn ? "set_Value" : "Target");
+
+        metadata.AddCustomAttribute(probe, attributeConstructor, metadata.GetOrAddBlob(attribute));
+
+        ManagedPEBuilder builder = new(new PEHeaderBuilder(imageCharacteristics: Characteristics.ExecutableImage | Characteristics.Dll),
+            new MetadataRootBuilder(metadata), il, flags: CorFlags.ILOnly);
+
+        BlobBuilder image = new();
+
+        builder.Serialize(image);
+
+        return image.ToArray();
     }
 
     [Fact]

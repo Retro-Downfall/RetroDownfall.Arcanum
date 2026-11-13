@@ -1613,8 +1613,8 @@ public sealed class ContinuousIntegrationWorkflowTests
         using JsonDocument globalJson = JsonDocument.Parse(File.ReadAllText(Path.Combine(FindRepositoryRoot(), "global.json")));
 
         Assert.True(
-            Version.Parse(globalJson.RootElement.GetProperty("sdk").GetProperty("version").GetString()!) >= new Version(10, 0, 401),
-            "global.json permits an SDK older than the serviced 10.0.401 that the macOS Native AOT lanes require.");
+            Version.Parse(globalJson.RootElement.GetProperty("sdk").GetProperty("version").GetString()!) >= new Version(11, 0, 100),
+            "global.json permits an SDK older than the .NET 11 floor 11.0.100 that the macOS Native AOT lanes require.");
 
         Assert.True(
             offenders.Count == 0,
@@ -1827,7 +1827,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         JsonElement sdk = globalJson.RootElement.GetProperty("sdk");
 
-        Assert.True(Version.Parse(sdk.GetProperty("version").GetString()!) >= new Version(10, 0, 401));
+        Assert.True(Version.Parse(sdk.GetProperty("version").GetString()!) >= new Version(11, 0, 100));
 
         Assert.Equal("latestMajor", sdk.GetProperty("rollForward").GetString());
 

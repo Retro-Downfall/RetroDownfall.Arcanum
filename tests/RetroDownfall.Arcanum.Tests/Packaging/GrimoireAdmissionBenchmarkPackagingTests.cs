@@ -43,44 +43,44 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
         JsonElement dependencies = document.RootElement
             .GetProperty("dependencies")
-            .GetProperty("net10.0");
+            .GetProperty("net11.0");
         (string Name, string Hash)[] expected =
         [
             (
                 "Microsoft.DotNet.ILCompiler",
-                "CDQ/+XRT1JT/0u87j9exR1AociehKUzxae4KCOWxCQ1PIKbYS0F8ovxaCrqRlkylGmbhywKxV/zbbrEhWa5NXg=="),
+                "lw6gUL92db6XPwYsQwaGwrJxgRM0X0qQKl0QkwuZIACMtgH0eFu6jmq6W+/L8qTxQZwggfV/dGjICyMqVHdehg=="),
             (
                 "Microsoft.NET.ILLink.Tasks",
-                "YlTamXppEQls6DYWt7RdUuwWDb0lyw/vXCaGeQpLCpsLmfwGuCkOz/vIGgMTV7ECsJcavkCOkxZXv9s8rdAHkQ=="),
+                "gK2aq4XvChj5kvozpPHrkfKkr7zc5Z4xoTrJb4GPZzDEPMlCk0TX632bwY3LsWcX2UVcVRQBBGzsBGC2lq6YhA=="),
         ];
 
         foreach ((string name, string hash) in expected)
         {
             JsonElement package = dependencies.GetProperty(name);
 
-            Assert.Equal("[10.0.14, )", package.GetProperty("requested").GetString());
+            Assert.Equal("[11.0.0, )", package.GetProperty("requested").GetString());
 
-            Assert.Equal("10.0.14", package.GetProperty("resolved").GetString());
+            Assert.Equal("11.0.0", package.GetProperty("resolved").GetString());
 
             Assert.Equal(hash, package.GetProperty("contentHash").GetString());
         }
 
         JsonElement runtimeDependencies = document.RootElement
             .GetProperty("dependencies")
-            .GetProperty("net10.0/osx-arm64");
+            .GetProperty("net11.0/osx-arm64");
 
         JsonElement compiler = runtimeDependencies.GetProperty("Microsoft.DotNet.ILCompiler");
 
-        Assert.Equal("[10.0.14, )", compiler.GetProperty("requested").GetString());
+        Assert.Equal("[11.0.0, )", compiler.GetProperty("requested").GetString());
 
-        Assert.Equal("10.0.14", compiler.GetProperty("resolved").GetString());
+        Assert.Equal("11.0.0", compiler.GetProperty("resolved").GetString());
 
         Assert.Equal(
-            "CDQ/+XRT1JT/0u87j9exR1AociehKUzxae4KCOWxCQ1PIKbYS0F8ovxaCrqRlkylGmbhywKxV/zbbrEhWa5NXg==",
+            "lw6gUL92db6XPwYsQwaGwrJxgRM0X0qQKl0QkwuZIACMtgH0eFu6jmq6W+/L8qTxQZwggfV/dGjICyMqVHdehg==",
             compiler.GetProperty("contentHash").GetString());
 
         Assert.Equal(
-            "10.0.14",
+            "11.0.0",
             compiler
                 .GetProperty("dependencies")
                 .GetProperty("runtime.osx-arm64.Microsoft.DotNet.ILCompiler")
@@ -89,10 +89,10 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
         JsonElement runtimeCompiler = runtimeDependencies
             .GetProperty("runtime.osx-arm64.Microsoft.DotNet.ILCompiler");
 
-        Assert.Equal("10.0.14", runtimeCompiler.GetProperty("resolved").GetString());
+        Assert.Equal("11.0.0", runtimeCompiler.GetProperty("resolved").GetString());
 
         Assert.Equal(
-            "t4T2d4Ye79r1GTjP9JuJHkA874jiKCvdhcsj8HAUD5U2XF8GpjRsT6YSusy67My5V12iydckl0D4qC9iZsmpvQ==",
+            "QWuxf01ws1E+3w6fzpbOQ3lhiRKIqUqi1Pf/ZIBlSvpAybsYMPoCYOssuBC/JrzJ8BcCObGHEYmEs7x1O3KVjg==",
             runtimeCompiler.GetProperty("contentHash").GetString());
     }
 
@@ -501,6 +501,11 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
         Assert.Contains(
             "R\tDirectory.Build.targets",
+            File.ReadAllLines(catalogPath),
+            StringComparer.Ordinal);
+
+        Assert.Contains(
+            "R\tscripts/prepare_macos_nativeaot_gc.py",
             File.ReadAllLines(catalogPath),
             StringComparer.Ordinal);
 

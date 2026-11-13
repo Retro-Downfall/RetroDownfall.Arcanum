@@ -170,18 +170,10 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 async Task CompleteQueueWhenParentEndsAsync()
                 {
-                    try
-                    {
-                        await parentTask;
-                    }
-                    catch (Exception)
-                    {
-                        // The reader reports the actual parent result or exception after the channel drains.
-                    }
-                    finally
-                    {
-                        queue.Pending.Writer.TryComplete();
-                    }
+                    // The reader reports the actual parent result or exception after the channel drains.
+                    _ = await Record.ExceptionAsync(async () => await parentTask);
+
+                    queue.Pending.Writer.TryComplete();
                 }
 
                 Task queueCompletion = CompleteQueueWhenParentEndsAsync();

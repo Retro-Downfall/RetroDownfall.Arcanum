@@ -1,10 +1,24 @@
 using System.Collections.Immutable;
+using System.Reflection;
 using System.Reflection.Metadata;
 using System.Runtime.CompilerServices;
 
 namespace RetroDownfall.Arcanum.Tests.Support;
 
-internal sealed record AiReflectionType(string Assembly, string Name);
+internal sealed record AiReflectionType(string Assembly, string Name, string AssemblyIdentity = "")
+{
+    internal string DefinitionName { get; init; } = Name;
+
+    internal ImmutableArray<AiReflectionType> TypeArguments { get; init; } = [];
+
+    internal bool IsByReference { get; init; }
+
+    internal AiReflectionType? UnmodifiedType { get; init; }
+
+    internal AiReflectionType? Modifier { get; init; }
+
+    internal bool IsRequiredModifier { get; init; }
+}
 
 internal sealed record AiReflectionMethod(
     AiReflectionType Owner,
@@ -46,6 +60,81 @@ internal sealed class AiReflectionMetadata(MetadataReader metadata) : ISignature
         // EF's compiled model uses CLR-supplied field accessors. A method accessor instead
         // needs a reviewed target-resolution rule; it must not become an uninspected call proxy.
         return value.ReadUInt16() == 1 && value.ReadInt32() == (int)UnsafeAccessorKind.Field;
+    }
+
+    internal bool TryGetInstanceAccessorName(MethodDefinition method, out string? name)
+    {
+        name = null;
+
+        CustomAttribute[] accessors = [.. method.GetCustomAttributes().Select(metadata.GetCustomAttribute)
+            .Where(attribute => Method(attribute.Constructor).Owner is
+                { Name: "System.Runtime.CompilerServices.UnsafeAccessorAttribute", Assembly: "System.Runtime" or "System.Private.CoreLib" })];
+
+        if (accessors.Length != 1 || (method.Attributes & MethodAttributes.Static) == 0)
+        {
+            return false;
+        }
+
+        BlobReader value = metadata.GetBlobReader(accessors[0].Value);
+
+        if (value.ReadUInt16() != 1 || value.ReadInt32() != (int)UnsafeAccessorKind.Method
+            || value.ReadUInt16() != 1 || value.ReadByte() != 0x54 || value.ReadByte() != 0x0e
+            || value.ReadSerializedString() != "Name")
+        {
+            return false;
+        }
+
+        name = value.ReadSerializedString();
+
+        return !string.IsNullOrEmpty(name) && value.RemainingBytes == 0;
+    }
+
+    internal MethodSignature<AiReflectionType> TargetSignature(MethodDefinition method, ImmutableArray<AiReflectionType> typeArguments) =>
+        method.DecodeSignature(this, typeArguments);
+
+    internal static string AssemblyIdentity(MetadataReader reader, AssemblyReferenceHandle reference = default)
+    {
+        AssemblyName identity;
+
+        byte[] key;
+
+        bool fullKey;
+
+        if (reference.IsNil)
+        {
+            AssemblyDefinition definition = reader.GetAssemblyDefinition();
+
+            identity = new() { Name = reader.GetString(definition.Name), Version = definition.Version, CultureName = reader.GetString(definition.Culture),
+                Flags = (AssemblyNameFlags)(definition.Flags & AssemblyFlags.Retargetable),
+                ContentType = (definition.Flags & AssemblyFlags.WindowsRuntime) != 0 ? AssemblyContentType.WindowsRuntime : AssemblyContentType.Default };
+
+            key = reader.GetBlobBytes(definition.PublicKey);
+
+            fullKey = key.Length != 0;
+        }
+        else
+        {
+            AssemblyReference definition = reader.GetAssemblyReference(reference);
+
+            identity = new() { Name = reader.GetString(definition.Name), Version = definition.Version, CultureName = reader.GetString(definition.Culture),
+                Flags = (AssemblyNameFlags)(definition.Flags & AssemblyFlags.Retargetable),
+                ContentType = (definition.Flags & AssemblyFlags.WindowsRuntime) != 0 ? AssemblyContentType.WindowsRuntime : AssemblyContentType.Default };
+
+            key = reader.GetBlobBytes(definition.PublicKeyOrToken);
+
+            fullKey = (definition.Flags & AssemblyFlags.PublicKey) != 0;
+        }
+
+        if (fullKey)
+        {
+            identity.SetPublicKey(key);
+        }
+        else
+        {
+            identity.SetPublicKeyToken(key);
+        }
+
+        return identity.FullName;
     }
 
     internal bool IsMethod(EntityHandle handle) => handle.Kind switch
@@ -125,7 +214,7 @@ internal sealed class AiReflectionMetadata(MetadataReader metadata) : ISignature
         }
     }
 
-    private AiReflectionType Type(EntityHandle handle) => handle.Kind switch
+    internal AiReflectionType Type(EntityHandle handle) => handle.Kind switch
     {
         HandleKind.TypeDefinition => GetTypeFromDefinition(metadata, (TypeDefinitionHandle)handle, 0),
         HandleKind.TypeReference => GetTypeFromReference(metadata, (TypeReferenceHandle)handle, 0),
@@ -143,10 +232,10 @@ internal sealed class AiReflectionMetadata(MetadataReader metadata) : ISignature
         {
             AiReflectionType parent = GetTypeFromDefinition(reader, parentHandle, rawTypeKind);
 
-            return parent with { Name = parent.Name + "+" + name };
+            return parent with { Name = parent.Name + "+" + name, DefinitionName = parent.Name + "+" + name };
         }
 
-        return new(reader.GetString(reader.GetAssemblyDefinition().Name), FullName(reader.GetString(type.Namespace), name));
+        return new(reader.GetString(reader.GetAssemblyDefinition().Name), FullName(reader.GetString(type.Namespace), name), AssemblyIdentity(reader));
     }
 
     public AiReflectionType GetTypeFromReference(MetadataReader reader, TypeReferenceHandle handle, byte rawTypeKind)
@@ -159,7 +248,7 @@ internal sealed class AiReflectionMetadata(MetadataReader metadata) : ISignature
         {
             AiReflectionType parent = GetTypeFromReference(reader, (TypeReferenceHandle)type.ResolutionScope, rawTypeKind);
 
-            return parent with { Name = parent.Name + "+" + name };
+            return parent with { Name = parent.Name + "+" + name, DefinitionName = parent.Name + "+" + name };
         }
 
         string assembly = type.ResolutionScope.Kind switch
@@ -169,7 +258,8 @@ internal sealed class AiReflectionMetadata(MetadataReader metadata) : ISignature
             _ => throw new BadImageFormatException("Unsupported type resolution scope."),
         };
 
-        return new(assembly, FullName(reader.GetString(type.Namespace), name));
+        return new(assembly, FullName(reader.GetString(type.Namespace), name), AssemblyIdentity(reader,
+            type.ResolutionScope.Kind == HandleKind.AssemblyReference ? (AssemblyReferenceHandle)type.ResolutionScope : default));
     }
 
     public AiReflectionType GetTypeFromSpecification(MetadataReader reader, object? genericContext, TypeSpecificationHandle handle, byte rawTypeKind) =>
@@ -183,7 +273,7 @@ internal sealed class AiReflectionMetadata(MetadataReader metadata) : ISignature
 
     public AiReflectionType GetSZArrayType(AiReflectionType elementType) => elementType with { Name = elementType.Name + "[]" };
 
-    public AiReflectionType GetByReferenceType(AiReflectionType elementType) => elementType with { Name = elementType.Name + "&" };
+    public AiReflectionType GetByReferenceType(AiReflectionType elementType) => elementType with { Name = elementType.Name + "&", IsByReference = true };
 
     public AiReflectionType GetPointerType(AiReflectionType elementType) => elementType with { Name = elementType.Name + "*" };
 
@@ -192,15 +282,21 @@ internal sealed class AiReflectionMetadata(MetadataReader metadata) : ISignature
     public AiReflectionType GetGenericInstantiation(AiReflectionType genericType, ImmutableArray<AiReflectionType> typeArguments) => genericType with
     {
         Name = genericType.Name + "<" + string.Join(", ", typeArguments.Select(static argument => argument.Name)) + ">",
+        TypeArguments = typeArguments,
     };
 
     public AiReflectionType GetGenericMethodParameter(object? genericContext, int index) => new("", "!!" + index);
 
-    public AiReflectionType GetGenericTypeParameter(object? genericContext, int index) => new("", "!" + index);
+    public AiReflectionType GetGenericTypeParameter(object? genericContext, int index) =>
+        genericContext is ImmutableArray<AiReflectionType> arguments && index < arguments.Length
+            ? arguments[index] : new("", "!" + index);
 
     public AiReflectionType GetModifiedType(AiReflectionType modifier, AiReflectionType unmodifiedType, bool isRequired) => unmodifiedType with
     {
         Name = unmodifiedType.Name + (isRequired ? " modreq(" : " modopt(") + modifier.Name + ")",
+        UnmodifiedType = unmodifiedType,
+        Modifier = modifier,
+        IsRequiredModifier = isRequired,
     };
 
     public AiReflectionType GetFunctionPointerType(MethodSignature<AiReflectionType> signature) => new("",

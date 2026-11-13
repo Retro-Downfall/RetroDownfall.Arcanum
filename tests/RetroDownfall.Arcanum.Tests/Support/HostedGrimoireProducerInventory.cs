@@ -488,7 +488,27 @@ internal static partial class HostedGrimoireProducerInventory
                 loader.AddDependencyLocation(analyzer);
             }
 
-            ISourceGenerator[] generators = analyzers.SelectMany(file => new AnalyzerFileReference(file, loader).GetGenerators(LanguageNames.CSharp)).ToArray();
+            List<ISourceGenerator> generators = [];
+
+            foreach (string analyzer in analyzers)
+            {
+                AnalyzerFileReference reference = new(analyzer, loader);
+
+                List<string> loadFailures = [];
+
+                reference.AnalyzerLoadFailed += (_, failure) => loadFailures.Add(failure.Message);
+
+                ImmutableArray<ISourceGenerator> loaded = reference.GetGenerators(LanguageNames.CSharp);
+
+                if (loadFailures.Count != 0 || (loaded.Length == 0 && Path.GetFileName(analyzer) is
+                    "System.Text.Json.SourceGeneration.dll" or "Microsoft.Extensions.Configuration.Binder.SourceGeneration.dll"))
+                {
+                    throw new InvalidOperationException($"Cannot load required SDK generator {analyzer} using Roslyn {typeof(CSharpCompilation).Assembly.GetName().Version}: "
+                        + (loadFailures.Count == 0 ? "No C# generator was discovered." : string.Join("; ", loadFailures)));
+                }
+
+                generators.AddRange(loaded);
+            }
 
             GeneratorDriver driver = CSharpGeneratorDriver.Create(generators, Inputs("AdditionalFiles").Select(static file => (AdditionalText)new GeneratorText(file)), parse, new GeneratorOptions(Inputs("EditorConfigFiles")));
 

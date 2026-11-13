@@ -39,6 +39,7 @@ internal static class Program
         "Directory.Build.props",
         "Directory.Build.targets",
         "scripts/benchmark-grimoire-admission.sh",
+        "scripts/prepare_macos_nativeaot_gc.py",
         CatalogPath,
         BenchmarkPrefix + "grimoire-admission-workload-v1.json",
         BenchmarkPrefix + "packages.lock.json",

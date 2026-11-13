@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/actions/workflows/ci.yml/badge.svg)](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/Retro-Downfall/RetroDownfall.Arcanum?include_prereleases&sort=semver&label=release)](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/releases)
-[![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://dotnet.microsoft.com/)
+[![.NET 11](https://img.shields.io/badge/.NET-11-512BD4)](https://dotnet.microsoft.com/)
 [![Native AOT](https://img.shields.io/badge/Native%20AOT-yes-2ea44f)](#one-executable-no-runtime)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20arm64%20%C2%B7%20Windows%20x64%2Farm64-blue)](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/releases)
 
@@ -178,7 +178,7 @@ These are active development projects and planned extensions to the capabilities
 | **Optional context compression** | Opt in to a separately installed local SuperCompress proxy for compatible inference requests, with explicit routing and failure behavior. | No guaranteed token savings or bundled proxy runtime. |
 | **Homebrew distribution** | A maintained tap for the CLI plus Compendium and Forge casks, updated from published release assets. | Use the release-download instructions below today. |
 
-Windows sandbox qualification, platform fixes, cancellation and indexing reliability, dependency maintenance, and a future stable .NET 11 / EF Core 11 migration are also planned.
+Windows sandbox qualification, platform fixes, cancellation and indexing reliability, dependency maintenance, and a future EF Core 11 query migration are also planned.
 
 ---
 
@@ -186,14 +186,14 @@ Windows sandbox qualification, platform fixes, cancellation and indexing reliabi
 
 Grab a build from the [latest release](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/releases).
 
-**macOS (Apple Silicon)** — signed with a Developer ID certificate and notarized.
+**macOS (Apple Silicon M1 or newer)** — signed with a Developer ID certificate and notarized.
 
 ```bash
 unzip arcanum-osx-arm64.zip && cd arcanum-osx-arm64
 ./arcanum setup
 ```
 
-**Windows (x64 or arm64)** — unsigned, so SmartScreen may warn.
+**Windows (x64 or arm64)** — unsigned, so SmartScreen may warn. The .NET 11 Native AOT baseline requires x86-64-v2 on x64 or LSE instructions on arm64; see the [runtime hardware requirements](https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-11/runtime#updated-minimum-hardware-requirements).
 
 ```powershell
 Expand-Archive .\arcanum-win-x64.zip -DestinationPath .
@@ -242,7 +242,7 @@ arcanum key list               # what credentials Arcanum holds (presence and st
 
 **Current operator limitations** — an honest list of what does not work yet, in [`Arcanum.Engineering.md`](docs/Arcanum.Engineering.md#current-operator-limitations). Worth reading before you rely on anything here.
 
-**Stack:** .NET 10 · ASP.NET Core Minimal API · Native AOT on macOS and Windows · `Microsoft.Extensions.AI` · EF Core 10 + hermetic SQLCipher 4.17.0 · Avalonia · MCP client (stdio + HTTP)
+**Stack:** .NET 11 · ASP.NET Core Minimal API · Native AOT on macOS and Windows · `Microsoft.Extensions.AI` · EF Core 10 + hermetic SQLCipher 4.17.0 · Avalonia · MCP client (stdio + HTTP)
 
 ## Contributing
 

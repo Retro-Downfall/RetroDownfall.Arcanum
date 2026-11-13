@@ -84,9 +84,16 @@ class TargetRuntimeSelectionTests(unittest.TestCase):
     def run_runtime_selection(self, selected, framework="net10.0"):
         with tempfile.TemporaryDirectory() as directory:
             props = Path(directory) / "Directory.Build.props"
+            policy = Path(directory) / "global.json"
+            policy.write_text(json.dumps({"sdk": {"version": "10.0.401", "rollForward": "latestMajor", "allowPrerelease": False}}))
             props.write_text(f"<Project><PropertyGroup><TargetFramework>{framework}</TargetFramework></PropertyGroup></Project>")
             return subprocess.run([sys.executable, str(SCRIPT), "--runtime-sdk-version", selected,
-                                   "--build-props", str(props)], cwd=ROOT, text=True, capture_output=True)
+                                   "--build-props", str(props), "--global-json", str(policy)], cwd=ROOT, text=True, capture_output=True)
+
+    def test_active_application_target_selects_dotnet_11_runtime(self):
+        result = subprocess.run([sys.executable, str(SCRIPT), "--runtime-sdk-version", "12.0.100"], cwd=ROOT, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "11.0.x")
 
     def test_newer_stable_sdk_also_installs_the_target_framework_sdk_channel(self):
         result = self.run_runtime_selection("11.0.100")
@@ -144,26 +151,26 @@ class SdkInstallerTests(unittest.TestCase):
     def test_installer_requires_both_target_framework_runtimes_with_a_newer_sdk(self):
         action = (ROOT / ".github/actions/setup-dotnet/action.yml").read_text()
         script = "\n".join(line[8:] for line in action.rsplit("      run: |\n", 1)[1].splitlines())
-        base = "Microsoft.NETCore.App 11.0.0 [/isolated/shared/Microsoft.NETCore.App]\nMicrosoft.AspNetCore.App 11.0.0 [/isolated/shared/Microsoft.AspNetCore.App]\n"
+        base = "Microsoft.NETCore.App 10.0.15 [/isolated/shared/Microsoft.NETCore.App]\nMicrosoft.AspNetCore.App 10.0.15 [/isolated/shared/Microsoft.AspNetCore.App]\n"
         for runtimes, missing in (
-            (base + "Microsoft.NETCore.App 10.0.15 [/isolated/shared/Microsoft.NETCore.App]\n", "Microsoft.AspNetCore.App"),
-            (base + "Microsoft.AspNetCore.App 10.0.15 [/isolated/shared/Microsoft.AspNetCore.App]\n", "Microsoft.NETCore.App"),
-            (base + "Microsoft.NETCore.App 10.0.15 [/isolated/shared/Microsoft.NETCore.App]\nMicrosoft.AspNetCore.App 10.0.15 [/isolated/shared/Microsoft.AspNetCore.App]\n", None),
+            (base + "Microsoft.NETCore.App 11.0.0 [/isolated/shared/Microsoft.NETCore.App]\n", "Microsoft.AspNetCore.App"),
+            (base + "Microsoft.AspNetCore.App 11.0.0 [/isolated/shared/Microsoft.AspNetCore.App]\n", "Microsoft.NETCore.App"),
+            (base + "Microsoft.NETCore.App 11.0.0 [/isolated/shared/Microsoft.NETCore.App]\nMicrosoft.AspNetCore.App 11.0.0 [/isolated/shared/Microsoft.AspNetCore.App]\n", None),
         ):
             with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
                 executable = Path(directory) / "dotnet"
-                executable.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then echo 11.0.100; else printf "%s" "$TEST_RUNTIMES"; fi\n')
+                executable.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then echo 12.0.100; else printf "%s" "$TEST_RUNTIMES"; fi\n')
                 executable.chmod(0o755)
                 summary = Path(directory) / "summary"
                 environment = dict(os.environ, PATH=directory + os.pathsep + os.environ["PATH"],
-                                   SDK_VERSION="11.0.100", PYTHON_COMMAND=sys.executable,
+                                   SDK_VERSION="12.0.100", PYTHON_COMMAND=sys.executable,
                                    GITHUB_STEP_SUMMARY=str(summary), TEST_RUNTIMES=runtimes)
                 result = subprocess.run(["bash", "-c", script], cwd=ROOT, env=environment, text=True, capture_output=True)
                 self.assertEqual(result.returncode == 0, missing is None, result.stdout + result.stderr)
                 if missing:
-                    self.assertIn(missing + " 10.0", result.stderr)
+                    self.assertIn(missing + " 11.0", result.stderr)
                 else:
-                    self.assertIn("Selected stable .NET SDK: 11.0.100", summary.read_text())
+                    self.assertIn("Selected stable .NET SDK: 12.0.100", summary.read_text())
 
     def test_installer_provisions_the_derived_compatibility_sdk_before_verifying_runtimes(self):
         action = (ROOT / ".github/actions/setup-dotnet/action.yml").read_text()
@@ -178,17 +185,17 @@ class SdkInstallerTests(unittest.TestCase):
         # Execute the real composite action's final shell block against a controlled dotnet boundary.
         script = action.rsplit("      run: |\n", 1)[1]
         script = "\n".join(line[8:] for line in script.splitlines())
-        for actual, expected_status in (("10.0.402", 0), ("11.0.100", 1), ("10.0.401", 1)):
+        for actual, expected_status in (("11.0.101", 0), ("12.0.100", 1), ("11.0.100", 1)):
             with self.subTest(actual=actual), tempfile.TemporaryDirectory() as directory:
                 executable = Path(directory) / "dotnet"
-                executable.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then echo ' + actual + '; else printf "Microsoft.NETCore.App 10.0.15 [/isolated/shared/Microsoft.NETCore.App]\\nMicrosoft.AspNetCore.App 10.0.15 [/isolated/shared/Microsoft.AspNetCore.App]\\n"; fi\n')
+                executable.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then echo ' + actual + '; else printf "Microsoft.NETCore.App 11.0.0 [/isolated/shared/Microsoft.NETCore.App]\\nMicrosoft.AspNetCore.App 11.0.0 [/isolated/shared/Microsoft.AspNetCore.App]\\n"; fi\n')
                 executable.chmod(0o755)
                 summary = Path(directory) / "summary"
-                environment = dict(os.environ, PATH=directory + os.pathsep + os.environ["PATH"], SDK_VERSION="10.0.402", PYTHON_COMMAND=sys.executable, GITHUB_STEP_SUMMARY=str(summary))
+                environment = dict(os.environ, PATH=directory + os.pathsep + os.environ["PATH"], SDK_VERSION="11.0.101", PYTHON_COMMAND=sys.executable, GITHUB_STEP_SUMMARY=str(summary))
                 result = subprocess.run(["bash", "-c", script], env=environment, text=True, capture_output=True)
                 self.assertEqual(result.returncode, expected_status, result.stderr)
                 if expected_status == 0:
-                    self.assertIn("Selected stable .NET SDK: 10.0.402", summary.read_text())
+                    self.assertIn("Selected stable .NET SDK: 11.0.101", summary.read_text())
                 else:
                     self.assertIn("SDK selection mismatch", result.stderr)
                     self.assertFalse(summary.exists())

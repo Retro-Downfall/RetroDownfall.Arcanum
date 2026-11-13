@@ -1,6 +1,7 @@
 R	Directory.Build.props
 R	Directory.Build.targets
 R	scripts/benchmark-grimoire-admission.sh
+R	scripts/prepare_macos_nativeaot_gc.py
 R	src/RetroDownfall.Arcanum.Core/Annals/AnnalClaimVersion.cs
 R	src/RetroDownfall.Arcanum.Core/Annals/AnnalContentDigest.cs
 R	src/RetroDownfall.Arcanum.Core/Annals/AnnalEnums.cs

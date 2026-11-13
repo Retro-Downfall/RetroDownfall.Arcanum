@@ -2,7 +2,7 @@
 
   <PropertyGroup>
 
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
 
     <Nullable>enable</Nullable>
 
@@ -60,7 +60,9 @@
          version (NativeSqlCipher once kept the older baseline while every other project applied a
          per-project Update). PackageVersionConsistencyTests fails if any project resolves a
          different version. -->
-    <PackageReference Include="Microsoft.Bcl.Memory" Version="10.0.10" />
+    <!-- The vendored upstream SQLite provider has no tokenizer shim and retains its own framework
+         and dependency surface. Do not inject this application dependency into its build. -->
+    <PackageReference Include="Microsoft.Bcl.Memory" Version="11.0.0" Condition="'$(MSBuildProjectName)' != 'Microsoft.Data.Sqlite.Core'" />
 
   </ItemGroup>
 

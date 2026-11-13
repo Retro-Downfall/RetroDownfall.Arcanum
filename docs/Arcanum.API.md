@@ -1735,14 +1735,14 @@ All routes have the unique names below and use generated records. Every mutation
 
 The authenticated native Operator physical-spend routes use `/api/guild/quests/{questId}/spend` as their base and the normal `ApiResponse<T>` envelope:
 
-| Method and suffix | Route name and payload |
+| Method/path | Route name and payload |
 |---|---|
-| `GET /effects` | `GuildListSpendEffects` → `GuildSpendEffectPageDto` |
-| `GET /effects/{effectId}` | `GuildGetSpendEffect` → `GuildSpendEffectDto` |
-| `POST /effects/{effectId}/corrections` | `GuildCorrectSpendEffect`; `GuildSpendCorrectionRequest` → `GuildSpendCorrectionResultDto` |
-| `POST /effects/{effectId}/refreshes` | `GuildRefreshSpendEffect`; `GuildSpendRefreshRequest` → `GuildSpendRefreshResultDto` |
-| `GET /effects/{effectId}/receipts` | `GuildListSpendReceipts` → `GuildSpendReceiptPageDto` |
-| `GET /effects/{effectId}/receipts/{receiptId}` | `GuildGetSpendReceipt` → `GuildSpendReceiptDto` |
+| `GET /api/guild/quests/{questId}/spend/effects` | `GuildListSpendEffects` → `GuildSpendEffectPageDto` |
+| `GET /api/guild/quests/{questId}/spend/effects/{effectId}` | `GuildGetSpendEffect` → `GuildSpendEffectDto` |
+| `POST /api/guild/quests/{questId}/spend/effects/{effectId}/corrections` | `GuildCorrectSpendEffect`; `GuildSpendCorrectionRequest` → `GuildSpendCorrectionResultDto` |
+| `POST /api/guild/quests/{questId}/spend/effects/{effectId}/refreshes` | `GuildRefreshSpendEffect`; `GuildSpendRefreshRequest` → `GuildSpendRefreshResultDto` |
+| `GET /api/guild/quests/{questId}/spend/effects/{effectId}/receipts` | `GuildListSpendReceipts` → `GuildSpendReceiptPageDto` |
+| `GET /api/guild/quests/{questId}/spend/effects/{effectId}/receipts/{receiptId}` | `GuildGetSpendReceipt` → `GuildSpendReceiptDto` |
 
 The refresh result includes `operationId`, nullable `receipt`, `replayed`, `inFlight`, `requiresAttention`, nullable `errorCode`, and `cancelled`. A terminal cancellation returns HTTP 200, `cancelled: true`, no receipt, and `Guild.RefreshCancelled`; an in-flight or attention-required observation returns HTTP 202. A committed receipt wins a cancellation race and remains replayable with HTTP 200. Generic operation cancellation acknowledges a durable signal; it does not prove physical work has stopped. Generic retry revalidates current authority and source before waking only the selected refresh; refusal leaves it parked.
 

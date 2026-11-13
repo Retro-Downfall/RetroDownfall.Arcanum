@@ -1,4 +1,8 @@
 using System.Collections.Concurrent;
+using System.Buffers.Binary;
+using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
+using System.Reflection.PortableExecutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.Extensions.AI;
@@ -49,6 +53,101 @@ public sealed class AiReflectionProductionClosureTests
         using ClosureFixture fixture = new();
 
         Assert.Empty(AiReflectionProductionClosure.Scan(fixture.Root, fixture.Assemblies));
+    }
+
+    [Theory]
+    [InlineData("valid")]
+    [InlineData("generic")]
+    [InlineData("wrong-generic")]
+    [InlineData("wrong-version")]
+    [InlineData("missing-body")]
+    [InlineData("ambiguous")]
+    [InlineData("uninventoried")]
+    [InlineData("forbidden")]
+    public void Instance_accessors_resolve_only_exact_targets_in_the_complete_scanned_closure(string control)
+    {
+        using ClosureFixture fixture = new();
+
+        string targetName = control == "uninventoried" ? "Uninventoried.Target" : "RetroDownfall.Arcanum.Core";
+
+        bool generic = control is "generic" or "wrong-generic";
+
+        byte[] Target(string version) => CompileSource(targetName, $$"""
+            [assembly: System.Reflection.AssemblyVersion("{{version}}")]
+            public sealed class AccessorHolder{{(generic ? "<T>" : "")}}
+            {
+                public {{(generic ? "T" : "string")}} Value { get; init; } = default!;
+                public void Other(string value) { }
+                public object Execute() => {{(control == "forbidden" ? "Microsoft.Extensions.AI.AIFunctionFactory.Create((System.Action)(() => { }))" : "new object()")}};
+            }
+            """, FixtureReferences);
+
+        byte[] referenceTarget = Target("1.0.0.0");
+
+        byte[] caller = CompileSource("RetroDownfall.Arcanum.Api", $$"""
+            public static class Fixture
+            {
+                [System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Method, Name = "{{(control == "forbidden" ? "Execute" : "set_Value")}}")]
+                public static extern {{(control == "forbidden" ? "object Probe(AccessorHolder instance)" : "void Probe(AccessorHolder" + (generic ? "<string>" : "") + " instance, " + (control == "wrong-generic" ? "int" : "string") + " value)")}};
+            }
+            """, [.. FixtureReferences.Where(reference => Path.GetFileNameWithoutExtension(reference.Display) != targetName), MetadataReference.CreateFromImage(referenceTarget)]);
+
+        byte[] target = control == "wrong-version" ? Target("2.0.0.0") : referenceTarget;
+
+        if (control is "missing-body" or "ambiguous")
+        {
+            using PEReader pe = new(new MemoryStream(target, writable: false));
+
+            MetadataReader metadata = pe.GetMetadataReader();
+
+            MethodDefinitionHandle setter = Assert.Single(metadata.MethodDefinitions, handle =>
+                metadata.GetString(metadata.GetMethodDefinition(handle).Name) == "set_Value");
+
+            int Row(MethodDefinitionHandle handle) => pe.PEHeaders.MetadataStartOffset
+                + metadata.GetTableMetadataOffset(TableIndex.MethodDef)
+                + (MetadataTokens.GetRowNumber(handle) - 1) * metadata.GetTableRowSize(TableIndex.MethodDef);
+
+            if (control == "missing-body")
+            {
+                BinaryPrimitives.WriteInt32LittleEndian(target.AsSpan(Row(setter), sizeof(int)), 0);
+            }
+            else
+            {
+                MethodDefinitionHandle other = Assert.Single(metadata.MethodDefinitions, handle =>
+                    metadata.GetString(metadata.GetMethodDefinition(handle).Name) == "Other");
+
+                int namesAndSignatureSize = (metadata.GetHeapSize(HeapIndex.String) > ushort.MaxValue ? 4 : 2)
+                    + (metadata.GetHeapSize(HeapIndex.Blob) > ushort.MaxValue ? 4 : 2);
+
+                target.AsSpan(Row(setter) + 6, sizeof(ushort) + namesAndSignatureSize).CopyTo(target.AsSpan(Row(other) + 6));
+            }
+        }
+
+        AiReflectionAssembly api = fixture.Assemblies.Single(assembly => Path.GetFileNameWithoutExtension(assembly.ProjectPath) == "RetroDownfall.Arcanum.Api");
+
+        AiReflectionAssembly core = fixture.Assemblies.Single(assembly => Path.GetFileNameWithoutExtension(assembly.ProjectPath) == "RetroDownfall.Arcanum.Core");
+
+        File.WriteAllBytes(api.AssemblyPath, caller);
+
+        if (control != "uninventoried")
+        {
+            File.WriteAllBytes(core.AssemblyPath, target);
+        }
+
+        if (control is "valid" or "generic")
+        {
+            Assert.Empty(AiReflectionProductionClosure.Scan(fixture.Root, fixture.Assemblies));
+        }
+        else if (control == "forbidden")
+        {
+            AiReflectionViolation violation = Assert.Single(AiReflectionProductionClosure.Scan(fixture.Root, fixture.Assemblies));
+
+            Assert.Contains("AccessorHolder.Execute", violation.Caller, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Throws<InvalidDataException>(() => AiReflectionProductionClosure.Scan(fixture.Root, fixture.Assemblies));
+        }
     }
 
     [Theory]
@@ -253,10 +352,15 @@ public sealed class AiReflectionProductionClosureTests
             ? "using System; using Microsoft.Extensions.AI; public static class Fixture { public static AIFunction Probe() => AIFunctionFactory.Create((Func<int>)(() => 1)); }"
             : "public static class Fixture { public static int Probe() => 1; }";
 
+        return CompileSource(assemblyName, source, FixtureReferences);
+    }
+
+    private static byte[] CompileSource(string assemblyName, string source, IEnumerable<MetadataReference> references)
+    {
         CSharpCompilation compilation = CSharpCompilation.Create(
             assemblyName,
             [CSharpSyntaxTree.ParseText(source)],
-            FixtureReferences,
+            references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
         using MemoryStream output = new();

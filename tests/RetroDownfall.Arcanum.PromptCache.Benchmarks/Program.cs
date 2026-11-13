@@ -113,7 +113,7 @@ static async Task<PromptCacheBenchmarkIdentity> IdentityAsync(string root, Cance
 
     using JsonDocument lockFile = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(root, "tests/RetroDownfall.Arcanum.PromptCache.Benchmarks/packages.lock.json"), ct));
 
-    var packages = lockFile.RootElement.GetProperty("dependencies").GetProperty("net10.0");
+    var packages = lockFile.RootElement.GetProperty("dependencies").GetProperty("net11.0");
 
     string libraries = $"OpenAI={packages.GetProperty("OpenAI").GetProperty("resolved").GetString()};Microsoft.Extensions.AI={packages.GetProperty("Microsoft.Extensions.AI").GetProperty("resolved").GetString()};Microsoft.Extensions.AI.OpenAI={packages.GetProperty("Microsoft.Extensions.AI.OpenAI").GetProperty("resolved").GetString()}";
 

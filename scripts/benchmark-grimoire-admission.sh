@@ -199,6 +199,7 @@ derive_revision_catalog()
         Directory.Build.props \
         Directory.Build.targets \
         scripts/benchmark-grimoire-admission.sh \
+        scripts/prepare_macos_nativeaot_gc.py \
         tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/grimoire-admission-input-catalog-v1.txt \
         tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/grimoire-admission-workload-v1.json \
         tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/packages.lock.json \

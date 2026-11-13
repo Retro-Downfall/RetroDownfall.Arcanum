@@ -21,7 +21,17 @@ internal static class AiReflectionBoundaryScanner
         .Where(static instruction => instruction.OpCodeType != OpCodeType.Nternal)
         .ToDictionary(static instruction => unchecked((ushort)instruction.Value));
 
-    internal static IReadOnlyList<AiReflectionViolation> FindForbiddenReferences(byte[] image)
+    internal static IReadOnlyList<AiReflectionViolation> FindForbiddenReferences(byte[] image) =>
+        FindForbiddenReferencesInClosure([image]);
+
+    internal static IReadOnlyList<AiReflectionViolation> FindForbiddenReferencesInClosure(IReadOnlyList<byte[]> images)
+    {
+        using AiReflectionAccessorCatalog catalog = new(images);
+
+        return [.. images.SelectMany(image => ScanImage(image, catalog))];
+    }
+
+    private static IReadOnlyList<AiReflectionViolation> ScanImage(byte[] image, AiReflectionAccessorCatalog catalog)
     {
         string assembly = "<unreadable assembly>";
 
@@ -69,7 +79,8 @@ internal static class AiReflectionBoundaryScanner
                     if ((method.Attributes & (MethodAttributes.Abstract | MethodAttributes.PinvokeImpl)) == 0
                         && (method.ImplAttributes & MethodImplAttributes.CodeTypeMask) != MethodImplAttributes.Runtime
                         && (method.ImplAttributes & MethodImplAttributes.InternalCall) == 0
-                        && !names.IsRuntimeFieldAccessor(method))
+                        && !names.IsRuntimeFieldAccessor(method)
+                        && !catalog.ResolvesInstanceMethod(names, method))
                     {
                         throw new BadImageFormatException("Ordinary managed method is missing its IL body.");
                     }

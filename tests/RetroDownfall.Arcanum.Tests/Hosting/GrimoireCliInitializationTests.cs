@@ -160,24 +160,12 @@ public sealed class GrimoireCliInitializationTests : IDisposable
             // started task without replacing the original assertion or bootstrap exception.
             if (first is not null)
             {
-                try
-                {
-                    _ = await first;
-                }
-                catch (Exception)
-                {
-                }
+                _ = await Record.ExceptionAsync(async () => { _ = await first; });
             }
 
             if (second is not null)
             {
-                try
-                {
-                    _ = await second;
-                }
-                catch (Exception)
-                {
-                }
+                _ = await Record.ExceptionAsync(async () => { _ = await second; });
             }
         }
     }

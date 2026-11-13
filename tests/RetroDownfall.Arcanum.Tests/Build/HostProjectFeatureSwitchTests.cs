@@ -185,7 +185,7 @@ public sealed class HostProjectFeatureSwitchTests
             .ToArray();
 
         Assert.Equal("$(BundledNETCoreAppPackageVersion)", auditedPackageVersion.Value.Trim());
-        Assert.Equal(5, auditedPackageHashes.Length);
+        Assert.Equal(6, auditedPackageHashes.Length);
         Assert.Contains(
             auditedPackageHashes,
             static element => string.IsNullOrEmpty(element.Value) && element.Attribute("Condition") is null);
@@ -221,6 +221,14 @@ public sealed class HostProjectFeatureSwitchTests
                     StringComparison.Ordinal)
                 && element.Value.Trim()
                     == "SaeXGZoDmwJs/4kLtoaLvpFDl6lTOEytpx/ZR3jtqVRI44farCSXizx3K7QX5T4sBMgLptfLF1Z0lfdGO7qDpw==");
+        Assert.Contains(
+            auditedPackageHashes,
+            static element =>
+                ((string?)element.Attribute("Condition") ?? string.Empty).Contains(
+                    "11.0.0",
+                    StringComparison.Ordinal)
+                && element.Value.Trim()
+                    == "m+K+2uqcmGRUYCLuy3yhbPAEaggNQAn8nrYogADqf1MtnosytxLihutOeMZ5zSSSjvs9VhEyrbnfH5/VdAkcRQ==");
         Assert.True(IsMacOsNativeAotGated(auditedPackageVersion));
 
         foreach (XElement auditedPackageHash in auditedPackageHashes)
@@ -529,6 +537,16 @@ public sealed class HostProjectFeatureSwitchTests
         Assert.Contains("<Copy", targetsText, StringComparison.Ordinal);
         Assert.Contains("strip -S", targetsText, StringComparison.Ordinal);
         Assert.Contains("_ArcanumPortableNativeAotFile", targetsText, StringComparison.Ordinal);
+
+        XElement gcPreparation = Assert.Single(prepareCryptoArchive.Descendants(), static element =>
+            element.Name.LocalName == "Exec" && ((string?)element.Attribute("Command") ?? "").Contains("prepare_macos_nativeaot_gc.py", StringComparison.Ordinal));
+
+        Assert.Equal("'$(ArcanumPortableMacOsNativeAotPackageVersion)' == '11.0.0'", (string?)gcPreparation.Attribute("Condition"));
+
+        Assert.Contains("$(_ArcanumPortableNativeAotPath)libRuntime.WorkstationGC.a", (string?)gcPreparation.Attribute("Command"), StringComparison.Ordinal);
+
+        Assert.Contains("$(_ArcanumPreparedNativeAotPath)libRuntime.WorkstationGC.a", (string?)gcPreparation.Attribute("Command"), StringComparison.Ordinal);
+
         Assert.Contains(
             "<IlcFrameworkNativePath>$(_ArcanumPreparedNativeAotPath)</IlcFrameworkNativePath>",
             targetsText,
@@ -658,6 +676,7 @@ public sealed class HostProjectFeatureSwitchTests
     [InlineData("10.0.12")]
     [InlineData("10.0.13")]
     [InlineData("10.0.14")]
+    [InlineData("11.0.0")]
     public async Task MacOS_native_aot_restore_collects_the_portable_pack_for_plural_runtime_identifiers(string version)
     {
         string temporaryRoot = Directory
@@ -838,7 +857,7 @@ public sealed class HostProjectFeatureSwitchTests
     public Task MacOS_native_aot_hashes_the_package_bytes_instead_of_trusting_nugets_record() =>
         AssertTamperedPackageRejectedAsync(
             recordedHash:
-                "NIe+WI0m5L4HrZ9b+wOhCUkrT3WZyIC8MQuHGzkvJyfUyR8ImMXYJIu3TiJsdLHUkgkqPK92AGQt7CQIc6vydQ==",
+                "m+K+2uqcmGRUYCLuy3yhbPAEaggNQAn8nrYogADqf1MtnosytxLihutOeMZ5zSSSjvs9VhEyrbnfH5/VdAkcRQ==",
             overriddenHash: null,
             expectedDiagnostic: "MSB3952");
 
@@ -850,6 +869,15 @@ public sealed class HostProjectFeatureSwitchTests
             overriddenHash:
                 "scNTItQptu9RlVE4qf6hke/EcUc3CdkHaTCsgjdltzBvaYi6oo/VKckg9zzdQlCGqNH596bKGeEpTcW1ojKHag==",
             expectedDiagnostic: "ARCAOT007");
+
+    [Fact]
+    public Task MacOS_native_aot_refuses_a_missing_dotnet_11_portable_package() =>
+        AssertTamperedPackageRejectedAsync(
+            recordedHash:
+                "m+K+2uqcmGRUYCLuy3yhbPAEaggNQAn8nrYogADqf1MtnosytxLihutOeMZ5zSSSjvs9VhEyrbnfH5/VdAkcRQ==",
+            overriddenHash: null,
+            expectedDiagnostic: "ARCAOT006",
+            packagePresent: false);
 
     [Fact]
     public async Task MacOS_native_aot_ignores_caller_path_redirects_and_uses_the_verified_package()
@@ -993,9 +1021,10 @@ public sealed class HostProjectFeatureSwitchTests
     private static async Task AssertTamperedPackageRejectedAsync(
         string recordedHash,
         string? overriddenHash,
-        string expectedDiagnostic)
+        string expectedDiagnostic,
+        bool packagePresent = true)
     {
-        const string version = "10.0.11";
+        const string version = "11.0.0";
         string temporaryRoot = Directory
             .CreateTempSubdirectory("arcanum-nativeaot-package-")
             .FullName;
@@ -1033,6 +1062,13 @@ public sealed class HostProjectFeatureSwitchTests
                     packageRoot,
                     $"microsoft.netcore.app.runtime.nativeaot.osx-arm64.{version}.nupkg"),
                 "tampered package bytes");
+
+            if (!packagePresent)
+            {
+                File.Delete(Path.Combine(
+                    packageRoot,
+                    $"microsoft.netcore.app.runtime.nativeaot.osx-arm64.{version}.nupkg"));
+            }
 
             string project = Path.Combine(
                 FindRepositoryRoot(),
