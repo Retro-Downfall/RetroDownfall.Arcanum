@@ -203,6 +203,80 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(0, await CampaignScalarCountAsync("SELECT count(*) FROM pragma_foreign_key_check"));
     }
 
+    [SkippableFact]
+    public async Task Factory_reset_refuses_reinserted_provider_source_without_rotating_authority()
+    {
+        RequireSqlCipher();
+
+        await _db!.Database.OpenConnectionAsync();
+
+        (Guid sessionId, _) = await SeedSessionAsync(pinned: false);
+
+        var captured = await GuildQuestStoreTests.CaptureAndCompleteForResetAsync(_db.Database.GetDbConnection().ConnectionString, sessionId);
+
+        SqliteConnection connection = (SqliteConnection)_db.Database.GetDbConnection();
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT KeyId || AuthorityEpoch || hex(CredentialKey) FROM guild_spend_authority_state";
+
+        string authority = Assert.IsType<string>(await command.ExecuteScalarAsync());
+
+        command.CommandText = "SELECT name FROM pragma_table_info('guild_spend_sources') ORDER BY cid";
+
+        List<string> columns = [];
+
+        await using (SqliteDataReader reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync()) columns.Add(reader.GetString(0));
+        }
+
+        string[] deferred = ["GenerationId", "InitialSnapshot", "InitialDigest", "InitialOutcome", "InitialEventSequence"];
+
+        string names = string.Join(",", columns.Select(column => "\"" + column + "\""));
+
+        string values = string.Join(",", columns.Select(column => deferred.Contains(column, StringComparer.Ordinal)
+            ? "NULL" : "OLD.\"" + column + "\""));
+
+        string restored = string.Join(",", deferred.Select(column => "\"" + column + "\"=OLD.\"" + column + "\""));
+
+        command.CommandText = "PRAGMA foreign_keys=OFF";
+
+        await command.ExecuteNonQueryAsync();
+
+        int reinsertionCount = 0;
+
+        connection.CreateFunction("task22_observe_reinsert", () => ++reinsertionCount);
+
+        command.CommandText = $"CREATE TEMP TRIGGER retain_provider_source AFTER DELETE ON guild_spend_sources BEGIN INSERT INTO guild_spend_sources({names}) VALUES({values}); UPDATE guild_spend_sources SET {restored} WHERE EffectId=OLD.EffectId; SELECT task22_observe_reinsert(); END";
+
+        await command.ExecuteNonQueryAsync();
+
+        var reset = await ReconcileFactoryResetV0Async(CreateService(), "guild-retained-source-reset");
+
+        Assert.Equal(0, reset.Summary.Completed);
+
+        Assert.Equal(1, reset.Summary.RequiresAttention);
+
+        Assert.Equal(1, reinsertionCount);
+
+        Assert.Equal(1, await CampaignScalarCountAsync("SELECT count(*) FROM guild_spend_authority_state"));
+
+        Assert.Equal(1, await CampaignScalarCountAsync("SELECT count(*) FROM guild_spend_sources"));
+
+        Assert.Equal(1, await CampaignScalarCountAsync("SELECT count(*) FROM guild_spend_receipts"));
+
+        command.CommandText = "SELECT KeyId || AuthorityEpoch || hex(CredentialKey) FROM guild_spend_authority_state";
+
+        Assert.Equal(authority, await command.ExecuteScalarAsync());
+
+        await using SqliteTransaction transaction = connection.BeginTransaction();
+
+        var verified = await captured.Credential.VerifyWithinAsync(connection, transaction, captured.EffectId, captured.InstallationGeneration, default);
+
+        Assert.True(verified.IsSuccess, verified.IsFailure ? verified.Error.Message : null);
+    }
+
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
