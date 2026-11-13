@@ -328,8 +328,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 Assert.Equal("both answers received", durableParent.Value.Body);
 
-
-
                 Assert.True(converged.Spend.UnknownUsd);
 
                 Assert.True(converged.Spend.UnknownTokens);
@@ -807,28 +805,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 (process, int port, string key, int attempts) = await StartChildAsync(home, modelUrl, ct, firstPort, null);
 
-                using (HttpClient admin = new())
-                {
-                    admin.DefaultRequestHeaders.Add("X-Arcanum-Key", key);
+                await VerifyEffectiveConfigurationAsync(port, key, ct);
 
-                    using HttpResponseMessage response = await admin.GetAsync($"http://localhost:{port}/api/config", ct);
-
-                    response.EnsureSuccessStatusCode();
-
-                    using JsonDocument effective = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-
-                    JsonElement effectiveConfig = effective.RootElement.GetProperty("data");
-
-                    Assert.False(effectiveConfig.GetProperty("cost").GetProperty("budget").GetProperty("enabled").GetBoolean());
-
-                    Assert.Equal("None", effectiveConfig.GetProperty("providers")[0].GetProperty("guildUsageReconciliation").GetString(), ignoreCase: true);
-
-                    JsonElement peerGrant = effectiveConfig.GetProperty("integrations").GetProperty("a2A").GetProperty("inboundPeers")[0].GetProperty("grant");
-
-                    Assert.Equal("unlimited", peerGrant.GetProperty("budget").GetProperty("usd").GetProperty("mode").GetString(), ignoreCase: true);
-
-                    Assert.Equal("unlimited", peerGrant.GetProperty("budget").GetProperty("tokens").GetProperty("mode").GetString(), ignoreCase: true);
-                }
                 MixedPeer result = new(provider, process, home, port, modelUrl, key) { StartupAttempts = attempts };
 
                 result.GetCounts = () => (Volatile.Read(ref posts), Volatile.Read(ref gets));
@@ -843,6 +821,31 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 throw;
             }
+        }
+
+        private static async Task VerifyEffectiveConfigurationAsync(int port, string key, CancellationToken ct)
+        {
+            using HttpClient admin = new();
+
+            admin.DefaultRequestHeaders.Add("X-Arcanum-Key", key);
+
+            using HttpResponseMessage response = await admin.GetAsync($"http://localhost:{port}/api/config", ct);
+
+            response.EnsureSuccessStatusCode();
+
+            using JsonDocument effective = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+
+            JsonElement effectiveConfig = effective.RootElement.GetProperty("data");
+
+            Assert.False(effectiveConfig.GetProperty("cost").GetProperty("budget").GetProperty("enabled").GetBoolean());
+
+            Assert.Equal("None", effectiveConfig.GetProperty("providers")[0].GetProperty("guildUsageReconciliation").GetString(), ignoreCase: true);
+
+            JsonElement peerGrant = effectiveConfig.GetProperty("integrations").GetProperty("a2A").GetProperty("inboundPeers")[0].GetProperty("grant");
+
+            Assert.Equal("unlimited", peerGrant.GetProperty("budget").GetProperty("usd").GetProperty("mode").GetString(), ignoreCase: true);
+
+            Assert.Equal("unlimited", peerGrant.GetProperty("budget").GetProperty("tokens").GetProperty("mode").GetString(), ignoreCase: true);
         }
 
         internal static bool IsAddressInUse(string output) => output.Split('\n').Any(line =>
@@ -1044,6 +1047,8 @@ public sealed partial class GuildLocalHostPolicyTests
             (process, int restartedPort, _, _) = await StartChildAsync(home, modelUrl, ct, null, masterKey);
 
             Port = restartedPort;
+
+            await VerifyEffectiveConfigurationAsync(Port, masterKey, ct);
         }
 
         internal async Task<PeerPersistedSnapshot> ReadStoppedSnapshotAsync(string taskId, CancellationToken ct)
