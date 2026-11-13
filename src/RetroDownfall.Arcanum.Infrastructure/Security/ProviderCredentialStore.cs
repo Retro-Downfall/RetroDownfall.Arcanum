@@ -40,7 +40,7 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
 
     private readonly ConcurrentDictionary<string, long> _mutationGenerations = new(StringComparer.Ordinal);
 
-    // Process-local successful mutations are observed even when callers rotate A-B-A between reads.
+    // Every entered local mutation invalidates on completion, including failure; saturation refuses proof.
     internal long MutationGeneration(string providerName) =>
         _mutationGenerations.GetValueOrDefault(ArcanumCredentialIdentity.InferenceProviderApiKeyAccount(providerName));
 

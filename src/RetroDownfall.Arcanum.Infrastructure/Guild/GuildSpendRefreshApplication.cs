@@ -28,6 +28,7 @@ internal sealed partial class GuildQuestStore
             if (effectId == Guid.Empty || refreshId == Guid.Empty || caller.PrincipalId is not { } principal) return OwnerUnavailable;
 
             Guid operationId;
+
             Guid? acceptedId;
 
             await using (SqliteCommand request = Command(connection, transaction, """

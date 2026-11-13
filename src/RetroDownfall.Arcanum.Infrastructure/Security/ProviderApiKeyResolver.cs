@@ -25,8 +25,8 @@ public sealed class ProviderApiKeyResolver(
 
     /// <summary>
     /// Captures the exact credential used by a client with an opaque process-local identity.
-    /// External changes wholly between observations cannot be detected. Local successful writes
-    /// through the shared store invalidate even an unobserved A-B-A transition.
+    /// External changes wholly between observations cannot be detected. Entered local writes
+    /// through the shared store invalidate on completion, including failure or partial mutation.
     /// </summary>
     public async Task<ResolvedProviderCredential> ResolveWithIdentityAsync(
         ProviderSettings provider,

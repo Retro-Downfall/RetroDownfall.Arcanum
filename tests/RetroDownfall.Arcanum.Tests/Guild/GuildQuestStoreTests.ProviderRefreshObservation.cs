@@ -63,7 +63,6 @@ public sealed partial class GuildQuestStoreTests
         string model = SpendModel;
 
         if (column == "Provider") provider.Name = "forged-router";
-
         else model = "forged/model";
 
         GuildSpendSourceCredential credential = new(provider, model, SpendSecret);
@@ -75,7 +74,6 @@ public sealed partial class GuildQuestStoreTests
 
         await transaction.RollbackAsync();
     }
-
 
     [Fact]
     public async Task Provider_source_verification_refuses_pruned_original_bill_before_metadata_read()
@@ -105,7 +103,6 @@ public sealed partial class GuildQuestStoreTests
 
         await transaction.RollbackAsync();
     }
-
 
     [Theory]
     [InlineData("StartedAt")]
@@ -141,5 +138,4 @@ public sealed partial class GuildQuestStoreTests
 
         await transaction.RollbackAsync();
     }
-
 }

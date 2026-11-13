@@ -306,19 +306,29 @@ public sealed partial class GuildQuestStoreTests
                 f.Query.Parameters.AddWithValue("$effect", f.Scenario.EffectId.ToString("D").ToUpperInvariant());
 
                 Guid sourceId;
+
                 Guid rootId;
+
                 Guid signetEpoch;
+
                 Guid spendEpoch;
+
                 Guid spendKeyId;
 
                 await using (SqliteDataReader row = await f.Query.ExecuteReaderAsync())
                 {
                     Assert.True(await row.ReadAsync());
+
                     f.QuestId = Guid.Parse(row.GetString(0));
+
                     sourceId = Guid.Parse(row.GetString(1));
+
                     rootId = Guid.Parse(row.GetString(2));
+
                     signetEpoch = Guid.Parse(row.GetString(3));
+
                     spendEpoch = Guid.Parse(row.GetString(4));
+
                     spendKeyId = Guid.Parse(row.GetString(5));
                 }
 
