@@ -799,6 +799,231 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.True((await portal.ReadPromptAsync(claim.Value, default)).IsFailure);
     }
 
+    [Fact]
+    public async Task Financial_off_provider_emits_cohort_tools_and_real_member_converges()
+    {
+        using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
+
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        f.Settings.CurrentValue.Features.Conclave = true;
+
+        f.Settings.CurrentValue.Features.Apprentices = true;
+
+        f.Settings.CurrentValue.Cost.Budget.Enabled = false;
+
+        f.Settings.CurrentValue.Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
+            Endpoint = "https://example.test/v1", ContextWindowLimit = 131072, Models = ["accepted-model"] }];
+
+        await using GuildLocalHostReadiness readiness = new(f.Settings, f.Connections, f.Policy, f.Authority,
+            TimeProvider.System, Path.Combine(f.WorkspaceRoot, "host.lock"), f.Gate);
+
+        f.Readiness.Inner = readiness;
+
+        Assert.True((await readiness.EnsureReadyAsync(default)).IsSuccess);
+
+        GuildCallerContext owner = await f.OperatorAsync();
+
+        var root = await f.IssueAsync(owner, f.Request with { Grant = f.Request.Grant with
+            { Tools = [.. CohortTools()], Delegation = [GuildDelegationKind.Local, GuildDelegationKind.Cohort] } });
+
+        Assert.True(root.IsSuccess, root.Error.Message);
+
+        GuildLocalInferenceExecution execution = await ToolExecutionAsync(f, owner, root.Value);
+
+        var input = await f.Store.ReadLocalInputAsync(execution.Driver, default);
+
+        Assert.True(input.IsSuccess, input.Error.Message);
+
+        GuildCohortStore cohorts = new(new(f.Connections, f.Gate, TimeProvider.System), f.Authority,
+            f.Store, new GuildBudgetLedger(), f.Policy, TimeProvider.System);
+
+        ChildQueue queue = new();
+
+        ConclaveArchmage coordinator = new(null!, f.Settings, f.Store, queue, cohorts: cohorts);
+
+        var opened = await f.Connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite, default);
+
+        Assert.True(opened.IsSuccess, opened.Error.Message);
+
+        await using var connection = opened.Value;
+
+        await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection.Connection);
+
+        ArcanumSettings settings = new()
+        {
+            Features = new() { Guild = true }, DefaultModel = "accepted-model",
+            Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
+                Endpoint = "https://example.test/v1", ContextWindowLimit = 131072,
+                GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["accepted-model"] }],
+        };
+
+        settings.Cost.Budget.Enabled = false;
+
+        using FinancialOffCohortTransport transport = new();
+
+        ChatClientFactory clients = new(transport, new TestOptionsMonitor<ArcanumSettings>(settings));
+
+        WizardIntelligenceProviderTests wizard = new();
+
+        try
+        {
+            var runtime = await wizard.CreateGuildRuntimeAsync(new BudgetReservationService(db, new TestOptionsMonitor<ArcanumSettings>(settings)), settings, clients, coordinator);
+
+            using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
+
+            var parent = await runtime.Runtime.ExecuteTurnAsync(execution, input.Value,
+                new("Create a cohort, admit one member, and close it.", DisableAllTools: false), deadline.Token);
+
+            Assert.True(parent.IsSuccess, parent.Error.Message);
+
+            Assert.Equal("cohort coordination accepted", parent.Value.Text);
+
+            Assert.NotEqual(Guid.Empty, transport.CohortId);
+
+            GuildQuestDto member = await queue.Pending.Reader.ReadAsync(deadline.Token);
+
+            var recovery = await f.Policy.CreateRecoveryAsync(owner, member.Id, member.OperationId, member.SignetRevision, deadline.Token);
+
+            Assert.True(recovery.IsSuccess, recovery.Error.Message);
+
+            var handle = await f.Authority.RebindAsync(recovery.Value, deadline.Token);
+
+            Assert.True(handle.IsSuccess, handle.Error.Message);
+
+            var pending = await f.Store.ReadLocalPendingAsync(owner, member.Id, deadline.Token);
+
+            Assert.True(pending.IsSuccess, pending.Error.Message);
+
+            using ServiceProvider services = new ServiceCollection().BuildServiceProvider();
+
+            using ApprenticeService engine = new(services.GetRequiredService<IServiceScopeFactory>(), f.Settings, new ChronicleHub(),
+                NullLogger<ApprenticeService>.Instance, f.Gate);
+
+            GuildLocalPort port = new(f.Store, f.Policy, f.Authority, new LongRunningOperationStore(db, f.Connections),
+                engine, runtime.Runtime, queue, new(), TimeProvider.System);
+
+            var completed = await port.DispatchAsync(handle.Value, pending.Value.Request!, deadline.Token);
+
+            Assert.True(completed.IsSuccess, completed.Error.Message);
+
+            Assert.Equal(QuestState.Completed, completed.Value.State);
+
+            var result = await f.Store.ReadLocalResultAsync(owner, member.Id, true, deadline.Token);
+
+            Assert.True(result.IsSuccess, result.Error.Message);
+
+            Assert.Equal("cohort member answer", result.Value.Body);
+
+            Assert.NotNull(result.Value.Receipt);
+
+            var memberState = await f.Store.GetAsync(owner, member.Id, deadline.Token);
+
+            Assert.True(memberState.IsSuccess, memberState.Error.Message);
+
+            Assert.Equal(GuildAccountingState.Settled, memberState.Value.Quest.AccountingState);
+
+            var draining = await WaitForConvergenceAsync(cohorts, owner, transport.CohortId, value => value.State == GuildCohortState.Draining);
+
+            Assert.Equal(GuildConvergenceDecision.Success, draining.Decision);
+
+            var stopped = await f.Store.RefreshCancellationConvergenceAsync(owner, member.Id, deadline.Token);
+
+            Assert.True(stopped.IsSuccess, stopped.Error.Message);
+
+            Assert.True(stopped.Value);
+
+            var converged = await WaitForConvergenceAsync(cohorts, owner, transport.CohortId, value => value.State == GuildCohortState.Completed);
+
+            Assert.Equal(GuildConvergenceDecision.Success, converged.Decision);
+
+            Assert.True(converged.Spend.UnknownUsd);
+
+            Assert.True(converged.Spend.UnknownTokens);
+
+            Assert.Contains("UNTRUSTED DATA", transport.Bodies[1], StringComparison.Ordinal);
+
+            Assert.Equal(7, transport.Bodies.Count);
+
+            Assert.Equal(0, transport.MetadataGets);
+
+            Assert.Equal(7L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd=1 AND UnknownTokens=1"));
+
+            Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
+        }
+        finally
+        {
+            await wizard.DisposeAsync();
+        }
+    }
+
+    private sealed class FinancialOffCohortTransport : HttpMessageHandler, IHttpClientFactory
+    {
+        internal List<string> Bodies { get; } = [];
+
+        internal Guid CohortId;
+
+        internal int MetadataGets;
+
+        public HttpClient CreateClient(string name) => new(this, false);
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                Interlocked.Increment(ref MetadataGets);
+
+                throw new InvalidOperationException("Unexpected metadata GET");
+            }
+
+            Assert.Equal(HttpMethod.Post, request.Method);
+
+            string body = await request.Content!.ReadAsStringAsync(ct);
+
+            Bodies.Add(body);
+
+            int ordinal = Bodies.Count;
+
+            if (ordinal == 2)
+            {
+                using JsonDocument payload = JsonDocument.Parse(body);
+
+                string toolResult = payload.RootElement.GetProperty("messages").EnumerateArray()
+                    .Single(message => message.GetProperty("role").GetString() == "tool").GetProperty("content").GetString()!;
+
+                var id = System.Text.RegularExpressions.Regex.Match(toolResult, "\\\"id\\\"\\s*:\\s*\\\"([0-9a-fA-F-]{36})\\\"");
+
+                Assert.True(id.Success, "The actual create_cohort result must expose its id to the next provider round.");
+
+                CohortId = Guid.Parse(id.Groups[1].Value);
+            }
+
+            string? tool = ordinal switch { 1 => "create_cohort", 2 => "admit_cohort_member", 3 => "close_cohort", _ => null };
+
+            string arguments = ordinal switch
+            {
+                1 => "{\"name\":\"Panel\",\"policy\":\"all\",\"resultType\":\"text/plain\"}",
+                2 => $"{{\"cohortId\":\"{CohortId:D}\",\"expectedRevision\":1,\"goal\":\"Contribute\"}}",
+                3 => $"{{\"cohortId\":\"{CohortId:D}\",\"expectedRevision\":2}}",
+                _ => "",
+            };
+
+            string message = tool is not null
+                ? $$$"""{"role":"assistant","content":null,"tool_calls":[{"id":"call-{{{ordinal}}}","type":"function","function":{"name":"{{{tool}}}","arguments":"{{{JsonEncodedText.Encode(arguments)}}}"}}]}"""
+                : ordinal == 5
+                ? """{"role":"assistant","content":"[{\"index\":1,\"description\":\"Contribute an answer\"}]"}"""
+                : ordinal is 6 or 7
+                ? """{"role":"assistant","content":"cohort member answer"}"""
+                : ordinal == 4
+                ? """{"role":"assistant","content":"cohort coordination accepted"}"""
+                : throw new InvalidOperationException("Unexpected provider call");
+
+            string json = $$$"""{"id":"cohort-{{{ordinal}}}","object":"chat.completion","created":1700000000,"model":"accepted-model","choices":[{"index":0,"message":{{{message}}},"finish_reason":"{{{(tool is null ? "stop" : "tool_calls")}}}"}]}""";
+
+            return new(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+        }
+    }
+
     private sealed class FinancialOffRuntimeCapture(IGuildLocalInferenceRuntime inner) : IGuildLocalInferenceRuntime
     {
         internal string? Diagnostic;
