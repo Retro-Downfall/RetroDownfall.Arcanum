@@ -427,7 +427,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.True(events.IsSuccess, events.Error.Message);
 
-        var physical = Assert.Single(events.Value.Page.Items.Where(item => item.EventKind == GuildEventKind.SpendChanged && item.ObjectId != quest.Id).Take(1));
+        var physical = events.Value.Page.Items.First(item => item.EventKind == GuildEventKind.SpendChanged && item.ObjectId != quest.Id);
 
         GuildSpendSourceDto source = Assert.IsType<GuildSpendSourceDto>(physical.SpendSource);
 
