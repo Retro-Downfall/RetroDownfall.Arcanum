@@ -644,6 +644,7 @@ internal sealed partial class LongRunningOperationStore(
                         "State" IN (@running, @waiting, @cancelling)
                         OR ("State" = @pending AND "AttemptCount" > 0)
                         OR ("State" = @pending AND "AttemptCount" = 0 AND "Kind" = @memoryEvaluation AND "CreatedAt" <= @initialStartCutoff)
+                        OR ("State" = @pending AND "AttemptCount" = 0 AND "Kind" = @guildRefresh)
                         OR {StartupRecoveredAttentionPredicate})
                       AND ("LeaseExpiresAt" IS NULL OR "LeaseExpiresAt" <= @now)
                     """
@@ -699,6 +700,7 @@ internal sealed partial class LongRunningOperationStore(
                     Add(cmd, "@factoryOwnerVersion", DataRetentionFactoryTransitionLaunchV2.CurrentVersion);
                 }
                 Add(cmd, "@memoryEvaluation", LongRunningOperationKinds.MemoryEvaluation);
+                Add(cmd, "@guildRefresh", LongRunningOperationKinds.GuildSpendRefresh);
                 Add(cmd, "@initialStartCutoff", Format(utcNow - RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation.MemoryEvaluationLimits.InitialStartGrace));
                 Add(cmd, "@now", Format(utcNow));
                 Add(cmd, "@limit", Math.Clamp(limit, 1, 1_000));

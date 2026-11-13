@@ -2917,6 +2917,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshApplication.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshAttemptGuard.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshConfiguration.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshRecoveryHandler.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshRetry.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshTracker.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendSourceAuthority.cs

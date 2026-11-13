@@ -71,6 +71,51 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
         }
     }
 
+    internal async Task<Result<bool>> RetryAsync(GuildCallerContext caller, LongRunningOperation operation, CancellationToken ct)
+    {
+        if (operation.Kind != LongRunningOperationKinds.GuildSpendRefresh
+            || operation.RecoveryPolicy != LongRunningOperationRecoveryPolicy.ReconcileAndComplete
+            || operation.CheckpointVersion != 1 || operation.CheckpointPayload is not { Length: > 0 and <= 2048 } payload
+            || ownership.IsClaimed(operation.Id)) return Unavailable;
+
+        GuildSpendRefreshCheckpoint? checkpoint;
+
+        try { checkpoint = JsonSerializer.Deserialize(payload, GuildSpendRefreshCheckpointJsonContext.Default.GuildSpendRefreshCheckpoint); }
+        catch (JsonException) { return Unavailable; }
+
+        if (checkpoint is null || checkpoint.Version != 1 || checkpoint.Phase != "admitted" || checkpoint.OperationId != operation.Id
+            || checkpoint.InstallationGeneration != caller.InstallationGeneration || checkpoint.PrincipalId != caller.PrincipalId
+            || !payload.AsSpan().SequenceEqual(JsonSerializer.SerializeToUtf8Bytes(checkpoint, GuildSpendRefreshCheckpointJsonContext.Default.GuildSpendRefreshCheckpoint)))
+            return Unavailable;
+
+        Result<GuildSpendRefreshPreparation> existing = await quests.PrepareProviderSpendRefreshAsync(caller, checkpoint.QuestId,
+            checkpoint.EffectId, checkpoint.RefreshId, ct).ConfigureAwait(false);
+
+        if (existing.IsFailure) return existing.Error;
+
+        if (existing.Value.OperationId != operation.Id || existing.Value.Receipt is not null) return Unavailable;
+
+        Result<GuildSpendRefreshPreparation> selected = await quests.SelectProviderSpendRefreshSourceAsync(caller,
+            checkpoint.QuestId, checkpoint.EffectId, ct).ConfigureAwait(false);
+
+        if (selected.IsFailure) return selected.Error;
+
+        if (selected.Value.RootQuestId != checkpoint.RootQuestId
+            || selected.Value.Provider is not { } provider || selected.Value.Model is not { } model) return Unavailable;
+
+        Result<GuildSpendRefreshCurrentness> current = await GuildSpendRefreshCurrentness.CaptureAsync(configuration, credentials,
+            provider, model, ct).ConfigureAwait(false);
+
+        if (current.IsFailure) return current.Error;
+
+        if (!tracker.TryEnter(checkpoint.RootQuestId, out GuildSpendRefreshTracker.Entry? entry) || entry is null) return Unavailable;
+
+        using (entry)
+        using (CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct, entry.Stop))
+            return await quests.RetryProviderSpendRefreshAsync(caller, checkpoint.QuestId, checkpoint.EffectId, checkpoint.RefreshId,
+                operation, current.Value, ownership, entry, lifetime.Token).ConfigureAwait(false);
+    }
+
     internal async Task<LongRunningOperationRecoveryResult> RecoverClaimedAsync(GuildCallerContext caller, LongRunningOperation operation,
         CancellationToken ct)
     {

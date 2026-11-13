@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 
 namespace RetroDownfall.Arcanum.Api.Operations;
 
@@ -191,11 +192,33 @@ internal static class LongRunningOperationEndpoints
                     ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
             }
 
-            bool changed = await store.ResetForRetryAsync(
-                id,
-                operation.Revision,
-                timeProvider.GetUtcNow(),
-                cancellationToken).ConfigureAwait(false);
+            bool changed;
+
+            if (operation.Kind == LongRunningOperationKinds.GuildSpendRefresh)
+            {
+                GuildNativeHost? host = httpContext.RequestServices.GetService<GuildNativeHost>();
+
+                GuildSpendRefreshService? refresh = httpContext.RequestServices.GetService<GuildSpendRefreshService>();
+
+                if (host is null || refresh is null)
+                    return Error<LongRunningOperationDto>(httpContext, StatusCodes.Status409Conflict, ErrorCodes.Operation.StateConflict,
+                        "The refresh cannot be retried while its authority is unavailable.", ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
+
+                var caller = await host.CreateCallerAsync(Guid.NewGuid(), cancellationToken).ConfigureAwait(false);
+
+                if (caller.IsFailure)
+                    return Error<LongRunningOperationDto>(httpContext, StatusCodes.Status409Conflict, ErrorCodes.Operation.StateConflict,
+                        "The refresh cannot be retried while its authority is unavailable.", ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
+
+                Result<bool> retried = await refresh.RetryAsync(caller.Value, operation, cancellationToken).ConfigureAwait(false);
+
+                changed = retried.IsSuccess && retried.Value;
+            }
+            else
+            {
+                changed = await store.ResetForRetryAsync(id, operation.Revision, timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
+            }
+
             if (!changed)
             {
                 return Error<LongRunningOperationDto>(
@@ -206,12 +229,29 @@ internal static class LongRunningOperationEndpoints
                     ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
             }
 
-            await WakeAfterRetryAsync(
-                operation,
-                reconciler,
-                httpContext.RequestServices.GetService<ILongRestSweepWake>(),
-                loggerFactory.CreateLogger(typeof(LongRunningOperationEndpoints)),
-                cancellationToken).ConfigureAwait(false);
+            if (operation.Kind == LongRunningOperationKinds.GuildSpendRefresh)
+            {
+                LongRunningOperation? pending = await store.GetAsync(id, cancellationToken).ConfigureAwait(false);
+
+                if (pending is not null)
+                {
+                    try
+                    {
+                        _ = await reconciler.SettleDiscoveredRuntimeAsync(pending,
+                            $"operator-refresh-retry-{Environment.ProcessId}-{id:N}", cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception exception) when (exception is not OperationCanceledException)
+                    {
+                        loggerFactory.CreateLogger(typeof(LongRunningOperationEndpoints)).LogWarning(exception,
+                            "The refresh retry could not be settled immediately; its durable operation remains recoverable.");
+                    }
+                }
+            }
+            else
+            {
+                await WakeAfterRetryAsync(operation, reconciler, httpContext.RequestServices.GetService<ILongRestSweepWake>(),
+                    loggerFactory.CreateLogger(typeof(LongRunningOperationEndpoints)), cancellationToken).ConfigureAwait(false);
+            }
 
             LongRunningOperation updated = (await store.GetAsync(id, cancellationToken).ConfigureAwait(false))!;
             return Success(
