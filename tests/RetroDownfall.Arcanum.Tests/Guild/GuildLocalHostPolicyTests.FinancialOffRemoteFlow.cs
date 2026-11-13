@@ -165,7 +165,9 @@ public sealed partial class GuildLocalHostPolicyTests
 
         dns.Add("remote-port.example", IPAddress.Parse("93.184.216.34"));
 
-        using HttpMessageHandler transport = scenario == "disconnect" ? new DropRemoteAcknowledgement(http, 1) : http;
+        using PushRemoteCapture capture = new(http);
+
+        using HttpMessageHandler transport = scenario == "disconnect" ? new DropRemoteAcknowledgement(capture, 1) : capture;
 
         A2ASendingCallbackRegistry callbacks = new(NullLogger<A2ASendingCallbackRegistry>.Instance);
 
@@ -262,20 +264,27 @@ public sealed partial class GuildLocalHostPolicyTests
 
             long eventsBeforeUpdate = await f.ScalarAsync("SELECT count(*) FROM guild_events WHERE EventKindCode=" + (int)GuildEventKind.SpendChanged);
 
-            DateTimeOffset observedAt = DateTimeOffset.UtcNow;
+            AgentTask peerTask = (await peerTasks.GetTaskAsync(taskIdentity.Value.TaskId, deadline.Token))!;
 
-            var updateLease = await operations.TryAcquireLeaseAsync(quest.OperationId, "financial-off-update", observedAt,
-                observedAt.AddMinutes(2), deadline.Token);
+            Assert.NotNull(peerTask);
 
-            Assert.True(updateLease.Acquired);
+            peerTask.Metadata ??= new();
 
-            GuildQuestDriver updateDriver = new(execution.Value, "financial-off-update", updateLease.Operation.Revision, initialRun.Value);
+            A2ASendingUsageMetadata.Write(peerTask.Metadata, 20, 1m);
 
-            var newer = await f.Store.WaitForRemoteInputAsync(updateDriver, quest.Id,
-                new(taskIdentity.Value.TaskId, taskIdentity.Value.ContextId, "input-required", "Which answer?",
-                    new A2ARemoteCost(true, 20, 1m), observedAt), deadline.Token);
+            await peerTasks.SaveTaskAsync(taskIdentity.Value.TaskId, peerTask, deadline.Token);
+
+            int readsBeforeUpdate = capture.TaskReads;
+
+            var newer = await port.DispatchAsync(execution.Value, request, deadline.Token);
 
             Assert.True(newer.IsSuccess, newer.Error.Message);
+
+            Assert.Equal(QuestState.InputRequired, newer.Value.State);
+
+            Assert.True(capture.TaskReads > readsBeforeUpdate);
+
+            Assert.Equal(1, agent.Calls);
 
             Assert.Equal(evidenceBeforeUpdate + 1, await f.ScalarAsync("SELECT count(*) FROM guild_budget_evidence"));
 
