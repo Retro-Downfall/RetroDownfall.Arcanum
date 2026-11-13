@@ -1,8 +1,10 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
@@ -170,7 +172,8 @@ internal sealed class GuildSpendSourceCredential
                 SELECT s.SourceKindCode,s.SourceVersion,s.InstallationGeneration,q.InstallationGeneration,
                     s.Endpoint,s.Provider,s.Model,s.GenerationId,s.CredentialFingerprint,s.InitialSnapshot,
                     s.AuthorityKeyId,s.AuthorityEpoch,a.KeyId,a.AuthorityEpoch,a.CredentialKey,
-                    s.SourceId,e.SourceId,e.KindCode
+                    s.SourceId,e.SourceId,e.KindCode,s.PricingSnapshotJson,
+                    e.QuestId,e.DispatchId,e.AccountingAssociationId,e.ReservationId
                 FROM guild_spend_sources s JOIN guild_budget_effects e ON e.EffectId=s.EffectId
                 JOIN guild_quests q ON q.Id=e.QuestId
                 LEFT JOIN guild_spend_authority_state a ON a.StateKey=1
@@ -226,27 +229,140 @@ internal sealed class GuildSpendSourceCredential
 
             string sourceId = reader.GetString(15);
 
+            string authorityKeyId = reader.GetString(10);
+
+            string authorityEpoch = reader.GetString(11);
+
+            string endpoint = reader.GetString(4);
+
+            string provider = reader.GetString(5);
+
+            string pricing = reader.GetString(18);
+
+            object questId = reader.GetValue(19);
+
+            object dispatchId = reader.GetValue(20);
+
+            object accountingId = reader.GetValue(21);
+
+            object reservationId = reader.GetValue(22);
+
             await reader.DisposeAsync().ConfigureAwait(false);
 
             Result<GuildStoredInitialSpend?> initial = await GuildSpendSourceStore.LoadInitialWithinAsync(
                 connection, transaction, effectId, ct).ConfigureAwait(false);
 
             if (initial.IsFailure || initial.Value is not { } stored
-                || Id(stored.Snapshot.SourceId) != sourceId || stored.Snapshot.ProviderRequestId != generationId)
+                || Id(stored.Snapshot.SourceId) != sourceId || stored.Snapshot.ProviderRequestId != generationId
+                || stored.Snapshot.PricingSnapshotJson != pricing)
                 return GuildSpendSourceFailure.SourceInvalid;
 
-            return new VerifiedSource(generationId, credential._model, credential._secret!);
+            GuildBudgetEffectRequest binding = stored.Outcome.Request;
+
+            if (questId is not string quest || quest != Id(binding.QuestId)
+                || dispatchId is not string dispatch || dispatch != Id(binding.DispatchId)
+                || accountingId is not string accounting || accounting != Id(binding.AccountingAssociationId)
+                || (binding.ReservationId is { } reservation
+                    ? reservationId is not string actual || actual != Id(reservation)
+                    : reservationId is not DBNull)) return GuildSpendSourceFailure.SourceInvalid;
+
+            return new VerifiedSource(generationId, credential._model, credential._secret!, generation,
+                authorityKeyId, authorityEpoch, endpoint, provider, pricing, saved, stored);
         }
 
         private readonly string _secret;
 
-        private VerifiedSource(string generationId, string model, string secret)
+        private readonly Guid _installation;
+
+        private readonly string _authorityKeyId;
+
+        private readonly string _authorityEpoch;
+
+        private readonly string _endpoint;
+
+        private readonly string _provider;
+
+        private readonly string _pricing;
+
+        private readonly byte[] _fingerprint;
+
+        private readonly GuildStoredInitialSpend _initial;
+
+        private VerifiedSource(string generationId, string model, string secret, Guid installation, string authorityKeyId,
+            string authorityEpoch, string endpoint, string provider, string pricing, byte[] fingerprint, GuildStoredInitialSpend initial)
         {
             GenerationId = generationId;
 
             Model = model;
 
             _secret = secret;
+
+            _installation = installation;
+
+            _authorityKeyId = authorityKeyId;
+
+            _authorityEpoch = authorityEpoch;
+
+            _endpoint = endpoint;
+
+            _provider = provider;
+
+            _pricing = pricing;
+
+            _fingerprint = (byte[])fingerprint.Clone();
+
+            _initial = initial;
+        }
+
+        internal void WriteIdentity(BinaryWriter writer)
+        {
+            GuildBudgetEffectRequest binding = _initial.Outcome.Request;
+
+            writer.Write(1);
+
+            writer.Write(Id(_installation));
+
+            writer.Write(_authorityKeyId);
+
+            writer.Write(_authorityEpoch);
+
+            writer.Write(_endpoint);
+
+            writer.Write(_provider);
+
+            writer.Write(Model);
+
+            writer.Write(_pricing);
+
+            writer.Write(_fingerprint);
+
+            writer.Write(GenerationId);
+
+            writer.Write(Id(binding.QuestId));
+
+            writer.Write(Id(binding.EffectId));
+
+            writer.Write(Id(binding.DispatchId));
+
+            writer.Write(Id(binding.AccountingAssociationId));
+
+            writer.Write(Id(binding.SourceId));
+
+            writer.Write(binding.ReservationId is not null);
+
+            if (binding.ReservationId is { } reservation) writer.Write(Id(reservation));
+
+            writer.Write(binding.UsdBound is not null);
+
+            if (binding.UsdBound is { } usdBound) writer.Write(ExactUsdText.Format(usdBound));
+
+            writer.Write(binding.TokenBound is not null);
+
+            if (binding.TokenBound is { } tokenBound) writer.Write(tokenBound);
+
+            byte[] snapshot = JsonSerializer.SerializeToUtf8Bytes(_initial.Snapshot, GuildSpendStorageJsonContext.Default.GuildInitialBillSnapshot);
+
+            writer.Write(SHA256.HashData(snapshot));
         }
 
         internal string GenerationId { get; }
