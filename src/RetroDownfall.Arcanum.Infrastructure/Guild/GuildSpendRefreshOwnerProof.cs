@@ -41,7 +41,7 @@ internal static class GuildSpendRefreshOwnerProof
                     || !TryId(reader.GetValue(0), out Guid? rowId) || rowId != current
                     || !TryId(reader.GetValue(1), out Guid? root) || root != rootQuestId
                     || !TryNullableId(reader.GetValue(2), out parent)
-                    || !TryNullableId(reader.GetValue(3), out session)
+                    || !TryId(reader.GetValue(3), out session)
                     || !TryNullableId(reader.GetValue(4), out campaign)
                     || !TryNullableId(reader.GetValue(5), out workspace)
                     || (workspace is not null && workspace != campaign)) return Unavailable;

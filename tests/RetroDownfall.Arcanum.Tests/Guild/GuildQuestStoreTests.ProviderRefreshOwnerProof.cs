@@ -80,34 +80,40 @@ public sealed partial class GuildQuestStoreTests
     [InlineData("missing")]
     [InlineData("wrongRoot")]
     [InlineData("workspace")]
+    [InlineData("missingSession")]
     public async Task Refresh_owner_proof_refuses_inconsistent_lineage(string corruption)
     {
         await using Fixture f = await Fixture.CreateAsync();
 
         GuildQuestStored root = await ReceiptRootAsync(f);
 
-        Guid unrelated = Guid.NewGuid();
+        GuildQuestDriver driver = await f.DriverAsync(root);
 
-        string value = unrelated.ToString("D").ToUpperInvariant();
+        GuildQuestStored child = await f.ChildAsync(root, driver);
 
-        string id = root.Quest.Id.ToString("D").ToUpperInvariant();
+        string value = Guid.NewGuid().ToString("D").ToUpperInvariant();
+
+        string childId = child.Quest.Id.ToString("D").ToUpperInvariant();
+
+        string target = corruption == "missingSession" ? root.Quest.Id.ToString("D").ToUpperInvariant() : childId;
 
         string mutation = corruption switch
         {
-            "cycle" => $"ParentQuestId='{id}'",
+            "cycle" => $"ParentQuestId='{childId}'",
             "missing" => $"ParentQuestId='{value}'",
             "wrongRoot" => $"RootQuestId='{value}'",
+            "missingSession" => "SessionId=NULL",
             _ => $"WorkspaceId='{value}'",
         };
 
         // Deliberately bypass immutable identity only in this scratch database to model corruption.
-        await f.ExecuteAsync($"DROP TRIGGER guild_quests_guard_update; UPDATE guild_quests SET {mutation} WHERE Id='{id}';");
+        await f.ExecuteAsync($"DROP TRIGGER guild_quests_guard_update; UPDATE guild_quests SET {mutation} WHERE Id='{target}';");
 
         await using SqliteConnection connection = await f.OpenAsync();
 
         await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
-        Result refused = await GuildSpendRefreshOwnerProof.RequireWithinAsync(connection, transaction, root.Quest.Id, root.Quest.Id, default);
+        Result refused = await GuildSpendRefreshOwnerProof.RequireWithinAsync(connection, transaction, child.Quest.Id, root.Quest.Id, default);
 
         Assert.Equal(ErrorCodes.Guild.OwnerUnavailable, refused.Error.Code);
     }
