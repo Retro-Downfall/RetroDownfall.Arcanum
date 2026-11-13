@@ -1,6 +1,8 @@
+using System.Text;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -22,7 +24,26 @@ public sealed partial class GuildQuestStoreTests
 
         Fixture secondFixture = Fixture.ForExistingDatabase(first.Connection.ConnectionString);
 
-        await using SpendScenario second = await SpendScenario.CreateAsync(fixture: secondFixture);
+        await using SpendScenario second = await SpendScenario.CreateAsync(fixture: secondFixture,
+            beforeEffectSelection: async connection =>
+            {
+                await using SqliteCommand selection = connection.CreateCommand();
+
+                selection.CommandText = "SELECT EffectId FROM guild_spend_sources";
+
+                string firstId = first.EffectId.ToString("D").ToUpperInvariant();
+
+                if (!Equals(firstId, await selection.ExecuteScalarAsync()))
+                {
+                    selection.CommandText = "PRAGMA reverse_unordered_selects=ON";
+
+                    await selection.ExecuteNonQueryAsync();
+                }
+
+                selection.CommandText = "SELECT EffectId FROM guild_spend_sources";
+
+                Assert.Equal(firstId, await selection.ExecuteScalarAsync());
+            });
 
         Assert.NotEqual(first.QuestId, second.QuestId);
 
@@ -61,7 +82,12 @@ public sealed partial class GuildQuestStoreTests
 
         OwnerRefreshStream firstStream = new();
 
-        OwnerRefreshStream secondStream = new();
+        OwnerRefreshStream secondStream = new(Encoding.UTF8.GetBytes("""
+            {"data":{"api_type":"completions","id":"gen-test-123","is_byok":false,"model":"provider/model",
+            "native_tokens_cached":40,"native_tokens_completion":20,"native_tokens_completion_images":0,
+            "native_tokens_prompt":110,"native_tokens_reasoning":5,"num_input_audio_prompt":0,
+            "num_media_completion":0,"num_media_prompt":0,"total_cost":0.30}}
+            """));
 
         GuildSpendRefreshService firstService = new(first.Fixture.Store,
             new GuildSpendRefreshConfiguration(new TestOptionsMonitor<RetroDownfall.Arcanum.Core.Configuration.ArcanumSettings>(first.Settings)), resolver,
@@ -73,11 +99,19 @@ public sealed partial class GuildQuestStoreTests
             new GuildOpenRouterSpendReader(new PublicSpendDns(), () => new OwnerRefreshHandler(secondStream)),
             new RefreshTestReadiness(hostLock), second.Fixture.Gate, secondOperations, new LongRunningOperationOwnership(), TimeProvider.System, tracker);
 
+        (Guid firstEffect, Guid firstSource) = await IssuedProviderEffectAsync(firstConnection, first);
+
+        (Guid secondEffect, Guid secondSource) = await IssuedProviderEffectAsync(secondConnection, second);
+
+        Assert.NotEqual(firstEffect, secondEffect);
+
+        Assert.NotEqual(firstSource, secondSource);
+
         Task<Result<GuildSpendRefreshResult>> firstRun = firstService.RefreshAsync(first.Fixture.Caller, first.QuestId,
-            first.EffectId, Guid.NewGuid(), default);
+            firstEffect, Guid.NewGuid(), default);
 
         Task<Result<GuildSpendRefreshResult>> secondRun = secondService.RefreshAsync(second.Fixture.Caller, second.QuestId,
-            second.EffectId, Guid.NewGuid(), default);
+            secondEffect, Guid.NewGuid(), default);
 
         Task<Result<GuildCleanupOutcome>>? cleanup = null;
 
@@ -140,7 +174,41 @@ public sealed partial class GuildQuestStoreTests
 
             secondStream.ReleaseDispose.TrySetResult();
 
-            await secondRun.WaitAsync(TimeSpan.FromSeconds(15));
+            Result<GuildSpendRefreshResult> secondResult = await secondRun.WaitAsync(TimeSpan.FromSeconds(15));
+
+            Assert.True(secondResult.IsSuccess, secondResult.IsFailure ? secondResult.Error.Message : null);
+
+            Assert.NotNull(secondResult.Value.Receipt);
+
+            Assert.False(secondResult.Value.RequiresAttention);
+
+            Assert.Equal(second.QuestId, secondResult.Value.Receipt.QuestId);
+
+            Assert.Equal(secondEffect, secondResult.Value.Receipt.EffectId);
+
+            Assert.Equal(GuildSpendOrigin.ProviderReported, secondResult.Value.Receipt.Origin);
+
+            await using (SqliteCommand receipt = secondConnection.CreateCommand())
+            {
+                receipt.CommandText = """
+                    SELECT COUNT(*) FROM guild_spend_receipts r JOIN guild_spend_refreshes f ON f.AcceptedReceiptId=r.ReceiptId
+                    WHERE r.ReceiptId=$receipt AND r.EffectId=$effect AND f.OperationId=$operation
+                    """;
+
+                receipt.Parameters.AddWithValue("$receipt", secondResult.Value.Receipt.ReceiptId.ToString("D").ToUpperInvariant());
+
+                receipt.Parameters.AddWithValue("$effect", secondEffect.ToString("D").ToUpperInvariant());
+
+                receipt.Parameters.AddWithValue("$operation", secondResult.Value.OperationId.ToString("N"));
+
+                Assert.Equal(1L, await receipt.ExecuteScalarAsync());
+            }
+
+            Assert.Equal(firstEffect, first.EffectId);
+
+            Assert.Equal(secondEffect, second.EffectId);
+
+            Assert.Equal("Guild.SpendGenerationMissing", second.PendingReason);
 
             Assert.False(cleanup.IsCompleted);
 
@@ -173,4 +241,37 @@ public sealed partial class GuildQuestStoreTests
             if (cleanup is not null) await cleanup;
         }
     }
+    private static async Task<(Guid Effect, Guid Source)> IssuedProviderEffectAsync(SqliteConnection connection, SpendScenario scenario)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT s.EffectId,s.SourceId,e.QuestId,e.DispatchId FROM guild_spend_sources s
+            JOIN guild_budget_effects e ON e.EffectId=s.EffectId
+            WHERE e.QuestId=$quest AND e.DispatchId=$dispatch AND e.KindCode=0 AND s.SourceKindCode=1
+            """;
+
+        command.Parameters.AddWithValue("$quest", scenario.QuestId.ToString("D").ToUpperInvariant());
+
+        command.Parameters.AddWithValue("$dispatch", scenario.DispatchId.ToString("D").ToUpperInvariant());
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync();
+
+        Assert.True(await reader.ReadAsync());
+
+        Guid effect = Guid.Parse(reader.GetString(0));
+
+        Guid source = Guid.Parse(reader.GetString(1));
+
+        Assert.NotEqual(Guid.Empty, source);
+
+        Assert.Equal(scenario.QuestId, Guid.Parse(reader.GetString(2)));
+
+        Assert.Equal(scenario.DispatchId, Guid.Parse(reader.GetString(3)));
+
+        Assert.False(await reader.ReadAsync());
+
+        return (effect, source);
+    }
+
 }

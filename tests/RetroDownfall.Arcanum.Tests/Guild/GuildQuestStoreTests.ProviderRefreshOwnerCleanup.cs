@@ -364,8 +364,12 @@ public sealed partial class GuildQuestStoreTests
             Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StreamContent(stream) });
     }
 
-    private sealed class OwnerRefreshStream : Stream
+    private sealed class OwnerRefreshStream(byte[]? content = null) : Stream
     {
+        private readonly byte[] _content = content ?? [];
+
+        private int _position;
+
         internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal TaskCompletionSource Cancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -394,7 +398,13 @@ public sealed partial class GuildQuestStoreTests
 
             await ReleaseRead.Task;
 
-            return 0;
+            int length = Math.Min(buffer.Length, _content.Length - _position);
+
+            _content.AsMemory(_position, length).CopyTo(buffer);
+
+            _position += length;
+
+            return length;
         }
 
         public override async ValueTask DisposeAsync()
