@@ -33,6 +33,7 @@ public sealed class GuildCommandTests
     [InlineData("guild spend list task --cursor next --page-size 2")]
     [InlineData("guild spend show task --effect 33333333-3333-3333-3333-333333333333")]
     [InlineData("guild spend correct task --effect 33333333-3333-3333-3333-333333333333 --idempotency-key 33333333-3333-3333-3333-333333333333 --expected-revision 1 --input-tokens 0 --output-tokens 0 --cached-tokens 0 --reasoning-tokens 0 --usd 1e-28 --evidence-digest aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    [InlineData("guild spend refresh task --effect 33333333-3333-3333-3333-333333333333 --idempotency-key 33333333-3333-3333-3333-333333333333")]
     [InlineData("guild spend receipts task --effect 33333333-3333-3333-3333-333333333333")]
     [InlineData("guild spend receipt task --effect 33333333-3333-3333-3333-333333333333 --receipt 33333333-3333-3333-3333-333333333333")]
     [InlineData("guild signet revoke signet --expected-revision 1")]
@@ -237,6 +238,34 @@ public sealed class GuildCommandTests
         Assert.False(output.RootElement.GetProperty("replayed").GetBoolean());
 
         Assert.Single(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void Guild_spend_refresh_reports_admitted_operation_with_nonzero_exit(bool inFlight, bool attention)
+    {
+        string response = "{\"data\":{\"operationId\":\"" + Id + "\",\"receipt\":null,\"replayed\":false,\"inFlight\":"
+            + (inFlight ? "true" : "false") + ",\"requiresAttention\":" + (attention ? "true" : "false")
+            + ",\"errorCode\":null},\"isSuccess\":true,\"error\":null}";
+
+        RecordingHandler handler = new(_ => JsonResponse(response, HttpStatusCode.Accepted));
+
+        CliTestResult result = Run(handler, ["guild", "spend", "refresh", Id, "--effect", Id, "--idempotency-key", Id, "--json"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        RecordedRequest request = Assert.Single(handler.Requests);
+
+        Assert.Equal($"/api/guild/quests/{Id}/spend/effects/{Id}/refreshes", request.Path);
+
+        using JsonDocument body = JsonDocument.Parse(request.Body!);
+
+        Assert.Equal(Guid.Parse(Id), body.RootElement.GetProperty("idempotencyKey").GetGuid());
+
+        using JsonDocument output = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(Guid.Parse(Id), output.RootElement.GetProperty("operationId").GetGuid());
     }
 
     [Fact]

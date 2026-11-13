@@ -4,6 +4,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -98,6 +100,23 @@ public sealed partial class GuildEndpointTests
 
         Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
 
+        string refreshRoute = $"/api/guild/quests/{quest:D}/spend/effects/{effect:D}/refreshes";
+
+        using HttpResponseMessage anonymousRefresh = await anonymous.PostAsync(refreshRoute, Json("{}"));
+
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousRefresh.StatusCode);
+
+        foreach (string invalidRefresh in new[] { "", "{", "null", "{}", "{\"idempotencyKey\":\"00000000-0000-0000-0000-000000000000\"}" })
+        {
+            using HttpResponseMessage response = await client.PostAsync(refreshRoute, Json(invalidRefresh));
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        }
+
+        using HttpResponseMessage missingRefresh = await client.PostAsync(refreshRoute, Json("{\"idempotencyKey\":\"" + Guid.NewGuid().ToString("D") + "\"}"));
+
+        Assert.Equal(HttpStatusCode.NotFound, missingRefresh.StatusCode);
+
         string key = Guid.NewGuid().ToString("D");
 
         string digest = new('a', 64);
@@ -136,6 +155,249 @@ public sealed partial class GuildEndpointTests
         using JsonDocument page = JsonDocument.Parse(await effects.Content.ReadAsStringAsync());
 
         Assert.Empty(page.RootElement.GetProperty("data").GetProperty("items").EnumerateArray());
+    }
+
+    [SkippableFact]
+    public async Task Native_operator_refreshes_real_bound_source_once_and_replays_receipt()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
+
+        RefreshHttpGate gate = new();
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings =>
+            {
+                settings.Features.Guild = true;
+
+                settings.Features.Apprentices = true;
+
+                settings.DefaultModel = "provider/model";
+
+                settings.Providers = [new() { Name = "router", Endpoint = "https://openrouter.ai/api/v1", Models = ["provider/model"],
+                    GuildUsageReconciliation = GuildUsageReconciliationSource.OpenRouterGeneration }];
+
+                return settings;
+            },
+            ServiceOverrides = services =>
+            {
+                HoldExecution(services);
+
+                services.RemoveAll<IProviderApiKeyResolver>();
+
+                services.AddSingleton<IProviderApiKeyResolver>(new RefreshHttpCredential());
+
+                services.RemoveAll<GuildOpenRouterSpendReader>();
+
+                services.AddScoped(_ => new GuildOpenRouterSpendReader(new RefreshHttpDns(), () => new RefreshHttpHandler(gate)));
+            },
+        };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        GuildIssueRootRequest request = new(Guid.NewGuid(), null, "Physical spend", "Track physical spend",
+            new([], [], [], new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited)), [], null));
+
+        using HttpResponseMessage issued = await client.PostAsync("/api/guild/quests", Json(JsonSerializer.Serialize(request, GuildJsonContext.Default.GuildIssueRootRequest)));
+
+        Assert.True(issued.StatusCode == HttpStatusCode.Created, await issued.Content.ReadAsStringAsync());
+
+        using JsonDocument accepted = JsonDocument.Parse(await issued.Content.ReadAsStringAsync());
+
+        Guid questId = accepted.RootElement.GetProperty("data").GetProperty("id").GetGuid();
+
+        Guid effectId = Guid.NewGuid();
+
+        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
+        {
+            GuildLocalHostPolicy policy = scope.ServiceProvider.GetRequiredService<GuildLocalHostPolicy>();
+
+            SignetAuthority authority = scope.ServiceProvider.GetRequiredService<SignetAuthority>();
+
+            GuildQuestStore store = scope.ServiceProvider.GetRequiredService<GuildQuestStore>();
+
+            var owner = await policy.CreateNativeOperatorAsync(Guid.NewGuid(), default);
+
+            Assert.True(owner.IsSuccess, owner.Error.Message);
+
+            var quest = await store.GetAsync(owner.Value, questId, default);
+
+            Assert.True(quest.IsSuccess, quest.Error.Message);
+
+            var recovery = await policy.CreateRecoveryAsync(owner.Value, questId, quest.Value.Quest.OperationId, quest.Value.Quest.SignetRevision, default);
+
+            Assert.True(recovery.IsSuccess, recovery.Error.Message);
+
+            var rebound = await authority.RebindAsync(recovery.Value, default);
+
+            Assert.True(rebound.IsSuccess, rebound.Error.Message);
+
+            var caller = await policy.CreateRunCallerAsync(authority, rebound.Value, Guid.NewGuid(), default);
+
+            Assert.True(caller.IsSuccess, caller.Error.Message);
+
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+
+            var lease = await scope.ServiceProvider.GetRequiredService<ILongRunningOperationStore>()
+                .TryAcquireLeaseAsync(quest.Value.Quest.OperationId, "spend-fixture", now, now.AddMinutes(5));
+
+            Assert.True(lease.Acquired);
+
+            GuildQuestDriver driver = new(rebound.Value, "spend-fixture", lease.Operation.Revision, caller.Value);
+
+            var local = await store.ReadLocalPortAsync(driver, questId, default);
+
+            Assert.True(local.IsSuccess, local.Error.Message);
+
+            var dispatch = await store.PrepareDispatchAsync(driver, questId, local.Value.Binding.Input.Digest, quest.Value.Quest.RunId, false, default);
+
+            Assert.True(dispatch.IsSuccess, dispatch.Error.Message);
+
+            GuildLocalInferenceExecution execution = new(store, driver, dispatch.Value);
+
+            BudgetReservationService daily = (BudgetReservationService)scope.ServiceProvider.GetRequiredService<IBudgetReservationService>();
+
+            GuildBudgetEffectRequest effect = new(effectId, questId, dispatch.Value.DispatchId, quest.Value.Quest.RunId,
+                GuildBudgetEffectKind.LocalProvider, Guid.NewGuid(), null, null, null);
+
+            BillableOperationRecord bill = new(quest.Value.Quest.RunId, BillableOperationType.Chat, "router", "provider/model", "guild",
+                now, now, 100, 20, 5, 40, "{}", .25m, BillableOperationStatus.Completed, "gen-test-123");
+
+            ProviderSettings provider = new() { Name = "router", Endpoint = "https://openrouter.ai/api/v1", Models = ["provider/model"],
+                GuildUsageReconciliation = GuildUsageReconciliationSource.OpenRouterGeneration };
+
+            var settled = await store.ExecuteAndSettleProviderResponseAsync(execution, daily, effect,
+                _ => Task.FromResult(Result<string>.Success("answer")), _ => Result<BillableOperationRecord>.Success(bill), default,
+                spendSource: new GuildSpendSourceCredential(provider, "provider/model", RefreshHttpCredential.Secret), spendPricing: "{}");
+
+            Assert.True(settled.IsSuccess, settled.Error.Message);
+        }
+
+        string root = $"/api/guild/quests/{questId:D}/spend/effects/{effectId:D}/refreshes";
+
+        string body = "{\"idempotencyKey\":\"" + Guid.NewGuid().ToString("D") + "\"}";
+
+        Task<HttpResponseMessage> first = client.PostAsync(root, Json(body));
+
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        using HttpResponseMessage concurrent = await client.PostAsync(root, Json(body));
+
+        Assert.Equal(HttpStatusCode.Accepted, concurrent.StatusCode);
+
+        using JsonDocument pending = JsonDocument.Parse(await concurrent.Content.ReadAsStringAsync());
+
+        Guid operation = pending.RootElement.GetProperty("data").GetProperty("operationId").GetGuid();
+
+        Assert.True(pending.RootElement.GetProperty("data").GetProperty("inFlight").GetBoolean());
+
+        gate.Release.TrySetResult();
+
+        using HttpResponseMessage completed = await first;
+
+        Assert.True(completed.StatusCode == HttpStatusCode.OK, await completed.Content.ReadAsStringAsync());
+
+        using JsonDocument completedBody = JsonDocument.Parse(await completed.Content.ReadAsStringAsync());
+
+        Assert.Equal(operation, completedBody.RootElement.GetProperty("data").GetProperty("operationId").GetGuid());
+
+        Guid receipt = completedBody.RootElement.GetProperty("data").GetProperty("receipt").GetProperty("receiptId").GetGuid();
+
+        using HttpResponseMessage replay = await client.PostAsync(root, Json(body));
+
+        Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
+
+        using JsonDocument replayed = JsonDocument.Parse(await replay.Content.ReadAsStringAsync());
+
+        Assert.True(replayed.RootElement.GetProperty("data").GetProperty("replayed").GetBoolean());
+
+        Assert.Equal(receipt, replayed.RootElement.GetProperty("data").GetProperty("receipt").GetProperty("receiptId").GetGuid());
+
+        Assert.Equal(1, gate.Reads);
+
+        gate.Fail = true;
+
+        string failedBody = "{\"idempotencyKey\":\"" + Guid.NewGuid().ToString("D") + "\"}";
+
+        using HttpResponseMessage parked = await client.PostAsync(root, Json(failedBody));
+
+        Assert.Equal(HttpStatusCode.Accepted, parked.StatusCode);
+
+        using JsonDocument attention = JsonDocument.Parse(await parked.Content.ReadAsStringAsync());
+
+        Guid parkedOperation = attention.RootElement.GetProperty("data").GetProperty("operationId").GetGuid();
+
+        Assert.True(attention.RootElement.GetProperty("data").GetProperty("requiresAttention").GetBoolean());
+
+        Assert.False(string.IsNullOrWhiteSpace(attention.RootElement.GetProperty("data").GetProperty("errorCode").GetString()));
+
+        using HttpResponseMessage parkedReplay = await client.PostAsync(root, Json(failedBody));
+
+        Assert.Equal(HttpStatusCode.Accepted, parkedReplay.StatusCode);
+
+        using JsonDocument repeatedPark = JsonDocument.Parse(await parkedReplay.Content.ReadAsStringAsync());
+
+        Assert.Equal(parkedOperation, repeatedPark.RootElement.GetProperty("data").GetProperty("operationId").GetGuid());
+
+        Assert.Equal(2, gate.Reads);
+    }
+
+    private sealed class RefreshHttpGate
+    {
+        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal int Reads;
+
+        internal bool Fail;
+    }
+
+    private sealed class RefreshHttpDns : IDnsResolver
+    {
+        public Task<IPAddress[]> GetHostAddressesAsync(string host, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IPAddress[]>([IPAddress.Parse("1.1.1.1")]);
+    }
+
+    private sealed class RefreshHttpCredential : IProviderApiKeyResolver
+    {
+        internal const string Secret = "private-refresh-test-key";
+
+        private readonly ProviderCredentialStamp _stamp = new(Guid.NewGuid(), Guid.NewGuid(), 1);
+
+        public Task<string?> ResolveAsync(ProviderSettings provider, CancellationToken cancellationToken = default) => Task.FromResult<string?>(Secret);
+
+        public Task<ResolvedProviderCredential> PeekWithIdentityAsync(ProviderSettings provider, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ResolvedProviderCredential(Secret, _stamp));
+
+        public ProviderCredentialCurrentness GetObservedLocalCurrentness(ProviderSettings provider, ProviderCredentialStamp stamp) =>
+            stamp == _stamp ? ProviderCredentialCurrentness.Current : ProviderCredentialCurrentness.ConfirmedStale;
+
+        public Task<ProviderCredentialCurrentness> GetCurrentnessAsync(ProviderSettings provider, ProviderCredentialStamp stamp, CancellationToken cancellationToken = default) =>
+            Task.FromResult(GetObservedLocalCurrentness(provider, stamp));
+    }
+
+    private sealed class RefreshHttpHandler(RefreshHttpGate gate) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref gate.Reads);
+
+            gate.Entered.TrySetResult();
+
+            await gate.Release.Task.WaitAsync(cancellationToken);
+
+            if (gate.Fail) return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""
+                {"data":{"api_type":"completions","id":"gen-test-123","is_byok":false,"model":"provider/model",
+                "native_tokens_cached":40,"native_tokens_completion":20,"native_tokens_completion_images":0,
+                "native_tokens_prompt":100,"native_tokens_reasoning":5,"num_input_audio_prompt":0,
+                "num_media_completion":0,"num_media_prompt":0,"total_cost":0.30}}
+                """) };
+        }
     }
 
     [SkippableFact]
@@ -496,6 +758,10 @@ public sealed partial class GuildEndpointTests
 
         GuildSpendCorrectionRequest correction = new(Guid.NewGuid(), data.GetProperty("evidenceRevision").GetInt64(), GuildSpendOrigin.OperatorAttested,
             new(20, 0, 0, 0, 1m), new string('a', 64));
+
+        using HttpResponseMessage deniedRefresh = await client.PostAsync(root + "/refreshes", Json("{\"idempotencyKey\":\"" + Guid.NewGuid().ToString("D") + "\"}"));
+
+        Assert.Equal(HttpStatusCode.NotFound, deniedRefresh.StatusCode);
 
         using HttpResponseMessage denied = await client.PostAsync(root + "/corrections", Json(JsonSerializer.Serialize(correction, GuildJsonContext.Default.GuildSpendCorrectionRequest)));
 

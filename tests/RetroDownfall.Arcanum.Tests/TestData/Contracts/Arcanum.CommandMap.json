@@ -7050,6 +7050,47 @@
               "commands": []
             },
             {
+              "path": "guild spend refresh",
+              "name": "refresh",
+              "description": "Refresh local spend from its bound provider.",
+              "runnable": true,
+              "aliases": [],
+              "arguments": [
+                {
+                  "name": "task",
+                  "description": "Visible task UUID, exact name, or unique UUID prefix; omit for an interactive picker.",
+                  "required": false,
+                  "variadic": false,
+                  "values": [],
+                  "completion": "guild-task"
+                }
+              ],
+              "options": [
+                {
+                  "name": "--effect",
+                  "aliases": [],
+                  "description": "Exact nonempty UUID; selection does not grant authority.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                },
+                {
+                  "name": "--idempotency-key",
+                  "aliases": [],
+                  "description": "Mutation UUID; generated once when omitted and reused by transport retries.",
+                  "recursive": false,
+                  "takesValue": true,
+                  "repeatable": false,
+                  "values": []
+                }
+              ],
+              "examples": [
+                "arcanum guild spend refresh task --effect 33333333-3333-3333-3333-333333333333 --idempotency-key 33333333-3333-3333-3333-333333333333"
+              ],
+              "commands": []
+            },
+            {
               "path": "guild spend receipts",
               "name": "receipts",
               "description": "List one page of effect receipts.",

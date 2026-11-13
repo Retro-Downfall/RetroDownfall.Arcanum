@@ -966,6 +966,8 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ApiResponse<GuildQuestDto>))]
 [JsonSerializable(typeof(ApiResponse<GuildQuestPageDto>))]
 [JsonSerializable(typeof(ApiResponse<GuildSpendDto>))]
+[JsonSerializable(typeof(GuildSpendRefreshRequest))]
+[JsonSerializable(typeof(ApiResponse<GuildSpendRefreshResultDto>))]
 [JsonSerializable(typeof(GuildSpendCorrectionRequest))]
 [JsonSerializable(typeof(ApiResponse<GuildSpendEffectPageDto>))]
 [JsonSerializable(typeof(ApiResponse<GuildSpendEffectDto>))]

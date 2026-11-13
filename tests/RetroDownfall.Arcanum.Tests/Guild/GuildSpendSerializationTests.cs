@@ -1,5 +1,8 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Tests.Guild;
@@ -48,6 +51,35 @@ public sealed class GuildSpendSerializationTests
 
         Assert.Equal(origin, JsonSerializer.Deserialize(json, GuildJsonContext.Default.GuildSpendOrigin));
     }
+
+    [Fact]
+    public void Refresh_request_and_envelope_round_trip_through_generated_contexts()
+    {
+        Guid key = Guid.NewGuid();
+
+        string request = JsonSerializer.Serialize(new GuildSpendRefreshRequest(key), GuildJsonContext.Default.GuildSpendRefreshRequest);
+
+        Assert.Equal(key, JsonSerializer.Deserialize(request, ArcanumJsonContext.Default.GuildSpendRefreshRequest)!.IdempotencyKey);
+
+        GuildSpendRefreshResultDto data = new(Guid.NewGuid(), null, false, false, true, "Guild.ReconciliationRequired");
+
+        ApiResponse<GuildSpendRefreshResultDto> envelope = ApiResponse<GuildSpendRefreshResultDto>.FromResult(Result<GuildSpendRefreshResultDto>.Success(data), "test");
+
+        string json = JsonSerializer.Serialize(envelope, ArcanumJsonContext.Default.ApiResponseGuildSpendRefreshResultDto);
+
+        Assert.Equal(data, JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseGuildSpendRefreshResultDto)!.Data);
+    }
+
+    [Theory]
+    [InlineData("Guild.SpendSourceMissing")]
+    [InlineData("Guild.SpendSourceInvalid")]
+    [InlineData("Guild.SpendGenerationMissing")]
+    [InlineData("Guild.SpendGenerationInvalid")]
+    [InlineData("Guild.SpendConfigurationChanged")]
+    [InlineData("Guild.SpendCredentialChanged")]
+    [InlineData("Guild.SpendAuthorityRetired")]
+    public void Refresh_source_refusals_are_conflicts(string code) =>
+        Assert.Equal(409, ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(code));
 
     private static GuildSpendAmountsRequest? ParseAmounts(string json) =>
         JsonSerializer.Deserialize(json, GuildJsonContext.Default.GuildSpendAmountsRequest);

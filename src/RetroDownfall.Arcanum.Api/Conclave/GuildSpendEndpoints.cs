@@ -70,6 +70,37 @@ internal static class GuildSpendEndpoints
                 result.IsSuccess && !result.Value.Replayed ? StatusCodes.Status201Created : StatusCodes.Status200OK);
         }).WithName("GuildCorrectSpendEffect");
 
+        api.MapPost("/guild/quests/{questId:guid}/spend/effects/{effectId:guid}/refreshes", async (Guid questId, Guid effectId,
+            GuildNativeHost host, GuildSpendRefreshService service, HttpContext context) =>
+        {
+            GuildSpendRefreshRequest? request;
+
+            try
+            {
+                request = await JsonSerializer.DeserializeAsync(context.Request.Body, ArcanumJsonContext.Default.GuildSpendRefreshRequest, context.RequestAborted).ConfigureAwait(false);
+            }
+            catch (JsonException)
+            {
+                request = null;
+            }
+
+            if (questId == Guid.Empty || effectId == Guid.Empty || request is null || request.IdempotencyKey == Guid.Empty)
+                return Reply(Result<GuildSpendRefreshResultDto>.Failure(Invalid), context, ArcanumJsonContext.Default.ApiResponseGuildSpendRefreshResultDto);
+
+            Result<GuildCallerContext> caller = await host.CreateCallerAsync(request.IdempotencyKey, context.RequestAborted).ConfigureAwait(false);
+
+            Result<GuildSpendRefreshResult> refreshed = caller.IsFailure ? caller.Error
+                : await service.RefreshAsync(caller.Value, questId, effectId, request.IdempotencyKey, context.RequestAborted).ConfigureAwait(false);
+
+            Result<GuildSpendRefreshResultDto> result = refreshed.IsFailure ? refreshed.Error
+                : new GuildSpendRefreshResultDto(refreshed.Value.OperationId, refreshed.Value.Receipt, refreshed.Value.Replayed,
+                    refreshed.Value.InFlight, refreshed.Value.RequiresAttention,
+                    refreshed.Value.ErrorCode ?? (refreshed.Value.RequiresAttention ? ErrorCodes.Guild.ReconciliationRequired : null));
+
+            return Reply(result, context, ArcanumJsonContext.Default.ApiResponseGuildSpendRefreshResultDto,
+                result.IsSuccess && (result.Value.InFlight || result.Value.RequiresAttention) ? StatusCodes.Status202Accepted : StatusCodes.Status200OK);
+        }).WithName("GuildRefreshSpendEffect");
+
         api.MapGet("/guild/quests/{questId:guid}/spend/effects/{effectId:guid}/receipts", async (Guid questId, Guid effectId,
             string? cursor, int? pageSize, GuildNativeHost host, GuildQuestStore store, HttpContext context) =>
         {

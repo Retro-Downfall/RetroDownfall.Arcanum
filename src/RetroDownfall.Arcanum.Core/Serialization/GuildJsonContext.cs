@@ -15,6 +15,8 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 [JsonSerializable(typeof(GuildSpendReceiptDto))]
 [JsonSerializable(typeof(GuildSpendReceiptDto[]))]
 [JsonSerializable(typeof(ImmutableArray<GuildSpendReceiptDto>))]
+[JsonSerializable(typeof(GuildSpendRefreshRequest))]
+[JsonSerializable(typeof(GuildSpendRefreshResultDto))]
 [JsonSerializable(typeof(GuildSpendCorrectionResultDto))]
 [JsonSerializable(typeof(GuildSpendCorrectionResultDto[]))]
 [JsonSerializable(typeof(ImmutableArray<GuildSpendCorrectionResultDto>))]
