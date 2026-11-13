@@ -308,6 +308,17 @@ internal sealed partial class GuildBudgetLedger
             UnknownUsd = evidence.UnknownUsd, UnknownTokens = evidence.UnknownTokens, State = next, Revision = effect.Revision + 1 };
     }
 
+    internal async Task<Result> ValidateDailyCorrectionWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        GuildBudgetEffect effect, CancellationToken ct)
+    {
+        if (effect.Request.ReservationId is not { } reservation) return Result.Success();
+
+        if (daily is null) return Result.Failure(new Error(ErrorCodes.Guild.AuthorityUnavailable, "The daily reservation owner is unavailable."));
+
+        return await daily.ValidateCorrectionWithinAsync(connection, transaction, reservation, effect.Request.AccountingAssociationId,
+            effect.KnownUsd, effect.State == GuildBudgetEffectState.Complete && !effect.UnknownUsd, ct).ConfigureAwait(false);
+    }
+
     internal async Task<Result> CorrectDailyWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         GuildBudgetEffect effect, decimal usd, CancellationToken ct)
     {

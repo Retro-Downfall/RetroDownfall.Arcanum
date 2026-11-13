@@ -22,7 +22,7 @@ internal interface IGuildLocalHostReadiness
 /// <summary>Host-lifetime ownership of the existing process-wide physical mutation fence.</summary>
 internal sealed class GuildLocalHostReadiness(IOptionsMonitor<ArcanumSettings> settings,
     IGrimoireOrdinaryConnectionFactory connections, GuildLocalHostPolicy policy, SignetAuthority authority,
-    TimeProvider time, string hostLockPath, IGrimoireConnectionAdmissionGate admission) : IGuildLocalHostReadiness, IHostedService, IAsyncDisposable
+    TimeProvider time, string hostLockPath, IGrimoireConnectionAdmissionGate admission, GuildSpendRefreshTracker? refreshes = null) : IGuildLocalHostReadiness, IHostedService, IAsyncDisposable
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -171,6 +171,8 @@ internal sealed class GuildLocalHostReadiness(IOptionsMonitor<ArcanumSettings> s
     public async ValueTask DisposeAsync()
     {
         _stopping = true;
+
+        if (refreshes is not null) await refreshes.CloseAllAsync(CancellationToken.None).ConfigureAwait(false);
 
         await _gate.WaitAsync().ConfigureAwait(false);
 

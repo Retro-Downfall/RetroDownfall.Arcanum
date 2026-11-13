@@ -54,6 +54,16 @@ public static class LongRunningOperationRecoveryRegistry
         new[]
         {
             new LongRunningOperationRecoveryDescriptor(
+                LongRunningOperationKinds.GuildSpendRefresh,
+                LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+                Owner: "GuildSpendRefreshService",
+                MinCheckpointVersion: 1,
+                MaxCheckpointVersion: 1,
+                LongRunningOperationStartupPriority.Readiness,
+                RecoveryIntent: "Reconcile the accepted receipt or retain the same refresh for an explicit retry.",
+                ManualRepairGuidance: "Inspect the refresh and its source; retry the same operation after correcting its eligibility."),
+
+            new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.GuildQuest,
                 LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
                 Owner: "GuildQuestCoordinator",

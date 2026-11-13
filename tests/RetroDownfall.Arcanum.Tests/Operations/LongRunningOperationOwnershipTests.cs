@@ -25,4 +25,32 @@ public sealed class LongRunningOperationOwnershipTests
 
         Assert.False(ownership.IsClaimedBy(operationId, token));
     }
+    [Fact]
+    public void Observation_does_not_follow_a_replaced_claim()
+    {
+        LongRunningOperationOwnership ownership = new();
+
+        Guid operation = Guid.NewGuid();
+
+        Assert.Null(ownership.Observe(operation));
+
+        Assert.True(ownership.TryClaim(operation, out Guid first));
+
+        var observed = ownership.Observe(operation);
+
+        Assert.NotNull(observed);
+
+        Assert.True(observed.IsCurrent);
+
+        Assert.True(ownership.Release(operation, first));
+
+        Assert.True(ownership.TryClaim(operation, out Guid second));
+
+        Assert.False(observed.IsCurrent);
+
+        Assert.True(ownership.Observe(operation)!.IsCurrent);
+
+        Assert.True(ownership.Release(operation, second));
+    }
+
 }
