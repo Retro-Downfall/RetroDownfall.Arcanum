@@ -16,7 +16,7 @@ public sealed class ManagedSqliteSourceTests
 
         Assert.Equal(expected, DescribePublicApi(assembly));
 
-        Assert.Equal("10.0.10+arcanum.null-origin.1", assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion);
+        Assert.Equal("11.0.0+arcanum.null-origin.1", assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion);
 
         Assert.Contains("self-built", assembly.GetCustomAttribute<AssemblyCompanyAttribute>()!.Company, StringComparison.Ordinal);
 

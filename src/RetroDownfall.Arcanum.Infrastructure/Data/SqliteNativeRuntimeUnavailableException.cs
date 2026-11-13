@@ -5,10 +5,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </summary>
 /// <remarks>
 /// The message names only the runtime identifier and the expected filename. Loader errors carry
-/// absolute search paths, environment variables, and installation layout; those belong nowhere near
-/// a message an operator may paste into an issue, and there is no recovery an operator could
-/// perform with them. The original exception is preserved as the inner exception for local
-/// diagnosis.
+/// absolute search paths, environment variables, and installation layout; those values belong nowhere near a message an operator may share.
+/// Recovery is to restore the delivered asset, remove unsupported startup loader overrides, and
+/// restart. The original exception is preserved as the inner exception for local diagnosis.
 /// </remarks>
 internal sealed class SqliteNativeRuntimeUnavailableException : Exception
 {
@@ -20,7 +19,8 @@ internal sealed class SqliteNativeRuntimeUnavailableException : Exception
         : base(
             $"The hermetic SQLCipher runtime for '{runtimeIdentifier}' could not be loaded. "
             + $"Expected '{expectedAssetFileName}' to be delivered with the application. "
-            + "Arcanum does not search for an alternative SQLite library.",
+            + "Arcanum does not search for an alternative SQLite library. "
+            + "Restore the delivered asset and remove native-loader overrides before restarting.",
             innerException)
     {
 

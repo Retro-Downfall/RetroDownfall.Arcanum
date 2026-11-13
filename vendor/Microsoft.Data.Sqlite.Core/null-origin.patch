@@ -1,6 +1,6 @@
 --- official/SqliteDataRecord.cs
-+++ backport/SqliteDataRecord.cs
-@@ -309,0 +310,8 @@
++++ arcanum/SqliteDataRecord.cs
+@@ -298,0 +299,8 @@
 +
 +        if (blobDatabaseName == null
 +            || blobTableName == null)

@@ -55,6 +55,8 @@ public sealed class EfNativeAotCompiledBoundaryTests
     [InlineData("Microsoft.EntityFrameworkCore.ChangeTracking.NavigationEntry", "Query")]
     [InlineData("Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions", "ExecuteSqlRaw")]
     [InlineData("Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions", "ExecuteSqlRawAsync")]
+    [InlineData("Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions", "ExecuteSql")]
+    [InlineData("Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions", "ExecuteSqlAsync")]
     public void Compiled_detector_rejects_each_forbidden_query_api_family(
         string expectedType,
         string expectedMethod)
@@ -84,6 +86,8 @@ public sealed class EfNativeAotCompiledBoundaryTests
         _ = db.FindAsync<Session>(Guid.Empty);
         _ = db.Sessions.Find(Guid.Empty);
         _ = db.Sessions.FindAsync(Guid.Empty);
+        _ = db.Database.ExecuteSql($"DELETE FROM Sessions WHERE Id = {Guid.Empty};");
+        _ = db.Database.ExecuteSqlAsync($"DELETE FROM Sessions WHERE Id = {Guid.Empty};");
         _ = db.Database.ExecuteSqlRaw("DELETE FROM Sessions;");
         _ = db.Database.ExecuteSqlRawAsync("DELETE FROM Sessions;");
     }
@@ -125,6 +129,8 @@ internal static class EfNativeAotCompiledBoundaryScanner
     private static readonly HashSet<string> RelationalDatabaseQueryOperations =
         new(StringComparer.Ordinal)
         {
+            "ExecuteSql",
+            "ExecuteSqlAsync",
             "ExecuteSqlInterpolated",
             "ExecuteSqlInterpolatedAsync",
             "ExecuteSqlRaw",

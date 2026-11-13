@@ -12,8 +12,6 @@
 
     <InvariantGlobalization>true</InvariantGlobalization>
 
-    <EFOptimizeContext>false</EFOptimizeContext>
-
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">

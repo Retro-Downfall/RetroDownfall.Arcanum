@@ -1,5 +1,10 @@
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.EntityFrameworkCore.Storage.Json;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Conclave;
@@ -90,6 +95,9 @@ public sealed class ArcanumDbContext(
             entity.Property(e => e.Content).IsRequired();
             entity.Property(e => e.ModelUsed).HasMaxLength(256).IsRequired();
             entity.Property(e => e.Role).HasConversion<int>();
+
+            entity.Property(e => e.Role).Metadata.SetTypeMapping(
+                CreateEnumTypeMapping<MessageRole>(MessageRoleValueComparer.Default));
             entity.Property(e => e.ToolCallId).HasMaxLength(256);
             entity.Property(e => e.ToolName).HasMaxLength(256);
             entity.Property(e => e.IsPinned).HasDefaultValue(false);
@@ -132,6 +140,9 @@ public sealed class ArcanumDbContext(
             entity.Property(e => e.Path).HasMaxLength(4096).IsRequired();
             entity.HasIndex(e => e.Path).IsUnique();
             entity.Property(e => e.Type).HasConversion<int>();
+
+            entity.Property(e => e.Type).Metadata.SetTypeMapping(
+                CreateEnumTypeMapping<WorkspaceType>(WorkspaceTypeValueComparer.Default));
             entity.Property(e => e.Description).HasMaxLength(2048);
             entity.Property(e => e.Settings).IsRequired();
             entity.Property(e => e.SanctumConfigJson).IsRequired().HasDefaultValue("{}");
@@ -181,4 +192,16 @@ public sealed class ArcanumDbContext(
                 .OnDelete(DeleteBehavior.SetNull);
         });
     }
+
+    private static RelationalTypeMapping CreateEnumTypeMapping<TEnum>(ValueComparer comparer)
+        where TEnum : struct, Enum =>
+        IntTypeMapping.Default.Clone(
+            mappingInfo: new RelationalTypeMappingInfo(storeTypeName: "INTEGER"),
+            converter: EnumToNumberConverter<TEnum, int>.Instance,
+            comparer: comparer,
+            keyComparer: comparer,
+            providerValueComparer: ValueComparer.CreateDefault<int>(favorStructuralComparisons: false),
+            jsonValueReaderWriter: new JsonConvertedValueReaderWriter<TEnum, int>(
+                JsonInt32ReaderWriter.Instance,
+                EnumToNumberConverter<TEnum, int>.Instance));
 }

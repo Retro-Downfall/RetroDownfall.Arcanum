@@ -158,13 +158,13 @@ public sealed partial class BatchProcessingServiceTests
 
             if (replacementStatus == "missing")
             {
-                Assert.Equal(1, await _db!.Database.ExecuteSqlInterpolatedAsync($"DELETE FROM Batches WHERE Id = {batch.Id.ToString("N")}"));
+                Assert.Equal(1, await _db!.Database.ExecuteSqlAsync($"DELETE FROM Batches WHERE Id = {batch.Id.ToString("N")}"));
             }
             else if (replacementStatus == "replaced-input")
             {
                 Guid changedInput = await SeedInputFileAsync(BatchLine("replacement"));
 
-                Assert.Equal(1, await _db!.Database.ExecuteSqlInterpolatedAsync($"UPDATE Batches SET InputFileId = {changedInput.ToString()} WHERE Id = {batch.Id.ToString("N")}"));
+                Assert.Equal(1, await _db!.Database.ExecuteSqlAsync($"UPDATE Batches SET InputFileId = {changedInput.ToString()} WHERE Id = {batch.Id.ToString("N")}"));
             }
             else
             {

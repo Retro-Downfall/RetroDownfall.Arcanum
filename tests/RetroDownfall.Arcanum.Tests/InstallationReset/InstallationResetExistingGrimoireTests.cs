@@ -1397,7 +1397,7 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         string checkpointReference = "retention-mutation:"
             + operationId.ToString("N");
 
-        _ = await context.Database.ExecuteSqlInterpolatedAsync(
+        _ = await context.Database.ExecuteSqlAsync(
             $"""
             INSERT INTO "LongRunningOperations"
                 ("Id", "Kind", "State", "RecoveryPolicy", "CreatedAt", "StartedAt",
@@ -1427,7 +1427,7 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
 
         string summary = $"Applying FactoryReset data-retention plan {planId}.";
 
-        _ = await context.Database.ExecuteSqlInterpolatedAsync(
+        _ = await context.Database.ExecuteSqlAsync(
             $"""
             INSERT INTO "LongRunningOperations"
                 ("Id", "Kind", "State", "RecoveryPolicy", "CreatedAt", "StartedAt",
@@ -1465,7 +1465,7 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
 
         string summary = $"Applying ResetWorkspace data-retention plan {planId}.";
 
-        _ = await context.Database.ExecuteSqlInterpolatedAsync(
+        _ = await context.Database.ExecuteSqlAsync(
             $"""
             INSERT INTO "LongRunningOperations"
                 ("Id", "Kind", "State", "RecoveryPolicy", "CreatedAt", "StartedAt",

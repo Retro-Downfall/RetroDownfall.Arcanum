@@ -1,5 +1,4 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.InteropServices;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
@@ -11,7 +10,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 [ExcludeFromCodeCoverage] // Reason: EF design-time factory, not runtime logic
 public sealed class ArcanumDbContextFactory : IDesignTimeDbContextFactory<ArcanumDbContext>
 {
-    private static readonly Lazy<IntPtr> DesignTimeNativeRuntime =
+    private static readonly Lazy<bool> DesignTimeNativeRuntime =
         new(InitializeDesignTimeNativeRuntime, LazyThreadSafetyMode.ExecutionAndPublication);
 
     [RequiresAssemblyFiles(
@@ -43,31 +42,14 @@ public sealed class ArcanumDbContextFactory : IDesignTimeDbContextFactory<Arcanu
         "SingleFile",
         "IL3000",
         Justification = "EF invokes this design-time-only factory from the ordinary target assembly, never from Arcanum's published process.")]
-    private static IntPtr InitializeDesignTimeNativeRuntime()
+    private static bool InitializeDesignTimeNativeRuntime()
     {
         string assemblyDirectory = Path.GetDirectoryName(typeof(ArcanumDbContextFactory).Assembly.Location)
             ?? throw new InvalidOperationException("The design-time Infrastructure assembly has no directory.");
 
-        string assetFileName = OperatingSystem.IsWindows()
-            ? "e_sqlcipher.dll"
-            : OperatingSystem.IsMacOS()
-                ? "libe_sqlcipher.dylib"
-                : "libe_sqlcipher.so";
+        SqliteNativeRuntime.Instance.InitializeForDesignTime(assemblyDirectory);
 
-        IntPtr handle = NativeLibrary.Load(Path.Combine(assemblyDirectory, assetFileName));
-
-        try
-        {
-            SqliteNativeRuntime.Instance.Initialize();
-
-            return handle;
-        }
-        catch
-        {
-            NativeLibrary.Free(handle);
-
-            throw;
-        }
+        return true;
     }
 
     private sealed class DesignTimeSecretStore : ISecretStore

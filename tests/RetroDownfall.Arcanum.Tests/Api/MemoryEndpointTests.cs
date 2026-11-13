@@ -161,7 +161,7 @@ public sealed partial class MemoryEndpointTests
 
             foreach (Guid session in new[] { sourceSessionId, selectedSessionId })
             {
-                _ = await db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc) VALUES ({session.ToString("D").ToUpperInvariant()}, 2, {campaignId.ToString("D").ToUpperInvariant()}, {DateTimeOffset.UtcNow.ToString("O")});");
+                _ = await db.Database.ExecuteSqlAsync($"INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc) VALUES ({session.ToString("D").ToUpperInvariant()}, 2, {campaignId.ToString("D").ToUpperInvariant()}, {DateTimeOffset.UtcNow.ToString("O")});");
             }
 
             CampaignRollupStore store = new(scope.ServiceProvider.GetRequiredService<ICovenantConnectionSource>(), CovenantSqliteConnectionInitializer.Instance);
@@ -226,7 +226,7 @@ public sealed partial class MemoryEndpointTests
         {
             ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
 
-            _ = await db.Database.ExecuteSqlInterpolatedAsync($"DELETE FROM \"Entries\" WHERE \"Id\" = {entryId.ToString("D").ToUpperInvariant()};");
+            _ = await db.Database.ExecuteSqlAsync($"DELETE FROM \"Entries\" WHERE \"Id\" = {entryId.ToString("D").ToUpperInvariant()};");
         }
 
         using HttpResponseMessage invalidated = await client.GetAsync($"/api/memory/explain/{selectedSessionId:D}");

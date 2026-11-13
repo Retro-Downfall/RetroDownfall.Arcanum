@@ -1,4 +1,4 @@
-Assembly: Microsoft.Data.Sqlite, Version=10.0.10.0, Culture=neutral, PublicKeyToken=adb9793829ddae60
+Assembly: Microsoft.Data.Sqlite, Version=11.0.0.0, Culture=neutral, PublicKeyToken=adb9793829ddae60
 Field: Microsoft.Data.Sqlite.SqliteCacheMode : Int32 value__ : Public : -
 Field: Microsoft.Data.Sqlite.SqliteCacheMode : Microsoft.Data.Sqlite.SqliteCacheMode Default : Public, Static, Literal : 0
 Field: Microsoft.Data.Sqlite.SqliteCacheMode : Microsoft.Data.Sqlite.SqliteCacheMode Private : Public, Static, Literal : 1

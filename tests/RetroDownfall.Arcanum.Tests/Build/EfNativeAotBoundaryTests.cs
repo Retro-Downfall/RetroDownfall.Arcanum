@@ -29,6 +29,8 @@ public sealed class EfNativeAotBoundaryTests
             "CompileQuery",
             "ExecuteDelete",
             "ExecuteDeleteAsync",
+            "ExecuteSql",
+            "ExecuteSqlAsync",
             "ExecuteSqlInterpolated",
             "ExecuteSqlInterpolatedAsync",
             "ExecuteSqlRaw",
@@ -116,6 +118,8 @@ public sealed class EfNativeAotBoundaryTests
     [InlineData("_ = db.Database.ExecuteSqlRawAsync(\"DELETE FROM Sessions;\");", "ExecuteSqlRawAsync")]
     [InlineData("_ = db.Database.ExecuteSqlInterpolated($\"DELETE FROM Sessions WHERE Id = {id}\");", "ExecuteSqlInterpolated")]
     [InlineData("_ = db.Database.ExecuteSqlInterpolatedAsync($\"DELETE FROM Sessions WHERE Id = {id}\");", "ExecuteSqlInterpolatedAsync")]
+    [InlineData("_ = db.Database.ExecuteSql($\"DELETE FROM Sessions WHERE Id = {id}\");", "ExecuteSql")]
+    [InlineData("_ = db.Database.ExecuteSqlAsync($\"DELETE FROM Sessions WHERE Id = {id}\");", "ExecuteSqlAsync")]
     [InlineData("db.Entry(id).Reload();", "Reload")]
     [InlineData("_ = db.Entry(id).GetDatabaseValues();", "GetDatabaseValues")]
     [InlineData("db.Entry(id).Collection(\"Entries\").Load();", "Load")]

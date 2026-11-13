@@ -194,7 +194,7 @@ public sealed class CampaignSummaryLifecycleEndpointTests
         using IDisposable bindingWrite = CovenantSqliteConnectionInitializer.Instance.Authorize(
             (SqliteConnection)db.Database.GetDbConnection(), CovenantSqliteAuthorizationKind.SessionBindingWrite);
 
-        _ = await db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc) VALUES ({sessionId.ToString("D").ToUpperInvariant()}, 2, {campaignId.ToString("D").ToUpperInvariant()}, {DateTimeOffset.UtcNow.ToString("O")});", Token);
+        _ = await db.Database.ExecuteSqlAsync($"INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc) VALUES ({sessionId.ToString("D").ToUpperInvariant()}, 2, {campaignId.ToString("D").ToUpperInvariant()}, {DateTimeOffset.UtcNow.ToString("O")});", Token);
 
         CampaignRollupStore store = new(scope.ServiceProvider.GetRequiredService<ICovenantConnectionSource>(), CovenantSqliteConnectionInitializer.Instance);
 

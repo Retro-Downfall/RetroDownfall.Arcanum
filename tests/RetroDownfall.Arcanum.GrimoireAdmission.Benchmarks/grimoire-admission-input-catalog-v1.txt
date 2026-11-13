@@ -1059,6 +1059,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryScopeResolver.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Migrations/20260805201243_InitialCreate.Designer.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Migrations/20260805201243_InitialCreate.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Migrations/ArcanumDbContextModelSnapshot.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/NativeAotEnumValueComparers.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/NativeMemorySearchReader.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/RetentionSchemaCensus.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaErasureWriteGate.cs
@@ -2710,7 +2711,6 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Generated/EntryEntityType.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Generated/EntryUnsafeAccessors.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Generated/MageSettingEntityType.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Generated/MageSettingUnsafeAccessors.cs
-R	src/RetroDownfall.Arcanum.Infrastructure/Generated/NativeAotSqliteTypeMappings.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Generated/PromptEntityType.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Generated/PromptUnsafeAccessors.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Generated/SessionEntityType.cs
@@ -3573,6 +3573,7 @@ R	vendor/Microsoft.Data.Sqlite.Core/source-manifest.json
 R	vendor/Microsoft.Data.Sqlite.Core/upstream/Extensions/SQLitePCLExtensions.cs
 R	vendor/Microsoft.Data.Sqlite.Core/upstream/Extensions/SqliteConnectionExtensions.cs
 R	vendor/Microsoft.Data.Sqlite.Core/upstream/Extensions/TypeExtensions.cs
+R	vendor/Microsoft.Data.Sqlite.Core/upstream/Microsoft.Data.Sqlite.Core.baseline.json
 R	vendor/Microsoft.Data.Sqlite.Core/upstream/Microsoft.Data.Sqlite.Core.ruleset
 R	vendor/Microsoft.Data.Sqlite.Core/upstream/Package.md
 R	vendor/Microsoft.Data.Sqlite.Core/upstream/Properties/InternalsVisibleTo.cs
@@ -3606,6 +3607,5 @@ R	vendor/Microsoft.Data.Sqlite.Core/upstream/SqliteTransaction.cs
 R	vendor/Microsoft.Data.Sqlite.Core/upstream/SqliteType.cs
 R	vendor/Microsoft.Data.Sqlite.Core/upstream/SqliteValueBinder.cs
 R	vendor/Microsoft.Data.Sqlite.Core/upstream/SqliteValueReader.cs
-R	vendor/Microsoft.Data.Sqlite.Core/upstream/Utilities/AllowNullAttribute.cs
-R	vendor/Microsoft.Data.Sqlite.Core/upstream/Utilities/MemberNotNullAttribute.cs
+R	vendor/Microsoft.Data.Sqlite.Core/upstream/Utilities/IsBusyHelper.cs
 R	vendor/Microsoft.Data.Sqlite.Core/upstream/Utilities/SharedStopwatch.cs

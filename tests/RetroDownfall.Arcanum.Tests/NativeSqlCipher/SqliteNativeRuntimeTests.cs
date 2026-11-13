@@ -13,10 +13,10 @@ public sealed class SqliteNativeRuntimeTests
 {
 
     [Fact]
-    public void Initialize_selects_e_sqlcipher_and_is_idempotent()
+    public void Initialize_selects_owned_sqlcipher_and_is_idempotent()
     {
 
-        SqliteNativeRuntime.Instance.Initialize();
+        Parallel.For(0, 64, static _ => SqliteNativeRuntime.Instance.Initialize());
 
         SqliteNativeRuntime.Instance.Initialize();
 
@@ -50,7 +50,7 @@ public sealed class SqliteNativeRuntimeTests
             "The SQLite provider must be frozen once selected, so no later component can swap the "
             + "engine underneath an already-open encrypted database.");
 
-        raw.SetProvider(new SQLite3Provider_e_sqlcipher());
+        raw.SetProvider(new SQLite3Provider_sqlcipher());
 
         Assert.Equal("3.53.3", raw.sqlite3_libversion().utf8_to_string());
 

@@ -2,7 +2,7 @@
 
   <PropertyGroup>
 
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
 
     <AssemblyName>Microsoft.Data.Sqlite</AssemblyName>
 
@@ -10,13 +10,13 @@
 
     <PackageId>Microsoft.Data.Sqlite.Core</PackageId>
 
-    <Version>10.0.10</Version>
+    <Version>11.0.0</Version>
 
-    <AssemblyVersion>10.0.10.0</AssemblyVersion>
+    <AssemblyVersion>11.0.0.0</AssemblyVersion>
 
-    <FileVersion>10.0.10.0</FileVersion>
+    <FileVersion>11.0.0.0</FileVersion>
 
-    <InformationalVersion>10.0.10+arcanum.null-origin.1</InformationalVersion>
+    <InformationalVersion>11.0.0+arcanum.null-origin.1</InformationalVersion>
 
     <Company>Arcanum self-built managed-provider backport</Company>
 
@@ -32,7 +32,7 @@
 
     <PathMap>$(MSBuildProjectDirectory)=/_/Microsoft.Data.Sqlite.Core</PathMap>
 
-    <LangVersion>14.0</LangVersion>
+    <LangVersion>15.0</LangVersion>
 
     <ImplicitUsings>disable</ImplicitUsings>
 
@@ -60,9 +60,9 @@
 
     <Content Include="LICENSE.txt;source-manifest.json;README.md" Link="licenses/Microsoft.Data.Sqlite.Core/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
 
-    <PackageReference Include="SQLitePCLRaw.core" Version="2.1.11" />
+    <PackageReference Include="SQLitePCLRaw.core" Version="3.0.5" />
 
-    <AssemblyMetadata Include="Arcanum.ManagedSqlite.UpstreamCommit" Value="f7d90799ce4ef09a0bb257852a57248d2a8fb8dd" />
+    <AssemblyMetadata Include="Arcanum.ManagedSqlite.UpstreamCommit" Value="297acf930fb0f5c07fd4e51d78e521b4ad2e5d1f" />
 
     <AssemblyMetadata Include="Arcanum.ManagedSqlite.SelfBuilt" Value="true; public-signed for identity compatibility; not a Microsoft-signed release" />
 

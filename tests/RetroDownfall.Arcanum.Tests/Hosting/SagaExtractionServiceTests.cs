@@ -1641,7 +1641,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         string sessionKey = sessionId.ToString();
 
-        _ = await _db!.Database.ExecuteSqlInterpolatedAsync(
+        _ = await _db!.Database.ExecuteSqlAsync(
             $"""
             WITH digits(value) AS
             (

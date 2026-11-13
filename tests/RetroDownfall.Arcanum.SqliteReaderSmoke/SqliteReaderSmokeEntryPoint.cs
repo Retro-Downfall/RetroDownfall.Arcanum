@@ -1,4 +1,5 @@
 using System.Data;
+using SQLitePCL;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -33,6 +34,83 @@ public static class SqliteReaderSmokeEntryPoint
 
     private static void Run(string mode)
     {
+        if (mode == "enum-comparer")
+        {
+            EnumComparerProbe.Run();
+
+            return;
+        }
+
+        if (mode == "design-time-after-runtime")
+        {
+            SqliteNativeRuntime.Instance.Initialize();
+
+            SqliteNativeRuntime.Instance.InitializeForDesignTime(
+                Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory));
+
+            try
+            {
+                SqliteNativeRuntime.Instance.InitializeForDesignTime(Path.Combine(AppContext.BaseDirectory, "different"));
+            }
+            catch (InvalidOperationException)
+            {
+                return;
+            }
+
+            throw new InvalidDataException("A different design-time asset was accepted after initialization.");
+        }
+
+        if (mode is "compiled-persistence" or "native-persistence")
+        {
+            CompiledPersistenceProbe.Run(mode == "native-persistence");
+
+            return;
+        }
+
+        if (mode is "native-decoy-control" or "native-decoy-control-cleared-override")
+        {
+            if (mode == "native-decoy-control-cleared-override")
+            {
+                Environment.SetEnvironmentVariable("DYLD_LIBRARY_PATH", null);
+            }
+
+            // Deliberately bypass the owner only in this isolated negative-control process.
+            SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_sqlcipher());
+
+            if (SQLitePCL.raw.sqlite3_libversion().utf8_to_string() != "3.53.3")
+            {
+                throw new InvalidDataException("The native probe substitute is not usable.");
+            }
+
+            return;
+        }
+
+        if (mode is "native-refusal" or "native-refusal-cleared-override")
+        {
+            if (mode == "native-refusal-cleared-override")
+            {
+                // dyld caches launch overrides; clearing the managed environment is insufficient.
+                Environment.SetEnvironmentVariable("DYLD_LIBRARY_PATH", null);
+            }
+
+            try
+            {
+                SqliteNativeRuntime.Instance.Initialize();
+            }
+            catch (SqliteNativeRuntimeUnavailableException exception)
+            {
+                if (exception.ErrorCode != "Grimoire.NativeRuntimeUnavailable"
+                    || exception.Message.Contains(AppContext.BaseDirectory, StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException("The native failure is not sanitized.");
+                }
+
+                return;
+            }
+
+            throw new InvalidDataException("A substitute native library was accepted.");
+        }
+
         if (mode == "cold-context")
         {
             VerifyColdContext();

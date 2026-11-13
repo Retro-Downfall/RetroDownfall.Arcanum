@@ -26,8 +26,6 @@
 
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
 
-    <EFOptimizeContext>false</EFOptimizeContext>
-
     <EFPrecompileQueriesStage>none</EFPrecompileQueriesStage>
 
   </PropertyGroup>
@@ -87,9 +85,9 @@
 
   <ItemGroup>
 
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite.Core" Version="10.0.10" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite.Core" Version="11.0.0" />
 
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="11.0.0">
 
       <PrivateAssets>all</PrivateAssets>
 
@@ -114,7 +112,7 @@
       which ships one verified, reproducibly built SQLCipher per RID; a bundle package would deliver
       binaries Arcanum neither builds nor verifies.
     -->
-    <PackageReference Include="SQLitePCLRaw.provider.e_sqlcipher" Version="2.1.11" />
+    <PackageReference Include="SQLitePCLRaw.provider.sqlcipher" Version="3.0.5" />
 
     <PackageReference Include="Microsoft.Extensions.AI" Version="10.9.0" />
 

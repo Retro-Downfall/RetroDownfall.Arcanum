@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -8,83 +9,23 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 public sealed class NativeAotCompiledModelGuardTests
 {
     [Fact]
-    public void Every_compiled_model_type_mapping_closes_its_default_comparer_generic()
+    public void Compiled_model_preserves_value_key_and_provider_comparers_with_upstream_generic_mappings()
     {
-        string repositoryRoot = FindRepositoryRoot();
-        (string File, string Mapping, string ClrType)[] expectedMappings =
-        [
-            ("Generated/NativeAotSqliteTypeMappings.cs", "SqliteGuidTypeMapping", "Guid"),
-            ("Generated/NativeAotSqliteTypeMappings.cs", "SqliteStringTypeMapping", "string"),
-            ("Generated/NativeAotSqliteTypeMappings.cs", "SqliteDecimalTypeMapping", "decimal"),
-            ("Generated/NativeAotSqliteTypeMappings.cs", "SqliteDateTimeTypeMapping", "DateTime"),
-            ("Generated/NativeAotSqliteTypeMappings.cs", "SqliteDateTimeOffsetTypeMapping", "DateTimeOffset"),
-            ("Data/UtcInstantTypeMappings.cs", "UtcDateTimeTypeMapping", "DateTime"),
-            ("Data/UtcInstantTypeMappings.cs", "UtcDateTimeOffsetTypeMapping", "DateTimeOffset"),
-        ];
+        Microsoft.EntityFrameworkCore.Metadata.IModel model =
+            RetroDownfall.Arcanum.Infrastructure.Generated.ArcanumDbContextModel.Instance;
 
-        foreach ((string relativeFile, string mapping, string clrType) in expectedMappings)
+        Assert.Equal("11.0.0", model.FindAnnotation("ProductVersion")!.Value);
+
+        foreach (Microsoft.EntityFrameworkCore.Metadata.IProperty property in model.GetEntityTypes().SelectMany(static entity => entity.GetProperties()))
         {
-            string path = Path.Combine(
-                repositoryRoot,
-                "src",
-                "RetroDownfall.Arcanum.Infrastructure",
-                relativeFile);
+            Microsoft.EntityFrameworkCore.Storage.CoreTypeMapping mapping = property.GetTypeMapping();
 
-            Assert.True(
-                File.Exists(path),
-                $"{relativeFile} must close the {mapping} comparer generic for Native AOT.");
+            Assert.Equal(Nullable.GetUnderlyingType(property.ClrType) ?? property.ClrType, mapping.Comparer.Type);
 
-            CompilationUnitSyntax root = CSharpSyntaxTree.ParseText(File.ReadAllText(path))
-                .GetCompilationUnitRoot();
+            Assert.Equal(mapping.Comparer.Type, mapping.KeyComparer.Type);
 
-            Assert.True(
-                HasClosedGenericComparerBoundary(root, mapping, clrType),
-                $"{relativeFile} must construct {mapping} through a closed {clrType} comparer "
-                + "boundary so Native AOT never uses MakeGenericMethod().");
+            Assert.Equal(mapping.Converter?.ProviderClrType ?? mapping.ClrType, mapping.ProviderValueComparer.Type);
         }
-    }
-
-    [Theory]
-    [InlineData("EntryEntityType.cs", "MessageRole", "ForMessageRole")]
-    [InlineData("CampaignEntityType.cs", "WorkspaceType", "ForWorkspaceType")]
-    public void Enum_mappings_use_named_scoped_ef10_aot_compatibility_boundaries(
-        string generatedFile,
-        string enumType,
-        string boundaryName)
-    {
-        string generatedDirectory = Path.Combine(
-            FindRepositoryRoot(),
-            "src",
-            "RetroDownfall.Arcanum.Infrastructure",
-            "Generated");
-        string mappingSource = File.ReadAllText(Path.Combine(
-            generatedDirectory,
-            "NativeAotSqliteTypeMappings.cs"));
-        CompilationUnitSyntax mappingRoot = CSharpSyntaxTree.ParseText(mappingSource)
-            .GetCompilationUnitRoot();
-        MethodDeclarationSyntax boundary = Assert.Single(
-            mappingRoot.DescendantNodes().OfType<MethodDeclarationSyntax>(),
-            method => method.Identifier.ValueText.Equals(boundaryName, StringComparison.Ordinal));
-        string boundarySource = boundary.NormalizeWhitespace().ToFullString();
-
-        Assert.Contains(
-            $"NativeAotSqliteInt32EnumTypeMapping<{enumType}>.Default",
-            boundarySource,
-            StringComparison.Ordinal);
-        Assert.Contains("UnconditionalSuppressMessage", boundarySource, StringComparison.Ordinal);
-        Assert.Contains("\"IL3050", boundarySource, StringComparison.Ordinal);
-        Assert.Contains("System.Enum.GetValues(System.Type)", boundarySource, StringComparison.Ordinal);
-
-        string entitySource = File.ReadAllText(Path.Combine(generatedDirectory, generatedFile));
-
-        Assert.Contains(
-            $"NativeAotSqliteEnumTypeMappings.{boundaryName}()",
-            entitySource,
-            StringComparison.Ordinal);
-        Assert.DoesNotContain(
-            $"NativeAotSqliteInt32EnumTypeMapping<{enumType}>.Default",
-            entitySource,
-            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -239,52 +180,7 @@ public sealed class NativeAotCompiledModelGuardTests
             .ToArray();
     }
 
-    private static bool HasClosedGenericComparerBoundary(
-        CompilationUnitSyntax root,
-        string mappingName,
-        string clrType)
-    {
-        ClassDeclarationSyntax? mapping = root.DescendantNodes()
-            .OfType<ClassDeclarationSyntax>()
-            .SingleOrDefault(type => type.Identifier.ValueText.Equals(mappingName, StringComparison.Ordinal));
 
-        if (mapping is null)
-        {
-            return false;
-        }
-
-        string? boundaryName = mapping.DescendantNodes()
-            .OfType<GenericNameSyntax>()
-            .Where(static generic => generic.Identifier.ValueText is
-                "WithClosedComparers" or "NativeAotUtcInstantTypeMapping")
-            .Where(static generic => generic.TypeArgumentList.Arguments.Count == 1)
-            .Where(generic => generic.TypeArgumentList.Arguments[0]
-                .ToString()
-                .Equals(clrType, StringComparison.Ordinal))
-            .Select(static generic => generic.Identifier.ValueText)
-            .SingleOrDefault();
-
-        if (boundaryName is null)
-        {
-            return false;
-        }
-
-        IEnumerable<SyntaxNode> methodBoundaries = root.DescendantNodes()
-            .OfType<MethodDeclarationSyntax>()
-            .Where(method => method.Identifier.ValueText.Equals(boundaryName, StringComparison.Ordinal))
-            .Where(static method => method.TypeParameterList?.Parameters.Count == 1);
-        IEnumerable<SyntaxNode> typeBoundaries = root.DescendantNodes()
-            .OfType<ClassDeclarationSyntax>()
-            .Where(type => type.Identifier.ValueText.Equals(boundaryName, StringComparison.Ordinal))
-            .Where(static type => type.TypeParameterList?.Parameters.Count == 1);
-
-        return methodBoundaries
-            .Concat(typeBoundaries)
-            .SelectMany(static boundary => boundary.DescendantNodes().OfType<GenericNameSyntax>())
-            .Count(static generic => generic.Identifier.ValueText.Equals("CreateDefault", StringComparison.Ordinal)
-                && generic.TypeArgumentList.Arguments.Count == 1
-                && generic.TypeArgumentList.Arguments[0].ToString().Equals("T", StringComparison.Ordinal)) >= 3;
-    }
 }
 
 internal static class NativeAotCompiledModelGuard

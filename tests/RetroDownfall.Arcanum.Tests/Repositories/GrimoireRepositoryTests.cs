@@ -1657,11 +1657,11 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         if (evidence == "fork")
         {
-            _ = await _db!.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO campaign_fork_frontiers (SessionId, SourceSessionId, InheritedThroughSequence, ProofKindCode, CreatedAtUtc) VALUES ({sessionId.ToString("D").ToUpperInvariant()}, {Guid.NewGuid().ToString("D").ToUpperInvariant()}, {expectedFloor}, 1, {DateTimeOffset.UtcNow.ToString("O")});");
+            _ = await _db!.Database.ExecuteSqlAsync($"INSERT INTO campaign_fork_frontiers (SessionId, SourceSessionId, InheritedThroughSequence, ProofKindCode, CreatedAtUtc) VALUES ({sessionId.ToString("D").ToUpperInvariant()}, {Guid.NewGuid().ToString("D").ToUpperInvariant()}, {expectedFloor}, 1, {DateTimeOffset.UtcNow.ToString("O")});");
         }
         else if (evidence == "saga")
         {
-            _ = await _db!.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO saga_extraction_watermarks (SessionId, LastExtractedEntryCreatedAt, LastExtractedEntrySequence) VALUES ({sessionId.ToString("D")}, {DateTimeOffset.UtcNow.ToString("O")}, {expectedFloor});");
+            _ = await _db!.Database.ExecuteSqlAsync($"INSERT INTO saga_extraction_watermarks (SessionId, LastExtractedEntryCreatedAt, LastExtractedEntrySequence) VALUES ({sessionId.ToString("D")}, {DateTimeOffset.UtcNow.ToString("O")}, {expectedFloor});");
         }
         else
         {
@@ -1678,7 +1678,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             Assert.Equal(expectedFloor, committed.Value.ThroughEntrySequence);
         }
 
-        _ = await _db!.Database.ExecuteSqlInterpolatedAsync($"DELETE FROM \"Entries\" WHERE \"SessionId\" = {sessionId.ToString("D").ToUpperInvariant()};");
+        _ = await _db!.Database.ExecuteSqlAsync($"DELETE FROM \"Entries\" WHERE \"SessionId\" = {sessionId.ToString("D").ToUpperInvariant()};");
 
         _ = await repository.BeginAssistantReplyAsync(
             sessionId, "new native tail", "test-model", CancellationToken.None);

@@ -456,7 +456,7 @@ public sealed class NativeSqlCipherAssetContractTests
             project.Descendants("PackageReference"),
             static item => string.Equals(
                 item.Attribute("Include")?.Value,
-                "SQLitePCLRaw.provider.e_sqlcipher",
+                "SQLitePCLRaw.provider.sqlcipher",
                 StringComparison.Ordinal));
 
         Assert.False(string.IsNullOrWhiteSpace(provider.Attribute("Version")?.Value));
