@@ -120,16 +120,8 @@ internal sealed partial class GuildPortalStore
             || envelope.Producer.Kind == GuildProducerKind.Run && (envelope.Producer.AgentId != source.Value.Quest.AgentId
                 || envelope.Producer.RunId != source.Value.Quest.RunId || envelope.Producer.QuestId != source.Value.Quest.Id)) return Unavailable;
 
-        Result sourceVisible = caller.Kind == GuildCallerKind.Run && envelope.Address.Kind == GuildCircleAddressKind.Cohort
-            ? source.Value.Retired || source.Value.Issuance.InstallationGeneration != policy.InstallationGeneration
-                ? Result.Failure(Forbidden)
-                : await GuildStore.RequireOwnerWithinAsync(connection, transaction, source.Value.Quest.SessionId,
-                    source.Value.Quest.CampaignId, ct).ConfigureAwait(false)
-            : await quests.RequireVisibleAsync(connection, transaction, caller, source.Value, ct).ConfigureAwait(false);
-
-        if (sourceVisible.IsFailure) return sourceVisible;
-
-        if (caller.Kind == GuildCallerKind.Operator) return Result.Success();
+        if (caller.Kind == GuildCallerKind.Operator)
+            return await quests.RequireVisibleAsync(connection, transaction, caller, source.Value, ct).ConfigureAwait(false);
 
         GuildExecutionHandle execution = caller.Execution!;
 
@@ -163,6 +155,31 @@ internal sealed partial class GuildPortalStore
 
         if (!relation || envelope.Address.Kind != GuildCircleAddressKind.Cohort
             && envelope.Address.QuestId != recipient.Value.Quest.Id) return Forbidden;
+
+        // A child's ordinary Quest visibility excludes its parent. The exact addressed
+        // relationship and the child's live Signet lineage above authorize this Portal read,
+        // without widening general Quest lookup.
+        bool directParent = envelope.Address.Kind == GuildCircleAddressKind.Child
+            && recipient.Value.Quest.ParentQuestId == source.Value.Quest.Id;
+
+        if (directParent)
+        {
+            Result<GuildSignetRecord> recipientSignet = await GuildSignetStore.ReadAsync(connection, transaction,
+                recipient.Value.Quest.SignetId, false, ct).ConfigureAwait(false);
+
+            if (recipientSignet.IsFailure) return recipientSignet.Error;
+
+            if (recipientSignet.Value.Binding.IssuerSignetId != source.Value.Quest.SignetId) return Forbidden;
+        }
+
+        Result sourceVisible = directParent || envelope.Address.Kind == GuildCircleAddressKind.Cohort
+            ? source.Value.Retired || source.Value.Issuance.InstallationGeneration != policy.InstallationGeneration
+                ? Result.Failure(Forbidden)
+                : await GuildStore.RequireOwnerWithinAsync(connection, transaction, source.Value.Quest.SessionId,
+                    source.Value.Quest.CampaignId, ct).ConfigureAwait(false)
+            : await quests.RequireVisibleAsync(connection, transaction, caller, source.Value, ct).ConfigureAwait(false);
+
+        if (sourceVisible.IsFailure) return sourceVisible;
 
         if (envelope.Address.Kind == GuildCircleAddressKind.Cohort)
         {
