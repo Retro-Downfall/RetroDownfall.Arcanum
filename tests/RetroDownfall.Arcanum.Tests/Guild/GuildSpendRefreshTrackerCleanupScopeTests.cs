@@ -79,6 +79,7 @@ public sealed class GuildSpendRefreshTrackerCleanupScopeTests
 
         reopened!.Dispose();
     }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -108,5 +109,4 @@ public sealed class GuildSpendRefreshTrackerCleanupScopeTests
 
         await Assert.ThrowsAsync<AggregateException>(async () => await closing.WaitAsync(TimeSpan.FromSeconds(5)));
     }
-
 }
