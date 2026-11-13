@@ -77,19 +77,6 @@ internal sealed class GuildSpendRefreshTracker
         return Task.WhenAll(entries.Select(static entry => entry.CancelAsync()));
     }
 
-    private void BindOperation(Entry entry, Guid operationId)
-    {
-        ArgumentOutOfRangeException.ThrowIfEqual(operationId, Guid.Empty);
-
-        lock (_gate)
-        {
-            if (entry.OperationId is { } existing && existing != operationId)
-                throw new InvalidOperationException("A refresh attempt cannot change its operation identity.");
-
-            entry.OperationId = operationId;
-        }
-    }
-
     private static async Task CancelAndJoinAsync(Entry[] entries, CancellationToken ct)
     {
         await Task.WhenAll(entries.Select(static entry => entry.CancelAsync())).WaitAsync(ct).ConfigureAwait(false);
@@ -131,9 +118,22 @@ internal sealed class GuildSpendRefreshTracker
 
         internal Guid Root { get; } = root;
 
-        internal Guid? OperationId { get; set; }
+        private Guid? _operationId;
 
-        internal void BindOperation(Guid operationId) => owner.BindOperation(this, operationId);
+        internal Guid? OperationId => _operationId;
+
+        internal void BindOperation(Guid operationId)
+        {
+            ArgumentOutOfRangeException.ThrowIfEqual(operationId, Guid.Empty);
+
+            lock (owner._gate)
+            {
+                if (_operationId is { } existing && existing != operationId)
+                    throw new InvalidOperationException("A refresh attempt cannot change its operation identity.");
+
+                _operationId = operationId;
+            }
+        }
 
         internal CancellationToken Stop => _stop.Token;
 
