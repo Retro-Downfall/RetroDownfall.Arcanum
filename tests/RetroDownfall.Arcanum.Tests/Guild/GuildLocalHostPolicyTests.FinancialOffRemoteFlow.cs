@@ -330,20 +330,21 @@ public sealed partial class GuildLocalHostPolicyTests
 
             long eventsBeforeReplay = await f.ScalarAsync("SELECT count(*) FROM guild_events WHERE EventKindCode=" + (int)GuildEventKind.SpendChanged);
 
-            DateTimeOffset replayAt = DateTimeOffset.UtcNow;
+            peerTask.Metadata!.Remove(A2ASendingUsageMetadata.MetadataKey);
 
-            var replayLease = await operations.TryAcquireLeaseAsync(quest.OperationId, "financial-off-replay", replayAt,
-                replayAt.AddMinutes(2), deadline.Token);
+            await peerTasks.SaveTaskAsync(taskIdentity.Value.TaskId, peerTask, deadline.Token);
 
-            Assert.True(replayLease.Acquired);
+            GuildRemotePort restartedPort = new(restartedStore, restartedPolicy, restartedAuthority, operations, client, f.Gate, new(), TimeProvider.System);
 
-            GuildQuestDriver replayDriver = new(rebound.Value, "financial-off-replay", replayLease.Operation.Revision, restartedRun.Value);
+            int readsBeforeReplay = capture.TaskReads;
 
-            var replay = await restartedStore.WaitForRemoteInputAsync(replayDriver, quest.Id,
-                new(persistedIdentity.Value.TaskId, persistedIdentity.Value.ContextId, "input-required", "Which answer?",
-                    new A2ARemoteCost(false, null, null), replayAt), deadline.Token);
+            var replay = await restartedPort.DispatchAsync(rebound.Value, request, deadline.Token);
 
             Assert.True(replay.IsSuccess, replay.Error.Message);
+
+            Assert.Equal(QuestState.InputRequired, replay.Value.State);
+
+            Assert.True(capture.TaskReads > readsBeforeReplay);
 
             Assert.Equal(evidenceBeforeReplay, await f.ScalarAsync("SELECT count(*) FROM guild_budget_evidence"));
 
@@ -379,8 +380,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
             request = new(dispatch.Value!.Mutation, quest.Id, quest.OperationId, quest.RunId, answer.ContinuationId,
                 operation.Revision, continuation.Value.ContentRef.Digest);
-
-            GuildRemotePort restartedPort = new(restartedStore, restartedPolicy, restartedAuthority, operations, client, f.Gate, new(), TimeProvider.System);
 
             result = await restartedPort.ContinueAsync(rebound.Value, request, answer, deadline.Token);
 
