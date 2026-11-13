@@ -65,75 +65,121 @@ public sealed class GrimoireCliInitializationTests : IDisposable
         TaskCompletionSource releaseFirstCallback = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        Task<int> first = initialization.RunExclusiveWithBootstrapAsync(
-            async (_, token) =>
-            {
-                using ArcanumMaintenanceLock? competing =
-                    ArcanumMaintenanceLock.AcquireDetailed(
-                        ArcanumPaths.GrimoireDirectory).Lock;
+        using CancellationTokenSource cancellation = new();
 
-                Assert.Null(competing);
+        Task<int>? first = null;
 
-                firstCallbackEntered.TrySetResult();
+        Task<int>? second = null;
 
-                using ArcanumClientMutationLock? competingClient =
-                    ArcanumClientMutationLock.AcquireDetailed(
-                        ArcanumPaths.GrimoireDirectory).Lock;
-
-                Assert.Null(competingClient);
-
-                await releaseFirstCallback.Task.WaitAsync(token);
-
-                return 17;
-            },
-            CancellationToken.None);
-
-        Task firstSignal = await Task.WhenAny(first, firstCallbackEntered.Task).WaitAsync(TimeSpan.FromSeconds(10));
-
-        if (firstSignal == first)
+        try
         {
-            _ = await first;
-        }
+            first = initialization.RunExclusiveWithBootstrapAsync(
+                async (_, token) =>
+                {
+                    using ArcanumMaintenanceLock? competing =
+                        ArcanumMaintenanceLock.AcquireDetailed(
+                            ArcanumPaths.GrimoireDirectory).Lock;
 
-        Assert.True(firstCallbackEntered.Task.IsCompletedSuccessfully);
+                    Assert.Null(competing);
 
-        int secondCallbackCount = 0;
+                    firstCallbackEntered.TrySetResult();
 
-        Task<int> second = initialization.RunExclusiveWithBootstrapAsync(
-            (_, _) =>
+                    using ArcanumClientMutationLock? competingClient =
+                        ArcanumClientMutationLock.AcquireDetailed(
+                            ArcanumPaths.GrimoireDirectory).Lock;
+
+                    Assert.Null(competingClient);
+
+                    await releaseFirstCallback.Task.WaitAsync(token);
+
+                    return 17;
+                },
+                cancellation.Token);
+
+            Task firstSignal = await Task.WhenAny(first, firstCallbackEntered.Task).WaitAsync(TimeSpan.FromSeconds(10));
+
+            if (firstSignal == first)
             {
-                Interlocked.Increment(ref secondCallbackCount);
+                _ = await first;
+            }
 
-                return Task.FromResult(23);
-            },
-            CancellationToken.None);
+            Assert.True(firstCallbackEntered.Task.IsCompletedSuccessfully);
 
-        Assert.False(second.IsCompleted);
+            int secondCallbackCount = 0;
 
-        Assert.Equal(0, Volatile.Read(ref secondCallbackCount));
+            second = initialization.RunExclusiveWithBootstrapAsync(
+                (_, _) =>
+                {
+                    Interlocked.Increment(ref secondCallbackCount);
 
-        releaseFirstCallback.TrySetResult();
+                    return Task.FromResult(23);
+                },
+                cancellation.Token);
 
-        Assert.Equal(17, await first);
+            Assert.False(second.IsCompleted);
 
-        Assert.Equal(23, await second);
+            Assert.Equal(0, Volatile.Read(ref secondCallbackCount));
 
-        Assert.Equal(2, secretStore.ApiKeyReadCount);
+            releaseFirstCallback.TrySetResult();
 
-        Assert.Equal(1, secondCallbackCount);
+            Assert.Equal(17, await first);
 
-        Assert.False(string.IsNullOrWhiteSpace(passphraseSource.Passphrase));
+            Assert.Equal(23, await second);
 
-        Assert.True(File.Exists(ArcanumPaths.GrimoireDatabaseFile));
+            Assert.Equal(2, secretStore.ApiKeyReadCount);
 
-        Assert.True(File.Exists(ArcanumPaths.GrimoireDatabaseFile + ".kdf"));
+            Assert.Equal(1, secondCallbackCount);
 
-        Assert.True(provider.GetRequiredService<IGrimoireDbReadiness>().IsReady);
+            Assert.False(string.IsNullOrWhiteSpace(passphraseSource.Passphrase));
 
-        using ArcanumMaintenanceLock? released = ArcanumMaintenanceLock.TryAcquire(
-            ArcanumPaths.GrimoireDirectory);
+            Assert.True(File.Exists(ArcanumPaths.GrimoireDatabaseFile));
 
-        Assert.NotNull(released);
+            Assert.True(File.Exists(ArcanumPaths.GrimoireDatabaseFile + ".kdf"));
+
+            Assert.True(provider.GetRequiredService<IGrimoireDbReadiness>().IsReady);
+
+            using ArcanumMaintenanceLock? released = ArcanumMaintenanceLock.TryAcquire(
+                ArcanumPaths.GrimoireDirectory);
+
+            Assert.NotNull(released);
+        }
+        finally
+        {
+            releaseFirstCallback.TrySetResult();
+
+            try
+            {
+                cancellation.Cancel();
+            }
+            catch (AggregateException)
+            {
+                // A cancellation callback must not prevent the started operations from joining.
+            }
+
+            // Normal execution observes both results above. On an earlier failure, join every
+            // started task without replacing the original assertion or bootstrap exception.
+            if (first is not null)
+            {
+                try
+                {
+                    _ = await first;
+                }
+                catch (Exception)
+                {
+                }
+            }
+
+            if (second is not null)
+            {
+                try
+                {
+                    _ = await second;
+                }
+                catch (Exception)
+                {
+                }
+            }
+        }
     }
 
     [Fact]

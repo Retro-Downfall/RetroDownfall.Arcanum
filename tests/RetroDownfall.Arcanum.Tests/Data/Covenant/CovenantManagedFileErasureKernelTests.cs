@@ -34,10 +34,6 @@ public sealed class CovenantManagedFileErasureKernelTests
 
     private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
 
-    /// <summary>
-    /// Every filesystem-outcome code is a literal that a durable row already carries, so a
-    /// renumbering has to fail here rather than reinterpret rows an earlier build wrote.
-    /// </summary>
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -161,7 +157,7 @@ public sealed class CovenantManagedFileErasureKernelTests
 
         Assert.Equal(ManagedFileOpenKind.Opened, opened.Value.Kind);
 
-        ManagedFileOpenHandle handle = Assert.IsType<ManagedFileOpenHandle>(opened.Value.Handle);
+        using ManagedFileOpenHandle handle = Assert.IsType<ManagedFileOpenHandle>(opened.Value.Handle);
 
         Result<ManagedFileVerification> verified = await new ManagedFileOwnershipVerifier()
             .VerifyAsync(handle, await fixture.ReadOwnershipAsync(), Token);
@@ -205,6 +201,10 @@ public sealed class CovenantManagedFileErasureKernelTests
         }
     }
 
+    /// <summary>
+    /// Every filesystem-outcome code is a literal that a durable row already carries, so a
+    /// renumbering has to fail here rather than reinterpret rows an earlier build wrote.
+    /// </summary>
     [Fact]
     public void Managed_file_outcome_codes_are_literal_and_exhaustive()
     {
@@ -774,8 +774,6 @@ public sealed class CovenantManagedFileErasureKernelTests
 
             return ManagedFileEvidenceCodec.DecodeOwnership(bytes).Value;
         }
-
-
 
         internal static async Task<ManagedFileFixture> CreateAsync()
         {
