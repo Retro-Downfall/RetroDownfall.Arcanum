@@ -156,6 +156,10 @@ public sealed partial class DataRetentionServiceTests
         await ExecuteAsync("""
             INSERT INTO guild_result_receipts(QuestId,ResultId,Digest,OutcomeCode,NoDispatchProven,WorkStoppedProven,MutationId,AcceptedRevision,CreatedAtUtc)
             VALUES('11111111-1111-1111-1111-111111111111','EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE',zeroblob(32),4,1,1,'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF',2,'2000-01-01T00:00:00.0000000Z');
+            INSERT INTO guild_budget_accounts(AccountId,OwnerKindCode,OwnerId,RootAccountId,Closed,SettlementReceiptId,Revision)
+            VALUES('DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD',0,'11111111-1111-1111-1111-111111111111',
+                'DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD',1,'EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE',1);
+            INSERT INTO guild_quest_budget(QuestId,AccountId) VALUES('11111111-1111-1111-1111-111111111111','DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD');
             INSERT INTO guild_content(ContentId,ContentKindCode,SourceRecordId,Revision,Digest,MimeType,Body,SensitivityCode,ProvenanceModeCode,CreatedAtUtc)
             VALUES('CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC',1,'11111111-1111-1111-1111-111111111111',1,@digest,'text/plain',X'',0,0,'2000-01-01T00:00:00.0000000Z');
             """, ("@digest", SHA256.HashData([])));

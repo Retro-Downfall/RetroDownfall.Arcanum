@@ -30,23 +30,80 @@ internal sealed partial class DataRetentionService
             retention, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<string> GuildPhysicalAccountingPinAsync(string runIdentity, CancellationToken cancellationToken)
+    internal const string GuildPhysicalRetentionRunPageSql = """
+                SELECT DISTINCT lower(replace(effect.AccountingAssociationId,'-','')) AS RunKey
+                FROM guild_budget_effects effect INDEXED BY idx_guild_budget_effects_accounting WHERE effect.KindCode IS NOT 1
+                  AND lower(replace(effect.AccountingAssociationId,'-',''))>$after
+                  AND EXISTS(SELECT 1 FROM InferenceRuns run
+                    WHERE lower(replace(run.Id,'-',''))=lower(replace(effect.AccountingAssociationId,'-',''))
+                      AND ($cutoff IS NULL OR julianday(COALESCE(run.CompletedAt,run.StartedAt))<=julianday($cutoff)))
+                ORDER BY RunKey LIMIT 100
+                """;
+
+    private static async Task<string> GuildPhysicalAccountingPinAsync(string runIdentity, SqliteConnection connection,
+        SqliteTransaction transaction, bool hasGuildEffects, DateTimeOffset? cutoff, CancellationToken cancellationToken)
     {
-        if (!await TableExistsAsync("guild_budget_effects", cancellationToken).ConfigureAwait(false))
+        if (!hasGuildEffects) return "0";
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = "CREATE TEMP TABLE IF NOT EXISTS guild_retention_blocked_runs(RunKey TEXT PRIMARY KEY); DELETE FROM guild_retention_blocked_runs";
+
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        string after = "";
+
+        while (true)
         {
-            return "0";
+            command.CommandText = GuildPhysicalRetentionRunPageSql;
+
+            command.Parameters.Clear();
+
+            command.Parameters.AddWithValue("$after", after);
+
+            command.Parameters.AddWithValue("$cutoff", cutoff is { } instant ? FormatTimestamp(instant) : DBNull.Value);
+
+            List<string> page = [];
+
+            await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+            {
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) page.Add(reader.GetString(0));
+            }
+
+            if (page.Count == 0) break;
+
+            Dictionary<string, bool> proof = await GuildPhysicalRetentionProof.ReadPageAsync(connection, transaction, page, cancellationToken).ConfigureAwait(false);
+
+            foreach ((string key, bool clear) in proof)
+            {
+                if (clear) continue;
+
+                command.CommandText = "INSERT OR IGNORE INTO guild_retention_blocked_runs(RunKey) VALUES($key)";
+
+                command.Parameters.Clear();
+
+                command.Parameters.AddWithValue("$key", key);
+
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            after = page[^1];
         }
 
-        string missingEvidence = await TableExistsAsync("guild_budget_evidence", cancellationToken).ConfigureAwait(false)
-            ? "NOT EXISTS(SELECT 1 FROM guild_budget_evidence receipt WHERE receipt.EffectId=effect.EffectId AND receipt.AppliedRevision=effect.Revision)"
-            : "1";
+        return $"EXISTS(SELECT 1 FROM guild_retention_blocked_runs blocked WHERE blocked.RunKey=lower(replace({runIdentity},'-','')))";
+    }
 
-        return $"""
-            EXISTS(SELECT 1 FROM guild_budget_effects effect
-                WHERE lower(replace(effect.AccountingAssociationId,'-',''))=lower(replace({runIdentity},'-',''))
-                  AND effect.KindCode=0
-                  AND (effect.StateCode IN(0,1) OR effect.UnknownUsd=1 OR effect.UnknownTokens=1 OR {missingEvidence}))
-            """;
+    private async Task<string> GuildReservationUnlinkedAsync(string reservationAlias, CancellationToken cancellationToken)
+    {
+        if (!await TableExistsAsync("guild_budget_effects", cancellationToken).ConfigureAwait(false)) return "1";
+
+        string normalized = $"lower(replace({reservationAlias}.Id,'-',''))";
+
+        string canonical = $"upper(substr({normalized},1,8)||'-'||substr({normalized},9,4)||'-'||substr({normalized},13,4)||'-'||substr({normalized},17,4)||'-'||substr({normalized},21,12))";
+
+        return $"NOT EXISTS(SELECT 1 FROM guild_budget_effects effect WHERE effect.ReservationId={canonical})";
     }
 
     private async Task<string> GuildOperationLinkPinAsync(CancellationToken cancellationToken) =>
@@ -146,7 +203,7 @@ internal sealed partial class DataRetentionService
                 JOIN guild_inbox delivery ON delivery.EnvelopeId=envelope.Id
                 JOIN guild_portal_inputs input ON input.InboxId=delivery.Id
                 LEFT JOIN guild_quests c ON c.Id=input.RecipientQuestId
-                WHERE envelope.ContentId=content.ContentId AND (c.Id IS NULL OR {GuildQuestRetentionPins.ExecutionUnresolved}))
+                WHERE envelope.ContentId=content.ContentId AND (c.Id IS NULL OR {GuildQuestRetentionPins.NonAccountingUnresolved}))
             AND ((content.ContentKindCode=0 AND NOT EXISTS(SELECT 1 FROM guild_agent_cards card WHERE card.ContentId=content.ContentId))
               OR (content.ContentKindCode IN(1,2,9,10) AND EXISTS(
                 SELECT 1 FROM guild_quests c WHERE
@@ -154,7 +211,7 @@ internal sealed partial class DataRetentionService
                    OR (content.ContentKindCode=10 AND EXISTS(SELECT 1 FROM guild_local_wait_checkpoints checkpoint WHERE checkpoint.QuestId=c.Id AND checkpoint.ContentId=content.ContentId))
                    OR (content.ContentKindCode=1 AND c.GoalContentId=content.ContentId)
                    OR (content.ContentKindCode=2 AND EXISTS(SELECT 1 FROM guild_result_receipts result WHERE result.QuestId=c.Id AND result.ContentId=content.ContentId)))
-                  AND NOT {GuildQuestRetentionPins.Unresolved}
+                  AND NOT {GuildQuestRetentionPins.NonAccountingUnresolved}
                   AND NOT EXISTS(SELECT 1 FROM guild_quests child WHERE child.ParentQuestId=c.Id)
                   AND NOT EXISTS(SELECT 1 FROM guild_result_applications application WHERE application.QuestId=c.Id)))
               OR (content.ContentKindCode=3 AND EXISTS(SELECT 1 FROM guild_envelopes envelope WHERE envelope.ContentId=content.ContentId)
@@ -167,6 +224,79 @@ internal sealed partial class DataRetentionService
                         OR (delivery.DeliveryStateCode=3 AND receipt.EffectKindCode<>3)
                         OR (delivery.DeliveryStateCode=2 AND receipt.EffectKindCode=3)))))
             """;
+    }
+
+    private static async Task<bool> GuildContentAccountingClearWithinAsync(SqliteConnection connection,
+        SqliteTransaction transaction, string contentId, CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = "CREATE TEMP TABLE IF NOT EXISTS guild_retention_quest_proof(QuestId TEXT PRIMARY KEY,Clear INTEGER NOT NULL)";
+
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        string after = "";
+
+        while (true)
+        {
+            command.CommandText = """
+                WITH references_by_quest(QuestId) AS (
+                  SELECT Id FROM guild_quests WHERE GoalContentId=$content
+                  UNION SELECT QuestId FROM guild_result_receipts WHERE ContentId=$content
+                  UNION SELECT QuestId FROM guild_local_executions WHERE InputContentId=$content
+                  UNION SELECT QuestId FROM guild_local_wait_checkpoints WHERE ContentId=$content
+                  UNION SELECT i.RecipientQuestId FROM guild_envelopes e JOIN guild_inbox d ON d.EnvelopeId=e.Id
+                    JOIN guild_portal_inputs i ON i.InboxId=d.Id WHERE e.ContentId=$content)
+                SELECT r.QuestId,c.RootQuestId FROM references_by_quest r LEFT JOIN guild_quests c ON c.Id=r.QuestId
+                WHERE r.QuestId>$after ORDER BY r.QuestId LIMIT 100
+                """;
+
+            command.Parameters.Clear();
+
+            command.Parameters.AddWithValue("$after", after);
+
+            command.Parameters.AddWithValue("$content", contentId);
+
+            List<(string Quest, string Root)> page = [];
+
+            await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+            {
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    page.Add((reader.GetString(0), reader.IsDBNull(1) ? "" : reader.GetString(1)));
+            }
+
+            if (page.Count == 0) return true;
+
+            foreach ((string quest, string root) in page)
+            {
+                command.CommandText = "SELECT Clear FROM guild_retention_quest_proof WHERE QuestId=$quest";
+
+                command.Parameters.Clear();
+
+                command.Parameters.AddWithValue("$quest", quest);
+
+                object? cached = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+                bool clear = cached is long value ? value == 1
+                    : Guid.TryParseExact(root, "D", out Guid rootId) && Guid.TryParseExact(quest, "D", out Guid questId)
+                      && await GuildQuestStore.AccountingClearWithinAsync(connection, transaction, rootId, questId, cancellationToken).ConfigureAwait(false);
+
+                if (cached is null)
+                {
+                    command.CommandText = "INSERT INTO guild_retention_quest_proof(QuestId,Clear) VALUES($quest,$clear)";
+
+                    command.Parameters.AddWithValue("$clear", clear ? 1 : 0);
+
+                    await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                if (!clear) return false;
+            }
+
+            after = page[^1].Quest;
+        }
     }
 
     private async Task AddGuildCandidatesAsync(RetentionSettings retention, int limit,
@@ -185,31 +315,60 @@ internal sealed partial class DataRetentionService
 
         if (retention.GuildContent.Enabled)
         {
-            await using SqliteCommand command = connection.CreateCommand();
+            await using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);
 
-            command.CommandText = $"SELECT content.ContentId FROM guild_content content WHERE {contentPredicate} ORDER BY content.CreatedAtUtc, content.ContentId LIMIT @limit;";
+            await using SqliteCommand reset = connection.CreateCommand();
 
-            Add(command, "@cutoff", FormatTimestamp(PrunePlanningTimestamp.AddDays(-ArcanumSettingClamps.RetentionRuleDays(retention.GuildContent.Days))));
+            reset.Transaction = transaction;
 
-            Add(command, "@limit", limit - candidates.Count);
+            reset.CommandText = "CREATE TEMP TABLE IF NOT EXISTS guild_retention_quest_proof(QuestId TEXT PRIMARY KEY,Clear INTEGER NOT NULL); DELETE FROM guild_retention_quest_proof";
 
-            List<string> ids = [];
+            await reset.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-            await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+            string afterAt = "", afterId = "";
+
+            while (candidates.Count < limit)
             {
-                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                await using SqliteCommand command = connection.CreateCommand();
+
+                command.Transaction = transaction;
+
+                command.CommandText = $"SELECT content.ContentId,content.CreatedAtUtc FROM guild_content content WHERE {contentPredicate} AND (content.CreatedAtUtc>@afterAt OR content.CreatedAtUtc=@afterAt AND content.ContentId>@afterId) ORDER BY content.CreatedAtUtc,content.ContentId LIMIT 100";
+
+                Add(command, "@cutoff", FormatTimestamp(PrunePlanningTimestamp.AddDays(-ArcanumSettingClamps.RetentionRuleDays(retention.GuildContent.Days))));
+
+                Add(command, "@afterAt", afterAt);
+
+                Add(command, "@afterId", afterId);
+
+                List<(string Id, string Created)> page = [];
+
+                await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    ids.Add(reader.GetString(0));
+                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    page.Add((reader.GetString(0), reader.IsDBNull(1) ? "" : reader.GetString(1)));
+                }
+
+                if (page.Count == 0) break;
+
+                foreach ((string id, string created) in page)
+                {
+                    afterAt = created;
+
+                    afterId = id;
+
+                    if (quests && !await GuildContentAccountingClearWithinAsync(connection, transaction, id, cancellationToken).ConfigureAwait(false)) continue;
+
+                    candidates.Add(GuildContentCandidatePrefix + Guid.Parse(id).ToString("D").ToUpperInvariant());
+
+                    items.Add(new(RetentionDataClass.GuildContent, 1, 0, 0,
+                        await MeasureGuildProjectionsAsync(connection, transaction, id, false, cancellationToken).ConfigureAwait(false)));
+
+                    if (candidates.Count >= limit) break;
                 }
             }
 
-            foreach (string id in ids)
-            {
-                candidates.Add(GuildContentCandidatePrefix + Guid.Parse(id).ToString("D").ToUpperInvariant());
-
-                items.Add(new(RetentionDataClass.GuildContent, 1, 0, 0,
-                    await MeasureGuildProjectionsAsync(connection, null, id, false, cancellationToken).ConfigureAwait(false)));
-            }
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
 
         if (retention.GuildRecords.Enabled && candidates.Count < limit)
@@ -281,7 +440,7 @@ internal sealed partial class DataRetentionService
         return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? 0L);
     }
 
-    private async Task<CandidateDeleteResult> DeleteGuildCandidateAsync(Guid id, bool card,
+    internal async Task<CandidateDeleteResult> DeleteGuildCandidateAsync(Guid id, bool card,
         DateTimeOffset cutoff, CancellationToken cancellationToken)
     {
         SqliteConnection connection = (SqliteConnection)await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -308,6 +467,20 @@ internal sealed partial class DataRetentionService
         if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not 1L)
         {
             return CandidateDeleteResult.Empty;
+        }
+
+        if (!card && quests)
+        {
+            await using SqliteCommand reset = connection.CreateCommand();
+
+            reset.Transaction = (SqliteTransaction)transaction;
+
+            reset.CommandText = "CREATE TEMP TABLE IF NOT EXISTS guild_retention_quest_proof(QuestId TEXT PRIMARY KEY,Clear INTEGER NOT NULL); DELETE FROM guild_retention_quest_proof";
+
+            await reset.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!await GuildContentAccountingClearWithinAsync(connection, (SqliteTransaction)transaction,
+                id.ToString("D").ToUpperInvariant(), cancellationToken).ConfigureAwait(false)) return CandidateDeleteResult.Empty;
         }
 
         if (!card)

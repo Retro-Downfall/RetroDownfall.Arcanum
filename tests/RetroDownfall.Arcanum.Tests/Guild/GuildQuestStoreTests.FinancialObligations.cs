@@ -115,6 +115,126 @@ public sealed partial class GuildQuestStoreTests
         Assert.True((await ledger.ReadWithinAsync(connection, transaction, row.AllocationAccountId, default)).IsFailure);
     }
     [Fact]
+    public void Physical_obligations_separate_known_usage_bounds_and_financial_axes()
+    {
+        var unbounded = GuildBudgetObligations.Classify(GuildBudgetEffectState.Prepared, false, false,
+            false, false, false, null, null, 0m, 0);
+
+        Assert.True(unbounded.PhysicalPending && unbounded.UsdBlocked && unbounded.TokensBlocked);
+
+        Assert.Null(unbounded.HoldUsd);
+
+        Assert.Null(unbounded.HoldTokens);
+
+        var exposed = GuildBudgetObligations.Classify(GuildBudgetEffectState.PossiblyDispatched, false, false,
+            false, false, false, 2m, 10, 0.5m, 2);
+
+        Assert.True(exposed.PhysicalPending && exposed.UsdBlocked && exposed.TokensBlocked);
+
+        Assert.Equal(1.5m, exposed.HoldUsd);
+
+        Assert.Equal(8, exposed.HoldTokens);
+
+        var linked = GuildBudgetObligations.Classify(GuildBudgetEffectState.Complete, false, false,
+            true, true, false, 2m, null, 0.5m, 0);
+
+        Assert.False(linked.PhysicalPending);
+
+        Assert.True(linked.UsdBlocked);
+
+        Assert.False(linked.TokensBlocked);
+
+        Assert.Equal(1.5m, linked.HoldUsd);
+
+        var finiteTokens = GuildBudgetObligations.Classify(GuildBudgetEffectState.Complete, false, true,
+            false, false, true, null, 10, 0m, 2);
+
+        Assert.False(finiteTokens.UsdBlocked);
+
+        Assert.True(finiteTokens.TokensBlocked);
+
+        Assert.Equal(8, finiteTokens.HoldTokens);
+
+        var unrestricted = GuildBudgetObligations.Classify(GuildBudgetEffectState.Complete, false, false,
+            false, true, true, null, null, 0m, 0);
+
+        Assert.False(unrestricted.PhysicalPending || unrestricted.UsdBlocked || unrestricted.TokensBlocked);
+
+        Assert.Equal(0m, unrestricted.HoldUsd);
+
+        Assert.Equal(0, unrestricted.HoldTokens);
+
+        var unsent = GuildBudgetObligations.Classify(GuildBudgetEffectState.ProvenNoDispatch, true, true,
+            true, false, false, 2m, 10, 0m, 0);
+
+        Assert.False(unsent.PhysicalPending || unsent.UsdBlocked || unsent.TokensBlocked);
+    }
+
+    [Fact]
+    public async Task Reservation_row_validation_rejects_wrong_identity_amount_and_disposition()
+    {
+        await using Fixture f = await Fixture.CreateAsync();
+
+        await using SqliteConnection connection = await f.OpenAsync();
+
+        const string reservation = "11111111-1111-1111-1111-111111111111";
+
+        const string run = "22222222-2222-2222-2222-222222222222";
+
+        const string other = "33333333-3333-3333-3333-333333333333";
+
+        (string Name, Action<object[]> Change, bool Expected)[] cases =
+        [
+            ("complete", _ => { }, true),
+            ("missing actual reservation", row => row[7] = DBNull.Value, false),
+            ("missing actual run", row => row[8] = DBNull.Value, false),
+            ("missing status", row => row[9] = DBNull.Value, false),
+            ("missing reserved", row => row[10] = DBNull.Value, false),
+            ("missing reconciled", row => row[11] = DBNull.Value, false),
+            ("wrong storage types", row => row[12] = 0L, false),
+            ("malformed reservation", row => row[1] = "bad", false),
+            ("empty reservation", row => row[1] = Guid.Empty.ToString("D"), false),
+            ("malformed run", row => row[2] = "bad", false),
+            ("empty run", row => row[2] = Guid.Empty.ToString("D"), false),
+            ("wrong reservation", row => row[7] = other, false),
+            ("wrong run", row => row[8] = other, false),
+            ("missing bound", row => row[4] = DBNull.Value, false),
+            ("negative bound", row => row[4] = "-1", false),
+            ("negative known", row => row[5] = "-1", false),
+            ("reserved below bound", row => row[10] = "1", false),
+            ("negative reconciled", row => row[11] = "-1", false),
+            ("unknown USD", row => row[6] = 1L, false),
+            ("wrong disposition", row => row[9] = 4L, false),
+            ("different amount", row => row[11] = "1.4", false),
+            ("no dispatch released", row => { row[3] = 3L; row[5] = "0"; row[9] = 2L; row[11] = "0"; }, true),
+            ("no dispatch reconciled", row => { row[3] = 3L; row[5] = "0"; row[11] = "0"; }, true),
+            ("no dispatch with paid amount", row => { row[3] = 3L; row[11] = "0"; }, false),
+            ("no dispatch with reconciled amount", row => { row[3] = 3L; row[5] = "0"; }, false),
+            ("no dispatch uncertain", row => { row[3] = 3L; row[5] = "0"; row[9] = 4L; row[11] = "0"; }, false),
+            ("still exposed", row => row[3] = 1L, false),
+        ];
+
+        foreach ((string name, Action<object[]> change, bool expected) in cases)
+        {
+            object[] row = [other, reservation, run, 2L, "2", "1.5", 0L, reservation, run, 1L, "2", "1.5", 1L];
+
+            change(row);
+
+            await using SqliteCommand command = connection.CreateCommand();
+
+            command.CommandText = "SELECT " + string.Join(',', Enumerable.Range(0, row.Length).Select(index => "$p" + index));
+
+            for (int index = 0; index < row.Length; index++) command.Parameters.AddWithValue("$p" + index, row[index]);
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync();
+
+            Assert.True(await reader.ReadAsync());
+
+            Assert.True(GuildBudgetObligations.ValidReservationRow(reader, 0) == expected, name);
+        }
+    }
+
+    [Fact]
     public async Task Reservation_validation_skips_census_without_any_link()
     {
         await using Fixture f = await Fixture.CreateAsync();

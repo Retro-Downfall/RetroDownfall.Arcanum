@@ -73,6 +73,8 @@ $securityTypes = [System.Collections.Generic.HashSet[string]]::new(
         "GuildSpendCorrectionPolicy",
         "GuildGrantPolicy",
         "GuildBudgetAllocationPolicy",
+        "GuildBudgetObligations",
+        "GuildPhysicalRetentionProof",
         "GuildSignetGrantComposition",
         # The authenticated-envelope codec. It seals and opens every Covenant fragment, so a branch it
         # never exercises is an authentication path nothing has proved refuses.

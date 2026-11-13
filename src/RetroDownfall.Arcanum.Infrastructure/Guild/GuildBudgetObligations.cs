@@ -79,31 +79,7 @@ internal static class GuildBudgetObligations
 
                 previous = effect;
 
-                if (reader.IsDBNull(7) || reader.IsDBNull(8) || reader.IsDBNull(9) || reader.IsDBNull(10) || reader.IsDBNull(11)
-                    || reader.GetInt64(12) != 1 || !Guid.TryParse(reader.GetString(1), out Guid reservation) || reservation == Guid.Empty
-                    || !Guid.TryParse(reader.GetString(2), out Guid run) || run == Guid.Empty
-                    || !Guid.TryParse(reader.GetString(7), out Guid actualReservation) || actualReservation != reservation
-                    || !Guid.TryParse(reader.GetString(8), out Guid actualRun) || actualRun != run || reader.IsDBNull(4)) return false;
-
-                decimal bound = ExactUsdText.Read(reader, 4), known = ExactUsdText.Read(reader, 5);
-
-                decimal reserved = ExactUsdText.Read(reader, 10), reconciled = ExactUsdText.Read(reader, 11);
-
-                if (bound < 0 || known < 0 || reserved < bound || reconciled < 0) return false;
-
-                GuildBudgetEffectState state = (GuildBudgetEffectState)reader.GetInt32(3);
-
-                BudgetReservationStatus status = (BudgetReservationStatus)reader.GetInt32(9);
-
-                if (state == GuildBudgetEffectState.Complete)
-                {
-                    if (reader.GetBoolean(6) || status != BudgetReservationStatus.Reconciled || reconciled != known) return false;
-                }
-                else if (state == GuildBudgetEffectState.ProvenNoDispatch)
-                {
-                    if (known != 0m || reconciled != 0m || status is not (BudgetReservationStatus.Released or BudgetReservationStatus.Reconciled)) return false;
-                }
-                else return false;
+                if (!ValidReservationRow(reader, 0)) return false;
             }
 
             return true;
@@ -112,6 +88,35 @@ internal static class GuildBudgetObligations
         {
             return false;
         }
+    }
+
+    internal static bool ValidReservationRow(SqliteDataReader reader, int offset)
+    {
+        if (reader.IsDBNull(offset + 7) || reader.IsDBNull(offset + 8) || reader.IsDBNull(offset + 9)
+            || reader.IsDBNull(offset + 10) || reader.IsDBNull(offset + 11) || reader.GetInt64(offset + 12) != 1
+            || !Guid.TryParse(reader.GetString(offset + 1), out Guid reservation) || reservation == Guid.Empty
+            || !Guid.TryParse(reader.GetString(offset + 2), out Guid run) || run == Guid.Empty
+            || !Guid.TryParse(reader.GetString(offset + 7), out Guid actualReservation) || actualReservation != reservation
+            || !Guid.TryParse(reader.GetString(offset + 8), out Guid actualRun) || actualRun != run || reader.IsDBNull(offset + 4)) return false;
+
+        decimal bound = ExactUsdText.Read(reader, offset + 4), known = ExactUsdText.Read(reader, offset + 5);
+
+        decimal reserved = ExactUsdText.Read(reader, offset + 10), reconciled = ExactUsdText.Read(reader, offset + 11);
+
+        if (bound < 0 || known < 0 || reserved < bound || reconciled < 0) return false;
+
+        GuildBudgetEffectState state = (GuildBudgetEffectState)reader.GetInt32(offset + 3);
+
+        BudgetReservationStatus status = (BudgetReservationStatus)reader.GetInt32(offset + 9);
+
+        return state switch
+        {
+            GuildBudgetEffectState.Complete => !reader.GetBoolean(offset + 6)
+                && status == BudgetReservationStatus.Reconciled && reconciled == known,
+            GuildBudgetEffectState.ProvenNoDispatch => known == 0m && reconciled == 0m
+                && status is BudgetReservationStatus.Released or BudgetReservationStatus.Reconciled,
+            _ => false,
+        };
     }
 
 }

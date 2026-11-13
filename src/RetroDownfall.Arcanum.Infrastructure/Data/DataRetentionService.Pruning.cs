@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
 using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
@@ -191,15 +192,35 @@ internal sealed partial class DataRetentionService
             cancellationToken,
             ("@status", (int)InferenceRunStatus.Running)).ConfigureAwait(false)];
 
-        string guildPin = await GuildPhysicalAccountingPinAsync("run.Id", cancellationToken).ConfigureAwait(false);
+        bool hasGuildEffects = await TableExistsAsync("guild_budget_effects", cancellationToken).ConfigureAwait(false);
 
-        if (guildPin != "0")
+        if (hasGuildEffects)
         {
-            conflicts.AddRange(await ReadConflictsAsync(
-                $"SELECT run.Id FROM InferenceRuns run WHERE {guildPin}",
-                ErrorCodes.Guild.ReconciliationRequired,
-                "An unresolved Guild physical effect protects its authoritative inference and billing evidence.",
-                cancellationToken).ConfigureAwait(false));
+            SqliteConnection connection = (SqliteConnection)await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            await using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);
+
+            string guildPin = await GuildPhysicalAccountingPinAsync("run.Id", connection, transaction, true, null, cancellationToken).ConfigureAwait(false);
+
+            await using SqliteCommand command = connection.CreateCommand();
+
+            command.Transaction = transaction;
+
+            command.CommandText = $"SELECT run.Id FROM InferenceRuns run WHERE {guildPin}";
+
+            await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+            {
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    string id = reader.GetString(0);
+
+                    conflicts.Add(new(ErrorCodes.Guild.ReconciliationRequired,
+                        Guid.TryParse(id, out Guid guid) ? guid.ToString("D") : id,
+                        "An unresolved Guild physical effect protects its authoritative inference and billing evidence."));
+                }
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
 
         return [.. conflicts];
@@ -2648,10 +2669,19 @@ internal sealed partial class DataRetentionService
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 
-        string guildPin = await GuildPhysicalAccountingPinAsync("run.Id", cancellationToken).ConfigureAwait(false);
+        bool hasGuildEffects = await TableExistsAsync("guild_budget_effects", cancellationToken).ConfigureAwait(false);
+
+        string unlinkedReservation = await GuildReservationUnlinkedAsync("reservation", cancellationToken).ConfigureAwait(false);
+
+        await using SqliteTransaction transaction = ((SqliteConnection)connection).BeginTransaction(deferred: true);
+
+        string guildPin = await GuildPhysicalAccountingPinAsync("run.Id", (SqliteConnection)connection, transaction,
+            hasGuildEffects, cutoff, cancellationToken).ConfigureAwait(false);
 
         await using (DbCommand blockedCommand = connection.CreateCommand())
         {
+            blockedCommand.Transaction = transaction;
+
             blockedCommand.CommandText =
                 $"""
                 SELECT run.Id,
@@ -2746,6 +2776,8 @@ internal sealed partial class DataRetentionService
 
         await using DbCommand command = connection.CreateCommand();
 
+        command.Transaction = transaction;
+
         command.CommandText =
             $"""
             WITH billable_counts AS (
@@ -2753,10 +2785,10 @@ internal sealed partial class DataRetentionService
                 FROM BillableOperations
                 GROUP BY lower(replace(RunId, '-', ''))),
             reservation_counts AS (
-                SELECT lower(replace(RunId, '-', '')) AS RunKey, COUNT(*) AS Rows,
-                       MAX(Status IN (@reserved, @uncertainPaid)) AS HasOutstanding
-                FROM BudgetReservations
-                GROUP BY lower(replace(RunId, '-', ''))),
+                SELECT lower(replace(reservation.RunId, '-', '')) AS RunKey, COUNT(*) FILTER (WHERE {unlinkedReservation}) AS Rows,
+                       MAX(reservation.Status IN (@reserved, @uncertainPaid)) AS HasOutstanding
+                FROM BudgetReservations reservation
+                GROUP BY lower(replace(reservation.RunId, '-', ''))),
             adjustment_memberships AS (
                 SELECT lower(replace(adjustment.RunId, '-', '')) AS RunKey, adjustment.Id
                 FROM CostAdjustments adjustment
@@ -2878,6 +2910,8 @@ internal sealed partial class DataRetentionService
         }
 
         await reader.DisposeAsync().ConfigureAwait(false);
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         if (candidates.Count >= limit)
         {
@@ -7116,7 +7150,7 @@ internal sealed partial class DataRetentionService
         return new CandidateDeleteResult(rows, 0, 0, 0, reconciled);
     }
 
-    private async Task<CandidateDeleteResult> DeleteAccountingCandidateAsync(
+    internal async Task<CandidateDeleteResult> DeleteAccountingCandidateAsync(
         Guid runId,
         DateTimeOffset effectiveCutoff,
         CancellationToken cancellationToken)
@@ -7155,7 +7189,11 @@ internal sealed partial class DataRetentionService
             return CandidateDeleteResult.Empty;
         }
 
-        string guildPin = await GuildPhysicalAccountingPinAsync("run.Id", cancellationToken).ConfigureAwait(false);
+        bool hasGuildEffects = await TableExistsAsync("guild_budget_effects", cancellationToken).ConfigureAwait(false);
+
+        string unlinkedReservation = await GuildReservationUnlinkedAsync("reservation", cancellationToken).ConfigureAwait(false);
+
+        string unlinkedReservationPost = await GuildReservationUnlinkedAsync("BudgetReservations", cancellationToken).ConfigureAwait(false);
 
         await using DbTransaction transaction = await BeginMutationTransactionAsync(
             connection,
@@ -7171,16 +7209,14 @@ internal sealed partial class DataRetentionService
 
         try
         {
-            await using (DbCommand guildObligation = connection.CreateCommand())
+            if (hasGuildEffects)
             {
-                guildObligation.Transaction = transaction;
+                string key = runId.ToString("N");
 
-                guildObligation.CommandText = $"SELECT EXISTS(SELECT 1 FROM InferenceRuns run WHERE lower(replace(run.Id,'-',''))=@id AND {guildPin})";
+                Dictionary<string, bool> proof = await GuildPhysicalRetentionProof.ReadPageAsync((SqliteConnection)connection,
+                    (SqliteTransaction)transaction, [key], cancellationToken).ConfigureAwait(false);
 
-                Add(guildObligation, "@id", runId.ToString("N"));
-
-                if (Convert.ToInt32(await guildObligation.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-                    CultureInfo.InvariantCulture) != 0)
+                if (!proof[key])
                 {
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
@@ -7204,7 +7240,7 @@ internal sealed partial class DataRetentionService
             reservations = await ExecuteAsync(
                 connection,
                 transaction,
-                "DELETE FROM BudgetReservations WHERE lower(replace(RunId, '-', '')) = @id AND Status NOT IN (@reserved, @uncertainPaid)",
+                $"DELETE FROM BudgetReservations AS reservation WHERE lower(replace(reservation.RunId, '-', '')) = @id AND reservation.Status NOT IN (@reserved, @uncertainPaid) AND {unlinkedReservation}",
                 cancellationToken,
                 ("@id", runId.ToString("N")),
                 ("@reserved", (int)BudgetReservationStatus.Reserved),
@@ -7272,7 +7308,7 @@ internal sealed partial class DataRetentionService
 
         reconciled &= await CountTableAsync(
             "BudgetReservations",
-            "lower(replace(RunId, '-', '')) = @id",
+            $"lower(replace(RunId, '-', '')) = @id AND {unlinkedReservationPost}",
             cancellationToken,
             ("@id", runId.ToString("N"))).ConfigureAwait(false) == 0;
 
@@ -7307,7 +7343,7 @@ internal sealed partial class DataRetentionService
             "The automatic retention candidate frontier did not close cleanly.",
             innerException);
 
-    private sealed record CandidateDeleteResult(
+    internal sealed record CandidateDeleteResult(
         long Rows,
         long Files,
         long Bytes,

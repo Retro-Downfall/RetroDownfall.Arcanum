@@ -2816,6 +2816,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOpenRouterSpendParser.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOpenRouterSpendReader.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOperatorVisibility.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOwnerCleanupCoordinator.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPhysicalRetentionProof.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortRouter.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalCleanupParticipant.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildPortalEvents.cs
