@@ -200,7 +200,9 @@ public sealed partial class GuildQuestStoreTests
     [Fact]
     public async Task Provider_refresh_list_keeps_cursor_members_and_reuses_currentness_per_page()
     {
-        await using Fixture f = await Fixture.CreateAsync();
+        SpendTrace? trace = null;
+
+        await using Fixture f = await Fixture.CreateAsync(inner => trace = new SpendTrace(inner));
 
         await using var connection = await f.OpenAsync();
 
@@ -294,9 +296,46 @@ public sealed partial class GuildQuestStoreTests
 
         long reservations = await f.CountAsync("BudgetReservations");
 
+        trace!.Enabled = true;
+
         var first = await service.ListEffectsAsync(f.Caller, quest.Quest.Id, null, 2, default);
 
+        trace.Enabled = false;
+
         Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : null);
+
+        Assert.Equal(0, trace.OtherBillReadCount);
+
+        Assert.Equal(2, trace.CensusCount);
+
+        Assert.Equal(6, trace.BillSeekCount);
+
+        await using (var plan = connection.CreateCommand())
+        {
+            plan.CommandText = "EXPLAIN QUERY PLAN " + trace.SeekSql;
+
+            List<string> details = [];
+
+            await using (var rows = await plan.ExecuteReaderAsync())
+                while (await rows.ReadAsync()) details.Add(rows.GetString(3));
+
+            Assert.Contains(details, detail => detail.Contains("SEARCH BillableOperations USING INDEX", StringComparison.OrdinalIgnoreCase));
+
+            plan.CommandText = "EXPLAIN QUERY PLAN " + trace.CensusSql;
+
+            details.Clear();
+
+            await using (var rows = await plan.ExecuteReaderAsync())
+                while (await rows.ReadAsync()) details.Add(rows.GetString(3));
+
+            Assert.Contains(details, detail => detail.Contains("COVERING INDEX", StringComparison.OrdinalIgnoreCase));
+        }
+
+        trace.CensusCount = 0;
+
+        trace.BillSeekCount = 0;
+
+        trace.OtherBillReadCount = 0;
 
         Assert.Equal(2, first.Value.Items.Length);
 
@@ -308,9 +347,19 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.True(JsonSerializer.SerializeToUtf8Bytes(first.Value, GuildJsonContext.Default.GuildSpendEffectPageDto).Length <= GuildQuestStore.TreePageMaximumBytes);
 
+        trace.Enabled = true;
+
         var second = await service.ListEffectsAsync(f.Caller, quest.Quest.Id, first.Value.NextCursor, 2, default);
 
+        trace.Enabled = false;
+
         Assert.True(second.IsSuccess, second.IsFailure ? second.Error.Message : null);
+
+        Assert.Equal(0, trace.OtherBillReadCount);
+
+        Assert.Equal(2, trace.CensusCount);
+
+        Assert.Equal(3, trace.BillSeekCount);
 
         Assert.Equal(2, second.Value.Items.Length);
 
@@ -488,5 +537,138 @@ public sealed partial class GuildQuestStoreTests
 
             return Task.FromCanceled<ResolvedProviderCredential>(cancellation.Token);
         }
+    }
+
+    [Fact]
+    public async Task Provider_refresh_eligibility_contains_final_local_currentness_faults()
+    {
+        await using RefreshApplicationScenario f = await RefreshApplicationScenario.CreateAsync();
+
+        FinalObservationFaultResolver resolver = new(f.Resolver);
+
+        GuildSpendRefreshService service = new(f.Scenario.Fixture.Store, f.Configuration, resolver,
+            new GuildOpenRouterSpendReader(new PublicSpendDns(), () => throw new InvalidOperationException("unexpected GET")),
+            null!, null!, null!, null!, TimeProvider.System, new GuildSpendRefreshTracker());
+
+        var effect = await service.ReadEffectAsync(f.Scenario.Fixture.Caller, f.QuestId, f.Scenario.EffectId, default);
+
+        Assert.True(effect.IsSuccess, effect.IsFailure ? effect.Error.Message : null);
+
+        Assert.Equal("sourceUnavailable", effect.Value.ProviderIneligibility);
+
+        var page = await service.ListEffectsAsync(f.Scenario.Fixture.Caller, f.QuestId, null, 1, default);
+
+        Assert.True(page.IsSuccess, page.IsFailure ? page.Error.Message : null);
+
+        Assert.Equal("sourceUnavailable", Assert.Single(page.Value.Items).ProviderIneligibility);
+
+        Assert.Equal(2, resolver.FinalChecks);
+    }
+
+    private sealed class FinalObservationFaultResolver(IProviderApiKeyResolver inner, Action? beforeThrow = null) : IProviderApiKeyResolver
+    {
+        internal int FinalChecks { get; private set; }
+
+        public Task<string?> ResolveAsync(ProviderSettings provider, CancellationToken ct = default) => inner.ResolveAsync(provider, ct);
+
+        public Task<ResolvedProviderCredential> PeekWithIdentityAsync(ProviderSettings provider, CancellationToken ct = default) =>
+            inner.PeekWithIdentityAsync(provider, ct);
+
+        public Task<ProviderCredentialCurrentness> GetCurrentnessAsync(ProviderSettings provider, ProviderCredentialStamp stamp,
+            CancellationToken ct = default) => inner.GetCurrentnessAsync(provider, stamp, ct);
+
+        public ProviderCredentialCurrentness GetObservedLocalCurrentness(ProviderSettings provider, ProviderCredentialStamp stamp)
+        {
+            FinalChecks++;
+
+            beforeThrow?.Invoke();
+
+            throw new InvalidOperationException("private-final-observation-sentinel");
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Provider_refresh_list_refuses_bill_change_during_credential_observation(bool deleteBill)
+    {
+        await using RefreshApplicationScenario f = await RefreshApplicationScenario.CreateAsync();
+
+        await using var connection = await f.Scenario.Fixture.OpenAsync();
+
+        await using var source = connection.CreateCommand();
+
+        source.CommandText = "SELECT SourceId FROM guild_budget_effects WHERE EffectId=$effect";
+
+        source.Parameters.AddWithValue("$effect", f.Scenario.EffectId.ToString("D").ToUpperInvariant());
+
+        Guid sourceId = Guid.Parse(Assert.IsType<string>(await source.ExecuteScalarAsync()));
+
+        CallbackEligibilityResolver resolver = new(f.Resolver, () =>
+        {
+            using var alias = connection.CreateCommand();
+
+            if (deleteBill)
+            {
+                alias.CommandText = "DELETE FROM BillableOperations WHERE Id=$original";
+
+                alias.Parameters.AddWithValue("$original", sourceId.ToString("N"));
+
+                Assert.Equal(1, alias.ExecuteNonQuery());
+
+                return;
+            }
+
+            alias.CommandText = """
+                INSERT INTO InferenceRuns(Id,RequestId,SessionId,Surface,Purpose,StartedAt,CompletedAt,Status,IdempotencyClaimId)
+                SELECT $run,RequestId,SessionId,Surface,Purpose,StartedAt,CompletedAt,Status,NULL FROM InferenceRuns WHERE Id=$originalRun;
+                INSERT INTO BillableOperations(Id,RunId,OperationType,Provider,Model,Purpose,StartedAt,CompletedAt,InputTokens,
+                    OutputTokens,ReasoningTokens,CachedTokens,PricingSnapshotJson,Status,ProviderRequestId,ActualCostUsd)
+                SELECT $alias,$run,OperationType,Provider,Model,Purpose,StartedAt,CompletedAt,InputTokens,
+                    OutputTokens,ReasoningTokens,CachedTokens,PricingSnapshotJson,Status,ProviderRequestId,ActualCostUsd
+                FROM BillableOperations WHERE Id=$original;
+                """;
+
+            alias.Parameters.AddWithValue("$run", Guid.NewGuid().ToString("N"));
+
+            alias.Parameters.AddWithValue("$originalRun", f.Scenario.Driver.Execution.RunId.ToString("N"));
+
+            alias.Parameters.AddWithValue("$alias", sourceId.ToString("D").ToUpperInvariant());
+
+            alias.Parameters.AddWithValue("$original", sourceId.ToString("N"));
+
+            Assert.Equal(2, alias.ExecuteNonQuery());
+        });
+
+        GuildSpendRefreshService service = new(f.Scenario.Fixture.Store, f.Configuration, resolver,
+            new GuildOpenRouterSpendReader(new PublicSpendDns(), () => throw new InvalidOperationException("unexpected GET")),
+            null!, null!, null!, null!, TimeProvider.System, new GuildSpendRefreshTracker());
+
+        var page = await service.ListEffectsAsync(f.Scenario.Fixture.Caller, f.QuestId, null, 1, default);
+
+        Assert.True(page.IsSuccess, page.IsFailure ? page.Error.Message : null);
+
+        Assert.Equal(deleteBill ? "sourceExpired" : "sourceUnavailable", Assert.Single(page.Value.Items).ProviderIneligibility);
+
+        Assert.Equal(1, resolver.Peeks);
+    }
+
+    [Fact]
+    public async Task Provider_refresh_eligibility_propagates_cancellation_during_final_local_observation()
+    {
+        await using RefreshApplicationScenario f = await RefreshApplicationScenario.CreateAsync();
+
+        using CancellationTokenSource cancellation = new();
+
+        FinalObservationFaultResolver resolver = new(f.Resolver, cancellation.Cancel);
+
+        GuildSpendRefreshService service = new(f.Scenario.Fixture.Store, f.Configuration, resolver,
+            new GuildOpenRouterSpendReader(new PublicSpendDns(), () => throw new InvalidOperationException("unexpected GET")),
+            null!, null!, null!, null!, TimeProvider.System, new GuildSpendRefreshTracker());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.ReadEffectAsync(f.Scenario.Fixture.Caller,
+            f.QuestId, f.Scenario.EffectId, cancellation.Token));
+
+        Assert.Equal(1, resolver.FinalChecks);
     }
 }

@@ -175,7 +175,8 @@ internal sealed partial class GuildQuestStore
 
     private static async Task<Result<RefreshAdmissibility>> ValidateRefreshSourceWithinAsync(SqliteConnection connection,
         SqliteTransaction transaction, GuildQuestStored quest, GuildBudgetLedger ledger, GuildCallerContext caller, Guid questId,
-        Guid effectId, GuildSpendRefreshCurrentness currentness, CancellationToken token)
+        Guid effectId, GuildSpendRefreshCurrentness currentness, CancellationToken token,
+        IReadOnlyDictionary<Guid, SpendBillIdentity>? identities = null)
     {
         Result ownerProof = await GuildSpendRefreshOwnerProof.RequireWithinAsync(connection, transaction, questId,
             quest.Quest.RootQuestId, token).ConfigureAwait(false);
@@ -190,12 +191,24 @@ internal sealed partial class GuildQuestStore
 
         if (effect.Request.QuestId != questId || effect.Request.Kind != GuildBudgetEffectKind.LocalProvider) return OwnerUnavailable;
 
+        string? exactBillId = null;
+
+        if (identities is not null)
+        {
+            if (!identities.TryGetValue(effect.Request.SourceId, out SpendBillIdentity identity) || identity.Count > 1
+                || identity.Count == 1 && identity.ExactId is null) return Conflict;
+
+            if (identity.Count == 0) return new Error(ErrorCodes.Guild.SourceExpired, "The physical billing source is unavailable.");
+
+            exactBillId = identity.ExactId;
+        }
+
         Result<GuildSpendSourceCredential.VerifiedSource> source = await currentness.Credential.VerifyWithinAsync(connection, transaction,
-            effectId, caller.InstallationGeneration, token).ConfigureAwait(false);
+            effectId, caller.InstallationGeneration, token, exactBillId).ConfigureAwait(false);
 
         if (source.IsFailure) return source.Error;
 
-        Result<GuildSpendEffectDto> current = await ReadSpendEffectWithinAsync(connection, transaction, quest, ledger, effectId, token).ConfigureAwait(false);
+        Result<GuildSpendEffectDto> current = await ReadSpendEffectWithinAsync(connection, transaction, quest, ledger, effectId, token, identities).ConfigureAwait(false);
 
         if (current.IsFailure) return current.Error;
 
@@ -240,7 +253,26 @@ internal sealed partial class GuildQuestStore
                 || signetEpoch == Guid.Empty || spendEpoch == Guid.Empty || spendKey == Guid.Empty) return Conflict;
         }
 
-        if (!currentness.IsCurrent()) return OwnerUnavailable;
+        if (identities is null)
+        {
+            if (!currentness.IsCurrent()) return OwnerUnavailable;
+        }
+        else
+        {
+            bool isCurrent;
+
+            try { isCurrent = currentness.IsCurrent(); }
+            catch (Exception)
+            {
+                token.ThrowIfCancellationRequested();
+
+                return OwnerUnavailable;
+            }
+
+            token.ThrowIfCancellationRequested();
+
+            if (!isCurrent) return OwnerUnavailable;
+        }
 
         return new RefreshAdmissibility(effect, signetEpoch, spendEpoch, spendKey);
     }
@@ -269,15 +301,29 @@ internal sealed partial class GuildQuestStore
             return new GuildSpendRefreshPreparation(saved.Snapshot.Provider, saved.Snapshot.Model, null, null, RootQuestId: quest.Quest.RootQuestId);
         }, ct);
 
-    internal async Task<Result> CheckProviderRefreshEligibilityAsync(GuildCallerContext caller,
-        Guid questId, Guid effectId, GuildSpendRefreshCurrentness currentness, CancellationToken ct)
-    {
-        Result<RefreshAdmissibility> result = await WithSpendOwnerAsync<RefreshAdmissibility>(caller, questId,
-            (connection, transaction, quest, ledger, token) => ValidateRefreshSourceWithinAsync(connection, transaction, quest, ledger,
-                caller, questId, effectId, currentness, token), ct).ConfigureAwait(false);
+    internal Task<Result<Dictionary<Guid, Result>>> CheckProviderRefreshEligibilityBatchAsync(GuildCallerContext caller,
+        Guid questId, IReadOnlyList<(Guid EffectId, GuildSpendRefreshCurrentness Currentness)> candidates, CancellationToken ct) =>
+        WithSpendOwnerAsync<Dictionary<Guid, Result>>(caller, questId, async (connection, transaction, quest, ledger, token) =>
+        {
+            if (candidates.Count > 100 || candidates.Select(candidate => candidate.EffectId).Distinct().Count() != candidates.Count)
+                return Conflict;
 
-        return result.IsFailure ? result.Error : Result.Success();
-    }
+            Dictionary<Guid, SpendBillIdentity> identities = [];
+
+            await CensusSpendBillsWithinAsync(connection, transaction, candidates.Select(candidate => candidate.EffectId).ToArray(), identities, token).ConfigureAwait(false);
+
+            Dictionary<Guid, Result> results = [];
+
+            foreach ((Guid effectId, GuildSpendRefreshCurrentness currentness) in candidates)
+            {
+                Result<RefreshAdmissibility> result = await ValidateRefreshSourceWithinAsync(connection, transaction, quest, ledger,
+                    caller, questId, effectId, currentness, token, identities).ConfigureAwait(false);
+
+                results.Add(effectId, result.IsFailure ? Result.Failure(result.Error) : Result.Success());
+            }
+
+            return results;
+        }, ct);
 
     internal Task<Result<GuildSpendRefreshPreparation>> SelectProviderSpendRefreshSourceAsync(GuildCallerContext caller,
         Guid questId, Guid effectId, CancellationToken ct) =>

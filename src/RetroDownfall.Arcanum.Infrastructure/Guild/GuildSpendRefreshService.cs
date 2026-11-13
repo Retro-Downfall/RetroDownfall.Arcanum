@@ -28,7 +28,14 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
 
         Dictionary<(string Provider, string Model), Result<GuildSpendRefreshCurrentness>> observations = [];
 
-        return await EnrichEligibilityAsync(caller, effect.Value, observations, ct).ConfigureAwait(false);
+        var prepared = await PrepareEligibilityAsync(caller, effect.Value, observations, ct).ConfigureAwait(false);
+
+        if (prepared.Currentness is null) return prepared.Effect;
+
+        Result<Dictionary<Guid, Result>> checkedBatch = await quests.CheckProviderRefreshEligibilityBatchAsync(caller, questId,
+            [(effectId, prepared.Currentness)], ct).ConfigureAwait(false);
+
+        return ApplyEligibilityResult(prepared.Effect, checkedBatch);
     }
 
     internal async Task<Result<GuildSpendEffectPageDto>> ListEffectsAsync(GuildCallerContext caller, Guid questId, string? cursor,
@@ -43,33 +50,73 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
 
         ImmutableArray<GuildSpendEffectDto>.Builder items = ImmutableArray.CreateBuilder<GuildSpendEffectDto>(page.Value.Items.Length);
 
+        List<(Guid EffectId, GuildSpendRefreshCurrentness Currentness)> candidates = [];
+
+        HashSet<Guid> candidateIds = [];
+
         foreach (GuildSpendEffectDto effect in page.Value.Items)
-            items.Add(await EnrichEligibilityAsync(caller, effect, observations, ct).ConfigureAwait(false));
+        {
+            var prepared = await PrepareEligibilityAsync(caller, effect, observations, ct).ConfigureAwait(false);
+
+            items.Add(prepared.Effect);
+
+            if (prepared.Currentness is not null)
+            {
+                candidates.Add((effect.EffectId, prepared.Currentness));
+
+                candidateIds.Add(effect.EffectId);
+            }
+        }
+
+        if (candidates.Count > 0)
+        {
+            Result<Dictionary<Guid, Result>> checkedBatch = await quests.CheckProviderRefreshEligibilityBatchAsync(caller, questId,
+                candidates, ct).ConfigureAwait(false);
+
+            for (int index = 0; index < items.Count; index++)
+                if (candidateIds.Contains(items[index].EffectId))
+                    items[index] = ApplyEligibilityResult(items[index], checkedBatch);
+        }
 
         return page.Value with { Items = items.MoveToImmutable() };
     }
 
-    private async Task<GuildSpendEffectDto> EnrichEligibilityAsync(GuildCallerContext caller, GuildSpendEffectDto effect,
+    private static GuildSpendEffectDto ApplyEligibilityResult(GuildSpendEffectDto effect, Result<Dictionary<Guid, Result>> checkedBatch)
+    {
+        if (checkedBatch.IsFailure || !checkedBatch.Value.TryGetValue(effect.EffectId, out Result? result) || result is null)
+            return effect with { ProviderIneligibility = "sourceUnavailable" };
+
+        string? reason = result.IsSuccess ? null : result.Error.Code switch
+        {
+            ErrorCodes.Guild.SourceExpired => "sourceExpired",
+            ErrorCodes.Guild.InitialEvidenceUnavailable => "initialEvidenceUnavailable",
+            _ => "sourceUnavailable",
+        };
+
+        return effect with { ProviderIneligibility = reason };
+    }
+
+    private async Task<(GuildSpendEffectDto Effect, GuildSpendRefreshCurrentness? Currentness)> PrepareEligibilityAsync(GuildCallerContext caller, GuildSpendEffectDto effect,
         Dictionary<(string Provider, string Model), Result<GuildSpendRefreshCurrentness>> observations, CancellationToken ct)
     {
-        if (effect.Kind == GuildSpendEffectKind.Remote) return effect with { ProviderIneligibility = "remoteEffect" };
+        if (effect.Kind == GuildSpendEffectKind.Remote) return (effect with { ProviderIneligibility = "remoteEffect" }, null);
 
         if (effect.OperatorIneligibility is "sourceExpired" or "initialEvidenceUnavailable")
-            return effect with { ProviderIneligibility = effect.OperatorIneligibility };
+            return (effect with { ProviderIneligibility = effect.OperatorIneligibility }, null);
 
         Result<GuildSpendRefreshPreparation> candidate = await quests.ReadProviderEligibilitySelectionAsync(caller, effect.QuestId,
             effect.EffectId, ct).ConfigureAwait(false);
 
         if (candidate.IsFailure || candidate.Value.Provider is not { } provider || candidate.Value.Model is not { } model)
-            return effect with { ProviderIneligibility = "sourceUnavailable" };
+            return (effect with { ProviderIneligibility = "sourceUnavailable" }, null);
 
-        if (configuration.IsExplicitlyDisabled(provider)) return effect with { ProviderIneligibility = "reconciliationDisabled" };
+        if (configuration.IsExplicitlyDisabled(provider)) return (effect with { ProviderIneligibility = "reconciliationDisabled" }, null);
 
         Result<GuildSpendRefreshPreparation> source = await quests.SelectProviderSpendRefreshSourceAsync(caller, effect.QuestId,
             effect.EffectId, ct).ConfigureAwait(false);
 
         if (source.IsFailure || source.Value.Provider != provider || source.Value.Model != model)
-            return effect with { ProviderIneligibility = "sourceUnavailable" };
+            return (effect with { ProviderIneligibility = "sourceUnavailable" }, null);
 
         var key = (provider, model);
 
@@ -89,19 +136,9 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
             observations.Add(key, observed);
         }
 
-        if (observed is null || observed.IsFailure) return effect with { ProviderIneligibility = "sourceUnavailable" };
+        if (observed is null || observed.IsFailure) return (effect with { ProviderIneligibility = "sourceUnavailable" }, null);
 
-        Result admissible = await quests.CheckProviderRefreshEligibilityAsync(caller, effect.QuestId,
-            effect.EffectId, observed.Value, ct).ConfigureAwait(false);
-
-        string? reason = admissible.IsSuccess ? null : admissible.Error.Code switch
-        {
-            ErrorCodes.Guild.SourceExpired => "sourceExpired",
-            ErrorCodes.Guild.InitialEvidenceUnavailable => "initialEvidenceUnavailable",
-            _ => "sourceUnavailable",
-        };
-
-        return effect with { ProviderIneligibility = reason };
+        return (effect, observed.Value);
     }
 
     internal async Task<Result<GuildSpendRefreshResult>> RefreshAsync(GuildCallerContext caller, Guid questId, Guid effectId,
