@@ -23,8 +23,11 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 
 public sealed partial class GuildLocalHostPolicyTests
 {
-    [Fact]
-    public async Task Financial_off_real_child_inference_is_consumed_by_parent_provider_round()
+    [Theory]
+    [InlineData("absent")]
+    [InlineData("partial")]
+    [InlineData("zero")]
+    public async Task Financial_off_real_child_inference_is_consumed_by_parent_provider_round(string usage)
     {
         using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
 
@@ -86,7 +89,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
 
-        using FinancialOffTransport transport = new();
+        using FinancialOffTransport transport = new() { Usage = usage };
 
         ChatClientFactory clients = new(transport, new TestOptionsMonitor<ArcanumSettings>(settings));
 
@@ -184,7 +187,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.NotNull(childResult.Value.Receipt);
 
-            Assert.Equal(3L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd=1 AND UnknownTokens=1"));
+            Assert.Equal(3L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd=1 AND UnknownTokens={(usage == "zero" ? 0 : 1)} AND KnownTokens={(usage == "partial" ? 7 : 0)}"));
 
             Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_result_applications"));
 
@@ -838,6 +841,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal bool FullParent;
 
+        internal string Usage = "absent";
+
         public HttpClient CreateClient(string name) => new(this, false);
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
@@ -874,7 +879,14 @@ public sealed partial class GuildLocalHostPolicyTests
                 ? """{"role":"assistant","content":"parent used the real child answer"}"""
                 : throw new InvalidOperationException("Unexpected provider call");
 
-            string json = $$$"""{"id":"response-{{{ordinal}}}","object":"chat.completion","created":1700000000,"model":"accepted-model","choices":[{"index":0,"message":{{{message}}},"finish_reason":"{{{(ordinal == toolOrdinal ? "tool_calls" : "stop")}}}"}]}""";
+            string usage = Usage switch
+            {
+                "partial" => ",\"usage\":{\"prompt_tokens\":7}",
+                "zero" => ",\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}",
+                _ => "",
+            };
+
+            string json = $$$"""{"id":"response-{{{ordinal}}}","object":"chat.completion","created":1700000000,"model":"accepted-model","choices":[{"index":0,"message":{{{message}}},"finish_reason":"{{{(ordinal == toolOrdinal ? "tool_calls" : "stop")}}}"}]{{{usage}}}}""";
 
             return new(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
         }

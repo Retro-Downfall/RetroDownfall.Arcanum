@@ -33,7 +33,7 @@ public sealed partial class GuildLocalHostPolicyTests
     [InlineData("disconnect")]
     [InlineData("finite-usd")]
     [InlineData("finite-tokens")]
-    public async Task Financial_off_remote_terminal_result_retains_unknown_measurements_and_does_not_resend(string scenario)
+    public async Task Financial_off_outgoing_remote_lifecycle_enforces_physical_and_financial_boundaries(string scenario)
     {
         bool restartAndContinue = scenario == "restart-wait";
 
@@ -250,6 +250,37 @@ public sealed partial class GuildLocalHostPolicyTests
         {
             Assert.Equal(QuestState.InputRequired, result.Value.State);
 
+            var initialRun = await f.Policy.CreateRunCallerAsync(f.Authority, execution.Value, quest.Id, deadline.Token);
+
+            Assert.True(initialRun.IsSuccess, initialRun.Error.Message);
+
+            var taskIdentity = await f.Store.ReadRemoteTaskIdentityAsync(new(execution.Value, "observe", 0, initialRun.Value), deadline.Token);
+
+            Assert.True(taskIdentity.IsSuccess, taskIdentity.Error.Message);
+
+            long evidenceBeforeUpdate = await f.ScalarAsync("SELECT count(*) FROM guild_budget_evidence");
+
+            long eventsBeforeUpdate = await f.ScalarAsync("SELECT count(*) FROM guild_events WHERE EventKindCode=" + (int)GuildEventKind.SpendChanged);
+
+            DateTimeOffset observedAt = DateTimeOffset.UtcNow;
+
+            var updateLease = await operations.TryAcquireLeaseAsync(quest.OperationId, "financial-off-update", observedAt,
+                observedAt.AddMinutes(2), deadline.Token);
+
+            Assert.True(updateLease.Acquired);
+
+            GuildQuestDriver updateDriver = new(execution.Value, "financial-off-update", updateLease.Operation.Revision, initialRun.Value);
+
+            var newer = await f.Store.WaitForRemoteInputAsync(updateDriver, quest.Id,
+                new(taskIdentity.Value.TaskId, taskIdentity.Value.ContextId, "input-required", "Which answer?",
+                    new A2ARemoteCost(true, 20, 1m), observedAt), deadline.Token);
+
+            Assert.True(newer.IsSuccess, newer.Error.Message);
+
+            Assert.Equal(evidenceBeforeUpdate + 1, await f.ScalarAsync("SELECT count(*) FROM guild_budget_evidence"));
+
+            Assert.Equal(eventsBeforeUpdate + 1, await f.ScalarAsync("SELECT count(*) FROM guild_events WHERE EventKindCode=" + (int)GuildEventKind.SpendChanged));
+
             GuildLocalHostPolicy restartedPolicy = f.NewPolicy();
 
             using SignetAuthority restartedAuthority = new(new(f.Connections), f.Gate, restartedPolicy, TimeProvider.System);
@@ -273,6 +304,41 @@ public sealed partial class GuildLocalHostPolicyTests
             var rebound = await restartedAuthority.RebindAsync(context.Value, deadline.Token);
 
             Assert.True(rebound.IsSuccess, rebound.Error.Message);
+
+            var restartedRun = await restartedPolicy.CreateRunCallerAsync(restartedAuthority, rebound.Value, quest.Id, deadline.Token);
+
+            Assert.True(restartedRun.IsSuccess, restartedRun.Error.Message);
+
+            var persistedIdentity = await restartedStore.ReadRemoteTaskIdentityAsync(new(rebound.Value, "observe", 0, restartedRun.Value), deadline.Token);
+
+            Assert.True(persistedIdentity.IsSuccess, persistedIdentity.Error.Message);
+
+            Assert.Equal(taskIdentity.Value.TaskId, persistedIdentity.Value.TaskId);
+
+            Assert.Equal(taskIdentity.Value.ContextId, persistedIdentity.Value.ContextId);
+
+            long evidenceBeforeReplay = await f.ScalarAsync("SELECT count(*) FROM guild_budget_evidence");
+
+            long eventsBeforeReplay = await f.ScalarAsync("SELECT count(*) FROM guild_events WHERE EventKindCode=" + (int)GuildEventKind.SpendChanged);
+
+            DateTimeOffset replayAt = DateTimeOffset.UtcNow;
+
+            var replayLease = await operations.TryAcquireLeaseAsync(quest.OperationId, "financial-off-replay", replayAt,
+                replayAt.AddMinutes(2), deadline.Token);
+
+            Assert.True(replayLease.Acquired);
+
+            GuildQuestDriver replayDriver = new(rebound.Value, "financial-off-replay", replayLease.Operation.Revision, restartedRun.Value);
+
+            var replay = await restartedStore.WaitForRemoteInputAsync(replayDriver, quest.Id,
+                new(persistedIdentity.Value.TaskId, persistedIdentity.Value.ContextId, "input-required", "Which answer?",
+                    new A2ARemoteCost(false, null, null), replayAt), deadline.Token);
+
+            Assert.True(replay.IsSuccess, replay.Error.Message);
+
+            Assert.Equal(evidenceBeforeReplay, await f.ScalarAsync("SELECT count(*) FROM guild_budget_evidence"));
+
+            Assert.Equal(eventsBeforeReplay, await f.ScalarAsync("SELECT count(*) FROM guild_events WHERE EventKindCode=" + (int)GuildEventKind.SpendChanged));
 
             var question = await restartedStore.ReadLocalQuestionAsync(restartedCaller.Value, quest.Id, deadline.Token);
 
