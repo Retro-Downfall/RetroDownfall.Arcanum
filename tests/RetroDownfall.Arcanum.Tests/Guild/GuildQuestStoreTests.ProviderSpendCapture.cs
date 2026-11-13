@@ -5,6 +5,8 @@ using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -605,7 +607,7 @@ public sealed partial class GuildQuestStoreTests
 
         internal string? PendingReason { get; private set; }
 
-        internal static async Task<SpendScenario> CreateAsync(Fixture? fixture = null)
+        internal static async Task<SpendScenario> CreateAsync(bool enableDailyBudget = false, Fixture? fixture = null)
         {
             SpendScenario scenario = new();
 
@@ -623,6 +625,15 @@ public sealed partial class GuildQuestStoreTests
                     Providers = [new() { Name = "router", Endpoint = "https://openrouter.ai/api/v1", Models = [SpendModel],
                         GuildUsageReconciliation = GuildUsageReconciliationSource.OpenRouterGeneration }],
                 };
+
+                if (enableDailyBudget)
+                {
+                    scenario.Settings.Cost.Budget.Enabled = true;
+
+                    scenario.Settings.Cost.Budget.DailyLimitUsd = 10m;
+
+                    scenario.Settings.Cost.Pricing.DefaultPricing = new() { InputPer1M = 1m, OutputPer1M = 1m };
+                }
 
                 BudgetReservationService daily = new(scenario._db, new TestOptionsMonitor<ArcanumSettings>(scenario.Settings));
 
@@ -650,6 +661,29 @@ public sealed partial class GuildQuestStoreTests
                     ReceiptDigest("provider-spend"), quest.Quest.RunId, false, default)).Value;
 
                 scenario.DispatchId = dispatch.DispatchId;
+
+                if (enableDailyBudget)
+                {
+                    GuildLocalInferenceExecution execution = new(scenario.Fixture.Store, driver, dispatch);
+
+                    GuildBudgetEffectRequest effect = new(Guid.NewGuid(), quest.Quest.Id, dispatch.DispatchId, quest.Quest.RunId,
+                        GuildBudgetEffectKind.LocalProvider, Guid.NewGuid(), null, 1m, 1000);
+
+                    DateTimeOffset started = DateTimeOffset.UtcNow;
+
+                    BillableOperationRecord bill = new(quest.Quest.RunId, BillableOperationType.Chat, "router", SpendModel, "guild",
+                        started, started.AddSeconds(1), 100, 20, 5, 40, "{}", 0m, BillableOperationStatus.Completed, "gen-test-123");
+
+                    var bounded = await scenario.Fixture.Store.ExecuteAndSettleProviderResponseAsync(execution, daily, effect,
+                        _ => Task.FromResult(Result<string>.Success("answer")), _ => Result<BillableOperationRecord>.Success(bill), default,
+                        spendSource: scenario.Credential(), spendPricing: "{}");
+
+                    Assert.True(bounded.IsSuccess, bounded.IsFailure ? bounded.Error.Message : null);
+
+                    scenario.EffectId = effect.EffectId;
+
+                    return scenario;
+                }
 
                 scenario.Transport = new(SpendModel, async () =>
                 {

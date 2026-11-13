@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.DataProtection;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -43,9 +44,69 @@ public sealed partial class GuildQuestStoreTests
         Assert.Equal(1, await f.Query.ExecuteNonQueryAsync());
 
         var forged = await f.Scenario.Fixture.Store.ApplyProviderSpendRefreshAsync(f.Scenario.Fixture.Caller, f.QuestId,
-            f.Scenario.EffectId, f.RefreshId, null, null, null, default);
+            f.Scenario.EffectId, f.RefreshId, null, null, null, null, default);
 
         Assert.True(forged.IsFailure);
+    }
+
+    [Fact]
+    public async Task Provider_refresh_refuses_another_attempts_live_physical_guard()
+    {
+        await using RefreshApplicationScenario first = await RefreshApplicationScenario.CreateAsync();
+
+        await using RefreshApplicationScenario second = await RefreshApplicationScenario.CreateAsync();
+
+        var result = await first.Scenario.Fixture.Store.ApplyProviderSpendRefreshAsync(first.Scenario.Fixture.Caller, first.QuestId,
+            first.Scenario.EffectId, first.RefreshId, "test-refresh-owner", first.Currentness, first.Observation, second.Guard, default);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(DBNull.Value, await first.ReadPointerAsync());
+
+        Assert.Equal(1L, await first.Scenario.Fixture.CountAsync("guild_spend_receipts"));
+    }
+
+    [Fact]
+    public async Task Provider_refresh_refuses_a_replaced_process_claim_for_the_same_operation()
+    {
+        await using RefreshApplicationScenario f = await RefreshApplicationScenario.CreateAsync();
+
+        f.ReplaceProcessClaim();
+
+        var result = await f.ApplyAsync();
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(DBNull.Value, await f.ReadPointerAsync());
+
+        Assert.Equal(1L, await f.Scenario.Fixture.CountAsync("guild_spend_receipts"));
+    }
+
+    [Fact]
+    public async Task Provider_refresh_refuses_a_closed_owner_even_if_attempt_cancellation_is_delayed()
+    {
+        RefreshApplicationScenario f = await RefreshApplicationScenario.CreateAsync();
+
+        Task close = f.Tracker.CloseRootAsync(f.RootId, default);
+
+        try
+        {
+            Assert.False(close.IsCompleted);
+
+            var result = await f.ApplyAsync();
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(DBNull.Value, await f.ReadPointerAsync());
+
+            Assert.Equal(1L, await f.Scenario.Fixture.CountAsync("guild_spend_receipts"));
+        }
+        finally
+        {
+            await f.DisposeAsync();
+
+            await close;
+        }
     }
 
     [Fact]
@@ -172,7 +233,7 @@ public sealed partial class GuildQuestStoreTests
         Assert.Equal(1, await f.Query.ExecuteNonQueryAsync());
 
         var replay = await f.Scenario.Fixture.Store.ApplyProviderSpendRefreshAsync(f.Scenario.Fixture.Caller, f.QuestId,
-            f.Scenario.EffectId, f.RefreshId, null, null, null, default);
+            f.Scenario.EffectId, f.RefreshId, null, null, null, null, default);
 
         Assert.True(replay.IsSuccess, replay.IsFailure ? replay.Error.Message : null);
 
@@ -207,7 +268,7 @@ public sealed partial class GuildQuestStoreTests
         try
         {
             var result = await f.Scenario.Fixture.Store.ApplyProviderSpendRefreshAsync(f.Scenario.Fixture.Caller, f.QuestId,
-                f.Scenario.EffectId, f.RefreshId, "test-refresh-owner", proof.Value, f.Observation, default);
+                f.Scenario.EffectId, f.RefreshId, "test-refresh-owner", proof.Value, f.Observation, f.Guard, default);
 
             Assert.Equal(expectRefusal, result.IsFailure);
 
@@ -247,17 +308,43 @@ public sealed partial class GuildQuestStoreTests
 
         private GuildSpendRefreshCurrentness _currentness = null!;
 
+        internal GuildSpendRefreshCurrentness Currentness => _currentness;
+
+        internal GuildSpendRefreshAttemptGuard Guard { get; private set; } = null!;
+
+        internal GuildSpendRefreshTracker Tracker { get; private set; } = null!;
+
+        internal Guid RootId { get; private set; }
+
+        private IGrimoireWorkLease? _work;
+
+        private IGrimoireExternalEffectGroup? _group;
+
+        private GuildWorkspaceLeaseHostLock? _hostLock;
+
+        private IDisposable? _physical;
+
+        private GuildSpendRefreshTracker.Entry? _entry;
+
+        private readonly LongRunningOperationOwnership _ownership = new();
+
+        private Guid _operationId;
+
+        private Guid _claim;
+
+        internal ProviderApiKeyResolver Resolver { get; private set; } = null!;
+
         internal Guid QuestId { get; private set; }
 
         internal Guid RefreshId { get; private set; }
 
-        internal static async Task<RefreshApplicationScenario> CreateAsync()
+        internal static async Task<RefreshApplicationScenario> CreateAsync(bool enableDailyBudget = false)
         {
             RefreshApplicationScenario f = new();
 
             try
             {
-                f.Scenario = await SpendScenario.CreateAsync();
+                f.Scenario = await SpendScenario.CreateAsync(enableDailyBudget);
 
                 GuildSpendSourceCredential.VerifiedSource source = await f.Scenario.VerifiedAsync();
 
@@ -284,9 +371,9 @@ public sealed partial class GuildQuestStoreTests
 
                 f._credentialStore = new(os, new EphemeralDataProtectionProvider());
 
-                ProviderApiKeyResolver resolver = new(f._credentialStore);
+                f.Resolver = new(f._credentialStore);
 
-                var proof = await GuildSpendRefreshCurrentness.CaptureAsync(f.Configuration, resolver, "router", SpendModel, default);
+                var proof = await GuildSpendRefreshCurrentness.CaptureAsync(f.Configuration, f.Resolver, "router", SpendModel, default);
 
                 Assert.True(proof.IsSuccess, proof.IsFailure ? proof.Error.Message : null);
 
@@ -377,6 +464,40 @@ public sealed partial class GuildQuestStoreTests
 
                 await f.Query.ExecuteNonQueryAsync();
 
+                Assert.True(f.Scenario.Fixture.Gate.TryAcquireWorkLease(GrimoireWorkKind.GuildStorage, out f._work));
+
+                Assert.NotNull(f._work);
+
+                Assert.True(f._work.TryBeginExternalEffectGroup(out f._group));
+
+                Assert.NotNull(f._group);
+
+                var locked = GuildWorkspaceLeaseHostLock.TryAcquire(Path.Combine(Path.GetTempPath(), "arcanum-refresh-fixture-" + Guid.NewGuid().ToString("N")));
+
+                Assert.True(locked.IsSuccess);
+
+                f._hostLock = locked.Value;
+
+                var pinned = f._hostLock.Pin();
+
+                Assert.True(pinned.IsSuccess);
+
+                f._physical = pinned.Value;
+
+                f.Tracker = new();
+
+                f.RootId = rootId;
+
+                Assert.True(f.Tracker.TryEnter(rootId, out f._entry));
+
+                Assert.NotNull(f._entry);
+
+                f._operationId = operationId;
+
+                Assert.True(f._ownership.TryClaim(operationId, out f._claim));
+
+                f.Guard = new(f.Scenario.Fixture.Gate, f._work, f._group, f._physical, f._entry, f._ownership, operationId);
+
                 return f;
             }
             catch
@@ -387,9 +508,16 @@ public sealed partial class GuildQuestStoreTests
             }
         }
 
+        internal void ReplaceProcessClaim()
+        {
+            Assert.True(_ownership.Release(_operationId, _claim));
+
+            Assert.True(_ownership.TryClaim(_operationId, out _claim));
+        }
+
         internal Task<Result<GuildSpendCorrectionResultDto>> ApplyAsync(GuildQuestStore? store = null) =>
             (store ?? Scenario.Fixture.Store).ApplyProviderSpendRefreshAsync(Scenario.Fixture.Caller, QuestId,
-                Scenario.EffectId, RefreshId, "test-refresh-owner", _currentness, Observation, default);
+                Scenario.EffectId, RefreshId, "test-refresh-owner", _currentness, Observation, Guard, default);
 
         internal async Task<object?> ReadPointerAsync()
         {
@@ -400,6 +528,20 @@ public sealed partial class GuildQuestStoreTests
 
         public async ValueTask DisposeAsync()
         {
+            Guard?.Dispose();
+
+            if (_group is not null) await _group.DisposeAsync();
+
+            if (_work is not null) await _work.DisposeAsync();
+
+            _physical?.Dispose();
+
+            _hostLock?.Dispose();
+
+            if (_claim != Guid.Empty) _ownership.Release(_operationId, _claim);
+
+            _entry?.Dispose();
+
             if (Query is not null) await Query.DisposeAsync();
 
             if (Connection is not null) await Connection.DisposeAsync();

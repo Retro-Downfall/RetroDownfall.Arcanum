@@ -39,6 +39,9 @@ public static class LongRunningOperationKinds
     public const string Subagent = "subagent";
 
     public const string GuildQuest = "guild-quest";
+
+    public const string GuildSpendRefresh = "guild-spend-refresh";
+
     public const string BlobEncryptionMigration = "blob-encryption-migration";
     public const string BlobEncryptionKeyRotation = "blob-encryption-key-rotation";
 

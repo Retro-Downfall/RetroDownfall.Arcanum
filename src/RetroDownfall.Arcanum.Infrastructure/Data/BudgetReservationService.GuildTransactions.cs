@@ -184,6 +184,18 @@ internal sealed partial class BudgetReservationService
             knownCostUsd, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Checks the exact existing physical reservation without mutating it.</summary>
+    internal async Task<Result> ValidateCorrectionWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        Guid reservationId, Guid runId, decimal knownCostUsd, bool completeKnown, CancellationToken cancellationToken = default)
+    {
+        BudgetReservation? owned = await ReadOwnedWithinAsync(connection, transaction, reservationId, runId, cancellationToken).ConfigureAwait(false);
+
+        if (owned is null || knownCostUsd < owned.ReconciledUsd) return UnavailableGuildReservation;
+
+        return owned.Status == BudgetReservationStatus.UncertainPaid || owned.Status == BudgetReservationStatus.Reconciled && completeKnown
+            ? Result.Success() : UnavailableGuildReservation;
+    }
+
     /// <summary>Adjusts an existing physical reservation without changing an uncertain disposition.</summary>
     internal async Task<Result> CorrectUsageWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         Guid reservationId, Guid runId, decimal knownCostUsd, bool completeKnown, CancellationToken cancellationToken = default)
@@ -274,6 +286,17 @@ internal sealed partial class BudgetReservationService
         Guid reservationId, Guid runId, CancellationToken cancellationToken)
     {
         RequireTransaction(connection, transaction);
+
+        await using (DbCommand census = connection.CreateCommand())
+        {
+            census.Transaction = transaction;
+
+            census.CommandText = "SELECT COUNT(*) FROM BudgetReservations WHERE lower(replace(Id,'-',''))=@id";
+
+            AddParameter(census, "@id", reservationId.ToString("N"));
+
+            if (!Equals(1L, await census.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))) return null;
+        }
 
         await using DbCommand command = connection.CreateCommand();
 

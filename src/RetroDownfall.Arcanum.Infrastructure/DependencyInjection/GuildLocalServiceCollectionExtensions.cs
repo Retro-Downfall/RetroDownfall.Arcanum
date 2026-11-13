@@ -2,6 +2,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Guild;
+using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
@@ -46,7 +48,8 @@ internal static class GuildLocalServiceCollectionExtensions
             sp.GetRequiredService<SignetAuthority>(),
             sp.GetRequiredService<TimeProvider>(),
             ArcanumPaths.GrimoireDatabaseFile + ".guild-mutation.lock",
-            sp.GetRequiredService<IGrimoireConnectionAdmissionGate>()));
+            sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+            sp.GetRequiredService<GuildSpendRefreshTracker>()));
 
         services.AddSingleton<IGuildLocalHostReadiness>(static sp => sp.GetRequiredService<GuildLocalHostReadiness>());
 
@@ -62,6 +65,16 @@ internal static class GuildLocalServiceCollectionExtensions
         services.AddScoped<IGuildQuestAllocationParticipant>(static sp => sp.GetRequiredService<GuildBudgetLedger>());
 
         services.AddScoped<IGuildLocalExecutionAdmission, GuildLocalExecutionAdmission>();
+
+        services.AddSingleton(static sp => new GuildSpendRefreshConfiguration(sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()));
+
+        services.AddSingleton<GuildSpendRefreshTracker>();
+
+        services.AddScoped(static sp => new GuildOpenRouterSpendReader(sp.GetRequiredService<IDnsResolver>()));
+
+        services.AddScoped<GuildSpendRefreshService>();
+
+        services.AddScoped<ILongRunningOperationRecoveryHandler, GuildSpendRefreshRecoveryHandler>();
 
         services.AddScoped<GuildQuestStore>();
 

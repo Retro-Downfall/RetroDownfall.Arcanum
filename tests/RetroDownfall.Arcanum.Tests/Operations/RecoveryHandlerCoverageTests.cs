@@ -44,6 +44,7 @@ public sealed class RecoveryHandlerCoverageTests
         new Dictionary<string, Type>(StringComparer.Ordinal)
         {
             [LongRunningOperationKinds.GuildQuest] = typeof(GuildQuestRecoveryHandler),
+            [LongRunningOperationKinds.GuildSpendRefresh] = typeof(GuildSpendRefreshRecoveryHandler),
             [LongRunningOperationKinds.MemoryEvaluation] = typeof(MemoryEvaluationRecoveryHandler),
             [LongRunningOperationKinds.LongRestSweep] = typeof(LongRestSweepRecoveryHandler),
             [LongRunningOperationKinds.Subagent] = typeof(SubagentRecoveryHandler),
@@ -70,6 +71,8 @@ public sealed class RecoveryHandlerCoverageTests
         {
             [LongRunningOperationKinds.GuildQuest] =
                 "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.cs",
+            [LongRunningOperationKinds.GuildSpendRefresh] =
+                "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshAdmission.cs",
             [LongRunningOperationKinds.MemoryEvaluation] =
                 "src/RetroDownfall.Arcanum.Api/ProvingGrounds/MemoryEvaluation/MemoryEvaluationRunner.cs",
             [LongRunningOperationKinds.LongRestSweep] =

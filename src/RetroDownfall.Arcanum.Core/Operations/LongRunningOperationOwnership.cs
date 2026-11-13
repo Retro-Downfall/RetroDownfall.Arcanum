@@ -57,4 +57,14 @@ public sealed class LongRunningOperationOwnership
         && token != Guid.Empty
         && _claims.TryGetValue(operationId, out Guid held)
         && held == token;
+
+    /// <summary>Observes one claim incarnation without granting claim or release authority.</summary>
+    internal ClaimObservation? Observe(Guid operationId) =>
+        operationId != Guid.Empty && _claims.TryGetValue(operationId, out Guid token)
+            ? new ClaimObservation(this, operationId, token) : null;
+
+    internal sealed class ClaimObservation(LongRunningOperationOwnership owner, Guid operationId, Guid token)
+    {
+        internal bool IsCurrent => owner.IsClaimedBy(operationId, token);
+    }
 }
