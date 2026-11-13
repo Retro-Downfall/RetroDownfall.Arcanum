@@ -416,6 +416,8 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.True(replay.Value.RequiresAttention);
 
+        Assert.Equal(result.Value.ErrorCode, replay.Value.ErrorCode);
+
         Assert.False(replay.Value.InFlight);
     }
 
@@ -812,6 +814,10 @@ public sealed partial class GuildQuestStoreTests
 
     private sealed class BlockingRefreshOperationStore(ILongRunningOperationStore inner) : ILongRunningOperationStore
     {
+        internal bool ReturnMissing { get; set; }
+
+        internal bool ThrowOnGet { get; set; }
+
         internal bool CancelAcquire { get; set; }
 
         internal bool CommitBeforeCancel { get; set; }
@@ -836,7 +842,9 @@ public sealed partial class GuildQuestStoreTests
 
         public Task<LongRunningOperation?> GetAsync(Guid id, CancellationToken ct = default)
         {
-            Task<LongRunningOperation?> result = inner.GetAsync(id, ct);
+            Task<LongRunningOperation?> result = ThrowOnGet
+                ? Task.FromException<LongRunningOperation?>(new InvalidOperationException("Operation store unavailable"))
+                : ReturnMissing ? Task.FromResult<LongRunningOperation?>(null) : inner.GetAsync(id, ct);
 
             if (VerifySynchronousPostBody) SynchronousPostBodyCalls &= result.IsCompleted;
 

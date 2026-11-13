@@ -40,7 +40,7 @@ internal sealed partial class DataRetentionService
                 ORDER BY RunKey LIMIT 100
                 """;
 
-    private static async Task<string> GuildPhysicalAccountingPinAsync(string runIdentity, SqliteConnection connection,
+    private async Task<string> GuildPhysicalAccountingPinAsync(string runIdentity, SqliteConnection connection,
         SqliteTransaction transaction, bool hasGuildEffects, DateTimeOffset? cutoff, CancellationToken cancellationToken)
     {
         if (!hasGuildEffects) return "0";
@@ -52,6 +52,10 @@ internal sealed partial class DataRetentionService
         command.CommandText = "CREATE TEMP TABLE IF NOT EXISTS guild_retention_blocked_runs(RunKey TEXT PRIMARY KEY); DELETE FROM guild_retention_blocked_runs";
 
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='guild_spend_refreshes')";
+
+        bool hasRefreshes = Equals(1L, await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false));
 
         string after = "";
 
@@ -78,7 +82,9 @@ internal sealed partial class DataRetentionService
 
             foreach ((string key, bool clear) in proof)
             {
-                if (clear) continue;
+                bool refreshPin = hasRefreshes && await GuildRefreshPinWithinAsync(connection, transaction, key, cancellationToken).ConfigureAwait(false);
+
+                if (clear && !refreshPin) continue;
 
                 command.CommandText = "INSERT OR IGNORE INTO guild_retention_blocked_runs(RunKey) VALUES($key)";
 
@@ -95,6 +101,58 @@ internal sealed partial class DataRetentionService
         return $"EXISTS(SELECT 1 FROM guild_retention_blocked_runs blocked WHERE blocked.RunKey=lower(replace({runIdentity},'-','')))";
     }
 
+    internal const string GuildRefreshDurablePinSql = """
+            SELECT EXISTS(
+                SELECT 1 FROM guild_budget_effects effect INDEXED BY idx_guild_budget_effects_accounting
+                CROSS JOIN guild_spend_refreshes refresh INDEXED BY idx_guild_spend_refreshes_effect_norm ON lower(replace(refresh.EffectId,'-',''))=lower(replace(effect.EffectId,'-',''))
+                LEFT JOIN LongRunningOperations operation ON operation.Id=refresh.OperationId
+                WHERE lower(replace(effect.AccountingAssociationId,'-',''))=$key AND (
+                    refresh.EffectId IS NOT effect.EffectId
+                    OR typeof(refresh.OperationId)<>'text' OR length(refresh.OperationId)<>32
+                    OR refresh.OperationId<>lower(refresh.OperationId) OR refresh.OperationId GLOB '*[^0-9a-f]*'
+                    OR refresh.OperationId='00000000000000000000000000000000'
+                    OR operation.Id IS NULL OR operation.Kind IS NOT 'guild-spend-refresh'
+                    OR typeof(operation.RecoveryPolicy)<>'integer' OR operation.RecoveryPolicy IS NOT 2
+                    OR typeof(operation.CheckpointVersion)<>'integer' OR operation.CheckpointVersion IS NOT 1
+                    OR typeof(operation.State)<>'integer' OR operation.State NOT IN(4,5,6)
+                    OR (SELECT COUNT(*) FROM LongRunningOperations alias INDEXED BY IX_LongRunningOperations_Id_Norm
+                        WHERE lower(replace(alias.Id,'-',''))=lower(replace(refresh.OperationId,'-','')))<>1))
+            """;
+
+    internal const string GuildRefreshClaimPinSql = """
+            SELECT refresh.OperationId FROM guild_budget_effects effect INDEXED BY idx_guild_budget_effects_accounting
+            CROSS JOIN guild_spend_refreshes refresh INDEXED BY idx_guild_spend_refreshes_effect_norm ON lower(replace(refresh.EffectId,'-',''))=lower(replace(effect.EffectId,'-',''))
+            WHERE lower(replace(effect.AccountingAssociationId,'-',''))=$key
+            """;
+
+    private async Task<bool> GuildRefreshPinWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        string runKey, CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = GuildRefreshDurablePinSql;
+
+        command.Parameters.AddWithValue("$key", runKey);
+
+        if (!Equals(0L, await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))) return true;
+
+        if (_operationOwnership is null) return false;
+
+        command.CommandText = GuildRefreshClaimPinSql;
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (reader.GetValue(0) is not string raw || !Guid.TryParseExact(raw, "N", out Guid operation)
+                || operation == Guid.Empty || _operationOwnership.IsClaimed(operation)) return true;
+        }
+
+        return false;
+    }
+
     private async Task<string> GuildReservationUnlinkedAsync(string reservationAlias, CancellationToken cancellationToken)
     {
         if (!await TableExistsAsync("guild_budget_effects", cancellationToken).ConfigureAwait(false)) return "1";
@@ -106,10 +164,17 @@ internal sealed partial class DataRetentionService
         return $"NOT EXISTS(SELECT 1 FROM guild_budget_effects effect WHERE effect.ReservationId={canonical})";
     }
 
-    private async Task<string> GuildOperationLinkPinAsync(CancellationToken cancellationToken) =>
-        await TableExistsAsync("guild_quests", cancellationToken).ConfigureAwait(false)
+    private async Task<string> GuildOperationLinkPinAsync(CancellationToken cancellationToken)
+    {
+        string pin = await TableExistsAsync("guild_quests", cancellationToken).ConfigureAwait(false)
             ? "AND NOT EXISTS(SELECT 1 FROM guild_quests c WHERE c.OperationId=LongRunningOperations.Id)"
             : string.Empty;
+
+        if (await TableExistsAsync("guild_spend_refreshes", cancellationToken).ConfigureAwait(false))
+            pin += " AND NOT EXISTS(SELECT 1 FROM guild_spend_refreshes refresh WHERE refresh.OperationId=lower(replace(LongRunningOperations.Id,'-','')))";
+
+        return pin;
+    }
 
     private async Task<DataRetentionConflict[]> ReadGuildResetConflictsAsync(DbConnection connection, DbTransaction? transaction,
         CancellationToken cancellationToken)
