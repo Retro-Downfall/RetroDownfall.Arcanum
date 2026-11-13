@@ -1024,6 +1024,234 @@ public sealed partial class GuildLocalHostPolicyTests
         }
     }
 
+    [Fact]
+    public async Task Financial_off_first_cohort_waits_for_started_loser_to_stop_after_received_response()
+    {
+        using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
+
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        f.Settings.CurrentValue.Features.Conclave = true;
+
+        f.Settings.CurrentValue.Features.Apprentices = true;
+
+        f.Settings.CurrentValue.Execution.MaxConcurrentApprentices = 2;
+
+        f.Settings.CurrentValue.Cost.Budget.Enabled = false;
+
+        await using GuildLocalHostReadiness readiness = new(f.Settings, f.Connections, f.Policy, f.Authority,
+            TimeProvider.System, Path.Combine(f.WorkspaceRoot, "host.lock"), f.Gate);
+
+        f.Readiness.Inner = readiness;
+
+        Assert.True((await readiness.EnsureReadyAsync(default)).IsSuccess);
+
+        var (owner, issuer, _, cohorts, cohort, members) = await ConvergenceFixtureAsync(f, GuildConvergenceKind.First, null, "text/plain", 2);
+
+        var loserOpened = await f.Connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite, default);
+
+        var winnerOpened = await f.Connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite, default);
+
+        Assert.True(loserOpened.IsSuccess, loserOpened.Error.Message);
+
+        Assert.True(winnerOpened.IsSuccess, winnerOpened.Error.Message);
+
+        await using var loserConnection = loserOpened.Value;
+
+        await using var winnerConnection = winnerOpened.Value;
+
+        await using ArcanumDbContext loserDb = GrimoireFixture.CreateContext(loserConnection.Connection);
+
+        await using ArcanumDbContext winnerDb = GrimoireFixture.CreateContext(winnerConnection.Connection);
+
+        ArcanumSettings settings = new()
+        {
+            Features = new() { Guild = true }, DefaultModel = "accepted-model",
+            Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
+                Endpoint = "https://example.test/v1", ContextWindowLimit = 131072,
+                GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["accepted-model"] }],
+        };
+
+        settings.Cost.Budget.Enabled = false;
+
+        using FinancialOffMemberTransport loserTransport = new();
+
+        using FinancialOffMemberTransport winnerTransport = new();
+
+        ChildQueue queue = new();
+
+        ConclaveArchmage coordinator = new(null!, f.Settings, f.Store, queue);
+
+        WizardIntelligenceProviderTests loserWizard = new();
+
+        WizardIntelligenceProviderTests winnerWizard = new();
+
+        try
+        {
+            var loserRuntime = await loserWizard.CreateGuildRuntimeAsync(new BudgetReservationService(loserDb, new TestOptionsMonitor<ArcanumSettings>(settings)),
+                settings, new ChatClientFactory(loserTransport, new TestOptionsMonitor<ArcanumSettings>(settings)), coordinator);
+
+            var winnerRuntime = await winnerWizard.CreateGuildRuntimeAsync(new BudgetReservationService(winnerDb, new TestOptionsMonitor<ArcanumSettings>(settings)),
+                settings, new ChatClientFactory(winnerTransport, new TestOptionsMonitor<ArcanumSettings>(settings)), coordinator);
+
+            FinancialOffStoppedRuntime pausedLoser = new(loserRuntime.Runtime);
+
+            using ServiceProvider services = new ServiceCollection().BuildServiceProvider();
+
+            using ApprenticeService engine = new(services.GetRequiredService<IServiceScopeFactory>(), f.Settings, new ChronicleHub(),
+                NullLogger<ApprenticeService>.Instance, f.Gate);
+
+            ManualTimerTimeProvider loserClock = new();
+
+            GuildLocalPort loserPort = new(f.Store, f.Policy, f.Authority, new LongRunningOperationStore(loserDb, f.Connections),
+                engine, pausedLoser, queue, new(), loserClock);
+
+            GuildLocalPort winnerPort = new(f.Store, f.Policy, f.Authority, new LongRunningOperationStore(winnerDb, f.Connections),
+                engine, winnerRuntime.Runtime, queue, new(), TimeProvider.System);
+
+            using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
+
+            async Task<(GuildExecutionHandle Handle, GuildDispatchRequest Request)> PrepareAsync(GuildQuestStored member)
+            {
+                var recovery = await f.Policy.CreateRecoveryAsync(owner, member.Quest.Id, member.Quest.OperationId, member.Quest.SignetRevision, deadline.Token);
+
+                Assert.True(recovery.IsSuccess, recovery.Error.Message);
+
+                var handle = await f.Authority.RebindAsync(recovery.Value, deadline.Token);
+
+                Assert.True(handle.IsSuccess, handle.Error.Message);
+
+                var pending = await f.Store.ReadLocalPendingAsync(owner, member.Quest.Id, deadline.Token);
+
+                Assert.True(pending.IsSuccess, pending.Error.Message);
+
+                return (handle.Value, pending.Value.Request!);
+            }
+
+            var loser = await PrepareAsync(members[1]);
+
+            var winner = await PrepareAsync(members[0]);
+
+            Task<RetroDownfall.Arcanum.Core.Primitives.Result<GuildDispatchObservation>> loserTask = loserPort.DispatchAsync(loser.Handle, loser.Request, deadline.Token);
+
+            try
+            {
+                await pausedLoser.Entered.Task.WaitAsync(deadline.Token);
+
+                await loserClock.FirstTimerCreated.WaitAsync(deadline.Token);
+
+                Assert.Equal(1, loserTransport.Posts);
+
+                var winnerResult = await winnerPort.DispatchAsync(winner.Handle, winner.Request, deadline.Token);
+
+                Assert.True(winnerResult.IsSuccess, winnerResult.Error.Message);
+
+                Assert.Equal(QuestState.Completed, winnerResult.Value.State);
+
+                var current = await cohorts.GetAsync(issuer, cohort.Id, deadline.Token);
+
+                Assert.True(current.IsSuccess, current.Error.Message);
+
+                Assert.True((await cohorts.CloseAsync(issuer, cohort.Id, new(Guid.NewGuid(), current.Value.Revision), deadline.Token)).IsSuccess);
+
+                var draining = await WaitForConvergenceAsync(cohorts, owner, cohort.Id, value => value.Decision == GuildConvergenceDecision.Success);
+
+                Assert.NotEqual(GuildCohortState.Completed, draining.State);
+
+                Assert.False(loserTask.IsCompleted);
+
+                loserClock.Advance(TimeSpan.FromSeconds(11));
+
+                await pausedLoser.CancelObserved.Task.WaitAsync(deadline.Token);
+
+                Assert.False(loserTask.IsCompleted);
+
+                pausedLoser.Release.TrySetResult();
+
+                var stoppedLoser = await loserTask.WaitAsync(deadline.Token);
+
+                Assert.True(stoppedLoser.IsSuccess, stoppedLoser.Error.Message);
+
+                Assert.Equal(QuestState.Canceled, stoppedLoser.Value.State);
+
+                var loserResult = await f.Store.ReadLocalResultAsync(owner, members[1].Quest.Id, true, deadline.Token);
+
+                Assert.True(loserResult.IsSuccess, loserResult.Error.Message);
+
+                Assert.NotNull(loserResult.Value.Receipt);
+
+                await using var proof = loserConnection.Connection.CreateCommand();
+
+                proof.CommandText = "SELECT count(*) FROM guild_result_receipts WHERE QuestId=$quest AND NoDispatchProven=0 AND WorkStoppedProven=1";
+
+                proof.Parameters.AddWithValue("$quest", members[1].Quest.Id.ToString("D").ToUpperInvariant());
+
+                Assert.Equal(1L, await proof.ExecuteScalarAsync(deadline.Token));
+
+                foreach (GuildQuestStored member in members)
+                {
+                    var stopped = await f.Store.RefreshCancellationConvergenceAsync(owner, member.Quest.Id, deadline.Token);
+
+                    Assert.True(stopped.IsSuccess, stopped.Error.Message);
+
+                    Assert.True(stopped.Value);
+                }
+
+                var converged = await WaitForConvergenceAsync(cohorts, owner, cohort.Id, value => value.State == GuildCohortState.Completed);
+
+                Assert.Equal(GuildConvergenceDecision.Success, converged.Decision);
+
+                Assert.Equal(1, loserTransport.Posts);
+
+                Assert.Equal(3, winnerTransport.Posts);
+
+                Assert.Equal(0, loserTransport.MetadataGets + winnerTransport.MetadataGets);
+
+                Assert.Equal(4L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd=1 AND UnknownTokens=1"));
+
+                Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
+            }
+            finally
+            {
+                pausedLoser.Release.TrySetResult();
+            }
+        }
+        finally
+        {
+            await winnerWizard.DisposeAsync();
+
+            await loserWizard.DisposeAsync();
+        }
+    }
+
+    private sealed class FinancialOffStoppedRuntime(IGuildLocalInferenceRuntime inner) : IGuildLocalInferenceRuntime
+    {
+        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource CancelObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool IsAvailable => inner.IsAvailable;
+
+        public Task<Result<PromptTurnResult>> ExecuteAsync(GuildLocalInferenceExecution execution, GuildLocalExecutionInput input, CancellationToken ct) =>
+            inner.ExecuteAsync(execution, input, ct);
+
+        public async Task<Result<PromptTurnResult>> ExecuteTurnAsync(GuildLocalInferenceExecution execution, GuildLocalExecutionInput input,
+            GuildLocalInferenceTurn turn, CancellationToken ct)
+        {
+            var result = await inner.ExecuteTurnAsync(execution, input, turn, ct);
+
+            using CancellationTokenRegistration registration = ct.Register(() => CancelObserved.TrySetResult());
+
+            Entered.TrySetResult();
+
+            await Release.Task;
+
+            return result;
+        }
+    }
+
     private sealed class FinancialOffRuntimeCapture(IGuildLocalInferenceRuntime inner) : IGuildLocalInferenceRuntime
     {
         internal string? Diagnostic;
