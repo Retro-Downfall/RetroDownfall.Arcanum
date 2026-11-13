@@ -35,7 +35,15 @@ internal sealed partial class GuildQuestStore
                         || !CryptographicOperations.FixedTimeEquals(digest, RefreshRequestDigest(caller.InstallationGeneration, principal,
                             questId, effectId, refreshId))) return Conflict;
 
-                    if (row.IsDBNull(3)) return new GuildSpendRefreshPreparation(null, null, operation, null);
+                    if (row.IsDBNull(3))
+                    {
+                        await row.DisposeAsync().ConfigureAwait(false);
+
+                        Result owner = await GuildSpendRefreshOwnerProof.RequireWithinAsync(connection, transaction, questId,
+                            quest.Quest.RootQuestId, token).ConfigureAwait(false);
+
+                        return owner.IsFailure ? owner.Error : new GuildSpendRefreshPreparation(null, null, operation, null);
+                    }
 
                     if (row.GetValue(3) is not string rawReceipt || !Guid.TryParseExact(rawReceipt, "D", out Guid receiptId)
                         || receiptId == Guid.Empty) return Conflict;
@@ -51,6 +59,11 @@ internal sealed partial class GuildQuestStore
                         ? new GuildSpendRefreshPreparation(null, null, operation, receipt.Value) : Conflict;
                 }
             }
+
+            Result ownerProof = await GuildSpendRefreshOwnerProof.RequireWithinAsync(connection, transaction, questId,
+                quest.Quest.RootQuestId, token).ConfigureAwait(false);
+
+            if (ownerProof.IsFailure) return ownerProof.Error;
 
             Result<GuildBudgetEffect> found = await ledger.ReadEffectWithinAsync(connection, transaction, effectId, token).ConfigureAwait(false);
 
@@ -99,7 +112,15 @@ internal sealed partial class GuildQuestStore
                         || operation == Guid.Empty || row.GetValue(2) is not byte[] saved || saved.Length != 32
                         || !CryptographicOperations.FixedTimeEquals(digest, saved)) return Conflict;
 
-                    if (row.IsDBNull(3)) return new GuildSpendRefreshPreparation(null, null, operation, null);
+                    if (row.IsDBNull(3))
+                    {
+                        await row.DisposeAsync().ConfigureAwait(false);
+
+                        Result owner = await GuildSpendRefreshOwnerProof.RequireWithinAsync(connection, transaction, questId,
+                            quest.Quest.RootQuestId, token).ConfigureAwait(false);
+
+                        return owner.IsFailure ? owner.Error : new GuildSpendRefreshPreparation(null, null, operation, null);
+                    }
 
                     if (row.GetValue(3) is not string rawReceipt || !Guid.TryParseExact(rawReceipt, "D", out Guid receiptId)
                         || receiptId == Guid.Empty) return Conflict;
@@ -117,6 +138,11 @@ internal sealed partial class GuildQuestStore
             }
 
             if (currentness is null) return OwnerUnavailable;
+
+            Result ownerProof = await GuildSpendRefreshOwnerProof.RequireWithinAsync(connection, transaction, questId,
+                quest.Quest.RootQuestId, token).ConfigureAwait(false);
+
+            if (ownerProof.IsFailure) return ownerProof.Error;
 
             Result<GuildBudgetEffect> effectResult = await ledger.ReadEffectWithinAsync(connection, transaction, effectId, token).ConfigureAwait(false);
 
@@ -215,6 +241,11 @@ internal sealed partial class GuildQuestStore
         Guid questId, Guid effectId, CancellationToken ct) =>
         WithSpendOwnerAsync<GuildSpendRefreshPreparation>(caller, questId, async (connection, transaction, quest, ledger, token) =>
         {
+            Result ownerProof = await GuildSpendRefreshOwnerProof.RequireWithinAsync(connection, transaction, questId,
+                quest.Quest.RootQuestId, token).ConfigureAwait(false);
+
+            if (ownerProof.IsFailure) return ownerProof.Error;
+
             Result<GuildBudgetEffect> effect = await ledger.ReadEffectWithinAsync(connection, transaction, effectId, token).ConfigureAwait(false);
 
             if (effect.IsFailure) return effect.Error;
