@@ -96,6 +96,10 @@ public sealed partial class GuildQuestStoreTests
 
         long afterEvents = await f.Scenario.Fixture.CountAsync("guild_events");
 
+        string? originalEndpoint = f.Scenario.Settings.Providers[0].Endpoint;
+
+        f.Scenario.Settings.Providers[0].Endpoint = "https://changed.example/v1";
+
         var replay = await service.RefreshAsync(f.Scenario.Fixture.Caller, f.QuestId, f.Scenario.EffectId, firstId, default);
 
         Assert.True(replay.IsSuccess, replay.IsFailure ? replay.Error.Message : null);
@@ -105,6 +109,14 @@ public sealed partial class GuildQuestStoreTests
         Assert.Equal(receipt, replay.Value.Receipt);
 
         Assert.Equal(2, response.Reads);
+
+        Assert.Equal(afterReceipts, await f.Scenario.Fixture.CountAsync("guild_spend_receipts"));
+
+        Assert.Equal(afterEvidence, await f.Scenario.Fixture.CountAsync("guild_budget_evidence"));
+
+        Assert.Equal(afterEvents, await f.Scenario.Fixture.CountAsync("guild_events"));
+
+        f.Scenario.Settings.Providers[0].Endpoint = originalEndpoint;
 
         response.Body = SequenceLower;
 
@@ -158,8 +170,10 @@ public sealed partial class GuildQuestStoreTests
 
         Guid refresh = Guid.NewGuid();
 
+        using CancellationTokenSource cancellation = new();
+
         Task<RetroDownfall.Arcanum.Core.Primitives.Result<GuildSpendRefreshResult>> pending = service.RefreshAsync(
-            f.Scenario.Fixture.Caller, f.QuestId, f.Scenario.EffectId, refresh, default);
+            f.Scenario.Fixture.Caller, f.QuestId, f.Scenario.EffectId, refresh, cancellation.Token);
 
         try
         {
@@ -207,9 +221,7 @@ public sealed partial class GuildQuestStoreTests
         }
         finally
         {
-            response.Release.TrySetResult();
-
-            await pending;
+            await FinishSequenceResponseAsync(response, cancellation, pending);
         }
     }
 
@@ -248,8 +260,10 @@ public sealed partial class GuildQuestStoreTests
 
         long revision = Assert.IsType<long>(await f.Query.ExecuteScalarAsync());
 
+        using CancellationTokenSource cancellation = new();
+
         Task<RetroDownfall.Arcanum.Core.Primitives.Result<GuildSpendRefreshResult>> pending = service.RefreshAsync(
-            f.Scenario.Fixture.Caller, f.QuestId, f.Scenario.EffectId, refresh, default);
+            f.Scenario.Fixture.Caller, f.QuestId, f.Scenario.EffectId, refresh, cancellation.Token);
 
         try
         {
@@ -295,9 +309,32 @@ public sealed partial class GuildQuestStoreTests
         }
         finally
         {
-            response.Release.TrySetResult();
+            await FinishSequenceResponseAsync(response, cancellation, pending);
+        }
+    }
 
-            await pending;
+    private static async Task FinishSequenceResponseAsync(SequenceResponse response, CancellationTokenSource cancellation,
+        Task<RetroDownfall.Arcanum.Core.Primitives.Result<GuildSpendRefreshResult>> pending)
+    {
+        response.Release.TrySetResult();
+
+        cancellation.Cancel();
+
+        try
+        {
+            await pending.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        catch (OperationCanceledException) when (pending.IsCanceled && cancellation.IsCancellationRequested)
+        {
+            // Cancellation is expected if cleanup interrupted the refresh.
+        }
+        catch (TimeoutException)
+        {
+            // Observe a later fault even when the bounded join cannot complete.
+            _ = pending.ContinueWith(task => _ = task.Exception, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+            throw;
         }
     }
 
