@@ -111,6 +111,7 @@ internal static class LongRunningOperationEndpoints
             Guid id,
             ILongRunningOperationStore store,
             TimeProvider timeProvider,
+            ILoggerFactory loggerFactory,
             HttpContext httpContext,
             CancellationToken cancellationToken) =>
         {
@@ -150,6 +151,20 @@ internal static class LongRunningOperationEndpoints
                     ErrorCodes.Operation.StateConflict,
                     "The operation cannot be cancelled in its current state.",
                     ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
+            }
+
+            if (operation.Kind == LongRunningOperationKinds.GuildSpendRefresh
+                && httpContext.RequestServices.GetService<GuildSpendRefreshTracker>() is { } refreshes)
+            {
+                try
+                {
+                    await refreshes.CancelOperationAsync(id).ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    loggerFactory.CreateLogger(typeof(LongRunningOperationEndpoints)).LogWarning(exception,
+                        "The refresh cancellation signal failed; the durable cancellation remains pending.");
+                }
             }
 
             LongRunningOperation updated = (await store.GetAsync(id, cancellationToken).ConfigureAwait(false))!;
