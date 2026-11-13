@@ -56,7 +56,7 @@ public sealed partial class GuildQuestStoreTests
     }
 
     [Fact]
-    public async Task Refresh_retry_refuses_a_completed_owner_close_before_its_writer_observation()
+    public async Task Refresh_retry_refuses_owner_close_before_writer_while_drain_is_pending()
     {
         await using RefreshApplicationScenario f = await RefreshApplicationScenario.CreateAsync(enableDailyBudget: true);
 

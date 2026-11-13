@@ -15,6 +15,11 @@ internal sealed partial class GuildQuestStore
         LongRunningOperationOwnership ownership, GuildSpendRefreshTracker.Entry entry, CancellationToken ct) =>
         WithSpendOwnerAsync<bool>(caller, questId, async (connection, transaction, quest, ledger, token) =>
         {
+            Result ownerProof = await GuildSpendRefreshOwnerProof.RequireWithinAsync(connection, transaction, questId,
+                quest.Quest.RootQuestId, token).ConfigureAwait(false);
+
+            if (ownerProof.IsFailure) return ownerProof.Error;
+
             if (entry.Root != quest.Quest.RootQuestId || caller.PrincipalId is not { } principal || operation.Kind != LongRunningOperationKinds.GuildSpendRefresh
                 || operation.RecoveryPolicy != LongRunningOperationRecoveryPolicy.ReconcileAndComplete
                 || operation.CheckpointVersion != 1 || operation.CheckpointPayload is not { Length: > 0 and <= 2048 } payload)
