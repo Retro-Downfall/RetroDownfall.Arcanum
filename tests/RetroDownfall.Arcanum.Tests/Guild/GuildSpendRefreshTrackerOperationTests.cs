@@ -47,6 +47,7 @@ public sealed class GuildSpendRefreshTrackerOperationTests
             Assert.False(other.Stop.IsCancellationRequested);
         }
     }
+
     [Fact]
     public async Task Binding_is_idempotent_but_cannot_change_identity_or_bypass_root_close()
     {
@@ -120,5 +121,4 @@ public sealed class GuildSpendRefreshTrackerOperationTests
 
         Assert.False(tracker.TryEnter(Guid.NewGuid(), out _));
     }
-
 }
