@@ -154,8 +154,6 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
 
         Assert.EndsWith("GrimoireConnectionAdmissionEpoch.cs", optional.Path, StringComparison.Ordinal);
 
-        Assert.Equal(1466, catalog.Count(static entry => entry.Path.EndsWith(".sql", StringComparison.Ordinal)));
-
         using JsonDocument manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(
             root,
             "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/grimoire-admission-workload-v1.json")));

@@ -31,10 +31,11 @@ internal sealed partial class GuildQuestStore
     internal Task<Result<GuildSpendEffectPageDto>> ListOperatorSpendEffectsAsync(GuildCallerContext caller, Guid questId, string? cursor, int pageSize, CancellationToken ct) =>
         WithSpendOwnerAsync<GuildSpendEffectPageDto>(caller, questId, async (connection, transaction, quest, ledger, token) =>
         {
+            Dictionary<Guid, SpendBillIdentity> identities = [];
             Result<SpendPage<GuildSpendEffectDto>> page = await SpendPageWithinAsync(connection, transaction, caller, quest,
-                4, questId, cursor, pageSize, (id, cancellation) => ReadSpendEffectWithinAsync(connection, transaction, quest, ledger, id, cancellation),
+                4, questId, cursor, pageSize, (id, cancellation) => ReadSpendEffectWithinAsync(connection, transaction, quest, ledger, id, cancellation, identities),
                 (items, next, snapshot) => JsonSerializer.SerializeToUtf8Bytes(new GuildSpendEffectPageDto(items, next, snapshot), GuildJsonContext.Default.GuildSpendEffectPageDto).Length,
-                token).ConfigureAwait(false);
+                token, (ids, cancellation) => CensusSpendBillsWithinAsync(connection, transaction, ids, identities, cancellation)).ConfigureAwait(false);
 
             return page.IsFailure ? page.Error : new GuildSpendEffectPageDto(page.Value.Items, page.Value.Next, page.Value.Snapshot);
         }, ct);
@@ -102,7 +103,8 @@ internal sealed partial class GuildQuestStore
     }
 
     private static async Task<Result<GuildSpendEffectDto>> ReadSpendEffectWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
-        GuildQuestStored quest, GuildBudgetLedger ledger, Guid effectId, CancellationToken ct)
+        GuildQuestStored quest, GuildBudgetLedger ledger, Guid effectId, CancellationToken ct,
+        IReadOnlyDictionary<Guid, SpendBillIdentity>? identities = null)
     {
         if (effectId == Guid.Empty) return OwnerUnavailable;
 
@@ -147,7 +149,16 @@ internal sealed partial class GuildQuestStore
 
             if (initial.IsFailure) return initial.Error;
 
-            Result<GuildSpendBill?> billResult = await ReadCorrectionBillWithinAsync(connection, transaction, effect.Request, ct).ConfigureAwait(false);
+            Result<GuildSpendBill?> billResult;
+            if (identities is null)
+                billResult = await ReadCorrectionBillWithinAsync(connection, transaction, effect.Request, ct).ConfigureAwait(false);
+            else if (!identities.TryGetValue(effect.Request.SourceId, out SpendBillIdentity identity)
+                || identity.Count > 1 || identity.Count == 1 && identity.ExactId is null)
+                return Conflict;
+            else if (identity.Count == 0)
+                billResult = Result<GuildSpendBill?>.Success(null);
+            else
+                billResult = await ReadCorrectionBillWithinAsync(connection, transaction, effect.Request, ct, identity.ExactId).ConfigureAwait(false);
 
             if (billResult.IsFailure) return billResult.Error;
 
@@ -311,11 +322,62 @@ internal sealed partial class GuildQuestStore
             && local.ReasoningTokens >= 0 && local.ReasoningTokens <= local.OutputTokens;
     }
 
+    private readonly record struct SpendBillIdentity(string? ExactId, int Count);
+
+    private static async Task CensusSpendBillsWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        IReadOnlyList<Guid> effectIds, Dictionary<Guid, SpendBillIdentity> identities, CancellationToken ct)
+    {
+        if (effectIds.Count == 0) return;
+
+        string members = string.Join(",", Enumerable.Range(0, effectIds.Count).Select(i => "$effect" + i));
+        await using (SqliteCommand select = Command(connection, transaction,
+            $"SELECT SourceId FROM guild_budget_effects WHERE KindCode=$kind AND EffectId IN ({members})"))
+        {
+            Add(select, "$kind", (int)GuildBudgetEffectKind.LocalProvider);
+            for (int i = 0; i < effectIds.Count; i++) Add(select, "$effect" + i, Id(effectIds[i]));
+            await using SqliteDataReader reader = await select.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                // Invalid effects are diagnosed only if the page actually materializes them.
+                if (reader.GetValue(0) is string source && Guid.TryParse(source, out Guid id))
+                    identities.TryAdd(id, new(null, 0));
+            }
+        }
+
+        if (identities.Count == 0) return;
+
+        Dictionary<string, Guid> spellings = new(StringComparer.OrdinalIgnoreCase);
+        List<string> parameters = [];
+        await using SqliteCommand census = Command(connection, transaction, string.Empty);
+        int index = 0;
+        foreach (Guid source in identities.Keys)
+        {
+            foreach (string spelling in new[] { source.ToString("N"), source.ToString("D") })
+            {
+                string parameter = "$id" + index++;
+                parameters.Add(parameter);
+                spellings.Add(spelling, source);
+                Add(census, parameter, spelling);
+            }
+        }
+
+        census.CommandText = $"SELECT Id FROM BillableOperations WHERE Id COLLATE NOCASE IN ({string.Join(",", parameters)})";
+        await using SqliteDataReader matches = await census.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await matches.ReadAsync(ct).ConfigureAwait(false))
+        {
+            string exact = matches.GetString(0);
+            if (!spellings.TryGetValue(exact, out Guid source)) continue;
+            SpendBillIdentity previous = identities[source];
+            identities[source] = previous.Count == 0 ? new(exact, 1) : new(previous.ExactId, 2);
+        }
+    }
+
     private sealed record SpendPage<T>(ImmutableArray<T> Items, string? Next, long Snapshot);
 
     private async Task<Result<SpendPage<T>>> SpendPageWithinAsync<T>(SqliteConnection connection, SqliteTransaction transaction,
         GuildCallerContext caller, GuildQuestStored quest, int kind, Guid scopeId, string? cursor, int pageSize,
-        Func<Guid, CancellationToken, Task<Result<T>>> load, Func<ImmutableArray<T>, string?, long, int> size, CancellationToken ct)
+        Func<Guid, CancellationToken, Task<Result<T>>> load, Func<ImmutableArray<T>, string?, long, int> size, CancellationToken ct,
+        Func<IReadOnlyList<Guid>, CancellationToken, Task>? prepare = null)
     {
         if (scopeId == Guid.Empty || pageSize is < 1 or > 100) return new Error(ErrorCodes.Guild.InvalidRequest, "The spend page is invalid.");
 
@@ -374,6 +436,9 @@ internal sealed partial class GuildQuestStore
                 batch.Add((id, sequence));
             }
         }
+
+        if (prepare is not null)
+            await prepare(batch.Take(pageSize).Select(member => member.Id).ToArray(), ct).ConfigureAwait(false);
 
         ImmutableArray<T>.Builder items = ImmutableArray.CreateBuilder<T>();
         bool more = false;

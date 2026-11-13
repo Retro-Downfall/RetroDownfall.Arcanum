@@ -2288,6 +2288,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/020_saga_m
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/030_saga_retirement_suppressions.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/031_saga_retirement_suppressions_campaign_index.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V4/040_saga_suppression_key.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V40/010_BudgetReservations_Id_index.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V5/010_Sessions_Id_guard_identity_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V5/020_Sessions_Id_guard_identity_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V5/030_Sessions_CampaignId_guard_identity_insert.sql
@@ -2822,9 +2823,9 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestCheckpoint.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestCleanupParticipant.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestRecoveryHandler.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestRetentionPins.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.AccountingRecovery.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Awards.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Budget.cs
-R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.AccountingRecovery.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Cancellation.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.CancellationWork.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.CohortCancellation.cs

@@ -45,6 +45,186 @@ public sealed class BudgetReservationIndexSchemaTests
         Assert.Equal(await ReadCatalogAsync(fresh), await ReadCatalogAsync(connection));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Normalized_reservation_identity_seeks_all_cross_run_aliases(bool evolve)
+    {
+        using var file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
+
+        Assert.Equal("8039D59876DB73F0B03CEFBB9A24364376B057F603099F57AE4FFA1407FBD448", GrimoireSchemaCatalog.ComputeSourceFingerprint(Core39Objects()));
+
+        var initial = await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(connection, 64, CancellationToken.None,
+            evolve ? Core39Chains() : null);
+
+        Assert.Equal(evolve ? 39 : 40, initial.Core.SchemaVersion);
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO BudgetReservations (Id, RunId, BudgetPeriod, Status, ExpiresAt, CreatedAt, UpdatedAt)
+            VALUES ('ABCDEF0123456789ABCDEF0123456789','run-one','2026-01-01',0,'x','x','x'),
+                   ('abcdef01-2345-6789-abcd-ef0123456789','run-two','2026-01-01',0,'x','x','x'),
+                   ('AbCdEf01-2345-6789-AbCd-Ef0123456789','run-three','2026-01-01',0,'x','x','x'),
+                   ('unrelated','run-four','2026-01-01',0,'x','x','x');
+            """;
+
+        await command.ExecuteNonQueryAsync();
+
+        if (evolve)
+        {
+            var upgraded = await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(connection, 64, CancellationToken.None);
+
+            Assert.Equal(40, upgraded.Core.SchemaVersion);
+        }
+
+        const string query = "SELECT RunId FROM BudgetReservations WHERE lower(replace(Id, '-', '')) = $id ORDER BY RunId";
+
+        command.CommandText = query;
+
+        command.Parameters.AddWithValue("$id", "abcdef0123456789abcdef0123456789");
+
+        List<string> runs = [];
+
+        await using (SqliteDataReader reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                runs.Add(reader.GetString(0));
+            }
+        }
+
+        Assert.Equal(new[] { "run-one", "run-three", "run-two" }, runs);
+
+        command.CommandText = "EXPLAIN QUERY PLAN " + query;
+
+        List<string> plan = [];
+
+        await using (SqliteDataReader reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                plan.Add(reader.GetString(3));
+            }
+        }
+
+        Assert.Contains(plan, detail => detail.Contains("SEARCH BudgetReservations USING INDEX IX_BudgetReservations_Id_Norm", StringComparison.Ordinal));
+
+        using var freshFile = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection fresh = await freshFile.OpenAsync(CancellationToken.None);
+
+        await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(fresh, 64, CancellationToken.None);
+
+        Assert.Equal(await ReadCatalogAsync(fresh), await ReadCatalogAsync(connection));
+    }
+
+    [Fact]
+    public void Current_core_fingerprint_and_index_ownership_are_exact()
+    {
+        Assert.Equal("FEEE1C2184FD0748760F91F4121FD675E2C977FFC406B609A6FD0E58FFE97E59", GrimoireSchemaCatalog.CoreSchemaFingerprint);
+
+        GrimoireSchemaTierOwnershipRegistry registry = GrimoireSchemaTierOwnershipRegistry.CreateDefault();
+
+        Assert.True(registry.TryGetIndexOwner("IX_BudgetReservations_Id_Norm", out GrimoireSchemaTransactionTier tier));
+
+        Assert.Equal(GrimoireSchemaTransactionTier.Core, tier);
+    }
+
+    [Fact]
+    public async Task Failed_index_transition_rolls_back_and_reopens_for_retry()
+    {
+        using var file = EvolutionScratchDatabase.Create();
+
+        await using (SqliteConnection connection = await file.OpenAsync(CancellationToken.None))
+        {
+            await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(connection, 64, CancellationToken.None, Core39Chains());
+
+            await using SqliteCommand seed = connection.CreateCommand();
+
+            seed.CommandText = "INSERT INTO BudgetReservations (Id, RunId, BudgetPeriod, Status, ExpiresAt, CreatedAt, UpdatedAt) VALUES ('A', 'other-run', '2026-01-01', 0, 'x', 'x', 'x')";
+
+            await seed.ExecuteNonQueryAsync();
+
+            SqliteException failure = await Assert.ThrowsAsync<SqliteException>(
+                () => GrimoireSchemaTestInstaller.InstallAsync(connection, Failing40Chains(), 64, CancellationToken.None));
+
+            Assert.Equal(1, failure.SqliteErrorCode);
+
+            Assert.Contains("missing_transition_test_table", failure.Message, StringComparison.Ordinal);
+
+            Assert.Equal(39, await GrimoireSchemaEvolutionInstallerTests.RecordedVersionAsync(connection));
+
+            seed.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='IX_BudgetReservations_Id_Norm'";
+
+            Assert.Equal(0L, await seed.ExecuteScalarAsync());
+
+            seed.CommandText = "SELECT RunId FROM BudgetReservations WHERE Id='A'";
+
+            Assert.Equal("other-run", await seed.ExecuteScalarAsync());
+        }
+
+        await using SqliteConnection reopened = await file.OpenAsync(CancellationToken.None);
+
+        var upgraded = await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(reopened, 64, CancellationToken.None);
+
+        Assert.Equal(40, upgraded.Core.SchemaVersion);
+
+        await using SqliteCommand check = reopened.CreateCommand();
+
+        check.CommandText = "SELECT RunId FROM BudgetReservations WHERE Id='A'";
+
+        Assert.Equal("other-run", await check.ExecuteScalarAsync());
+    }
+
+    private static GrimoireSchemaVersionChainSet Failing40Chains()
+    {
+        GrimoireSchemaVersionChainSet current = GrimoireSchemaVersionChains.Default;
+
+        GrimoireSchemaVersionChain core = current.ForTier(GrimoireSchemaTransactionTier.Core);
+
+        GrimoireSchemaVersionStep final = core.Steps[^1];
+
+        GrimoireSchemaVersionStep failure = final with
+        {
+            Statements = [.. final.Statements, new GrimoireSchemaTransitionStatement("test.failure", 20, "failure", "SELECT * FROM missing_transition_test_table;")],
+        };
+
+        return new GrimoireSchemaVersionChainSet(
+        [
+            new GrimoireSchemaVersionChain(core.HeadManifest, core.HeadObjects, [.. core.Steps.Take(core.Steps.Count - 1), failure]),
+            current.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
+            current.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+            current.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
+        ]);
+    }
+
+    private static IReadOnlyList<GrimoireSchemaObject> Core39Objects() =>
+        [.. GrimoireSchemaCatalog.CoreObjects.Select(definition => definition.Name == "BudgetReservations"
+            ? definition with { Sql = definition.Sql.Replace("\nCREATE INDEX IF NOT EXISTS \"IX_BudgetReservations_Id_Norm\" ON \"BudgetReservations\" (lower(replace(\"Id\", '-', '')));\n", "", StringComparison.Ordinal) }
+            : definition)];
+
+    private static GrimoireSchemaVersionChainSet Core39Chains()
+    {
+        IReadOnlyList<GrimoireSchemaObject> objects = Core39Objects();
+
+        GrimoireSchemaVersionChainSet current = GrimoireSchemaVersionChains.Default;
+
+        return new GrimoireSchemaVersionChainSet(
+        [
+            new GrimoireSchemaVersionChain(
+                GrimoireSchemaManifestBuilder.Build(GrimoireSchemaFamily.Core, GrimoireSchemaTransactionTier.Core, 39,
+                    "8039D59876DB73F0B03CEFBB9A24364376B057F603099F57AE4FFA1407FBD448", objects),
+                objects,
+                [.. current.ForTier(GrimoireSchemaTransactionTier.Core).Steps.Where(static step => step.ToVersion <= 39)]),
+            current.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
+            current.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+            current.ForTier(GrimoireSchemaTransactionTier.GuildCanonical),
+        ]);
+    }
+
     private static async Task<string[]> ReadCatalogAsync(SqliteConnection connection)
     {
         await using SqliteCommand command = connection.CreateCommand();

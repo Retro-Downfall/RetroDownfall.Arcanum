@@ -19,6 +19,18 @@ public interface IProviderApiKeyResolver
         CancellationToken cancellationToken = default) =>
         new(await ResolveAsync(provider, cancellationToken).ConfigureAwait(false), null);
 
+    /// <summary>Observes a credential and identity without mutating credential storage.</summary>
+    Task<ResolvedProviderCredential> PeekWithIdentityAsync(
+        ProviderSettings provider,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(new ResolvedProviderCredential(null, null));
+    }
+
     /// <summary>Proves currentness without migrating or repairing credential storage.</summary>
     Task<bool> IsCurrentAsync(
         ProviderSettings provider,
