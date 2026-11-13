@@ -28,6 +28,7 @@ internal static class GuildBudgetObligations
 
         return new(physical, usd, tokens, holdUsd, holdTokens);
     }
+
     internal const string ReservationLinksSql = """
         WITH RECURSIVE subtree(Id) AS (
           SELECT AccountId FROM guild_budget_accounts WHERE AccountId=$account

@@ -489,6 +489,7 @@ internal sealed partial class GuildQuestStore
             await insert.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             next = id.ToString("N");
         }
+
         return new SpendPage<T>(items.ToImmutable(), next, snapshot);
     }
 }
