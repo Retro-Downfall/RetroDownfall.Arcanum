@@ -618,12 +618,14 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 CohortId = Guid.Parse(match.Groups[1].Value);
             }
+
             if (ordinal == 5)
             {
                 AdmissionsComplete.TrySetResult();
 
                 await Release.Task.WaitAsync(ct);
             }
+
             string? tool = ordinal switch { 1 => "create_cohort", 2 or 3 => "admit_cohort_member", 4 => "close_cohort", 5 => "get_agent_task", _ => null };
 
             string arguments = ordinal switch
@@ -655,6 +657,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 message = """{"role":"assistant","content":"both answers received"}""";
             }
+
             string json = $$$"""{"id":"mixed-{{{ordinal}}}","object":"chat.completion","created":1700000000,"model":"accepted-model","choices":[{"index":0,"message":{{{message}}},"finish_reason":"{{{(tool is null ? "stop" : "tool_calls")}}}"}]}""";
 
             return new(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
@@ -798,7 +801,6 @@ public sealed partial class GuildLocalHostPolicyTests
 
                         await context.Response.WriteAsync($$$"""{"id":"remote-{{{ordinal}}}","object":"chat.completion","created":1700000000,"model":"accepted-model","choices":[{"index":0,"message":{{{message}}},"finish_reason":"stop"}]}""");
                     }));
-
                 }).StartAsync(ct);
 
                 string modelUrl = provider.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
@@ -919,6 +921,7 @@ public sealed partial class GuildLocalHostPolicyTests
                             return (child, port, key, attempt + 1);
                         }
                     }
+
                     await child.WaitForExitAsync(ct);
 
                     if (!IsAddressInUse(stderr.ToString()) || attempt == 4)
@@ -947,6 +950,7 @@ public sealed partial class GuildLocalHostPolicyTests
                     Directory.CreateDirectory(Path.Combine(home, ".config", "arcanum"));
                 }
             }
+
             throw new InvalidOperationException("Peer address retry limit was exhausted.");
         }
 
@@ -966,6 +970,7 @@ public sealed partial class GuildLocalHostPolicyTests
                 {
                     // The operating system reaped the process between those operations.
                 }
+
                 await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(15));
             }
             finally

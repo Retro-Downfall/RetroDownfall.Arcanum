@@ -101,6 +101,7 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.Equal(expected, result[key]);
     }
+
     [Fact]
     public async Task Physical_retention_pins_shared_run_if_one_valid_origin_loses_its_root()
     {
@@ -174,5 +175,4 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.False(after[key]);
     }
-
 }

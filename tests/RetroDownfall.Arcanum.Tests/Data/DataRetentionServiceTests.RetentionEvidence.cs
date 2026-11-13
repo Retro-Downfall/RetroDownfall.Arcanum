@@ -91,6 +91,7 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.True(proof[unrelated]);
     }
+
     [SkippableTheory]
     [InlineData("zero", true)]
     [InlineData("usd", false)]
@@ -146,5 +147,4 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.False(proof[key]);
     }
-
 }
