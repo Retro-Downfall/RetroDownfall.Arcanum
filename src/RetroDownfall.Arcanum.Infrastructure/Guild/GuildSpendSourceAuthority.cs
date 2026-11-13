@@ -224,6 +224,17 @@ internal sealed class GuildSpendSourceCredential
                 CryptographicOperations.ZeroMemory(key);
             }
 
+            string sourceId = reader.GetString(15);
+
+            await reader.DisposeAsync().ConfigureAwait(false);
+
+            Result<GuildStoredInitialSpend?> initial = await GuildSpendSourceStore.LoadInitialWithinAsync(
+                connection, transaction, effectId, ct).ConfigureAwait(false);
+
+            if (initial.IsFailure || initial.Value is not { } stored
+                || Id(stored.Snapshot.SourceId) != sourceId || stored.Snapshot.ProviderRequestId != generationId)
+                return GuildSpendSourceFailure.SourceInvalid;
+
             return new VerifiedSource(generationId, credential._model, credential._secret!);
         }
 

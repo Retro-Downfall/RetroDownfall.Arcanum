@@ -128,4 +128,35 @@ public sealed partial class GuildQuestStoreTests
 
         await transaction.RollbackAsync();
     }
+
+    [Fact]
+    public async Task Provider_source_verification_refuses_generation_that_disagrees_with_initial_bill()
+    {
+        await using SpendScenario scenario = await SpendScenario.CreateAsync();
+
+        await using SqliteConnection connection = await scenario.Fixture.OpenAsync();
+
+        await using SqliteTransaction transaction = connection.BeginTransaction();
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = "DROP TRIGGER guild_spend_sources_guard_update";
+
+        await command.ExecuteNonQueryAsync();
+
+        command.CommandText = "UPDATE guild_spend_sources SET GenerationId='gen-forged' WHERE EffectId=$effect";
+
+        command.Parameters.AddWithValue("$effect", scenario.EffectId.ToString("D").ToUpperInvariant());
+
+        Assert.Equal(1, await command.ExecuteNonQueryAsync());
+
+        var verified = await scenario.Credential().VerifyWithinAsync(connection, transaction, scenario.EffectId,
+            scenario.Fixture.Host.InstallationGeneration, default);
+
+        Assert.True(verified.IsFailure);
+
+        await transaction.RollbackAsync();
+    }
 }
