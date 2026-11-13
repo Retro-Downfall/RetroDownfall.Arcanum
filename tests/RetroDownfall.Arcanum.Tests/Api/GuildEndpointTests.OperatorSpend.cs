@@ -225,6 +225,16 @@ public sealed partial class GuildEndpointTests
 
         Guid effectId = Guid.NewGuid();
 
+        Guid secondEffect = Guid.NewGuid();
+
+        Guid lateEffect = Guid.NewGuid();
+
+        string firstPageJson = "";
+
+        string firstCursor = "";
+
+        long pageSnapshot = 0;
+
         await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
         {
             GuildLocalHostPolicy policy = scope.ServiceProvider.GetRequiredService<GuildLocalHostPolicy>();
@@ -288,7 +298,153 @@ public sealed partial class GuildEndpointTests
                 spendSource: new GuildSpendSourceCredential(provider, "provider/model", RefreshHttpCredential.Secret), spendPricing: "{}");
 
             Assert.True(settled.IsSuccess, settled.Error.Message);
+
+            GuildBudgetEffectRequest second = effect with { EffectId = secondEffect, SourceId = Guid.NewGuid() };
+
+            var secondSettled = await store.ExecuteAndSettleProviderResponseAsync(execution, daily, second,
+                _ => Task.FromResult(Result<string>.Success("answer")), _ => Result<BillableOperationRecord>.Success(bill), default,
+                spendSource: new GuildSpendSourceCredential(provider, "provider/model", RefreshHttpCredential.Secret), spendPricing: "{}");
+
+            Assert.True(secondSettled.IsSuccess, secondSettled.Error.Message);
+
+            using HttpResponseMessage firstPage = await client.GetAsync($"/api/guild/quests/{questId:D}/spend/effects?pageSize=1");
+
+            Assert.Equal(HttpStatusCode.OK, firstPage.StatusCode);
+
+            firstPageJson = await firstPage.Content.ReadAsStringAsync();
+
+            using JsonDocument firstPageBody = JsonDocument.Parse(firstPageJson);
+
+            JsonElement firstData = firstPageBody.RootElement.GetProperty("data");
+
+            Assert.True(System.Text.Encoding.UTF8.GetByteCount(firstData.GetRawText()) <= GuildQuestStore.TreePageMaximumBytes);
+
+            Assert.Equal(JsonValueKind.Null, Assert.Single(firstData.GetProperty("items").EnumerateArray()).GetProperty("providerIneligibility").ValueKind);
+
+            firstCursor = firstData.GetProperty("nextCursor").GetString()!;
+
+            pageSnapshot = firstData.GetProperty("snapshotSequence").GetInt64();
+
+            GuildBudgetEffectRequest late = effect with { EffectId = lateEffect, SourceId = Guid.NewGuid() };
+
+            var lateSettled = await store.ExecuteAndSettleProviderResponseAsync(execution, daily, late,
+                _ => Task.FromResult(Result<string>.Success("answer")), _ => Result<BillableOperationRecord>.Success(bill), default,
+                spendSource: new GuildSpendSourceCredential(provider, "provider/model", RefreshHttpCredential.Secret), spendPricing: "{}");
+
+            Assert.True(lateSettled.IsSuccess, lateSettled.Error.Message);
         }
+
+        string effectRoute = $"/api/guild/quests/{questId:D}/spend/effects/{effectId:D}";
+
+        string effectsRoute = $"/api/guild/quests/{questId:D}/spend/effects";
+
+        (long operations, long reservations) beforeWorkReads = await RefreshWorkRowsAsync(factory);
+
+        using HttpResponseMessage firstReplay = await client.GetAsync(effectsRoute + "?pageSize=1");
+
+        using JsonDocument firstReplayed = JsonDocument.Parse(await firstReplay.Content.ReadAsStringAsync());
+
+        using JsonDocument firstOriginal = JsonDocument.Parse(firstPageJson);
+
+        Assert.Equal(firstOriginal.RootElement.GetProperty("data").GetProperty("items")[0].GetProperty("effectId").GetGuid(),
+            firstReplayed.RootElement.GetProperty("data").GetProperty("items")[0].GetProperty("effectId").GetGuid());
+
+        string nextPageRoute = effectsRoute + "?pageSize=1&cursor=" + Uri.EscapeDataString(firstCursor);
+
+        using HttpResponseMessage nextPage = await client.GetAsync(nextPageRoute);
+
+        Assert.Equal(HttpStatusCode.OK, nextPage.StatusCode);
+
+        string nextJson = await nextPage.Content.ReadAsStringAsync();
+
+        using JsonDocument nextBody = JsonDocument.Parse(nextJson);
+
+        JsonElement nextData = nextBody.RootElement.GetProperty("data");
+
+        Assert.Equal(pageSnapshot, nextData.GetProperty("snapshotSequence").GetInt64());
+
+        Guid nextId = Assert.Single(nextData.GetProperty("items").EnumerateArray()).GetProperty("effectId").GetGuid();
+
+        Assert.NotEqual(lateEffect, nextId);
+
+        Assert.Equal(JsonValueKind.Null, nextData.GetProperty("items")[0].GetProperty("providerIneligibility").ValueKind);
+
+        Assert.Equal(JsonValueKind.Null, nextData.GetProperty("nextCursor").ValueKind);
+
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(nextData.GetRawText()) <= GuildQuestStore.TreePageMaximumBytes);
+
+        using HttpResponseMessage nextReplay = await client.GetAsync(nextPageRoute);
+
+        using JsonDocument nextReplayed = JsonDocument.Parse(await nextReplay.Content.ReadAsStringAsync());
+
+        Assert.Equal(nextId, Assert.Single(nextReplayed.RootElement.GetProperty("data").GetProperty("items").EnumerateArray()).GetProperty("effectId").GetGuid());
+
+        Assert.Equal(pageSnapshot, nextReplayed.RootElement.GetProperty("data").GetProperty("snapshotSequence").GetInt64());
+
+        Assert.DoesNotContain(RefreshHttpCredential.Secret, nextJson, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("gen-test-123", nextJson, StringComparison.Ordinal);
+
+        int pagePeeks = credential.Reads;
+
+        using HttpResponseMessage sharedPage = await client.GetAsync(effectsRoute + "?pageSize=2");
+
+        Assert.Equal(HttpStatusCode.OK, sharedPage.StatusCode);
+
+        using JsonDocument sharedPageBody = JsonDocument.Parse(await sharedPage.Content.ReadAsStringAsync());
+
+        Assert.Equal(2, sharedPageBody.RootElement.GetProperty("data").GetProperty("items").GetArrayLength());
+
+        Assert.Equal(pagePeeks + 1, credential.Reads);
+
+        (long bills, long events, long receipts) beforeReads = await RefreshRowsAsync(factory);
+
+        int beforePeeks = credential.Reads;
+
+        using HttpResponseMessage eligible = await client.GetAsync(effectRoute);
+
+        Assert.Equal(HttpStatusCode.OK, eligible.StatusCode);
+
+        using JsonDocument eligibleBody = JsonDocument.Parse(await eligible.Content.ReadAsStringAsync());
+
+        Assert.Equal(JsonValueKind.Null, eligibleBody.RootElement.GetProperty("data").GetProperty("providerIneligibility").ValueKind);
+
+        Assert.True(credential.Reads > beforePeeks);
+
+        ProviderSettings eligibilityProvider = factory.Services.GetRequiredService<IOptionsMonitor<ArcanumSettings>>().CurrentValue.Providers[0];
+
+        eligibilityProvider.GuildUsageReconciliation = GuildUsageReconciliationSource.None;
+
+        beforePeeks = credential.Reads;
+
+        using HttpResponseMessage disabled = await client.GetAsync(effectRoute);
+
+        Assert.Equal(HttpStatusCode.OK, disabled.StatusCode);
+
+        using JsonDocument disabledBody = JsonDocument.Parse(await disabled.Content.ReadAsStringAsync());
+
+        Assert.Equal("reconciliationDisabled", disabledBody.RootElement.GetProperty("data").GetProperty("providerIneligibility").GetString());
+
+        Assert.Equal(beforePeeks, credential.Reads);
+
+        using HttpResponseMessage disabledPage = await client.GetAsync(effectsRoute + "?pageSize=2");
+
+        Assert.Equal(HttpStatusCode.OK, disabledPage.StatusCode);
+
+        using JsonDocument disabledPageBody = JsonDocument.Parse(await disabledPage.Content.ReadAsStringAsync());
+
+        Assert.All(disabledPageBody.RootElement.GetProperty("data").GetProperty("items").EnumerateArray(), item =>
+            Assert.Equal("reconciliationDisabled", item.GetProperty("providerIneligibility").GetString()));
+
+        Assert.Equal(beforePeeks, credential.Reads);
+
+        Assert.Equal(beforeWorkReads, await RefreshWorkRowsAsync(factory));
+
+        Assert.Equal(0, gate.Reads);
+
+        Assert.Equal(beforeReads, await RefreshRowsAsync(factory));
+
+        eligibilityProvider.GuildUsageReconciliation = GuildUsageReconciliationSource.OpenRouterGeneration;
 
         using HttpResponseMessage otherIssued = await client.PostAsync("/api/guild/quests", Json(JsonSerializer.Serialize(
             request with { IdempotencyKey = Guid.NewGuid() }, GuildJsonContext.Default.GuildIssueRootRequest)));
@@ -374,6 +530,16 @@ public sealed partial class GuildEndpointTests
         using HttpResponseMessage deniedKey = await invalidKey.PostAsync(root, Json(body));
 
         Assert.Equal(HttpStatusCode.Unauthorized, deniedKey.StatusCode);
+
+        using HttpResponseMessage peerGet = await invalidKey.GetAsync(effectRoute);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, peerGet.StatusCode);
+
+        using HttpClient anonymousGetClient = factory.CreateClient();
+
+        using HttpResponseMessage anonymousGet = await anonymousGetClient.GetAsync(effectsRoute);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousGet.StatusCode);
 
         string distinctBody = "{\"idempotencyKey\":\"" + Guid.NewGuid().ToString("D") + "\"}";
 
@@ -615,6 +781,14 @@ public sealed partial class GuildEndpointTests
             }
         }
 
+        using HttpResponseMessage missingSourceRead = await client.GetAsync(effectRoute);
+
+        Assert.Equal(HttpStatusCode.OK, missingSourceRead.StatusCode);
+
+        using JsonDocument missingSourceBody = JsonDocument.Parse(await missingSourceRead.Content.ReadAsStringAsync());
+
+        Assert.Equal("initialEvidenceUnavailable", missingSourceBody.RootElement.GetProperty("data").GetProperty("providerIneligibility").GetString());
+
         using HttpResponseMessage missingSource = await client.PostAsync($"/api/operations/{otherOperation:D}/retry", null);
 
         Assert.Equal(HttpStatusCode.Conflict, missingSource.StatusCode);
@@ -624,6 +798,28 @@ public sealed partial class GuildEndpointTests
         Assert.Equal(HttpStatusCode.OK, completedAgain.StatusCode);
 
         Assert.Equal(7, gate.Reads);
+    }
+
+    private static async Task<(long Operations, long Reservations)> RefreshWorkRowsAsync(ArcanumWebApplicationFactory factory)
+    {
+        await using AsyncServiceScope scope = factory.Services.CreateAsyncScope();
+
+        var opened = await scope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()
+            .OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, default);
+
+        Assert.True(opened.IsSuccess, opened.Error.Message);
+
+        await using IGrimoireOrdinaryConnectionLease lease = opened.Value;
+
+        await using var command = lease.Connection.CreateCommand();
+
+        command.CommandText = "SELECT (SELECT COUNT(*) FROM LongRunningOperations),(SELECT COUNT(*) FROM BudgetReservations)";
+
+        await using var reader = await command.ExecuteReaderAsync();
+
+        Assert.True(await reader.ReadAsync());
+
+        return (reader.GetInt64(0), reader.GetInt64(1));
     }
 
     private static async Task<(long Bills, long Events, long Receipts)> RefreshRowsAsync(ArcanumWebApplicationFactory factory)
@@ -1062,6 +1258,8 @@ public sealed partial class GuildEndpointTests
         Assert.Equal("remote", data.GetProperty("kind").GetString());
 
         Assert.Equal("remoteEffect", data.GetProperty("operatorIneligibility").GetString());
+
+        Assert.Equal("remoteEffect", data.GetProperty("providerIneligibility").GetString());
 
         Assert.Equal(1m, data.GetProperty("facts").GetProperty("knownUsd").GetDecimal());
 

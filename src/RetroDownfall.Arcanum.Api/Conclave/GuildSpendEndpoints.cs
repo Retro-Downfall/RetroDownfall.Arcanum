@@ -17,7 +17,7 @@ internal static class GuildSpendEndpoints
     internal static RouteGroupBuilder MapGuildSpendEndpoints(this RouteGroupBuilder api)
     {
         api.MapGet("/guild/quests/{questId:guid}/spend/effects", async (Guid questId, string? cursor, int? pageSize,
-            GuildNativeHost host, GuildQuestStore store, HttpContext context) =>
+            GuildNativeHost host, GuildSpendRefreshService service, HttpContext context) =>
         {
             if (questId == Guid.Empty || pageSize is < 1 or > 100)
                 return Reply(Result<GuildSpendEffectPageDto>.Failure(Invalid), context, ArcanumJsonContext.Default.ApiResponseGuildSpendEffectPageDto);
@@ -25,13 +25,13 @@ internal static class GuildSpendEndpoints
             Result<GuildCallerContext> caller = await host.CreateCallerAsync(Guid.NewGuid(), context.RequestAborted).ConfigureAwait(false);
 
             Result<GuildSpendEffectPageDto> result = caller.IsFailure ? caller.Error
-                : await store.ListOperatorSpendEffectsAsync(caller.Value, questId, cursor, pageSize ?? 100, context.RequestAborted).ConfigureAwait(false);
+                : await service.ListEffectsAsync(caller.Value, questId, cursor, pageSize ?? 100, context.RequestAborted).ConfigureAwait(false);
 
             return Reply(result, context, ArcanumJsonContext.Default.ApiResponseGuildSpendEffectPageDto);
         }).WithName("GuildListSpendEffects");
 
         api.MapGet("/guild/quests/{questId:guid}/spend/effects/{effectId:guid}", async (Guid questId, Guid effectId,
-            GuildNativeHost host, GuildQuestStore store, HttpContext context) =>
+            GuildNativeHost host, GuildSpendRefreshService service, HttpContext context) =>
         {
             if (questId == Guid.Empty || effectId == Guid.Empty)
                 return Reply(Result<GuildSpendEffectDto>.Failure(Invalid), context, ArcanumJsonContext.Default.ApiResponseGuildSpendEffectDto);
@@ -39,7 +39,7 @@ internal static class GuildSpendEndpoints
             Result<GuildCallerContext> caller = await host.CreateCallerAsync(Guid.NewGuid(), context.RequestAborted).ConfigureAwait(false);
 
             Result<GuildSpendEffectDto> result = caller.IsFailure ? caller.Error
-                : await store.ReadOperatorSpendEffectAsync(caller.Value, questId, effectId, context.RequestAborted).ConfigureAwait(false);
+                : await service.ReadEffectAsync(caller.Value, questId, effectId, context.RequestAborted).ConfigureAwait(false);
 
             return Reply(result, context, ArcanumJsonContext.Default.ApiResponseGuildSpendEffectDto);
         }).WithName("GuildGetSpendEffect");
