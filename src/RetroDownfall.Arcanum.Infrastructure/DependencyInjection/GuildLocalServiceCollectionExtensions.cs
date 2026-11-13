@@ -68,8 +68,6 @@ internal static class GuildLocalServiceCollectionExtensions
 
         services.AddSingleton(static sp => new GuildSpendRefreshConfiguration(sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()));
 
-        services.AddSingleton<GuildSpendRefreshTracker>();
-
         services.AddScoped(static sp => new GuildOpenRouterSpendReader(sp.GetRequiredService<IDnsResolver>()));
 
         services.AddScoped<GuildSpendRefreshService>();
