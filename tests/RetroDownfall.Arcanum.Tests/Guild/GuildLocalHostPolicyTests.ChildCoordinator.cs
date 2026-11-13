@@ -321,6 +321,68 @@ public sealed partial class GuildLocalHostPolicyTests
     }
 
     [Fact]
+    public async Task Prompt_only_child_refuses_rotated_stale_signet_without_creating_work_or_allocation()
+    {
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        f.Settings.CurrentValue.Features.Conclave = true;
+
+        GuildCallerContext owner = await f.OperatorAsync();
+
+        GuildToolGrant tool = new(GuildToolSourceKind.BuiltIn, "arcanum", "delegate_task");
+
+        var parent = await f.IssueAsync(owner, f.Request with { Grant = f.Request.Grant with { Tools = [tool] } });
+
+        Assert.True(parent.IsSuccess, parent.Error.Message);
+
+        GuildLocalInferenceExecution execution = await ToolExecutionAsync(f, owner, parent.Value);
+
+        var input = await f.Store.ReadLocalInputAsync(execution.Driver, default);
+
+        Assert.True(input.IsSuccess, input.Error.Message);
+
+        ChildQueue queue = new();
+
+        using GuildLocalToolRegistry registry = new(execution, input.Value, new ConclaveArchmage(null!, f.Settings, f.Store, queue));
+
+        var context = f.Store.CreateToolContext(execution, registry, _ => true);
+
+        var function = await context.AdvertiseAsync(new InertChildTool(tool.Name), tool, default);
+
+        Assert.NotNull(function);
+
+        var current = await f.Store.GetAsync(owner, parent.Value.Quest.Id, default);
+
+        Assert.True(current.IsSuccess, current.Error.Message);
+
+        var recovery = await f.Policy.CreateRecoveryAsync(owner, current.Value.Quest.Id, current.Value.Quest.OperationId,
+            current.Value.Quest.SignetRevision, default);
+
+        Assert.True(recovery.IsSuccess, recovery.Error.Message);
+
+        var replacement = await f.Authority.RebindAsync(recovery.Value, default);
+
+        Assert.True(replacement.IsSuccess, replacement.Error.Message);
+
+        Assert.True((await f.Authority.VerifyToolAsync(replacement.Value, tool, true, default)).IsSuccess);
+
+        Assert.Equal(RetroDownfall.Arcanum.Core.Primitives.ErrorCodes.Guild.AuthorityMismatch,
+            (await f.Authority.VerifyToolAsync(execution.Driver.Execution, tool, true, default)).Error.Code);
+
+        using IDisposable frame = registry.BeginInvocation(Guid.NewGuid(), Guid.NewGuid(), tool);
+
+        object? result = await context.InvokeBoundAsync(function, new() { ["prompt"] = "child" }, default);
+
+        Assert.StartsWith("Guild.AuthorityMismatch:", Assert.IsType<string>(result));
+
+        Assert.False(queue.Pending.Reader.TryRead(out _));
+
+        Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
+
+        Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_accounts"));
+    }
+
+    [Fact]
     public async Task Prompt_only_child_refuses_revoked_signet_without_creating_work_or_allocation()
     {
         await using Fixture f = await Fixture.CreateAsync(localExecution: true);
@@ -387,6 +449,10 @@ public sealed partial class GuildLocalHostPolicyTests
     [Theory]
     [InlineData("{\"prompt\":\"task\",\"max_tokens\":\"10\"}")]
     [InlineData("{\"prompt\":\"task\",\"max_tokens\":0}")]
+    [InlineData("{\"prompt\":\"task\",\"max_tokens\":-1}")]
+    [InlineData("{\"prompt\":\"task\",\"max_tokens\":1.5}")]
+    [InlineData("{\"prompt\":\"task\",\"max_tokens\":9223372036854775808}")]
+    [InlineData("{\"prompt\":\"task\",\"max_cost_usd\":-1}")]
     [InlineData("{\"prompt\":\"task\",\"max_cost_usd\":0.00000000000000000000000000001}")]
     [InlineData("{\"prompt\":\"task\",\"max_tokens\":100,\"memory_grant\":\"memory\"}")]
     [InlineData("{\"prompt\":\"task\",\"max_tokens\":100,\"files\":[{\"path\":\"x\",\"content\":\"secret\",\"attachment_id\":\"00000000-0000-0000-0000-000000000001\"}]}")]

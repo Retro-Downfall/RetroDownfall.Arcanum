@@ -58,6 +58,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
         f.Settings.CurrentValue.Features.A2AClient = true;
 
+        f.Settings.CurrentValue.Cost.Budget.Enabled = false;
+
         f.Settings.CurrentValue.Integrations ??= new();
 
         f.Settings.CurrentValue.Integrations.A2A ??= new();
@@ -88,6 +90,12 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.True(issued.IsSuccess, issued.Error.Message);
 
         GuildQuestDto quest = issued.Value.Quest;
+
+        Assert.False(f.Settings.CurrentValue.Cost.Budget.Enabled);
+
+        Assert.Equal(GuildBudgetMode.Unlimited, quest.ResolvedGrant.Budget.Usd.Mode);
+
+        Assert.Equal(GuildBudgetMode.Unlimited, quest.ResolvedGrant.Budget.Tokens.Mode);
 
         GuildPortalStore portal = new(f.Store, f.Authority, f.Policy, TimeProvider.System);
 
@@ -966,7 +974,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         var retained = (await f.Store.GetAsync(caller, quest.Id, default)).Value.Quest;
 
-        if (!uncertain || scenario == "continuation-disconnect") Assert.Equal(GuildAccountingState.Uncertain, retained.AccountingState);
+        if (!uncertain || scenario == "continuation-disconnect") Assert.Equal(GuildAccountingState.Settled, retained.AccountingState);
 
         await using var count = connection.Connection.CreateCommand();
 
