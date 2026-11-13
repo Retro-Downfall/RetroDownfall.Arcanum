@@ -127,31 +127,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(expected, proof[key]);
     }
 
-    [SkippableFact]
-    public async Task Physical_retention_pins_run_when_one_of_multiple_origins_has_no_funding_root()
-    {
-        RequireSqlCipher();
-
-        await SeedGuildPhysicalRetentionAsync(2, true, false, authentic: true);
-
-        // An orphaned effect origin sorts before the intact origin on the same run.
-        await ExecuteAsync("""
-            PRAGMA foreign_keys=OFF;
-            PRAGMA ignore_check_constraints=ON;
-            INSERT INTO guild_budget_effects(EffectId,AccountId,QuestId,DispatchId,AccountingAssociationId,KindCode,SourceId,KnownUsd,KnownTokens,UnknownUsd,UnknownTokens,StateCode,Revision)
-            SELECT 'AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA','00000001-0000-0000-0000-000000000000',QuestId,DispatchId,AccountingAssociationId,KindCode,
-                'AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',KnownUsd,KnownTokens,UnknownUsd,UnknownTokens,StateCode,Revision FROM guild_budget_effects;
-            """);
-
-        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
-
-        string key = BudgetPhysicalRun.ToString("N");
-
-        var proof = await GuildPhysicalRetentionProof.ReadPageAsync(connection, null, [key], default);
-
-        Assert.False(proof[key]);
-    }
-
     [SkippableTheory]
     [InlineData(0)]
     [InlineData(1)]

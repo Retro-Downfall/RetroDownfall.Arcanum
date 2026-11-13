@@ -101,4 +101,78 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.Equal(expected, result[key]);
     }
+    [Fact]
+    public async Task Physical_retention_pins_shared_run_if_one_valid_origin_loses_its_root()
+    {
+        await using Fixture f = await Fixture.CreateAsync();
+
+        GuildBudgetLedger ledger = new();
+
+        f.UseBudgetParticipant(ledger);
+
+        GuildQuestStored root = await ReceiptRootAsync(f);
+
+        GuildQuestDriver rootDriver = await f.DriverAsync(root);
+
+        GuildQuestStored first = await f.ChildAsync(root, rootDriver);
+
+        GuildQuestStored second = await f.ChildAsync(root, rootDriver);
+
+        GuildQuestStored[] origins = [first, second];
+
+        Array.Sort(origins, (left, right) => StringComparer.Ordinal.Compare(
+            left.AllocationAccountId.ToString("D"), right.AllocationAccountId.ToString("D")));
+
+        Guid run = Guid.NewGuid();
+
+        foreach (GuildQuestStored origin in origins)
+        {
+            GuildQuestDriver driver = await f.DriverAsync(origin);
+
+            Guid dispatch = Guid.NewGuid(), effect = Guid.NewGuid();
+
+            Assert.True((await f.Store.PrepareDispatchAsync(driver, dispatch, ReceiptDigest("shared-run"), run, false, default)).IsSuccess);
+
+            await using SqliteConnection write = await f.OpenAsync();
+
+            await using SqliteTransaction transaction = write.BeginTransaction(deferred: false);
+
+            Assert.True((await ledger.PrepareEffectWithinAsync(write, transaction,
+                new(effect, origin.Quest.Id, dispatch, run, GuildBudgetEffectKind.LocalProvider, Guid.NewGuid(), null, null, null), default)).IsSuccess);
+
+            Assert.True((await ledger.ExposeAsync(write, transaction, origin.Quest.Id, origin.AllocationAccountId, dispatch, run, default)).IsSuccess);
+
+            Assert.True((await ledger.ApplyEvidenceWithinAsync(write, transaction, effect,
+                new(Guid.NewGuid(), ReceiptDigest("shared-run-evidence"), 1m, 10, false, false, true), default)).IsSuccess);
+
+            await transaction.CommitAsync();
+        }
+
+        await using SqliteConnection connection = await f.OpenAsync();
+
+        string key = run.ToString("N");
+
+        var before = await GuildPhysicalRetentionProof.ReadPageAsync(connection, null, [key], default);
+
+        Assert.True(before[key]);
+
+        // Break only the first origin's parent edge: its account, owner, root reference,
+        // dispatch and complete receipt still exist, while the intact origin sorts later.
+        await using SqliteCommand corrupt = connection.CreateCommand();
+
+        corrupt.CommandText = "PRAGMA ignore_check_constraints=ON; DROP TRIGGER guild_budget_accounts_guard_update";
+
+        await corrupt.ExecuteNonQueryAsync();
+
+        corrupt.CommandText = "UPDATE guild_budget_accounts SET ParentAccountId=AccountId WHERE AccountId=$account";
+
+        corrupt.Parameters.AddWithValue("$account", origins[0].AllocationAccountId.ToString("D").ToUpperInvariant());
+
+        Assert.Equal(1, await corrupt.ExecuteNonQueryAsync());
+
+        var after = await GuildPhysicalRetentionProof.ReadPageAsync(connection, null, [key], default);
+
+        Assert.False(after[key]);
+    }
+
 }
