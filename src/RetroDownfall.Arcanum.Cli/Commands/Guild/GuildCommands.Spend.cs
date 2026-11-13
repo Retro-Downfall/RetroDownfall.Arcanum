@@ -72,6 +72,6 @@ internal sealed partial class GuildCommands
 
         _ = Output(result.Value);
 
-        return result.Value.InFlight || result.Value.RequiresAttention ? 1 : 0;
+        return result.Value.Receipt is not null ? 0 : result.Value.Cancelled ? 130 : result.Value.InFlight || result.Value.RequiresAttention ? 1 : 0;
     }
 }

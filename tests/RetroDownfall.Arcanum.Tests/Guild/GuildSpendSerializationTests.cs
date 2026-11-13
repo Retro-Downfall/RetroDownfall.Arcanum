@@ -61,13 +61,17 @@ public sealed class GuildSpendSerializationTests
 
         Assert.Equal(key, JsonSerializer.Deserialize(request, ArcanumJsonContext.Default.GuildSpendRefreshRequest)!.IdempotencyKey);
 
-        GuildSpendRefreshResultDto data = new(Guid.NewGuid(), null, false, false, true, "Guild.ReconciliationRequired");
+        GuildSpendRefreshResultDto data = new(Guid.NewGuid(), null, false, false, true, "Guild.ReconciliationRequired", false);
 
         ApiResponse<GuildSpendRefreshResultDto> envelope = ApiResponse<GuildSpendRefreshResultDto>.FromResult(Result<GuildSpendRefreshResultDto>.Success(data), "test");
 
         string json = JsonSerializer.Serialize(envelope, ArcanumJsonContext.Default.ApiResponseGuildSpendRefreshResultDto);
 
         Assert.Equal(data, JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseGuildSpendRefreshResultDto)!.Data);
+
+        using JsonDocument serialized = JsonDocument.Parse(json);
+
+        Assert.False(serialized.RootElement.GetProperty("data").GetProperty("cancelled").GetBoolean());
     }
 
     [Theory]

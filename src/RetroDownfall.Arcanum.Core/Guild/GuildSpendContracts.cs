@@ -42,7 +42,7 @@ public sealed record GuildSpendCorrectionResultDto(GuildSpendReceiptDto Receipt,
 public sealed record GuildSpendRefreshRequest(Guid IdempotencyKey);
 
 public sealed record GuildSpendRefreshResultDto(Guid OperationId, GuildSpendReceiptDto? Receipt, bool Replayed, bool InFlight,
-    bool RequiresAttention, string? ErrorCode);
+    bool RequiresAttention, string? ErrorCode, bool Cancelled);
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<GuildSpendEffectKind>))]
 public enum GuildSpendEffectKind

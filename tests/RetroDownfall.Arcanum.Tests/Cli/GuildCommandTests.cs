@@ -269,6 +269,27 @@ public sealed class GuildCommandTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Guild_spend_refresh_cancelled_exits_130_and_prints_result(bool replayed)
+    {
+        string response = "{\"data\":{\"operationId\":\"" + Id + "\",\"receipt\":null,\"replayed\":"
+            + (replayed ? "true" : "false") + ",\"inFlight\":false,\"requiresAttention\":false,\"cancelled\":true,\"errorCode\":\"Guild.RefreshCancelled\"},\"isSuccess\":true,\"error\":null}";
+
+        RecordingHandler handler = new(_ => JsonResponse(response));
+
+        CliTestResult result = Run(handler, ["guild", "spend", "refresh", Id, "--effect", Id, "--idempotency-key", Id, "--json"]);
+
+        Assert.Equal(130, result.ExitCode);
+
+        using JsonDocument output = JsonDocument.Parse(result.Output);
+
+        Assert.True(output.RootElement.GetProperty("cancelled").GetBoolean());
+
+        Assert.Equal(JsonValueKind.Null, output.RootElement.GetProperty("receipt").ValueKind);
+    }
+
+    [Theory]
     [InlineData("--json")]
     [InlineData("--plain")]
     public void Guild_spend_refresh_completed_prints_one_typed_result_and_exits_zero(string mode)

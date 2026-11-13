@@ -417,6 +417,71 @@ public sealed partial class GuildEndpointTests
 
         Assert.Equal(3, gate.Reads);
 
+        string otherParkedBody = "{\"idempotencyKey\":\"" + Guid.NewGuid().ToString("D") + "\"}";
+
+        using HttpResponseMessage otherParked = await client.PostAsync(root, Json(otherParkedBody));
+
+        Assert.Equal(HttpStatusCode.Accepted, otherParked.StatusCode);
+
+        using JsonDocument otherParkedState = JsonDocument.Parse(await otherParked.Content.ReadAsStringAsync());
+
+        Guid otherOperation = otherParkedState.RootElement.GetProperty("data").GetProperty("operationId").GetGuid();
+
+        Assert.NotEqual(parkedOperation, otherOperation);
+
+        using HttpClient anonymous = factory.CreateClient();
+
+        foreach (string action in new[] { "retry", "cancel" })
+        {
+            using HttpResponseMessage anonymousDenied = await anonymous.PostAsync($"/api/operations/{parkedOperation:D}/{action}", null);
+
+            Assert.Equal(HttpStatusCode.Unauthorized, anonymousDenied.StatusCode);
+
+            using HttpResponseMessage peerDenied = await invalidKey.PostAsync($"/api/operations/{parkedOperation:D}/{action}", null);
+
+            Assert.Equal(HttpStatusCode.Unauthorized, peerDenied.StatusCode);
+        }
+
+        configured.GuildUsageReconciliation = GuildUsageReconciliationSource.None;
+
+        using HttpResponseMessage refused = await client.PostAsync($"/api/operations/{parkedOperation:D}/retry", null);
+
+        Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+
+        Assert.Equal(4, gate.Reads);
+
+        configured.GuildUsageReconciliation = GuildUsageReconciliationSource.OpenRouterGeneration;
+
+        gate.Fail = false;
+
+        using HttpResponseMessage retried = await client.PostAsync($"/api/operations/{parkedOperation:D}/retry", null);
+
+        Assert.Equal(HttpStatusCode.OK, retried.StatusCode);
+
+        Assert.Equal(5, gate.Reads);
+
+        using HttpResponseMessage untouched = await client.PostAsync(root, Json(otherParkedBody));
+
+        Assert.Equal(HttpStatusCode.Accepted, untouched.StatusCode);
+
+        using JsonDocument untouchedState = JsonDocument.Parse(await untouched.Content.ReadAsStringAsync());
+
+        Assert.Equal(otherOperation, untouchedState.RootElement.GetProperty("data").GetProperty("operationId").GetGuid());
+
+        Assert.True(untouchedState.RootElement.GetProperty("data").GetProperty("requiresAttention").GetBoolean());
+
+        Assert.Equal(5, gate.Reads);
+
+        using HttpResponseMessage retryReplay = await client.PostAsync(root, Json(failedBody));
+
+        Assert.Equal(HttpStatusCode.OK, retryReplay.StatusCode);
+
+        using JsonDocument retryState = JsonDocument.Parse(await retryReplay.Content.ReadAsStringAsync());
+
+        Assert.Equal(parkedOperation, retryState.RootElement.GetProperty("data").GetProperty("operationId").GetGuid());
+
+        Assert.Equal(JsonValueKind.Object, retryState.RootElement.GetProperty("data").GetProperty("receipt").ValueKind);
+
         gate.Fail = false;
 
         gate.Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -466,9 +531,99 @@ public sealed partial class GuildEndpointTests
             await Task.Delay(20, deadline.Token);
         }
 
-        Assert.Equal(4, gate.Reads);
+        Assert.Equal(6, gate.Reads);
 
         Assert.Equal(beforeCancel, await RefreshRowsAsync(factory));
+
+        gate.Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        gate.Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        gate.Cancelled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        string signalBody = "{\"idempotencyKey\":\"" + Guid.NewGuid().ToString("D") + "\"}";
+
+        Task<HttpResponseMessage> waiter = client.PostAsync(root, Json(signalBody));
+
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        using HttpResponseMessage signalObserved = await client.PostAsync(root, Json(signalBody));
+
+        using JsonDocument signalPending = JsonDocument.Parse(await signalObserved.Content.ReadAsStringAsync());
+
+        Guid signalOperation = signalPending.RootElement.GetProperty("data").GetProperty("operationId").GetGuid();
+
+        using HttpResponseMessage acknowledged = await client.PostAsync($"/api/operations/{signalOperation:D}/cancel", null);
+
+        Assert.Equal(HttpStatusCode.OK, acknowledged.StatusCode);
+
+        await gate.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        using HttpResponseMessage cancelled = await waiter.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(HttpStatusCode.OK, cancelled.StatusCode);
+
+        using JsonDocument cancelledResult = JsonDocument.Parse(await cancelled.Content.ReadAsStringAsync());
+
+        Assert.True(cancelledResult.RootElement.GetProperty("data").GetProperty("cancelled").GetBoolean());
+
+        Assert.Equal("Guild.RefreshCancelled", cancelledResult.RootElement.GetProperty("data").GetProperty("errorCode").GetString());
+
+        Assert.Equal(JsonValueKind.Null, cancelledResult.RootElement.GetProperty("data").GetProperty("receipt").ValueKind);
+
+        using HttpResponseMessage cancelledReplay = await client.PostAsync(root, Json(signalBody));
+
+        Assert.Equal(HttpStatusCode.OK, cancelledReplay.StatusCode);
+
+        using JsonDocument cancelledAgain = JsonDocument.Parse(await cancelledReplay.Content.ReadAsStringAsync());
+
+        Assert.True(cancelledAgain.RootElement.GetProperty("data").GetProperty("cancelled").GetBoolean());
+
+        Assert.Equal(signalOperation, cancelledAgain.RootElement.GetProperty("data").GetProperty("operationId").GetGuid());
+
+        Assert.Equal(7, gate.Reads);
+
+        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
+        {
+            var opened = await scope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()
+                .OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite, default);
+
+            Assert.True(opened.IsSuccess, opened.Error.Message);
+
+            await using IGrimoireOrdinaryConnectionLease lease = opened.Value;
+
+            await using var command = lease.Connection.CreateCommand();
+
+            // Fault injection in this scratch database: production foreign keys forbid this deletion.
+            command.CommandText = "PRAGMA foreign_keys=OFF";
+
+            await command.ExecuteNonQueryAsync();
+
+            command.CommandText = "DELETE FROM guild_spend_sources WHERE EffectId=$effect";
+
+            command.Parameters.AddWithValue("$effect", effectId.ToString("D").ToUpperInvariant());
+
+            try
+            {
+                Assert.Equal(1, await command.ExecuteNonQueryAsync());
+            }
+            finally
+            {
+                command.CommandText = "PRAGMA foreign_keys=ON";
+
+                await command.ExecuteNonQueryAsync();
+            }
+        }
+
+        using HttpResponseMessage missingSource = await client.PostAsync($"/api/operations/{otherOperation:D}/retry", null);
+
+        Assert.Equal(HttpStatusCode.Conflict, missingSource.StatusCode);
+
+        using HttpResponseMessage completedAgain = await client.PostAsync(root, Json(failedBody));
+
+        Assert.Equal(HttpStatusCode.OK, completedAgain.StatusCode);
+
+        Assert.Equal(7, gate.Reads);
     }
 
     private static async Task<(long Bills, long Events, long Receipts)> RefreshRowsAsync(ArcanumWebApplicationFactory factory)

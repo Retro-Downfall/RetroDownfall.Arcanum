@@ -95,7 +95,8 @@ internal static class GuildSpendEndpoints
             Result<GuildSpendRefreshResultDto> result = refreshed.IsFailure ? refreshed.Error
                 : new GuildSpendRefreshResultDto(refreshed.Value.OperationId, refreshed.Value.Receipt, refreshed.Value.Replayed,
                     refreshed.Value.InFlight, refreshed.Value.RequiresAttention,
-                    refreshed.Value.ErrorCode ?? (refreshed.Value.RequiresAttention ? ErrorCodes.Guild.ReconciliationRequired : null));
+                    refreshed.Value.ErrorCode ?? (refreshed.Value.Cancelled ? ErrorCodes.Guild.RefreshCancelled : refreshed.Value.RequiresAttention ? ErrorCodes.Guild.ReconciliationRequired : null),
+                    refreshed.Value.Cancelled);
 
             return Reply(result, context, ArcanumJsonContext.Default.ApiResponseGuildSpendRefreshResultDto,
                 result.IsSuccess && (result.Value.InFlight || result.Value.RequiresAttention) ? StatusCodes.Status202Accepted : StatusCodes.Status200OK);
