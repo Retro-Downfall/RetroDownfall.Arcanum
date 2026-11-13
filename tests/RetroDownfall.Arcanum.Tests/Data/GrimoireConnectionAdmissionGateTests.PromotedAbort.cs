@@ -7,6 +7,52 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class GrimoireConnectionAdmissionGateTests
 {
+    [Fact]
+    public async Task Original_generation_observation_vetoes_pending_close_and_cannot_revive_after_abort()
+    {
+        GrimoireConnectionAdmissionGate gate = CreateGate();
+
+        Assert.True(gate.TryAcquireWorkLease(GrimoireWorkKind.GuildStorage, out IGrimoireWorkLease? acquired));
+
+        await using IGrimoireWorkLease work = acquired!;
+
+        Assert.True(work.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? acquiredGroup));
+
+        await using IGrimoireExternalEffectGroup group = acquiredGroup!;
+
+        long original = work.Generation;
+
+        Assert.True(gate.IsOrdinaryGeneration(original));
+
+        Assert.False(gate.IsOrdinaryGeneration(0));
+
+        Assert.False(gate.IsOrdinaryGeneration(-1));
+
+        Assert.False(gate.IsOrdinaryGeneration(original + 1));
+
+        await using IGrimoireClosingOwner closing = Begin(gate, Owner(96));
+
+        Assert.Equal(original, gate.CurrentGeneration);
+
+        Assert.True(work.MaintenanceRevocationPending);
+
+        Assert.False(work.MaintenanceRevocation.IsCancellationRequested);
+
+        Assert.False(gate.IsOrdinaryGeneration(original));
+
+        Assert.True((await gate.AbortClosingAsync(closing, static _ => ValueTask.FromResult(true), default)).IsSuccess);
+
+        Assert.True(gate.CurrentGeneration > original);
+
+        Assert.False(gate.IsOrdinaryGeneration(original));
+
+        Assert.True(gate.TryAcquireWorkLease(GrimoireWorkKind.GuildStorage, out IGrimoireWorkLease? fresh));
+
+        await using IGrimoireWorkLease freshWork = fresh!;
+
+        Assert.True(gate.IsOrdinaryGeneration(freshWork.Generation));
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]

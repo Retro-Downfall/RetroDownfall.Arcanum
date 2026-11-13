@@ -175,6 +175,12 @@ internal interface IGrimoireConnectionAdmissionGate
     long CurrentGeneration { get; }
 
     /// <summary>
+    /// Observes under the gate lock whether a positive original generation is still Ordinary and current.
+    /// This is a currentness veto only: it grants no admission or lease-attestation authority.
+    /// </summary>
+    bool IsOrdinaryGeneration(long observedGeneration);
+
+    /// <summary>
     /// Attests, under the gate's own lock and at the moment of the call, that the presented lease is a still-live
     /// work lease minted by this very gate and that every generation since <paramref name="previousGeneration"/>
     /// was a fully drained, non-destructive abort. Nothing is stored or returned: authority is the lease itself.

@@ -52,6 +52,8 @@ internal sealed class BatchAdmissionGate : IGrimoireConnectionAdmissionGate
 
     public long CurrentGeneration => ObservedGeneration ?? Inner.CurrentGeneration;
 
+    public bool IsOrdinaryGeneration(long observedGeneration) => Inner.IsOrdinaryGeneration(observedGeneration);
+
     public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
 
     internal IGrimoireClosingOwner Close()

@@ -900,6 +900,8 @@ public sealed class LongRunningOperationStartupHostedServiceTests
 
         public long CurrentGeneration => Volatile.Read(ref _generation);
 
+        public bool IsOrdinaryGeneration(long observedGeneration) => observedGeneration > 0 && observedGeneration == Volatile.Read(ref _generation);
+
         public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
 
         public bool TryAcquireWorkLease(GrimoireWorkKind kind, out IGrimoireWorkLease? lease)

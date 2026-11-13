@@ -353,6 +353,8 @@ public sealed class LongRestSweepAdmissionOwnershipTests
 
         public long CurrentGeneration => 1;
 
+        public bool IsOrdinaryGeneration(long observedGeneration) => observedGeneration == 1;
+
         public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
 
         public bool TryAcquireWorkLease(GrimoireWorkKind kind, out IGrimoireWorkLease? lease)

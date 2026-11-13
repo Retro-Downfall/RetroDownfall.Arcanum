@@ -367,7 +367,7 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
 
         await using IGrimoireExternalEffectGroup heldGroup = group;
 
-        using GuildSpendRefreshAttemptGuard guard = new(gate, work, heldGroup, physical, entry, ownership, operationId);
+        using GuildSpendRefreshAttemptGuard guard = new(gate, work.Generation, physical, entry, ownership, operationId);
 
         string owner = recoveryOwner ?? "guild-refresh-" + Guid.NewGuid().ToString("N");
 

@@ -110,6 +110,64 @@ public sealed partial class GuildQuestStoreTests
     }
 
     [Fact]
+    public async Task Provider_refresh_refuses_a_disposed_guard_without_correction()
+    {
+        await using RefreshApplicationScenario f = await RefreshApplicationScenario.CreateAsync();
+
+        f.Guard.Dispose();
+
+        Assert.True((await f.ApplyAsync()).IsFailure);
+
+        Assert.Equal(DBNull.Value, await f.ReadPointerAsync());
+
+        Assert.Equal(1L, await f.Scenario.Fixture.CountAsync("guild_spend_receipts"));
+
+        f.Query.CommandText = "SELECT ActualCostUsd FROM BillableOperations";
+
+        Assert.Equal(0m, ExactUsdText.Parse(Assert.IsType<string>(await f.Query.ExecuteScalarAsync())));
+    }
+
+    [Fact]
+    public async Task Provider_refresh_refuses_pending_maintenance_with_uncancelled_group_and_after_abort()
+    {
+        await using RefreshApplicationScenario f = await RefreshApplicationScenario.CreateAsync();
+
+        IGrimoireWorkLease work = f.Work;
+
+        long original = work.Generation;
+
+        var begun = f.Scenario.Fixture.Gate.BeginOrResumeExclusive(GrimoireGateTestEdges.Owner(72));
+
+        Assert.True(begun.IsSuccess);
+
+        await using IGrimoireClosingOwner closing = begun.Value;
+
+        Assert.True(work.MaintenanceRevocationPending);
+
+        Assert.False(work.MaintenanceRevocation.IsCancellationRequested);
+
+        Assert.True((await f.ApplyAsync()).IsFailure);
+
+        Assert.Equal(DBNull.Value, await f.ReadPointerAsync());
+
+        Assert.Equal(1L, await f.Scenario.Fixture.CountAsync("guild_spend_receipts"));
+
+        Assert.True((await f.Scenario.Fixture.Gate.AbortClosingAsync(closing, static _ => ValueTask.FromResult(true), default)).IsSuccess);
+
+        Assert.True(f.Scenario.Fixture.Gate.CurrentGeneration > original);
+
+        Assert.True((await f.ApplyAsync()).IsFailure);
+
+        Assert.Equal(DBNull.Value, await f.ReadPointerAsync());
+
+        Assert.Equal(1L, await f.Scenario.Fixture.CountAsync("guild_spend_receipts"));
+
+        f.Query.CommandText = "SELECT ActualCostUsd FROM BillableOperations";
+
+        Assert.Equal(0m, ExactUsdText.Parse(Assert.IsType<string>(await f.Query.ExecuteScalarAsync())));
+    }
+
+    [Fact]
     public async Task Provider_refresh_pointer_failure_rolls_back_correction_and_can_retry()
     {
         await using RefreshApplicationScenario f = await RefreshApplicationScenario.CreateAsync();
@@ -318,6 +376,8 @@ public sealed partial class GuildQuestStoreTests
 
         private IGrimoireWorkLease? _work;
 
+        internal IGrimoireWorkLease Work => _work!;
+
         private IGrimoireExternalEffectGroup? _group;
 
         private GuildWorkspaceLeaseHostLock? _hostLock;
@@ -496,7 +556,7 @@ public sealed partial class GuildQuestStoreTests
 
                 Assert.True(f._ownership.TryClaim(operationId, out f._claim));
 
-                f.Guard = new(f.Scenario.Fixture.Gate, f._work, f._group, f._physical, f._entry, f._ownership, operationId);
+                f.Guard = new(f.Scenario.Fixture.Gate, f._work.Generation, f._physical, f._entry, f._ownership, operationId);
 
                 return f;
             }

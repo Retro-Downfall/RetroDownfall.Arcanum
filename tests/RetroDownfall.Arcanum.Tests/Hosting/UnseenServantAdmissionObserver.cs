@@ -21,6 +21,8 @@ internal sealed class UnseenServantAdmissionObserver(
 
     public long CurrentGeneration => inner.CurrentGeneration;
 
+    public bool IsOrdinaryGeneration(long observedGeneration) => inner.IsOrdinaryGeneration(observedGeneration);
+
     public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
 
     public bool TryAcquireWorkLease(GrimoireWorkKind kind, out IGrimoireWorkLease? lease)

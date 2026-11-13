@@ -1672,6 +1672,8 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
     public long CurrentGeneration => inner.CurrentGeneration;
 
+    public bool IsOrdinaryGeneration(long observedGeneration) => inner.IsOrdinaryGeneration(observedGeneration);
+
     public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
 
     internal IGrimoireRequestLease InnerRequest(IGrimoireRequestLease lease) =>

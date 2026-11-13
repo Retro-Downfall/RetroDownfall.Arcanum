@@ -4321,6 +4321,8 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         public long CurrentGeneration => _recording.CurrentGeneration;
 
+        public bool IsOrdinaryGeneration(long observedGeneration) => _recording.IsOrdinaryGeneration(observedGeneration);
+
         public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
 
         public bool TryAcquireRequestLease(

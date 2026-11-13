@@ -168,6 +168,8 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     public long CurrentGeneration => inner.CurrentGeneration;
 
+    public bool IsOrdinaryGeneration(long observedGeneration) => inner.IsOrdinaryGeneration(observedGeneration);
+
     /// <summary>
     /// Forwards only a lease this gate itself wrapped, unwrapped to the inner gate's own lease.
     /// A wrapper minted by any other gate, or a lease this gate never saw, is refused.

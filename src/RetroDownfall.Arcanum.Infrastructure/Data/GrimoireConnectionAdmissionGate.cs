@@ -251,6 +251,14 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     /// </remarks>
     internal long MaterializedTerminalCallbacks => Interlocked.Read(ref _materializedTerminalCallbacks);
 
+    public bool IsOrdinaryGeneration(long observedGeneration)
+    {
+        lock (_sync)
+        {
+            return observedGeneration > 0 && _state == GateState.Ordinary && _generation == observedGeneration;
+        }
+    }
+
     public long CurrentGeneration
     {
         get

@@ -74,6 +74,14 @@ public sealed partial class GuildQuestStoreTests
         }
 
         Assert.Equal(receipts, await f.Scenario.Fixture.CountAsync("guild_spend_receipts"));
+
+        f.Query.CommandText = "SELECT COUNT(*) FROM guild_spend_refreshes WHERE AcceptedReceiptId IS NOT NULL";
+
+        Assert.Equal(0L, await f.Query.ExecuteScalarAsync());
+
+        f.Query.CommandText = "SELECT ActualCostUsd FROM BillableOperations";
+
+        Assert.Equal(0m, ExactUsdText.Parse(Assert.IsType<string>(await f.Query.ExecuteScalarAsync())));
     }
 
     private sealed class RefreshMaintenanceConnections(IGrimoireOrdinaryConnectionFactory inner, Action begin)

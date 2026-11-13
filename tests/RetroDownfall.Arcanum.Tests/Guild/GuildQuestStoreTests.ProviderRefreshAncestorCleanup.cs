@@ -149,7 +149,7 @@ public sealed partial class GuildQuestStoreTests
 
         using IDisposable physical = pin.Value;
 
-        using GuildSpendRefreshAttemptGuard guard = new(f.Gate, work, group, physical, writerEntry, writerOwnership, writerOperation);
+        using GuildSpendRefreshAttemptGuard guard = new(f.Gate, work.Generation, physical, writerEntry, writerOwnership, writerOperation);
 
         var verified = await f.Store.VerifyProviderSpendRefreshSourceAsync(f.Caller, child.Quest.Id, effect.EffectId,
             writerRefresh, "ancestor-writer", currentness.Value, guard, default);

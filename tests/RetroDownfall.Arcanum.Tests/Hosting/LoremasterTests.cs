@@ -1633,6 +1633,8 @@ public sealed class LoremasterTests
 
         public long CurrentGeneration => Recording.CurrentGeneration;
 
+        public bool IsOrdinaryGeneration(long observedGeneration) => Recording.IsOrdinaryGeneration(observedGeneration);
+
         public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
 
         internal Task<GrimoireWorkKind> NextAcquireAsync() =>
