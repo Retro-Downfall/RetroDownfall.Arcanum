@@ -28,18 +28,27 @@ public sealed partial class GuildLocalHostPolicyTests
     [InlineData("partial")]
     [InlineData("zero")]
     [InlineData("cap")]
+    [InlineData("qualified-cap")]
     [InlineData("fault")]
     public async Task Financial_off_real_child_inference_is_consumed_by_parent_provider_round(string usage)
     {
         using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
 
-        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true, productionOptions: usage == "qualified-cap");
 
         f.Settings.CurrentValue.Features.Conclave = true;
 
         f.Settings.CurrentValue.Features.Apprentices = true;
 
         f.Settings.CurrentValue.Cost.Budget.Enabled = false;
+
+        if (usage == "qualified-cap")
+        {
+            f.Settings.CurrentValue.DefaultModel = "gpt-5.4-mini-2026-03-17";
+
+            f.Settings.CurrentValue.Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
+                Endpoint = "https://api.openai.com/v1", ContextWindowLimit = 400000, Models = ["gpt-5.4-mini-2026-03-17"] }];
+        }
 
         await using GuildLocalHostReadiness readiness = new(f.Settings, f.Connections, f.Policy, f.Authority,
             TimeProvider.System, Path.Combine(f.WorkspaceRoot, "host.lock"), f.Gate);
@@ -88,6 +97,15 @@ public sealed partial class GuildLocalHostPolicyTests
         };
 
         settings.Cost.Budget.Enabled = false;
+
+        if (usage == "qualified-cap")
+        {
+            settings.DefaultModel = "gpt-5.4-mini-2026-03-17";
+
+            settings.Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
+                Endpoint = "https://api.openai.com/v1", ContextWindowLimit = 400000,
+                GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["gpt-5.4-mini-2026-03-17"] }];
+        }
 
         BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
 
@@ -159,9 +177,10 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.Equal(GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Usd.Mode);
 
-            Assert.Equal(usage == "cap" ? GuildBudgetMode.Finite : GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Tokens.Mode);
+            Assert.Equal(usage is "cap" or "qualified-cap" ? GuildBudgetMode.Finite : GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Tokens.Mode);
 
-            if (usage == "cap") Assert.Equal(100_000, child.ResolvedGrant.Budget.Tokens.Value);
+            if (usage is "cap" or "qualified-cap")
+                Assert.Equal(usage == "cap" ? 100_000 : 600_000, child.ResolvedGrant.Budget.Tokens.Value);
 
             Assert.Empty(child.ResolvedGrant.Tools);
 
@@ -243,7 +262,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.NotNull(childResult.Value.Receipt);
 
-            Assert.Equal(3L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd=1 AND UnknownTokens={(usage is "zero" or "cap" ? 0 : 1)} AND KnownTokens={(usage == "partial" ? 7 : 0)}"));
+            Assert.Equal(3L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd={(usage == "qualified-cap" ? 0 : 1)} AND UnknownTokens={(usage is "zero" or "qualified-cap" ? 0 : 1)} AND KnownTokens={(usage == "partial" ? 7 : 0)}"));
 
             Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_result_applications"));
 
@@ -1378,7 +1397,9 @@ public sealed partial class GuildLocalHostPolicyTests
 
             int toolOrdinal = FullParent ? 2 : 1;
 
-            string message = ordinal == toolOrdinal && Usage == "cap"
+            string message = ordinal == toolOrdinal && Usage == "qualified-cap"
+                ? """{"role":"assistant","content":null,"tool_calls":[{"id":"call-child","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\",\"max_tokens\":600000}"}}]}"""
+                : ordinal == toolOrdinal && Usage == "cap"
                 ? """{"role":"assistant","content":null,"tool_calls":[{"id":"call-child","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\",\"max_tokens\":100000}"}}]}"""
                 : ordinal == toolOrdinal
                 ? """{"role":"assistant","content":null,"tool_calls":[{"id":"call-child","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\"}"}}]}"""
@@ -1393,7 +1414,7 @@ public sealed partial class GuildLocalHostPolicyTests
             string usage = Usage switch
             {
                 "partial" => ",\"usage\":{\"prompt_tokens\":7}",
-                "zero" or "cap" => ",\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}",
+                "zero" or "cap" or "qualified-cap" => ",\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}",
                 _ => "",
             };
 
