@@ -27,6 +27,7 @@ public sealed partial class GuildLocalHostPolicyTests
     [InlineData("absent")]
     [InlineData("partial")]
     [InlineData("zero")]
+    [InlineData("cap")]
     [InlineData("fault")]
     public async Task Financial_off_real_child_inference_is_consumed_by_parent_provider_round(string usage)
     {
@@ -158,7 +159,9 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.Equal(GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Usd.Mode);
 
-            Assert.Equal(GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Tokens.Mode);
+            Assert.Equal(usage == "cap" ? GuildBudgetMode.Finite : GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Tokens.Mode);
+
+            if (usage == "cap") Assert.Equal(100_000, child.ResolvedGrant.Budget.Tokens.Value);
 
             Assert.Empty(child.ResolvedGrant.Tools);
 
@@ -191,6 +194,27 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.True(result.IsSuccess, result.Error.Message);
 
+            if (usage == "cap")
+            {
+                Assert.Equal(QuestState.Failed, completed.Value.State);
+
+                var refused = await f.Store.ReadLocalResultAsync(owner, child.Id, true, deadline.Token);
+
+                Assert.True(refused.IsSuccess, refused.Error.Message);
+
+                Assert.NotNull(refused.Value.Receipt);
+
+                Assert.Equal(ErrorCodes.Guild.BudgetCapabilityUnavailable, refused.Value.Receipt!.ReasonCode);
+
+                Assert.Equal(2, transport.Bodies.Count);
+
+                Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=2"));
+
+                Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
+
+                return;
+            }
+
             Assert.Equal("parent used the real child answer", result.Value.Text);
 
             Assert.Equal(3, transport.Bodies.Count);
@@ -219,7 +243,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.NotNull(childResult.Value.Receipt);
 
-            Assert.Equal(3L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd=1 AND UnknownTokens={(usage == "zero" ? 0 : 1)} AND KnownTokens={(usage == "partial" ? 7 : 0)}"));
+            Assert.Equal(3L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd=1 AND UnknownTokens={(usage is "zero" or "cap" ? 0 : 1)} AND KnownTokens={(usage == "partial" ? 7 : 0)}"));
 
             Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_result_applications"));
 
@@ -1354,7 +1378,9 @@ public sealed partial class GuildLocalHostPolicyTests
 
             int toolOrdinal = FullParent ? 2 : 1;
 
-            string message = ordinal == toolOrdinal
+            string message = ordinal == toolOrdinal && Usage == "cap"
+                ? """{"role":"assistant","content":null,"tool_calls":[{"id":"call-child","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\",\"max_tokens\":100000}"}}]}"""
+                : ordinal == toolOrdinal
                 ? """{"role":"assistant","content":null,"tool_calls":[{"id":"call-child","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\"}"}}]}"""
                 : FullParent && ordinal == 1
                 ? """{"role":"assistant","content":"[{\"index\":1,\"description\":\"Delegate a child task and summarize its answer\"}]"}"""
@@ -1367,7 +1393,7 @@ public sealed partial class GuildLocalHostPolicyTests
             string usage = Usage switch
             {
                 "partial" => ",\"usage\":{\"prompt_tokens\":7}",
-                "zero" => ",\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}",
+                "zero" or "cap" => ",\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}",
                 _ => "",
             };
 
