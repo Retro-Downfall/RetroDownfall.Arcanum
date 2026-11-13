@@ -29,7 +29,7 @@ public sealed partial class GuildQuestStoreTests
 
         using GuildWorkspaceLeaseHostLock hostLock = acquired.Value;
 
-        BlockingRefreshOperationStore lookup = new(operations);
+        BlockingRefreshOperationStore lookup = new ForwardingRefreshOperationStore(operations);
 
         GuildSpendRefreshService service = new(f.Scenario.Fixture.Store, f.Configuration, f.Resolver,
             new GuildOpenRouterSpendReader(new PublicSpendDns(), () => new SpendMetadataHandler { Status = HttpStatusCode.ServiceUnavailable }),

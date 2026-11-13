@@ -110,9 +110,10 @@ internal sealed class GuildSpendSourceCredential
         return await insert.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1 ? Result.Success() : Result.Failure(Unavailable);
     }
 
+    // exactBillId is supplied only by a unique census in this same transaction; null keeps the independent mutation proof.
     internal Task<Result<VerifiedSource>> VerifyWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
-        Guid effectId, Guid generation, CancellationToken ct) =>
-        VerifiedSource.VerifyWithinAsync(this, connection, transaction, effectId, generation, ct);
+        Guid effectId, Guid generation, CancellationToken ct, string? exactBillId = null) =>
+        VerifiedSource.VerifyWithinAsync(this, connection, transaction, effectId, generation, ct, exactBillId);
 
     private static bool ValidSecret(string? secret) => secret is { Length: > 0 }
         && secret.All(static character => character is >= '!' and <= '~');
@@ -152,7 +153,7 @@ internal sealed class GuildSpendSourceCredential
     internal sealed class VerifiedSource
     {
         internal static async Task<Result<VerifiedSource>> VerifyWithinAsync(GuildSpendSourceCredential credential, SqliteConnection connection, SqliteTransaction transaction,
-            Guid effectId, Guid generation, CancellationToken ct)
+            Guid effectId, Guid generation, CancellationToken ct, string? exactBillId)
         {
             if (credential._type != AiProviderKind.OpenAICompatible
                 || credential._source != GuildUsageReconciliationSource.OpenRouterGeneration
@@ -268,7 +269,7 @@ internal sealed class GuildSpendSourceCredential
                     : reservationId is not DBNull)) return GuildSpendSourceFailure.SourceInvalid;
 
             Result<GuildQuestStore.GuildSpendBill?> physical = await GuildQuestStore.ReadCorrectionBillWithinAsync(
-                connection, transaction, binding, ct).ConfigureAwait(false);
+                connection, transaction, binding, ct, exactBillId).ConfigureAwait(false);
 
             if (physical.IsFailure) return physical.Error;
 

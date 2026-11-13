@@ -125,70 +125,18 @@ internal sealed partial class GuildQuestStore
 
             if (currentness is null) return OwnerUnavailable;
 
-            Result ownerProof = await GuildSpendRefreshOwnerProof.RequireWithinAsync(connection, transaction, questId,
-                quest.Quest.RootQuestId, token).ConfigureAwait(false);
+            Result<RefreshAdmissibility> admissible = await ValidateRefreshSourceWithinAsync(connection, transaction, quest, ledger,
+                caller, questId, effectId, currentness, token).ConfigureAwait(false);
 
-            if (ownerProof.IsFailure) return ownerProof.Error;
+            if (admissible.IsFailure) return admissible.Error;
 
-            Result<GuildBudgetEffect> effectResult = await ledger.ReadEffectWithinAsync(connection, transaction, effectId, token).ConfigureAwait(false);
+            GuildBudgetEffect effect = admissible.Value.Effect;
 
-            if (effectResult.IsFailure) return effectResult.Error;
+            Guid signetEpoch = admissible.Value.SignetEpoch;
 
-            GuildBudgetEffect effect = effectResult.Value;
+            Guid spendEpoch = admissible.Value.SpendEpoch;
 
-            if (effect.Request.QuestId != questId || effect.Request.Kind != GuildBudgetEffectKind.LocalProvider) return OwnerUnavailable;
-
-            Result<GuildSpendSourceCredential.VerifiedSource> source = await currentness.Credential.VerifyWithinAsync(connection, transaction,
-                effectId, caller.InstallationGeneration, token).ConfigureAwait(false);
-
-            if (source.IsFailure) return source.Error;
-
-            Result<GuildSpendEffectDto> current = await ReadSpendEffectWithinAsync(connection, transaction, quest, ledger, effectId, token).ConfigureAwait(false);
-
-            if (current.IsFailure) return current.Error;
-
-            Result daily = await ledger.ValidateDailyCorrectionWithinAsync(connection, transaction, effect, token).ConfigureAwait(false);
-
-            if (daily.IsFailure) return daily.Error;
-
-            await using (SqliteCommand dispatch = Command(connection, transaction, """
-                SELECT COUNT(*) FROM guild_dispatches WHERE DispatchId=$dispatch AND QuestId=$quest AND AccountingAssociationId=$run
-                """))
-            {
-                Add(dispatch, "$dispatch", Id(effect.Request.DispatchId));
-
-                Add(dispatch, "$quest", Id(questId));
-
-                Add(dispatch, "$run", Id(effect.Request.AccountingAssociationId));
-
-                if (!Equals(1L, await dispatch.ExecuteScalarAsync(token).ConfigureAwait(false))) return Conflict;
-            }
-
-            Guid signetEpoch;
-
-            Guid spendEpoch;
-
-            Guid spendKey;
-
-            await using (SqliteCommand epochs = Command(connection, transaction, """
-                SELECT g.AuthorityEpoch,s.AuthorityEpoch,s.AuthorityKeyId FROM guild_signets g
-                JOIN guild_spend_sources s ON s.EffectId=$effect WHERE g.SignetId=$signet
-                """))
-            {
-                Add(epochs, "$effect", Id(effectId));
-
-                Add(epochs, "$signet", Id(quest.Quest.SignetId));
-
-                await using SqliteDataReader row = await epochs.ExecuteReaderAsync(token).ConfigureAwait(false);
-
-                if (!await row.ReadAsync(token).ConfigureAwait(false)
-                    || row.GetValue(0) is not string signet || !Guid.TryParseExact(signet, "D", out signetEpoch)
-                    || row.GetValue(1) is not string spend || !Guid.TryParseExact(spend, "D", out spendEpoch)
-                    || row.GetValue(2) is not string key || !Guid.TryParseExact(key, "D", out spendKey)
-                    || signetEpoch == Guid.Empty || spendEpoch == Guid.Empty || spendKey == Guid.Empty) return Conflict;
-            }
-
-            if (!currentness.IsCurrent()) return OwnerUnavailable;
+            Guid spendKey = admissible.Value.SpendKey;
 
             Guid operationId = Guid.NewGuid();
 
@@ -221,6 +169,160 @@ internal sealed partial class GuildQuestStore
             token.ThrowIfCancellationRequested();
 
             return new GuildSpendRefreshPreparation(null, null, operationId, null, true);
+        }, ct);
+
+    private sealed record RefreshAdmissibility(GuildBudgetEffect Effect, Guid SignetEpoch, Guid SpendEpoch, Guid SpendKey);
+
+    private static async Task<Result<RefreshAdmissibility>> ValidateRefreshSourceWithinAsync(SqliteConnection connection,
+        SqliteTransaction transaction, GuildQuestStored quest, GuildBudgetLedger ledger, GuildCallerContext caller, Guid questId,
+        Guid effectId, GuildSpendRefreshCurrentness currentness, CancellationToken token,
+        IReadOnlyDictionary<Guid, SpendBillIdentity>? identities = null)
+    {
+        Result ownerProof = await GuildSpendRefreshOwnerProof.RequireWithinAsync(connection, transaction, questId,
+            quest.Quest.RootQuestId, token).ConfigureAwait(false);
+
+        if (ownerProof.IsFailure) return ownerProof.Error;
+
+        Result<GuildBudgetEffect> effectResult = await ledger.ReadEffectWithinAsync(connection, transaction, effectId, token).ConfigureAwait(false);
+
+        if (effectResult.IsFailure) return effectResult.Error;
+
+        GuildBudgetEffect effect = effectResult.Value;
+
+        if (effect.Request.QuestId != questId || effect.Request.Kind != GuildBudgetEffectKind.LocalProvider) return OwnerUnavailable;
+
+        string? exactBillId = null;
+
+        if (identities is not null)
+        {
+            if (!identities.TryGetValue(effect.Request.SourceId, out SpendBillIdentity identity) || identity.Count > 1
+                || identity.Count == 1 && identity.ExactId is null) return Conflict;
+
+            if (identity.Count == 0) return new Error(ErrorCodes.Guild.SourceExpired, "The physical billing source is unavailable.");
+
+            exactBillId = identity.ExactId;
+        }
+
+        Result<GuildSpendSourceCredential.VerifiedSource> source = await currentness.Credential.VerifyWithinAsync(connection, transaction,
+            effectId, caller.InstallationGeneration, token, exactBillId).ConfigureAwait(false);
+
+        if (source.IsFailure) return source.Error;
+
+        Result<GuildSpendEffectDto> current = await ReadSpendEffectWithinAsync(connection, transaction, quest, ledger, effectId, token, identities).ConfigureAwait(false);
+
+        if (current.IsFailure) return current.Error;
+
+        Result daily = await ledger.ValidateDailyCorrectionWithinAsync(connection, transaction, effect, token).ConfigureAwait(false);
+
+        if (daily.IsFailure) return daily.Error;
+
+        await using (SqliteCommand dispatch = Command(connection, transaction, """
+            SELECT COUNT(*) FROM guild_dispatches WHERE DispatchId=$dispatch AND QuestId=$quest AND AccountingAssociationId=$run
+            """))
+        {
+            Add(dispatch, "$dispatch", Id(effect.Request.DispatchId));
+
+            Add(dispatch, "$quest", Id(questId));
+
+            Add(dispatch, "$run", Id(effect.Request.AccountingAssociationId));
+
+            if (!Equals(1L, await dispatch.ExecuteScalarAsync(token).ConfigureAwait(false))) return Conflict;
+        }
+
+        Guid signetEpoch;
+
+        Guid spendEpoch;
+
+        Guid spendKey;
+
+        await using (SqliteCommand epochs = Command(connection, transaction, """
+            SELECT g.AuthorityEpoch,s.AuthorityEpoch,s.AuthorityKeyId FROM guild_signets g
+            JOIN guild_spend_sources s ON s.EffectId=$effect WHERE g.SignetId=$signet
+            """))
+        {
+            Add(epochs, "$effect", Id(effectId));
+
+            Add(epochs, "$signet", Id(quest.Quest.SignetId));
+
+            await using SqliteDataReader row = await epochs.ExecuteReaderAsync(token).ConfigureAwait(false);
+
+            if (!await row.ReadAsync(token).ConfigureAwait(false)
+                || row.GetValue(0) is not string signet || !Guid.TryParseExact(signet, "D", out signetEpoch)
+                || row.GetValue(1) is not string spend || !Guid.TryParseExact(spend, "D", out spendEpoch)
+                || row.GetValue(2) is not string key || !Guid.TryParseExact(key, "D", out spendKey)
+                || signetEpoch == Guid.Empty || spendEpoch == Guid.Empty || spendKey == Guid.Empty) return Conflict;
+        }
+
+        if (identities is null)
+        {
+            if (!currentness.IsCurrent()) return OwnerUnavailable;
+        }
+        else
+        {
+            bool isCurrent;
+
+            try { isCurrent = currentness.IsCurrent(); }
+            catch (Exception)
+            {
+                token.ThrowIfCancellationRequested();
+
+                return OwnerUnavailable;
+            }
+
+            token.ThrowIfCancellationRequested();
+
+            if (!isCurrent) return OwnerUnavailable;
+        }
+
+        return new RefreshAdmissibility(effect, signetEpoch, spendEpoch, spendKey);
+    }
+
+    internal Task<Result<GuildSpendRefreshPreparation>> ReadProviderEligibilitySelectionAsync(GuildCallerContext caller,
+        Guid questId, Guid effectId, CancellationToken ct) =>
+        WithSpendOwnerAsync<GuildSpendRefreshPreparation>(caller, questId, async (connection, transaction, quest, ledger, token) =>
+        {
+            Result owner = await GuildSpendRefreshOwnerProof.RequireWithinAsync(connection, transaction, questId,
+                quest.Quest.RootQuestId, token).ConfigureAwait(false);
+
+            if (owner.IsFailure) return owner.Error;
+
+            Result<GuildBudgetEffect> effect = await ledger.ReadEffectWithinAsync(connection, transaction, effectId, token).ConfigureAwait(false);
+
+            if (effect.IsFailure) return effect.Error;
+
+            if (effect.Value.Request.QuestId != questId || effect.Value.Request.Kind != GuildBudgetEffectKind.LocalProvider) return OwnerUnavailable;
+
+            Result<GuildStoredInitialSpend?> initial = await GuildSpendSourceStore.LoadInitialWithinAsync(connection, transaction, effectId, token).ConfigureAwait(false);
+
+            if (initial.IsFailure) return initial.Error;
+
+            if (initial.Value is not { } saved) return GuildSpendSourceFailure.InitialEvidenceUnavailable;
+
+            return new GuildSpendRefreshPreparation(saved.Snapshot.Provider, saved.Snapshot.Model, null, null, RootQuestId: quest.Quest.RootQuestId);
+        }, ct);
+
+    internal Task<Result<Dictionary<Guid, Result>>> CheckProviderRefreshEligibilityBatchAsync(GuildCallerContext caller,
+        Guid questId, IReadOnlyList<(Guid EffectId, GuildSpendRefreshCurrentness Currentness)> candidates, CancellationToken ct) =>
+        WithSpendOwnerAsync<Dictionary<Guid, Result>>(caller, questId, async (connection, transaction, quest, ledger, token) =>
+        {
+            if (candidates.Count > 100 || candidates.Select(candidate => candidate.EffectId).Distinct().Count() != candidates.Count)
+                return Conflict;
+
+            Dictionary<Guid, SpendBillIdentity> identities = [];
+
+            await CensusSpendBillsWithinAsync(connection, transaction, candidates.Select(candidate => candidate.EffectId).ToArray(), identities, token).ConfigureAwait(false);
+
+            Dictionary<Guid, Result> results = [];
+
+            foreach ((Guid effectId, GuildSpendRefreshCurrentness currentness) in candidates)
+            {
+                Result<RefreshAdmissibility> result = await ValidateRefreshSourceWithinAsync(connection, transaction, quest, ledger,
+                    caller, questId, effectId, currentness, token, identities).ConfigureAwait(false);
+
+                results.Add(effectId, result.IsFailure ? Result.Failure(result.Error) : Result.Success());
+            }
+
+            return results;
         }, ct);
 
     internal Task<Result<GuildSpendRefreshPreparation>> SelectProviderSpendRefreshSourceAsync(GuildCallerContext caller,
