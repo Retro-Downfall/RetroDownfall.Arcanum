@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Operations;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
@@ -300,9 +301,9 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
 
         LongRunningOperation? latest = await operations.GetAsync(operationId, CancellationToken.None).ConfigureAwait(false);
 
-        if (latest is not null && latest.LeaseOwner == owner && latest.LeaseExpiresAt > time.GetUtcNow())
-            _ = await operations.TryTransitionAsync(operationId, latest.Revision, owner, LongRunningOperationState.Completed,
-                time.GetUtcNow(), cancellationToken: CancellationToken.None).ConfigureAwait(false);
+        if (latest is not null && operations is IGuildRefreshOwnedSettlement settlement)
+            _ = await settlement.TrySettleGuildRefreshAsync(operationId, latest.Revision, owner, LongRunningOperationState.Completed,
+                null, time, CancellationToken.None).ConfigureAwait(false);
 
         return new GuildSpendRefreshResult(operationId, result.Value.Receipt, result.Value.Replayed, false);
     }
@@ -389,17 +390,17 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
 
         if (latest is null) return error;
 
-        if (latest.LeaseOwner == owner && latest.LeaseExpiresAt > time.GetUtcNow()
-            && latest.State == LongRunningOperationState.Cancelling
-            && await operations.TryTransitionAsync(operationId, latest.Revision, owner, LongRunningOperationState.Abandoned,
-                time.GetUtcNow(), ErrorCodes.Guild.RefreshCancelled, CancellationToken.None).ConfigureAwait(false))
-            return new GuildSpendRefreshResult(operationId, null, false, false, Cancelled: true);
+        if (operations is IGuildRefreshOwnedSettlement settlement)
+        {
+            LongRunningOperationState? settled = await settlement.TrySettleGuildRefreshAsync(operationId, latest.Revision, owner,
+                LongRunningOperationState.ReconciliationRequired, error.Code, time, CancellationToken.None).ConfigureAwait(false);
 
-        if (latest.LeaseOwner == owner && latest.LeaseExpiresAt > time.GetUtcNow()
-            && latest.State is LongRunningOperationState.Running or LongRunningOperationState.Waiting
-            && await operations.TryTransitionAsync(operationId, latest.Revision, owner, LongRunningOperationState.ReconciliationRequired,
-                time.GetUtcNow(), error.Code, CancellationToken.None).ConfigureAwait(false))
-            return new GuildSpendRefreshResult(operationId, null, false, false, true, error.Code);
+            if (settled == LongRunningOperationState.Abandoned)
+                return new GuildSpendRefreshResult(operationId, null, false, false, Cancelled: true);
+
+            if (settled == LongRunningOperationState.ReconciliationRequired)
+                return new GuildSpendRefreshResult(operationId, null, false, false, true, error.Code);
+        }
 
         return new GuildSpendRefreshResult(operationId, null, false, true);
     }

@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
+using RetroDownfall.Arcanum.Infrastructure.Operations;
 
 namespace RetroDownfall.Arcanum.Tests.Guild;
 
@@ -345,7 +346,7 @@ public sealed partial class GuildQuestStoreTests
 
         using LongRunningOperationStore inner = new(db, f.Scenario.Fixture.Connections);
 
-        BlockingRefreshOperationStore operations = new(inner) { CancelAcquire = true, CommitBeforeCancel = commitFirst };
+        BlockingRefreshOperationStore operations = new ForwardingRefreshOperationStore(inner) { CancelAcquire = true, CommitBeforeCancel = commitFirst };
 
         string lockPath = Path.Combine(Path.GetTempPath(), "arcanum-refresh-lock-" + Guid.NewGuid().ToString("N"));
 
@@ -719,8 +720,14 @@ public sealed partial class GuildQuestStoreTests
         }
     }
 
-    private sealed class BlockingRefreshOperationStore(ILongRunningOperationStore inner) : ILongRunningOperationStore
+    private class BlockingRefreshOperationStore(ILongRunningOperationStore inner) : ILongRunningOperationStore
     {
+        internal bool PauseSettlement { get; set; }
+
+        internal TaskCompletionSource SettlementEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource ReleaseSettlement { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         internal bool ReturnMissing { get; set; }
 
         internal bool ThrowOnGet { get; set; }
@@ -752,8 +759,32 @@ public sealed partial class GuildQuestStoreTests
             return await inner.TryAcquireLeaseAsync(id, owner, now, expiry, ct);
         }
 
-        public Task<bool> TryTransitionAsync(Guid id, long revision, string? owner, LongRunningOperationState state, DateTimeOffset now,
-            string? error = null, CancellationToken ct = default) => inner.TryTransitionAsync(id, revision, owner, state, now, error, ct);
+        public async Task<bool> TryTransitionAsync(Guid id, long revision, string? owner, LongRunningOperationState state, DateTimeOffset now,
+            string? error = null, CancellationToken ct = default)
+        {
+            if (PauseSettlement && state == LongRunningOperationState.Abandoned)
+            {
+                SettlementEntered.TrySetResult();
+
+                await ReleaseSettlement.Task;
+            }
+
+            return await inner.TryTransitionAsync(id, revision, owner, state, now, error, ct);
+        }
+
+        public async Task<LongRunningOperationState?> TrySettleGuildRefreshAsync(Guid id, long revision, string owner,
+            LongRunningOperationState state, string? error, TimeProvider time, CancellationToken ct)
+        {
+            if (PauseSettlement)
+            {
+                SettlementEntered.TrySetResult();
+
+                await ReleaseSettlement.Task;
+            }
+
+            return inner is IGuildRefreshOwnedSettlement settlement
+                ? await settlement.TrySettleGuildRefreshAsync(id, revision, owner, state, error, time, ct) : null;
+        }
 
         public async Task<bool> RenewLeaseAsync(Guid id, string owner, DateTimeOffset now, DateTimeOffset expiry, CancellationToken ct = default)
         {
@@ -798,6 +829,10 @@ public sealed partial class GuildQuestStoreTests
         public Task<bool> ResetForRetryAsync(Guid id, long revision, DateTimeOffset now, CancellationToken ct = default) => throw new NotSupportedException();
 
         public Task<IReadOnlyList<LongRunningOperationCount>> GetCountsAsync(CancellationToken ct = default) => throw new NotSupportedException();
+    }
+
+    private sealed class ForwardingRefreshOperationStore(ILongRunningOperationStore inner) : BlockingRefreshOperationStore(inner), IGuildRefreshOwnedSettlement
+    {
     }
 
     private sealed class BlockingRefreshHandler(BlockingRefreshStream stream) : HttpMessageHandler

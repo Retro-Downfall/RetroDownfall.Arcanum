@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Telemetry;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Operations;
@@ -629,14 +630,26 @@ public sealed class LongRunningOperationReconciler
             result = LongRunningOperationRecoveryResult.Abandoned("long_rest.cancelled");
         }
 
-        bool transitioned = await operationStore.TryTransitionAsync(
-            leased.Id,
-            latest.Revision,
-            ownerId,
-            result.State,
-            _timeProvider.GetUtcNow(),
-            result.ErrorCode,
-            CancellationToken.None).ConfigureAwait(false);
+        bool transitioned;
+
+        if (leased.Kind == LongRunningOperationKinds.GuildSpendRefresh)
+        {
+            LongRunningOperationState? settled = operationStore is IGuildRefreshOwnedSettlement settlement
+                ? await settlement.TrySettleGuildRefreshAsync(leased.Id, latest.Revision, ownerId, result.State,
+                    result.ErrorCode, _timeProvider, CancellationToken.None).ConfigureAwait(false)
+                : null;
+
+            transitioned = settled is not null;
+
+            if (settled == LongRunningOperationState.Abandoned)
+                result = LongRunningOperationRecoveryResult.Abandoned(ErrorCodes.Guild.RefreshCancelled);
+        }
+        else
+        {
+            transitioned = await operationStore.TryTransitionAsync(
+                leased.Id, latest.Revision, ownerId, result.State, _timeProvider.GetUtcNow(), result.ErrorCode,
+                CancellationToken.None).ConfigureAwait(false);
+        }
 
         if (!transitioned)
         {

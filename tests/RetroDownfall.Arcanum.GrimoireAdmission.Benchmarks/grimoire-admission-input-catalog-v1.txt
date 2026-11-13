@@ -3228,6 +3228,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemorySearchToolResponseFormat
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryErasureService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryReviewService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/DurableOperationDiagnostics.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Operations/IGuildRefreshOwnedSettlement.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/ILongRunningOperationClassifiedRecoveryLeaseAcquisition.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/ILongRunningOperationGenericRecoveryDiscovery.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/ILongRunningOperationMaintenanceLeaseAdoption.cs
