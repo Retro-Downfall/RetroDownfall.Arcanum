@@ -168,6 +168,14 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.True(historical.IsSuccess, historical.IsFailure ? historical.Error.Message : null);
 
+        var advisory = await service.ReadEffectAsync(f.Caller, child.Quest.Id, effect.EffectId, default);
+
+        Assert.True(advisory.IsSuccess, advisory.IsFailure ? advisory.Error.Message : null);
+
+        Assert.Equal("sourceUnavailable", advisory.Value.ProviderIneligibility);
+
+        Assert.Equal(1, gets);
+
         var selected = await f.Store.SelectProviderSpendRefreshSourceAsync(f.Caller, child.Quest.Id, effect.EffectId, default);
 
         Assert.True(selected.IsFailure);

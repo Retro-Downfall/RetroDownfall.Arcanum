@@ -53,6 +53,36 @@ internal sealed class GuildSpendRefreshConfiguration : IDisposable
         }
     }
 
+    internal bool IsExplicitlyDisabled(string providerName)
+    {
+        if (!Monitor.TryEnter(_gate)) return false;
+
+        try
+        {
+            long epoch = Volatile.Read(ref _epoch);
+
+            if (Volatile.Read(ref _disposed) != 0 || epoch == long.MaxValue) return false;
+
+            ArcanumSettings publication = _options.CurrentValue;
+
+            if (publication is null) return false;
+
+            ProviderSettings[] matches = publication.Providers?.Where(provider => provider is not null && provider.Name == providerName).ToArray() ?? [];
+
+            return matches.Length == 1 && matches[0].GuildUsageReconciliation == GuildUsageReconciliationSource.None
+                && epoch == Volatile.Read(ref _epoch) && ReferenceEquals(publication, _options.CurrentValue)
+                && matches[0].GuildUsageReconciliation == GuildUsageReconciliationSource.None;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+        finally
+        {
+            Monitor.Exit(_gate);
+        }
+    }
+
     internal bool IsCurrent(GuildSpendRefreshConfigurationSnapshot snapshot)
     {
         if (snapshot is null || !ReferenceEquals(snapshot.Owner, this) || !Monitor.TryEnter(_gate)) return false;
