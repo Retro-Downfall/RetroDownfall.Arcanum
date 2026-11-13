@@ -607,7 +607,8 @@ public sealed partial class GuildQuestStoreTests
 
         internal string? PendingReason { get; private set; }
 
-        internal static async Task<SpendScenario> CreateAsync(bool enableDailyBudget = false, Fixture? fixture = null)
+        internal static async Task<SpendScenario> CreateAsync(bool enableDailyBudget = false, Fixture? fixture = null,
+            Func<SqliteConnection, Task>? beforeEffectSelection = null)
         {
             SpendScenario scenario = new();
 
@@ -691,11 +692,21 @@ public sealed partial class GuildQuestStoreTests
 
                     await using SqliteCommand check = observed.CreateCommand();
 
-                    check.CommandText = "SELECT COUNT(*) FROM guild_spend_sources WHERE SourceKindCode=1 AND GenerationId IS NULL";
+                    check.CommandText = """
+                        SELECT COUNT(*) FROM guild_spend_sources s JOIN guild_budget_effects e ON e.EffectId=s.EffectId
+                        WHERE e.QuestId=$quest AND e.DispatchId=$dispatch AND e.KindCode=0 AND s.SourceKindCode=1 AND s.GenerationId IS NULL
+                        """;
+
+                    check.Parameters.AddWithValue("$quest", scenario.QuestId.ToString("D").ToUpperInvariant());
+
+                    check.Parameters.AddWithValue("$dispatch", scenario.DispatchId.ToString("D").ToUpperInvariant());
 
                     Assert.Equal(1L, await check.ExecuteScalarAsync());
 
-                    check.CommandText = "SELECT EffectId FROM guild_spend_sources WHERE SourceKindCode=1";
+                    check.CommandText = """
+                        SELECT s.EffectId FROM guild_spend_sources s JOIN guild_budget_effects e ON e.EffectId=s.EffectId
+                        WHERE e.QuestId=$quest AND e.DispatchId=$dispatch AND e.KindCode=0 AND s.SourceKindCode=1 AND s.GenerationId IS NULL
+                        """;
 
                     Guid pendingEffect = Guid.Parse((string)(await check.ExecuteScalarAsync())!);
 
@@ -719,11 +730,26 @@ public sealed partial class GuildQuestStoreTests
 
                 Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
 
+                if (beforeEffectSelection is not null) await beforeEffectSelection(scenario.Connection);
+
                 await using SqliteCommand source = scenario.Connection.CreateCommand();
 
-                source.CommandText = "SELECT EffectId FROM guild_spend_sources";
+                source.CommandText = """
+                    SELECT s.EffectId FROM guild_spend_sources s JOIN guild_budget_effects e ON e.EffectId=s.EffectId
+                    WHERE e.QuestId=$quest AND e.DispatchId=$dispatch AND e.KindCode=0 AND s.SourceKindCode=1
+                    """;
 
-                scenario.EffectId = Guid.Parse((string)(await source.ExecuteScalarAsync())!);
+                source.Parameters.AddWithValue("$quest", scenario.QuestId.ToString("D").ToUpperInvariant());
+
+                source.Parameters.AddWithValue("$dispatch", scenario.DispatchId.ToString("D").ToUpperInvariant());
+
+                await using SqliteDataReader selected = await source.ExecuteReaderAsync();
+
+                Assert.True(await selected.ReadAsync());
+
+                scenario.EffectId = Guid.Parse(selected.GetString(0));
+
+                Assert.False(await selected.ReadAsync());
 
                 return scenario;
             }
