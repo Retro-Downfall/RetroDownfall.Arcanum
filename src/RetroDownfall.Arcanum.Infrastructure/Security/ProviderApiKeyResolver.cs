@@ -37,6 +37,37 @@ public sealed class ProviderApiKeyResolver(
         ProviderSettings provider,
         CancellationToken cancellationToken = default) => (await CaptureIdentityAsync(provider, true, null, cancellationToken).ConfigureAwait(false)).Credential;
 
+    /// <summary>Checks only an already-observed local identity; it performs no secret read or wait.</summary>
+    public ProviderCredentialCurrentness GetObservedLocalCurrentness(ProviderSettings provider, ProviderCredentialStamp stamp)
+    {
+        if (provider is null || stamp is null || string.IsNullOrWhiteSpace(provider.Name)
+            || credentialStore is not ProviderCredentialStore local || local.IsDisposed)
+            return ProviderCredentialCurrentness.Unavailable;
+
+        if (!_identityGate.Wait(0)) return ProviderCredentialCurrentness.Unavailable;
+
+        try
+        {
+            string name = provider.Name;
+
+            string variable = EnvironmentCredentialResolver.GetProviderApiKeyEnvironmentVariableName(provider);
+
+            var source = (EnvironmentCredentialResolver.NormalizeProviderName(name), variable);
+
+            long generation = local.MutationGeneration(name);
+
+            if (local.IsDisposed || generation == long.MaxValue) return ProviderCredentialCurrentness.Unavailable;
+
+            return _observed.TryGetValue(source, out ObservedCredential? observed)
+                && observed.Stamp == stamp && observed.LocalGeneration == generation
+                ? ProviderCredentialCurrentness.Current : ProviderCredentialCurrentness.ConfirmedStale;
+        }
+        finally
+        {
+            _identityGate.Release();
+        }
+    }
+
     public async Task<bool> IsCurrentAsync(
         ProviderSettings provider,
         ProviderCredentialStamp stamp,
@@ -120,11 +151,11 @@ public sealed class ProviderApiKeyResolver(
 
             long after = LocalGeneration(providerName);
 
-            if (!known || before != after)
+            if (!known || before != after || before == long.MaxValue)
             {
                 // A failed OS peek cannot hide a local owner mutation or an already superseded
                 // stamp. Classify from this gated observation before discarding comparison state.
-                bool stale = before != after || expected is not null
+                bool stale = before != after || before == long.MaxValue && expected is not null || expected is not null
                     && (!_observed.TryGetValue(source, out ObservedCredential? prior)
                         || prior.Stamp != expected || prior.LocalGeneration != after);
 

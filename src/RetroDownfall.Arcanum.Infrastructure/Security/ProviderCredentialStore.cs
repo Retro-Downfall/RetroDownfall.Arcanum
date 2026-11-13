@@ -45,9 +45,12 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
         _mutationGenerations.GetValueOrDefault(ArcanumCredentialIdentity.InferenceProviderApiKeyAccount(providerName));
 
     private void Mutated(string providerName) => _mutationGenerations.AddOrUpdate(
-        ArcanumCredentialIdentity.InferenceProviderApiKeyAccount(providerName), 1, static (_, current) => checked(current + 1));
+        ArcanumCredentialIdentity.InferenceProviderApiKeyAccount(providerName), 1,
+        static (_, current) => current == long.MaxValue ? long.MaxValue : current + 1);
 
     private bool _disposed;
+
+    internal bool IsDisposed => Volatile.Read(ref _disposed);
 
     public ProviderCredentialStore(
         IOsCredentialStore osStore,
@@ -141,9 +144,14 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        await Credential(providerName).SaveAsync(apiKey.Trim(), cancellationToken).ConfigureAwait(false);
-
-        Mutated(providerName);
+        try
+        {
+            await Credential(providerName).SaveAsync(apiKey.Trim(), cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Mutated(providerName);
+        }
     }
 
     public async Task DeleteApiKeyAsync(
@@ -154,9 +162,14 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        await Credential(providerName).DeleteAsync(cancellationToken).ConfigureAwait(false);
-
-        Mutated(providerName);
+        try
+        {
+            await Credential(providerName).DeleteAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Mutated(providerName);
+        }
     }
 
     private MirroredOsCredential Credential(string providerName)
