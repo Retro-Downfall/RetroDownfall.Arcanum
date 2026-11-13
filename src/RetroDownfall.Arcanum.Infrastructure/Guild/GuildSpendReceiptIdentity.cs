@@ -28,5 +28,33 @@ internal static class GuildSpendReceiptIdentity
         return SHA256.HashData(Encoding.UTF8.GetBytes(canonical));
     }
 
+    internal static byte[] ProviderDigest(GuildSpendSourceCredential.VerifiedSource source, GuildSpendObservation observation)
+    {
+        GuildSpendAmountsRequest amounts = observation.Amounts;
+
+        using MemoryStream bytes = new();
+
+        using (BinaryWriter writer = new(bytes, Encoding.UTF8, leaveOpen: true))
+        {
+            writer.Write("Arcanum.Guild.ProviderObservation.v1");
+
+            source.WriteIdentity(writer);
+
+            writer.Write(amounts.InputTokens!.Value);
+
+            writer.Write(amounts.OutputTokens!.Value);
+
+            writer.Write(amounts.CachedTokens!.Value);
+
+            writer.Write(amounts.ReasoningTokens!.Value);
+
+            writer.Write(amounts.Usd!.Value.ToString("G29", CultureInfo.InvariantCulture));
+
+            writer.Write(observation.EvidenceDigest);
+        }
+
+        return SHA256.HashData(bytes.GetBuffer().AsSpan(0, checked((int)bytes.Length)));
+    }
+
     private static string Id(Guid value) => value.ToString("D").ToUpperInvariant();
 }
