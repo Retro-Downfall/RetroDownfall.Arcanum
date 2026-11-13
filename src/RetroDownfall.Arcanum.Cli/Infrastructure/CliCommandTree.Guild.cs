@@ -48,6 +48,8 @@ internal static partial class CliCommandTree
 
         Add(spend, "correct", "Attest corrected local physical totals.", ["task"], ["effect!", "idempotency-key!", "expected-revision!", "input-tokens!", "output-tokens!", "cached-tokens!", "reasoning-tokens!", "usd!", "evidence-digest!"]);
 
+        Add(spend, "refresh", "Refresh local spend from its bound provider.", ["task"], ["effect!", "idempotency-key!"]);
+
         Add(spend, "receipts", "List one page of effect receipts.", ["task"], ["effect!", "cursor", "page-size"]);
 
         Add(spend, "receipt", "Show one exact effect receipt.", ["task"], ["effect!", "receipt!"]);
@@ -180,7 +182,9 @@ internal static partial class CliCommandTree
                 else
                 {
                     Option<string?> text = new(optionName) { Required = required, Description = parent.Name == "spend" && key == "idempotency-key"
-                        ? "Required explicit attestation UUID; reused for exact replay." : Description(key) };
+                        ? name == "correct" ? "Required explicit attestation UUID; reused for exact replay."
+                            : name == "refresh" ? "Required explicit refresh UUID; reused for exact replay." : Description(key)
+                        : Description(key) };
 
                     if (key == "policy") text.AcceptOnlyFromAmong("all", "first", "quorum");
 

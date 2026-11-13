@@ -37,6 +37,7 @@ public sealed partial class GuildEndpointTests
             ("GET", "/api/guild/quests/{questId:guid}/spend/effects", "GuildListSpendEffects"),
             ("GET", "/api/guild/quests/{questId:guid}/spend/effects/{effectId:guid}", "GuildGetSpendEffect"),
             ("POST", "/api/guild/quests/{questId:guid}/spend/effects/{effectId:guid}/corrections", "GuildCorrectSpendEffect"),
+            ("POST", "/api/guild/quests/{questId:guid}/spend/effects/{effectId:guid}/refreshes", "GuildRefreshSpendEffect"),
             ("GET", "/api/guild/quests/{questId:guid}/spend/effects/{effectId:guid}/receipts", "GuildListSpendReceipts"),
             ("GET", "/api/guild/quests/{questId:guid}/spend/effects/{effectId:guid}/receipts/{receiptId:guid}", "GuildGetSpendReceipt"),
             ("POST", "/api/guild/content/resolve", "GuildResolveContent"),

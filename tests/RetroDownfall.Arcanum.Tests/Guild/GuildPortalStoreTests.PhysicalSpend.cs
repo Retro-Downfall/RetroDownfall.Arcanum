@@ -136,9 +136,72 @@ public sealed partial class GuildPortalStoreTests
         GuildSpendCorrectionRequest correction = new(Guid.NewGuid(), settled.Value.Revision, GuildSpendOrigin.OperatorAttested,
             new(8, 4, 0, 0, .05m), new string('A', 64));
 
+        var beforeCorrection = await f.Portal.CaptureTreeSnapshotAsync(f.Caller, quest.Quest.Id, default);
+
+        Assert.True(beforeCorrection.IsSuccess, beforeCorrection.Error.Message);
+
+        IGuildTreeSpendLedger ledger = f.Store;
+
+        var beforeSpend = await ledger.ReadAsync(f.Caller, quest.Quest.Id, default);
+
+        Assert.True(beforeSpend.IsSuccess, beforeSpend.Error.Message);
+
+        Assert.Equal(10, beforeSpend.Value.KnownTokens);
+
+        await f.ExecuteAsync("CREATE TRIGGER fixture_abort_correction_receipt BEFORE INSERT ON guild_spend_receipts BEGIN SELECT RAISE(ABORT,'injected'); END");
+
+        var failedCorrection = await f.Store.CorrectOperatorSpendAsync(f.Caller, quest.Quest.Id, effect.EffectId, correction, default);
+
+        Assert.True(failedCorrection.IsFailure);
+
+        var failedSnapshot = await f.Portal.CaptureTreeSnapshotAsync(f.Caller, quest.Quest.Id, default);
+
+        var failedSpend = await ledger.ReadAsync(f.Caller, quest.Quest.Id, default);
+
+        var failedReplay = await f.Portal.ReadScopedReplayAsync(f.Caller, quest.Quest.Id, quest.Quest.Id, null, beforeCorrection.Value.ResumeCursor, default);
+
+        Assert.True(failedSnapshot.IsSuccess, failedSnapshot.Error.Message);
+
+        Assert.True(failedSpend.IsSuccess, failedSpend.Error.Message);
+
+        Assert.True(failedReplay.IsSuccess, failedReplay.Error.Message);
+
+        Assert.Equal(beforeCorrection.Value.Watermark, failedSnapshot.Value.Watermark);
+
+        Assert.Equal(beforeSpend.Value, failedSpend.Value);
+
+        Assert.Empty(failedReplay.Value.Page.Items);
+
+        await f.ExecuteAsync("DROP TRIGGER fixture_abort_correction_receipt");
+
         var corrected = await f.Store.CorrectOperatorSpendAsync(f.Caller, quest.Quest.Id, effect.EffectId, correction, default);
 
         Assert.True(corrected.IsSuccess, corrected.Error.Message);
+
+        var afterSpend = await ledger.ReadAsync(f.Caller, quest.Quest.Id, default);
+
+        Assert.True(afterSpend.IsSuccess, afterSpend.Error.Message);
+
+        Assert.Equal(12, afterSpend.Value.KnownTokens);
+
+        Assert.Equal(.05m, afterSpend.Value.KnownUsd);
+
+        var correctionReplay = await f.Portal.ReadScopedReplayAsync(f.Caller, quest.Quest.Id, quest.Quest.Id, null, beforeCorrection.Value.ResumeCursor, default);
+
+        Assert.True(correctionReplay.IsSuccess, correctionReplay.Error.Message);
+
+        var correctionEvent = Assert.Single(correctionReplay.Value.Page.Items.Where(item => item.SpendSource is not null));
+
+        Assert.Equal(new GuildSpendSourceDto(effect.EffectId, corrected.Value.Receipt.ReceiptId, corrected.Value.Receipt.EvidenceRevision,
+            GuildSpendOrigin.OperatorAttested), correctionEvent.SpendSource);
+
+        Assert.Equal(corrected.Value.Receipt.EventSequence, correctionEvent.EventSequence);
+
+        var correctionReconnect = await f.Portal.ReadScopedReplayAsync(f.Caller, quest.Quest.Id, quest.Quest.Id, null, beforeCorrection.Value.ResumeCursor, default);
+
+        Assert.True(correctionReconnect.IsSuccess, correctionReconnect.Error.Message);
+
+        Assert.Equal(correctionEvent, Assert.Single(correctionReconnect.Value.Page.Items.Where(item => item.SpendSource is not null)));
 
         var correctedReplay = await f.Portal.ReadScopedReplayAsync(f.Caller, quest.Quest.Id, quest.Quest.Id, null, snapshot.Value.ResumeCursor, default);
 

@@ -33,6 +33,7 @@ public sealed class GuildCommandTests
     [InlineData("guild spend list task --cursor next --page-size 2")]
     [InlineData("guild spend show task --effect 33333333-3333-3333-3333-333333333333")]
     [InlineData("guild spend correct task --effect 33333333-3333-3333-3333-333333333333 --idempotency-key 33333333-3333-3333-3333-333333333333 --expected-revision 1 --input-tokens 0 --output-tokens 0 --cached-tokens 0 --reasoning-tokens 0 --usd 1e-28 --evidence-digest aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    [InlineData("guild spend refresh task --effect 33333333-3333-3333-3333-333333333333 --idempotency-key 33333333-3333-3333-3333-333333333333")]
     [InlineData("guild spend receipts task --effect 33333333-3333-3333-3333-333333333333")]
     [InlineData("guild spend receipt task --effect 33333333-3333-3333-3333-333333333333 --receipt 33333333-3333-3333-3333-333333333333")]
     [InlineData("guild signet revoke signet --expected-revision 1")]
@@ -237,6 +238,138 @@ public sealed class GuildCommandTests
         Assert.False(output.RootElement.GetProperty("replayed").GetBoolean());
 
         Assert.Single(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void Guild_spend_refresh_reports_admitted_operation_with_nonzero_exit(bool inFlight, bool attention)
+    {
+        string response = "{\"data\":{\"operationId\":\"" + Id + "\",\"receipt\":null,\"replayed\":false,\"inFlight\":"
+            + (inFlight ? "true" : "false") + ",\"requiresAttention\":" + (attention ? "true" : "false")
+            + ",\"errorCode\":null},\"isSuccess\":true,\"error\":null}";
+
+        RecordingHandler handler = new(_ => JsonResponse(response, HttpStatusCode.Accepted));
+
+        CliTestResult result = Run(handler, ["guild", "spend", "refresh", Id, "--effect", Id, "--idempotency-key", Id, "--json"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        RecordedRequest request = Assert.Single(handler.Requests);
+
+        Assert.Equal($"/api/guild/quests/{Id}/spend/effects/{Id}/refreshes", request.Path);
+
+        using JsonDocument body = JsonDocument.Parse(request.Body!);
+
+        Assert.Equal(Guid.Parse(Id), body.RootElement.GetProperty("idempotencyKey").GetGuid());
+
+        using JsonDocument output = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(Guid.Parse(Id), output.RootElement.GetProperty("operationId").GetGuid());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Guild_spend_refresh_cancelled_exits_130_and_prints_result(bool replayed)
+    {
+        string response = "{\"data\":{\"operationId\":\"" + Id + "\",\"receipt\":null,\"replayed\":"
+            + (replayed ? "true" : "false") + ",\"inFlight\":false,\"requiresAttention\":false,\"cancelled\":true,\"errorCode\":\"Guild.RefreshCancelled\"},\"isSuccess\":true,\"error\":null}";
+
+        RecordingHandler handler = new(_ => JsonResponse(response));
+
+        CliTestResult result = Run(handler, ["guild", "spend", "refresh", Id, "--effect", Id, "--idempotency-key", Id, "--json"]);
+
+        Assert.Equal(130, result.ExitCode);
+
+        using JsonDocument output = JsonDocument.Parse(result.Output);
+
+        Assert.True(output.RootElement.GetProperty("cancelled").GetBoolean());
+
+        Assert.Equal(JsonValueKind.Null, output.RootElement.GetProperty("receipt").ValueKind);
+    }
+
+    [Theory]
+    [InlineData("--json")]
+    [InlineData("--plain")]
+    public void Guild_spend_refresh_completed_prints_one_typed_result_and_exits_zero(string mode)
+    {
+        string response = "{\"data\":{\"operationId\":\"" + Id + "\",\"receipt\":{\"receiptId\":\"" + Id
+            + "\",\"questId\":\"" + Id + "\",\"effectId\":\"" + Id + "\",\"origin\":\"providerReported\",\"evidenceDigest\":null,"
+            + "\"facts\":{\"knownUsd\":0.1,\"knownTokens\":0,\"unknownUsd\":false,\"unknownTokens\":false,\"complete\":true,\"localTokens\":null},"
+            + "\"evidenceRevision\":2,\"eventSequence\":3,\"acceptedAt\":\"2026-01-01T00:00:00Z\"},"
+            + "\"replayed\":false,\"inFlight\":false,\"requiresAttention\":false,\"errorCode\":null},\"isSuccess\":true,\"error\":null}";
+
+        RecordingHandler handler = new(_ => JsonResponse(response));
+
+        CliTestResult result = Run(handler, ["guild", "spend", "refresh", Id, "--effect", Id, "--idempotency-key", Id, mode]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        using JsonDocument output = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(Id, output.RootElement.GetProperty("receipt").GetProperty("receiptId").GetString());
+
+        Assert.Single(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void Guild_spend_refresh_requires_nonempty_effect_and_key(bool emptyEffect, bool emptyKey)
+    {
+        RecordingHandler handler = new(_ => throw new InvalidOperationException("Invalid request reached HTTP."));
+
+        string[] args = emptyEffect ? ["guild", "spend", "refresh", Id, "--effect", "", "--idempotency-key", Id, "--json"]
+            : emptyKey ? ["guild", "spend", "refresh", Id, "--effect", Id, "--idempotency-key", "", "--json"]
+            : ["guild", "spend", "refresh", Id, "--effect", Id, "--json"];
+
+        CliTestResult result = Run(handler, args);
+
+        Assert.Equal(2, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public void Guild_spend_refresh_requires_effect_option()
+    {
+        RecordingHandler handler = new(_ => throw new InvalidOperationException("Missing effect reached HTTP."));
+
+        CliTestResult result = Run(handler, ["guild", "spend", "refresh", Id, "--idempotency-key", Id, "--json"]);
+
+        Assert.Equal(2, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public void Guild_spend_refresh_reports_ordinary_domain_error()
+    {
+        RecordingHandler handler = new(_ => DomainRefusal());
+
+        CliTestResult result = Run(handler, ["guild", "spend", "refresh", Id, "--effect", Id, "--idempotency-key", Id, "--json"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Single(handler.Requests);
+
+        using JsonDocument output = JsonDocument.Parse(result.Output);
+
+        Assert.False(output.RootElement.TryGetProperty("operationId", out _));
+    }
+
+    [Fact]
+    public void Guild_spend_refresh_help_describes_required_key()
+    {
+        RecordingHandler handler = new(_ => throw new InvalidOperationException("Help reached HTTP."));
+
+        CliTestResult result = Run(handler, ["guild", "spend", "refresh", "--help"]);
+
+        Assert.Contains("Required explicit refresh UUID", result.Output, StringComparison.Ordinal);
+
+        Assert.Empty(handler.Requests);
     }
 
     [Fact]

@@ -42,6 +42,9 @@ internal sealed partial class GuildCommands
                 new(Tokens("input-tokens"), Tokens("output-tokens"), Tokens("cached-tokens"), Tokens("reasoning-tokens"), amounts.Usd), digest);
         }
 
+        GuildSpendRefreshRequest? refresh = path == "spend refresh"
+            ? new(ExactGuid(input.Text("idempotency-key") ?? "", "--idempotency-key")) : null;
+
         Guid quest = await Select("task", input.Argument(), ct).ConfigureAwait(false);
 
         string root = $"api/guild/quests/{quest:D}/spend/effects";
@@ -53,9 +56,22 @@ internal sealed partial class GuildCommands
             "spend list" => await Get<GuildSpendEffectPageDto>(Query(root, input.Text("cursor"), pageSize), ct).ConfigureAwait(false),
             "spend show" => await Get<GuildSpendEffectDto>($"{root}/{effect:D}", ct).ConfigureAwait(false),
             "spend correct" => await Post<GuildSpendCorrectionRequest, GuildSpendCorrectionResultDto>($"{root}/{effect:D}/corrections", correction!, ct).ConfigureAwait(false),
+            "spend refresh" => await RefreshSpendAsync($"{root}/{effect:D}/refreshes", refresh!, ct).ConfigureAwait(false),
             "spend receipts" => await Get<GuildSpendReceiptPageDto>(Query($"{root}/{effect:D}/receipts", input.Text("cursor"), pageSize), ct).ConfigureAwait(false),
             "spend receipt" => await Get<GuildSpendReceiptDto>($"{root}/{effect:D}/receipts/{receipt:D}", ct).ConfigureAwait(false),
             _ => throw new GuildCliInputException("Unknown spend command."),
         };
+    }
+
+    private async Task<int> RefreshSpendAsync(string path, GuildSpendRefreshRequest request, CancellationToken ct)
+    {
+        var result = await apiClient.PostGuildAsync(path, request, Data<GuildSpendRefreshRequest>(),
+            Envelope<GuildSpendRefreshResultDto>(), ct).ConfigureAwait(false);
+
+        if (result.IsFailure) return Failure(result.Error);
+
+        _ = Output(result.Value);
+
+        return result.Value.Receipt is not null ? 0 : result.Value.Cancelled ? 130 : result.Value.InFlight || result.Value.RequiresAttention ? 1 : 0;
     }
 }

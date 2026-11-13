@@ -46,6 +46,13 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.Guild.LeaseReconciliationRequired
                 or ErrorCodes.Guild.SequenceExhausted
                 or ErrorCodes.Guild.SourceExpired
+                or "Guild.SpendSourceMissing"
+                or "Guild.SpendSourceInvalid"
+                or "Guild.SpendGenerationMissing"
+                or "Guild.SpendGenerationInvalid"
+                or "Guild.SpendConfigurationChanged"
+                or "Guild.SpendCredentialChanged"
+                or "Guild.SpendAuthorityRetired"
                 or ErrorCodes.Guild.InitialEvidenceUnavailable
                 or ErrorCodes.Guild.SourceConflict
                 or ErrorCodes.Guild.ReconciliationRequired

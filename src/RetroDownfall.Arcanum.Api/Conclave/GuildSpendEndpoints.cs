@@ -17,7 +17,7 @@ internal static class GuildSpendEndpoints
     internal static RouteGroupBuilder MapGuildSpendEndpoints(this RouteGroupBuilder api)
     {
         api.MapGet("/guild/quests/{questId:guid}/spend/effects", async (Guid questId, string? cursor, int? pageSize,
-            GuildNativeHost host, GuildQuestStore store, HttpContext context) =>
+            GuildNativeHost host, GuildSpendRefreshService service, HttpContext context) =>
         {
             if (questId == Guid.Empty || pageSize is < 1 or > 100)
                 return Reply(Result<GuildSpendEffectPageDto>.Failure(Invalid), context, ArcanumJsonContext.Default.ApiResponseGuildSpendEffectPageDto);
@@ -25,13 +25,13 @@ internal static class GuildSpendEndpoints
             Result<GuildCallerContext> caller = await host.CreateCallerAsync(Guid.NewGuid(), context.RequestAborted).ConfigureAwait(false);
 
             Result<GuildSpendEffectPageDto> result = caller.IsFailure ? caller.Error
-                : await store.ListOperatorSpendEffectsAsync(caller.Value, questId, cursor, pageSize ?? 100, context.RequestAborted).ConfigureAwait(false);
+                : await service.ListEffectsAsync(caller.Value, questId, cursor, pageSize ?? 100, context.RequestAborted).ConfigureAwait(false);
 
             return Reply(result, context, ArcanumJsonContext.Default.ApiResponseGuildSpendEffectPageDto);
         }).WithName("GuildListSpendEffects");
 
         api.MapGet("/guild/quests/{questId:guid}/spend/effects/{effectId:guid}", async (Guid questId, Guid effectId,
-            GuildNativeHost host, GuildQuestStore store, HttpContext context) =>
+            GuildNativeHost host, GuildSpendRefreshService service, HttpContext context) =>
         {
             if (questId == Guid.Empty || effectId == Guid.Empty)
                 return Reply(Result<GuildSpendEffectDto>.Failure(Invalid), context, ArcanumJsonContext.Default.ApiResponseGuildSpendEffectDto);
@@ -39,7 +39,7 @@ internal static class GuildSpendEndpoints
             Result<GuildCallerContext> caller = await host.CreateCallerAsync(Guid.NewGuid(), context.RequestAborted).ConfigureAwait(false);
 
             Result<GuildSpendEffectDto> result = caller.IsFailure ? caller.Error
-                : await store.ReadOperatorSpendEffectAsync(caller.Value, questId, effectId, context.RequestAborted).ConfigureAwait(false);
+                : await service.ReadEffectAsync(caller.Value, questId, effectId, context.RequestAborted).ConfigureAwait(false);
 
             return Reply(result, context, ArcanumJsonContext.Default.ApiResponseGuildSpendEffectDto);
         }).WithName("GuildGetSpendEffect");
@@ -69,6 +69,38 @@ internal static class GuildSpendEndpoints
             return Reply(result, context, ArcanumJsonContext.Default.ApiResponseGuildSpendCorrectionResultDto,
                 result.IsSuccess && !result.Value.Replayed ? StatusCodes.Status201Created : StatusCodes.Status200OK);
         }).WithName("GuildCorrectSpendEffect");
+
+        api.MapPost("/guild/quests/{questId:guid}/spend/effects/{effectId:guid}/refreshes", async (Guid questId, Guid effectId,
+            GuildNativeHost host, GuildSpendRefreshService service, HttpContext context) =>
+        {
+            GuildSpendRefreshRequest? request;
+
+            try
+            {
+                request = await JsonSerializer.DeserializeAsync(context.Request.Body, ArcanumJsonContext.Default.GuildSpendRefreshRequest, context.RequestAborted).ConfigureAwait(false);
+            }
+            catch (JsonException)
+            {
+                request = null;
+            }
+
+            if (questId == Guid.Empty || effectId == Guid.Empty || request is null || request.IdempotencyKey == Guid.Empty)
+                return Reply(Result<GuildSpendRefreshResultDto>.Failure(Invalid), context, ArcanumJsonContext.Default.ApiResponseGuildSpendRefreshResultDto);
+
+            Result<GuildCallerContext> caller = await host.CreateCallerAsync(request.IdempotencyKey, context.RequestAborted).ConfigureAwait(false);
+
+            Result<GuildSpendRefreshResult> refreshed = caller.IsFailure ? caller.Error
+                : await service.RefreshAsync(caller.Value, questId, effectId, request.IdempotencyKey, context.RequestAborted).ConfigureAwait(false);
+
+            Result<GuildSpendRefreshResultDto> result = refreshed.IsFailure ? refreshed.Error
+                : new GuildSpendRefreshResultDto(refreshed.Value.OperationId, refreshed.Value.Receipt, refreshed.Value.Replayed,
+                    refreshed.Value.InFlight, refreshed.Value.RequiresAttention,
+                    refreshed.Value.ErrorCode ?? (refreshed.Value.Cancelled ? ErrorCodes.Guild.RefreshCancelled : refreshed.Value.RequiresAttention ? ErrorCodes.Guild.ReconciliationRequired : null),
+                    refreshed.Value.Cancelled);
+
+            return Reply(result, context, ArcanumJsonContext.Default.ApiResponseGuildSpendRefreshResultDto,
+                result.IsSuccess && (result.Value.InFlight || result.Value.RequiresAttention) ? StatusCodes.Status202Accepted : StatusCodes.Status200OK);
+        }).WithName("GuildRefreshSpendEffect");
 
         api.MapGet("/guild/quests/{questId:guid}/spend/effects/{effectId:guid}/receipts", async (Guid questId, Guid effectId,
             string? cursor, int? pageSize, GuildNativeHost host, GuildQuestStore store, HttpContext context) =>

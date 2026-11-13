@@ -393,6 +393,11 @@ public sealed partial class GuildLocalHostPolicyTests
             var identity = await currentStore.ReadRemoteTaskIdentityAsync(new(currentExecution, "observe", 0, observationCaller.Value), default);
             Assert.True(identity.IsSuccess, identity.Error.Message);
 
+            GuildTreeSnapshotDto? correctionSnapshot = null;
+            GuildChangeEventDto? correctionEvent = null;
+            long previousRevision = 0;
+            IGuildTreeSpendLedger spendLedger = currentStore;
+
             async Task ObserveCostAsync(long? tokens, decimal? usd, bool replay)
             {
                 long beforeEvidence = await f.ScalarAsync("SELECT COUNT(*) FROM guild_budget_evidence");
@@ -403,8 +408,20 @@ public sealed partial class GuildLocalHostPolicyTests
                 GuildQuestDriver observationDriver = new(currentExecution, "test-observation", lease.Operation.Revision, observationCaller.Value);
                 A2AGuildTaskObservation observation = new(identity.Value.TaskId, identity.Value.ContextId, "input-required", "Which answer?",
                     new A2ARemoteCost(usd.HasValue && tokens.HasValue, tokens, usd), now);
-                if (tokens == 20 && usd == 1m)
+                if (tokens == 40 && usd == 2m)
                 {
+                    var captured = await portal.CaptureTreeSnapshotAsync(caller, quest.Id, default);
+                    Assert.True(captured.IsSuccess, captured.Error.Message);
+                    correctionSnapshot = captured.Value;
+                    var previousEffect = await currentStore.ReadOperatorSpendEffectAsync(caller, quest.Id, quest.Id, default);
+                    Assert.True(previousEffect.IsSuccess, previousEffect.Error.Message);
+                    previousRevision = previousEffect.Value.EvidenceRevision;
+                }
+
+                if (tokens == 20 && usd == 1m || tokens == 40 && usd == 2m)
+                {
+                    var spendBeforeFailure = await spendLedger.ReadAsync(caller, quest.Id, default);
+                    Assert.True(spendBeforeFailure.IsSuccess, spendBeforeFailure.Error.Message);
                     await using var abort = connection.Connection.CreateCommand();
                     abort.CommandText = "CREATE TRIGGER fixture_abort_remote_receipt BEFORE INSERT ON guild_spend_receipts BEGIN SELECT RAISE(ABORT,'injected'); END";
                     await abort.ExecuteNonQueryAsync();
@@ -412,6 +429,18 @@ public sealed partial class GuildLocalHostPolicyTests
                     Assert.True(failed.IsFailure);
                     Assert.Equal(beforeEvidence, await f.ScalarAsync("SELECT COUNT(*) FROM guild_budget_evidence"));
                     Assert.Equal(beforeEvents, await f.ScalarAsync("SELECT COUNT(*) FROM guild_events WHERE EventKindCode=" + (int)GuildEventKind.SpendChanged));
+                    if (correctionSnapshot is not null)
+                    {
+                        var failedSnapshot = await portal.CaptureTreeSnapshotAsync(caller, quest.Id, default);
+                        var failedSpend = await spendLedger.ReadAsync(caller, quest.Id, default);
+                        var failedReplay = await portal.ReadScopedReplayAsync(caller, quest.Id, quest.Id, null, correctionSnapshot.ResumeCursor, default);
+                        Assert.True(failedSnapshot.IsSuccess, failedSnapshot.Error.Message);
+                        Assert.True(failedSpend.IsSuccess, failedSpend.Error.Message);
+                        Assert.True(failedReplay.IsSuccess, failedReplay.Error.Message);
+                        Assert.Equal(correctionSnapshot.Watermark, failedSnapshot.Value.Watermark);
+                        Assert.Equal(spendBeforeFailure.Value, failedSpend.Value);
+                        Assert.Empty(failedReplay.Value.Page.Items);
+                    }
                     abort.CommandText = "DROP TRIGGER fixture_abort_remote_receipt";
                     await abort.ExecuteNonQueryAsync();
                 }
@@ -420,6 +449,35 @@ public sealed partial class GuildLocalHostPolicyTests
                 Assert.True(observed.IsSuccess, observed.Error.Message);
                 Assert.Equal(beforeEvidence + (replay ? 0 : 1), await f.ScalarAsync("SELECT COUNT(*) FROM guild_budget_evidence"));
                 Assert.Equal(beforeEvents + (replay ? 0 : 1), await f.ScalarAsync("SELECT COUNT(*) FROM guild_events WHERE EventKindCode=" + (int)GuildEventKind.SpendChanged));
+                if (tokens == 40 && usd == 2m)
+                {
+                    var events = await portal.ReadScopedReplayAsync(caller, quest.Id, quest.Id, null, correctionSnapshot!.ResumeCursor, default);
+                    Assert.True(events.IsSuccess, events.Error.Message);
+                    correctionEvent = Assert.Single(events.Value.Page.Items.Where(item => item.SpendSource is not null));
+                    var source = Assert.IsType<GuildSpendSourceDto>(correctionEvent.SpendSource);
+                    Assert.Equal(quest.Id, source.EffectId);
+                    Assert.Equal(GuildSpendOrigin.RemoteReport, source.Origin);
+                    Assert.Equal(previousRevision + 1, source.EvidenceRevision);
+                    var receipt = await currentStore.ReadOperatorSpendReceiptAsync(caller, quest.Id, source.EffectId, source.ReceiptId, default);
+                    Assert.True(receipt.IsSuccess, receipt.Error.Message);
+                    Assert.Equal(source.EvidenceRevision, receipt.Value.EvidenceRevision);
+                    Assert.Equal(GuildSpendOrigin.RemoteReport, receipt.Value.Origin);
+                    Assert.Equal(quest.Id, receipt.Value.QuestId);
+                    Assert.Equal(quest.Id, receipt.Value.EffectId);
+                    Assert.Equal(correctionEvent.EventSequence, receipt.Value.EventSequence);
+                    Assert.Equal(40, receipt.Value.Facts.KnownTokens);
+                    Assert.Equal(2m, receipt.Value.Facts.KnownUsd);
+                    var spend = await spendLedger.ReadAsync(caller, quest.Id, default);
+                    Assert.True(spend.IsSuccess, spend.Error.Message);
+                    Assert.Equal(40, spend.Value.KnownTokens);
+                    Assert.Equal(2m, spend.Value.KnownUsd);
+                }
+                else if (tokens == 30 && usd is null && replay)
+                {
+                    var reconnected = await portal.ReadScopedReplayAsync(caller, quest.Id, quest.Id, null, correctionSnapshot!.ResumeCursor, default);
+                    Assert.True(reconnected.IsSuccess, reconnected.Error.Message);
+                    Assert.Equal(correctionEvent, Assert.Single(reconnected.Value.Page.Items.Where(item => item.SpendSource is not null)));
+                }
             }
 
             await ObserveCostAsync(20, 1m, false);
