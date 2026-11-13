@@ -29,12 +29,13 @@ public sealed partial class GuildLocalHostPolicyTests
     [InlineData("zero")]
     [InlineData("cap")]
     [InlineData("qualified-cap")]
+    [InlineData("qualified-breach")]
     [InlineData("fault")]
     public async Task Financial_off_real_child_inference_is_consumed_by_parent_provider_round(string usage)
     {
         using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
 
-        await using Fixture f = await Fixture.CreateAsync(localExecution: true, productionOptions: usage == "qualified-cap");
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true, productionOptions: usage is "qualified-cap" or "qualified-breach");
 
         f.Settings.CurrentValue.Features.Conclave = true;
 
@@ -42,7 +43,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         f.Settings.CurrentValue.Cost.Budget.Enabled = false;
 
-        if (usage == "qualified-cap")
+        if (usage is "qualified-cap" or "qualified-breach")
         {
             f.Settings.CurrentValue.DefaultModel = "gpt-5.4-mini-2026-03-17";
 
@@ -98,7 +99,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         settings.Cost.Budget.Enabled = false;
 
-        if (usage == "qualified-cap")
+        if (usage is "qualified-cap" or "qualified-breach")
         {
             settings.DefaultModel = "gpt-5.4-mini-2026-03-17";
 
@@ -177,9 +178,9 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.Equal(GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Usd.Mode);
 
-            Assert.Equal(usage is "cap" or "qualified-cap" ? GuildBudgetMode.Finite : GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Tokens.Mode);
+            Assert.Equal(usage is "cap" or "qualified-cap" or "qualified-breach" ? GuildBudgetMode.Finite : GuildBudgetMode.Unlimited, child.ResolvedGrant.Budget.Tokens.Mode);
 
-            if (usage is "cap" or "qualified-cap")
+            if (usage is "cap" or "qualified-cap" or "qualified-breach")
                 Assert.Equal(usage == "cap" ? 100_000 : 600_000, child.ResolvedGrant.Budget.Tokens.Value);
 
             Assert.Empty(child.ResolvedGrant.Tools);
@@ -210,6 +211,21 @@ public sealed partial class GuildLocalHostPolicyTests
             Assert.True(completed.IsSuccess, completed.Error.Message);
 
             var result = await invocation;
+
+            if (usage == "qualified-breach")
+            {
+                Assert.True(result.IsFailure);
+
+                Assert.Equal(ErrorCodes.Guild.GrantExceeded, result.Error.Code);
+
+                Assert.Equal(2, transport.Bodies.Count);
+
+                Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND TokenBound IS NOT NULL AND KnownTokens>TokenBound"));
+
+                Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
+
+                return;
+            }
 
             Assert.True(result.IsSuccess, result.Error.Message);
 
@@ -262,7 +278,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.NotNull(childResult.Value.Receipt);
 
-            Assert.Equal(3L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd={(usage == "qualified-cap" ? 0 : 1)} AND UnknownTokens={(usage is "zero" or "qualified-cap" ? 0 : 1)} AND KnownTokens={(usage == "partial" ? 7 : 0)}"));
+            Assert.Equal(3L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd={(usage is "qualified-cap" or "qualified-breach" ? 0 : 1)} AND UnknownTokens={(usage is "zero" or "qualified-cap" ? 0 : 1)} AND KnownTokens={(usage == "partial" ? 7 : 0)}"));
 
             Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_result_applications"));
 
@@ -1397,7 +1413,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             int toolOrdinal = FullParent ? 2 : 1;
 
-            string message = ordinal == toolOrdinal && Usage == "qualified-cap"
+            string message = ordinal == toolOrdinal && Usage is "qualified-cap" or "qualified-breach"
                 ? """{"role":"assistant","content":null,"tool_calls":[{"id":"call-child","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\",\"max_tokens\":600000}"}}]}"""
                 : ordinal == toolOrdinal && Usage == "cap"
                 ? """{"role":"assistant","content":null,"tool_calls":[{"id":"call-child","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\",\"max_tokens\":100000}"}}]}"""
@@ -1414,7 +1430,8 @@ public sealed partial class GuildLocalHostPolicyTests
             string usage = Usage switch
             {
                 "partial" => ",\"usage\":{\"prompt_tokens\":7}",
-                "zero" or "cap" or "qualified-cap" => ",\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}",
+                "qualified-breach" when ordinal == 2 => ",\"usage\":{\"prompt_tokens\":500000,\"completion_tokens\":1,\"total_tokens\":500001}",
+                "zero" or "cap" or "qualified-cap" or "qualified-breach" => ",\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}",
                 _ => "",
             };
 
