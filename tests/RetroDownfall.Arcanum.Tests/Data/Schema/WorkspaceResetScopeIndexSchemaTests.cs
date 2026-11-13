@@ -21,7 +21,7 @@ public sealed class WorkspaceResetScopeIndexSchemaTests
             static item => item.Sql.Contains(IndexName, StringComparison.Ordinal));
 
         // The captured predecessor is Core-only; its ChainSet uses the current optional-family heads.
-        Assert.Equal(39, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        Assert.Equal(40, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
         Assert.Equal(7, GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion);
 

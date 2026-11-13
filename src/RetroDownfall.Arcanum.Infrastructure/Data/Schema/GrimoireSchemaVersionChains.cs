@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 39 and declares thirty-eight steps, Covenant canonical is at version 7 and declares six,
+/// Core is at version 40 and declares thirty-nine steps, Covenant canonical is at version 7 and declares six,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -157,7 +157,7 @@ internal static class GrimoireSchemaVersionChains
     /// staged decisions after any label insertion or deletion without coupling Core writes to an
     /// optional capability. Existing labels remain unchanged.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 39;
+    internal const int CoreSchemaVersion = 40;
 
     internal const int GuildCanonicalSchemaVersion = 15;
 
@@ -403,6 +403,9 @@ internal static class GrimoireSchemaVersionChains
 
             // Frozen Core35 catalog before the standalone attachment retrieval index.
             [(GrimoireSchemaTransactionTier.Core, 36)] = "1243F9B7B5256B4C07A71E030C145D20804297950101E93A5E411510D872E148",
+
+            // Published Core39 before the normalized reservation identity index.
+            [(GrimoireSchemaTransactionTier.Core, 40)] = "8039D59876DB73F0B03CEFBB9A24364376B057F603099F57AE4FFA1407FBD448",
 
             [(GrimoireSchemaTransactionTier.Core, 39)] = "614F0BD1685656251669D0268734BB045B805B85AD4CD43D9DEDAEA83E4A71B5",
 

@@ -13,7 +13,7 @@ public sealed class GuildSignetSchemaTests
 
         var installed = await GrimoireSchemaTestInstaller.InstallAsync(connection, 768, CancellationToken.None);
 
-        Assert.Equal(39, installed.Core.SchemaVersion);
+        Assert.Equal(40, installed.Core.SchemaVersion);
 
         Assert.Equal(15, installed.GuildCanonical.SchemaVersion);
 
