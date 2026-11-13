@@ -416,6 +416,8 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.True(replay.Value.RequiresAttention);
 
+        Assert.Equal(result.Value.ErrorCode, replay.Value.ErrorCode);
+
         Assert.False(replay.Value.InFlight);
     }
 
@@ -719,6 +721,10 @@ public sealed partial class GuildQuestStoreTests
 
     private sealed class BlockingRefreshOperationStore(ILongRunningOperationStore inner) : ILongRunningOperationStore
     {
+        internal bool ReturnMissing { get; set; }
+
+        internal bool ThrowOnGet { get; set; }
+
         internal bool CancelAcquire { get; set; }
 
         internal bool CommitBeforeCancel { get; set; }
@@ -729,7 +735,9 @@ public sealed partial class GuildQuestStoreTests
 
         internal TaskCompletionSource HeartbeatFinished { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Task<LongRunningOperation?> GetAsync(Guid id, CancellationToken ct = default) => inner.GetAsync(id, ct);
+        public Task<LongRunningOperation?> GetAsync(Guid id, CancellationToken ct = default) => ThrowOnGet
+            ? Task.FromException<LongRunningOperation?>(new InvalidOperationException("Operation store unavailable"))
+            : ReturnMissing ? Task.FromResult<LongRunningOperation?>(null) : inner.GetAsync(id, ct);
 
         public async Task<LongRunningOperationLeaseResult> TryAcquireLeaseAsync(Guid id, string owner, DateTimeOffset now, DateTimeOffset expiry,
             CancellationToken ct = default)

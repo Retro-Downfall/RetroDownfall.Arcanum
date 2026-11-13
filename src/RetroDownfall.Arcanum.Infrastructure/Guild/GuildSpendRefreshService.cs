@@ -56,6 +56,10 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
             {
                 return await RunClaimedAsync(caller, questId, effectId, refreshId, operationId, provider, model, before.Value, entry, lifetime.Token).ConfigureAwait(false);
             }
+            catch (Exception)
+            {
+                return new GuildSpendRefreshResult(operationId, null, false, false, true, ErrorCodes.Guild.ReconciliationRequired);
+            }
             finally
             {
                 ownership.Release(operationId, claim);
@@ -126,17 +130,30 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
     {
         if (receipt is not null) return new GuildSpendRefreshResult(operationId, receipt, true, false);
 
-        LongRunningOperation? operation = await operations.GetAsync(operationId, ct).ConfigureAwait(false);
+        LongRunningOperation? operation;
+
+        try
+        {
+            operation = await operations.GetAsync(operationId, ct).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            return new GuildSpendRefreshResult(operationId, null, false, false, true, ErrorCodes.Guild.ReconciliationRequired);
+        }
 
         if (operation is null || operation.Kind != LongRunningOperationKinds.GuildSpendRefresh
-            || operation.RecoveryPolicy != LongRunningOperationRecoveryPolicy.ReconcileAndComplete) return Unavailable;
+            || operation.RecoveryPolicy != LongRunningOperationRecoveryPolicy.ReconcileAndComplete)
+            return new GuildSpendRefreshResult(operationId, null, false, false, true, ErrorCodes.Guild.ReconciliationRequired);
 
         return operation.State switch
         {
             LongRunningOperationState.Pending or LongRunningOperationState.Running or LongRunningOperationState.Waiting or LongRunningOperationState.Cancelling =>
                 new GuildSpendRefreshResult(operationId, null, false, true),
-            LongRunningOperationState.ReconciliationRequired => new GuildSpendRefreshResult(operationId, null, false, false, true),
-            _ => Unavailable,
+            LongRunningOperationState.ReconciliationRequired => new GuildSpendRefreshResult(operationId, null, false, false, true,
+                operation.TerminalErrorCode is ErrorCodes.Guild.Unavailable or ErrorCodes.Guild.SourceExpired
+                    or ErrorCodes.Guild.SourceConflict or ErrorCodes.Guild.InitialEvidenceUnavailable
+                    ? operation.TerminalErrorCode : ErrorCodes.Guild.ReconciliationRequired),
+            _ => new GuildSpendRefreshResult(operationId, null, false, false, true, ErrorCodes.Guild.ReconciliationRequired),
         };
     }
 
