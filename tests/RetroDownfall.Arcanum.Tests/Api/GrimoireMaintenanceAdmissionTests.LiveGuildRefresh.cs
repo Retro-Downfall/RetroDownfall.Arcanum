@@ -117,8 +117,49 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
             }
 
             using (response)
+            {
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-            Assert.True(response.IsSuccessStatusCode, $"Factory reset returned {response.StatusCode}.");
+                var envelope = await response.Content.ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
+
+                Assert.NotNull(envelope);
+
+                Assert.True(envelope.IsSuccess);
+
+                Assert.NotNull(envelope.Data);
+
+                Assert.True(envelope.Data.Reconciled);
+
+                Assert.Empty(envelope.Data.Conflicts);
+
+                Assert.Equal(requestedOperation, envelope.Data.RequestedOperationId);
+
+                Assert.Equal(initialGeneration + 1, harness.Admission.CurrentGeneration);
+
+                Assert.True(harness.Admission.StageTwo.CompletedCount > 0);
+
+                Assert.Equal(ConnectionState.Closed, refresh.OperationConnection.State);
+
+                using IServiceScope inspection = harness.Factory.Services.CreateScope();
+
+                LongRunningOperation operation = Assert.IsType<LongRunningOperation>(await inspection.ServiceProvider
+                    .GetRequiredService<ILongRunningOperationStore>().GetAsync(envelope.Data.OperationId));
+
+                Assert.Equal(LongRunningOperationState.Completed, operation.State);
+
+                var opened = await inspection.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>()
+                    .OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, default);
+
+                Assert.True(opened.IsSuccess, opened.IsFailure ? opened.Error.Message : null);
+
+                await using IGrimoireOrdinaryConnectionLease lease = opened.Value;
+
+                await using SqliteCommand source = lease.Connection.CreateCommand();
+
+                source.CommandText = "SELECT COUNT(*) FROM guild_spend_sources";
+
+                Assert.Equal(0L, await source.ExecuteScalarAsync());
+            }
         }
         finally
         {
