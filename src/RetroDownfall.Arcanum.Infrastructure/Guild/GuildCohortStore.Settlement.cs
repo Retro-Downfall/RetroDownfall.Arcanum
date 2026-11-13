@@ -24,6 +24,12 @@ internal sealed partial class GuildCohortStore
 
             if (root.Kind != GuildBudgetOwnerKind.Cohort || root.OwnerId != cohort.Id) return Unavailable;
 
+            // Validated finite narrowing makes each account's own immutable limits
+            // equivalent to the inherited finite axes for an established generation.
+            root.FiniteUsd = root.UsdLimit is not null;
+
+            root.FiniteTokens = root.TokenLimit is not null;
+
             long epoch;
 
             await using (SqliteCommand clock = Command(connection, transaction,
@@ -69,8 +75,39 @@ internal sealed partial class GuildCohortStore
 
             if (generation < 1 || complete != (current is null)) return Unavailable;
 
+            if (initialized)
+            {
+                var storedRoot = await LoadSettlementNodeAsync(connection, transaction, cohort.Id, generation, root.AccountId, ct, allowOld: true).ConfigureAwait(false);
+
+                if (storedRoot.IsFailure) return storedRoot.Error;
+
+                if (storedRoot.Value.RootAccountId != root.RootAccountId || storedRoot.Value.Kind != root.Kind
+                    || storedRoot.Value.OwnerId != root.OwnerId || storedRoot.Value.ParentAccountId is not null) return Unavailable;
+
+                if (storedRoot.Value.FormatVersion == 0)
+                {
+                    generation = checked(generation + 1);
+
+                    initialized = false;
+
+                    current = root.AccountId;
+
+                    complete = false;
+                }
+            }
+
             if (!initialized)
             {
+                Result<(bool Usd, bool Tokens)> lineage = await GuildBudgetLedger.ReadFiniteLineageAsync(
+                    connection, transaction, root.AccountId, false, ct).ConfigureAwait(false);
+
+                if (lineage.IsFailure) return lineage.Error;
+
+                if (lineage.Value.Usd != root.FiniteUsd || lineage.Value.Tokens != root.FiniteTokens) return Unavailable;
+
+                if (!await GuildQuestStore.ValidateAccountingLineageOwnershipAsync(connection, transaction,
+                    cohort.RootQuestId, root.AccountId, ct).ConfigureAwait(false)) return Unavailable;
+
                 await SaveSettlementNodeAsync(connection, transaction, cohort.Id, generation, root, ct).ConfigureAwait(false);
 
                 await SaveSettlementStateAsync(connection, transaction, cohort.Id, generation, epoch, current, ct).ConfigureAwait(false);
@@ -167,7 +204,13 @@ internal sealed partial class GuildCohortStore
                     if (admitted.IsFailure) return admitted.Error;
 
                     if (admitted.Value.RootAccountId != root.RootAccountId
-                        || admitted.Value.Kind == GuildBudgetOwnerKind.Cohort && node.Kind != GuildBudgetOwnerKind.Quest) return Unavailable;
+                        || admitted.Value.Kind == GuildBudgetOwnerKind.Cohort && node.Kind != GuildBudgetOwnerKind.Quest
+                        || node.UsdLimit is { } parentUsd && (admitted.Value.UsdLimit is null || Usd(admitted.Value.UsdLimit) > Usd(parentUsd))
+                        || node.TokenLimit is { } parentTokens && (admitted.Value.TokenLimit is null || admitted.Value.TokenLimit > parentTokens)) return Unavailable;
+
+                    admitted.Value.FiniteUsd = node.FiniteUsd || admitted.Value.UsdLimit is not null;
+
+                    admitted.Value.FiniteTokens = node.FiniteTokens || admitted.Value.TokenLimit is not null;
 
                     node.LastChild = childId;
 
@@ -224,7 +267,8 @@ internal sealed partial class GuildCohortStore
                 SettlementGrant(remainingUsd is { } value ? ExactUsdText.Format(value) : null, remainingTokens),
                 SettlementGrant(total.ActiveUsd, total.ActiveTokens), SettlementGrant(total.HoldUsd, total.HoldTokens),
                 Usd(total.KnownUsd), total.KnownTokens, total.UnknownUsd, total.UnknownTokens, total.Priced, total.Unpriced,
-                total.Uncertain, total.Revision, total.Closed, SettlementGrant(total.LiabilityUsd, total.LiabilityTokens), total.CapabilityFault);
+                total.Uncertain, total.Revision, total.Closed, SettlementGrant(total.LiabilityUsd, total.LiabilityTokens), total.CapabilityFault,
+                total.PhysicalBlocked, total.UsdBlocked, total.TokensBlocked);
 
             return new GuildCohortSettlementStep(snapshot, total.PendingMembers, total.PendingDescendants, total.CancelRequested, true, total.PendingAccounts, total.PendingEffects);
         }
@@ -262,6 +306,9 @@ internal sealed partial class GuildCohortStore
         target.HoldTokens = AddTokens(target.HoldTokens, child.HoldTokens);
         target.UnknownUsd |= child.UnknownUsd;
         target.UnknownTokens |= child.UnknownTokens;
+        target.PhysicalBlocked |= child.PhysicalBlocked;
+        target.UsdBlocked |= child.UsdBlocked;
+        target.TokensBlocked |= child.TokensBlocked;
         target.CapabilityFault |= child.CapabilityFault;
         target.Priced = checked(target.Priced + child.Priced);
         target.Unpriced = checked(target.Unpriced + child.Unpriced);

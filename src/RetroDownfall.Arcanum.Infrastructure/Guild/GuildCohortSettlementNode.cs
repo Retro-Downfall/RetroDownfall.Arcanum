@@ -5,6 +5,20 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 // Content-free, disposable traversal state. Monetary strings use ExactUsdText throughout.
 internal sealed class GuildCohortSettlementNode
 {
+    internal const int CurrentFormatVersion = 1;
+
+    public int FormatVersion { get; set; }
+
+    public bool FiniteUsd { get; set; }
+
+    public bool FiniteTokens { get; set; }
+
+    public bool PhysicalBlocked { get; set; }
+
+    public bool UsdBlocked { get; set; }
+
+    public bool TokensBlocked { get; set; }
+
     public Guid AccountId { get; set; }
 
     public Guid RootAccountId { get; set; }

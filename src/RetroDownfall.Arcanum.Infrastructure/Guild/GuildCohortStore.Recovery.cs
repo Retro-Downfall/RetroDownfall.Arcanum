@@ -134,9 +134,10 @@ internal sealed partial class GuildCohortStore
 
                 if (cohort.State == GuildCohortState.Draining && decision is not null
                     && settlement.Value.PendingMembers == 0 && settlement.Value.PendingDescendants == 0
-                    && settlement.Value.CancelRequested == 0 && settlement.Value.PendingAccounts == 0 && settlement.Value.PendingEffects == 0 && !snapshot.UnknownUsd && !snapshot.UnknownTokens
-                    && snapshot.UncertainCount == 0 && snapshot.UnpricedCount == 0
-                    && Empty(snapshot.OutstandingAllocation) && Empty(snapshot.UnresolvedHolds))
+                    && settlement.Value.CancelRequested == 0 && settlement.Value.PendingAccounts == 0 && settlement.Value.PendingEffects == 0
+                    && !snapshot.PhysicalBlocked && !snapshot.UsdBlocked && !snapshot.TokensBlocked && !snapshot.CapabilityFault
+                    && Empty(snapshot.OutstandingAllocation) && Empty(snapshot.UnresolvedHolds)
+                    && await GuildBudgetObligations.ReservationsClearWithinAsync(connection, transaction, cohort.AllocationAccountId, token).ConfigureAwait(false))
                 {
                     Result closed = await budgets.CloseAccountWithinAsync(connection, transaction, cohort.AllocationAccountId, cohort.Id, token).ConfigureAwait(false);
 

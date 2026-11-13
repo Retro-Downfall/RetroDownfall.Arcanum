@@ -195,19 +195,31 @@ internal sealed partial class GuildBudgetLedger(BudgetReservationService? daily 
     private static async Task<Result> ValidateLineageAsync(SqliteConnection connection, SqliteTransaction transaction,
         Guid accountId, bool requireOpen, CancellationToken ct)
     {
+        Result<(bool Usd, bool Tokens)> result = await ReadFiniteLineageAsync(connection, transaction, accountId, requireOpen, ct).ConfigureAwait(false);
+
+        return result.IsFailure ? Result.Failure(result.Error) : Result.Success();
+    }
+
+    internal static async Task<Result<(bool Usd, bool Tokens)>> ReadFiniteLineageAsync(SqliteConnection connection,
+        SqliteTransaction transaction, Guid accountId, bool requireOpen, CancellationToken ct)
+    {
         await using SqliteCommand command = Command(connection, transaction, """
             WITH RECURSIVE lineage(Id) AS (
                 SELECT AccountId FROM guild_budget_accounts WHERE AccountId=$id
                 UNION
                 SELECT a.ParentAccountId FROM guild_budget_accounts a JOIN lineage l ON a.AccountId=l.Id WHERE a.ParentAccountId IS NOT NULL
             )
-            SELECT AccountId,OwnerKindCode,OwnerId,RootAccountId,ParentAccountId,UsdLimit,TokenLimit,Closed,SettlementReceiptId,Revision
+            SELECT a.AccountId,a.OwnerKindCode,a.OwnerId,a.RootAccountId,a.ParentAccountId,a.UsdLimit,a.TokenLimit,
+                a.Closed,a.SettlementReceiptId,a.Revision,p.AccountId,p.OwnerKindCode,p.RootAccountId,p.UsdLimit,p.TokenLimit
             FROM guild_budget_accounts a JOIN lineage l ON a.AccountId=l.Id
+            LEFT JOIN guild_budget_accounts p ON p.AccountId=a.ParentAccountId
             """);
 
         Add(command, "$id", Id(accountId));
 
-        Dictionary<Guid, Account> lineage = [];
+        bool finiteUsd = false, finiteTokens = false, found = false, foundRoot = false;
+
+        Guid? rootId = null;
 
         try
         {
@@ -217,38 +229,54 @@ internal sealed partial class GuildBudgetLedger(BudgetReservationService? daily 
             {
                 Account account = ParseAccount(reader);
 
-                if (!Enum.IsDefined(account.Kind) || account.Usd < 0 || account.Tokens < 0 || account.Revision < 1) return Invalid;
+                if (!Enum.IsDefined(account.Kind) || account.Id == Guid.Empty || account.OwnerId == Guid.Empty
+                    || account.RootId == Guid.Empty || account.Usd < 0 || account.Tokens < 0 || account.Revision < 1) return Invalid;
 
-                lineage.Add(account.Id, account);
+                rootId ??= account.RootId;
+
+                if (account.RootId != rootId) return Invalid;
+
+                if (requireOpen && account.Closed) return Closed;
+
+                finiteUsd |= account.Usd is not null;
+
+                finiteTokens |= account.Tokens is not null;
+
+                found = true;
+
+                if (account.ParentId is not { } parentId)
+                {
+                    if (foundRoot || account.Kind != GuildBudgetOwnerKind.Quest || account.Id != rootId) return Invalid;
+
+                    foundRoot = true;
+
+                    continue;
+                }
+
+                if (reader.IsDBNull(10) || Guid.Parse(reader.GetString(10)) != parentId
+                    || !Enum.IsDefined((GuildBudgetOwnerKind)reader.GetInt32(11))
+                    || Guid.Parse(reader.GetString(12)) != rootId
+                    || account.Kind == GuildBudgetOwnerKind.Cohort && (GuildBudgetOwnerKind)reader.GetInt32(11) != GuildBudgetOwnerKind.Quest) return Invalid;
+
+                decimal? parentUsd = reader.IsDBNull(13) ? null : ExactUsdText.Read(reader, 13);
+
+                long? parentTokens = reader.IsDBNull(14) ? null : reader.GetInt64(14);
+
+                if (parentUsd < 0 || parentTokens < 0
+                    || parentUsd is { } usd && (account.Usd is null || account.Usd > usd)
+                    || parentTokens is { } tokens && (account.Tokens is null || account.Tokens > tokens)) return Invalid;
             }
         }
-        catch (FormatException)
+        catch (Exception error) when (error is FormatException or InvalidCastException or ArgumentException or OverflowException)
         {
             return Invalid;
         }
 
-        if (!lineage.TryGetValue(accountId, out Account? current)) return Missing;
+        if (!found) return Missing;
 
-        Guid rootId = current.RootId;
-
-        HashSet<Guid> visited = [];
-
-        while (true)
-        {
-            ct.ThrowIfCancellationRequested();
-
-            if (!visited.Add(current.Id) || current.RootId != rootId) return Invalid;
-
-            if (requireOpen && current.Closed) return Closed;
-
-            if (current.ParentId is not { } parentId)
-                return current.Kind == GuildBudgetOwnerKind.Quest && current.Id == rootId ? Result.Success() : Invalid;
-
-            if (!lineage.TryGetValue(parentId, out Account? parent)
-                || current.Kind == GuildBudgetOwnerKind.Cohort && parent.Kind != GuildBudgetOwnerKind.Quest) return Invalid;
-
-            current = parent;
-        }
+        // The recursive UNION admits each immutable parent edge once. A cycle or a
+        // dangling parent cannot also reach the one parentless funding root.
+        return foundRoot ? (finiteUsd, finiteTokens) : Invalid;
     }
 
     private static bool Valid(GuildBudgetGrant? grant) => grant is not null

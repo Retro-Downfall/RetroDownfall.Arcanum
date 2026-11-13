@@ -538,6 +538,9 @@ public sealed partial class GuildLocalHostPolicyTests
             await f.ExecuteAsync("DROP TRIGGER guild_budget_effects_guard_update; UPDATE guild_budget_effects SET StateCode=1,UnknownUsd=0,UnknownTokens=0");
         }
 
+        if (!live)
+            await f.ExecuteAsync($"DELETE FROM guild_budget_evidence WHERE EffectId IN (SELECT EffectId FROM guild_budget_effects WHERE QuestId='{members[0].Quest.Id:D}' COLLATE NOCASE)");
+
         GuildCleanupOwner cleanupOwner = new(2, members[0].Quest.SessionId!.Value, null);
 
         var result = await new GuildQuestCleanupParticipant(f.Connections, TimeProvider.System).ReconcileAsync(cleanupOwner, default);
@@ -545,6 +548,40 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(1L, await f.ScalarAsync($"SELECT AccountingStateCode FROM guild_quests WHERE Id='{members[0].Quest.Id:D}' COLLATE NOCASE"));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task Owner_cleanup_repairs_unrestricted_terminal_projection_once(int oldState)
+    {
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        var (owner, _, _, _, _, members) = await ConvergenceFixtureAsync(f, GuildConvergenceKind.All, null, "text/plain", 1);
+
+        await CommitConvergenceResultAsync(f, owner, members[0], "done", recordBilling: false);
+
+        string quest = members[0].Quest.Id.ToString("D").ToUpperInvariant();
+
+        await f.ExecuteAsync($"DELETE FROM guild_portal_outbox WHERE QuestId='{quest}' AND SourceKindCode=2");
+
+        await f.ExecuteAsync($"UPDATE guild_quests SET AccountingStateCode={oldState},Revision=Revision+1 WHERE Id='{quest}'");
+
+        GuildCleanupOwner cleanupOwner = new(2, members[0].Quest.SessionId!.Value, null);
+
+        GuildQuestCleanupParticipant cleanup = new(f.Connections, TimeProvider.System);
+
+        _ = await cleanup.ReconcileAsync(cleanupOwner, default);
+
+        Assert.Equal(0L, await f.ScalarAsync($"SELECT AccountingStateCode FROM guild_quests WHERE Id='{quest}'"));
+
+        Assert.Equal(1L, await f.ScalarAsync($"SELECT count(*) FROM guild_portal_outbox WHERE QuestId='{quest}' AND SourceKindCode=2"));
+
+        long events = await f.ScalarAsync("SELECT count(*) FROM guild_events");
+
+        _ = await cleanup.ReconcileAsync(cleanupOwner, default);
+
+        Assert.Equal(events, await f.ScalarAsync("SELECT count(*) FROM guild_events"));
     }
 
     [Fact]

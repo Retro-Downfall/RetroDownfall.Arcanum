@@ -28,90 +28,68 @@ internal sealed class GuildQuestCleanupParticipant(IGrimoireOrdinaryConnectionFa
     {
         var opened = await connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite, cancellationToken).ConfigureAwait(false);
 
-        if (opened.IsFailure)
-        {
-            return opened.Error;
-        }
+        if (opened.IsFailure) return opened.Error;
 
         await using IGrimoireOrdinaryConnectionLease lease = opened.Value;
 
         Result available = await GuildStorageAvailability.CheckAsync(lease.Connection, null, cancellationToken).ConfigureAwait(false);
 
-        if (available.IsFailure)
+        if (available.IsFailure) return available;
+
+        string? after = null;
+
+        while (true)
         {
-            return available;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            await using SqliteTransaction transaction = lease.Connection.BeginTransaction(deferred: false);
+
+            List<(Guid Root, Guid Quest, int State)> page = [];
+
+            await using (SqliteCommand candidates = Command(owner, lease.Connection, transaction))
+            {
+                candidates.CommandText = Affected(owner) + """
+                    SELECT c.RootQuestId,c.Id,c.AccountingStateCode FROM guild_quests c
+                    WHERE c.Id IN(SELECT Id FROM affected) AND c.Id>$after ORDER BY c.Id LIMIT 100
+                    """;
+
+                candidates.Parameters.AddWithValue("$after", after ?? string.Empty);
+
+                await using SqliteDataReader reader = await candidates.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    if (!Guid.TryParse(reader.GetString(0), out Guid root) || root == Guid.Empty
+                        || !Guid.TryParse(reader.GetString(1), out Guid quest) || quest == Guid.Empty
+                        || reader.GetValue(2) is not long state || state is < 0 or > 2)
+                        return new Error(ErrorCodes.Guild.ReconciliationRequired, "Guild accounting evidence is inconsistent.");
+
+                    page.Add((root, quest, (int)state));
+                }
+            }
+
+            foreach (var candidate in page)
+            {
+                if (candidate.State == 0) continue;
+
+                Result<bool> refreshed = await GuildQuestStore.RefreshAccountingProjectionWithinAsync(lease.Connection,
+                    transaction, candidate.Root, candidate.Quest, clock.GetUtcNow(), cancellationToken).ConfigureAwait(false);
+
+                if (refreshed.IsFailure) return refreshed.Error;
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            if (page.Count < 100) break;
+
+            after = page[^1].Quest.ToString("D").ToUpperInvariant();
         }
 
-        await using SqliteTransaction transaction = lease.Connection.BeginTransaction(deferred: false);
+        await using SqliteTransaction finalTransaction = lease.Connection.BeginTransaction(deferred: false);
 
-        // A parent receipt may precede closure of a child's account. Refresh at most 100
-        // stale Pending projections after re-proving each funding subtree in this writer
-        // transaction. Unknown or missing evidence never becomes settled by inference.
-        await using (SqliteCommand refresh = Command(owner, lease.Connection, transaction))
-        {
-            refresh.CommandText = Affected(owner) + """
-                UPDATE guild_quests AS c SET AccountingStateCode=0,Revision=Revision+1,UpdatedAtUtc=$now
-                WHERE c.Id IN (SELECT Id FROM affected) AND c.AccountingStateCode=1 AND c.Revision<9223372036854775807
-                  AND c.Id IN (
-                    SELECT candidate.Id FROM guild_quests candidate
-                    JOIN guild_quest_budget binding ON binding.QuestId=candidate.Id AND binding.AccountId=candidate.AllocationAccountId
-                    JOIN guild_budget_accounts own ON own.AccountId=binding.AccountId
-                    WHERE candidate.Id IN (SELECT Id FROM affected) AND candidate.AccountingStateCode=1
-                      AND own.OwnerKindCode=0 AND own.OwnerId=candidate.Id
-                      AND EXISTS (SELECT 1 FROM guild_budget_accounts root
-                        JOIN guild_quests rootQuest ON rootQuest.Id=candidate.RootQuestId
-                        WHERE root.AccountId=own.RootAccountId AND root.RootAccountId=root.AccountId
-                          AND root.ParentAccountId IS NULL AND root.OwnerKindCode=0 AND root.OwnerId=rootQuest.Id
-                          AND rootQuest.AllocationAccountId=root.AccountId)
-                      AND EXISTS (
-                        WITH RECURSIVE ancestors(Id,ParentId) AS (
-                          SELECT own.AccountId,own.ParentAccountId UNION
-                          SELECT parent.AccountId,parent.ParentAccountId FROM guild_budget_accounts parent JOIN ancestors child ON parent.AccountId=child.ParentId)
-                        SELECT 1 FROM ancestors WHERE Id=own.RootAccountId AND ParentId IS NULL)
-                      AND NOT EXISTS (
-                        WITH RECURSIVE subtree(Id) AS (
-                          SELECT own.AccountId UNION SELECT child.AccountId FROM guild_budget_accounts child JOIN subtree p ON child.ParentAccountId=p.Id),
-                        quests(Id) AS (
-                          SELECT candidate.Id UNION SELECT child.Id FROM guild_quests child JOIN quests p ON child.ParentQuestId=p.Id)
-                        SELECT 1 FROM guild_quests q JOIN quests ON quests.Id=q.Id
-                        WHERE q.RootQuestId<>candidate.RootQuestId OR NOT EXISTS (
-                          SELECT 1 FROM guild_quest_budget qb JOIN guild_budget_accounts qa ON qa.AccountId=qb.AccountId
-                          WHERE qb.QuestId=q.Id AND qb.AccountId=q.AllocationAccountId AND qa.RootAccountId=own.RootAccountId
-                            AND qa.OwnerKindCode=0 AND qa.OwnerId=q.Id AND qa.AccountId IN(SELECT Id FROM subtree)))
-                      AND NOT EXISTS (
-                        WITH RECURSIVE subtree(Id) AS (
-                          SELECT own.AccountId UNION SELECT child.AccountId FROM guild_budget_accounts child JOIN subtree p ON child.ParentAccountId=p.Id)
-                        SELECT 1 FROM guild_budget_accounts a JOIN subtree ON subtree.Id=a.AccountId WHERE (
-                          a.RootAccountId<>own.RootAccountId OR a.Closed IS NOT 1 OR a.SettlementReceiptId IS NULL OR
-                          (a.OwnerKindCode=0 AND NOT EXISTS (
-                            SELECT 1 FROM guild_quests q JOIN guild_quest_budget qb ON qb.QuestId=q.Id AND qb.AccountId=a.AccountId
-                              JOIN guild_result_receipts r ON r.QuestId=q.Id
-                            WHERE q.Id=a.OwnerId AND q.RootQuestId=candidate.RootQuestId AND q.AllocationAccountId=a.AccountId
-                              AND r.ResultId=a.SettlementReceiptId AND (r.NoDispatchProven=1 OR r.WorkStoppedProven=1))) OR
-                          (a.OwnerKindCode=1 AND NOT EXISTS (
-                            SELECT 1 FROM guild_cohorts h WHERE h.Id=a.OwnerId AND h.RootQuestId=candidate.RootQuestId
-                              AND h.AllocationAccountId=a.AccountId AND h.Id=a.SettlementReceiptId AND h.StateCode IN(4,5,6))) OR
-                          a.OwnerKindCode NOT IN(0,1)))
-                      AND NOT EXISTS (
-                        WITH RECURSIVE subtree(Id) AS (
-                          SELECT own.AccountId UNION SELECT child.AccountId FROM guild_budget_accounts child JOIN subtree p ON child.ParentAccountId=p.Id)
-                        SELECT 1 FROM guild_budget_accounts a JOIN subtree ON subtree.Id=a.AccountId
-                        JOIN guild_budget_effects e ON e.AccountId=a.AccountId
-                        WHERE a.OwnerKindCode<>0 OR e.QuestId<>a.OwnerId OR e.StateCode NOT IN(2,3)
-                          OR e.UnknownUsd IS NOT 0 OR e.UnknownTokens IS NOT 0
-                          OR NOT EXISTS (SELECT 1 FROM guild_budget_evidence evidence
-                            WHERE evidence.EffectId=e.EffectId AND evidence.AppliedRevision=e.Revision))
-                    ORDER BY candidate.Id LIMIT 100);
-                """;
+        Result settled = await SettledAsync(owner, lease.Connection, finalTransaction, cancellationToken).ConfigureAwait(false);
 
-            refresh.Parameters.AddWithValue("$now", UtcInstantText.Format(clock.GetUtcNow()));
-
-            _ = await refresh.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-
-        Result settled = await SettledAsync(owner, lease.Connection, transaction, cancellationToken).ConfigureAwait(false);
-
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await finalTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         return settled;
     }
@@ -143,14 +121,34 @@ internal sealed class GuildQuestCleanupParticipant(IGrimoireOrdinaryConnectionFa
 
     private static async Task<Result> SettledAsync(GuildCleanupOwner owner, SqliteConnection connection, SqliteTransaction? transaction, CancellationToken cancellationToken)
     {
-        await using SqliteCommand command = Command(owner, connection, transaction);
+        if (transaction is null) return new Error(ErrorCodes.Guild.ReconciliationRequired, "Guild owner cleanup requires a transaction.");
 
-        command.CommandText = Affected(owner)
-            + $"SELECT COUNT(*) FROM guild_quests c WHERE c.Id IN(SELECT Id FROM affected) AND {GuildQuestRetentionPins.Unresolved};";
+        await using (SqliteCommand command = Command(owner, connection, transaction))
+        {
+            command.CommandText = Affected(owner)
+                + $"SELECT COUNT(*) FROM guild_quests c WHERE c.Id IN(SELECT Id FROM affected) AND (c.AccountingStateCode<>0 OR {GuildQuestRetentionPins.NonAccountingUnresolved});";
 
-        return Equals(0L, await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))
-            ? Result.Success()
-            : new Error(ErrorCodes.Guild.ReconciliationRequired, "Guild owner cleanup retains unresolved Quest execution, delivery or accounting evidence.");
+            if (!Equals(0L, await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)))
+                return new Error(ErrorCodes.Guild.ReconciliationRequired, "Guild owner cleanup retains unresolved Quest execution, delivery or accounting evidence.");
+        }
+
+        await using SqliteCommand roots = Command(owner, connection, transaction);
+
+        roots.CommandText = Affected(owner) + """
+            SELECT c.RootQuestId,c.Id FROM guild_quests c WHERE c.Id IN(SELECT Id FROM affected)
+              AND (c.ParentQuestId IS NULL OR c.ParentQuestId NOT IN(SELECT Id FROM affected)) ORDER BY c.Id
+            """;
+
+        await using SqliteDataReader reader = await roots.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (!Guid.TryParse(reader.GetString(0), out Guid root) || !Guid.TryParse(reader.GetString(1), out Guid quest)
+                || !await GuildQuestStore.AccountingClearWithinAsync(connection, transaction, root, quest, cancellationToken).ConfigureAwait(false))
+                return new Error(ErrorCodes.Guild.ReconciliationRequired, "Guild owner cleanup retains unresolved Quest execution, delivery or accounting evidence.");
+        }
+
+        return Result.Success();
     }
 
     private static string Affected(GuildCleanupOwner owner) => $"""

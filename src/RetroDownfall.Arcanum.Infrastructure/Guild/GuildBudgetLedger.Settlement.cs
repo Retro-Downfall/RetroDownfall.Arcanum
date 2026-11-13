@@ -77,7 +77,9 @@ internal sealed partial class GuildBudgetLedger
 
         if (read.IsFailure) return read.Error;
 
-        if (read.Value.UnknownUsd || read.Value.UnknownTokens) return GuildAccountingState.Uncertain;
+        if (read.Value.PhysicalBlocked || read.Value.UsdBlocked || read.Value.TokensBlocked
+            || !await GuildBudgetObligations.ReservationsClearWithinAsync(connection, transaction, accountId, cancellationToken).ConfigureAwait(false))
+            return GuildAccountingState.Uncertain;
 
         await using SqliteCommand pending = Command(connection, transaction, Subtree + """
             SELECT EXISTS(SELECT 1 FROM guild_budget_accounts a WHERE a.AccountId IN(SELECT Id FROM subtree) AND a.Closed=0)

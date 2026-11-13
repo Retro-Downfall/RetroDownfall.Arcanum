@@ -44,6 +44,16 @@ internal static class GuildQuestRetentionPins
                 OR (i.DeliveryStateCode=3 AND receipt.EffectKindCode=3))))
         """;
 
+    // Independent execution and delivery pins; accounting is re-proven separately
+    // where a transaction-local exact reservation check is available.
+    internal const string NonAccountingUnresolved = "(" + StoppedExecutionUnresolved + """
+         OR EXISTS(SELECT 1 FROM guild_result_outbox delivery WHERE delivery.QuestId=c.Id AND delivery.DeliveryStateCode=1)
+         OR EXISTS(SELECT 1 FROM guild_inbox i JOIN guild_envelopes e ON e.Id=i.EnvelopeId
+             WHERE (i.RecipientQuestId=c.Id OR e.QuestId=c.Id) AND
+        """ + UnresolvedPortalInbox + """
+        ) OR EXISTS(SELECT 1 FROM guild_portal_outbox delivery WHERE delivery.QuestId=c.Id AND delivery.DeliveryStateCode=1))
+        """;
+
     internal const string Unresolved = "(" + ExecutionUnresolved + """
          OR EXISTS(SELECT 1 FROM guild_inbox i JOIN guild_envelopes e ON e.Id=i.EnvelopeId
              WHERE (i.RecipientQuestId=c.Id OR e.QuestId=c.Id) AND

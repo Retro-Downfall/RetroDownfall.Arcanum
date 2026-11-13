@@ -44,4 +44,5 @@ internal sealed record GuildBudgetEffectAdmission(GuildBudgetEffect Effect, bool
 internal sealed record GuildBudgetSnapshot(Guid AccountId, GuildBudgetGrant Grant, GuildBudgetGrant Remaining,
     GuildBudgetGrant OutstandingAllocation, GuildBudgetGrant UnresolvedHolds, decimal KnownUsd, long KnownTokens,
     bool UnknownUsd, bool UnknownTokens, long PricedCount, long UnpricedCount, long UncertainCount,
-    long Revision, bool Closed, GuildBudgetGrant? Committed = null, bool CapabilityFault = false);
+    long Revision, bool Closed, GuildBudgetGrant? Committed = null, bool CapabilityFault = false,
+    bool PhysicalBlocked = false, bool UsdBlocked = false, bool TokensBlocked = false);

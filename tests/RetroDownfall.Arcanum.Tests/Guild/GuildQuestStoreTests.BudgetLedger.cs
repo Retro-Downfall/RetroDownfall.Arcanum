@@ -295,7 +295,7 @@ public sealed partial class GuildQuestStoreTests
     }
 
     [Fact]
-    public async Task Unlimited_remote_terminal_unknown_is_retained_until_authoritative_reconciliation()
+    public async Task Unlimited_remote_terminal_unknown_remains_reported_without_a_financial_hold()
     {
         await using Fixture f = await Fixture.CreateAsync();
 
@@ -337,7 +337,9 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.Equal(1L, unknown.UncertainCount);
 
-        Assert.Equal(GuildBudgetMode.Unlimited, unknown.UnresolvedHolds.Usd.Mode);
+        Assert.Equal(0m, unknown.UnresolvedHolds.Usd.Value);
+
+        Assert.Equal(0L, unknown.UnresolvedHolds.Tokens.Value);
 
         Assert.True((await ledger.ApplyEvidenceWithinAsync(connection, transaction, request.EffectId,
             new(Guid.NewGuid(), ReceiptDigest("priced-correction"), 5m, 7, false, false, true), default)).IsSuccess);

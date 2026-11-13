@@ -7,6 +7,55 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 
 public sealed partial class GuildLocalHostPolicyTests
 {
+    [Theory]
+    [InlineData(GuildConvergenceKind.All)]
+    [InlineData(GuildConvergenceKind.First)]
+    public async Task Cohort_finalizes_completed_unrestricted_members_with_unknown_reporting(GuildConvergenceKind kind)
+    {
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        var (owner, issuer, _, cohorts, cohort, members) = await ConvergenceFixtureAsync(f, kind, null, "text/plain", 2);
+
+        await CommitConvergenceResultAsync(f, owner, members[0], "first", recordBilling: false);
+
+        await CommitConvergenceResultAsync(f, owner, members[1], "second", recordBilling: false);
+
+        Assert.Equal(2L, await f.ScalarAsync("SELECT count(*) FROM guild_quests q JOIN guild_budget_accounts a ON a.AccountId=q.AllocationAccountId JOIN guild_result_receipts r ON r.QuestId=q.Id WHERE q.ParentQuestId IS NOT NULL AND a.Closed=1 AND r.WorkStoppedProven=1 AND q.AccountingStateCode=0"));
+
+        var current = await cohorts.GetAsync(issuer, cohort.Id, default);
+
+        Assert.True(current.IsSuccess, current.Error.Message);
+
+        var closed = await cohorts.CloseAsync(issuer, cohort.Id, new(Guid.NewGuid(), current.Value.Revision), default);
+
+        Assert.True(closed.IsSuccess, closed.Error.Message);
+
+        CohortConvergenceDto pending = await WaitForConvergenceAsync(cohorts, owner, cohort.Id,
+            value => value.State == GuildCohortState.Draining && value.PendingMemberCount == 2);
+
+        Assert.Equal(2, pending.PendingMemberCount);
+
+        // This is the stop-frontier stage driven by the scheduler after Cohort cancellation.
+        // Reconciliation alone cannot persist the independently proved stop convergence.
+        foreach (GuildQuestStored member in members)
+        {
+            var stopped = await f.Store.RefreshCancellationConvergenceAsync(owner, member.Quest.Id, default);
+
+            Assert.True(stopped.IsSuccess, stopped.Error.Message);
+
+            Assert.True(stopped.Value);
+        }
+
+        CohortConvergenceDto final = await WaitForConvergenceAsync(cohorts, owner, cohort.Id,
+            value => value.State == GuildCohortState.Completed);
+
+        Assert.Equal(GuildConvergenceDecision.Success, final.Decision);
+
+        Assert.True(final.Spend.UnknownUsd);
+
+        Assert.True(final.Spend.UnknownTokens);
+    }
+
     [Fact]
     public async Task Cohort_settlement_clock_cannot_be_deleted_while_its_live_accounts_remain()
     {
@@ -26,7 +75,7 @@ public sealed partial class GuildLocalHostPolicyTests
     }
 
     [Fact]
-    public async Task Cohort_settlement_recomputes_completed_work_after_its_accounting_evidence_settles()
+    public async Task Cohort_settlement_recomputes_after_unrestricted_completed_evidence_changes()
     {
         await using Fixture f = await Fixture.CreateAsync(localExecution: true);
 
@@ -39,7 +88,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.True(parent.IsSuccess, parent.Error.Message);
 
-        Assert.NotEqual(GuildAccountingState.Settled, parent.Value.Quest.AccountingState);
+        Assert.Equal(GuildAccountingState.Settled, parent.Value.Quest.AccountingState);
 
         var settled = await f.Authority.InQuestTransactionAsync<GuildBudgetEffect>(root.Quest.RootQuestId,
             async (connection, transaction, _, ct) =>
@@ -129,7 +178,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.Equal(1, observed.Value.Snapshot.UncertainCount);
 
-        Assert.Equal(GuildBudgetMode.Unlimited, observed.Value.Snapshot.UnresolvedHolds.Usd.Mode);
+        Assert.Equal(0m, observed.Value.Snapshot.UnresolvedHolds.Usd.Value);
 
         Assert.Equal(2L, await f.ScalarAsync("SELECT Generation FROM guild_cohort_settlement_state"));
 
@@ -139,6 +188,145 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.True(expected.IsSuccess, expected.Error.Message);
 
         Assert.Equal(expected.Value, observed.Value.Snapshot);
+    }
+
+    [Fact]
+    public async Task Cohort_settlement_validates_funding_ancestry_once_per_generation()
+    {
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        var (_, _, _, _, cohort, _) = await ConvergenceFixtureAsync(f,
+            GuildConvergenceKind.All, null, "text/plain", 23);
+
+        await using SqliteConnection connection = await f.OpenAsync();
+
+        await using SqliteTransaction transaction = connection.BeginTransaction();
+
+        List<string> statements = [];
+
+        SQLitePCL.raw.sqlite3_trace(connection.Handle, (object? _, string sql) => statements.Add(sql), null);
+
+        var first = await GuildCohortStore.AdvanceSettlementWithinAsync(connection, transaction, cohort, default);
+
+        Assert.True(first.IsSuccess, first.Error.Message);
+
+        Assert.False(first.Value.Complete);
+
+        Assert.Single(statements, sql => sql.Contains("WITH RECURSIVE lineage(Id)", StringComparison.Ordinal));
+
+        Assert.Single(statements, sql => sql.Contains("WITH RECURSIVE ancestors(Id)", StringComparison.Ordinal));
+
+        statements.Clear();
+
+        var resumed = await GuildCohortStore.AdvanceSettlementWithinAsync(connection, transaction, cohort, default);
+
+        Assert.True(resumed.IsSuccess, resumed.Error.Message);
+
+        Assert.DoesNotContain(statements, sql => sql.Contains("WITH RECURSIVE lineage(Id)", StringComparison.Ordinal)
+            || sql.Contains("WITH RECURSIVE ancestors(Id)", StringComparison.Ordinal));
+
+        await transaction.RollbackAsync();
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(23)]
+    public async Task Cohort_settlement_rebuilds_unversioned_complete_and_partial_scratch(int count)
+    {
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        var (_, _, root, _, cohort, _) = await ConvergenceFixtureAsync(f,
+            GuildConvergenceKind.All, null, "text/plain", count);
+
+        var first = await f.Authority.InQuestTransactionAsync<GuildCohortSettlementStep>(root.Quest.RootQuestId,
+            (connection, transaction, _, ct) => GuildCohortStore.AdvanceSettlementWithinAsync(connection, transaction, cohort, ct), default);
+
+        Assert.True(first.IsSuccess, first.Error.Message);
+
+        Assert.Equal(count == 1, first.Value.Complete);
+
+        await using (var connection = await f.OpenAsync())
+        {
+            await using var corrupt = connection.CreateCommand();
+
+            corrupt.CommandText = "UPDATE guild_cohort_settlement_nodes SET NodeJson=json_remove(NodeJson,'$.FormatVersion')";
+
+            Assert.True(await corrupt.ExecuteNonQueryAsync() > 0);
+        }
+
+        var rebuilt = await f.Authority.InQuestTransactionAsync<GuildCohortSettlementStep>(root.Quest.RootQuestId,
+            (connection, transaction, _, ct) => GuildCohortStore.AdvanceSettlementWithinAsync(connection, transaction, cohort, ct), default);
+
+        Assert.True(rebuilt.IsSuccess, rebuilt.Error.Message);
+
+        Assert.Equal(2L, await f.ScalarAsync("SELECT Generation FROM guild_cohort_settlement_state"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Cohort_settlement_refuses_future_or_mixed_scratch_versions(bool partial)
+    {
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        var (_, _, root, _, cohort, _) = await ConvergenceFixtureAsync(f,
+            GuildConvergenceKind.All, null, "text/plain", partial ? 23 : 1);
+
+        var first = await f.Authority.InQuestTransactionAsync<GuildCohortSettlementStep>(root.Quest.RootQuestId,
+            (connection, transaction, _, ct) => GuildCohortStore.AdvanceSettlementWithinAsync(connection, transaction, cohort, ct), default);
+
+        Assert.True(first.IsSuccess, first.Error.Message);
+
+        Assert.Equal(!partial, first.Value.Complete);
+
+        await using (var connection = await f.OpenAsync())
+        {
+            await using var corrupt = connection.CreateCommand();
+
+            corrupt.CommandText = partial
+                ? "UPDATE guild_cohort_settlement_nodes SET NodeJson=json_set(NodeJson,'$.FormatVersion',99) WHERE AccountId=(SELECT CurrentAccountId FROM guild_cohort_settlement_state)"
+                : "UPDATE guild_cohort_settlement_nodes SET NodeJson=json_set(NodeJson,'$.FormatVersion',99) WHERE AccountId=$root";
+
+            corrupt.Parameters.AddWithValue("$root", cohort.AllocationAccountId.ToString("D").ToUpperInvariant());
+
+            Assert.Equal(1, await corrupt.ExecuteNonQueryAsync());
+        }
+
+        var refused = await f.Authority.InQuestTransactionAsync<GuildCohortSettlementStep>(root.Quest.RootQuestId,
+            (connection, transaction, _, ct) => GuildCohortStore.AdvanceSettlementWithinAsync(connection, transaction, cohort, ct), default);
+
+        Assert.True(refused.IsFailure);
+    }
+
+    [Theory]
+    [InlineData("FiniteUsd")]
+    [InlineData("FiniteTokens")]
+    public async Task Cohort_settlement_refuses_policy_bits_inconsistent_with_funding_account(string property)
+    {
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        var (_, _, root, _, cohort, _) = await ConvergenceFixtureAsync(f, GuildConvergenceKind.All, null, "text/plain", 1);
+
+        var first = await f.Authority.InQuestTransactionAsync<GuildCohortSettlementStep>(root.Quest.RootQuestId,
+            (connection, transaction, _, ct) => GuildCohortStore.AdvanceSettlementWithinAsync(connection, transaction, cohort, ct), default);
+
+        Assert.True(first.IsSuccess, first.Error.Message);
+
+        await using (var connection = await f.OpenAsync())
+        {
+            await using var corrupt = connection.CreateCommand();
+
+            corrupt.CommandText = $"UPDATE guild_cohort_settlement_nodes SET NodeJson=json_set(NodeJson,'$.{property}',json('true')) WHERE AccountId=$root";
+
+            corrupt.Parameters.AddWithValue("$root", cohort.AllocationAccountId.ToString("D").ToUpperInvariant());
+
+            Assert.Equal(1, await corrupt.ExecuteNonQueryAsync());
+        }
+
+        var refused = await f.Authority.InQuestTransactionAsync<GuildCohortSettlementStep>(root.Quest.RootQuestId,
+            (connection, transaction, _, ct) => GuildCohortStore.AdvanceSettlementWithinAsync(connection, transaction, cohort, ct), default);
+
+        Assert.True(refused.IsFailure);
     }
 
     [Fact]

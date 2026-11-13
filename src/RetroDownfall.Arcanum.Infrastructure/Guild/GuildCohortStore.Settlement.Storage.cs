@@ -29,6 +29,7 @@ internal sealed partial class GuildCohortStore
 
             node = new()
             {
+                FormatVersion = GuildCohortSettlementNode.CurrentFormatVersion,
                 AccountId = account, ParentAccountId = parent, RootAccountId = Guid.Parse(reader.GetString(2)),
                 Kind = (GuildBudgetOwnerKind)reader.GetInt32(0), OwnerId = Guid.Parse(reader.GetString(1)),
                 UsdLimit = reader.IsDBNull(4) ? null : ExactUsdText.Format(ExactUsdText.Read(reader, 4)),
@@ -95,12 +96,26 @@ internal sealed partial class GuildCohortStore
         SqliteTransaction transaction, GuildCohortSettlementNode node, CancellationToken ct)
     {
         await using SqliteCommand command = Command(connection, transaction, """
-            SELECT EffectId,QuestId,
-                CASE WHEN UsdBound IS NULL OR length(CAST(UsdBound AS BLOB))<=64 THEN UsdBound END,TokenBound,
-                CASE WHEN length(CAST(KnownUsd AS BLOB))<=64 THEN KnownUsd END,KnownTokens,UnknownUsd,UnknownTokens,StateCode,
-                (UsdBound IS NULL OR typeof(UsdBound)='text' AND length(CAST(UsdBound AS BLOB))<=64)
-                    AND typeof(KnownUsd)='text' AND length(CAST(KnownUsd AS BLOB))<=64
-            FROM guild_budget_effects WHERE AccountId=$account AND EffectId>$after ORDER BY EffectId LIMIT 1
+            SELECT e.EffectId,e.QuestId,
+                CASE WHEN e.UsdBound IS NULL OR length(CAST(e.UsdBound AS BLOB))<=64 THEN e.UsdBound END,e.TokenBound,
+                CASE WHEN length(CAST(e.KnownUsd AS BLOB))<=64 THEN e.KnownUsd END,e.KnownTokens,e.UnknownUsd,e.UnknownTokens,e.StateCode,
+                (e.UsdBound IS NULL OR typeof(e.UsdBound)='text' AND length(CAST(e.UsdBound AS BLOB))<=64)
+                    AND typeof(e.KnownUsd)='text' AND length(CAST(e.KnownUsd AS BLOB))<=64
+                    AND (e.TokenBound IS NULL OR typeof(e.TokenBound)='integer') AND typeof(e.KnownTokens)='integer'
+                    AND typeof(e.UnknownUsd)='integer' AND e.UnknownUsd IN(0,1)
+                    AND typeof(e.UnknownTokens)='integer' AND e.UnknownTokens IN(0,1)
+                    AND typeof(e.StateCode)='integer' AND typeof(e.KindCode)='integer' AND e.KindCode IN(0,1),
+                e.ReservationId,v.ReceiptId,v.KnownUsd,v.KnownTokens,v.UnknownUsd,v.UnknownTokens,v.Complete,v.NoDispatchProven,
+                v.ReceiptId IS NULL OR (typeof(v.KnownUsd)='text' AND typeof(v.KnownTokens)='integer'
+                    AND typeof(v.UnknownUsd)='integer' AND v.UnknownUsd IN(0,1)
+                    AND typeof(v.UnknownTokens)='integer' AND v.UnknownTokens IN(0,1)
+                    AND typeof(v.Complete)='integer' AND v.Complete IN(0,1)
+                    AND typeof(v.NoDispatchProven)='integer' AND v.NoDispatchProven IN(0,1)
+                    AND typeof(v.Digest)='blob' AND length(v.Digest)=32),
+                EXISTS(SELECT 1 FROM guild_dispatches d WHERE d.DispatchId=e.DispatchId AND d.QuestId=e.QuestId
+                    AND d.AccountingAssociationId=e.AccountingAssociationId)
+            FROM guild_budget_effects e LEFT JOIN guild_budget_evidence v ON v.EffectId=e.EffectId AND v.AppliedRevision=e.Revision
+            WHERE e.AccountId=$account AND e.EffectId>$after ORDER BY e.EffectId LIMIT 1
             """);
 
         Add(command, "$account", Id(node.AccountId));
@@ -120,7 +135,19 @@ internal sealed partial class GuildCohortStore
         bool unknownUsd = reader.GetBoolean(6), unknownTokens = reader.GetBoolean(7);
         GuildBudgetEffectState state = (GuildBudgetEffectState)reader.GetInt32(8);
 
-        if (!Enum.IsDefined(state) || boundUsd < 0 || boundTokens < 0 || knownUsd < 0 || knownTokens < 0) return Unavailable;
+        if (!Enum.IsDefined(state) || boundUsd < 0 || boundTokens < 0 || knownUsd < 0 || knownTokens < 0
+            || reader.GetInt64(18) != 1 || reader.GetInt64(19) != 1) return Unavailable;
+
+        bool hasReceipt = !reader.IsDBNull(11);
+
+        if (state is GuildBudgetEffectState.Complete or GuildBudgetEffectState.ProvenNoDispatch && !hasReceipt) return Unavailable;
+
+        if (hasReceipt && (Guid.Parse(reader.GetString(11)) == Guid.Empty || ExactUsdText.Read(reader, 12) != knownUsd
+            || reader.GetInt64(13) != knownTokens || reader.GetBoolean(14) != unknownUsd || reader.GetBoolean(15) != unknownTokens
+            || reader.GetBoolean(16) != (state is GuildBudgetEffectState.Complete or GuildBudgetEffectState.ProvenNoDispatch)
+            || reader.GetBoolean(17) != (state == GuildBudgetEffectState.ProvenNoDispatch))) return Unavailable;
+
+        if (state == GuildBudgetEffectState.ProvenNoDispatch && (knownUsd != 0m || knownTokens != 0 || unknownUsd || unknownTokens)) return Unavailable;
 
         node.KnownUsd = ExactUsdText.Format(ExactUsdText.CheckedAdd(Usd(node.KnownUsd), knownUsd));
         node.KnownTokens = checked(node.KnownTokens + knownTokens);
@@ -128,18 +155,17 @@ internal sealed partial class GuildCohortStore
         node.UnknownTokens |= unknownTokens;
         node.CapabilityFault |= boundUsd is { } usd && knownUsd > usd || boundTokens is { } tokens && knownTokens > tokens;
 
-        bool outstanding = state is GuildBudgetEffectState.Prepared or GuildBudgetEffectState.PossiblyDispatched;
+        GuildBudgetObligations.Classification obligations = GuildBudgetObligations.Classify(state, node.FiniteUsd,
+            node.FiniteTokens, !reader.IsDBNull(10), unknownUsd, unknownTokens, boundUsd, boundTokens, knownUsd, knownTokens);
 
-        if (outstanding) node.PendingEffects = checked(node.PendingEffects + 1);
+        if (obligations.PhysicalPending) node.PendingEffects = checked(node.PendingEffects + 1);
 
-        decimal? holdUsd = state != GuildBudgetEffectState.ProvenNoDispatch && (outstanding || unknownUsd)
-            ? boundUsd is { } limit ? Math.Max(0m, ExactUsdText.CheckedAdd(limit, -knownUsd)) : null : 0m;
+        node.PhysicalBlocked |= obligations.PhysicalPending;
+        node.UsdBlocked |= obligations.UsdBlocked;
+        node.TokensBlocked |= obligations.TokensBlocked;
 
-        long? holdTokens = state != GuildBudgetEffectState.ProvenNoDispatch && (outstanding || unknownTokens)
-            ? boundTokens is { } tokenLimit ? Math.Max(0L, checked(tokenLimit - knownTokens)) : null : 0L;
-
-        node.HoldUsd = AddUsd(node.HoldUsd, holdUsd is { } held ? ExactUsdText.Format(held) : null);
-        node.HoldTokens = AddTokens(node.HoldTokens, holdTokens);
+        node.HoldUsd = AddUsd(node.HoldUsd, obligations.HoldUsd is { } held ? ExactUsdText.Format(held) : null);
+        node.HoldTokens = AddTokens(node.HoldTokens, obligations.HoldTokens);
 
         if (state == GuildBudgetEffectState.Complete)
         {
@@ -194,22 +220,52 @@ internal sealed partial class GuildCohortStore
     }
 
     private static async Task<Result<GuildCohortSettlementNode>> LoadSettlementNodeAsync(SqliteConnection connection,
-        SqliteTransaction transaction, Guid cohort, long generation, Guid account, CancellationToken ct)
+        SqliteTransaction transaction, Guid cohort, long generation, Guid account, CancellationToken ct, bool allowOld = false)
     {
         await using SqliteCommand command = Command(connection, transaction, """
-            SELECT CASE WHEN typeof(NodeJson)='text' AND length(CAST(NodeJson AS BLOB))<=65536 THEN NodeJson END
-            FROM guild_cohort_settlement_nodes WHERE CohortId=$cohort AND Generation=$generation AND AccountId=$account
+            SELECT CASE WHEN typeof(n.NodeJson)='text' AND length(CAST(n.NodeJson AS BLOB))<=65536 THEN n.NodeJson END,
+                a.RootAccountId,a.ParentAccountId,a.UsdLimit,a.TokenLimit,a.Closed,a.Revision,a.OwnerKindCode,a.OwnerId,h.AllocationAccountId
+            FROM guild_cohort_settlement_nodes n JOIN guild_budget_accounts a ON a.AccountId=n.AccountId
+              JOIN guild_cohorts h ON h.Id=n.CohortId
+            WHERE n.CohortId=$cohort AND n.Generation=$generation AND n.AccountId=$account
             """);
 
         Add(command, "$cohort", Id(cohort));
         Add(command, "$generation", generation);
         Add(command, "$account", Id(account));
 
-        if (await command.ExecuteScalarAsync(ct).ConfigureAwait(false) is not string json) return Unavailable;
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
 
-        GuildCohortSettlementNode? node = JsonSerializer.Deserialize(json, GuildCohortSettlementJsonContext.Default.GuildCohortSettlementNode);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false) || reader.IsDBNull(0)) return Unavailable;
 
-        if (node is null || node.AccountId != account || node.RootAccountId == Guid.Empty || node.OwnerId == Guid.Empty
+        GuildCohortSettlementNode? node = JsonSerializer.Deserialize(reader.GetString(0), GuildCohortSettlementJsonContext.Default.GuildCohortSettlementNode);
+
+        Guid actualRoot = Guid.Parse(reader.GetString(1));
+
+        Guid? actualParent = reader.IsDBNull(2) ? null : Guid.Parse(reader.GetString(2));
+
+        decimal? actualUsd = reader.IsDBNull(3) ? null : ExactUsdText.Read(reader, 3);
+
+        long? actualTokens = reader.IsDBNull(4) ? null : reader.GetInt64(4);
+
+        bool actualClosed = reader.GetBoolean(5);
+
+        long actualRevision = reader.GetInt64(6);
+
+        GuildBudgetOwnerKind actualKind = (GuildBudgetOwnerKind)reader.GetInt32(7);
+
+        Guid actualOwner = Guid.Parse(reader.GetString(8));
+
+        Guid traversalRoot = Guid.Parse(reader.GetString(9));
+
+        if (node is null || node.FormatVersion < 0 || node.FormatVersion > GuildCohortSettlementNode.CurrentFormatVersion
+            || !allowOld && node.FormatVersion != GuildCohortSettlementNode.CurrentFormatVersion
+            || node.AccountId != account || node.RootAccountId != actualRoot || node.OwnerId != actualOwner || node.Kind != actualKind
+            || node.ParentAccountId != (account == traversalRoot ? null : actualParent)
+            || (node.UsdLimit is null ? (decimal?)null : Usd(node.UsdLimit)) != actualUsd || node.TokenLimit != actualTokens
+            || node.Closed != actualClosed || node.Revision != actualRevision
+            || node.FormatVersion == GuildCohortSettlementNode.CurrentFormatVersion
+                && (node.FiniteUsd != (actualUsd is not null) || node.FiniteTokens != (actualTokens is not null))
             || node.Revision < 1 || node.Phase is < 0 or > 2 || !Enum.IsDefined(node.Kind)
             || node.KnownTokens < 0 || node.HoldTokens < 0 || node.ActiveTokens < 0 || node.LiabilityTokens < 0
             || node.Priced < 0 || node.Unpriced < 0 || node.Uncertain < 0 || node.PendingMembers < 0

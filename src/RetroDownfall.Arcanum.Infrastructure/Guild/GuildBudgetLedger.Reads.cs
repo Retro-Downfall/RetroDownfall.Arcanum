@@ -14,7 +14,7 @@ internal sealed partial class GuildBudgetLedger
 
         try
         {
-            Result lineage = await ValidateLineageAsync(connection, transaction, accountId, false, ct).ConfigureAwait(false);
+            Result<(bool Usd, bool Tokens)> lineage = await ReadFiniteLineageAsync(connection, transaction, accountId, false, ct).ConfigureAwait(false);
 
             if (lineage.IsFailure) return lineage.Error;
 
@@ -60,9 +60,58 @@ internal sealed partial class GuildBudgetLedger
                 list.Add(account.Id);
             }
 
+            Dictionary<Guid, (bool Usd, bool Tokens)> policies = [];
+
+            Stack<(Guid Id, bool Usd, bool Tokens)> policyWork = new();
+
+            policyWork.Push((accountId, lineage.Value.Usd, lineage.Value.Tokens));
+
+            while (policyWork.TryPop(out var policy))
+            {
+                ct.ThrowIfCancellationRequested();
+
+                if (!policies.TryAdd(policy.Id, (policy.Usd, policy.Tokens))) return Invalid;
+
+                if (!children.TryGetValue(policy.Id, out List<Guid>? descendants)) continue;
+
+                Account parent = accounts[policy.Id];
+
+                foreach (Guid childId in descendants)
+                {
+                    Account child = accounts[childId];
+
+                    if (parent.Usd is { } usd && (child.Usd is null || child.Usd > usd)
+                        || parent.Tokens is { } tokens && (child.Tokens is null || child.Tokens > tokens)) return Invalid;
+
+                    policyWork.Push((childId, policy.Usd || child.Usd is not null, policy.Tokens || child.Tokens is not null));
+                }
+            }
+
+            if (policies.Count != accounts.Count) return Invalid;
+
             await using (SqliteCommand effects = Command(connection, transaction, Subtree + """
-                SELECT e.AccountId,e.UsdBound,e.TokenBound,e.KnownUsd,e.KnownTokens,e.UnknownUsd,e.UnknownTokens,e.StateCode
-                FROM guild_budget_effects e WHERE e.AccountId IN(SELECT Id FROM subtree)
+                SELECT e.AccountId,e.UsdBound,e.TokenBound,e.KnownUsd,e.KnownTokens,e.UnknownUsd,e.UnknownTokens,e.StateCode,
+                    e.ReservationId,e.QuestId,
+                    EXISTS(SELECT 1 FROM guild_budget_accounts a JOIN guild_budget_accounts root ON root.AccountId=a.RootAccountId
+                        JOIN guild_quests q ON q.Id=a.OwnerId AND q.Id=e.QuestId AND q.RootQuestId=root.OwnerId
+                        JOIN guild_quest_budget b ON b.QuestId=q.Id AND b.AccountId=a.AccountId AND q.AllocationAccountId=a.AccountId
+                        JOIN guild_dispatches d ON d.QuestId=q.Id AND d.DispatchId=e.DispatchId AND d.AccountingAssociationId=e.AccountingAssociationId
+                        WHERE a.AccountId=e.AccountId AND a.OwnerKindCode=0 AND root.OwnerKindCode=0 AND root.ParentAccountId IS NULL),
+                    v.ReceiptId,v.KnownUsd,v.KnownTokens,v.UnknownUsd,v.UnknownTokens,v.Complete,v.NoDispatchProven,
+                    typeof(e.KnownUsd)='text' AND typeof(e.KnownTokens)='integer'
+                        AND (e.UsdBound IS NULL OR typeof(e.UsdBound)='text')
+                        AND (e.TokenBound IS NULL OR typeof(e.TokenBound)='integer')
+                        AND typeof(e.KindCode)='integer' AND e.KindCode IN(0,1)
+                        AND typeof(e.UnknownUsd)='integer' AND e.UnknownUsd IN(0,1)
+                        AND typeof(e.UnknownTokens)='integer' AND e.UnknownTokens IN(0,1) AND typeof(e.StateCode)='integer',
+                    v.ReceiptId IS NULL OR (typeof(v.KnownUsd)='text' AND typeof(v.KnownTokens)='integer'
+                        AND typeof(v.UnknownUsd)='integer' AND v.UnknownUsd IN(0,1)
+                        AND typeof(v.UnknownTokens)='integer' AND v.UnknownTokens IN(0,1)
+                        AND typeof(v.Complete)='integer' AND v.Complete IN(0,1)
+                        AND typeof(v.NoDispatchProven)='integer' AND v.NoDispatchProven IN(0,1)
+                        AND typeof(v.Digest)='blob' AND length(v.Digest)=32)
+                FROM guild_budget_effects e LEFT JOIN guild_budget_evidence v ON v.EffectId=e.EffectId AND v.AppliedRevision=e.Revision
+                WHERE e.AccountId IN(SELECT Id FROM subtree)
                 """))
             {
                 Add(effects, "$account", Id(accountId));
@@ -71,7 +120,9 @@ internal sealed partial class GuildBudgetLedger
 
                 while (await reader.ReadAsync(ct).ConfigureAwait(false))
                 {
-                    Totals total = sums[Guid.Parse(reader.GetString(0))];
+                    Guid effectAccount = Guid.Parse(reader.GetString(0));
+
+                    Totals total = sums[effectAccount];
 
                     decimal? boundUsd = reader.IsDBNull(1) ? null : ExactUsdText.Read(reader, 1);
 
@@ -85,7 +136,22 @@ internal sealed partial class GuildBudgetLedger
 
                     GuildBudgetEffectState state = (GuildBudgetEffectState)reader.GetInt32(7);
 
-                    if (!Enum.IsDefined(state) || boundUsd < 0 || boundTokens < 0 || knownUsd < 0 || knownTokens < 0) return Invalid;
+                    if (!Enum.IsDefined(state) || boundUsd < 0 || boundTokens < 0 || knownUsd < 0 || knownTokens < 0
+                        || reader.GetInt64(10) != 1 || reader.GetInt64(18) != 1 || reader.GetInt64(19) != 1
+                        || accounts[effectAccount].Kind != GuildBudgetOwnerKind.Quest
+                        || accounts[effectAccount].OwnerId != Guid.Parse(reader.GetString(9))) return Invalid;
+
+                    bool hasReceipt = !reader.IsDBNull(11);
+
+                    if (state is GuildBudgetEffectState.Complete or GuildBudgetEffectState.ProvenNoDispatch && !hasReceipt) return Invalid;
+
+                    if (hasReceipt && (Guid.Parse(reader.GetString(11)) == Guid.Empty
+                        || ExactUsdText.Read(reader, 12) != knownUsd || reader.GetInt64(13) != knownTokens
+                        || reader.GetBoolean(14) != unknownUsd || reader.GetBoolean(15) != unknownTokens
+                        || reader.GetBoolean(16) != (state is GuildBudgetEffectState.Complete or GuildBudgetEffectState.ProvenNoDispatch)
+                        || reader.GetBoolean(17) != (state == GuildBudgetEffectState.ProvenNoDispatch))) return Invalid;
+
+                    if (state == GuildBudgetEffectState.ProvenNoDispatch && (knownUsd != 0m || knownTokens != 0 || unknownUsd || unknownTokens)) return Invalid;
 
                     total.KnownUsd = ExactUsdText.CheckedAdd(total.KnownUsd, knownUsd);
                     total.KnownTokens = checked(total.KnownTokens + knownTokens);
@@ -94,16 +160,17 @@ internal sealed partial class GuildBudgetLedger
                     total.CapabilityFault |= boundUsd is { } qualifiedUsd && knownUsd > qualifiedUsd
                         || boundTokens is { } qualifiedTokens && knownTokens > qualifiedTokens;
 
-                    bool outstanding = state is GuildBudgetEffectState.Prepared or GuildBudgetEffectState.PossiblyDispatched;
+                    var policy = policies[effectAccount];
 
-                    decimal? holdUsd = state != GuildBudgetEffectState.ProvenNoDispatch && (outstanding || unknownUsd)
-                        ? boundUsd is { } usd ? knownUsd >= usd ? 0m : ExactUsdText.CheckedAdd(usd, -knownUsd) : null : 0m;
+                    GuildBudgetObligations.Classification obligations = GuildBudgetObligations.Classify(state,
+                        policy.Usd, policy.Tokens, !reader.IsDBNull(8), unknownUsd, unknownTokens,
+                        boundUsd, boundTokens, knownUsd, knownTokens);
 
-                    long? holdTokens = state != GuildBudgetEffectState.ProvenNoDispatch && (outstanding || unknownTokens)
-                        ? boundTokens is { } tokens ? Math.Max(0L, checked(tokens - knownTokens)) : null : 0L;
-
-                    total.HoldUsd = Sum(total.HoldUsd, holdUsd);
-                    total.HoldTokens = Sum(total.HoldTokens, holdTokens);
+                    total.PhysicalBlocked |= obligations.PhysicalPending;
+                    total.UsdBlocked |= obligations.UsdBlocked;
+                    total.TokensBlocked |= obligations.TokensBlocked;
+                    total.HoldUsd = Sum(total.HoldUsd, obligations.HoldUsd);
+                    total.HoldTokens = Sum(total.HoldTokens, obligations.HoldTokens);
 
                     if (state == GuildBudgetEffectState.Complete)
                     {
@@ -167,6 +234,9 @@ internal sealed partial class GuildBudgetLedger
                         total.HoldTokens = Sum(total.HoldTokens, childTotal.HoldTokens);
                         total.UnknownUsd |= childTotal.UnknownUsd;
                         total.UnknownTokens |= childTotal.UnknownTokens;
+                        total.PhysicalBlocked |= childTotal.PhysicalBlocked;
+                        total.UsdBlocked |= childTotal.UsdBlocked;
+                        total.TokensBlocked |= childTotal.TokensBlocked;
                         total.CapabilityFault |= childTotal.CapabilityFault;
                         total.Priced = checked(total.Priced + childTotal.Priced);
                         total.Unpriced = checked(total.Unpriced + childTotal.Unpriced);
@@ -189,13 +259,14 @@ internal sealed partial class GuildBudgetLedger
                 Grant(aggregate.ActiveUsd, aggregate.ActiveTokens), Grant(aggregate.HoldUsd, aggregate.HoldTokens),
                 aggregate.KnownUsd, aggregate.KnownTokens, aggregate.UnknownUsd, aggregate.UnknownTokens,
                 aggregate.Priced, aggregate.Unpriced, aggregate.Uncertain, root.Revision, root.Closed,
-                Grant(aggregate.LiabilityUsd, aggregate.LiabilityTokens), aggregate.CapabilityFault);
+                Grant(aggregate.LiabilityUsd, aggregate.LiabilityTokens), aggregate.CapabilityFault,
+                aggregate.PhysicalBlocked, aggregate.UsdBlocked, aggregate.TokensBlocked);
         }
         catch (OverflowException)
         {
             return Exceeded;
         }
-        catch (FormatException)
+        catch (Exception error) when (error is FormatException or InvalidCastException or ArgumentException)
         {
             return Invalid;
         }
@@ -227,7 +298,7 @@ internal sealed partial class GuildBudgetLedger
 
         internal long? HoldTokens = 0L, ActiveTokens = 0L, LiabilityTokens = 0L;
 
-        internal bool UnknownUsd, UnknownTokens, CapabilityFault;
+        internal bool UnknownUsd, UnknownTokens, CapabilityFault, PhysicalBlocked, UsdBlocked, TokensBlocked;
 
         internal long Priced, Unpriced, Uncertain;
     }

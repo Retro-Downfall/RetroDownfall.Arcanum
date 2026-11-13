@@ -46,6 +46,13 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
         ) ORDER BY Id LIMIT 100
         """;
 
+    internal const string AccountingRecoveryFrontierQuery = """
+        SELECT Id,RootQuestId,AccountingStateCode FROM guild_quests
+        WHERE Id>$after ORDER BY Id LIMIT 100
+        """;
+
+    private string? _accountingScanAfter;
+
     private readonly Channel<Guid> _wakes = Channel.CreateUnbounded<Guid>(new() { SingleReader = true, AllowSynchronousContinuations = false });
 
     private readonly ConcurrentDictionary<Guid, object> _pending = new();
@@ -194,7 +201,7 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
         }
     }
 
-    private async Task DiscoverPendingAsync(CancellationToken ct)
+    internal async Task DiscoverPendingAsync(CancellationToken ct)
     {
         if (!admission.TryAcquireWorkLease(GrimoireWorkKind.GuildStorage, out IGrimoireWorkLease? acquired) || acquired is null) return;
 
@@ -207,6 +214,8 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
             // Cohort decisions and stop frontiers remain recovery work even while Guild
             // execution is disabled. They never rebind the creator's work authority.
             await DiscoverCohortsAsync(lifetime.Token).ConfigureAwait(false);
+
+            await DiscoverAccountingRecoveryAsync(lifetime.Token).ConfigureAwait(false);
 
             // Cascade discovery is independent of the live execution task. A parent waiting
             // for its descendants cannot suppress the durable stop work that lets it finish.
@@ -234,6 +243,72 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
         catch (OperationCanceledException) when (!ct.IsCancellationRequested && work.MaintenanceRevocation.IsCancellationRequested)
         {
             Volatile.Write(ref _ready, 0);
+        }
+    }
+
+    private async Task DiscoverAccountingRecoveryAsync(CancellationToken ct)
+    {
+        var opened = await connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, ct).ConfigureAwait(false);
+
+        if (opened.IsFailure) return;
+
+        List<(Guid Root, Guid Quest)> candidates = [];
+
+        string? last = null;
+
+        int scanned = 0;
+
+        await using (IGrimoireOrdinaryConnectionLease held = opened.Value)
+        {
+            await using SqliteTransaction transaction = held.Connection.BeginTransaction(deferred: true);
+
+            Result available = await GuildStorageAvailability.CheckAsync(held.Connection, transaction, ct).ConfigureAwait(false);
+
+            if (available.IsFailure) return;
+
+            await using SqliteCommand command = held.Connection.CreateCommand();
+
+            command.Transaction = transaction;
+
+            command.CommandText = AccountingRecoveryFrontierQuery;
+
+            command.Parameters.AddWithValue("$after", _accountingScanAfter ?? string.Empty);
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                scanned++;
+
+                if (reader.IsDBNull(0) || reader.GetValue(0) is not string id) return;
+
+                last = id;
+
+                if (reader.GetValue(2) is not long state || state is not (1 or 2)
+                    || reader.IsDBNull(1) || !Guid.TryParse(id, out Guid quest) || quest == Guid.Empty
+                    || !Guid.TryParse(reader.GetString(1), out Guid root) || root == Guid.Empty) continue;
+
+                candidates.Add((root, quest));
+            }
+        }
+
+        // Progress is by inspected rows, including blocked and already-settled entries.
+        // A restart begins a fresh bounded census; an uninterrupted scan eventually wraps.
+        _accountingScanAfter = scanned == 100 ? last : null;
+
+        if (candidates.Count == 0) return;
+
+        await using AsyncServiceScope scope = scopes.CreateAsyncScope();
+
+        GuildQuestStore? store = scope.ServiceProvider.GetService<GuildQuestStore>();
+
+        if (store is null) return;
+
+        foreach (var candidate in candidates)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            _ = await store.RefreshAccountingProjectionAsync(candidate.Root, candidate.Quest, ct).ConfigureAwait(false);
         }
     }
 
