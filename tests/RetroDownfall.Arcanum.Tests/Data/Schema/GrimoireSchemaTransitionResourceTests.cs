@@ -163,6 +163,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
                         (GrimoireSchemaTransactionTier.GuildCanonical, 15),
                         (GrimoireSchemaTransactionTier.GuildCanonical, 16),
                         (GrimoireSchemaTransactionTier.GuildCanonical, 17),
+                        (GrimoireSchemaTransactionTier.GuildCanonical, 18),
                     ]);
             });
 
@@ -985,6 +986,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "guild_cohort_members_cohort_settlement_insert",
                 "guild_cohort_members_cohort_settlement_delete",
                 "idx_guild_spend_refreshes_effect",
+                "idx_guild_spend_refreshes_effect_norm",
             ],
             GrimoireSchemaCatalog.TransitionStatements.Select(static statement => statement.Name));
     }

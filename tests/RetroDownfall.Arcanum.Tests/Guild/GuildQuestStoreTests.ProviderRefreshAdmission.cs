@@ -416,6 +416,8 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.True(replay.Value.RequiresAttention);
 
+        Assert.Equal(result.Value.ErrorCode, replay.Value.ErrorCode);
+
         Assert.False(replay.Value.InFlight);
     }
 
@@ -649,7 +651,9 @@ public sealed partial class GuildQuestStoreTests
 
         using LongRunningOperationStore inner = new(db, f.Scenario.Fixture.Connections);
 
-        BlockingRefreshOperationStore operations = new(inner);
+        using ManualResetEventSlim heartbeatEntered = new();
+
+        BlockingRefreshOperationStore operations = new(inner) { PendingRenewal = heartbeatEntered };
 
         string lockPath = Path.Combine(Path.GetTempPath(), "arcanum-refresh-lock-" + Guid.NewGuid().ToString("N"));
 
@@ -659,69 +663,176 @@ public sealed partial class GuildQuestStoreTests
 
         using GuildWorkspaceLeaseHostLock hostLock = acquired.Value;
 
-        BlockingRefreshStream stream = new();
+        LongRunningOperationOwnership ownership = new();
+
+        using SynchronousHeartbeatRefreshHandler handler = new(operations, heartbeatEntered, hostLock);
 
         GuildSpendRefreshService service = new(f.Scenario.Fixture.Store, f.Configuration, f.Resolver,
-            new GuildOpenRouterSpendReader(new PublicSpendDns(), () => new BlockingRefreshHandler(stream)),
-            new RefreshTestReadiness(hostLock), f.Scenario.Fixture.Gate, operations, new LongRunningOperationOwnership(),
+            new GuildOpenRouterSpendReader(new PublicSpendDns(), () => handler),
+            new RefreshTestReadiness(hostLock), f.Scenario.Fixture.Gate, operations, ownership,
             TimeProvider.System, new GuildSpendRefreshTracker());
 
-        using CancellationTokenSource cancellation = new();
+        // Use the real resolver's environment-source path: OS-store reads deliberately Task.Run.
+        // This fixture already names a unique variable; restore even if a proof precondition fails.
+        string variable = f.Scenario.Settings.Providers[0].CredentialEnvironmentVariable!;
 
-        Task<Result<GuildSpendRefreshResult>> running = service.RefreshAsync(f.Scenario.Fixture.Caller, f.QuestId,
-            f.Scenario.EffectId, Guid.NewGuid(), cancellation.Token);
+        string? previous = System.Environment.GetEnvironmentVariable(variable);
+
+        System.Environment.SetEnvironmentVariable(variable, SpendSecret);
 
         try
         {
-            await stream.Entered.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            await Task.Run(async () =>
+            {
+                Task<Result<GuildSpendRefreshResult>>? running = null;
 
-            await operations.HeartbeatEntered.Task.WaitAsync(TimeSpan.FromSeconds(15));
+                try
+                {
+                    int initiatingThread = System.Environment.CurrentManagedThreadId;
 
-            cancellation.Cancel();
+                    running = service.RefreshAsync(f.Scenario.Fixture.Caller, f.QuestId,
+                        f.Scenario.EffectId, Guid.NewGuid(), default);
 
-            hostLock.Dispose();
+                    // No await precedes these assertions. A queued reader continuation cannot run on
+                    // this still-occupied initiating thread and make an earlier suspension look synchronous.
+                    Assert.Equal(initiatingThread, handler.ReturnedOnThread);
 
-            stream.ReleaseRead.TrySetResult();
+                    Assert.Equal(initiatingThread, handler.Body.DisposedOnThread);
 
-            await stream.Disposing.Task.WaitAsync(TimeSpan.FromSeconds(15));
+                    Assert.True(handler.Body.CompletedSynchronously, "The real reader's body or disposal introduced an asynchronous boundary.");
 
-            stream.ReleaseDispose.TrySetResult();
+                    Assert.True(handler.ObservedPendingRenewal, "The real heartbeat did not reach the renewal gate.");
 
-            await stream.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(15));
+                    Assert.True(operations.SynchronousPostBodyCalls, "Post-body storage introduced an unproved asynchronous boundary.");
 
-            Assert.False(running.IsCompleted);
+                    Assert.True(operations.HeartbeatStop.IsCancellationRequested, "The service did not reach heartbeat shutdown.");
 
-            Assert.True(GuildWorkspaceLeaseHostLock.TryAcquire(lockPath).IsFailure);
+                    Assert.False(operations.ReleaseHeartbeat.Task.IsCompleted);
 
-            operations.ReleaseHeartbeat.TrySetResult();
+                    Assert.NotNull(operations.Renewal);
 
-            await running;
+                    Assert.False(operations.Renewal.IsCompleted);
 
-            var successor = GuildWorkspaceLeaseHostLock.TryAcquire(lockPath);
+                    var contender = GuildWorkspaceLeaseHostLock.TryAcquire(lockPath);
 
-            Assert.True(successor.IsSuccess, successor.IsFailure ? successor.Error.Message : null);
+                    using GuildWorkspaceLeaseHostLock? unexpectedlyAcquired = contender.IsSuccess ? contender.Value : null;
 
-            successor.Value.Dispose();
+                    Assert.True(contender.IsFailure, "The physical host lock was released while its actual heartbeat renewal was pending.");
+
+                    Assert.True(ownership.IsClaimed(operations.HeartbeatOperationId));
+
+                    Assert.False(running.IsCompleted);
+
+                    operations.ReleaseHeartbeat.TrySetResult();
+
+                    var result = await running;
+
+                    Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+                    Assert.True(result.Value.RequiresAttention);
+
+                    Assert.True(operations.SynchronousPostBodyCalls);
+
+                    Assert.False(ownership.IsClaimed(operations.HeartbeatOperationId));
+
+                    var successor = GuildWorkspaceLeaseHostLock.TryAcquire(lockPath);
+
+                    Assert.True(successor.IsSuccess, successor.IsFailure ? successor.Error.Message : null);
+
+                    successor.Value.Dispose();
+                }
+                finally
+                {
+                    operations.ReleaseHeartbeat.TrySetResult();
+
+                    if (running is not null) await running;
+
+                    if (operations.Renewal is not null) await operations.Renewal;
+                }
+            });
         }
         finally
         {
-            stream.ReleaseRead.TrySetResult();
+            System.Environment.SetEnvironmentVariable(variable, previous);
+        }
+    }
 
-            stream.ReleaseDispose.TrySetResult();
+    private sealed class SynchronousHeartbeatRefreshHandler(BlockingRefreshOperationStore operations,
+        ManualResetEventSlim heartbeatEntered, GuildWorkspaceLeaseHostLock hostLock) : HttpMessageHandler
+    {
+        internal SynchronousHeartbeatBody Body { get; } = new();
 
-            operations.ReleaseHeartbeat.TrySetResult();
+        internal int ReturnedOnThread { get; private set; }
 
-            await running;
+        internal bool ObservedPendingRenewal { get; private set; }
 
-            if (operations.HeartbeatEntered.Task.IsCompleted) await operations.HeartbeatFinished.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            // This is a positive handshake with the independent real monitor, not a negative timed
+            // assertion. Keep the HTTP/body/disposal path synchronous all the way back to the service.
+            ObservedPendingRenewal = heartbeatEntered.Wait(TimeSpan.FromSeconds(15));
+
+            hostLock.Dispose();
+
+            operations.VerifySynchronousPostBody = true;
+
+            ReturnedOnThread = System.Environment.CurrentManagedThreadId;
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(Body),
+            });
+        }
+    }
+
+    private sealed class SynchronousHeartbeatBody() : MemoryStream("{}"u8.ToArray())
+    {
+        internal int DisposedOnThread { get; private set; }
+
+        internal bool CompletedSynchronously { get; private set; } = true;
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            ValueTask<int> read = base.ReadAsync(buffer, cancellationToken);
+
+            CompletedSynchronously &= read.IsCompleted;
+
+            return read;
+        }
+
+        public override ValueTask DisposeAsync()
+        {
+            ValueTask disposal = base.DisposeAsync();
+
+            CompletedSynchronously &= disposal.IsCompleted;
+
+            DisposedOnThread = System.Environment.CurrentManagedThreadId;
+
+            return disposal;
         }
     }
 
     private sealed class BlockingRefreshOperationStore(ILongRunningOperationStore inner) : ILongRunningOperationStore
     {
+        internal bool ReturnMissing { get; set; }
+
+        internal bool ThrowOnGet { get; set; }
+
         internal bool CancelAcquire { get; set; }
 
         internal bool CommitBeforeCancel { get; set; }
+
+        internal ManualResetEventSlim? PendingRenewal { get; init; }
+
+        internal Guid HeartbeatOperationId { get; private set; }
+
+        internal CancellationToken HeartbeatStop { get; private set; }
+
+        internal Task<bool>? Renewal { get; private set; }
+
+        internal bool VerifySynchronousPostBody { get; set; }
+
+        internal bool SynchronousPostBodyCalls { get; private set; } = true;
 
         internal TaskCompletionSource HeartbeatEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -729,7 +840,16 @@ public sealed partial class GuildQuestStoreTests
 
         internal TaskCompletionSource HeartbeatFinished { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Task<LongRunningOperation?> GetAsync(Guid id, CancellationToken ct = default) => inner.GetAsync(id, ct);
+        public Task<LongRunningOperation?> GetAsync(Guid id, CancellationToken ct = default)
+        {
+            Task<LongRunningOperation?> result = ThrowOnGet
+                ? Task.FromException<LongRunningOperation?>(new InvalidOperationException("Operation store unavailable"))
+                : ReturnMissing ? Task.FromResult<LongRunningOperation?>(null) : inner.GetAsync(id, ct);
+
+            if (VerifySynchronousPostBody) SynchronousPostBodyCalls &= result.IsCompleted;
+
+            return result;
+        }
 
         public async Task<LongRunningOperationLeaseResult> TryAcquireLeaseAsync(Guid id, string owner, DateTimeOffset now, DateTimeOffset expiry,
             CancellationToken ct = default)
@@ -745,12 +865,32 @@ public sealed partial class GuildQuestStoreTests
         }
 
         public Task<bool> TryTransitionAsync(Guid id, long revision, string? owner, LongRunningOperationState state, DateTimeOffset now,
-            string? error = null, CancellationToken ct = default) => inner.TryTransitionAsync(id, revision, owner, state, now, error, ct);
-
-        public async Task<bool> RenewLeaseAsync(Guid id, string owner, DateTimeOffset now, DateTimeOffset expiry, CancellationToken ct = default)
+            string? error = null, CancellationToken ct = default)
         {
+            Task<bool> result = inner.TryTransitionAsync(id, revision, owner, state, now, error, ct);
+
+            if (VerifySynchronousPostBody) SynchronousPostBodyCalls &= result.IsCompleted;
+
+            return result;
+        }
+
+        public Task<bool> RenewLeaseAsync(Guid id, string owner, DateTimeOffset now, DateTimeOffset expiry, CancellationToken ct = default)
+        {
+            HeartbeatOperationId = id;
+
+            HeartbeatStop = ct;
+
+            Renewal = CompleteRenewalAsync(id, owner, now, expiry);
+
             HeartbeatEntered.TrySetResult();
 
+            PendingRenewal?.Set();
+
+            return Renewal;
+        }
+
+        private async Task<bool> CompleteRenewalAsync(Guid id, string owner, DateTimeOffset now, DateTimeOffset expiry)
+        {
             try
             {
                 await ReleaseHeartbeat.Task;
