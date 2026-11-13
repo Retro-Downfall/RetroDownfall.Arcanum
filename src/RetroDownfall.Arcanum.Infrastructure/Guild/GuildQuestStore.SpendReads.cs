@@ -12,6 +12,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 internal sealed partial class GuildQuestStore
 {
+    // Longest declared advisory reason; reserve its encoded width before issuing the cursor.
+    private const string MaximumProviderEligibilityReason = "initialEvidenceUnavailable";
+
     internal Task<Result<GuildSpendEffectDto>> ReadOperatorSpendEffectAsync(GuildCallerContext caller, Guid questId, Guid effectId, CancellationToken ct) =>
         WithSpendOwnerAsync(caller, questId, (connection, transaction, quest, ledger, token) =>
             ReadSpendEffectWithinAsync(connection, transaction, quest, ledger, effectId, token), ct);
@@ -28,13 +31,16 @@ internal sealed partial class GuildQuestStore
             return await ReadSpendReceiptWithinAsync(connection, transaction, quest.Quest.Id, effectId, receiptId, token).ConfigureAwait(false);
         }, ct);
 
-    internal Task<Result<GuildSpendEffectPageDto>> ListOperatorSpendEffectsAsync(GuildCallerContext caller, Guid questId, string? cursor, int pageSize, CancellationToken ct) =>
+    internal Task<Result<GuildSpendEffectPageDto>> ListOperatorSpendEffectsAsync(GuildCallerContext caller, Guid questId, string? cursor, int pageSize, CancellationToken ct,
+        bool reserveProviderReason = false) =>
         WithSpendOwnerAsync<GuildSpendEffectPageDto>(caller, questId, async (connection, transaction, quest, ledger, token) =>
         {
             Dictionary<Guid, SpendBillIdentity> identities = [];
             Result<SpendPage<GuildSpendEffectDto>> page = await SpendPageWithinAsync(connection, transaction, caller, quest,
                 4, questId, cursor, pageSize, (id, cancellation) => ReadSpendEffectWithinAsync(connection, transaction, quest, ledger, id, cancellation, identities),
-                (items, next, snapshot) => JsonSerializer.SerializeToUtf8Bytes(new GuildSpendEffectPageDto(items, next, snapshot), GuildJsonContext.Default.GuildSpendEffectPageDto).Length,
+                (items, next, snapshot) => JsonSerializer.SerializeToUtf8Bytes(new GuildSpendEffectPageDto(
+                    reserveProviderReason ? items.Select(item => item with { ProviderIneligibility = MaximumProviderEligibilityReason }).ToImmutableArray() : items,
+                    next, snapshot), GuildJsonContext.Default.GuildSpendEffectPageDto).Length,
                 token, (ids, cancellation) => CensusSpendBillsWithinAsync(connection, transaction, ids, identities, cancellation)).ConfigureAwait(false);
 
             return page.IsFailure ? page.Error : new GuildSpendEffectPageDto(page.Value.Items, page.Value.Next, page.Value.Snapshot);
