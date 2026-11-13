@@ -1311,6 +1311,182 @@ public sealed partial class GuildLocalHostPolicyTests
         }
     }
 
+    [Fact]
+    public async Task Financial_off_after_dispatch_does_not_release_a_real_daily_reservation()
+    {
+        using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
+
+        await using Fixture f = await Fixture.CreateAsync(productionOptions: true);
+
+        f.Settings.CurrentValue.Features.Conclave = true;
+
+        f.Settings.CurrentValue.Features.Apprentices = true;
+
+        f.Settings.CurrentValue.DefaultModel = "gpt-5.4-mini-2026-03-17";
+
+        f.Settings.CurrentValue.Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
+            Endpoint = "https://api.openai.com/v1", ContextWindowLimit = 400000, Models = ["gpt-5.4-mini-2026-03-17"] }];
+
+        await using GuildLocalHostReadiness readiness = new(f.Settings, f.Connections, f.Policy, f.Authority,
+            TimeProvider.System, Path.Combine(f.WorkspaceRoot, "host.lock"), f.Gate);
+
+        f.Readiness.Inner = readiness;
+
+        Assert.True((await readiness.EnsureReadyAsync(default)).IsSuccess);
+
+        GuildCallerContext owner = await f.OperatorAsync();
+
+        var root = await f.IssueAsync(owner);
+
+        Assert.True(root.IsSuccess, root.Error.Message);
+
+        GuildLocalInferenceExecution execution = await ToolExecutionAsync(f, owner, root.Value);
+
+        var input = await f.Store.ReadLocalInputAsync(execution.Driver, default);
+
+        Assert.True(input.IsSuccess, input.Error.Message);
+
+        var opened = await f.Connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite, default);
+
+        Assert.True(opened.IsSuccess, opened.Error.Message);
+
+        await using var connection = opened.Value;
+
+        await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection.Connection);
+
+        ArcanumSettings settings = new()
+        {
+            Features = new() { Guild = true }, DefaultModel = "gpt-5.4-mini-2026-03-17",
+            Cost = new() { Budget = new() { Enabled = true, DailyLimitUsd = 10m } },
+            Providers = [new() { Name = "accepted-provider", Type = AiProviderKind.OpenAICompatible,
+                Endpoint = "https://api.openai.com/v1", ContextWindowLimit = 400000,
+                GuildUsageReconciliation = GuildUsageReconciliationSource.None, Models = ["gpt-5.4-mini-2026-03-17"] }],
+        };
+
+        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
+
+        GuildQuestStore paidStore = new(new(f.Connections, f.Gate, TimeProvider.System), f.Authority, f.Policy,
+            new GuildBudgetLedger(daily), TimeProvider.System, new GuildLocalExecutionAdmission(f.Settings), f.Readiness);
+
+        execution = new(paidStore, execution.Driver, execution.Dispatch);
+
+        using FinancialOffDailyTransport transport = new(async () =>
+        {
+            Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
+
+            settings.Cost.Budget.Enabled = false;
+        });
+
+        ChatClientFactory clients = new(transport, new TestOptionsMonitor<ArcanumSettings>(settings));
+
+        WizardIntelligenceProviderTests wizard = new();
+
+        try
+        {
+            var runtime = await wizard.CreateGuildRuntimeAsync(daily, settings, clients);
+
+            using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
+
+            var first = await runtime.Runtime.ExecuteTurnAsync(execution, input.Value, new("Answer the question.", DisableAllTools: true), deadline.Token);
+
+            Assert.True(first.IsSuccess, first.Error.Message);
+
+            Assert.Equal("received without usage", first.Value.Text);
+
+            Assert.False(settings.Cost.Budget.Enabled);
+
+            Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
+
+            Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd=1 AND UnknownTokens=1 AND ReservationId IS NOT NULL"));
+
+            await using (var transaction = connection.Connection.BeginTransaction())
+            {
+                var snapshot = await new GuildBudgetLedger(daily).ReadWithinAsync(connection.Connection, transaction, root.Value.AllocationAccountId, deadline.Token);
+
+                Assert.True(snapshot.IsSuccess, snapshot.Error.Message);
+
+                Assert.True(snapshot.Value.UsdBlocked);
+
+                Assert.True(snapshot.Value.UnknownUsd);
+            }
+
+            var reopened = await f.Connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite, deadline.Token);
+
+            Assert.True(reopened.IsSuccess, reopened.Error.Message);
+
+            await using var restartedConnection = reopened.Value;
+
+            await using ArcanumDbContext restartedDb = GrimoireFixture.CreateContext(restartedConnection.Connection);
+
+            BudgetReservationService restartedDaily = new(restartedDb, new TestOptionsMonitor<ArcanumSettings>(settings));
+
+            GuildLocalHostPolicy restartedPolicy = f.NewPolicy();
+
+            using SignetAuthority restartedAuthority = new(new(f.Connections), f.Gate, restartedPolicy, TimeProvider.System);
+
+            GuildQuestStore restartedStore = new(new(f.Connections, f.Gate, TimeProvider.System), restartedAuthority, restartedPolicy,
+                new GuildBudgetLedger(restartedDaily), TimeProvider.System, new GuildLocalExecutionAdmission(f.Settings), f.Readiness);
+
+            var restartedOwner = await restartedPolicy.CreateNativeOperatorAsync(Guid.NewGuid(), deadline.Token);
+
+            Assert.True(restartedOwner.IsSuccess, restartedOwner.Error.Message);
+
+            var spend = await ((IGuildTreeSpendLedger)restartedStore).ReadAsync(restartedOwner.Value, root.Value.Quest.Id, deadline.Token);
+
+            Assert.True(spend.IsSuccess, spend.Error.Message);
+
+            Assert.True(spend.Value.UnknownUsd);
+
+            await using (var transaction = restartedConnection.Connection.BeginTransaction())
+            {
+                var restarted = await new GuildBudgetLedger(restartedDaily).ReadWithinAsync(restartedConnection.Connection, transaction, root.Value.AllocationAccountId, deadline.Token);
+
+                Assert.True(restarted.IsSuccess, restarted.Error.Message);
+
+                Assert.True(restarted.Value.UsdBlocked);
+
+                Assert.True(restarted.Value.UnknownUsd);
+            }
+
+            Assert.Equal(1, transport.Posts);
+
+            Assert.Equal(0, transport.MetadataGets);
+        }
+        finally
+        {
+            await wizard.DisposeAsync();
+        }
+    }
+
+    private sealed class FinancialOffDailyTransport(Func<Task> afterHandoff) : HttpMessageHandler, IHttpClientFactory
+    {
+        internal int Posts;
+
+        internal int MetadataGets;
+
+        public HttpClient CreateClient(string name) => new(this, false);
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                Interlocked.Increment(ref MetadataGets);
+
+                throw new InvalidOperationException("Unexpected metadata GET");
+            }
+
+            Assert.Equal(HttpMethod.Post, request.Method);
+
+            Interlocked.Increment(ref Posts);
+
+            await afterHandoff();
+
+            const string json = """{"id":"daily-response","object":"chat.completion","created":1700000000,"model":"gpt-5.4-mini-2026-03-17","choices":[{"index":0,"message":{"role":"assistant","content":"received without usage"},"finish_reason":"stop"}]}""";
+
+            return new(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+        }
+    }
+
     private sealed class FinancialOffRuntimeCapture(IGuildLocalInferenceRuntime inner) : IGuildLocalInferenceRuntime
     {
         internal string? Diagnostic;
