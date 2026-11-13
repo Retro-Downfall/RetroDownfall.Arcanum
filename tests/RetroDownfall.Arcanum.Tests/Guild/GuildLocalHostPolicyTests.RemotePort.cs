@@ -237,7 +237,6 @@ public sealed partial class GuildLocalHostPolicyTests
                     await Task.Delay(25, CancellationToken.None);
             }
             finally { await scheduler.StopAsync(default); }
-
         }
 
         async Task<Result<GuildDispatchObservation>> CompletePushAsync(Func<CancellationToken, Task<Result<GuildDispatchObservation>>> start)
@@ -416,6 +415,7 @@ public sealed partial class GuildLocalHostPolicyTests
                     abort.CommandText = "DROP TRIGGER fixture_abort_remote_receipt";
                     await abort.ExecuteNonQueryAsync();
                 }
+
                 var observed = await currentStore.WaitForRemoteInputAsync(observationDriver, quest.Id, observation, default);
                 Assert.True(observed.IsSuccess, observed.Error.Message);
                 Assert.Equal(beforeEvidence + (replay ? 0 : 1), await f.ScalarAsync("SELECT COUNT(*) FROM guild_budget_evidence"));
@@ -859,7 +859,6 @@ public sealed partial class GuildLocalHostPolicyTests
             Assert.True(remoteHistory.IsSuccess, remoteHistory.Error.Message);
 
             Assert.Contains(remoteHistory.Value.Items, item => item.ReceiptId == source.ReceiptId);
-
 
             Assert.All(spendEvents, item =>
             {
