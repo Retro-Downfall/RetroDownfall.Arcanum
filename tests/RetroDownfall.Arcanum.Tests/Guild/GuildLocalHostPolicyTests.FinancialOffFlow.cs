@@ -1,6 +1,8 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -283,7 +285,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.NotNull(childResult.Value.Receipt);
 
-            Assert.Equal(3L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd={(usage is "qualified-cap" or "qualified-breach" or "qualified-usd" ? 0 : 1)} AND UnknownTokens={(usage is "zero" or "qualified-cap" or "qualified-usd" ? 0 : 1)} AND KnownTokens={(usage == "partial" ? 7 : 0)}"));
+            Assert.Equal(3L, await f.ScalarAsync($"SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd={(usage is "qualified-cap" or "qualified-breach" or "qualified-usd" ? 0 : 1)} AND UnknownTokens={(usage is "zero" or "qualified-cap" or "qualified-usd" ? 0 : 1)} AND KnownTokens={(usage == "partial" ? 7 : 0)} AND CAST(KnownUsd AS NUMERIC)=0"));
 
             Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_result_applications"));
 
@@ -1198,6 +1200,8 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Task<RetroDownfall.Arcanum.Core.Primitives.Result<GuildDispatchObservation>> loserTask = loserPort.DispatchAsync(loser.Handle, loser.Request, deadline.Token);
 
+            bool assertionsCompleted = false;
+
             try
             {
                 await pausedLoser.Entered.Task.WaitAsync(deadline.Token);
@@ -1274,10 +1278,23 @@ public sealed partial class GuildLocalHostPolicyTests
                 Assert.Equal(4L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=2 AND UnknownUsd=1 AND UnknownTokens=1"));
 
                 Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BudgetReservations"));
+
+                assertionsCompleted = true;
             }
             finally
             {
+                deadline.Cancel();
+
                 pausedLoser.Release.TrySetResult();
+
+                try
+                {
+                    await loserTask.WaitAsync(TimeSpan.FromSeconds(15));
+                }
+                catch when (!assertionsCompleted)
+                {
+                    // Preserve the original failure while observing the owned task.
+                }
             }
         }
         finally
@@ -1372,14 +1389,38 @@ public sealed partial class GuildLocalHostPolicyTests
 
         settings.Cost.Budget.Enabled = !enableBeforeDispatch;
 
-        FinancialOffGateFlipOptions? flip = enableBeforeDispatch ? new(settings) : null;
+        FinancialOffPreparedEffectConnections? observed = enableBeforeDispatch ? new(f.Connections, settings) : null;
 
-        BudgetReservationService daily = new(db, flip is null ? new TestOptionsMonitor<ArcanumSettings>(settings) : flip);
+        if (observed is not null)
+            await f.ExecuteAsync("CREATE TRIGGER fixture_daily_gate_after_preparation AFTER INSERT ON guild_budget_effects BEGIN SELECT fixture_daily_prepared(NEW.StateCode, NEW.ReservationId); END");
 
-        GuildQuestStore paidStore = new(new(f.Connections, f.Gate, TimeProvider.System), f.Authority, f.Policy,
+        IGrimoireOrdinaryConnectionFactory connections = observed ?? (IGrimoireOrdinaryConnectionFactory)f.Connections;
+
+        using SignetAuthority paidAuthority = new(new(connections), f.Gate, f.Policy, TimeProvider.System);
+
+        BudgetReservationService daily = new(db, new TestOptionsMonitor<ArcanumSettings>(settings));
+
+        GuildQuestStore paidStore = new(new(connections, f.Gate, TimeProvider.System), paidAuthority, f.Policy,
             new GuildBudgetLedger(daily), TimeProvider.System, new GuildLocalExecutionAdmission(f.Settings), f.Readiness);
 
-        execution = new(paidStore, execution.Driver, execution.Dispatch);
+        var paidCurrent = await f.Store.GetAsync(owner, root.Value.Quest.Id, default);
+
+        Assert.True(paidCurrent.IsSuccess, paidCurrent.Error.Message);
+
+        var paidRecovery = await f.Policy.CreateRecoveryAsync(owner, root.Value.Quest.Id, root.Value.Quest.OperationId,
+            paidCurrent.Value.Quest.SignetRevision, default);
+
+        Assert.True(paidRecovery.IsSuccess, paidRecovery.Error.Message);
+
+        var paidHandle = await paidAuthority.RebindAsync(paidRecovery.Value, default);
+
+        Assert.True(paidHandle.IsSuccess, paidHandle.Error.Message);
+
+        var paidCaller = await f.Policy.CreateRunCallerAsync(paidAuthority, paidHandle.Value, root.Value.Quest.Id, default);
+
+        Assert.True(paidCaller.IsSuccess, paidCaller.Error.Message);
+
+        execution = new(paidStore, execution.Driver with { Execution = paidHandle.Value, Caller = paidCaller.Value }, execution.Dispatch);
 
         using FinancialOffDailyTransport transport = new(async () =>
         {
@@ -1408,7 +1449,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
                 Assert.Equal(ErrorCodes.Guild.ReconciliationRequired, first.Error.Code);
 
-                Assert.Equal(2, flip!.Reads);
+                Assert.True(observed!.PreparedWithoutReservation);
 
                 Assert.True(settings.Cost.Budget.Enabled);
 
@@ -1490,24 +1531,36 @@ public sealed partial class GuildLocalHostPolicyTests
         }
     }
 
-    private sealed class FinancialOffGateFlipOptions(ArcanumSettings settings) : IOptionsMonitor<ArcanumSettings>
+    private sealed class FinancialOffPreparedEffectConnections(IGrimoireOrdinaryConnectionFactory inner, ArcanumSettings settings)
+        : IGrimoireOrdinaryConnectionFactory
     {
-        internal int Reads;
+        internal bool PreparedWithoutReservation;
 
-        public ArcanumSettings CurrentValue
+        public async Task<Result<IGrimoireOrdinaryConnectionLease>> OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind kind, CancellationToken ct)
         {
-            get
-            {
-                // The daily service observes disabled during reservation preparation, then enabled at exposure.
-                if (Interlocked.Increment(ref Reads) == 2) settings.Cost.Budget.Enabled = true;
+            var opened = await inner.OpenFreshAsync(kind, ct);
 
-                return settings;
-            }
+            if (opened.IsSuccess)
+                opened.Value.Connection.CreateFunction<long, string?, long>("fixture_daily_prepared", (state, reservation) =>
+                {
+                    Assert.Equal(0, state);
+
+                    Assert.Null(reservation);
+
+                    Assert.False(settings.Cost.Budget.Enabled);
+
+                    PreparedWithoutReservation = true;
+
+                    settings.Cost.Budget.Enabled = true;
+
+                    return 1;
+                });
+
+            return opened;
         }
 
-        public ArcanumSettings Get(string? name) => CurrentValue;
-
-        public IDisposable? OnChange(Action<ArcanumSettings, string?> listener) => null;
+        public Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(SqliteConnection connection,
+            CovenantSqliteConnectionMode mode, CancellationToken ct) => inner.AcquireScopedAsync(connection, mode, ct);
     }
 
     private sealed class FinancialOffDailyTransport(Func<Task> afterHandoff) : HttpMessageHandler, IHttpClientFactory

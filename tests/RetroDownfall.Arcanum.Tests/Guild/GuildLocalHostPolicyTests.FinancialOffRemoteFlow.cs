@@ -290,6 +290,33 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.Equal(eventsBeforeUpdate + 1, await f.ScalarAsync("SELECT count(*) FROM guild_events WHERE EventKindCode=" + (int)GuildEventKind.SpendChanged));
 
+            async Task AssertRetainedCostAsync()
+            {
+                await using var costConnection = await f.OpenAsync();
+
+                await using var cost = costConnection.CreateCommand();
+
+                cost.CommandText = "SELECT KnownUsd,KnownTokens,UnknownUsd,UnknownTokens FROM guild_budget_effects WHERE EffectId=$effect";
+
+                cost.Parameters.AddWithValue("$effect", quest.Id.ToString("D").ToUpperInvariant());
+
+                await using var reader = await cost.ExecuteReaderAsync(deadline.Token);
+
+                Assert.True(await reader.ReadAsync(deadline.Token));
+
+                Assert.Equal(1m, ExactUsdText.Read(reader, 0));
+
+                Assert.Equal(20L, reader.GetInt64(1));
+
+                Assert.True(reader.GetBoolean(2));
+
+                Assert.True(reader.GetBoolean(3));
+
+                Assert.False(await reader.ReadAsync(deadline.Token));
+            }
+
+            await AssertRetainedCostAsync();
+
             GuildLocalHostPolicy restartedPolicy = f.NewPolicy();
 
             using SignetAuthority restartedAuthority = new(new(f.Connections), f.Gate, restartedPolicy, TimeProvider.System);
@@ -349,6 +376,8 @@ public sealed partial class GuildLocalHostPolicyTests
             Assert.Equal(evidenceBeforeReplay, await f.ScalarAsync("SELECT count(*) FROM guild_budget_evidence"));
 
             Assert.Equal(eventsBeforeReplay, await f.ScalarAsync("SELECT count(*) FROM guild_events WHERE EventKindCode=" + (int)GuildEventKind.SpendChanged));
+
+            await AssertRetainedCostAsync();
 
             var question = await restartedStore.ReadLocalQuestionAsync(restartedCaller.Value, quest.Id, deadline.Token);
 
