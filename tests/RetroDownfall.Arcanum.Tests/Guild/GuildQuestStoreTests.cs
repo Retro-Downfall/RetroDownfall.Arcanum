@@ -109,7 +109,7 @@ public sealed partial class GuildQuestStoreTests
         internal readonly GuildIssueRootRequest Request;
 
         private Fixture(string connectionString, EvolutionScratchDatabase? file,
-            Func<FixtureOrdinaryConnectionFactory, IGrimoireOrdinaryConnectionFactory>? wrapConnections)
+            Func<FixtureOrdinaryConnectionFactory, IGrimoireOrdinaryConnectionFactory>? wrapConnections, Guid? sessionId = null)
         {
             _file = file;
 
@@ -127,7 +127,7 @@ public sealed partial class GuildQuestStoreTests
 
             Identity = new(Host.InstallationGeneration, null, Caller.InvocationId, Guid.NewGuid(), key);
 
-            Request = new(key, null, "Child", "Summarize the selected material", Host.Grant);
+            Request = new(key, null, "Child", "Summarize the selected material", Host.Grant, sessionId);
 
             Authority = new(new(_storeConnections), Gate, Host, TimeProvider.System);
 
@@ -186,7 +186,7 @@ public sealed partial class GuildQuestStoreTests
             Store = NewStore();
         }
 
-        internal static Fixture ForExistingDatabase(string connectionString) => new(connectionString, null, null);
+        internal static Fixture ForExistingDatabase(string connectionString, Guid? sessionId = null) => new(connectionString, null, null, sessionId);
 
         internal Task<SqliteConnection> OpenAsync() => GrimoireSchemaTestInstaller.OpenAsync(_connectionString, default);
 

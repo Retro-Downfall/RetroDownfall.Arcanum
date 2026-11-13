@@ -29,7 +29,7 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(1, await CampaignScalarCountAsync("SELECT count(*) FROM guild_cohort_settlement_clock"));
 
-        Assert.Contains(plan.Items, item => item.DataClass == RetentionDataClass.GuildEvidence && item.DerivedRecords == 4);
+        Assert.Contains(plan.Items, item => item.DataClass == RetentionDataClass.GuildEvidence && item.DerivedRecords == 5);
 
         var recovered = await ReconcileFactoryResetV0Async(CreateService(), "guild-budget-reset");
 
@@ -808,7 +808,7 @@ public sealed partial class DataRetentionServiceTests
     {
         RequireSqlCipher();
 
-        await SeedGuildPhysicalRetentionAsync(2, staleSnapshot, false);
+        await SeedGuildPhysicalRetentionAsync(2, staleSnapshot, false, authentic: true);
 
         if (staleSnapshot)
         {
@@ -819,6 +819,7 @@ public sealed partial class DataRetentionServiceTests
             INSERT INTO guild_result_receipts(QuestId,ResultId,Digest,OutcomeCode,NoDispatchProven,WorkStoppedProven,MutationId,AcceptedRevision,CreatedAtUtc)
             VALUES('11111111-1111-1111-1111-111111111111','99999999-9999-9999-9999-999999999999',zeroblob(32),5,0,1,
                 '88888888-8888-8888-8888-888888888888',1,'2000-01-01T00:00:00.0000000Z');
+            UPDATE guild_budget_accounts SET Closed=1,SettlementReceiptId='99999999-9999-9999-9999-999999999999',Revision=2;
             """);
 
         var service = CreateService();

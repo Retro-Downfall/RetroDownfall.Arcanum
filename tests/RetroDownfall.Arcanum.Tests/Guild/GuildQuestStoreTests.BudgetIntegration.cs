@@ -69,12 +69,4 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.True((await port.ReadAsync(stranger, issued.Value.Quest.Id, default)).IsFailure);
     }
-
-    [Fact]
-    public void Unresolved_accounting_evidence_pins_cleanup_independently_of_quest_projection()
-    {
-        Assert.Contains("guild_budget_effects", GuildQuestRetentionPins.ExecutionUnresolved, StringComparison.Ordinal);
-
-        Assert.Contains("guild_budget_accounts", GuildQuestRetentionPins.ExecutionUnresolved, StringComparison.Ordinal);
-    }
 }

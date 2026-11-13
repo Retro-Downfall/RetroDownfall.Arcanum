@@ -23,20 +23,6 @@ internal static class GuildQuestRetentionPins
              AND NOT EXISTS(SELECT 1 FROM guild_result_receipts stopped WHERE stopped.QuestId=c.Id AND stopped.WorkStoppedProven=1)))
         """;
 
-    // Every caller binds its Quest as c. Missing proof is an obligation, never measured zero.
-    internal const string ExecutionUnresolved = """
-        (c.AccountingStateCode<>0
-         OR EXISTS(SELECT 1 FROM guild_quest_budget binding JOIN guild_budget_accounts account ON account.AccountId=binding.AccountId
-             WHERE binding.QuestId=c.Id AND account.Closed=0)
-         OR EXISTS(SELECT 1 FROM guild_budget_effects effect WHERE effect.QuestId=c.Id
-             AND (effect.StateCode IN(0,1) OR effect.UnknownUsd=1 OR effect.UnknownTokens=1
-                 OR NOT EXISTS(SELECT 1 FROM guild_budget_evidence receipt
-                     WHERE receipt.EffectId=effect.EffectId AND receipt.AppliedRevision=effect.Revision)))
-         OR
-        """ + StoppedExecutionUnresolved + """
-         OR EXISTS(SELECT 1 FROM guild_result_outbox delivery WHERE delivery.QuestId=c.Id AND delivery.DeliveryStateCode=1))
-        """;
-
     internal const string UnresolvedPortalInbox = """
         (i.DeliveryStateCode=1 OR i.AcknowledgedAtUtc IS NULL OR NOT EXISTS(
             SELECT 1 FROM guild_portal_receipts receipt WHERE receipt.InboxId=i.Id AND receipt.Digest=e.IntentDigest
@@ -48,13 +34,6 @@ internal static class GuildQuestRetentionPins
     // where a transaction-local exact reservation check is available.
     internal const string NonAccountingUnresolved = "(" + StoppedExecutionUnresolved + """
          OR EXISTS(SELECT 1 FROM guild_result_outbox delivery WHERE delivery.QuestId=c.Id AND delivery.DeliveryStateCode=1)
-         OR EXISTS(SELECT 1 FROM guild_inbox i JOIN guild_envelopes e ON e.Id=i.EnvelopeId
-             WHERE (i.RecipientQuestId=c.Id OR e.QuestId=c.Id) AND
-        """ + UnresolvedPortalInbox + """
-        ) OR EXISTS(SELECT 1 FROM guild_portal_outbox delivery WHERE delivery.QuestId=c.Id AND delivery.DeliveryStateCode=1))
-        """;
-
-    internal const string Unresolved = "(" + ExecutionUnresolved + """
          OR EXISTS(SELECT 1 FROM guild_inbox i JOIN guild_envelopes e ON e.Id=i.EnvelopeId
              WHERE (i.RecipientQuestId=c.Id OR e.QuestId=c.Id) AND
         """ + UnresolvedPortalInbox + """

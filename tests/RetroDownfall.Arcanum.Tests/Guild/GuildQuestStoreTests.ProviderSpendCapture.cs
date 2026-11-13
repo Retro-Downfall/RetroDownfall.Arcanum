@@ -595,6 +595,14 @@ public sealed partial class GuildQuestStoreTests
 
         internal Guid EffectId { get; private set; }
 
+        internal GuildQuestDriver Driver { get; private set; } = null!;
+
+        internal Guid QuestId { get; private set; }
+
+        internal Guid DispatchId { get; private set; }
+
+        internal Guid ApprenticeId { get; private set; }
+
         internal string? PendingReason { get; private set; }
 
         internal static async Task<SpendScenario> CreateAsync(Fixture? fixture = null)
@@ -630,10 +638,18 @@ public sealed partial class GuildQuestStoreTests
 
                 Assert.True(bound.IsSuccess, bound.IsFailure ? bound.Error.Message : null);
 
+                scenario.ApprenticeId = bound.Value.ApprenticeId;
+
                 GuildQuestDriver driver = await scenario.Fixture.DriverAsync(quest);
+
+                scenario.Driver = driver;
+
+                scenario.QuestId = quest.Quest.Id;
 
                 GuildQuestDispatchRecord dispatch = (await scenario.Fixture.Store.PrepareDispatchAsync(driver, Guid.NewGuid(),
                     ReceiptDigest("provider-spend"), quest.Quest.RunId, false, default)).Value;
+
+                scenario.DispatchId = dispatch.DispatchId;
 
                 scenario.Transport = new(SpendModel, async () =>
                 {

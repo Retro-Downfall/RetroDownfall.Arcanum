@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 
@@ -262,5 +263,59 @@ public sealed partial class GuildQuestStoreTests
         Assert.True((await scenario.VerifyAsync(scenario.Credential())).IsSuccess);
 
         return new(scenario.Credential(), scenario.EffectId, scenario.Fixture.Host.InstallationGeneration);
+    }
+
+    internal static async Task<RestoreCapture> CaptureAndCompleteForResetAsync(string connectionString, Guid sessionId)
+    {
+        Fixture fixture = Fixture.ForExistingDatabase(connectionString, sessionId);
+
+        await using SpendScenario scenario = await SpendScenario.CreateAsync(fixture: fixture);
+
+        var resolved = await fixture.Store.RecordDispatchEvidenceAsync(scenario.Driver,
+            new(scenario.DispatchId, 2, GuildDispatchEvidence.Confirmed, scenario.ApprenticeId), default);
+
+        Assert.True(resolved.IsSuccess, resolved.IsFailure ? resolved.Error.Message : null);
+
+        var current = await fixture.Store.GetAsync(fixture.Caller, scenario.QuestId, default);
+
+        Assert.True(current.IsSuccess, current.IsFailure ? current.Error.Message : null);
+
+        GuildQuestResult result = ReceiptResult(scenario.QuestId) with { WorkStoppedProven = true };
+
+        var committed = await fixture.Store.CommitResultAsync(scenario.Driver, new(Guid.NewGuid(), ReceiptDigest("reset-commit")),
+            current.Value.Quest.Revision, result, default);
+
+        Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : null);
+
+        var acknowledged = await fixture.Store.AcknowledgeRootResultAsync(fixture.Caller, scenario.QuestId,
+            committed.Value.ResultId, committed.Value.CanonicalContentDigest, 1, default);
+
+        Assert.True(acknowledged.IsSuccess, acknowledged.IsFailure ? acknowledged.Error.Message : null);
+
+        GuildPortalStore portal = new(fixture.Store, fixture.Authority, fixture.Host, TimeProvider.System);
+
+        var drained = await portal.DrainOutboxAsync(fixture.Caller, scenario.QuestId, default);
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
+
+        List<Guid> envelopes = [];
+
+        await using (SqliteCommand command = scenario.Connection.CreateCommand())
+        {
+            command.CommandText = "SELECT EnvelopeId FROM guild_inbox WHERE DeliveryStateCode=1";
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync();
+
+            while (await reader.ReadAsync()) envelopes.Add(Guid.Parse(reader.GetString(0)));
+        }
+
+        foreach (Guid envelope in envelopes)
+        {
+            var applied = await portal.AcknowledgeOperatorAsync(fixture.Caller, envelope, default);
+
+            Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
+        }
+
+        return new(scenario.Credential(), scenario.EffectId, fixture.Host.InstallationGeneration);
     }
 }

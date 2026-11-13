@@ -25,7 +25,7 @@ internal sealed partial class DataRetentionService
             retention, cancellationToken).ConfigureAwait(false);
 
         await AddCompositeDatabaseStatusAsync(items, RetentionDataClass.GuildEvidence,
-            ["guild_distribution_notifications", "guild_cohort_award_authority_scan", "guild_work_mutations", "guild_work_awards", "guild_work_bids", "guild_work_offer_recipients", "guild_work_offers", "guild_cohort_ledger", "guild_portal_cohort_audience", "guild_cohort_settlement_nodes", "guild_cohort_settlement_state", "guild_cohort_settlement_clock", "guild_cohort_selections", "guild_cohort_eval_candidates", "guild_cohort_eval_buckets", "guild_cohort_eval_state", "guild_cohort_stop_frontiers", "guild_cohort_result_observations", "guild_cohort_contributions", "guild_cohort_member_quests", "guild_cohort_mutations", "guild_cohort_members", "guild_cohorts", "guild_workspace_lease_mutations", "guild_workspace_leases", "guild_workspace_authority_state", "guild_budget_evidence", "guild_budget_effects", "guild_quest_budget", "guild_budget_accounts", "guild_memory_attribution", "guild_portal_inputs", "guild_portal_receipts", "guild_inbox", "guild_portal_outbox", "guild_events", "guild_portal_cursors", "guild_envelopes", "guild_portal_streams", "guild_event_streams", "guild_remote_questions", "guild_remote_callbacks", "guild_remote_effects", "guild_remote_executions", "guild_inbound_tasks", "guild_inbound_peer_state", "guild_continuations", "guild_result_inputs", "guild_result_applications", "guild_result_outbox", "guild_result_receipts", "guild_dispatches", "guild_quest_cancellations", "guild_local_wait_checkpoints", "guild_local_executions", "guild_quest_start_intents", "guild_quests", "guild_signets", "guild_signet_revocations", "guild_signet_authority_state", "guild_content_erasure_receipts", "guild_owner_cleanup", "guild_roster_refreshes", "guild_roster_cursors", "guild_declared_source_claims", "guild_declared_roots"],
+            ["guild_distribution_notifications", "guild_cohort_award_authority_scan", "guild_work_mutations", "guild_work_awards", "guild_work_bids", "guild_work_offer_recipients", "guild_work_offers", "guild_cohort_ledger", "guild_portal_cohort_audience", "guild_cohort_settlement_nodes", "guild_cohort_settlement_state", "guild_cohort_settlement_clock", "guild_cohort_selections", "guild_cohort_eval_candidates", "guild_cohort_eval_buckets", "guild_cohort_eval_state", "guild_cohort_stop_frontiers", "guild_cohort_result_observations", "guild_cohort_contributions", "guild_cohort_member_quests", "guild_cohort_mutations", "guild_cohort_members", "guild_cohorts", "guild_workspace_lease_mutations", "guild_workspace_leases", "guild_workspace_authority_state", "guild_spend_refreshes", "guild_spend_receipts", "guild_spend_sources", "guild_spend_authority_state", "guild_budget_evidence", "guild_budget_effects", "guild_quest_budget", "guild_budget_accounts", "guild_memory_attribution", "guild_portal_inputs", "guild_portal_receipts", "guild_inbox", "guild_portal_outbox", "guild_events", "guild_portal_cursors", "guild_envelopes", "guild_portal_streams", "guild_event_streams", "guild_remote_questions", "guild_remote_callbacks", "guild_remote_effects", "guild_remote_executions", "guild_inbound_tasks", "guild_inbound_peer_state", "guild_continuations", "guild_result_inputs", "guild_result_applications", "guild_result_outbox", "guild_result_receipts", "guild_dispatches", "guild_quest_cancellations", "guild_local_wait_checkpoints", "guild_local_executions", "guild_quest_start_intents", "guild_quests", "guild_signets", "guild_signet_revocations", "guild_signet_authority_state", "guild_content_erasure_receipts", "guild_owner_cleanup", "guild_roster_refreshes", "guild_roster_cursors", "guild_declared_source_claims", "guild_declared_roots"],
             "Content-free Guild budget, physical spend, erasure and owner cleanup evidence; never aged out on a timer.",
             retention, cancellationToken).ConfigureAwait(false);
     }
@@ -114,67 +114,160 @@ internal sealed partial class DataRetentionService
     private async Task<DataRetentionConflict[]> ReadGuildResetConflictsAsync(DbConnection connection, DbTransaction? transaction,
         CancellationToken cancellationToken)
     {
-        bool quests = await TableExistsAsync("guild_quests", cancellationToken).ConfigureAwait(false);
+        SqliteConnection sqlite = (SqliteConnection)connection;
+
+        if (transaction is not null)
+            return await ReadGuildResetConflictsWithinAsync(sqlite, (SqliteTransaction)transaction, cancellationToken).ConfigureAwait(false);
+
+        await using SqliteTransaction snapshot = sqlite.BeginTransaction(deferred: true);
+
+        return await ReadGuildResetConflictsWithinAsync(sqlite, snapshot, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<DataRetentionConflict[]> ReadGuildResetConflictsWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        bool quests = await GuildResetTableExistsAsync(connection, transaction, "guild_quests", cancellationToken).ConfigureAwait(false);
 
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
 
         command.CommandText = quests
-            ? $"SELECT c.Id,0 FROM guild_quests c WHERE {GuildQuestRetentionPins.Unresolved}"
+            ? $"SELECT c.Id,0 FROM guild_quests c WHERE c.AccountingStateCode<>0 OR {GuildQuestRetentionPins.NonAccountingUnresolved}"
                 + " UNION SELECT operation.Id,0 FROM LongRunningOperations operation WHERE operation.Kind='guild-quest'"
                 + " AND NOT EXISTS(SELECT 1 FROM guild_quests c WHERE c.OperationId=operation.Id)"
             : "SELECT Id,0 FROM LongRunningOperations WHERE Kind='guild-quest'";
 
-        if (await TableExistsAsync("guild_local_executions", cancellationToken).ConfigureAwait(false))
+        if (await GuildResetTableExistsAsync(connection, transaction, "guild_local_executions", cancellationToken).ConfigureAwait(false))
         {
             command.CommandText += quests
                 ? $" UNION SELECT b.QuestId,0 FROM guild_local_executions b WHERE NOT ({GuildLocalExecutionStore.BindingProof})"
                 : " UNION SELECT QuestId,0 FROM guild_local_executions";
         }
 
-        if (await TableExistsAsync("guild_local_wait_checkpoints", cancellationToken).ConfigureAwait(false))
+        if (await GuildResetTableExistsAsync(connection, transaction, "guild_local_wait_checkpoints", cancellationToken).ConfigureAwait(false))
         {
             command.CommandText += quests
                 ? $" UNION SELECT w.QuestId,0 FROM guild_local_wait_checkpoints w WHERE NOT ({GuildQuestStore.WaitCheckpointProof})"
                 : " UNION SELECT QuestId,0 FROM guild_local_wait_checkpoints";
         }
 
-        if (await TableExistsAsync("guild_inbox", cancellationToken).ConfigureAwait(false))
+        if (await GuildResetTableExistsAsync(connection, transaction, "guild_inbox", cancellationToken).ConfigureAwait(false))
         {
             command.CommandText += " UNION SELECT i.Id,0 FROM guild_inbox i JOIN guild_envelopes e ON e.Id=i.EnvelopeId WHERE "
                 + GuildQuestRetentionPins.UnresolvedPortalInbox
                 + " UNION SELECT ReceiptId,0 FROM guild_portal_outbox WHERE DeliveryStateCode=1";
         }
 
-        if (await TableExistsAsync("guild_cohorts", cancellationToken).ConfigureAwait(false))
+        if (await GuildResetTableExistsAsync(connection, transaction, "guild_cohorts", cancellationToken).ConfigureAwait(false))
         {
             command.CommandText += " UNION SELECT Id,2 FROM guild_cohorts WHERE StateCode IN(1,2,3)";
         }
 
-        if (await TableExistsAsync("guild_cohort_stop_frontiers", cancellationToken).ConfigureAwait(false))
+        if (await GuildResetTableExistsAsync(connection, transaction, "guild_cohort_stop_frontiers", cancellationToken).ConfigureAwait(false))
         {
             command.CommandText += " UNION SELECT CohortId,2 FROM guild_cohort_stop_frontiers WHERE Completed=0";
         }
 
-        if (await TableExistsAsync("guild_workspace_leases", cancellationToken).ConfigureAwait(false))
+        if (await GuildResetTableExistsAsync(connection, transaction, "guild_workspace_leases", cancellationToken).ConfigureAwait(false))
         {
             command.CommandText += " UNION SELECT Id,1 FROM guild_workspace_leases WHERE StateCode IS NOT 3 OR InFlightMutationCount IS NOT 0";
         }
 
         List<DataRetentionConflict> conflicts = [];
 
-        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        await using (DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-            conflicts.Add(new(ErrorCodes.Guild.ReconciliationRequired, Guid.Parse(reader.GetString(0)).ToString("D"),
-                reader.GetInt64(1) == 1 ? "A Guild workspace lease retains live or unresolved physical mutation ownership."
-                    : reader.GetInt64(1) == 2 ? "A Cohort retains unresolved convergence or cancellation work."
-                    : "A Guild Quest retains unresolved execution, delivery or accounting evidence."));
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                string resource = Guid.TryParse(reader.GetString(0), out Guid parsed) && parsed != Guid.Empty
+                    ? parsed.ToString("D") : "guild";
+
+                conflicts.Add(new(ErrorCodes.Guild.ReconciliationRequired, resource,
+                    reader.GetInt64(1) == 1 ? "A Guild workspace lease retains live or unresolved physical mutation ownership."
+                        : reader.GetInt64(1) == 2 ? "A Cohort retains unresolved convergence or cancellation work."
+                        : "A Guild Quest retains unresolved execution, delivery or accounting evidence."));
+            }
+        }
+
+        if (quests)
+        {
+            command.CommandText = """
+                WITH RECURSIVE reachable(Id,RootQuestId) AS (
+                    SELECT Id,RootQuestId FROM guild_quests WHERE ParentQuestId IS NULL AND Id=RootQuestId
+                    UNION
+                    SELECT child.Id,child.RootQuestId FROM guild_quests child JOIN reachable parent
+                        ON child.ParentQuestId=parent.Id AND child.RootQuestId=parent.RootQuestId)
+                SELECT EXISTS(SELECT 1 FROM guild_quests c WHERE NOT EXISTS(SELECT 1 FROM reachable r WHERE r.Id=c.Id))
+                """;
+
+            if (!Equals(0L, await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)))
+                conflicts.Add(new(ErrorCodes.Guild.ReconciliationRequired, "guild", "Guild Quest lineage could not be proved."));
+
+            if (await GuildResetTableExistsAsync(connection, transaction, "guild_budget_effects", cancellationToken).ConfigureAwait(false))
+            {
+                command.CommandText = """
+                    SELECT EXISTS(SELECT 1 FROM guild_budget_effects e LEFT JOIN guild_quests q ON q.Id=e.QuestId
+                        WHERE q.Id IS NULL OR q.AllocationAccountId IS NOT e.AccountId)
+                    OR EXISTS(SELECT 1 FROM guild_quest_budget b LEFT JOIN guild_quests q ON q.Id=b.QuestId
+                        WHERE q.Id IS NULL OR q.AllocationAccountId IS NOT b.AccountId)
+                    OR EXISTS(SELECT 1 FROM guild_budget_evidence v LEFT JOIN guild_budget_effects e ON e.EffectId=v.EffectId
+                        WHERE e.EffectId IS NULL)
+                    """;
+
+                if (!Equals(0L, await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)))
+                    conflicts.Add(new(ErrorCodes.Guild.ReconciliationRequired, "guild", "Guild accounting ownership could not be proved."));
+            }
+
+            string after = string.Empty;
+
+            while (true)
+            {
+                command.CommandText = "SELECT Id FROM guild_quests WHERE ParentQuestId IS NULL AND Id=RootQuestId AND Id>$after ORDER BY Id LIMIT 100";
+
+                command.Parameters.Clear();
+
+                Add(command, "$after", after);
+
+                List<string> roots = [];
+
+                await using (DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) roots.Add(reader.GetString(0));
+                }
+
+                if (roots.Count == 0) break;
+
+                foreach (string root in roots)
+                {
+                    bool valid = Guid.TryParseExact(root, "D", out Guid rootId) && rootId != Guid.Empty
+                        && root == rootId.ToString("D").ToUpperInvariant();
+
+                    if (!valid || !await GuildQuestStore.AccountingClearWithinAsync(connection, transaction, rootId, rootId, cancellationToken).ConfigureAwait(false))
+                        conflicts.Add(new(ErrorCodes.Guild.ReconciliationRequired, valid ? rootId.ToString("D") : "guild",
+                            "Guild Quest accounting could not be proved."));
+                }
+
+                after = roots[^1];
+            }
         }
 
         return [.. conflicts];
+    }
+
+    private static async Task<bool> GuildResetTableExistsAsync(SqliteConnection connection, SqliteTransaction transaction,
+        string table, CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=$table AND type IN ('table','view'))";
+
+        command.Parameters.AddWithValue("$table", table);
+
+        return Equals(1L, await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false));
     }
 
     private const string GuildContentCandidatePrefix = "guild-content:";

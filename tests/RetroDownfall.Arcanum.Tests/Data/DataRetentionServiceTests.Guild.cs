@@ -81,7 +81,7 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Contains(plan.Items, item => item.DataClass == RetentionDataClass.GuildContent && item.Rows == 1);
 
-        Assert.Contains(plan.Items, item => item.DataClass == RetentionDataClass.GuildEvidence && item.DerivedRecords == 4);
+        Assert.Contains(plan.Items, item => item.DataClass == RetentionDataClass.GuildEvidence && item.DerivedRecords == 5);
 
         var recovered = await ReconcileFactoryResetV0Async(service, "guild-factory-reset-recovery");
 
@@ -156,7 +156,7 @@ public sealed partial class DataRetentionServiceTests
                 Assert.Empty(plan.Conflicts);
 
                 Assert.Contains(plan.Items, item => item.DataClass == RetentionDataClass.GuildEvidence
-                    && item.DerivedRecords == 6); // Two Signets, revocation receipt, authority epoch, event and event stream.
+                    && item.DerivedRecords == 7); // Two Signets, revocation receipt, two authority records, event and event stream.
 
                 var reset = await ReconcileFactoryResetV0Async(service, "populated-signet-reset");
 
@@ -214,7 +214,7 @@ public sealed partial class DataRetentionServiceTests
         {
             DataRetentionStatusItem item = Assert.Single(status.Items, candidate => candidate.DataClass == dataClass);
 
-            Assert.Equal(dataClass == RetentionDataClass.GuildEvidence ? 1 : 0, item.Rows);
+            Assert.Equal(dataClass == RetentionDataClass.GuildEvidence ? 2 : 0, item.Rows);
 
             Assert.False(item.PolicyEnabled);
         }
