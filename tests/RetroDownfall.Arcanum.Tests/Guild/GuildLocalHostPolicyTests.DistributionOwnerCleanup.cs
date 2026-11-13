@@ -180,7 +180,7 @@ public sealed partial class GuildLocalHostPolicyTests
             [new GuildRosterCleanupParticipant(), new GuildSignetCleanupParticipant(f.Gate),
                 new GuildPortalCleanupParticipant(TimeProvider.System), new GuildQuestCleanupParticipant(f.Connections, TimeProvider.System),
                 new GuildCohortCleanupParticipant(f.Connections, setup.Store, f.Policy), new GuildWorkspaceLeaseCleanupParticipant(f.Connections)],
-            TimeProvider.System);
+            TimeProvider.System, new GuildSpendRefreshCleanupParticipant(new GuildSpendRefreshTracker()));
 
         string last = "not attempted";
 

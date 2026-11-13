@@ -37,7 +37,8 @@ internal sealed class GuildOwnerCleanupCoordinator(
     ICovenantSensitiveArtifactPurger purger,
     ICovenantLabeledArtifactTransactionGuard labels,
     IReadOnlyList<IGuildOwnerCleanupParticipant> participants,
-    TimeProvider clock)
+    TimeProvider clock,
+    GuildSpendRefreshCleanupParticipant refreshCleanup)
 {
     internal async Task<Result<GuildCleanupOutcome>> RunBatchAsync(int maxEvents, int maxOrphans, CancellationToken cancellationToken)
     {
@@ -96,6 +97,12 @@ internal sealed class GuildOwnerCleanupCoordinator(
             {
                 lifetime.Token.ThrowIfCancellationRequested();
 
+                Result<GuildSpendRefreshCleanupParticipant.Scope> refreshPrepared = await refreshCleanup.PrepareAsync(owner, connection, lifetime.Token).ConfigureAwait(false);
+
+                if (refreshPrepared.IsFailure) return refreshPrepared.Error;
+
+                using GuildSpendRefreshCleanupParticipant.Scope refreshScope = refreshPrepared.Value;
+
                 foreach (IGuildOwnerCleanupParticipant participant in participants)
                 {
                     Result prepared = await participant.PrepareSealAsync(owner, connection, lifetime.Token).ConfigureAwait(false);
@@ -106,7 +113,7 @@ internal sealed class GuildOwnerCleanupCoordinator(
                     }
                 }
 
-                Result sealedOwner = await SealAsync(connection, owner, lifetime.Token).ConfigureAwait(false);
+                Result sealedOwner = await SealAsync(connection, owner, refreshScope, lifetime.Token).ConfigureAwait(false);
 
                 if (sealedOwner.IsFailure)
                 {
@@ -144,7 +151,7 @@ internal sealed class GuildOwnerCleanupCoordinator(
 
             return new GuildCleanupOutcome(cleaned, campaign, session);
         }
-        catch (SqliteException)
+        catch (Exception exception) when (exception is SqliteException or FormatException or InvalidCastException or OverflowException)
         {
             return Deferred();
         }
@@ -260,7 +267,8 @@ internal sealed class GuildOwnerCleanupCoordinator(
         return owners;
     }
 
-    private async Task<Result> SealAsync(SqliteConnection connection, GuildCleanupOwner owner, CancellationToken ct)
+    private async Task<Result> SealAsync(SqliteConnection connection, GuildCleanupOwner owner,
+        GuildSpendRefreshCleanupParticipant.Scope refreshScope, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -272,6 +280,10 @@ internal sealed class GuildOwnerCleanupCoordinator(
         {
             return available.Error;
         }
+
+        Result refreshValid = await refreshCleanup.ValidateWithinAsync(owner, refreshScope, connection, transaction, ct).ConfigureAwait(false);
+
+        if (refreshValid.IsFailure) return refreshValid;
 
         foreach (IGuildOwnerCleanupParticipant participant in participants)
         {

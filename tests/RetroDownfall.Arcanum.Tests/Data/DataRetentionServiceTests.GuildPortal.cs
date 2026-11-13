@@ -24,6 +24,14 @@ public sealed partial class DataRetentionServiceTests
 
         await SeedRetentionPortalAsync(session);
 
+        // The retained Quest has stopped; its exact funding account must also be settled.
+        await ExecuteAsync("""
+            INSERT INTO guild_budget_accounts(AccountId,OwnerKindCode,OwnerId,RootAccountId,Closed,SettlementReceiptId,Revision)
+            VALUES('DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD',0,'11111111-1111-1111-1111-111111111111',
+                'DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD',1,'EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE',1);
+            INSERT INTO guild_quest_budget(QuestId,AccountId) VALUES('11111111-1111-1111-1111-111111111111','DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD');
+            """);
+
         await ExecuteAsync("""
             INSERT INTO guild_portal_outbox(SourceKindCode,ReceiptId,QuestId,CreatedAtUtc)
             VALUES(0,'15151515-1515-1515-1515-151515151515','11111111-1111-1111-1111-111111111111','2000-01-01T00:00:00.0000000Z');

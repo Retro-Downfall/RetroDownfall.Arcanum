@@ -2445,6 +2445,10 @@ public static class ServiceCollectionExtensions
     /// </remarks>
     private static IServiceCollection AddCovenantErasureAndMaintenance(this IServiceCollection services)
     {
+        services.AddSingleton<GuildSpendRefreshTracker>();
+
+        services.AddScoped<GuildSpendRefreshCleanupParticipant>();
+
         services.AddSingleton<IManagedFileCapabilityOpener>(static _ => new ManagedFileCapabilityOpener());
 
         services.AddSingleton<IManagedFileOwnershipVerifier>(static _ => new ManagedFileOwnershipVerifier());
@@ -2512,7 +2516,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<ICovenantSensitiveArtifactPurger>(),
             sp.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>(),
             sp.GetServices<IGuildOwnerCleanupParticipant>().ToArray(),
-            sp.GetRequiredService<TimeProvider>()));
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<GuildSpendRefreshCleanupParticipant>()));
 
         services.AddScoped<ICovenantSensitiveArtifactPurger>(
             static sp => new CovenantSensitiveRetentionPurgeCoordinator(
