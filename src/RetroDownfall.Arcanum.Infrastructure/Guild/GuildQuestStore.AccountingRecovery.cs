@@ -30,6 +30,30 @@ internal sealed partial class GuildQuestStore
         return Equals(1L, await ownership.ExecuteScalarAsync(ct).ConfigureAwait(false));
     }
 
+    internal static async Task<bool> ValidateAccountingOwnershipAsync(SqliteConnection connection,
+        SqliteTransaction transaction, Guid root, Guid account, CancellationToken ct)
+    {
+        if (!await ValidateAccountingLineageOwnershipAsync(connection, transaction, root, account, ct).ConfigureAwait(false)) return false;
+
+        await using SqliteCommand owners = Command(connection, transaction, """
+            WITH RECURSIVE subtree(Id) AS (
+                SELECT AccountId FROM guild_budget_accounts WHERE AccountId=$account
+                UNION SELECT a.AccountId FROM guild_budget_accounts a JOIN subtree p ON a.ParentAccountId=p.Id)
+            SELECT NOT EXISTS(SELECT 1 FROM guild_budget_accounts a JOIN subtree s ON s.Id=a.AccountId
+                WHERE (a.OwnerKindCode=0 AND NOT EXISTS(SELECT 1 FROM guild_quests q JOIN guild_quest_budget b
+                    ON b.QuestId=q.Id AND b.AccountId=a.AccountId WHERE q.Id=a.OwnerId
+                    AND q.AllocationAccountId=a.AccountId AND q.RootQuestId=$root))
+                OR (a.OwnerKindCode=1 AND NOT EXISTS(SELECT 1 FROM guild_cohorts h WHERE h.Id=a.OwnerId
+                    AND h.AllocationAccountId=a.AccountId AND h.RootQuestId=$root)) OR a.OwnerKindCode NOT IN(0,1))
+            """);
+
+        Add(owners, "$account", Id(account));
+
+        Add(owners, "$root", Id(root));
+
+        return Equals(1L, await owners.ExecuteScalarAsync(ct).ConfigureAwait(false));
+    }
+
     internal Task<Result<bool>> RefreshAccountingProjectionAsync(Guid root, Guid quest, CancellationToken ct) =>
         authority.InQuestTransactionAsync(root, (connection, transaction, _, token) =>
             RefreshAccountingProjectionWithinAsync(connection, transaction, root, quest, time.GetUtcNow(), token), ct);

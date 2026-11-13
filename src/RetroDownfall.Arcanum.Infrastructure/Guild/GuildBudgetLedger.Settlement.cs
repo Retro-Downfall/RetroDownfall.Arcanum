@@ -33,6 +33,16 @@ internal sealed partial class GuildBudgetLedger
 
         if (!noDispatch && !stopped) return GuildAccountingState.Uncertain;
 
+        await using (SqliteCommand owner = Command(connection, transaction, "SELECT RootQuestId FROM guild_quests WHERE Id=$quest"))
+        {
+            Add(owner, "$quest", Id(questId));
+
+            if (await owner.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not string root
+                || !Guid.TryParse(root, out Guid rootQuest) || rootQuest == Guid.Empty
+                || !await GuildQuestStore.ValidateAccountingOwnershipAsync(connection, transaction, rootQuest, accountId, cancellationToken).ConfigureAwait(false))
+                return Invalid;
+        }
+
         if (noDispatch)
         {
             List<GuildBudgetEffect> effects = [];

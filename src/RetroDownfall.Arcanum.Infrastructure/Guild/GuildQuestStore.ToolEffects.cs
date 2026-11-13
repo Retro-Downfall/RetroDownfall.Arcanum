@@ -60,6 +60,9 @@ internal sealed partial class GuildQuestStore
     {
         if (allocations is not GuildBudgetLedger ledger) return Unavailable;
 
+        if (!await ValidateAccountingOwnershipAsync(connection, transaction, parent.Quest.RootQuestId,
+            fundingAccountId ?? parent.AllocationAccountId, ct).ConfigureAwait(false)) return Unavailable;
+
         Result<GuildBudgetSnapshot> available = await ledger.ReadWithinAsync(connection, transaction,
             fundingAccountId ?? parent.AllocationAccountId, ct).ConfigureAwait(false);
 

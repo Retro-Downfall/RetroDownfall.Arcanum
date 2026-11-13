@@ -353,7 +353,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
         internal readonly GuildIssueRootRequest Request = new(Guid.NewGuid(), null, "Local", "Compute a result", new([], [], [], new(new(GuildBudgetMode.Unlimited), new(GuildBudgetMode.Unlimited)), [GuildDelegationKind.Local], null));
 
-        private Fixture(EvolutionScratchDatabase file, bool localExecution, bool productionOptions, bool inboundPeers, bool denialJournal, bool unsafeJournal, TimeProvider? gateTimeProvider)
+        internal Fixture(EvolutionScratchDatabase file, bool localExecution, bool productionOptions, bool inboundPeers, bool denialJournal, bool unsafeJournal, TimeProvider? gateTimeProvider)
         {
             _file = file;
 

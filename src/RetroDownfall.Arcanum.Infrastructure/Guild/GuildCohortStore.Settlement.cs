@@ -84,7 +84,7 @@ internal sealed partial class GuildCohortStore
                 if (storedRoot.Value.RootAccountId != root.RootAccountId || storedRoot.Value.Kind != root.Kind
                     || storedRoot.Value.OwnerId != root.OwnerId || storedRoot.Value.ParentAccountId is not null) return Unavailable;
 
-                if (storedRoot.Value.FormatVersion == 0)
+                if (storedRoot.Value.FormatVersion < GuildCohortSettlementNode.CurrentFormatVersion)
                 {
                     generation = checked(generation + 1);
 

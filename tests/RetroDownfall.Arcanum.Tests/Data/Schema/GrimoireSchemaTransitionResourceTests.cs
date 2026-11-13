@@ -161,6 +161,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
                         (GrimoireSchemaTransactionTier.GuildCanonical, 13),
                         (GrimoireSchemaTransactionTier.GuildCanonical, 14),
                         (GrimoireSchemaTransactionTier.GuildCanonical, 15),
+                        (GrimoireSchemaTransactionTier.GuildCanonical, 16),
                     ]);
             });
 
@@ -974,6 +975,14 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "guild_spend_refreshes_guard_insert",
                 "guild_utc_instant_columns_drop",
                 "guild_utc_instant_columns",
+                "guild_budget_evidence_cohort_settlement_insert",
+                "guild_budget_evidence_cohort_settlement_delete",
+                "guild_quest_budget_cohort_settlement_insert",
+                "guild_quest_budget_cohort_settlement_delete",
+                "guild_dispatches_cohort_settlement_insert",
+                "guild_dispatches_cohort_settlement_delete",
+                "guild_cohort_members_cohort_settlement_insert",
+                "guild_cohort_members_cohort_settlement_delete",
             ],
             GrimoireSchemaCatalog.TransitionStatements.Select(static statement => statement.Name));
     }

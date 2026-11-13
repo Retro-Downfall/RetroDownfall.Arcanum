@@ -1536,6 +1536,14 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canoni
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V15/152_guild_spend_refreshes_guard_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V15/900_guild_utc_instant_columns_drop.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V15/910_guild_utc_instant_columns.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V16/010_guild_budget_evidence_cohort_settlement_insert.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V16/020_guild_budget_evidence_cohort_settlement_delete.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V16/030_guild_quest_budget_cohort_settlement_insert.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V16/040_guild_quest_budget_cohort_settlement_delete.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V16/050_guild_dispatches_cohort_settlement_insert.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V16/060_guild_dispatches_cohort_settlement_delete.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V16/070_guild_cohort_members_cohort_settlement_insert.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V16/080_guild_cohort_members_cohort_settlement_delete.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V2/010_guild_signet_authority_state.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V2/020_guild_signets.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V2/030_guild_signet_revocations.sql
@@ -1673,6 +1681,8 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canoni
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_budget_effects_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_budget_effects_operator_delete.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_budget_effects_operator_insert.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_budget_evidence_cohort_settlement_delete.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_budget_evidence_cohort_settlement_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_budget_evidence_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_cohort_award_authority_scan_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_cohort_content_clock_guard_delete.sql
@@ -1681,6 +1691,8 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canoni
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_cohort_eval_candidates_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_cohort_ledger_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_cohort_member_quests_guard_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_cohort_members_cohort_settlement_delete.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_cohort_members_cohort_settlement_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_cohort_members_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_cohort_selections_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_cohort_settlement_clock_guard_delete.sql
@@ -1697,6 +1709,8 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canoni
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_content_guard_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_content_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_continuations_guard_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_dispatches_cohort_settlement_delete.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_dispatches_cohort_settlement_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_dispatches_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_distribution_notifications_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_envelopes_guard_update.sql
@@ -1717,6 +1731,8 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canoni
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_portal_outbox_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_portal_receipts_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_portal_streams_guard_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_quest_budget_cohort_settlement_delete.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_quest_budget_cohort_settlement_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_quest_budget_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_quest_cancellations_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Triggers/guild_quest_start_intents_guard_update.sql

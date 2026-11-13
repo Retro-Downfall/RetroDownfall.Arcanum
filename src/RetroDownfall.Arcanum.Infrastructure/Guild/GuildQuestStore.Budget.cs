@@ -29,6 +29,9 @@ internal sealed partial class GuildQuestStore : IGuildTreeSpendLedger
                     if (live.IsFailure) return live.Error;
                 }
 
+                if (!await ValidateAccountingOwnershipAsync(connection, transaction, found.Value.Quest.RootQuestId,
+                    found.Value.AllocationAccountId, token).ConfigureAwait(false)) return Unavailable;
+
                 Result<GuildBudgetSnapshot> read = await ledger.ReadWithinAsync(connection, transaction,
                     found.Value.AllocationAccountId, token).ConfigureAwait(false);
 
