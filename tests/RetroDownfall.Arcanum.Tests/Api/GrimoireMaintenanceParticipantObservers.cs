@@ -1587,6 +1587,8 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
     private readonly AsyncLocal<OpenTicketSelection?> _selectedOpen = new();
 
+    private readonly AsyncLocal<WorkSelection?> _selectedWork = new();
+
     private readonly ConcurrentQueue<GrimoireOwnerObservation> _closingOwners = new();
 
     private readonly ConcurrentQueue<GrimoireOwnerObservation> _closedLeases = new();
@@ -1615,6 +1617,39 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
         _firstEffects.GetOrAdd(kind, static _ => new(TaskCreationOptions.RunContinuationsAsynchronously));
 
     internal IReadOnlyList<GrimoireTicketObservation> Tickets => _tickets.ToArray();
+
+    internal WorkSelection SelectCurrentWorkExecution()
+    {
+        WorkSelection? previous = _selectedWork.Value;
+
+        WorkSelection selected = new(() => _selectedWork.Value = previous);
+
+        _selectedWork.Value = selected;
+
+        return selected;
+    }
+
+    internal sealed class WorkSelection(Action restore) : IDisposable
+    {
+        private readonly ConcurrentQueue<GrimoireLeaseObservation<GrimoireWorkKind>> _work = new();
+
+        private readonly ConcurrentQueue<GrimoireEffectObservation> _effects = new();
+
+        private int _disposed;
+
+        internal IReadOnlyList<GrimoireLeaseObservation<GrimoireWorkKind>> Work => _work.ToArray();
+
+        internal IReadOnlyList<GrimoireEffectObservation> Effects => _effects.ToArray();
+
+        internal void Observe(GrimoireLeaseObservation<GrimoireWorkKind> item) => _work.Enqueue(item);
+
+        internal void Observe(GrimoireEffectObservation item) => _effects.Enqueue(item);
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0) restore();
+        }
+    }
 
     internal OpenTicketSelection SelectCurrentExecution()
     {
@@ -1678,7 +1713,11 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
         _workAttempts.Enqueue(observation);
 
-        lease = actual is null ? null : new ObservedWork(actual, observation, _effects, _firstEffects);
+        WorkSelection? selection = _selectedWork.Value;
+
+        selection?.Observe(observation);
+
+        lease = actual is null ? null : new ObservedWork(actual, observation, _effects, _firstEffects, selection);
 
         observation.Lease = lease;
 
@@ -1960,7 +1999,8 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
         IGrimoireWorkLease actual,
         GrimoireLeaseObservation<GrimoireWorkKind> observation,
         ConcurrentQueue<GrimoireEffectObservation> effects,
-        ConcurrentDictionary<GrimoireWorkKind, TaskCompletionSource<GrimoireEffectObservation>> firstEffects) : IGrimoireWorkLease
+        ConcurrentDictionary<GrimoireWorkKind, TaskCompletionSource<GrimoireEffectObservation>> firstEffects,
+        WorkSelection? selection) : IGrimoireWorkLease
     {
         public GrimoireWorkKind Kind => actual.Kind;
 
@@ -1981,6 +2021,8 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
                 GrimoireEffectObservation effectObservation = new(actual.Kind);
 
                 effects.Enqueue(effectObservation);
+
+                selection?.Observe(effectObservation);
 
                 firstEffects.GetOrAdd(actual.Kind, static _ => new(TaskCreationOptions.RunContinuationsAsynchronously))
                     .TrySetResult(effectObservation);

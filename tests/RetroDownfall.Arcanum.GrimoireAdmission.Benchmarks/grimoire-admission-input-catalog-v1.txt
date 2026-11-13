@@ -1280,6 +1280,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canoni
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Indexes/idx_guild_signets_session.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Indexes/idx_guild_signets_workspace.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Indexes/idx_guild_spend_refreshes_effect.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Indexes/idx_guild_spend_refreshes_effect_norm.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Indexes/idx_guild_spend_sources_provider_binding.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Indexes/idx_guild_work_awards_primary_signet.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Indexes/idx_guild_work_mutations_result.sql
@@ -1546,6 +1547,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canoni
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V16/070_guild_cohort_members_cohort_settlement_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V16/080_guild_cohort_members_cohort_settlement_delete.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V17/010_idx_guild_spend_refreshes_effect.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V18/010_idx_guild_spend_refreshes_effect_norm.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V2/010_guild_signet_authority_state.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V2/020_guild_signets.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Capabilities/Guild/Canonical/Transitions/V2/030_guild_signet_revocations.sql
@@ -2913,8 +2915,11 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendReceiptIdentity.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshAdmission.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshApplication.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshAttemptGuard.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshCleanupParticipant.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshConfiguration.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshOwnerProof.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshRecoveryHandler.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshRetry.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshTracker.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendSourceAuthority.cs
@@ -3224,6 +3229,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemorySearchToolResponseFormat
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryErasureService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryReviewService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/DurableOperationDiagnostics.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Operations/IGuildRefreshOwnedSettlement.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/ILongRunningOperationClassifiedRecoveryLeaseAcquisition.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/ILongRunningOperationGenericRecoveryDiscovery.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Operations/ILongRunningOperationMaintenanceLeaseAdoption.cs

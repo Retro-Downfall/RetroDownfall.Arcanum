@@ -142,7 +142,7 @@ public sealed class GuildSpendRefreshIndexTests
 
         GrimoireSchemaVersionChain guild = standard.ForTier(GrimoireSchemaTransactionTier.GuildCanonical);
 
-        GrimoireSchemaVersionStep last = guild.Steps[^1];
+        GrimoireSchemaVersionStep last = guild.Steps.Single(step => step.ToVersion == 17);
 
         GrimoireSchemaVersionStep fault = last with { Statements = [.. last.Statements,
             new("fixture.failure", 20, "failure", "SELECT * FROM missing_refresh_index_fixture;")] };
@@ -151,7 +151,7 @@ public sealed class GuildSpendRefreshIndexTests
             standard.ForTier(GrimoireSchemaTransactionTier.Core),
             standard.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
             standard.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
-            new GrimoireSchemaVersionChain(guild.HeadManifest, guild.HeadObjects, [.. guild.Steps.Take(guild.Steps.Count - 1), fault]),
+            new GrimoireSchemaVersionChain(guild.HeadManifest, guild.HeadObjects, [.. guild.Steps.Select(step => step.ToVersion == 17 ? fault : step)]),
         ]);
 
         await using (SqliteConnection failed = await file.OpenAsync(default))

@@ -65,6 +65,8 @@ public static class ErrorCodes
 
         public const string ReconciliationRequired = "Guild.ReconciliationRequired";
 
+        public const string RefreshCancelled = "Guild.RefreshCancelled";
+
         public const string SourceExpired = "Guild.SourceExpired";
 
         public const string InitialEvidenceUnavailable = "Guild.InitialEvidenceUnavailable";

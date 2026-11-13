@@ -4,11 +4,12 @@ using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Operations;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Guild;
 
 internal sealed record GuildSpendRefreshResult(Guid OperationId, GuildSpendReceiptDto? Receipt, bool Replayed, bool InFlight,
-    bool RequiresAttention = false, string? ErrorCode = null);
+    bool RequiresAttention = false, string? ErrorCode = null, bool Cancelled = false);
 
 /// <summary>Coordinates one admitted provider observation under durable and physical ownership.</summary>
 internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpendRefreshConfiguration configuration,
@@ -47,6 +48,8 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
 
             if (admitted.Value.OperationId is not { } operationId) return Unavailable;
 
+            entry.BindOperation(operationId);
+
             if (!admitted.Value.Created)
                 return await DescribeExistingAsync(operationId, admitted.Value.Receipt, lifetime.Token).ConfigureAwait(false);
 
@@ -54,13 +57,66 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
 
             try
             {
-                return await RunClaimedAsync(caller, questId, effectId, refreshId, operationId, provider, model, before.Value, entry, lifetime.Token).ConfigureAwait(false);
+                Result<GuildSpendRefreshResult> attempted = await RunClaimedAsync(caller, questId, effectId, refreshId, operationId,
+                    provider, model, before.Value, entry, lifetime.Token).ConfigureAwait(false);
+
+                return attempted.IsSuccess ? attempted : new GuildSpendRefreshResult(operationId, null, false, false, true,
+                    ErrorCodes.Guild.ReconciliationRequired);
+            }
+            catch (Exception)
+            {
+                return new GuildSpendRefreshResult(operationId, null, false, false, true, ErrorCodes.Guild.ReconciliationRequired);
             }
             finally
             {
                 ownership.Release(operationId, claim);
             }
         }
+    }
+
+    internal async Task<Result<bool>> RetryAsync(GuildCallerContext caller, LongRunningOperation operation, CancellationToken ct)
+    {
+        if (operation.Kind != LongRunningOperationKinds.GuildSpendRefresh
+            || operation.RecoveryPolicy != LongRunningOperationRecoveryPolicy.ReconcileAndComplete
+            || operation.CheckpointVersion != 1 || operation.CheckpointPayload is not { Length: > 0 and <= 2048 } payload
+            || ownership.IsClaimed(operation.Id)) return Unavailable;
+
+        GuildSpendRefreshCheckpoint? checkpoint;
+
+        try { checkpoint = JsonSerializer.Deserialize(payload, GuildSpendRefreshCheckpointJsonContext.Default.GuildSpendRefreshCheckpoint); }
+        catch (JsonException) { return Unavailable; }
+
+        if (checkpoint is null || checkpoint.Version != 1 || checkpoint.Phase != "admitted" || checkpoint.OperationId != operation.Id
+            || checkpoint.InstallationGeneration != caller.InstallationGeneration || checkpoint.PrincipalId != caller.PrincipalId
+            || !payload.AsSpan().SequenceEqual(JsonSerializer.SerializeToUtf8Bytes(checkpoint, GuildSpendRefreshCheckpointJsonContext.Default.GuildSpendRefreshCheckpoint)))
+            return Unavailable;
+
+        Result<GuildSpendRefreshPreparation> existing = await quests.PrepareProviderSpendRefreshAsync(caller, checkpoint.QuestId,
+            checkpoint.EffectId, checkpoint.RefreshId, ct).ConfigureAwait(false);
+
+        if (existing.IsFailure) return existing.Error;
+
+        if (existing.Value.OperationId != operation.Id || existing.Value.Receipt is not null) return Unavailable;
+
+        Result<GuildSpendRefreshPreparation> selected = await quests.SelectProviderSpendRefreshSourceAsync(caller,
+            checkpoint.QuestId, checkpoint.EffectId, ct).ConfigureAwait(false);
+
+        if (selected.IsFailure) return selected.Error;
+
+        if (selected.Value.RootQuestId != checkpoint.RootQuestId
+            || selected.Value.Provider is not { } provider || selected.Value.Model is not { } model) return Unavailable;
+
+        Result<GuildSpendRefreshCurrentness> current = await GuildSpendRefreshCurrentness.CaptureAsync(configuration, credentials,
+            provider, model, ct).ConfigureAwait(false);
+
+        if (current.IsFailure) return current.Error;
+
+        if (!tracker.TryEnter(checkpoint.RootQuestId, out GuildSpendRefreshTracker.Entry? entry) || entry is null) return Unavailable;
+
+        using (entry)
+        using (CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct, entry.Stop))
+            return await quests.RetryProviderSpendRefreshAsync(caller, checkpoint.QuestId, checkpoint.EffectId, checkpoint.RefreshId,
+                operation, current.Value, ownership, entry, lifetime.Token).ConfigureAwait(false);
     }
 
     internal async Task<LongRunningOperationRecoveryResult> RecoverClaimedAsync(GuildCallerContext caller, LongRunningOperation operation,
@@ -90,6 +146,9 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
 
         if (replay.Value.Receipt is not null) return LongRunningOperationRecoveryResult.Completed();
 
+        if (operation.State == LongRunningOperationState.Cancelling && !string.IsNullOrWhiteSpace(operation.LeaseOwner)
+            && operation.LeaseExpiresAt > time.GetUtcNow()) return LongRunningOperationRecoveryResult.Abandoned(ErrorCodes.Guild.RefreshCancelled);
+
         if (operation.State is not (LongRunningOperationState.Running or LongRunningOperationState.Waiting)
             || string.IsNullOrWhiteSpace(operation.LeaseOwner) || operation.LeaseExpiresAt <= time.GetUtcNow())
             return LongRunningOperationRecoveryResult.RequiresAttention(ErrorCodes.Guild.Unavailable);
@@ -110,15 +169,22 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
         if (!tracker.TryEnter(checkpoint.RootQuestId, out GuildSpendRefreshTracker.Entry? entry) || entry is null)
             return LongRunningOperationRecoveryResult.RequiresAttention(ErrorCodes.Guild.Unavailable);
 
+        entry.BindOperation(operation.Id);
+
         using (entry)
         using (CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct, entry.Stop))
         {
             Result<GuildSpendRefreshResult> result = await RunClaimedAsync(caller, checkpoint.QuestId, checkpoint.EffectId,
                 checkpoint.RefreshId, operation.Id, provider, model, before.Value, entry, lifetime.Token, operation.LeaseOwner).ConfigureAwait(false);
 
-            return result.IsSuccess && result.Value.Receipt is not null
-                ? LongRunningOperationRecoveryResult.Completed()
-                : LongRunningOperationRecoveryResult.RequiresAttention(result.IsFailure ? result.Error.Code : result.Value.ErrorCode ?? ErrorCodes.Guild.Unavailable);
+            if (result.IsSuccess && result.Value.Receipt is not null) return LongRunningOperationRecoveryResult.Completed();
+
+            LongRunningOperation? latest = await operations.GetAsync(operation.Id, CancellationToken.None).ConfigureAwait(false);
+
+            if (latest is not null && latest.State == LongRunningOperationState.Cancelling && latest.LeaseOwner == operation.LeaseOwner
+                && latest.LeaseExpiresAt > time.GetUtcNow()) return LongRunningOperationRecoveryResult.Abandoned(ErrorCodes.Guild.RefreshCancelled);
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(result.IsFailure ? result.Error.Code : result.Value.ErrorCode ?? ErrorCodes.Guild.Unavailable);
         }
     }
 
@@ -126,17 +192,32 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
     {
         if (receipt is not null) return new GuildSpendRefreshResult(operationId, receipt, true, false);
 
-        LongRunningOperation? operation = await operations.GetAsync(operationId, ct).ConfigureAwait(false);
+        LongRunningOperation? operation;
+
+        try
+        {
+            operation = await operations.GetAsync(operationId, ct).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            return new GuildSpendRefreshResult(operationId, null, false, false, true, ErrorCodes.Guild.ReconciliationRequired);
+        }
 
         if (operation is null || operation.Kind != LongRunningOperationKinds.GuildSpendRefresh
-            || operation.RecoveryPolicy != LongRunningOperationRecoveryPolicy.ReconcileAndComplete) return Unavailable;
+            || operation.RecoveryPolicy != LongRunningOperationRecoveryPolicy.ReconcileAndComplete)
+            return new GuildSpendRefreshResult(operationId, null, false, false, true, ErrorCodes.Guild.ReconciliationRequired);
 
         return operation.State switch
         {
             LongRunningOperationState.Pending or LongRunningOperationState.Running or LongRunningOperationState.Waiting or LongRunningOperationState.Cancelling =>
                 new GuildSpendRefreshResult(operationId, null, false, true),
-            LongRunningOperationState.ReconciliationRequired => new GuildSpendRefreshResult(operationId, null, false, false, true),
-            _ => Unavailable,
+            LongRunningOperationState.Abandoned when operation.TerminalErrorCode == ErrorCodes.Guild.RefreshCancelled =>
+                new GuildSpendRefreshResult(operationId, null, false, false, Cancelled: true),
+            LongRunningOperationState.ReconciliationRequired => new GuildSpendRefreshResult(operationId, null, false, false, true,
+                operation.TerminalErrorCode is ErrorCodes.Guild.Unavailable or ErrorCodes.Guild.SourceExpired
+                    or ErrorCodes.Guild.SourceConflict or ErrorCodes.Guild.InitialEvidenceUnavailable
+                    ? operation.TerminalErrorCode : ErrorCodes.Guild.ReconciliationRequired),
+            _ => new GuildSpendRefreshResult(operationId, null, false, false, true, ErrorCodes.Guild.ReconciliationRequired),
         };
     }
 
@@ -220,9 +301,9 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
 
         LongRunningOperation? latest = await operations.GetAsync(operationId, CancellationToken.None).ConfigureAwait(false);
 
-        if (latest is not null && latest.LeaseOwner == owner && latest.LeaseExpiresAt > time.GetUtcNow())
-            _ = await operations.TryTransitionAsync(operationId, latest.Revision, owner, LongRunningOperationState.Completed,
-                time.GetUtcNow(), cancellationToken: CancellationToken.None).ConfigureAwait(false);
+        if (latest is not null && operations is IGuildRefreshOwnedSettlement settlement)
+            _ = await settlement.TrySettleGuildRefreshAsync(operationId, latest.Revision, owner, LongRunningOperationState.Completed,
+                null, time, CancellationToken.None).ConfigureAwait(false);
 
         return new GuildSpendRefreshResult(operationId, result.Value.Receipt, result.Value.Replayed, false);
     }
@@ -309,11 +390,17 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
 
         if (latest is null) return error;
 
-        if (latest.LeaseOwner == owner && latest.LeaseExpiresAt > time.GetUtcNow()
-            && latest.State is LongRunningOperationState.Running or LongRunningOperationState.Waiting
-            && await operations.TryTransitionAsync(operationId, latest.Revision, owner, LongRunningOperationState.ReconciliationRequired,
-                time.GetUtcNow(), error.Code, CancellationToken.None).ConfigureAwait(false))
-            return new GuildSpendRefreshResult(operationId, null, false, false, true, error.Code);
+        if (operations is IGuildRefreshOwnedSettlement settlement)
+        {
+            LongRunningOperationState? settled = await settlement.TrySettleGuildRefreshAsync(operationId, latest.Revision, owner,
+                LongRunningOperationState.ReconciliationRequired, error.Code, time, CancellationToken.None).ConfigureAwait(false);
+
+            if (settled == LongRunningOperationState.Abandoned)
+                return new GuildSpendRefreshResult(operationId, null, false, false, Cancelled: true);
+
+            if (settled == LongRunningOperationState.ReconciliationRequired)
+                return new GuildSpendRefreshResult(operationId, null, false, false, true, error.Code);
+        }
 
         return new GuildSpendRefreshResult(operationId, null, false, true);
     }

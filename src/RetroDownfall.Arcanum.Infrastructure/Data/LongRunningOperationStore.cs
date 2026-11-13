@@ -28,6 +28,7 @@ internal sealed partial class LongRunningOperationStore(
       ILongRunningOperationClassifiedRecoveryLeaseAcquisition,
       ILongRunningOperationMaintenanceLeaseAdoption,
       ILongRunningOperationSameOwnerLeaseResumption,
+      IGuildRefreshOwnedSettlement,
       IDisposable
 {
     private const int MaxKindLength = 100;
@@ -644,6 +645,7 @@ internal sealed partial class LongRunningOperationStore(
                         "State" IN (@running, @waiting, @cancelling)
                         OR ("State" = @pending AND "AttemptCount" > 0)
                         OR ("State" = @pending AND "AttemptCount" = 0 AND "Kind" = @memoryEvaluation AND "CreatedAt" <= @initialStartCutoff)
+                        OR ("State" = @pending AND "AttemptCount" = 0 AND "Kind" = @guildRefresh)
                         OR {StartupRecoveredAttentionPredicate})
                       AND ("LeaseExpiresAt" IS NULL OR "LeaseExpiresAt" <= @now)
                     """
@@ -699,6 +701,7 @@ internal sealed partial class LongRunningOperationStore(
                     Add(cmd, "@factoryOwnerVersion", DataRetentionFactoryTransitionLaunchV2.CurrentVersion);
                 }
                 Add(cmd, "@memoryEvaluation", LongRunningOperationKinds.MemoryEvaluation);
+                Add(cmd, "@guildRefresh", LongRunningOperationKinds.GuildSpendRefresh);
                 Add(cmd, "@initialStartCutoff", Format(utcNow - RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation.MemoryEvaluationLimits.InitialStartGrace));
                 Add(cmd, "@now", Format(utcNow));
                 Add(cmd, "@limit", Math.Clamp(limit, 1, 1_000));
@@ -1229,6 +1232,72 @@ internal sealed partial class LongRunningOperationStore(
             command => ConfigureTransitionCommand(command, operationId, expectedRevision, ownerId, state, utcNow, terminalErrorCode),
             cancellationToken,
             cancellableAttempts: cancellationToken.CanBeCanceled).ConfigureAwait(false) == 1;
+
+    public Task<LongRunningOperationState?> TrySettleGuildRefreshAsync(Guid operationId, long revision, string owner,
+        LongRunningOperationState proposedState, string? errorCode, TimeProvider time, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+
+        if (proposedState is not (LongRunningOperationState.Completed or LongRunningOperationState.ReconciliationRequired
+            or LongRunningOperationState.Abandoned)) throw new ArgumentOutOfRangeException(nameof(proposedState));
+
+        return SqliteBusyRetry.ExecuteAsync(async () =>
+        {
+            DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+
+            DateTimeOffset now = time.GetUtcNow();
+
+            await using DbCommand command = connection.CreateCommand();
+
+            command.Transaction = transaction;
+
+            command.CommandText = """
+                UPDATE "LongRunningOperations"
+                SET "State" = CASE WHEN "State" = @cancelling AND @proposed <> @completed THEN @abandoned ELSE @proposed END,
+                    "CompletedAt" = CASE WHEN "State" = @cancelling OR @proposed = @completed OR @proposed = @abandoned THEN @now ELSE NULL END,
+                    "LeaseOwner" = NULL, "LeaseExpiresAt" = NULL,
+                    "TerminalErrorCode" = CASE WHEN "State" = @cancelling AND @proposed <> @completed THEN @cancelled ELSE @error END,
+                    "Revision" = "Revision" + 1
+                WHERE "Id" = @id AND "Kind" = @kind AND "Revision" = @revision AND "Revision" < 9223372036854775807
+                  AND "LeaseOwner" = @owner AND "LeaseExpiresAt" > @now AND "State" IN (@running, @waiting, @cancelling)
+                RETURNING "State"
+                """;
+
+            Add(command, "@id", Format(operationId));
+
+            Add(command, "@kind", LongRunningOperationKinds.GuildSpendRefresh);
+
+            Add(command, "@revision", revision);
+
+            Add(command, "@owner", Bound(owner, MaxOwnerLength));
+
+            Add(command, "@now", Format(now));
+
+            Add(command, "@proposed", (int)proposedState);
+
+            Add(command, "@completed", (int)LongRunningOperationState.Completed);
+
+            Add(command, "@abandoned", (int)LongRunningOperationState.Abandoned);
+
+            Add(command, "@running", (int)LongRunningOperationState.Running);
+
+            Add(command, "@waiting", (int)LongRunningOperationState.Waiting);
+
+            Add(command, "@cancelling", (int)LongRunningOperationState.Cancelling);
+
+            Add(command, "@cancelled", ErrorCodes.Guild.RefreshCancelled);
+
+            Add(command, "@error", errorCode is null ? null : Bound(errorCode, MaxErrorCodeLength));
+
+            object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            return value is long state ? (LongRunningOperationState?)state : null;
+        }, cancellationToken);
+    }
 
     private static void ConfigureTransitionCommand(DbCommand cmd, Guid operationId, long expectedRevision,
         string? ownerId, LongRunningOperationState state, DateTimeOffset utcNow, string? terminalErrorCode)

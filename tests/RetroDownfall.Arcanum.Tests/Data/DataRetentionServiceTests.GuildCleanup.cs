@@ -79,7 +79,7 @@ public sealed partial class DataRetentionServiceTests
         var purger = new CleanupBlockedPurger();
 
         var result = await new GuildOwnerCleanupCoordinator(FixtureOrdinaryConnectionFactory.For(_db!),
-            new GrimoireConnectionAdmissionGate(TimeProvider.System), purger, FixtureLabeledArtifactGuard.For(_db!), [], TimeProvider.System)
+            new GrimoireConnectionAdmissionGate(TimeProvider.System), purger, FixtureLabeledArtifactGuard.For(_db!), [], TimeProvider.System, new GuildSpendRefreshCleanupParticipant(new GuildSpendRefreshTracker()))
             .RunBatchAsync(8, 8, CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -105,7 +105,7 @@ public sealed partial class DataRetentionServiceTests
         await SeedCleanupContentAsync(Guid.NewGuid(), Guid.NewGuid());
 
         var failed = await new GuildOwnerCleanupCoordinator(FixtureOrdinaryConnectionFactory.For(_db!),
-            new GrimoireConnectionAdmissionGate(TimeProvider.System), new CleanupBlockedPurger(), FixtureLabeledArtifactGuard.For(_db!), [], TimeProvider.System)
+            new GrimoireConnectionAdmissionGate(TimeProvider.System), new CleanupBlockedPurger(), FixtureLabeledArtifactGuard.For(_db!), [], TimeProvider.System, new GuildSpendRefreshCleanupParticipant(new GuildSpendRefreshTracker()))
             .RunBatchAsync(8, 1, CancellationToken.None);
 
         Assert.True(failed.IsFailure);
@@ -151,7 +151,7 @@ public sealed partial class DataRetentionServiceTests
         });
 
         var result = await new GuildOwnerCleanupCoordinator(FixtureOrdinaryConnectionFactory.For(_db!),
-            new GrimoireConnectionAdmissionGate(TimeProvider.System), purger, FixtureLabeledArtifactGuard.For(_db!), [], TimeProvider.System)
+            new GrimoireConnectionAdmissionGate(TimeProvider.System), purger, FixtureLabeledArtifactGuard.For(_db!), [], TimeProvider.System, new GuildSpendRefreshCleanupParticipant(new GuildSpendRefreshTracker()))
             .RunBatchAsync(8, 8, CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -189,7 +189,7 @@ public sealed partial class DataRetentionServiceTests
 
     private GuildOwnerCleanupCoordinator GuildCleanup(IReadOnlyList<IGuildOwnerCleanupParticipant> participants) =>
         new(FixtureOrdinaryConnectionFactory.For(_db!), new GrimoireConnectionAdmissionGate(TimeProvider.System),
-            new CleanupUnlabeledPurger(), FixtureLabeledArtifactGuard.For(_db!), participants, TimeProvider.System);
+            new CleanupUnlabeledPurger(), FixtureLabeledArtifactGuard.For(_db!), participants, TimeProvider.System, new GuildSpendRefreshCleanupParticipant(new GuildSpendRefreshTracker()));
 
     private sealed class CleanupParticipant(int id, bool fails) : IGuildOwnerCleanupParticipant
     {

@@ -266,7 +266,8 @@ public sealed class GuildMaintenanceHostedServiceTests
             new RefusingSensitivePurger(new Error(ErrorCodes.Covenant.Unavailable, "No purge is authorized in this fixture.")),
             new UnreadableLabeledArtifactGuard(),
             [],
-            clock));
+            clock,
+            new GuildSpendRefreshCleanupParticipant(new GuildSpendRefreshTracker())));
 
         return services.BuildServiceProvider();
     }

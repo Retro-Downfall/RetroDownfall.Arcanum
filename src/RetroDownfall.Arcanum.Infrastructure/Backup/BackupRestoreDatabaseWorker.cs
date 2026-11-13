@@ -288,17 +288,27 @@ internal static class BackupRestoreDatabaseWorker
 
         bool hasGuildQuests = await TableExistsAsync(connection, "guild_quests", cancellationToken).ConfigureAwait(false);
 
-        if (hasGuildQuests)
+        bool hasGuildRefreshes = await TableExistsAsync(connection, "guild_spend_refreshes", cancellationToken).ConfigureAwait(false);
+
+        List<string> guildReferences = [];
+
+        if (hasGuildQuests) guildReferences.Add("EXISTS (SELECT 1 FROM guild_quests q WHERE q.OperationId=o.\"Id\")");
+
+        if (hasGuildRefreshes) guildReferences.Add("EXISTS (SELECT 1 FROM guild_spend_refreshes r WHERE r.OperationId=o.\"Id\")");
+
+        string retained = string.Join(" OR ", guildReferences);
+
+        if (guildReferences.Count > 0)
         {
             // Refuse before changing any operation: SQLite promotes an exhausted integer increment
             // to REAL, which cannot be used as a durable operation revision.
             await using SqliteCommand revisionCheck = connection.CreateCommand();
 
-            revisionCheck.CommandText = """
+            revisionCheck.CommandText = $"""
                 SELECT EXISTS(SELECT 1 FROM "LongRunningOperations" o
                     WHERE o."State" NOT IN ($completed, $failed, $abandoned)
                       AND (o."LeaseOwner" IS NOT NULL OR o."LeaseExpiresAt" IS NOT NULL)
-                      AND EXISTS (SELECT 1 FROM guild_quests q WHERE q.OperationId=o."Id")
+                      AND ({retained})
                       AND (typeof(o."Revision") <> 'integer' OR o."Revision" < 0 OR o."Revision" >= $maxRevision));
                 """;
 
@@ -316,8 +326,8 @@ internal static class BackupRestoreDatabaseWorker
             }
         }
 
-        string retainedGuild = hasGuildQuests
-            ? """ AND NOT EXISTS (SELECT 1 FROM guild_quests q WHERE q.OperationId="LongRunningOperations"."Id")"""
+        string retainedGuild = guildReferences.Count > 0
+            ? " AND NOT (" + retained.Replace("o.\"Id\"", "\"LongRunningOperations\".\"Id\"") + ")"
             : string.Empty;
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -371,18 +381,18 @@ internal static class BackupRestoreDatabaseWorker
 
         long interrupted = await children.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-        if (hasGuildQuests)
+        if (guildReferences.Count > 0)
         {
             await using SqliteCommand guild = connection.CreateCommand();
 
-            // Retain the Quest/LRO link and its unresolved accounting evidence. The archived lease
+            // Retain Guild operation links and unresolved accounting evidence. The archived lease
             // belonged to another host; Signet sanitation independently makes the Quest inert.
-            guild.CommandText = """
+            guild.CommandText = $"""
                 UPDATE "LongRunningOperations"
                 SET "LeaseOwner"=NULL, "LeaseExpiresAt"=NULL, "Revision"="Revision"+1
                 WHERE "State" NOT IN ($completed, $failed, $abandoned)
                   AND ("LeaseOwner" IS NOT NULL OR "LeaseExpiresAt" IS NOT NULL)
-                  AND EXISTS (SELECT 1 FROM guild_quests q WHERE q.OperationId="LongRunningOperations"."Id");
+                  AND ({retained.Replace("o.\"Id\"", "\"LongRunningOperations\".\"Id\"")});
                 """;
 
             _ = guild.Parameters.AddWithValue("$completed", (int)LongRunningOperationState.Completed);

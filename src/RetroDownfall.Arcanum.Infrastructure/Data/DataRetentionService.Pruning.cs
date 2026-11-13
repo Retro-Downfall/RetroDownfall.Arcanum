@@ -7191,6 +7191,8 @@ internal sealed partial class DataRetentionService
 
         bool hasGuildEffects = await TableExistsAsync("guild_budget_effects", cancellationToken).ConfigureAwait(false);
 
+        bool hasRefreshes = await TableExistsAsync("guild_spend_refreshes", cancellationToken).ConfigureAwait(false);
+
         string unlinkedReservation = await GuildReservationUnlinkedAsync("reservation", cancellationToken).ConfigureAwait(false);
 
         string unlinkedReservationPost = await GuildReservationUnlinkedAsync("BudgetReservations", cancellationToken).ConfigureAwait(false);
@@ -7216,7 +7218,8 @@ internal sealed partial class DataRetentionService
                 Dictionary<string, bool> proof = await GuildPhysicalRetentionProof.ReadPageAsync((SqliteConnection)connection,
                     (SqliteTransaction)transaction, [key], cancellationToken).ConfigureAwait(false);
 
-                if (!proof[key])
+                if (!proof[key] || hasRefreshes && await GuildRefreshPinWithinAsync((SqliteConnection)connection,
+                    (SqliteTransaction)transaction, key, cancellationToken).ConfigureAwait(false))
                 {
                     await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 

@@ -1415,18 +1415,19 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                 + (SELECT COUNT(*) FROM tapestry_scope_revisions)
                 + (SELECT COUNT(*) FROM memory_search_documents) + (SELECT COUNT(*) FROM memory_search_fts)
                 + (SELECT COUNT(*) FROM guild_signet_authority_state)
-                + (SELECT COUNT(*) FROM guild_workspace_authority_state);
+                + (SELECT COUNT(*) FROM guild_workspace_authority_state)
+                + (SELECT COUNT(*) FROM guild_spend_authority_state);
             """;
 
         long derived = (long)(await command.ExecuteScalarAsync(token))!;
 
         // Planning sees Entry FTS, active indexing state, Session revision, the Entry's Core28
-        // projection/FTS pair and the initialized Guild authority and operator identity records.
+        // projection/FTS pair and the initialized Guild authority, operator identity and spend key records.
         // Indexing adds chunk, BLOB embedding, compact companion, attachment revision and its
         // Core28 projection/FTS pair; the native counts prove those six additions independently.
-        Assert.Equal(7L, plan.DerivedRecords);
+        Assert.Equal(8L, plan.DerivedRecords);
 
-        Assert.Equal(13L, derived);
+        Assert.Equal(14L, derived);
 
         Assert.Equal(plan.DerivedRecords + 6, derived);
 
