@@ -27,6 +27,7 @@ public sealed partial class GuildLocalHostPolicyTests
     [InlineData("absent")]
     [InlineData("partial")]
     [InlineData("zero")]
+    [InlineData("fault")]
     public async Task Financial_off_real_child_inference_is_consumed_by_parent_provider_round(string usage)
     {
         using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
@@ -115,8 +116,39 @@ public sealed partial class GuildLocalHostPolicyTests
 
             using CancellationTokenSource deadline = new(TimeSpan.FromMinutes(2));
 
+            if (usage == "fault")
+                await f.ExecuteAsync("CREATE TRIGGER fixture_financial_off_abort_receipt BEFORE INSERT ON guild_spend_receipts BEGIN SELECT RAISE(ABORT,'injected'); END");
+
             var invocation = runtime.Runtime.ExecuteTurnAsync(execution, input.Value,
                 new("Delegate the task.", DisableAllTools: false), deadline.Token);
+
+            if (usage == "fault")
+            {
+                var interrupted = await invocation;
+
+                Assert.True(interrupted.IsFailure);
+
+                Assert.Single(transport.Bodies);
+
+                Assert.Equal(0, transport.MetadataGets);
+
+                Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_effects WHERE StateCode=1"));
+
+                Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM guild_budget_evidence"));
+
+                Assert.Equal(0L, await f.ScalarAsync("SELECT count(*) FROM BillableOperations"));
+
+                Assert.False(queue.Pending.Reader.TryRead(out _));
+
+                var retry = await runtime.Runtime.ExecuteTurnAsync(execution, input.Value,
+                    new("Delegate the task.", DisableAllTools: false), deadline.Token);
+
+                Assert.True(retry.IsFailure);
+
+                Assert.Single(transport.Bodies);
+
+                return;
+            }
 
             Task<GuildQuestDto> scheduled = queue.Pending.Reader.ReadAsync(deadline.Token).AsTask();
 
