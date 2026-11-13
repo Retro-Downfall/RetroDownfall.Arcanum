@@ -223,9 +223,7 @@ public sealed partial class GuildQuestStoreTests
 
             Assert.NotEqual(original, GuildSpendReceiptIdentity.ProviderDigest(firstSource, changed.Value));
         }
-
     }
-
 
     [Theory]
     [InlineData("DispatchId")]
@@ -269,7 +267,6 @@ public sealed partial class GuildQuestStoreTests
         await transaction.RollbackAsync();
     }
 
-
     [Fact]
     public async Task Provider_source_verification_refuses_pricing_that_disagrees_with_initial_bill()
     {
@@ -300,7 +297,6 @@ public sealed partial class GuildQuestStoreTests
 
         await transaction.RollbackAsync();
     }
-
 
     [Fact]
     public async Task Provider_observation_identity_separates_real_physical_calls_in_one_installation()
@@ -376,7 +372,6 @@ public sealed partial class GuildQuestStoreTests
         Assert.NotEqual(GuildSpendReceiptIdentity.ProviderDigest(firstSource, observed.Value),
             GuildSpendReceiptIdentity.ProviderDigest(verified.Value, observed.Value));
     }
-
 
     [Fact]
     public async Task Provider_observation_identity_normalizes_equivalent_exact_usd_spellings()
