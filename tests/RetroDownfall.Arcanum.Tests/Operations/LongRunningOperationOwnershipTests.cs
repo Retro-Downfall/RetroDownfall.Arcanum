@@ -25,6 +25,7 @@ public sealed class LongRunningOperationOwnershipTests
 
         Assert.False(ownership.IsClaimedBy(operationId, token));
     }
+
     [Fact]
     public void Observation_does_not_follow_a_replaced_claim()
     {
@@ -52,5 +53,4 @@ public sealed class LongRunningOperationOwnershipTests
 
         Assert.True(ownership.Release(operation, second));
     }
-
 }
