@@ -83,6 +83,7 @@ public sealed class BudgetReservationIndexSchemaTests
         const string query = "SELECT RunId FROM BudgetReservations WHERE lower(replace(Id, '-', '')) = $id ORDER BY RunId";
 
         command.CommandText = query;
+
         command.Parameters.AddWithValue("$id", "abcdef0123456789abcdef0123456789");
 
         List<string> runs = [];
@@ -142,17 +143,26 @@ public sealed class BudgetReservationIndexSchemaTests
             await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(connection, 64, CancellationToken.None, Core39Chains());
 
             await using SqliteCommand seed = connection.CreateCommand();
+
             seed.CommandText = "INSERT INTO BudgetReservations (Id, RunId, BudgetPeriod, Status, ExpiresAt, CreatedAt, UpdatedAt) VALUES ('A', 'other-run', '2026-01-01', 0, 'x', 'x', 'x')";
+
             await seed.ExecuteNonQueryAsync();
 
-            await Assert.ThrowsAnyAsync<Exception>(() => GrimoireSchemaTestInstaller.InstallAsync(connection, Failing40Chains(), 64, CancellationToken.None));
+            SqliteException failure = await Assert.ThrowsAsync<SqliteException>(
+                () => GrimoireSchemaTestInstaller.InstallAsync(connection, Failing40Chains(), 64, CancellationToken.None));
+
+            Assert.Equal(1, failure.SqliteErrorCode);
+
+            Assert.Contains("missing_transition_test_table", failure.Message, StringComparison.Ordinal);
 
             Assert.Equal(39, await GrimoireSchemaEvolutionInstallerTests.RecordedVersionAsync(connection));
 
             seed.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='IX_BudgetReservations_Id_Norm'";
+
             Assert.Equal(0L, await seed.ExecuteScalarAsync());
 
             seed.CommandText = "SELECT RunId FROM BudgetReservations WHERE Id='A'";
+
             Assert.Equal("other-run", await seed.ExecuteScalarAsync());
         }
 
@@ -163,15 +173,20 @@ public sealed class BudgetReservationIndexSchemaTests
         Assert.Equal(40, upgraded.Core.SchemaVersion);
 
         await using SqliteCommand check = reopened.CreateCommand();
+
         check.CommandText = "SELECT RunId FROM BudgetReservations WHERE Id='A'";
+
         Assert.Equal("other-run", await check.ExecuteScalarAsync());
     }
 
     private static GrimoireSchemaVersionChainSet Failing40Chains()
     {
         GrimoireSchemaVersionChainSet current = GrimoireSchemaVersionChains.Default;
+
         GrimoireSchemaVersionChain core = current.ForTier(GrimoireSchemaTransactionTier.Core);
+
         GrimoireSchemaVersionStep final = core.Steps[^1];
+
         GrimoireSchemaVersionStep failure = final with
         {
             Statements = [.. final.Statements, new GrimoireSchemaTransitionStatement("test.failure", 20, "failure", "SELECT * FROM missing_transition_test_table;")],
