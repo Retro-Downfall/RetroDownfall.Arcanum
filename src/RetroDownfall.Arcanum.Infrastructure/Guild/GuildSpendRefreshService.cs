@@ -54,7 +54,11 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
 
             try
             {
-                return await RunClaimedAsync(caller, questId, effectId, refreshId, operationId, provider, model, before.Value, entry, lifetime.Token).ConfigureAwait(false);
+                Result<GuildSpendRefreshResult> attempted = await RunClaimedAsync(caller, questId, effectId, refreshId, operationId,
+                    provider, model, before.Value, entry, lifetime.Token).ConfigureAwait(false);
+
+                return attempted.IsSuccess ? attempted : new GuildSpendRefreshResult(operationId, null, false, false, true,
+                    ErrorCodes.Guild.ReconciliationRequired);
             }
             catch (Exception)
             {
