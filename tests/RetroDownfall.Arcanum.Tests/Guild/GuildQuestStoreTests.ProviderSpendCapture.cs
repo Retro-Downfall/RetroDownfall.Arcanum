@@ -597,13 +597,13 @@ public sealed partial class GuildQuestStoreTests
 
         internal string? PendingReason { get; private set; }
 
-        internal static async Task<SpendScenario> CreateAsync()
+        internal static async Task<SpendScenario> CreateAsync(Fixture? fixture = null)
         {
             SpendScenario scenario = new();
 
             try
             {
-                scenario.Fixture = await Fixture.CreateAsync();
+                scenario.Fixture = fixture ?? await Fixture.CreateAsync();
 
                 scenario.Connection = await scenario.Fixture.OpenAsync();
 

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
@@ -18,9 +19,35 @@ internal static class BackupRestoreGuildSignetSanitation
             return available;
         }
 
+        Result spend = await VerifySpendAuthorityAsync(connection, transaction, requireInert: false, ct).ConfigureAwait(false);
+
+        if (spend.IsFailure)
+        {
+            return spend;
+        }
+
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
+
+        command.CommandText = "UPDATE guild_spend_authority_state SET KeyId=$keyId,AuthorityEpoch=$spendEpoch,CredentialKey=$key WHERE StateKey=1";
+
+        command.Parameters.AddWithValue("$keyId", Guid.NewGuid().ToString("D").ToUpperInvariant());
+
+        command.Parameters.AddWithValue("$spendEpoch", Guid.NewGuid().ToString("D").ToUpperInvariant());
+
+        byte[] key = RandomNumberGenerator.GetBytes(32);
+
+        try
+        {
+            command.Parameters.AddWithValue("$key", key);
+
+            _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(key);
+        }
 
         command.CommandText = "UPDATE guild_signet_authority_state SET Epoch=$epoch WHERE StateKey=1;";
 
@@ -101,8 +128,66 @@ internal static class BackupRestoreGuildSignetSanitation
 
         command.CommandText = "SELECT EXISTS(SELECT 1 FROM guild_workspace_leases WHERE StateCode IN(1,2))";
 
+        if (!Equals(0L, await command.ExecuteScalarAsync(ct).ConfigureAwait(false))) return Unknown();
+
+        return await VerifySpendAuthorityAsync(connection, transaction, requireInert: true, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<Result> VerifySpendAuthorityAsync(SqliteConnection connection, SqliteTransaction transaction,
+        bool requireInert, CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = "SELECT StateKey,KeyId,AuthorityEpoch,CredentialKey FROM guild_spend_authority_state";
+
+        string? keyId = null;
+
+        string? epoch = null;
+
+        await using (SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false))
+        {
+            if (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                object keyObject = reader.GetValue(3);
+
+                try
+                {
+                    if (reader.GetValue(0) is not long stateKey || stateKey != 1
+                        || reader.GetValue(1) is not string id || !CanonicalId(id)
+                        || reader.GetValue(2) is not string value || !CanonicalId(value)
+                        || keyObject is not byte[] key || key.Length != 32)
+                        return Unknown();
+
+                    keyId = id;
+
+                    epoch = value;
+                }
+                finally
+                {
+                    if (keyObject is byte[] bytes) CryptographicOperations.ZeroMemory(bytes);
+                }
+
+                if (await reader.ReadAsync(ct).ConfigureAwait(false)) return Unknown();
+            }
+        }
+
+        command.CommandText = keyId is null
+            ? "SELECT EXISTS(SELECT 1 FROM guild_spend_sources WHERE SourceKindCode=1)"
+            : requireInert
+                ? "SELECT EXISTS(SELECT 1 FROM guild_spend_sources WHERE SourceKindCode=1 AND (AuthorityKeyId IS NULL OR AuthorityEpoch IS NULL OR AuthorityKeyId=$keyId OR AuthorityEpoch=$spendEpoch))"
+                : "SELECT 0";
+
+        command.Parameters.AddWithValue("$keyId", (object?)keyId ?? DBNull.Value);
+
+        command.Parameters.AddWithValue("$spendEpoch", (object?)epoch ?? DBNull.Value);
+
         return Equals(0L, await command.ExecuteScalarAsync(ct).ConfigureAwait(false)) ? Result.Success() : Unknown();
     }
+
+    private static bool CanonicalId(string text) => Guid.TryParseExact(text, "D", out Guid value)
+        && value != Guid.Empty && text == value.ToString("D").ToUpperInvariant();
 
     private static Error Unknown() => new(ErrorCodes.Guild.AuthorityUnavailable, "Restored Guild Signet execution inactivity could not be proved.");
 }
