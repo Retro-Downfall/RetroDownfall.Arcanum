@@ -181,10 +181,13 @@ internal sealed class GuildSpendSourceCredential
 
             await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
 
-            if (!await reader.ReadAsync(ct).ConfigureAwait(false) || reader.GetInt64(0) != 1)
-                return GuildSpendSourceFailure.SourceMissing;
+            if (!await reader.ReadAsync(ct).ConfigureAwait(false)) return GuildSpendSourceFailure.SourceMissing;
 
-            if (reader.GetInt64(1) != 1 || reader.GetString(15) != reader.GetString(16)
+            if (reader.GetValue(0) is not long sourceKind) return GuildSpendSourceFailure.SourceInvalid;
+
+            if (sourceKind != 1) return GuildSpendSourceFailure.SourceMissing;
+
+            if (reader.GetValue(1) is not long sourceVersion || sourceVersion != 1 || reader.GetString(15) != reader.GetString(16)
                 || reader.GetValue(17) is not long kind || kind != 0)
                 return GuildSpendSourceFailure.SourceInvalid;
 
