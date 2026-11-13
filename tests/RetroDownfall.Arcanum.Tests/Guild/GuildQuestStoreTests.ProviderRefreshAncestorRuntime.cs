@@ -191,6 +191,25 @@ public sealed partial class GuildQuestStoreTests
 
         Assert.Equal(beforeOperations, await f.CountAsync("LongRunningOperations"));
 
+        var parkedReplay = await service.RefreshAsync(f.Caller, child.Quest.Id, effect.EffectId, retryRefresh, default);
+
+        Assert.True(parkedReplay.IsSuccess, parkedReplay.IsFailure ? parkedReplay.Error.Message : null);
+
+        Assert.Equal(retryId, parkedReplay.Value.OperationId);
+
+        Assert.True(parkedReplay.Value.RequiresAttention);
+
+        Assert.Equal(1, gets);
+
+        var admittedReplay = await f.Store.AdmitProviderSpendRefreshAsync(f.Caller, child.Quest.Id, effect.EffectId,
+            retryRefresh, currentness.Value, default);
+
+        Assert.True(admittedReplay.IsSuccess, admittedReplay.IsFailure ? admittedReplay.Error.Message : null);
+
+        Assert.Equal(retryId, admittedReplay.Value.OperationId);
+
+        Assert.False(admittedReplay.Value.Created);
+
         var retried = await service.RetryAsync(f.Caller, parked, default);
 
         Assert.True(retried.IsFailure);

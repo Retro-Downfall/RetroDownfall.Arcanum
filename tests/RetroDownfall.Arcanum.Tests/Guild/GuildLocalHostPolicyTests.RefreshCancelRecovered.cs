@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -29,10 +30,12 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 public sealed partial class GuildLocalHostPolicyTests
 {
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    public async Task Cancellation_of_recovered_reader_settles_abandoned_only_after_disposal(bool cancelAfterHandler, bool expireBeforeSettlement)
+    [InlineData(false, false, false)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
+    public async Task Cancellation_of_recovered_reader_settles_abandoned_only_after_disposal(bool cancelAfterHandler, bool expireBeforeSettlement,
+        bool eraseAncestor)
     {
         using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
 
@@ -55,7 +58,13 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.True(issued.IsSuccess, issued.IsFailure ? issued.Error.Message : null);
 
-        GuildQuestDto quest = issued.Value.Quest;
+        GuildQuestStored root = issued.Value;
+
+        GuildQuestStored selected = eraseAncestor ? await IssueChildAsync(f, await RunCallerAsync(f, caller, root), root) : root;
+
+        GuildQuestDto quest = selected.Quest;
+
+        if (eraseAncestor) Assert.NotEqual(root.Quest.SessionId, quest.SessionId);
 
         var recovery = await f.Policy.CreateRecoveryAsync(caller, quest.Id, quest.OperationId, quest.SignetRevision, default);
 
@@ -185,6 +194,39 @@ public sealed partial class GuildLocalHostPolicyTests
         Assert.True(admitted.IsSuccess);
 
         Guid operation = admitted.Value.OperationId!.Value;
+
+        if (eraseAncestor)
+        {
+            LongRunningOperation pending = (await operations.GetAsync(operation))!;
+
+            Assert.True(await operations.RequestCancellationAsync(operation, pending.Revision, now));
+
+            using (CovenantSqliteConnectionInitializer.Instance.Authorize(opened.Connection, CovenantSqliteAuthorizationKind.SessionRetention))
+            await using (SqliteCommand delete = opened.Connection.CreateCommand())
+            {
+                delete.CommandText = "DELETE FROM Sessions WHERE Id=$id";
+
+                delete.Parameters.AddWithValue("$id", root.Quest.SessionId!.Value.ToString("D").ToUpperInvariant());
+
+                Assert.Equal(1, await delete.ExecuteNonQueryAsync());
+            }
+
+            await reconciler.ReconcileNowAsync("erased-ancestor", maxConcurrency: 1);
+
+            Assert.Equal(LongRunningOperationState.Abandoned, barrier.Result!.State);
+
+            LongRunningOperation settled = (await operations.GetAsync(operation))!;
+
+            Assert.Equal(operation, settled.Id);
+
+            Assert.Equal(LongRunningOperationState.Abandoned, settled.State);
+
+            Assert.Equal(ErrorCodes.Guild.RefreshCancelled, settled.TerminalErrorCode);
+
+            Assert.Equal(0, gets);
+
+            return;
+        }
 
         Task<LongRunningOperationReconciliationSummary> recoveryPass = reconciler.ReconcileNowAsync("recovered-refresh", maxConcurrency: 1);
 

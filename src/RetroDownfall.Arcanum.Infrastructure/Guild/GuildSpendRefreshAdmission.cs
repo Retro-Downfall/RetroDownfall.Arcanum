@@ -35,15 +35,8 @@ internal sealed partial class GuildQuestStore
                         || !CryptographicOperations.FixedTimeEquals(digest, RefreshRequestDigest(caller.InstallationGeneration, principal,
                             questId, effectId, refreshId))) return Conflict;
 
-                    if (row.IsDBNull(3))
-                    {
-                        await row.DisposeAsync().ConfigureAwait(false);
-
-                        Result owner = await GuildSpendRefreshOwnerProof.RequireWithinAsync(connection, transaction, questId,
-                            quest.Quest.RootQuestId, token).ConfigureAwait(false);
-
-                        return owner.IsFailure ? owner.Error : new GuildSpendRefreshPreparation(null, null, operation, null);
-                    }
+                    // This is a read-only lookup of the authenticated saved request, not authority to start new work.
+                    if (row.IsDBNull(3)) return new GuildSpendRefreshPreparation(null, null, operation, null);
 
                     if (row.GetValue(3) is not string rawReceipt || !Guid.TryParseExact(rawReceipt, "D", out Guid receiptId)
                         || receiptId == Guid.Empty) return Conflict;
@@ -112,15 +105,8 @@ internal sealed partial class GuildQuestStore
                         || operation == Guid.Empty || row.GetValue(2) is not byte[] saved || saved.Length != 32
                         || !CryptographicOperations.FixedTimeEquals(digest, saved)) return Conflict;
 
-                    if (row.IsDBNull(3))
-                    {
-                        await row.DisposeAsync().ConfigureAwait(false);
-
-                        Result owner = await GuildSpendRefreshOwnerProof.RequireWithinAsync(connection, transaction, questId,
-                            quest.Quest.RootQuestId, token).ConfigureAwait(false);
-
-                        return owner.IsFailure ? owner.Error : new GuildSpendRefreshPreparation(null, null, operation, null);
-                    }
+                    // This is a read-only lookup of the authenticated saved request, not authority to start new work.
+                    if (row.IsDBNull(3)) return new GuildSpendRefreshPreparation(null, null, operation, null);
 
                     if (row.GetValue(3) is not string rawReceipt || !Guid.TryParseExact(rawReceipt, "D", out Guid receiptId)
                         || receiptId == Guid.Empty) return Conflict;
