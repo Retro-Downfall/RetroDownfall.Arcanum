@@ -169,7 +169,8 @@ internal sealed class GuildSpendSourceCredential
             command.CommandText = """
                 SELECT s.SourceKindCode,s.SourceVersion,s.InstallationGeneration,q.InstallationGeneration,
                     s.Endpoint,s.Provider,s.Model,s.GenerationId,s.CredentialFingerprint,s.InitialSnapshot,
-                    s.AuthorityKeyId,s.AuthorityEpoch,a.KeyId,a.AuthorityEpoch,a.CredentialKey
+                    s.AuthorityKeyId,s.AuthorityEpoch,a.KeyId,a.AuthorityEpoch,a.CredentialKey,
+                    s.SourceId,e.SourceId,e.KindCode
                 FROM guild_spend_sources s JOIN guild_budget_effects e ON e.EffectId=s.EffectId
                 JOIN guild_quests q ON q.Id=e.QuestId
                 LEFT JOIN guild_spend_authority_state a ON a.StateKey=1
@@ -183,7 +184,9 @@ internal sealed class GuildSpendSourceCredential
             if (!await reader.ReadAsync(ct).ConfigureAwait(false) || reader.GetInt64(0) != 1)
                 return GuildSpendSourceFailure.SourceMissing;
 
-            if (reader.GetInt64(1) != 1) return GuildSpendSourceFailure.SourceInvalid;
+            if (reader.GetInt64(1) != 1 || reader.GetString(15) != reader.GetString(16)
+                || reader.GetValue(17) is not long kind || kind != 0)
+                return GuildSpendSourceFailure.SourceInvalid;
 
             if (reader.GetString(2) != Id(generation) || reader.GetString(3) != Id(generation)
                 || reader.IsDBNull(12) || reader.IsDBNull(13) || reader.IsDBNull(14)
