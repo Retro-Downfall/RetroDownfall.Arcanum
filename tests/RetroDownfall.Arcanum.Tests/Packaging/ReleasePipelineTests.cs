@@ -767,14 +767,24 @@ public sealed class ReleasePipelineTests
         {
             ["ci.yml"] = 8,
 
-            ["coverage.sh"] = 1,
-
             ["verify-published-apphost.sh"] = 1,
 
             ["verify-local-ollama-aot.sh"] = 1,
 
             ["verify-local-ollama-long-rest.sh"] = 1,
         };
+
+        // Coverage delegates both fixed runtime lanes to the owned Python coordinator;
+        // its executable boundary tests also prove EOF, deadline and descendant cleanup.
+        string coverage = File.ReadAllText(Path.Combine(root, "scripts", "coverage.sh"));
+
+        Assert.Contains("\"$ROOT/scripts/runtime_test_runner.py\"", coverage, StringComparison.Ordinal);
+
+        string runtime = File.ReadAllText(Path.Combine(root, "scripts", "runtime_test_runner.py"));
+
+        Assert.Contains("command = [args.dotnet, \"test\"", runtime, StringComparison.Ordinal);
+
+        Assert.Contains("\"--blame-hang-timeout\", \"15m\", \"--blame-hang-dump-type\", \"none\"", runtime, StringComparison.Ordinal);
 
         string[] files =
         [

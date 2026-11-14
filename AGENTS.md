@@ -27,7 +27,7 @@
 ## Build, test, verify
 ```bash
 dotnet build RetroDownfall.Arcanum.slnx
-dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj
+python3 scripts/runtime_test_runner.py --project tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --configuration Debug --results-directory .tmp/runtime-required
 dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj
 ./scripts/coverage.sh --threshold        # Cobertura + HTML coverage, tiered gates
 ./scripts/verify-aot-il-warnings.sh      # AOT publish closure must be free of first-party IL/AOT warnings

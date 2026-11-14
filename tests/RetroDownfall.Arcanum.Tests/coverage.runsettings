@@ -8,7 +8,7 @@
     <DataCollectors>
       <DataCollector friendlyName="XPlat Code Coverage">
         <Configuration>
-          <Format>cobertura</Format>
+          <Format>json,cobertura</Format>
           <!--
             Aggregate gate assemblies: Core, Infrastructure, Api. The 80/70 aggregate floors in
             scripts/coverage_threshold.py are computed over these three only.

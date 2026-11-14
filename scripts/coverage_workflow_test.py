@@ -28,6 +28,29 @@ class CoverageWorkflowTests(unittest.TestCase):
         (scripts / "coverage_threshold.py").write_text(
             "import os, sys\nsys.exit(int(os.environ.get('THRESHOLD_EXIT', '0')))\n"
         )
+        # The shell contract owns coordinator/adapter invocation and error propagation;
+        # their actual process/format boundaries have dedicated behavioral tests.
+        (scripts / "runtime_test_runner.py").write_text(
+            "import argparse,json,os,pathlib,subprocess,sys\n"
+            "p=argparse.ArgumentParser();p.add_argument('--dotnet');p.add_argument('--project');p.add_argument('--configuration');p.add_argument('--results-directory');p.add_argument('--coverage-settings');a=p.parse_args()\n"
+            "d=pathlib.Path(a.results_directory);d.mkdir(parents=True)\n"
+            "(d/'invocation.json').write_text(json.dumps(vars(a)))\n"
+            "command=[a.dotnet,'test',a.project,'--blame-hang-timeout','15m','--blame-hang-dump-type','none','--collect:XPlat Code Coverage','--settings',a.coverage_settings,'--filter','Category!=Perf&Category!=HostedProducerAnalysis','--logger','trx;LogFileName=arcanum-runtime.trx','--results-directory',str(d)]\n"
+            "code=subprocess.run(command,stdin=subprocess.DEVNULL).returncode\n"
+            "(d/'runtime-summary.json').write_text(json.dumps({'status':'passed' if code==0 else 'failed'}))\n"
+            "sys.exit(code)\n"
+        )
+        (scripts / "coverage_union.py").write_text(
+            "import argparse,json,os,pathlib,sys\n"
+            "p=argparse.ArgumentParser();p.add_argument('--runtime-summary');p.add_argument('--output');a=p.parse_args()\n"
+            "receipt=pathlib.Path(a.runtime_summary);output=pathlib.Path(a.output)\n"
+            "(output.parent/'union-invocation.json').write_text(json.dumps(vars(a)))\n"
+            "code=int(os.environ.get('UNION_EXIT','0'))\n"
+            "if code:sys.exit(code)\n"
+            "source=receipt.parent/'coverage.cobertura.xml'\n"
+            "if not source.is_file():print('coverage union refused: missing paired report',file=sys.stderr);sys.exit(23)\n"
+            "output.write_bytes(source.read_bytes())\n"
+        )
         self.log = self.root / "calls.jsonl"
         executable = self.root / "dotnet"
         executable.write_text(
@@ -205,6 +228,22 @@ class CoverageWorkflowTests(unittest.TestCase):
             )
         )
 
+    def test_coverage_requires_coordinator_receipt_and_union_before_thresholds(self):
+        result, calls = self.run_gate("--threshold", "--ci-runtime-only")
+        self.assertEqual(0, result.returncode, result.stderr)
+        output = self.root / ".tmp/coverage"
+        invocation = json.loads((output / "runtime/invocation.json").read_text())
+        self.assertEqual("Debug", invocation["configuration"])
+        self.assertEqual(str(output / "runtime"), invocation["results_directory"])
+        union = json.loads((output / "union-invocation.json").read_text())
+        self.assertEqual(str(output / "runtime/runtime-summary.json"), union["runtime_summary"])
+        self.assertEqual(str(output / "coverage.cobertura.xml"), union["output"])
+
+    def test_union_failure_cannot_reach_threshold_or_analysis(self):
+        result, calls = self.run_gate("--threshold", UNION_EXIT="29", THRESHOLD_EXIT="11")
+        self.assertEqual(29, result.returncode)
+        self.assertEqual(1, len(calls))
+
     def test_release_analysis_build_failure_fails_closed_before_discovery(self):
         result, calls = self.run_gate("--threshold", BUILD_EXIT="19")
 
@@ -266,7 +305,7 @@ class CoverageWorkflowTests(unittest.TestCase):
         self.assertIn("--logger", calls[0])
         self.assertEqual("trx;LogFileName=arcanum-runtime.trx", calls[0][calls[0].index("--logger") + 1])
 
-        results = self.root / ".tmp" / "coverage"
+        results = self.root / ".tmp" / "coverage" / "runtime"
         self.assertEqual("<TestRun/>", (results / "arcanum-runtime.trx").read_text())
         self.assertEqual(
             "<TestSequence/>",
@@ -499,7 +538,7 @@ class CoverageWorkflowTests(unittest.TestCase):
         result, calls = self.run_gate(NO_REPORT="1")
         self.assertNotEqual(0, result.returncode)
         self.assertEqual(1, len(calls))
-        self.assertIn("no cobertura report", result.stderr)
+        self.assertIn("missing paired report", result.stderr)
 
     def test_unknown_option_never_starts_tests(self):
         result, calls = self.run_gate("--skip-analysis")

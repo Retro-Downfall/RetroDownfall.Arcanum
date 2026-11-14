@@ -209,7 +209,7 @@ jobs:
       - name: Arcanum tests + coverage thresholds
         if: needs.scope.outputs.full == 'true' && inputs.qualification != 'guild-memory' && inputs.qualification != 'guild-budget' && inputs.qualification != 'guild-workspace' && inputs.qualification != 'guild-execution'
         run: |
-          python3 -m unittest scripts/coverage_threshold_test.py scripts/coverage_workflow_test.py scripts/hosted_producer_analysis_runner_test.py
+          python3 -m unittest scripts/coverage_threshold_test.py scripts/coverage_workflow_test.py scripts/hosted_producer_analysis_runner_test.py scripts/runtime_test_runner_test.py scripts/coverage_union_test.py
           ./scripts/coverage.sh --threshold --ci-runtime-only
 
       - name: Upload coverage report
@@ -220,6 +220,9 @@ jobs:
           path: |
             .tmp/coverage/report/
             .tmp/coverage/**/coverage.cobertura.xml
+            .tmp/coverage/**/coverage.json
+            .tmp/coverage/**/*.json
+            .tmp/coverage/**/*.log
             .tmp/coverage/**/Sequence_*.xml
             .tmp/coverage/**/*.trx
             .tmp/coverage/analysis/

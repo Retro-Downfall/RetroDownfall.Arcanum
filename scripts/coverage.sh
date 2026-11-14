@@ -57,30 +57,29 @@ mkdir -p "$OUT_DIR"
 # Local tools (reportgenerator) come from .config/dotnet-tools.json.
 dotnet tool restore >/dev/null
 
-# The XPlat Code Coverage collector + its include/exclude filters are declared
-# in coverage.runsettings; --settings both enables and configures it.
-# --collect is required so VSTest actually attaches the XPlat collector.
-# Category=Perf is the manual wall-clock baseline harness (Tests/Performance): its
-# assertions are machine-load sensitive and would fail the gate for reasons unrelated
-# to any code change, especially under coverlet instrumentation on a loaded runner.
-# Runtime tests must see redirected EOF even when this runner inherits a terminal.
-# --blame-hang-timeout names and kills a test host that stops making progress instead of letting it
-# sit until the job ceiling; the dump type is none so the kill does not write a multi-gigabyte dump.
-dotnet test "$TEST_PROJECT" \
-  --blame-hang-timeout 15m \
-  --blame-hang-dump-type none \
-  --collect:"XPlat Code Coverage" \
-  --settings "$RUNSETTINGS" \
-  --filter "Category!=Perf&Category!=HostedProducerAnalysis" \
-  --logger "trx;LogFileName=arcanum-runtime.trx" \
-  --results-directory "$OUT_DIR" </dev/null
-
-COBERTURA="$(find "$OUT_DIR" -name 'coverage.cobertura.xml' | head -n 1)"
-
-if [ -z "$COBERTURA" ]; then
-  echo "coverage.sh: no cobertura report was produced under $OUT_DIR" >&2
+# Both required fresh-process lanes retain the same collector settings and compiled
+# closure. Only the adapter's lossless JSON identity union reaches the threshold gate.
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' >/dev/null 2>&1; then
+  RUNTIME_PYTHON=python3
+elif command -v python >/dev/null 2>&1 && python -c 'import sys' >/dev/null 2>&1; then
+  RUNTIME_PYTHON=python
+else
+  echo "coverage.sh: Python is required for runtime qualification and coverage union" >&2
   exit 1
 fi
+
+"$RUNTIME_PYTHON" "$ROOT/scripts/runtime_test_runner.py" \
+  --dotnet dotnet \
+  --project "$TEST_PROJECT" \
+  --configuration Debug \
+  --results-directory "$OUT_DIR/runtime" \
+  --coverage-settings "$RUNSETTINGS"
+
+COBERTURA="$OUT_DIR/coverage.cobertura.xml"
+
+"$RUNTIME_PYTHON" "$ROOT/scripts/coverage_union.py" \
+  --runtime-summary "$OUT_DIR/runtime/runtime-summary.json" \
+  --output "$COBERTURA"
 
 # HTML report is best-effort — never let a reporting hiccup mask the gate.
 if dotnet reportgenerator \

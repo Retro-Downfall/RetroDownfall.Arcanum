@@ -4763,15 +4763,27 @@ Exact-value requirement discovery visits each reachable method/parameter pair on
 
 Deadline tests must not race a short cancellation timer against a later success timer: an overdue thread pool can deliver those callbacks in either order. The bounded HTTP-client fixture remains pending until cancellation. Subagent renewal tests advance the manual clock only after the renewal loop registers its next timer, proving four renewals over twenty simulated minutes and the current revision at completion. Completion wait bounds remain deadlock guards; they do not drive behavior. The daemon lease tests synchronously establish the blocked state before release and retain their existing two-second guard under the bounded runner load. Terminal-recovery refusal fixtures publish structurally valid mutations through the production canonical journal codec and synchronize on the terminal-finisher entry boundary; a host failure before that boundary propagates with its original cause instead of masquerading as the expected refusal.
 
-Windows serial verification uses host PowerShell and the normal user NuGet cache:
+Windows required runtime verification uses host PowerShell and the normal user NuGet cache:
 
 ```powershell
 $env:NUGET_PACKAGES = "$env:USERPROFILE\.nuget\packages"
-dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --configuration Release -- xUnit.ParallelizeTestCollections=false
+python scripts/runtime_test_runner.py --project tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --configuration Release --results-directory .tmp/runtime-required-windows
 dotnet test tests/RetroDownfall.TheForge.Tests/RetroDownfall.TheForge.Tests.csproj --configuration Release
 ```
 
-Run `scripts/coverage.sh --threshold` from Git Bash for the normal parallel coverage gate. Threshold evaluation prefers Python and falls back to Windows PowerShell on Windows; the xUnit run itself remains parallel.
+Run `scripts/coverage.sh --threshold` from Git Bash for the required runtime coverage gate. Python coordinates two sequential fresh testhosts while xUnit collections within each host retain their ordinary parallel behavior. The first host runs every `RaptorScaleProbe` case; the second runs the remaining tests selected by `Category!=Perf&Category!=HostedProducerAnalysis`. The numerical resource tests retain their absolute 4 GiB whole-process cap, full corpus and completion/cancellation assertions. A fresh host prevents unrelated earlier fixtures' retained heap from deciding a numerical measurement. Ordinary `dotnet test` remains available for focused feedback, but an unfiltered shared host is not the required runtime qualification command.
+
+For required runtime verification without instrumentation, run:
+
+```bash
+python3 scripts/runtime_test_runner.py \
+  --project tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
+  --configuration Debug --results-directory .tmp/runtime-required
+```
+
+The results directory must be fresh. The coordinator builds once, binds both discoveries and terminal results to the same executable/configuration and adjacent symbol/dependency hashes, verifies that the two method selections are a disjoint union of the base selection, and retains exact terminal case multiplicities, named skip reasons, logs and TRX receipts. Deferred theories are reconciled by method coverage plus their actual terminal rows; the resource class additionally requires its exact discovered row multiset and only its eleven established offline opt-in skips. Ordinary remainder platform/opt-in skips retain normal VSTest semantics and remain skipped in every receipt. Failed, aborted, empty, unjoined or mismatched proof refuses qualification. Every child receives redirected EOF and a 15-minute no-dump hang bound; owned process trees are joined or cleaned up before another lane starts. `--no-build` records caller-owned provenance and does not assert that the current source built the supplied binary. The ordinary coordinator refuses `ARCANUM_RAPTOR_SCALE_PROBE=1` before launching children; run the separate explicit offline scale commands for those probes.
+
+Coverage uses the same two required lanes with the filters declared in `coverage.runsettings`, emitting both Coverlet JSON and Cobertura. Attachment selection follows the TRX's declared Coverlet collector/deployment paths, so duplicated attachment copies are not merged twice. `scripts/coverage_union.py` verifies each official single-run JSON/Cobertura pair, unchanged build/settings/artifact hashes and identical full module/document/raw-type/method inventories. It unions line hits and full branch identities `(Line, Offset, EndOffset, Ordinal, Path)` before projecting onto the validated closed Coverlet Cobertura structure. It preserves repeated method-line occurrences, raw nested async types, never-covered branches and the existing security gate's worst-line behavior, with one denominator. Missing/mismatched structures, duplicate properties, ambiguous method display identities and values outside the pinned producer's integer ranges refuse the merge. Percentages are recomputed from that union; percentages and file totals are never added. The Python/PowerShell threshold consumers enforce the documented floors. HTML consumes the merged Cobertura report as a best-effort presentation step. The coordinator, adapter and shell boundary have separate behavioral tests.
 
 | Post-exclusion metric | Default/local target | CI target (`macos-26` `build-test`) |
 |-----------------------|----------------------|------------------|
@@ -4802,11 +4814,11 @@ env:
   COVERAGE_LINE_TARGET: "80"
   COVERAGE_BRANCH_TARGET: "70"
 - run: |
-    python3 -m unittest scripts/coverage_threshold_test.py scripts/coverage_workflow_test.py scripts/hosted_producer_analysis_runner_test.py
+    python3 -m unittest scripts/coverage_threshold_test.py scripts/coverage_workflow_test.py scripts/hosted_producer_analysis_runner_test.py scripts/runtime_test_runner_test.py scripts/coverage_union_test.py
     ./scripts/coverage.sh --threshold --ci-runtime-only
 ```
 
-Do not publish a historical test count or coverage percentage as a release claim. GitHub Actions uploads HTML + Cobertura as `arcanum-coverage-report`. Compendium runs as a separate `dotnet test` step. `TheForge.Ux` — and through it `TheForge.Core` — is compiled by the `build-test` job because the release workflows package and ship it, and the Forge test suite runs there as its own `dotnet test` step. No test project in `RetroDownfall.Arcanum.slnx` is excluded from `.github/workflows/ci.yml`: a whole-project exclusion leaves no trace in any test report, so a suite nobody runs is indistinguishable from one that passes. `ContinuousIntegrationWorkflowTests.Ci_runs_every_test_project_the_solution_carries` enforces that; quarantine an individual test with `Skip` and an issue link instead.
+Do not publish a historical test count or coverage percentage as a release claim. GitHub Actions uploads HTML, both raw coverage formats, merged Cobertura, logs and receipts as `arcanum-coverage-report`. Compendium runs as a separate `dotnet test` step. `TheForge.Ux` — and through it `TheForge.Core` — is compiled by the `build-test` job because the release workflows package and ship it, and the Forge test suite runs there as its own `dotnet test` step. No test project in `RetroDownfall.Arcanum.slnx` is excluded from `.github/workflows/ci.yml`: a whole-project exclusion leaves no trace in any test report, so a suite nobody runs is indistinguishable from one that passes. `ContinuousIntegrationWorkflowTests.Ci_runs_every_test_project_the_solution_carries` enforces that; quarantine an individual test with `Skip` and an issue link instead.
 
 ### 13.2 Test data, ownership, and parallel collections
 
@@ -6025,7 +6037,7 @@ The separately opted-in completion harness uses fresh processes for 10k full sta
 
 The recursive-consumer harness owns one process-resource reader per budget. Its 10 ms timer permits only one reader observation at a time; overlapping ticks check the clock deadline without queuing another read. A failed observation cancels qualification with the fixed `resource-unavailable` reason, preserving the last known peak as a partial observation instead of manufacturing zero or continuing acceptance. Caller, memory and time cancellation retain their first recorded cause; cancellation-callback faults cannot escape the timer and are recorded only as a Boolean in the receipt. Timer disposal joins in-flight callbacks before reader/source disposal, and a failed initial observation cleans up the owned reader. These harness controls change no scale limits or numerical recipe. An aborted testhost with no terminal test result remains incomplete, even when an earlier same-source run passed.
 
-The recursive-consumer cancellation, resource-boundary, and 256-row lineage/receipt controls use controlled resource observations, so memory retained by the shared testhost cannot select their result. The numerical `RaptorScaleProbe` class measures real whole-process resources and runs in a `DisableParallelization` collection, preserving its absolute 4 GiB cap and all numerical, completion and cancellation assertions. Serialization prevents unrelated concurrent fixture work; it does not clear memory retained by earlier tests. Opt-in scale probes continue to measure the real process in fresh testhosts and preserve their physical resource limits.
+The recursive-consumer cancellation, resource-boundary, and 256-row lineage/receipt controls use controlled resource observations, so memory retained by the shared testhost cannot select their result. The numerical `RaptorScaleProbe` class measures real whole-process resources and runs in a `DisableParallelization` collection, preserving its absolute 4 GiB cap and all numerical, completion and cancellation assertions. Serialization prevents unrelated concurrent fixture work; it does not clear memory retained by earlier tests. Required runtime and coverage qualification therefore run the whole class in the first fresh testhost through `scripts/runtime_test_runner.py`, followed by the remainder in a separate host. Opt-in scale probes continue to measure the real process in fresh testhosts and preserve their physical resource limits.
 
 ##### Offline RAPTOR scale qualification
 
