@@ -129,6 +129,8 @@ public sealed partial class GuildQuestStoreTests
     {
         await using Fixture f = await Fixture.CreateAsync();
 
+        f.UseBudgetParticipant(new GuildBudgetLedger());
+
         GuildQuestStored parent = await ReceiptRootAsync(f);
 
         GuildQuestDriver parentDriver = await f.DriverAsync(parent);
@@ -165,7 +167,9 @@ public sealed partial class GuildQuestStoreTests
 
             Assert.True((await portalCleanup.DeleteAsync(owner, connection, transaction, default)).IsSuccess);
 
-            Assert.True((await cleanup.DeleteAsync(owner, connection, transaction, default)).IsSuccess);
+            Result deleted = await cleanup.DeleteAsync(owner, connection, transaction, default);
+
+            Assert.True(deleted.IsSuccess, $"{deleted.Error.Code}: {deleted.Error.Message}");
 
             await transaction.CommitAsync();
         }
@@ -187,6 +191,80 @@ public sealed partial class GuildQuestStoreTests
             after.Value.Quest.AccountingState);
 
         Assert.NotEqual(parent.Quest.SessionId, after.Value.Quest.SessionId);
+    }
+
+    [Fact]
+    public async Task Cleanup_refuses_settled_projections_without_real_accounting_bindings()
+    {
+        await using Fixture f = await Fixture.CreateAsync();
+
+        GuildQuestStored parent = await ReceiptRootAsync(f);
+
+        GuildQuestDriver parentDriver = await f.DriverAsync(parent);
+
+        GuildQuestStored child = await f.ChildAsync(parent, parentDriver);
+
+        GuildQuestDriver childDriver = await f.DriverAsync(child, "converging-child");
+
+        var childResult = await f.Store.CommitResultAsync(childDriver, new(Guid.NewGuid(), ReceiptDigest("converging-child")),
+            child.Quest.Revision, ReceiptResult(child.Quest.Id) with { NoDispatchProven = true }, default);
+
+        Assert.True(childResult.IsSuccess, childResult.Error.Message);
+
+        var parentResult = await f.Store.CommitResultAsync(parentDriver, new(Guid.NewGuid(), ReceiptDigest("converging-parent")),
+            parent.Quest.Revision, ReceiptResult(parent.Quest.Id) with { NoDispatchProven = true }, default);
+
+        Assert.True(parentResult.IsSuccess, parentResult.Error.Message);
+
+        await f.ExecuteAsync("UPDATE guild_result_outbox SET DeliveryStateCode=3,Revision=Revision+1");
+
+        GuildQuestCleanupParticipant cleanup = new(f.Connections, TimeProvider.System);
+
+        GuildPortalCleanupParticipant portalCleanup = new(TimeProvider.System);
+
+        GuildCleanupOwner owner = new(2, parent.Quest.SessionId!.Value, null);
+
+        await using (SqliteConnection connection = await f.OpenAsync())
+        {
+            await using SqliteTransaction transaction = connection.BeginTransaction();
+
+            Assert.True((await portalCleanup.SealAsync(owner, connection, transaction, default)).IsSuccess);
+
+            Assert.True((await cleanup.SealAsync(owner, connection, transaction, default)).IsSuccess);
+
+            Assert.True((await portalCleanup.DeleteAsync(owner, connection, transaction, default)).IsSuccess);
+
+            await using SqliteCommand evidence = connection.CreateCommand();
+
+            evidence.Transaction = transaction;
+
+            evidence.CommandText = "SELECT COUNT(*) FROM guild_budget_accounts";
+
+            Assert.Equal(0L, await evidence.ExecuteScalarAsync());
+
+            evidence.CommandText = $"SELECT COUNT(*) FROM guild_quests c WHERE c.AccountingStateCode<>0 OR {GuildQuestRetentionPins.NonAccountingUnresolved}";
+
+            Assert.Equal(0L, await evidence.ExecuteScalarAsync());
+
+            Assert.False(await GuildQuestStore.AccountingClearWithinAsync(connection, transaction, parent.Quest.RootQuestId, parent.Quest.Id, default));
+
+            Result deleted = await cleanup.DeleteAsync(owner, connection, transaction, default);
+
+            Assert.Equal(ErrorCodes.Guild.ReconciliationRequired, deleted.Error.Code);
+
+            evidence.CommandText = "SELECT COUNT(*) FROM guild_quests WHERE CancellationConverged<>0";
+
+            Assert.Equal(0L, await evidence.ExecuteScalarAsync());
+
+            foreach (string table in new[] { "guild_quests", "guild_result_receipts", "fixture_allocations", "fixture_settlements" })
+            {
+                evidence.CommandText = $"SELECT COUNT(*) FROM {table}";
+
+                Assert.Equal(2L, await evidence.ExecuteScalarAsync());
+            }
+
+            await transaction.CommitAsync();
+        }
     }
 
     private static async Task AssertBoundedCorruptReadAsync(Fixture f, Guid quest)

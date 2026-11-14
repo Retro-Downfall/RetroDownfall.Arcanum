@@ -1,3 +1,5 @@
+using Xunit.Abstractions;
+
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -14,7 +16,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 /// <summary>
 /// Closed source inventory for every authored boundary that may render persisted instants.
 /// </summary>
-public sealed class UtcInstantPersistenceBoundaryTests
+public sealed class UtcInstantPersistenceBoundaryTests(ITestOutputHelper output)
 {
     [Fact]
     public void Every_direct_SQL_instant_parameter_is_canonical_at_its_binding_site()
@@ -1054,6 +1056,61 @@ public sealed class UtcInstantPersistenceBoundaryTests
         }
     }
 
+    [Fact]
+    public void Stored_text_mutation_inputs_preserve_other_cases_and_later_requests()
+    {
+        long before = GC.GetAllocatedBytesForCurrentThread();
+
+        ProductionSource[] first = StoredTextProofSources();
+
+        long firstAllocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        before = GC.GetAllocatedBytesForCurrentThread();
+
+        ProductionSource[] second = StoredTextProofSources();
+
+        long secondAllocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        output.WriteLine($"stored-text fixture allocations: first request={firstAllocated}, second request={secondAllocated}");
+
+        string[] owners =
+        [
+            StoredTextRoute("workspace"),
+            StoredTextRoute("retention"),
+            "src/RetroDownfall.Arcanum.Core/Memory/MemorySearchContinuation.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestRetentionPins.cs",
+        ];
+
+        Assert.Equal(owners.Order(StringComparer.Ordinal), first.Select(source => source.RelativePath).Order(StringComparer.Ordinal));
+
+        Assert.Equal(first, second);
+
+        Assert.NotSame(first, second);
+
+        string owner = StoredTextRoute("workspace");
+
+        int index = Array.FindIndex(first, source => source.RelativePath == owner);
+
+        const string selected = "SELECT rowid,IndexedAt,RelativePath";
+
+        Assert.Contains(selected, first[index].Text, StringComparison.Ordinal);
+
+        first[index] = new(owner, first[index].Text.Replace(selected, "SELECT rowid,RelativePath,RelativePath", StringComparison.Ordinal));
+
+        Assert.Contains(FindInstantBindingViolations(first), violation => violation.Source == owner && violation.ParameterName == "@time");
+
+        ProductionSource[] later = StoredTextProofSources();
+
+        Assert.Equal(second, later);
+
+        Assert.NotSame(second, later);
+
+        foreach (ProductionSource[] unchanged in new[] { second, later })
+        {
+            Assert.DoesNotContain(FindInstantBindingViolations(unchanged), violation => violation.Source == owner && violation.ParameterName == "@time");
+        }
+    }
+
     [Theory]
     [InlineData("workspace", "@time")]
     [InlineData("retention", "@afterAt")]
@@ -1245,13 +1302,17 @@ public sealed class UtcInstantPersistenceBoundaryTests
         ? "src/RetroDownfall.Arcanum.Infrastructure/Memory/GuildWorkspaceMemorySearchReader.cs"
         : "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Guild.cs";
 
-    private static ProductionSource[] StoredTextProofSources() =>
+    // Retain only the four immutable templates. Each mutation case owns its array slots;
+    // the independent whole-production guard above still reads a fresh source inventory.
+    private static readonly Lazy<ProductionSource[]> StoredTextTemplates = new(() =>
     [
         .. ProductionSourceInventory.Sources().Where(source => source.IsExactOwner(StoredTextRoute("workspace"))
             || source.IsExactOwner(StoredTextRoute("retention"))
             || source.IsExactOwner("src/RetroDownfall.Arcanum.Core/Memory/MemorySearchContinuation.cs")
             || source.IsExactOwner("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestRetentionPins.cs")),
-    ];
+    ], LazyThreadSafetyMode.ExecutionAndPublication);
+
+    private static ProductionSource[] StoredTextProofSources() => [.. StoredTextTemplates.Value];
 
     private static IReadOnlyList<InstantBindingViolation> FindInstantBindingViolations(
         IReadOnlyList<ProductionSource> sources)

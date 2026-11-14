@@ -1,5 +1,7 @@
 using System.Data.Common;
 
+using System.Security.Cryptography;
+
 using System.Net;
 
 using System.Net.Http.Json;
@@ -475,8 +477,25 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
             Assert.NotEqual(Guid.Empty, principal);
 
-            Assert.Equal(GuildTableNames.Select(name => $"table:{name}:{(name is "guild_signet_authority_state" or "guild_workspace_authority_state" ? 1 : 0)}")
-                .Append("cursor:0:0:0").Append(epochState).Append(identityState).Order(StringComparer.Ordinal).ToArray(), beforeGuildState);
+            string spendState = Assert.Single(beforeGuildState, state => state.StartsWith("spend-authority:", StringComparison.Ordinal));
+
+            string[] spendParts = spendState.Split(':');
+
+            Assert.Equal(4, spendParts.Length);
+
+            foreach (string canonicalId in spendParts.Skip(1).Take(2))
+            {
+                Assert.True(Guid.TryParseExact(canonicalId, "D", out Guid id));
+
+                Assert.NotEqual(Guid.Empty, id);
+
+                Assert.Equal(id.ToString("D").ToUpperInvariant(), canonicalId);
+            }
+
+            Assert.Equal(32, Convert.FromHexString(spendParts[3]).Length);
+
+            Assert.Equal(GuildTableNames.Select(name => $"table:{name}:{(name is "guild_signet_authority_state" or "guild_workspace_authority_state" or "guild_spend_authority_state" ? 1 : 0)}")
+                .Append("cursor:0:0:0").Append(epochState).Append(identityState).Append(spendState).Order(StringComparer.Ordinal).ToArray(), beforeGuildState);
 
             beforeRows = await ParticipantRowsAsync(first);
 
@@ -553,8 +572,8 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
         ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
 
         // Table names come only from the compiled schema manifest. Cover every Guild-owned
-        // domain/cache/evidence table and preserve the exact bootstrap epoch across ordinary restart,
-        // while permitting the cleanup pass's housekeeping timestamp.
+        // domain/cache/evidence table and preserve signet/workspace/spend authority identities,
+        // epochs and the spend key fingerprint across restart, while permitting cleanup housekeeping.
         string counts = string.Join(" UNION ALL ", GuildTableNames.Select(name =>
             $"SELECT 'table:{name}:' || COUNT(*) AS Value FROM \"{name}\""));
 
@@ -570,16 +589,41 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
              ORDER BY Value
             """;
 
-        await using DbDataReader reader = await command.ExecuteReaderAsync(timeout.Token);
-
         List<string> state = [];
 
-        while (await reader.ReadAsync(timeout.Token))
+        await using (DbDataReader reader = await command.ExecuteReaderAsync(timeout.Token))
         {
-            state.Add(reader.GetString(0));
+            while (await reader.ReadAsync(timeout.Token))
+            {
+                state.Add(reader.GetString(0));
+            }
         }
 
-        return state.ToArray();
+        command.CommandText = "SELECT KeyId,AuthorityEpoch,CredentialKey FROM guild_spend_authority_state WHERE StateKey=1";
+
+        await using (DbDataReader reader = await command.ExecuteReaderAsync(timeout.Token))
+        {
+            Assert.True(await reader.ReadAsync(timeout.Token));
+
+            byte[] credentialKey = (byte[])reader.GetValue(2);
+
+            try
+            {
+                Assert.Equal(32, credentialKey.Length);
+
+                string fingerprint = Convert.ToHexString(SHA256.HashData(credentialKey));
+
+                state.Add($"spend-authority:{reader.GetString(0)}:{reader.GetString(1)}:{fingerprint}");
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(credentialKey);
+            }
+
+            Assert.False(await reader.ReadAsync(timeout.Token));
+        }
+
+        return state.Order(StringComparer.Ordinal).ToArray();
     }
 
     private static async Task<string[]> ParticipantRowsAsync(GrimoireMaintenanceAdmissionHarness harness)

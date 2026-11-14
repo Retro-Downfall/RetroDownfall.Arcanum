@@ -21,10 +21,10 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 /// </summary>
 /// <remarks>
 /// Swapping that logger changes it for every test running beside these, so they sit in the
-/// serialized seam collection rather than in <see cref="BackupRestoreServiceTests"/>, and borrow its
-/// fixture through an instance of it.
+/// serialized workspace-path collection alongside <see cref="BackupRestoreServiceTests"/>, and borrow
+/// its fixture through an instance of it.
 /// </remarks>
-[Collection(ProcessGlobalSeamCollectionName.Value)]
+[Collection("WorkspacePathPolicy")]
 public sealed class BackupRestoreServiceLoggingTests : IDisposable
 {
     private readonly BackupRestoreServiceTests _restores = new();

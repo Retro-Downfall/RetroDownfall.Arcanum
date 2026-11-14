@@ -594,6 +594,24 @@ public sealed class EnvironmentIsolationContractTests
             + "without unrelated parallel fixture work consuming the match budget.");
     }
 
+    /// <summary>
+    /// Whole-process resource observations require exclusive ownership of testhost work.
+    /// </summary>
+    [Fact]
+    public void Raptor_numerical_resource_measurements_are_serialized()
+    {
+        Type probe = typeof(RetroDownfall.Arcanum.Tests.Weave.Tapestry.Raptor.RaptorScaleProbe);
+
+        string? collection = AttributeName<CollectionAttribute>(probe);
+
+        Assert.True(
+            collection is not null
+                && CollectionParallelism.Value.TryGetValue(collection, out bool disablesParallelization)
+                && disablesParallelization,
+            $"{probe.FullName} measures whole-process memory and allocation, so it must run in a "
+            + "DisableParallelization collection without unrelated concurrent test work.");
+    }
+
     [Fact]
     public void Collections_that_mutate_the_process_environment_disable_parallelization()
     {

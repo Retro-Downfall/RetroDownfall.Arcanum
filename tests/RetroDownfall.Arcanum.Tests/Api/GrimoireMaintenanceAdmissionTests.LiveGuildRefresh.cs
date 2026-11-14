@@ -14,7 +14,9 @@ using RetroDownfall.Arcanum.Tests.Guild;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
-public sealed partial class GrimoireMaintenanceAdmissionTests
+[Collection("WorkspacePathPolicy")]
+[Trait("Category", "Integration")]
+public sealed class GrimoireMaintenanceLiveGuildRefreshTests
 {
     [SkippableFact]
     public async Task Factory_reset_waits_for_real_terminal_refresh_body_disposal_and_heartbeat()

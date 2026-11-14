@@ -10,6 +10,7 @@ using Xunit.Abstractions;
 namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry.Raptor;
 
 /// <summary>Explicit offline numerical measurements; never discovers or calls an embedding provider.</summary>
+[Collection(RetroDownfall.Arcanum.Tests.Collections.ResourceMeasurementCollection.Name)]
 [Trait("Category", "RaptorScaleProbe")]
 public sealed partial class RaptorScaleProbe(ITestOutputHelper output)
 {

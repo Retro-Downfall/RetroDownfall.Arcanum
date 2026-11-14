@@ -54,11 +54,11 @@ using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
-[Collection("Grimoire")]
+[Collection("WorkspacePathPolicy")]
 
 [Trait("Category", "Integration")]
 
-public sealed partial class DataRetentionServiceTests : IAsyncLifetime
+public sealed partial class DataRetentionServiceTests : IAsyncLifetime, IClassFixture<GrimoireFixture>
 {
     private readonly GrimoireFixture _fixture;
 

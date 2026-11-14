@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.DataProtection;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Tests.Support;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
@@ -7,7 +9,7 @@ using RetroDownfall.Arcanum.Tests.Guild;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
-[Collection("ProcessEnvironment")]
+[Collection("WorkspacePathPolicy")]
 public sealed class GuildSpendRefreshCredentialMutationTests
 {
     [Fact]
@@ -21,23 +23,21 @@ public sealed class GuildSpendRefreshCredentialMutationTests
 
     private static async Task RunAsync(bool failDelete, bool betweenChecks = false)
     {
-        string root = Path.Combine(Path.GetTempPath(), "arcanum-refresh-credentials-" + Guid.NewGuid().ToString("N"));
+        using ArcanumTestHomeScope home = new("arcanum-refresh-credentials");
 
-        string? oldHome = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+        string root = home.Root;
 
         string? oldKey = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_PENDING_GUILD_REFRESH");
 
-        Directory.CreateDirectory(root);
-
-        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", root);
-
-        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_PENDING_GUILD_REFRESH", null);
-
         try
         {
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_PENDING_GUILD_REFRESH", null);
+
             using BlockingMutationStore os = new();
 
             using ProviderCredentialStore store = new(os, DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(root, "protection"))));
+
+            Assert.Equal(Path.Combine(Path.GetFullPath(home.Root), ".config", "arcanum"), ArcanumPaths.SecretStoreDirectory);
 
             await store.SaveApiKeyAsync("router", "private-provider-key-sentinel");
 
@@ -93,10 +93,6 @@ public sealed class GuildSpendRefreshCredentialMutationTests
         finally
         {
             global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_PENDING_GUILD_REFRESH", oldKey);
-
-            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", oldHome);
-
-            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
     }
 

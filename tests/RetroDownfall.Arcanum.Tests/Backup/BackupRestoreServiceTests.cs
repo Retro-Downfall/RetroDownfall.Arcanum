@@ -45,6 +45,7 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 /// service, because the properties under test — atomic commit, complete rollback, migration through
 /// the authoritative installer — only exist across the whole pipeline.
 /// </summary>
+[Collection("WorkspacePathPolicy")]
 public sealed partial class BackupRestoreServiceTests : IDisposable
 {
     internal const string Passphrase = "restore integration passphrase";

@@ -1,15 +1,25 @@
-using System.Net;
+using System.Globalization;
 using System.Net.Http.Json;
+using System.Net;
 using System.Text.Json;
-using Microsoft.Extensions.DependencyInjection;
+
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+
 using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
-using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
@@ -24,13 +34,32 @@ public sealed class BudgetEndpointTests
         _factory = factory;
     }
 
+    [Fact]
+    public void Guild_runtime_registration_refuses_an_interface_only_budget_participant()
+    {
+        ServiceCollection services = new();
+
+        services.AddSingleton<IBudgetReservationService>(new BudgetEndpointTestFactoryExtensions.StubBudgetReservationService(0m, 0m));
+
+        services.AddGuildLocalExecution();
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        using IServiceScope scope = provider.CreateScope();
+
+        InvalidOperationException error = Assert.Throws<InvalidOperationException>(() =>
+            scope.ServiceProvider.GetRequiredService<IGuildQuestAllocationParticipant>());
+
+        Assert.Equal("Guild execution requires the physical daily budget participant.", error.Message);
+    }
+
     [Theory]
     [InlineData(true, 0, HealthStatus.Degraded)]
     [InlineData(false, 0, HealthStatus.Healthy)]
     [InlineData(true, 10, HealthStatus.Healthy)]
     public async Task Health_reports_budget_enforcement_with_a_remedy_without_refusing_the_host(bool enabled, int limit, HealthStatus expected)
     {
-        await using ArcanumWebApplicationFactory factory = _factory.WithBudget(
+        await using ArcanumWebApplicationFactory factory = await _factory.WithBudgetAsync(
             new BudgetPolicySettings { Enabled = enabled, DailyLimitUsd = limit }, todaySpend: 0m);
 
         using HttpClient client = factory.CreateAuthenticatedClient();
@@ -56,7 +85,7 @@ public sealed class BudgetEndpointTests
     [Fact]
     public async Task GetBudget_Disabled_ReportsRealSpend()
     {
-        await using ArcanumWebApplicationFactory factory = _factory.WithBudget(
+        await using ArcanumWebApplicationFactory factory = await _factory.WithBudgetAsync(
             new BudgetPolicySettings { Enabled = false, DailyLimitUsd = 10m },
             todaySpend: 999m);
 
@@ -84,7 +113,7 @@ public sealed class BudgetEndpointTests
     [InlineData(true, 20, true)]
     public async Task Budget_enforcement_is_explicit_and_never_hides_recorded_spend(bool enabled, int limit, bool enforced)
     {
-        await using ArcanumWebApplicationFactory factory = _factory.WithBudget(
+        await using ArcanumWebApplicationFactory factory = await _factory.WithBudgetAsync(
             new BudgetPolicySettings { Enabled = enabled, DailyLimitUsd = limit },
             todaySpend: 4.5m,
             outstandingReservations: 2m,
@@ -121,7 +150,7 @@ public sealed class BudgetEndpointTests
     [Fact]
     public async Task GetBudget_DistinguishesLocalFromDelegatedSpendAndFlagsUnpricedSendings()
     {
-        await using ArcanumWebApplicationFactory factory = _factory.WithBudget(
+        await using ArcanumWebApplicationFactory factory = await _factory.WithBudgetAsync(
             new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 20m },
             todaySpend: 5m,
             externalSpend: new ExternalSpendSummary(3m, 900, 2, 1));
@@ -149,7 +178,7 @@ public sealed class BudgetEndpointTests
     [Fact]
     public async Task GetBudget_Enabled_ReturnsSpendAndRemaining()
     {
-        await using ArcanumWebApplicationFactory factory = _factory.WithBudget(
+        await using ArcanumWebApplicationFactory factory = await _factory.WithBudgetAsync(
             new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 20m },
             todaySpend: 5m);
 
@@ -186,7 +215,7 @@ public sealed class BudgetEndpointTests
         // Sessions.TotalCostUsd projection for today (it is keyed on Sessions.CreatedAt), and a call in
         // flight has no completed BillableOperations row at all. The reported figure must be the same
         // authority the gate enforces on: committed + outstanding (DESIGN §22.2).
-        await using ArcanumWebApplicationFactory factory = _factory.WithBudget(
+        await using ArcanumWebApplicationFactory factory = await _factory.WithBudgetAsync(
             new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 20m },
             todaySpend: 5m,
             outstandingReservations: 2m,
@@ -211,7 +240,7 @@ public sealed class BudgetEndpointTests
 
 internal static class BudgetEndpointTestFactoryExtensions
 {
-    public static ArcanumWebApplicationFactory WithBudget(
+    public static async Task<ArcanumWebApplicationFactory> WithBudgetAsync(
         this ArcanumWebApplicationFactory factory,
         BudgetPolicySettings budget,
         decimal todaySpend,
@@ -219,7 +248,9 @@ internal static class BudgetEndpointTestFactoryExtensions
         decimal outstandingReservations = 0m,
         decimal? sessionProjectionSpend = null)
     {
-        return new ArcanumWebApplicationFactory
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        ArcanumWebApplicationFactory configured = new()
         {
             SettingsOverride = settings => settings with
             {
@@ -235,8 +266,11 @@ internal static class BudgetEndpointTestFactoryExtensions
 
                 services.RemoveAll<IBudgetReservationService>();
 
-                services.AddScoped<IBudgetReservationService>(
-                    _ => new StubBudgetReservationService(todaySpend, outstandingReservations));
+                services.AddScoped<IBudgetReservationService>(sp => new BudgetReservationService(
+                    sp.GetRequiredService<ArcanumDbContext>(), sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>())
+                {
+                    UtcNowForTesting = () => now,
+                });
 
                 services.RemoveAll<IExternalSpendLedger>();
 
@@ -244,6 +278,103 @@ internal static class BudgetEndpointTestFactoryExtensions
                     _ => new StubExternalSpendLedger(externalSpend ?? ExternalSpendSummary.None));
             },
         };
+
+        try
+        {
+            await using AsyncServiceScope scope = configured.Services.CreateAsyncScope();
+
+            Assert.IsType<BudgetReservationService>(scope.ServiceProvider.GetRequiredService<IBudgetReservationService>());
+
+            GuildBudgetLedger ledger = scope.ServiceProvider.GetRequiredService<GuildBudgetLedger>();
+
+            Assert.Same(ledger, scope.ServiceProvider.GetRequiredService<IGuildQuestAllocationParticipant>());
+
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            if (todaySpend > 0m || outstandingReservations > 0m)
+            {
+                await SeedAccountingAsync(db, now, todaySpend, outstandingReservations);
+            }
+
+            return configured;
+        }
+        catch
+        {
+            await configured.DisposeAsync();
+
+            throw;
+        }
+    }
+
+    private static async Task SeedAccountingAsync(ArcanumDbContext db, DateTimeOffset now, decimal committed, decimal outstanding)
+    {
+        Guid run = await new TurnRunWriter(db).StartRunAsync(new InferenceRunStart(
+            Guid.NewGuid().ToString("N"), null, "test", "budget-endpoint", null, now.AddMinutes(-1)));
+
+        await db.Database.OpenConnectionAsync();
+
+        SqliteConnection connection = (SqliteConnection)db.Database.GetDbConnection();
+
+        await using SqliteTransaction transaction = connection.BeginTransaction();
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        if (committed > 0m)
+        {
+            command.CommandText = """
+                INSERT INTO BillableOperations
+                    (Id,RunId,OperationType,Provider,Model,Purpose,StartedAt,CompletedAt,InputTokens,OutputTokens,
+                     ReasoningTokens,CachedTokens,PricingSnapshotJson,ActualCostUsd,Status,ProviderRequestId)
+                VALUES ($id,$run,$type,'test','model','budget-endpoint',$started,$now,1,1,0,0,'{}',$usd,$status,NULL)
+                """;
+
+            command.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("N"));
+
+            command.Parameters.AddWithValue("$run", run.ToString("N"));
+
+            command.Parameters.AddWithValue("$type", (int)BillableOperationType.Chat);
+
+            command.Parameters.AddWithValue("$started", UtcInstantText.Format(now.AddSeconds(-1)));
+
+            command.Parameters.AddWithValue("$now", UtcInstantText.Format(now));
+
+            ExactUsdText.AddParameter(command, "$usd", committed);
+
+            command.Parameters.AddWithValue("$status", (int)BillableOperationStatus.Completed);
+
+            Assert.Equal(1, await command.ExecuteNonQueryAsync());
+        }
+
+        if (outstanding > 0m)
+        {
+            command.Parameters.Clear();
+
+            command.CommandText = """
+                INSERT INTO BudgetReservations
+                    (Id,RunId,BudgetPeriod,Status,ExpiresAt,CreatedAt,UpdatedAt,ReservedUsd,ReconciledUsd)
+                VALUES ($id,$run,$period,$status,$expires,$now,$now,$usd,'0')
+                """;
+
+            command.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("N"));
+
+            command.Parameters.AddWithValue("$run", run.ToString("N"));
+
+            command.Parameters.AddWithValue("$period", now.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+
+            command.Parameters.AddWithValue("$status", (int)BudgetReservationStatus.Reserved);
+
+            command.Parameters.AddWithValue("$expires", UtcInstantText.Format(now.AddHours(1)));
+
+            command.Parameters.AddWithValue("$now", UtcInstantText.Format(now));
+
+            ExactUsdText.AddParameter(command, "$usd", outstanding);
+
+            Assert.Equal(1, await command.ExecuteNonQueryAsync());
+        }
+
+        await transaction.CommitAsync();
     }
 
     private sealed class StubExternalSpendLedger(ExternalSpendSummary summary) : IExternalSpendLedger
@@ -252,7 +383,8 @@ internal static class BudgetEndpointTestFactoryExtensions
             Task.FromResult(summary);
     }
 
-    private sealed class StubBudgetReservationService(decimal committedUsd, decimal outstandingUsd)
+    // Used only by the registration refusal control, never by a running API fixture.
+    internal sealed class StubBudgetReservationService(decimal committedUsd, decimal outstandingUsd)
         : IBudgetReservationService
     {
         public Task<decimal> GetTodayCommittedSpendAsync(CancellationToken cancellationToken = default) =>

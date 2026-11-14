@@ -101,12 +101,18 @@ public sealed partial class GuildLocalHostPolicyTests
 
         bool paidCall = frontier != "unpaid-parked-wait";
 
+        PaidWaitEvidence? beforeEvidence = null;
+
+        Assert.False(daily.RequiresReservation);
+
         if (paidCall)
         {
             var paidResult = await paid.ExecuteGuildAsync(binding, (await store.ReadLocalInputAsync(driver, default)).Value,
                 invocation, new UnusedInference(), null!, default);
 
             Assert.True(paidResult.IsSuccess, paidResult.Error.Message);
+
+            beforeEvidence = await ReadPaidWaitEvidenceAsync(connection.Connection, quest.Id);
         }
 
         Assert.True((await store.ResolveLocalDispatchAsync(driver, quest.Id, default)).IsSuccess);
@@ -220,7 +226,190 @@ public sealed partial class GuildLocalHostPolicyTests
 
             Assert.True(result.Value.Quest.CancellationConverged);
 
-            Assert.Equal(paidCall ? GuildAccountingState.Uncertain : GuildAccountingState.Settled, result.Value.Quest.AccountingState);
+            Assert.Equal(0L, await f.ScalarAsync("SELECT COUNT(*) FROM BudgetReservations"));
+
+            if (paidCall)
+            {
+                Assert.Equal(beforeEvidence, await ReadPaidWaitEvidenceAsync(connection.Connection, quest.Id));
+            }
+            else
+            {
+                Assert.Equal(0L, await f.ScalarAsync("SELECT COUNT(*) FROM guild_budget_effects"));
+            }
+
+            await using SqliteTransaction proof = connection.Connection.BeginTransaction(deferred: true);
+
+            await using SqliteCommand account = connection.Connection.CreateCommand();
+
+            account.Transaction = proof;
+
+            account.CommandText = """
+                SELECT a.AccountId,a.Closed,a.SettlementReceiptId,r.ResultId
+                FROM guild_quests q JOIN guild_budget_accounts a ON a.AccountId=q.AllocationAccountId
+                JOIN guild_result_receipts r ON r.QuestId=q.Id WHERE q.Id=$quest
+                """;
+
+            account.Parameters.AddWithValue("$quest", quest.Id.ToString("D").ToUpperInvariant());
+
+            Guid rootAccount;
+
+            await using (SqliteDataReader reader = await account.ExecuteReaderAsync())
+            {
+                Assert.True(await reader.ReadAsync());
+
+                rootAccount = Guid.Parse(reader.GetString(0));
+
+                Assert.Equal(1L, reader.GetInt64(1));
+
+                Assert.Equal(reader.GetString(3), reader.GetString(2));
+
+                Assert.False(await reader.ReadAsync());
+            }
+
+            var budget = await new GuildBudgetLedger(daily).ReadWithinAsync(connection.Connection, proof, rootAccount, default);
+
+            Assert.True(budget.IsSuccess, budget.Error.Message);
+
+            Assert.Equal(GuildBudgetMode.Unlimited, budget.Value.Grant.Usd.Mode);
+
+            Assert.Equal(GuildBudgetMode.Unlimited, budget.Value.Grant.Tokens.Mode);
+
+            Assert.Equal(paidCall, budget.Value.UnknownUsd);
+
+            Assert.False(budget.Value.UnknownTokens);
+
+            Assert.False(budget.Value.PhysicalBlocked);
+
+            Assert.False(budget.Value.UsdBlocked);
+
+            Assert.False(budget.Value.TokensBlocked);
+
+            account.CommandText = "SELECT COUNT(*) FROM guild_budget_accounts WHERE ParentAccountId=$account AND Closed=0";
+
+            account.Parameters.AddWithValue("$account", rootAccount.ToString("D").ToUpperInvariant());
+
+            Assert.Equal(cohortId is null ? 0L : 1L, await account.ExecuteScalarAsync());
+
+            if (cohortId is { } openCohort)
+            {
+                account.CommandText = """
+                    SELECT COUNT(*) FROM guild_cohorts c JOIN guild_budget_accounts a ON a.AccountId=c.AllocationAccountId
+                    WHERE c.Id=$cohort AND c.StateCode=$open AND a.OwnerKindCode=1 AND a.OwnerId=c.Id
+                      AND a.ParentAccountId=$account AND a.RootAccountId=$account AND a.Closed=0 AND a.SettlementReceiptId IS NULL
+                    """;
+
+                account.Parameters.AddWithValue("$cohort", openCohort.ToString("D").ToUpperInvariant());
+
+                account.Parameters.AddWithValue("$open", (long)GuildCohortState.Open);
+
+                Assert.Equal(1L, await account.ExecuteScalarAsync());
+            }
+
+            await proof.CommitAsync();
+
+            GuildAccountingState expectedAccounting = frontier switch
+            {
+                "waiting" => GuildAccountingState.Settled,
+                "parked-wait" => GuildAccountingState.Pending,
+                "unpaid-parked-wait" => GuildAccountingState.Settled,
+                _ => throw new InvalidOperationException(frontier),
+            };
+
+            Assert.Equal(expectedAccounting, result.Value.Quest.AccountingState);
         }
+    }
+
+    private sealed record PaidWaitEvidence(Guid EffectId, Guid SourceId, Guid AssociationId, Guid ReceiptId, long Revision, string Digest);
+
+    private static async Task<PaidWaitEvidence> ReadPaidWaitEvidenceAsync(SqliteConnection connection, Guid questId)
+    {
+        await using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            SELECT e.EffectId,e.SourceId,e.AccountingAssociationId,r.ReceiptId,e.Revision,r.Digest,
+                e.KnownUsd,e.KnownTokens,e.UnknownUsd,e.UnknownTokens,e.StateCode,e.ReservationId,e.UsdBound,
+                r.KnownUsd,r.KnownTokens,r.UnknownUsd,r.UnknownTokens,r.Complete,r.NoDispatchProven
+            FROM guild_budget_effects e JOIN guild_budget_evidence r ON r.EffectId=e.EffectId AND r.AppliedRevision=e.Revision
+            WHERE e.QuestId=$quest AND e.KindCode=0
+            """;
+
+        command.Parameters.AddWithValue("$quest", questId.ToString("D").ToUpperInvariant());
+
+        PaidWaitEvidence evidence;
+
+        await using (SqliteDataReader reader = await command.ExecuteReaderAsync())
+        {
+            Assert.True(await reader.ReadAsync());
+
+            byte[] digest = Assert.IsType<byte[]>(reader.GetValue(5));
+
+            Assert.Equal(32, digest.Length);
+
+            evidence = new(Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)), Guid.Parse(reader.GetString(2)),
+                Guid.Parse(reader.GetString(3)), reader.GetInt64(4), Convert.ToHexString(digest));
+
+            Assert.NotEqual(Guid.Empty, evidence.EffectId);
+
+            Assert.NotEqual(Guid.Empty, evidence.SourceId);
+
+            Assert.NotEqual(Guid.Empty, evidence.AssociationId);
+
+            Assert.NotEqual(Guid.Empty, evidence.ReceiptId);
+
+            Assert.True(evidence.Revision > 0);
+
+            Assert.Equal("0", reader.GetString(6));
+
+            Assert.Equal(10L, reader.GetInt64(7));
+
+            Assert.Equal(1L, reader.GetInt64(8));
+
+            Assert.Equal(0L, reader.GetInt64(9));
+
+            Assert.Equal((long)GuildBudgetEffectState.Complete, reader.GetInt64(10));
+
+            Assert.True(reader.IsDBNull(11));
+
+            Assert.True(reader.IsDBNull(12));
+
+            Assert.Equal("0", reader.GetString(13));
+
+            Assert.Equal(10L, reader.GetInt64(14));
+
+            Assert.Equal(1L, reader.GetInt64(15));
+
+            Assert.Equal(0L, reader.GetInt64(16));
+
+            Assert.Equal(1L, reader.GetInt64(17));
+
+            Assert.Equal(0L, reader.GetInt64(18));
+
+            Assert.False(await reader.ReadAsync());
+        }
+
+        command.CommandText = "SELECT Id,Status,InputTokens,OutputTokens FROM BillableOperations";
+
+        await using (SqliteDataReader reader = await command.ExecuteReaderAsync())
+        {
+            Assert.True(await reader.ReadAsync());
+
+            Assert.Equal(evidence.SourceId, Guid.Parse(reader.GetString(0)));
+
+            Assert.Equal(0L, reader.GetInt64(1));
+
+            Assert.Equal(7L, reader.GetInt64(2));
+
+            Assert.Equal(3L, reader.GetInt64(3));
+
+            Assert.False(await reader.ReadAsync());
+        }
+
+        await transaction.CommitAsync();
+
+        return evidence;
     }
 }

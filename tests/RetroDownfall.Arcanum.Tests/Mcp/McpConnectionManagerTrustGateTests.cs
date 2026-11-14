@@ -332,28 +332,38 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         Assert.Equal(1, trust.SnapshotCalls);
     }
 
-    [Fact]
-    public async Task Workspace_surface_cache_is_reused_while_its_digest_remains_trusted()
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(true, 1)]
+    public async Task Workspace_surface_cache_is_reused_while_its_digest_remains_trusted(bool alwaysOn, int buildSnapshots)
     {
         string path = _workspace.WriteFile(
             "mcp.json",
             """
             {
               "mcpServers": {
-                "cached": { "type": "sse", "url": "https://cached.example.test/mcp" }
+                "cached": { "type": "sse", "url": "https://cached.example.test/mcp", "alwaysOn": ALWAYS_ON }
               }
             }
-            """);
+            """.Replace("ALWAYS_ON", alwaysOn ? "true" : "false", StringComparison.Ordinal));
 
         DigestTrustStore trust = new() { ApprovedDigest = await ComputeSha256HexAsync(path) };
 
         await using McpConnectionManager manager = CreateManager(trust);
 
-        await manager.GetAvailableToolsAsync(_workspace.Root);
-        await manager.GetAvailableToolsAsync(_workspace.Root);
+        var first = await manager.GetAvailableToolsAsync(_workspace.Root);
 
         Assert.Equal(1, trust.AdmissionCalls);
-        Assert.Equal(1, trust.SnapshotCalls);
+
+        Assert.Equal(buildSnapshots, trust.SnapshotCalls);
+
+        var second = await manager.GetAvailableToolsAsync(_workspace.Root);
+
+        Assert.Same(first, second);
+
+        Assert.Equal(1, trust.AdmissionCalls);
+
+        Assert.Equal(buildSnapshots + 1, trust.SnapshotCalls);
     }
 
     [Fact]
