@@ -12,6 +12,39 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed partial class DataRetentionServiceTests
 {
     [SkippableFact]
+    public async Task Guild_content_pages_preserve_empty_and_stored_time_spellings_without_duplicate_candidates()
+    {
+        RequireSqlCipher();
+
+        await ExecuteAsync("""
+            WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM rows WHERE n<103)
+            INSERT INTO guild_content(ContentId,ContentKindCode,SourceRecordId,Revision,Digest,MimeType,Body,SensitivityCode,ProvenanceModeCode,CreatedAtUtc)
+            SELECT printf('%08X-0000-0000-0000-%012X',n,n),0,printf('%08X-0000-0000-0000-%012X',n,n),
+                1,zeroblob(32),'text/plain',X'6162',0,0,
+                CASE WHEN n=1 THEN '' WHEN n<=101 THEN '2000-01-01T00:00:00.0000000Z' ELSE '2000-01-01T00:00:00Z' END
+            FROM rows;
+            """);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.GuildContent.Enabled = true;
+
+        settings.Retention.GuildContent.Days = 1;
+
+        DataRetentionPlan plan = await CreateService(settings).PlanAsync(new(DataRetentionOperation.Prune));
+
+        string[] content = plan.CandidateIds.Where(id => id.StartsWith("guild-content:", StringComparison.Ordinal)).ToArray();
+
+        Assert.Equal(103, content.Length);
+
+        Assert.Equal(103, content.Distinct(StringComparer.Ordinal).Count());
+
+        Assert.Empty(plan.Conflicts);
+
+        Assert.Equal(103, await CampaignScalarCountAsync("SELECT count(*) FROM guild_content"));
+    }
+
+    [SkippableFact]
     public async Task Guild_content_prune_preserves_current_card_content_and_erasure_evidence()
     {
         RequireSqlCipher();

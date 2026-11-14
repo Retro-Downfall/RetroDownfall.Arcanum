@@ -106,6 +106,14 @@
                                         ItemsSource="{Binding OutputTokenLimitWireDialectValues}"
                                         SelectedItem="{Binding OutputTokenLimitWireDialect, Mode=TwoWay}" />
 
+                <controls:LabeledPicker Label="Guild usage reconciliation"
+                                        Description="Optional metadata source for new Guild calls. OpenRouterGeneration requires the OpenRouter endpoint and its resolved credential; None leaves provider reconciliation disabled."
+                                        Key="providers.guildUsageReconciliation"
+                                        PickerTitle="Select metadata source"
+                                        IsVisible="{Binding IsHttpProvider}"
+                                        ItemsSource="{Binding GuildUsageReconciliationValues}"
+                                        SelectedItem="{Binding GuildUsageReconciliation, Mode=TwoWay}" />
+
                 <controls:LabeledStepper Label="Context window limit"
                                          Description="Factual provider context-window capacity."
                                          Value="{Binding ContextWindowLimit, Mode=TwoWay}"

@@ -3,6 +3,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 using System.Text;
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
@@ -818,6 +819,10 @@ public sealed class UtcInstantPersistenceBoundaryTests
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Delivery.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Dispatch.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.Results.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.AccountingRecovery.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.SpendCorrections.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.SpendReads.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshRetry.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestStore.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSignetStore.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildStore.cs",
@@ -1049,6 +1054,205 @@ public sealed class UtcInstantPersistenceBoundaryTests
         }
     }
 
+    [Theory]
+    [InlineData("workspace", "@time")]
+    [InlineData("retention", "@afterAt")]
+    public void Reviewed_stored_ordering_text_is_accepted_only_with_its_full_provenance(string route, string parameter)
+    {
+        ProductionSource[] sources = StoredTextProofSources();
+
+        string owner = StoredTextRoute(route);
+
+        Assert.DoesNotContain(FindInstantBindingViolations(sources),
+            violation => violation.Source == owner && violation.ParameterName == parameter);
+    }
+
+    [Theory]
+    [InlineData("workspace", "ordinal")]
+    [InlineData("workspace", "source-column")]
+    [InlineData("workspace", "target-column")]
+    [InlineData("workspace", "reader-command")]
+    [InlineData("workspace", "position-reassignment")]
+    [InlineData("workspace", "position-ref-alias")]
+    [InlineData("workspace", "position-implicit-in")]
+    [InlineData("workspace", "candidate-implicit-in")]
+    [InlineData("workspace", "candidate-position-implicit-in")]
+    [InlineData("workspace", "after-union")]
+    [InlineData("workspace", "after-seed")]
+    [InlineData("workspace", "after-implicit-in")]
+    [InlineData("workspace", "blob-alias")]
+    [InlineData("workspace", "scope-union")]
+    [InlineData("workspace", "scope-alias")]
+    [InlineData("workspace", "scope-helper")]
+    [InlineData("workspace", "scope-shadow")]
+    [InlineData("workspace", "scope-pattern")]
+    [InlineData("workspace", "scope-parameter")]
+    [InlineData("workspace", "authored-list")]
+    [InlineData("workspace", "record-type")]
+    [InlineData("workspace", "record-getter")]
+    [InlineData("workspace", "type-alias")]
+    [InlineData("workspace", "global-type-alias")]
+    [InlineData("retention", "ordinal")]
+    [InlineData("retention", "source-column")]
+    [InlineData("retention", "target-column")]
+    [InlineData("retention", "reader-command")]
+    [InlineData("retention", "cursor-reassignment")]
+    [InlineData("retention", "cursor-ref-alias")]
+    [InlineData("retention", "cursor-in-escape")]
+    [InlineData("retention", "cursor-implicit-in")]
+    [InlineData("retention", "created-implicit-in")]
+    [InlineData("retention", "cursor-seed")]
+    [InlineData("retention", "binding-lambda")]
+    [InlineData("retention", "page-lambda")]
+    [InlineData("retention", "predicate-union")]
+    [InlineData("retention", "predicate-reassignment")]
+    [InlineData("retention", "predicate-implicit-in")]
+    [InlineData("retention", "predicate-helper")]
+    [InlineData("retention", "predicate-shadow")]
+    [InlineData("retention", "predicate-const")]
+    [InlineData("retention", "reachable-const")]
+    [InlineData("retention", "pins-alias")]
+    [InlineData("retention", "nested-pins")]
+    [InlineData("retention", "global-pins-alias")]
+    public void Stored_text_provenance_refuses_changed_sources_commands_types_and_fragment_builders(string route, string mutation)
+    {
+        ProductionSource[] sources = StoredTextProofSources();
+
+        string owner = StoredTextRoute(route);
+
+        string parameter = route == "workspace" ? "@time" : "@afterAt";
+
+        if (mutation is "global-type-alias" or "global-pins-alias")
+        {
+            string alias = route == "workspace" ? "MemorySearchPosition" : "GuildQuestRetentionPins";
+
+            sources = [.. sources, new ProductionSource("Fixture.GlobalAliases.cs", $"global using {alias} = OtherNamespace.ForgedType;")];
+
+            Assert.Contains(FindInstantBindingViolations(sources),
+                violation => violation.Source == owner && violation.ParameterName == parameter);
+
+            return;
+        }
+
+        string changedOwner = owner;
+
+        string before;
+
+        string after;
+
+        if (route == "workspace")
+        {
+            const string position = "MemorySearchPosition position = new(3, reader.GetString(1), reader.GetInt64(3), reader.GetString(2), reader.GetString(4));";
+
+            (before, after) = mutation switch
+            {
+                "ordinal" => (position, position.Replace("GetString(1)", "GetString(4)", StringComparison.Ordinal)),
+                "source-column" => ("SELECT rowid,IndexedAt,RelativePath", "SELECT rowid,RelativePath,RelativePath"),
+                "target-column" => ("AND IndexedAt=@time AND ChunkIndex", "AND RelativePath=@time AND IndexedAt>=@time AND ChunkIndex"),
+                "reader-command" => ("await using (DbDataReader reader = await metadata.ExecuteReaderAsync(ct)", "await using DbCommand other = connection.CreateCommand(); other.Transaction = snapshot; other.CommandText = metadata.CommandText; await using (DbDataReader reader = await other.ExecuteReaderAsync(ct)"),
+                "position-reassignment" => (position, position + " position = new(3, \"unproved\");"),
+                "position-ref-alias" => (position, position + " { ref MemorySearchPosition alias = ref position; alias = new(3, \"unproved\"); }"),
+                "position-implicit-in" => (position, position + " Tamper(position); static void Tamper(in MemorySearchPosition value) { System.Runtime.CompilerServices.Unsafe.AsRef(in value) = new(3, \"unproved\"); }"),
+                "candidate-implicit-in" => ("MemorySearchPosition previous = cursor;", "Tamper(candidate); static void Tamper(in (long Row, MemorySearchPosition Position, long Offset, long Length, long Bytes) value) { System.Runtime.CompilerServices.Unsafe.AsRef(in value).Position = new(3, \"unproved\"); } MemorySearchPosition previous = cursor;"),
+                "candidate-position-implicit-in" => ("MemorySearchPosition previous = cursor;", "Tamper(candidate.Position); static void Tamper(in MemorySearchPosition value) { System.Runtime.CompilerServices.Unsafe.AsRef(in value) = new(3, \"unproved\"); } MemorySearchPosition previous = cursor;"),
+                "after-union" => ("metadata.CommandText =", "after = \" UNION ALL SELECT rowid,'unproved',RelativePath,ChunkIndex,ChunkId,CharOffset,CharLength,octet_length(Content),0 FROM workspace_file_chunks\"; metadata.CommandText ="),
+                "after-seed" => ("string after = \"\";", "string after = \" UNION ALL SELECT rowid,'unproved',RelativePath,ChunkIndex,ChunkId,CharOffset,CharLength,octet_length(Content),0 FROM workspace_file_chunks\";"),
+                "after-implicit-in" => ("metadata.CommandText =", "Tamper(after); static void Tamper(in string value) { System.Runtime.CompilerServices.Unsafe.AsRef(in value) = \" UNION ALL SELECT rowid,'unproved',RelativePath,ChunkIndex,ChunkId,CharOffset,CharLength,octet_length(Content),0 FROM workspace_file_chunks\"; } metadata.CommandText ="),
+                "blob-alias" => ("using System.Data.Common;", "using System.Data.Common; using SqliteBlob = OtherNamespace.ForgedBlob;"),
+                "scope-union" => ("metadata.CommandText =", "scopePredicates.Clear(); scopePredicates.Add(\"0) UNION ALL SELECT rowid,'unproved',RelativePath,ChunkIndex,ChunkId,CharOffset,CharLength,octet_length(Content),0 FROM workspace_file_chunks WHERE (1=1\"); metadata.CommandText ="),
+                "scope-alias" => ("metadata.CommandText =", "var aliases = scopePredicates; aliases.Add(\"unproved\"); metadata.CommandText ="),
+                "scope-helper" => ("=> windows\n", "=> true ? \"unproved\" : windows\n"),
+                "scope-shadow" => ("List<string> scopePredicates = [];", "List<string> scopePredicates = []; string ScopePrefixPredicate(bool windows, int index) => \"unproved\";"),
+                "scope-pattern" => ("scopePredicates.Add(ScopePrefixPredicate(OperatingSystem.IsWindows(), i));", "if (new Func<bool,int,string>((_, _) => \"0) UNION ALL SELECT rowid,'unproved',RelativePath,ChunkIndex,ChunkId,CharOffset,CharLength,octet_length(Content),0 FROM workspace_file_chunks WHERE (1=1\") is { } ScopePrefixPredicate) { scopePredicates.Add(ScopePrefixPredicate(OperatingSystem.IsWindows(), i)); }"),
+                "scope-parameter" => ("scopePredicates.Add(ScopePrefixPredicate(OperatingSystem.IsWindows(), i));", "((Action<Func<bool,int,string>>)(ScopePrefixPredicate => { scopePredicates.Add(ScopePrefixPredicate(OperatingSystem.IsWindows(), i)); }))((_, _) => \"0) UNION ALL SELECT rowid,'unproved',RelativePath,ChunkIndex,ChunkId,CharOffset,CharLength,octet_length(Content),0 FROM workspace_file_chunks WHERE (1=1\");"),
+                "authored-list" => ("internal static class GuildWorkspaceMemorySearchReader", "internal class List<T> : System.Collections.Generic.List<T> { } internal static class GuildWorkspaceMemorySearchReader"),
+                "record-type" => ("string? Time = null", "object? Time = null"),
+                "record-getter" => ("string? Tier = null);", "string? Tier = null) { public string? Time { get; init; } = \"unproved\"; }"),
+                "type-alias" => ("using System.Data.Common;", "using System.Data.Common; using MemorySearchPosition = OtherNamespace.ForgedPosition;"),
+                "global-type-alias" => ("namespace RetroDownfall.Arcanum.Core.Memory;", "global using MemorySearchPosition = OtherNamespace.ForgedPosition; namespace RetroDownfall.Arcanum.Core.Memory;"),
+                _ => throw new InvalidOperationException(mutation),
+            };
+
+            if (mutation is "record-type" or "record-getter" or "global-type-alias")
+            {
+                changedOwner = "src/RetroDownfall.Arcanum.Core/Memory/MemorySearchContinuation.cs";
+            }
+        }
+        else
+        {
+            const string predicate = "string contentPredicate = await GuildContentPredicateAsync(cancellationToken).ConfigureAwait(false);";
+
+            string pageLoop = CSharpSyntaxTree.ParseText(sources.Single(source => source.RelativePath == owner).Text)
+                .GetRoot().DescendantNodes().OfType<ForEachVariableStatementSyntax>()
+                .Single(each => each.Expression.ToString() == "page"
+                    && each.Ancestors().OfType<MethodDeclarationSyntax>().First().Identifier.ValueText == "AddGuildCandidatesAsync")
+                .ToString();
+
+            (before, after) = mutation switch
+            {
+                "ordinal" => ("page.Add((reader.GetString(0), reader.IsDBNull(1) ? \"\" : reader.GetString(1)));", "page.Add((reader.GetString(0), reader.IsDBNull(0) ? \"\" : reader.GetString(0)));"),
+                "source-column" => ("SELECT content.ContentId,content.CreatedAtUtc FROM guild_content content WHERE {contentPredicate} AND", "SELECT content.ContentId,content.ContentId FROM guild_content content WHERE {contentPredicate} AND"),
+                "target-column" => ("content.CreatedAtUtc>@afterAt OR content.CreatedAtUtc=@afterAt", "content.ContentId>@afterAt OR content.ContentId=@afterAt"),
+                "reader-command" => ("await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))\n                {\n                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))\n                    page.Add", "await using SqliteCommand other = connection.CreateCommand(); other.Transaction = transaction; other.CommandText = command.CommandText; await using (SqliteDataReader reader = await other.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))\n                {\n                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))\n                    page.Add"),
+                "cursor-reassignment" => ("afterAt = created;", "afterAt = created; afterAt = \"unproved\";"),
+                "cursor-ref-alias" => ("afterAt = created;", "afterAt = created; { ref string alias = ref afterAt; alias = \"unproved\"; }"),
+                "cursor-in-escape" => ("afterAt = created;", "afterAt = created; Observe(in afterAt); static void Observe(in string value) { }"),
+                "cursor-implicit-in" => ("afterAt = created;", "afterAt = created; Tamper(afterAt); static void Tamper(in string value) { System.Runtime.CompilerServices.Unsafe.AsRef(in value) = \"unproved\"; }"),
+                "created-implicit-in" => ("afterAt = created;", "Tamper(created); static void Tamper(in string value) { System.Runtime.CompilerServices.Unsafe.AsRef(in value) = \"unproved\"; } afterAt = created;"),
+                "cursor-seed" => ("string afterAt = \"\", afterId = \"\";", "string afterAt = \"unproved\", afterId = \"\";"),
+                "binding-lambda" => ("Add(command, \"@afterAt\", afterAt);", "((Action<string>)(afterAt => { Add(command, \"@afterAt\", afterAt); }))(\"unproved\");"),
+                "page-lambda" => (pageLoop, "await ((Func<List<(string Id, string Created)>, Task>)(async page => { " + pageLoop + " }))(new() { (\"00000000-0000-0000-0000-000000000001\", \"unproved\") });"),
+                "predicate-union" => (predicate, "string contentPredicate = \"0 UNION ALL SELECT content.ContentId,'unproved' AS CreatedAtUtc FROM guild_content content WHERE 1=1\";"),
+                "predicate-reassignment" => (predicate, predicate + " contentPredicate = \"unproved\";"),
+                "predicate-implicit-in" => (predicate, predicate + " Tamper(contentPredicate); static void Tamper(in string value) { System.Runtime.CompilerServices.Unsafe.AsRef(in value) = \"0 UNION ALL SELECT content.ContentId,'unproved' AS CreatedAtUtc FROM guild_content content WHERE 1=1\"; }"),
+                "predicate-helper" => ("return GuildContentRetentionPredicate;", "return \"unproved\";"),
+                "predicate-shadow" => (predicate, "Task<string> GuildContentPredicateAsync(CancellationToken token) => Task.FromResult(\"unproved\"); " + predicate),
+                "predicate-const" => ("content.ContentKindCode = 0 AND content.SensitivityCode = 0", "0 UNION ALL SELECT content.ContentId,'unproved' AS CreatedAtUtc FROM guild_content content WHERE content.SensitivityCode = 0"),
+                "reachable-const" => ("dispatch.EvidenceCode=2", "dispatch.EvidenceCode=2 OR 'unproved'='unproved'"),
+                "nested-pins" => ("private const string GuildContentCandidatePrefix", "private static class GuildQuestRetentionPins { internal const string NonAccountingUnresolved = \"unproved\"; internal const string UnresolvedPortalInbox = global::RetroDownfall.Arcanum.Infrastructure.Guild.GuildQuestRetentionPins.UnresolvedPortalInbox; } private const string GuildContentCandidatePrefix"),
+                "pins-alias" => ("using Microsoft.Data.Sqlite;", "using Microsoft.Data.Sqlite; using GuildQuestRetentionPins = OtherNamespace.ForgedPins;"),
+                "global-pins-alias" => ("namespace RetroDownfall.Arcanum.Infrastructure.Guild;", "global using GuildQuestRetentionPins = OtherNamespace.ForgedPins; namespace RetroDownfall.Arcanum.Infrastructure.Guild;"),
+                _ => throw new InvalidOperationException(mutation),
+            };
+
+            if (mutation is "reachable-const" or "global-pins-alias")
+            {
+                changedOwner = "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestRetentionPins.cs";
+            }
+        }
+
+        int index = Array.FindIndex(sources, source => source.RelativePath == changedOwner);
+
+        Assert.True(index >= 0);
+
+        string text = sources[index].Text;
+
+        int searchStart = route == "retention" && mutation is not ("predicate-helper" or "predicate-const" or "reachable-const" or "pins-alias" or "global-pins-alias" or "nested-pins")
+            ? text.IndexOf("private async Task AddGuildCandidatesAsync", StringComparison.Ordinal)
+            : 0;
+
+        int offset = text.IndexOf(before, searchStart, StringComparison.Ordinal);
+
+        Assert.True(offset >= 0, $"Mutation {route}/{mutation} did not find its source.");
+
+        sources[index] = new(changedOwner, text[..offset] + after + text[(offset + before.Length)..]);
+
+        Assert.Contains(FindInstantBindingViolations(sources),
+            violation => violation.Source == owner && violation.ParameterName == parameter);
+    }
+
+    private static string StoredTextRoute(string route) => route == "workspace"
+        ? "src/RetroDownfall.Arcanum.Infrastructure/Memory/GuildWorkspaceMemorySearchReader.cs"
+        : "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Guild.cs";
+
+    private static ProductionSource[] StoredTextProofSources() =>
+    [
+        .. ProductionSourceInventory.Sources().Where(source => source.IsExactOwner(StoredTextRoute("workspace"))
+            || source.IsExactOwner(StoredTextRoute("retention"))
+            || source.IsExactOwner("src/RetroDownfall.Arcanum.Core/Memory/MemorySearchContinuation.cs")
+            || source.IsExactOwner("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestRetentionPins.cs")),
+    ];
+
     private static IReadOnlyList<InstantBindingViolation> FindInstantBindingViolations(
         IReadOnlyList<ProductionSource> sources)
     {
@@ -1064,6 +1268,8 @@ public sealed class UtcInstantPersistenceBoundaryTests
 
         Dictionary<string, List<MethodDeclarationSyntax>> methods = IndexMethods(parsed);
         Dictionary<string, HashSet<string>> memberTypes = IndexMemberTypes(parsed);
+        StoredTextProofs rebindProofs = BuildStoredTextProofs(parsed);
+
         List<InstantBindingViolation> violations = [];
 
         foreach (ParsedSource source in parsed)
@@ -1113,6 +1319,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
                             IsUtcInstantSqlBinder(invocation),
                             methods,
                             memberTypes,
+                            rebindProofs,
                             violations);
                     }
                 }
@@ -1145,6 +1352,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
                         canonicalByContract: false,
                         methods,
                         memberTypes,
+                        rebindProofs,
                         violations);
                 }
 
@@ -1254,6 +1462,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
                             canonicalByContract: false,
                             methods,
                             memberTypes,
+                            rebindProofs,
                             violations);
                     }
 
@@ -1438,6 +1647,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
         bool canonicalByContract,
         IReadOnlyDictionary<string, List<MethodDeclarationSyntax>> methods,
         IReadOnlyDictionary<string, HashSet<string>> memberTypes,
+        StoredTextProofs rebindProofs,
         List<InstantBindingViolation> violations)
     {
         SqlInstantContract[] mapped = contracts
@@ -1486,12 +1696,480 @@ public sealed class UtcInstantPersistenceBoundaryTests
 
         if (canonicalByContract
             || IsExactStoredOrderingCursor(source, parameterName, value, binding, memberTypes)
+            || IsReviewedStoredTextRebind(source, resolved, parameterName, value, binding, memberTypes, rebindProofs)
             || IsCanonicalExpression(value, binding, methods, memberTypes, []))
         {
             return;
         }
 
         AddViolation(source, value, parameterName, value.ToString(), violations);
+    }
+
+    private sealed record StoredTextProofs(bool Workspace, bool Retention);
+
+    private static StoredTextProofs BuildStoredTextProofs(IReadOnlyList<ParsedSource> sources)
+    {
+        const string core = "src/RetroDownfall.Arcanum.Core/Memory/MemorySearchContinuation.cs";
+
+        const string pins = "src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildQuestRetentionPins.cs";
+
+        bool HasAlias(string owner, params string[] names) => sources.Any(source =>
+            source.Root.DescendantNodes().OfType<UsingDirectiveSyntax>().Any(alias =>
+                alias.Alias is not null && names.Contains(alias.Alias.Name.Identifier.ValueText, StringComparer.Ordinal)
+                && (alias.GlobalKeyword.IsKind(SyntaxKind.GlobalKeyword) || source.Source.IsExactOwner(owner))));
+
+        bool Declaration(string path, string type, string name, string expectedHash)
+        {
+            ParsedSource[] owners = sources.Where(source => source.Source.IsExactOwner(path)).ToArray();
+
+            if (owners is not [ParsedSource owner]) return false;
+
+            SyntaxNode[] declarations = owner.Root.DescendantNodes().Where(node => node switch
+            {
+                MethodDeclarationSyntax method => method.Identifier.ValueText == name,
+                FieldDeclarationSyntax field => field.Declaration.Variables.Any(variable => variable.Identifier.ValueText == name),
+                RecordDeclarationSyntax record => record.Identifier.ValueText == name,
+                _ => false,
+            }).ToArray();
+
+            if (declarations is not [SyntaxNode declaration]) return false;
+
+            string expectedNamespace = path == core ? "RetroDownfall.Arcanum.Core.Memory"
+                : path == pins ? "RetroDownfall.Arcanum.Infrastructure.Guild"
+                : path == StoredTextRoute("workspace") ? "RetroDownfall.Arcanum.Infrastructure.Memory"
+                : "RetroDownfall.Arcanum.Infrastructure.Data";
+
+            string? actualNamespace = declaration.Ancestors().OfType<BaseNamespaceDeclarationSyntax>().FirstOrDefault()?.Name.ToString();
+
+            string? actualType = declaration is RecordDeclarationSyntax recordType ? recordType.Identifier.ValueText
+                : declaration.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault()?.Identifier.ValueText;
+
+            return actualNamespace == expectedNamespace && actualType == type
+                && Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(declaration.DescendantTokens().Select(static token => $"{token.RawKind}:{token.Text.Length}:{token.Text}"))))) == expectedHash;
+        }
+
+        // Hashes cover token kind, token length and token text. SQL literals and raw-string contents
+        // retain every byte; only surrounding C# trivia is excluded. These are nine reviewed
+        // declarations, not a source-file or cursor-method exemption.
+        TypeDeclarationSyntax[] authoredTypes = sources.SelectMany(source =>
+            source.Root.DescendantNodes().OfType<TypeDeclarationSyntax>()).ToArray();
+
+        string[] externalNames = ["DbConnection", "DbCommand", "DbDataReader", "SqliteConnection", "SqliteTransaction", "SqliteCommand", "SqliteDataReader", "SqliteBlob", "List"];
+
+        bool externalTypes = !authoredTypes.Any(type => externalNames.Contains(type.Identifier.ValueText, StringComparer.Ordinal));
+
+        bool workspace = externalTypes && !HasAlias(StoredTextRoute("workspace"), "MemorySearchPosition", "DbConnection", "DbCommand", "DbDataReader", "SqliteConnection", "SqliteTransaction", "SqliteBlob", "List")
+            && !HasAlias(core, "MemorySearchPosition")
+            && authoredTypes.Count(type => type.Identifier.ValueText == "MemorySearchPosition") == 1
+            && Declaration(core, "MemorySearchPosition", "MemorySearchPosition", "210F2F52DD936BAE8B2D80F5DF8EE29B87AAB39B395C5400D391DEEDC7DE5F4E")
+            && Declaration(StoredTextRoute("workspace"), "GuildWorkspaceMemorySearchReader", "ScopePrefixPredicate", "0E14E155B61D4BFB33485405803DDBFDEB55304E90B677398BE5D3BA043E7765");
+
+        bool retention = externalTypes && authoredTypes.Count(type => type.Identifier.ValueText == "GuildQuestRetentionPins") == 1
+            && !HasAlias(StoredTextRoute("retention"), "GuildQuestRetentionPins", "SqliteConnection", "SqliteTransaction", "SqliteCommand", "SqliteDataReader", "List")
+            && Declaration(StoredTextRoute("retention"), "DataRetentionService", "GuildContentPredicateAsync", "23619D7C2BE953D2E255858D2BA2D7FC76E90E919F21DA5ADE91A548893071AA")
+            && Declaration(StoredTextRoute("retention"), "DataRetentionService", "GuildContentRetentionPredicate", "BF6BA0AE4566EECAAAF49BDF148D43E9C6D0E03BBA4F4816C939EAE11B6EB7AF")
+            && Declaration(pins, "GuildQuestRetentionPins", "PhysicalWorkUnresolved", "325245A08D9ED40F0CCFEC8F15C9C8676C98AB4576E393F0349577AF87AEEA08")
+            && Declaration(pins, "GuildQuestRetentionPins", "ExternalWorkUnresolved", "899AED8298BB7941498823A748E600E60C546B5779AAF379DF615EB03882B5C9")
+            && Declaration(pins, "GuildQuestRetentionPins", "StoppedExecutionUnresolved", "419578C78F04149314C89E3D8CEA3CACCBECB6C6A23449A8CEFF7874B7813843")
+            && Declaration(pins, "GuildQuestRetentionPins", "UnresolvedPortalInbox", "26F0DC70E041A4CA439364731D0617B14813E7C104AC052211CA38375FB00105")
+            && Declaration(pins, "GuildQuestRetentionPins", "NonAccountingUnresolved", "57FE9CE83C3A201EDD15CA28021988488F2B19C5ED79D52EDEB49548F5ABEA83");
+
+        return new(workspace, retention);
+    }
+
+    private static string RebindTokens(SyntaxNode node) =>
+        string.Concat(node.DescendantTokens().Select(static token => $"{token.Text.Length}:{token.Text}"));
+
+    private static string RebindTokens(string text)
+    {
+        CSharpParseOptions options = new(LanguageVersion.Preview);
+
+        ExpressionSyntax expression = SyntaxFactory.ParseExpression(text, options: options);
+
+        if (!expression.ContainsDiagnostics) return RebindTokens(expression);
+
+        bool statementText = text.TrimEnd().EndsWith(';');
+
+        StatementSyntax statement = SyntaxFactory.ParseStatement(statementText ? text : text + ";", options: options);
+
+        if (!statement.ContainsDiagnostics)
+        {
+            return !statementText && statement is LocalDeclarationStatementSyntax local
+                ? RebindTokens(local.Declaration)
+                : RebindTokens(statement);
+        }
+
+        return string.Concat(SyntaxFactory.ParseTokens(text).Where(static token => !token.IsKind(SyntaxKind.EndOfFileToken))
+            .Select(static token => $"{token.Text.Length}:{token.Text}"));
+    }
+
+    private static bool IsRebindExecutionRegion(SyntaxNode node, SyntaxNode scope)
+    {
+        MethodDeclarationSyntax? method = scope as MethodDeclarationSyntax
+            ?? scope.Ancestors().OfType<MethodDeclarationSyntax>().FirstOrDefault();
+
+        return method is not null && method.Span.Contains(node.Span)
+            && !node.AncestorsAndSelf().TakeWhile(ancestor => !ReferenceEquals(ancestor, method))
+                .Any(ancestor => ancestor is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax);
+    }
+
+    private static T? ExactRebindNode<T>(SyntaxNode scope, string text) where T : SyntaxNode
+    {
+        T[] matches = scope.DescendantNodesAndSelf().OfType<T>()
+            .Where(node => IsRebindExecutionRegion(node, scope) && RebindTokens(node) == RebindTokens(text)).ToArray();
+
+        return matches is [T match] ? match : null;
+    }
+
+    private static bool RebindBefore(SyntaxNode? first, SyntaxNode? second) =>
+        first is not null && second is not null && first.Span.End <= second.SpanStart;
+
+    private static bool RebindContains(SyntaxNode? outer, SyntaxNode? inner) =>
+        outer is not null && inner is not null && outer.Span.Contains(inner.Span);
+
+    // Include writes nested in lambdas/local functions: either can change a captured cursor later.
+    // An assignment's entire left-hand side is checked, including tuple/deconstruction and index writes.
+    // Ref-local creation itself is an escape even when the later write names only the alias.
+    private static bool RebindWritesAreClosed(SyntaxNode scope, string[] names, params string[] expected)
+    {
+        HashSet<string> roots = new(names, StringComparer.Ordinal);
+
+        bool Touches(SyntaxNode target) => target.DescendantNodesAndSelf()
+            .OfType<IdentifierNameSyntax>().Any(id => roots.Contains(id.Identifier.ValueText));
+
+        string[] actual = scope.DescendantNodesAndSelf().Where(node => node switch
+        {
+            VariableDeclaratorSyntax declaration => roots.Contains(declaration.Identifier.ValueText),
+            AssignmentExpressionSyntax assignment => Touches(assignment.Left),
+            PrefixUnaryExpressionSyntax prefix when prefix.Kind() is SyntaxKind.PreIncrementExpression
+                or SyntaxKind.PreDecrementExpression => Touches(prefix.Operand),
+            PostfixUnaryExpressionSyntax postfix when postfix.Kind() is SyntaxKind.PostIncrementExpression
+                or SyntaxKind.PostDecrementExpression => Touches(postfix.Operand),
+            RefExpressionSyntax reference => Touches(reference.Expression),
+            MakeRefExpressionSyntax reference => Touches(reference.Expression),
+            ArgumentSyntax argument when argument.RefKindKeyword.Kind() is SyntaxKind.RefKeyword
+                or SyntaxKind.OutKeyword or SyntaxKind.InKeyword => Touches(argument.Expression),
+            _ => false,
+        }).Select(RebindTokens).Order(StringComparer.Ordinal).ToArray();
+
+        return actual.SequenceEqual(expected.Select(RebindTokens).Order(StringComparer.Ordinal), StringComparer.Ordinal);
+    }
+
+    private static bool RebindReadsAreClosed(SyntaxNode scope, string name, params SyntaxNode?[] allowed) =>
+        allowed.All(node => node is not null)
+            && scope.DescendantNodes().OfType<IdentifierNameSyntax>()
+                .Where(identifier => identifier.Identifier.ValueText == name)
+                .All(identifier => allowed.Any(node => node!.Span.Contains(identifier.Span)));
+
+    private static bool RebindCandidateIsClosed(ForEachStatementSyntax each)
+    {
+        AssignmentExpressionSyntax? cursor = ExactRebindNode<AssignmentExpressionSyntax>(each, "cursor = candidate.Position");
+
+        InvocationExpressionSyntax? hit = ExactRebindNode<InvocationExpressionSyntax>(each, WorkspaceHitAddition);
+
+        if (cursor is null || hit is null) return false;
+
+        foreach (IdentifierNameSyntax identifier in each.DescendantNodes().OfType<IdentifierNameSyntax>()
+            .Where(identifier => identifier.Identifier.ValueText == "candidate"))
+        {
+            if (identifier.Parent is not MemberAccessExpressionSyntax member || !ReferenceEquals(member.Expression, identifier)) return false;
+
+            if (member.Name.Identifier.ValueText is "Row" or "Offset" or "Length" or "Bytes") continue;
+
+            if (member.Name.Identifier.ValueText != "Position") return false;
+
+            if (member.Parent is MemberAccessExpressionSyntax property && ReferenceEquals(property.Expression, member)
+                && property.Name.Identifier.ValueText is "Time" or "Path" or "Number" or "Id") continue;
+
+            if (ReferenceEquals(cursor.Right, member) || hit.Span.Contains(member.Span)) continue;
+
+            return false;
+        }
+
+        return true;
+    }
+
+    // A collection cannot be aliased, passed to an unknown helper, sorted, replaced or mutated by
+    // another receiver call. Count is observation only; its one Add and foreach are proved separately.
+    private static bool RebindCollectionIsClosed(SyntaxNode scope, string name,
+        InvocationExpressionSyntax add, ForEachStatementSyntax each)
+    {
+        foreach (IdentifierNameSyntax id in scope.DescendantNodes().OfType<IdentifierNameSyntax>()
+            .Where(id => id.Identifier.ValueText == name))
+        {
+            if (add.Span.Contains(id.Span) || ReferenceEquals(each.Expression, id)) continue;
+
+            if (id.Parent is MemberAccessExpressionSyntax member && ReferenceEquals(member.Expression, id)
+                && member.Name.Identifier.ValueText == "Count") continue;
+
+            return false;
+        }
+
+        return true;
+    }
+
+    // Read-only receiver uses only. This prevents reader alias escape / NextResult / another command
+    // being smuggled into an otherwise correctly spelled GetString(ordinal) construction.
+    private static bool RebindReaderIsClosed(SyntaxNode scope, string name)
+    {
+        foreach (IdentifierNameSyntax id in scope.DescendantNodes().OfType<IdentifierNameSyntax>()
+            .Where(id => id.Identifier.ValueText == name))
+        {
+            if (id.Parent is not MemberAccessExpressionSyntax member || !ReferenceEquals(member.Expression, id)
+                || member.Parent is not InvocationExpressionSyntax
+                || member.Name.Identifier.ValueText is not ("ReadAsync" or "GetString" or "GetInt64" or "IsDBNull"))
+                return false;
+        }
+
+        return true;
+    }
+
+    // Only reviewed assignments, the existing Bind helper, and ExecuteReaderAsync may use a protected
+    // command. Unknown helpers/aliases and direct Parameters mutations do not inherit this proof.
+    private static bool RebindCommandIsClosed(SyntaxNode scope, string name)
+    {
+        foreach (IdentifierNameSyntax id in scope.DescendantNodes().OfType<IdentifierNameSyntax>()
+            .Where(id => id.Identifier.ValueText == name))
+        {
+            if (id.Parent is MemberAccessExpressionSyntax member && ReferenceEquals(member.Expression, id)
+                && (member.Name.Identifier.ValueText is "Transaction" or "CommandText"
+                    && member.Parent is AssignmentExpressionSyntax assignment && ReferenceEquals(assignment.Left, member)
+                    || member.Name.Identifier.ValueText == "ExecuteReaderAsync" && member.Parent is InvocationExpressionSyntax))
+                continue;
+
+            if (id.Parent is ArgumentSyntax argument
+                && argument.Parent is ArgumentListSyntax list && list.Arguments.IndexOf(argument) == 0
+                && list.Parent is InvocationExpressionSyntax call
+                && call.Expression is IdentifierNameSyntax { Identifier.ValueText: "Bind" or "Add" }) continue;
+
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool HasOneStringTime(IReadOnlyDictionary<string, HashSet<string>> members) =>
+        members.TryGetValue("MemorySearchPosition.Time", out HashSet<string>? types)
+            && types.Count == 1 && NormalizeType(types.Single()) == "string";
+
+    private static bool IsReviewedStoredTextRebind(ProductionSource source,
+        IReadOnlyList<SqlInstantContract> resolved, string parameter, ExpressionSyntax value,
+        SyntaxNode binding, IReadOnlyDictionary<string, HashSet<string>> members, StoredTextProofs proofs)
+    {
+        if (resolved.Count != 1 || !resolved[0].InstantParameters.Contains(parameter)
+            || binding is not InvocationExpressionSyntax call
+            || binding.Ancestors().OfType<MethodDeclarationSyntax>().FirstOrDefault() is not { } method)
+            return false;
+
+        if (!IsRebindExecutionRegion(binding, method)) return false;
+
+        string? owner = method.Ancestors().OfType<ClassDeclarationSyntax>().FirstOrDefault()?.Identifier.ValueText;
+
+        if (source.IsExactOwner("src/RetroDownfall.Arcanum.Infrastructure/Memory/GuildWorkspaceMemorySearchReader.cs")
+            && owner == "GuildWorkspaceMemorySearchReader" && method.Identifier.ValueText == "ReadAsync"
+            && parameter == "@time" && resolved[0].CommandKey == "hydrate"
+            && RebindTokens(value) == RebindTokens("candidate.Position.Time!") && HasOneStringTime(members))
+            return proofs.Workspace && ProveWorkspaceFragments(method) && ProveWorkspaceStoredTime(method, call);
+
+        if (source.IsExactOwner("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Guild.cs")
+            && owner == "DataRetentionService" && method.Identifier.ValueText == "AddGuildCandidatesAsync"
+            && parameter == "@afterAt" && resolved[0].CommandKey == "command"
+            && RebindTokens(value) == RebindTokens("afterAt"))
+            return proofs.Retention && ProveRetentionFragments(method) && ProveRetentionStoredTime(method, call);
+
+        return false;
+    }
+
+    private static bool HasRebindHelperShadow(MethodDeclarationSyntax method, params string[] names) =>
+        method.DescendantTokens().Any(token => token.IsKind(SyntaxKind.IdentifierToken)
+            && names.Contains(token.ValueText, StringComparer.Ordinal)
+            && !(token.Parent is IdentifierNameSyntax identifier
+                && (identifier.Parent is InvocationExpressionSyntax call && ReferenceEquals(call.Expression, identifier)
+                    || identifier.Parent is MemberAccessExpressionSyntax member && ReferenceEquals(member.Name, identifier))));
+
+    private const string WorkspaceAfterAssignment = """
+    after = " AND (IndexedAt<@time OR (IndexedAt=@time AND (RelativePath>@path OR (RelativePath=@path AND (ChunkIndex>@number OR (ChunkIndex=@number AND ChunkId>@id))))))"
+    """;
+
+    private static bool ProveWorkspaceFragments(MethodDeclarationSyntax method)
+    {
+        if (HasRebindHelperShadow(method, "ScopePrefixPredicate", "Bind")
+            || !RebindWritesAreClosed(method, ["after", "scopePredicates"],
+                "after = \"\"", WorkspaceAfterAssignment, "scopePredicates = []")) return false;
+
+        InvocationExpressionSyntax? all = ExactRebindNode<InvocationExpressionSyntax>(method, "scopePredicates.Add(\"1=1\")");
+
+        InvocationExpressionSyntax? prefix = ExactRebindNode<InvocationExpressionSyntax>(method,
+            "scopePredicates.Add(ScopePrefixPredicate(OperatingSystem.IsWindows(), i))");
+
+        InvocationExpressionSyntax? join = ExactRebindNode<InvocationExpressionSyntax>(method,
+            "string.Join(\" OR \", scopePredicates)");
+
+        if (all is null || prefix is null || join is null) return false;
+
+        return RebindReadsAreClosed(method, "after",
+                ExactRebindNode<AssignmentExpressionSyntax>(method, WorkspaceAfterAssignment),
+                ExactRebindNode<AssignmentExpressionSyntax>(method, WorkspaceMetadataAssignment.Trim().TrimEnd(';')))
+            && method.DescendantNodes().OfType<IdentifierNameSyntax>()
+            .Where(identifier => identifier.Identifier.ValueText == "scopePredicates")
+            .All(identifier => all.Span.Contains(identifier.Span) || prefix.Span.Contains(identifier.Span)
+                || join.Span.Contains(identifier.Span));
+    }
+
+    private static bool ProveRetentionFragments(MethodDeclarationSyntax method) =>
+        !HasRebindHelperShadow(method, "GuildContentPredicateAsync", "GuildQuestRetentionPins", "Add")
+            && ExactRebindNode<LocalDeclarationStatementSyntax>(method,
+                "string contentPredicate = await GuildContentPredicateAsync(cancellationToken).ConfigureAwait(false);") is not null
+            && RebindWritesAreClosed(method, ["contentPredicate"],
+                "contentPredicate = await GuildContentPredicateAsync(cancellationToken).ConfigureAwait(false)")
+            && RebindReadsAreClosed(method, "contentPredicate",
+                ExactRebindNode<ExpressionStatementSyntax>(method, RetentionCursorAssignment));
+
+    private const string WorkspaceHitAddition = """
+    hits.Add(new(new(MemorySearchScope.Workspace, $"{candidate.Position.Path} lines {first}-{last}", excerpt,
+                        $"Workspace {workspace.Label}, relative file {candidate.Position.Path}, chunk {candidate.Position.Number}",
+                        "Derived and rebuildable from registered workspace files; not session memory.", candidate.Position.Id!), candidate.Position))
+    """;
+
+    private const string WorkspaceMetadataAssignment = """
+    metadata.CommandText = "SELECT rowid,IndexedAt,RelativePath,ChunkIndex,ChunkId,CharOffset,CharLength,octet_length(Content),coalesce(octet_length(IndexedAt),0)+coalesce(octet_length(RelativePath),0)+coalesce(octet_length(ChunkId),0) FROM workspace_file_chunks WHERE WorkspacePath=@root AND ("
+        + string.Join(" OR ", scopePredicates) + ")" + after
+        + " ORDER BY IndexedAt DESC,RelativePath ASC,ChunkIndex ASC,ChunkId ASC LIMIT 513";
+    """;
+
+    private const string WorkspaceHydrateAssignment = """
+    hydrate.CommandText = "SELECT StartLine,EndLine FROM workspace_file_chunks WHERE rowid=@row AND WorkspacePath=@root AND RelativePath=@path AND IndexedAt=@time AND ChunkIndex=@number AND ChunkId=@id AND octet_length(Content)=@bytes AND (arcanum_ordinal_contains(Content,@query) OR arcanum_ordinal_contains(RelativePath,@query))";
+    """;
+
+    private static bool ProveWorkspaceStoredTime(MethodDeclarationSyntax method, InvocationExpressionSyntax binding)
+    {
+        StatementSyntax? snapshot = ExactRebindNode<LocalDeclarationStatementSyntax>(method,
+            "await using SqliteTransaction snapshot = ((SqliteConnection)connection).BeginTransaction(deferred: true);");
+        StatementSyntax? metadata = ExactRebindNode<LocalDeclarationStatementSyntax>(method,
+            "await using DbCommand metadata = connection.CreateCommand();");
+        StatementSyntax? candidates = ExactRebindNode<LocalDeclarationStatementSyntax>(method,
+            "List<(long Row, MemorySearchPosition Position, long Offset, long Length, long Bytes)> candidates = [];");
+        AssignmentExpressionSyntax? query = ExactRebindNode<AssignmentExpressionSyntax>(method,
+            WorkspaceMetadataAssignment.Trim().TrimEnd(';'));
+        UsingStatementSyntax[] reads = method.DescendantNodes().OfType<UsingStatementSyntax>()
+            .Where(node => IsRebindExecutionRegion(node, method) && node.Declaration is not null && RebindTokens(node.Declaration)
+                == RebindTokens("DbDataReader reader = await metadata.ExecuteReaderAsync(ct).ConfigureAwait(false)")).ToArray();
+        StatementSyntax? position = ExactRebindNode<LocalDeclarationStatementSyntax>(method,
+            "MemorySearchPosition position = new(3, reader.GetString(1), reader.GetInt64(3), reader.GetString(2), reader.GetString(4));");
+        InvocationExpressionSyntax? add = ExactRebindNode<InvocationExpressionSyntax>(method,
+            "candidates.Add((reader.GetInt64(0), position, reader.GetInt64(5), reader.GetInt64(6), reader.GetInt64(7)))");
+        ForEachStatementSyntax? each = binding.Ancestors().OfType<ForEachStatementSyntax>()
+            .FirstOrDefault(node => node.Identifier.ValueText == "candidate" && RebindTokens(node.Expression) == RebindTokens("candidates")
+                && node.Type.IsVar);
+
+        if (snapshot is null || metadata is null || candidates is null || query is null
+            || reads is not [UsingStatementSyntax read] || position is null || add is null || each is null
+            || !RebindBefore(snapshot, metadata) || !RebindBefore(metadata, query) || !RebindBefore(query, read) || !RebindBefore(candidates, read)
+            || !RebindContains(read, position) || !RebindContains(read, add) || !RebindBefore(position, add)
+            || !RebindBefore(read, each) || !RebindContains(each, binding)) return false;
+
+        if (ExactRebindNode<LocalDeclarationStatementSyntax>(each, "await using DbCommand hydrate = connection.CreateCommand();") is null
+            || ExactRebindNode<ExpressionStatementSyntax>(method, "metadata.Transaction = snapshot;") is null
+            || ExactRebindNode<ExpressionStatementSyntax>(each, "hydrate.Transaction = snapshot;") is null
+            || ExactRebindNode<ExpressionStatementSyntax>(each, WorkspaceHydrateAssignment) is null
+            || RebindTokens(binding) != RebindTokens("Bind(hydrate, \"@time\", candidate.Position.Time!)")) return false;
+
+        // All writes are considered, including writes after this bind, not just preceding lexical spans.
+        return RebindWritesAreClosed(method, ["connection", "snapshot", "candidates", "position", "candidate", "metadata", "hydrate", "reader"],
+            "snapshot = ((SqliteConnection)connection).BeginTransaction(deferred: true)",
+            "candidates = []", "position = new(3, reader.GetString(1), reader.GetInt64(3), reader.GetString(2), reader.GetString(4))",
+            "metadata = connection.CreateCommand()", "metadata.Transaction = snapshot", WorkspaceMetadataAssignment.Trim().TrimEnd(';'),
+            "reader = await metadata.ExecuteReaderAsync(ct).ConfigureAwait(false)", "hydrate = connection.CreateCommand()",
+            "hydrate.Transaction = snapshot", WorkspaceHydrateAssignment.Trim().TrimEnd(';'))
+            && RebindReadsAreClosed(method, "position", add)
+            && RebindReadsAreClosed(method, "snapshot",
+                ExactRebindNode<ExpressionStatementSyntax>(method, "metadata.Transaction = snapshot;"),
+                ExactRebindNode<ExpressionStatementSyntax>(each, "hydrate.Transaction = snapshot;"))
+            && RebindReadsAreClosed(method, "connection", snapshot, metadata,
+                ExactRebindNode<LocalDeclarationStatementSyntax>(each, "await using DbCommand hydrate = connection.CreateCommand();"),
+                ExactRebindNode<ImplicitObjectCreationExpressionSyntax>(each,
+                    "new((SqliteConnection)connection, \"workspace_file_chunks\", \"Content\", candidate.Row, readOnly: true)"))
+            && RebindCandidateIsClosed(each)
+            && RebindCollectionIsClosed(method, "candidates", add, each)
+            && RebindReaderIsClosed(read, "reader")
+            && RebindCommandIsClosed(method, "metadata") && RebindCommandIsClosed(each, "hydrate")
+            && each.DescendantNodes().OfType<InvocationExpressionSyntax>().Count(node =>
+                node.ArgumentList.Arguments.Count >= 2 && RebindTokens(node.ArgumentList.Arguments[0].Expression) == RebindTokens("hydrate")
+                    && node.ArgumentList.Arguments[1].Expression is LiteralExpressionSyntax literal
+                    && literal.Token.ValueText == "@time") == 1;
+    }
+
+    private const string RetentionCursorAssignment = """
+    command.CommandText = $"SELECT content.ContentId,content.CreatedAtUtc FROM guild_content content WHERE {contentPredicate} AND (content.CreatedAtUtc>@afterAt OR content.CreatedAtUtc=@afterAt AND content.ContentId>@afterId) ORDER BY content.CreatedAtUtc,content.ContentId LIMIT 100";
+    """;
+
+    private static bool ProveRetentionStoredTime(MethodDeclarationSyntax method, InvocationExpressionSyntax binding)
+    {
+        WhileStatementSyntax? loop = binding.Ancestors().OfType<WhileStatementSyntax>().FirstOrDefault();
+
+        if (loop is null || loop.Parent is not BlockSyntax branch
+            || RebindTokens(binding) != RebindTokens("Add(command, \"@afterAt\", afterAt)")
+            || ExactRebindNode<LocalDeclarationStatementSyntax>(method, "string afterAt = \"\", afterId = \"\";") is not { } seed
+            || !RebindBefore(seed, loop)) return false;
+
+        LocalDeclarationStatementSyntax? transaction = ExactRebindNode<LocalDeclarationStatementSyntax>(branch,
+            "await using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);");
+
+        if (transaction is null || !RebindBefore(transaction, seed)
+            || !RebindWritesAreClosed(branch, ["transaction"], "transaction = connection.BeginTransaction(deferred: true)")
+            || !RebindWritesAreClosed(method, ["connection"],
+                "connection = (SqliteConnection)await OpenConnectionAsync(cancellationToken).ConfigureAwait(false)")) return false;
+
+        LocalDeclarationStatementSyntax? command = ExactRebindNode<LocalDeclarationStatementSyntax>(loop,
+            "await using SqliteCommand command = connection.CreateCommand();");
+        ExpressionStatementSyntax? query = ExactRebindNode<ExpressionStatementSyntax>(loop, RetentionCursorAssignment);
+        LocalDeclarationStatementSyntax? page = ExactRebindNode<LocalDeclarationStatementSyntax>(loop,
+            "List<(string Id, string Created)> page = [];");
+        UsingStatementSyntax[] reads = loop.DescendantNodes().OfType<UsingStatementSyntax>()
+            .Where(node => IsRebindExecutionRegion(node, method) && node.Declaration is not null && RebindTokens(node.Declaration)
+                == RebindTokens("SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false)")).ToArray();
+        InvocationExpressionSyntax? add = ExactRebindNode<InvocationExpressionSyntax>(loop,
+            "page.Add((reader.GetString(0), reader.IsDBNull(1) ? \"\" : reader.GetString(1)))");
+        ForEachVariableStatementSyntax[] loops = loop.DescendantNodes().OfType<ForEachVariableStatementSyntax>()
+            .Where(node => IsRebindExecutionRegion(node, method)
+                && RebindTokens(node.Variable) == RebindTokens("(string id, string created)")
+                && RebindTokens(node.Expression) == RebindTokens("page")).ToArray();
+
+        if (command is null || query is null || page is null || reads is not [UsingStatementSyntax read]
+            || add is null || loops is not [ForEachVariableStatementSyntax each]
+            || !RebindBefore(command, query) || !RebindBefore(query, binding) || !RebindBefore(binding, page)
+            || !RebindBefore(page, read) || !RebindContains(read, add) || !RebindBefore(read, each)
+            || ExactRebindNode<ExpressionStatementSyntax>(loop, "command.Transaction = transaction;") is null
+            || ExactRebindNode<ExpressionStatementSyntax>(each, "afterAt = created;") is null) return false;
+
+        ExpressionStatementSyntax? advance = ExactRebindNode<ExpressionStatementSyntax>(each, "afterAt = created;");
+
+        if (!RebindReadsAreClosed(method, "afterAt", binding, advance)
+            || !RebindReadsAreClosed(each, "created", advance)) return false;
+
+        // Whole-method afterAt write closure catches a later write used by the next loop iteration.
+        if (!RebindWritesAreClosed(method, ["afterAt"], "afterAt = \"\"", "afterAt = created")) return false;
+
+        if (!RebindWritesAreClosed(loop, ["created", "page", "command", "reader"],
+            "page = []", "command = connection.CreateCommand()", "command.Transaction = transaction",
+            RetentionCursorAssignment.Trim().TrimEnd(';'),
+            "reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false)")) return false;
+
+        // Same closure as the workspace collection, adapted to deconstructing foreach.
+        foreach (IdentifierNameSyntax id in loop.DescendantNodes().OfType<IdentifierNameSyntax>()
+            .Where(node => node.Identifier.ValueText == "page"))
+        {
+            if (add.Span.Contains(id.Span) || ReferenceEquals(each.Expression, id)) continue;
+            if (id.Parent is MemberAccessExpressionSyntax member && ReferenceEquals(member.Expression, id)
+                && member.Name.Identifier.ValueText == "Count") continue;
+            return false;
+        }
+
+        return RebindReaderIsClosed(read, "reader") && RebindCommandIsClosed(loop, "command")
+            && loop.DescendantNodes().OfType<InvocationExpressionSyntax>().Count(node =>
+                node.ArgumentList.Arguments.Count >= 2 && RebindTokens(node.ArgumentList.Arguments[0].Expression) == RebindTokens("command")
+                    && node.ArgumentList.Arguments[1].Expression is LiteralExpressionSyntax literal
+                    && literal.Token.ValueText == "@afterAt") == 1;
     }
 
     private static bool IsExactStoredOrderingCursor(

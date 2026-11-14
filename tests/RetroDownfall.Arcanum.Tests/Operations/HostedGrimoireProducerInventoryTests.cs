@@ -710,7 +710,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
             Assert.Equal("System.Private.CoreLib", selectedAs.ContainingAssembly.Name);
 
-            Assert.Equal(new Version(10, 0, 0, 0), selectedAs.ContainingAssembly.Identity.Version);
+            Assert.Equal(new Version(11, 0, 0, 0), selectedAs.ContainingAssembly.Identity.Version);
 
             Assert.Equal("7CEC85D7BEA7798E", Convert.ToHexString(selectedAs.ContainingAssembly.Identity.PublicKeyToken.AsSpan()));
 
@@ -1024,7 +1024,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
             Assert.Equal(assemblyName + ".dll", Path.GetFileName(candidate.Reference.FilePath));
 
-            Assert.Equal(new Version(10, 0, 0, 0), assembly.Identity.Version);
+            Assert.Equal(new Version(11, 0, 0, 0), assembly.Identity.Version);
 
             Assert.Equal("ADB9793829DDAE60", Convert.ToHexString(assembly.Identity.PublicKeyToken.AsSpan()));
 
@@ -2235,7 +2235,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
             Assert.Equal(assemblyName + ".dll", Path.GetFileName(candidate.Reference.FilePath));
 
-            Assert.Equal(new Version(10, 0, 0, 0), assembly.Identity.Version);
+            Assert.Equal(new Version(11, 0, 0, 0), assembly.Identity.Version);
 
             Assert.Equal("ADB9793829DDAE60", Convert.ToHexString(assembly.Identity.PublicKeyToken.AsSpan()));
 
@@ -2987,7 +2987,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
             Assert.Equal(assemblyName + ".dll", Path.GetFileName(candidate.Reference.FilePath));
 
-            Assert.Equal(new Version(10, 0, 0, 0), assembly.Identity.Version);
+            Assert.Equal(new Version(11, 0, 0, 0), assembly.Identity.Version);
 
             Assert.Equal("ADB9793829DDAE60", Convert.ToHexString(assembly.Identity.PublicKeyToken.AsSpan()));
 
@@ -3227,7 +3227,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal("System.Runtime", core.Identity.Name);
 
-        Assert.Equal(new Version(10, 0, 0, 0), core.Identity.Version);
+        Assert.Equal(new Version(11, 0, 0, 0), core.Identity.Version);
 
         Assert.Equal("B03F5F7F11D50A3A", Convert.ToHexString(core.Identity.PublicKeyToken.AsSpan()));
 
@@ -3779,7 +3779,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
             Assert.Equal(assemblyName + ".dll", Path.GetFileName(candidate.Reference.FilePath));
 
-            Assert.Equal(new Version(10, 0, 0, 0), assembly.Identity.Version);
+            Assert.Equal(new Version(11, 0, 0, 0), assembly.Identity.Version);
 
             Assert.Equal("ADB9793829DDAE60", Convert.ToHexString(assembly.Identity.PublicKeyToken.AsSpan()));
 
@@ -4006,7 +4006,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal("System.Runtime", core.Identity.Name);
 
-        Assert.Equal(new Version(10, 0, 0, 0), core.Identity.Version);
+        Assert.Equal(new Version(11, 0, 0, 0), core.Identity.Version);
 
         Assert.Equal("B03F5F7F11D50A3A", Convert.ToHexString(core.Identity.PublicKeyToken.AsSpan()));
 
@@ -4386,7 +4386,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
             Assert.Equal(assemblyName + ".dll", Path.GetFileName(candidate.Reference.FilePath));
 
-            Assert.Equal(new Version(10, 0, 0, 0), assembly.Identity.Version);
+            Assert.Equal(new Version(11, 0, 0, 0), assembly.Identity.Version);
 
             Assert.Equal("ADB9793829DDAE60", Convert.ToHexString(assembly.Identity.PublicKeyToken.AsSpan()));
 
@@ -4673,7 +4673,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal("System.Runtime", selectedAs.ContainingAssembly.Name);
 
-        Assert.Equal(new Version(10, 0, 0, 0), selectedAs.ContainingAssembly.Identity.Version);
+        Assert.Equal(new Version(11, 0, 0, 0), selectedAs.ContainingAssembly.Identity.Version);
 
         Assert.Equal("B03F5F7F11D50A3A", Convert.ToHexString(selectedAs.ContainingAssembly.Identity.PublicKeyToken.AsSpan()));
 
@@ -4997,7 +4997,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal("System.Runtime", selectedAs.ContainingAssembly.Name);
 
-        Assert.Equal(new Version(10, 0, 0, 0), selectedAs.ContainingAssembly.Identity.Version);
+        Assert.Equal(new Version(11, 0, 0, 0), selectedAs.ContainingAssembly.Identity.Version);
 
         Assert.Equal("B03F5F7F11D50A3A", Convert.ToHexString(selectedAs.ContainingAssembly.Identity.PublicKeyToken.AsSpan()));
 
@@ -5225,7 +5225,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal("System.Runtime", selected.ContainingAssembly.Name);
 
-        Assert.Equal(new Version(10, 0, 0, 0), selected.ContainingAssembly.Identity.Version);
+        Assert.Equal(new Version(11, 0, 0, 0), selected.ContainingAssembly.Identity.Version);
 
         Assert.Equal("B03F5F7F11D50A3A", Convert.ToHexString(selected.ContainingAssembly.Identity.PublicKeyToken.AsSpan()));
 
@@ -5822,7 +5822,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal("System.Private.CoreLib", selected.ContainingAssembly.Name);
 
-        Assert.Equal(new Version(10, 0, 0, 0), selected.ContainingAssembly.Identity.Version);
+        Assert.Equal(new Version(11, 0, 0, 0), selected.ContainingAssembly.Identity.Version);
 
         Assert.Equal("7CEC85D7BEA7798E", Convert.ToHexString(selected.ContainingAssembly.Identity.PublicKeyToken.AsSpan()));
 

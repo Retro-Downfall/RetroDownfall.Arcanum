@@ -6,7 +6,7 @@ namespace RetroDownfall.Arcanum.Core.Primitives;
 /// </summary>
 public static class ErrorCodes
 {
-    /// <summary>Dormant Guild contracts; HTTP mappings belong to their future emitting surfaces.</summary>
+    /// <summary>Guild contract errors; their HTTP mappings belong to the API error mapper.</summary>
     public static class Guild
     {
         public const string InvalidRequest = "Guild.InvalidRequest";
@@ -68,6 +68,20 @@ public static class ErrorCodes
         public const string RefreshCancelled = "Guild.RefreshCancelled";
 
         public const string SourceExpired = "Guild.SourceExpired";
+
+        public const string SpendSourceMissing = "Guild.SpendSourceMissing";
+
+        public const string SpendSourceInvalid = "Guild.SpendSourceInvalid";
+
+        public const string SpendGenerationMissing = "Guild.SpendGenerationMissing";
+
+        public const string SpendGenerationInvalid = "Guild.SpendGenerationInvalid";
+
+        public const string SpendConfigurationChanged = "Guild.SpendConfigurationChanged";
+
+        public const string SpendCredentialChanged = "Guild.SpendCredentialChanged";
+
+        public const string SpendAuthorityRetired = "Guild.SpendAuthorityRetired";
 
         public const string InitialEvidenceUnavailable = "Guild.InitialEvidenceUnavailable";
 

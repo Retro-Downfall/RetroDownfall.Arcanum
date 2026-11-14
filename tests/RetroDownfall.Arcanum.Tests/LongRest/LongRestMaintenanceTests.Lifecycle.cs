@@ -208,6 +208,8 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM guild_signet_authority_state;"));
 
+        Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM guild_spend_authority_state;"));
+
         DataRetentionPlan after = await retention.Service.PlanAsync(request);
 
         Assert.Equal(0, after.DerivedRecords);
@@ -357,11 +359,13 @@ public sealed partial class LongRestMaintenanceTests
     {
         Dictionary<string, long> counts = await ReadLifecycleCountsAsync(f, PaidGenerationTables.Concat(PaidReceiptTables)
             .Concat(PaidSagaTables.Where(table => table != "saga_memories"))
-            .Append("long_rest_sources").Append("guild_signet_authority_state"));
+            .Append("long_rest_sources").Append("guild_signet_authority_state").Append("guild_spend_authority_state"));
 
-        // Fresh Guild storage contributes one installation-owned authority epoch to a whole
+        // Fresh Guild storage contributes two installation-owned authority rows to a whole
         // factory reset, independently of this fixture's paid Long Rest generation and receipts.
         Assert.Equal(1L, counts["guild_signet_authority_state"]);
+
+        Assert.Equal(1L, counts["guild_spend_authority_state"]);
 
         return counts.Values.Sum();
     }

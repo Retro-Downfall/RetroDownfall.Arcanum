@@ -1149,14 +1149,9 @@ public sealed class HostProjectFeatureSwitchTests
                         (string?)element.Attribute("Include"),
                         "Microsoft.EntityFrameworkCore.Tasks",
                         StringComparison.Ordinal));
-            Assert.Equal(
-                "false",
-                Assert.Single(
-                    project.Descendants(),
-                    static element => element.Name.LocalName == "EFOptimizeContext")
-                    .Value
-                    .Trim(),
-                ignoreCase: true);
+            Assert.DoesNotContain(
+                project.Descendants(),
+                static element => element.Name.LocalName == "EFOptimizeContext");
             Assert.DoesNotContain(
                 project.Descendants(),
                 static element =>

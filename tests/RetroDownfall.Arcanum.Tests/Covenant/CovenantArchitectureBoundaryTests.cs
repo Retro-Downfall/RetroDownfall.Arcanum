@@ -233,6 +233,11 @@ public sealed class CovenantArchitectureBoundaryTests
                 ],
                 [2]),
             new(
+                "RetroDownfall.Arcanum.Infrastructure.Guild.GuildSpendRefreshRecoveryHandler",
+                LongRunningOperationKinds.GuildSpendRefresh,
+                [1],
+                ["System.Net.Http.HttpClient.SendAsync"]),
+            new(
                 "RetroDownfall.Arcanum.Infrastructure.A2A.A2AOutboundSendingRecoveryHandler",
                 LongRunningOperationKinds.A2AOutboundSending,
                 [1],

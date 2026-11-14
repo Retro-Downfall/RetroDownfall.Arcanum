@@ -84,18 +84,9 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
         set => Value = value;
     }
 
-    public double NumericValue
+    public decimal NumericValue
     {
-        get => Value switch
-        {
-            null => 0,
-            double d => d,
-            float f => f,
-            int i => i,
-            long l => l,
-            decimal m => (double)m,
-            _ => Convert.ToDouble(Value),
-        };
+        get => TryReadNumericValue(out decimal value) ? value : 0m;
 
         set => Value = descriptorKindConvert(value);
     }
@@ -128,18 +119,44 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
         }
     }
 
-    private object? descriptorKindConvert(double value)
+    private bool TryReadNumericValue(out decimal value)
     {
-        return Descriptor.Kind switch
+        switch (Value)
         {
-            SettingKind.Int => (int)Math.Round(value),
-            SettingKind.Long => (long)Math.Round(value),
-            // Float settings are money backed by decimal properties. Narrowing to float would keep only
-            // ~7 significant digits, silently rounding a six-figure limit typed to the cent.
-            SettingKind.Float => (decimal)value,
-            _ => value,
-        };
+            case null:
+                value = 0m;
+
+                return true;
+
+            case decimal number:
+                value = number;
+
+                return true;
+
+            case int number:
+                value = number;
+
+                return true;
+
+            case long number:
+                value = number;
+
+                return true;
+
+            default:
+                value = 0m;
+
+                return false;
+        }
     }
+
+    private object? descriptorKindConvert(decimal value) => Descriptor.Kind switch
+    {
+        SettingKind.Int => (object)(int)Math.Round(value, MidpointRounding.ToEven),
+        SettingKind.Long => (object)(long)Math.Round(value, MidpointRounding.ToEven),
+        SettingKind.Float => value,
+        _ => value,
+    };
 
     partial void OnValueChanged(object? oldValue, object? newValue)
     {
@@ -218,8 +235,11 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
         if (Descriptor.Kind is SettingKind.Int or SettingKind.Long or SettingKind.Float
             && Value is not null)
         {
-            double numericValue = NumericValue;
-            if (numericValue < Descriptor.Min || numericValue > Descriptor.Max)
+            if (!TryReadNumericValue(out decimal numericValue))
+            {
+                errors.Add("Value is not a recognized number.");
+            }
+            else if (numericValue < Descriptor.Min || numericValue > Descriptor.Max)
             {
                 errors.Add($"Value must be between {Descriptor.Min} and {Descriptor.Max}");
             }

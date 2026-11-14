@@ -90,7 +90,7 @@ public sealed partial class BackupRestoreServiceTests
         Assert.Equal("Guild.SpendAuthorityRetired", verified.Error.Code);
     }
 
-    private static async Task<string> RestoreEvidenceAsync(SqliteConnection connection, string sql)
+    internal static async Task<string> RestoreEvidenceAsync(SqliteConnection connection, string sql)
     {
         await using SqliteCommand command = connection.CreateCommand();
 

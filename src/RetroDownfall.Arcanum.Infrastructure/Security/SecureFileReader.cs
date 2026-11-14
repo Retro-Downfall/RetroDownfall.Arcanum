@@ -172,6 +172,11 @@ internal static partial class SecureFileReader
                 return SecureFileOpenStatus.Rejected;
             }
 
+            if (!OperatingSystem.IsWindows() && !TryUseSeekableRegularFileFlags(openedHandle))
+            {
+                return SecureFileOpenStatus.Rejected;
+            }
+
             try
             {
                 stream = new SecureRegularFileStream(
@@ -510,9 +515,72 @@ internal static partial class SecureFileReader
         SecureFileOpenStatus status) =>
         (SecureFileReadStatus)status;
 
+    private static bool TryUseSeekableRegularFileFlags(SafeFileHandle handle)
+    {
+        bool retained = false;
+
+        try
+        {
+            handle.DangerousAddRef(ref retained);
+
+            int descriptor = handle.DangerousGetHandle().ToInt32();
+
+            int descriptorFlags = Fcntl(descriptor, FGetDescriptor);
+
+            int statusFlags = Fcntl(descriptor, FGetStatus);
+
+            if (descriptorFlags < 0 || statusFlags < 0)
+            {
+                return false;
+            }
+
+            int expected = statusFlags & ~(OperatingSystem.IsMacOS() ? MacOsOpenNonBlocking : LinuxOpenNonBlocking);
+
+            if (expected != statusFlags)
+            {
+                int result;
+
+                if (OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64)
+                {
+                    result = FcntlSetFlagsDarwinArm64(descriptor, FSetStatus, 0, 0, 0, 0, 0, 0, expected);
+                }
+                else if (OperatingSystem.IsLinux()
+                    || OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.X64)
+                {
+                    result = FcntlSetFlags(descriptor, FSetStatus, expected);
+                }
+                else
+                {
+                    return false;
+                }
+
+                if (result != 0)
+                {
+                    return false;
+                }
+            }
+
+            return Fcntl(descriptor, FGetStatus) == expected
+                && Fcntl(descriptor, FGetDescriptor) == descriptorFlags;
+        }
+        finally
+        {
+            if (retained)
+            {
+                handle.DangerousRelease();
+            }
+        }
+    }
+
+    private const int MacOsOpenNonBlocking = 0x00000004;
+
+    private const int LinuxOpenNonBlocking = 0x00000800;
+
     private const int FGetDescriptor = 1;
 
     private const int FGetStatus = 3;
+
+    private const int FSetStatus = 4;
 
     [LibraryImport(
         "libc",
@@ -521,6 +589,16 @@ internal static partial class SecureFileReader
     private static partial int Fcntl(
         int descriptor,
         int command);
+
+    [LibraryImport("libc", EntryPoint = "fcntl", SetLastError = true)]
+    private static partial int FcntlSetFlags(int descriptor, int command, nint flags);
+
+    // Darwin arm64 places fcntl's variadic value in an eight-byte stack slot. The six unused
+    // register arguments occupy x2 through x7 so the ninth fixed argument has that exact location.
+    // This adapter is only for F_SETFL on Darwin arm64; it is not a general variadic entry point.
+    [LibraryImport("libc", EntryPoint = "fcntl", SetLastError = true)]
+    private static partial int FcntlSetFlagsDarwinArm64(int descriptor, int command,
+        nint register2, nint register3, nint register4, nint register5, nint register6, nint register7, nint flags);
 
     private sealed class SecureRegularFileStream(
         SafeFileHandle handle,

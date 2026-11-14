@@ -400,19 +400,19 @@ internal sealed class GuildSpendSourceCredential
 /// <summary>Stable secret-free eligibility reasons for an authorized refresh caller.</summary>
 internal static class GuildSpendSourceFailure
 {
-    internal static Error SourceMissing => new("Guild.SpendSourceMissing", "The provider spend source is missing.");
+    internal static Error SourceMissing => new(ErrorCodes.Guild.SpendSourceMissing, "The provider spend source is missing.");
 
-    internal static Error SourceInvalid => new("Guild.SpendSourceInvalid", "The provider spend source is invalid.");
+    internal static Error SourceInvalid => new(ErrorCodes.Guild.SpendSourceInvalid, "The provider spend source is invalid.");
 
-    internal static Error GenerationMissing => new("Guild.SpendGenerationMissing", "The provider generation is missing.");
+    internal static Error GenerationMissing => new(ErrorCodes.Guild.SpendGenerationMissing, "The provider generation is missing.");
 
-    internal static Error GenerationInvalid => new("Guild.SpendGenerationInvalid", "The provider generation is invalid.");
+    internal static Error GenerationInvalid => new(ErrorCodes.Guild.SpendGenerationInvalid, "The provider generation is invalid.");
 
-    internal static Error ConfigurationChanged => new("Guild.SpendConfigurationChanged", "The provider source configuration changed.");
+    internal static Error ConfigurationChanged => new(ErrorCodes.Guild.SpendConfigurationChanged, "The provider source configuration changed.");
 
-    internal static Error CredentialChanged => new("Guild.SpendCredentialChanged", "The provider credential is unavailable or changed.");
+    internal static Error CredentialChanged => new(ErrorCodes.Guild.SpendCredentialChanged, "The provider credential is unavailable or changed.");
 
-    internal static Error AuthorityRetired => new("Guild.SpendAuthorityRetired", "The provider spend authority is unavailable or retired.");
+    internal static Error AuthorityRetired => new(ErrorCodes.Guild.SpendAuthorityRetired, "The provider spend authority is unavailable or retired.");
 
-    internal static Error InitialEvidenceUnavailable => new("Guild.InitialEvidenceUnavailable", "The initial spend evidence is unavailable.");
+    internal static Error InitialEvidenceUnavailable => new(ErrorCodes.Guild.InitialEvidenceUnavailable, "The initial spend evidence is unavailable.");
 }

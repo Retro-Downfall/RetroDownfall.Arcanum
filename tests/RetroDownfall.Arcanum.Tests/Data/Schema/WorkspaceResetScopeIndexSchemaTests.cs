@@ -27,7 +27,7 @@ public sealed class WorkspaceResetScopeIndexSchemaTests
 
         Assert.Equal(1, GrimoireSchemaVersionChains.CovenantAcceleratorSchemaVersion);
 
-        Assert.Equal(15, GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion);
+        Assert.Equal(18, GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion);
     }
 
     [Fact]

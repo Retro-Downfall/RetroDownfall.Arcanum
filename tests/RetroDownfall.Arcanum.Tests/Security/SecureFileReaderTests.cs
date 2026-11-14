@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -29,6 +30,43 @@ public sealed class SecureFileReaderTests : IAsyncLifetime
         FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
 
         await _workspace.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Validated_regular_stream_rewinds_after_async_read_hash_and_handle_identity_check()
+    {
+        byte[] expected = Enumerable.Range(0, 16_384).Select(static index => (byte)(index % 251)).ToArray();
+
+        string path = Path.Combine(_workspace.Root, "seekable.bin");
+
+        await File.WriteAllBytesAsync(path, expected);
+
+        Assert.Equal(SecureFileOpenStatus.Success, SecureFileReader.TryOpenRegularFile(path,
+            expectedIdentity: null, out FileStream? opened, out _));
+
+        await using FileStream stream = Assert.IsAssignableFrom<FileStream>(opened);
+
+        byte[] first = new byte[8];
+
+        await stream.ReadExactlyAsync(first);
+
+        Assert.Equal(expected[..8], first);
+
+        stream.Position = 0;
+
+        Assert.Equal(SHA256.HashData(expected), SHA256.HashData(stream));
+
+        Assert.True(FileHandleIdentityInterop.TryGetHandleMetadata(stream.SafeFileHandle, out _));
+
+        stream.Position = 0;
+
+        byte[] reread = new byte[8];
+
+        int read = await stream.ReadAsync(reread);
+
+        Assert.True(read == reread.Length, $"Read={read}; Position={stream.Position}; IsAsync={stream.IsAsync}");
+
+        Assert.Equal(expected[..8], reread);
     }
 
     /// <summary>
@@ -98,6 +136,23 @@ public sealed class SecureFileReaderTests : IAsyncLifetime
     {
         string path = _workspace.WriteFile("regular.txt", "regular");
 
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Equal(SecureFileOpenStatus.Success,
+                FileHandleIdentityInterop.TryOpenReadOnlyNoFollow(path, out var initial));
+
+            using (initial)
+            {
+                (int descriptorFlags, int statusFlags) = SecureFileReader.GetUnixHandleFlagsForTests(initial!);
+
+                int nonBlocking = OperatingSystem.IsMacOS() ? MacOsOpenNonBlocking : LinuxOpenNonBlocking;
+
+                Assert.NotEqual(0, statusFlags & nonBlocking);
+
+                Assert.NotEqual(0, descriptorFlags & FileDescriptorCloseOnExec);
+            }
+        }
+
         SecureFileOpenStatus status =
             SecureFileReader.TryOpenRegularFile(
                 path,
@@ -134,7 +189,7 @@ public sealed class SecureFileReaderTests : IAsyncLifetime
                     ? MacOsOpenNonBlocking
                     : LinuxOpenNonBlocking;
 
-                Assert.NotEqual(0, statusFlags & nonBlocking);
+                Assert.Equal(0, statusFlags & nonBlocking);
             }
         }
     }

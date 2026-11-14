@@ -12,88 +12,85 @@ namespace RetroDownfall.Compendium.Ux.Tests.Compendium;
 /// unhandled rethrow on the dispatcher crashes the process. <see cref="RecordingSynchronizationContext"/>
 /// stands in for that dispatcher so the test can observe the rethrow without one.
 /// </summary>
-public sealed class AppAboutDialogTests
+[Collection("AvaloniaBinding")]
+public sealed class AppAboutDialogTests(AvaloniaBindingFixture ui)
 {
 
     [Fact]
-    public void OnAboutClick_WhenTheDialogServiceThrows_DoesNotCrashTheDispatcher()
-    {
-
-        SynchronizationContext? previous = SynchronizationContext.Current;
-
-        RecordingSynchronizationContext recorder = new();
-
-        SynchronizationContext.SetSynchronizationContext(recorder);
-
-        try
+    public Task OnAboutClick_WhenTheDialogServiceThrows_DoesNotCrashTheDispatcher() =>
+        ui.RunAsync(() =>
         {
+            SynchronizationContext? previous = SynchronizationContext.Current;
 
-            ServiceCollection serviceCollection = new();
+            RecordingSynchronizationContext recorder = new();
 
-            serviceCollection.AddSingleton<IDialogService>(new ThrowingDialogService());
+            SynchronizationContext.SetSynchronizationContext(recorder);
 
-            using ServiceProvider provider = serviceCollection.BuildServiceProvider();
+            try
+            {
+                ServiceCollection serviceCollection = new();
 
-            App app = new();
+                serviceCollection.AddSingleton<IDialogService>(new ThrowingDialogService());
 
-            App.ConfigureServices(provider);
+                using ServiceProvider provider = serviceCollection.BuildServiceProvider();
 
-            app.OnAboutClick(sender: null, EventArgs.Empty);
+                App app = new();
 
-        }
-        finally
-        {
+                App.ConfigureServices(provider);
 
-            SynchronizationContext.SetSynchronizationContext(previous);
+                app.OnAboutClick(sender: null, EventArgs.Empty);
 
-        }
+            }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(previous);
 
-        Assert.Null(recorder.Observed);
+            }
 
-    }
+            Assert.Null(recorder.Observed);
+
+        });
 
     [Fact]
-    public void OnAboutClick_WhenTheProviderIsAlreadyDisposed_DoesNotCrashTheDispatcher()
-    {
-
-        SynchronizationContext? previous = SynchronizationContext.Current;
-
-        RecordingSynchronizationContext recorder = new();
-
-        SynchronizationContext.SetSynchronizationContext(recorder);
-
-        try
+    public Task OnAboutClick_WhenTheProviderIsAlreadyDisposed_DoesNotCrashTheDispatcher() =>
+        ui.RunAsync(() =>
         {
+            SynchronizationContext? previous = SynchronizationContext.Current;
 
-            ServiceCollection serviceCollection = new();
+            RecordingSynchronizationContext recorder = new();
 
-            serviceCollection.AddSingleton<IDialogService>(new NoopDialogService());
+            SynchronizationContext.SetSynchronizationContext(recorder);
 
-            ServiceProvider provider = serviceCollection.BuildServiceProvider();
+            try
+            {
+                ServiceCollection serviceCollection = new();
 
-            // Disposed before the click — GetRequiredService<IDialogService>() itself throws
-            // ObjectDisposedException here, before ShowAlertAsync is ever reached. This is the most
-            // reachable real trigger: macOS keeps the native menu bar (and its Click handlers) live
-            // during teardown, after DI has already been disposed.
-            provider.Dispose();
+                serviceCollection.AddSingleton<IDialogService>(new NoopDialogService());
 
-            App app = new();
+                ServiceProvider provider = serviceCollection.BuildServiceProvider();
 
-            App.ConfigureServices(provider);
+                // Disposed before the click — GetRequiredService<IDialogService>() itself throws
+                // ObjectDisposedException here, before ShowAlertAsync is ever reached. This is the most
+                // reachable real trigger: macOS keeps the native menu bar (and its Click handlers) live
+                // during teardown, after DI has already been disposed.
+                provider.Dispose();
 
-            app.OnAboutClick(sender: null, EventArgs.Empty);
+                App app = new();
 
-        }
-        finally
-        {
+                App.ConfigureServices(provider);
 
-            SynchronizationContext.SetSynchronizationContext(previous);
+                app.OnAboutClick(sender: null, EventArgs.Empty);
 
-        }
+            }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(previous);
 
-        Assert.Null(recorder.Observed);
+            }
 
-    }
+            Assert.Null(recorder.Observed);
+
+        });
 
     private sealed class NoopDialogService : IDialogService
     {
@@ -128,16 +125,13 @@ public sealed class AppAboutDialogTests
 
         public override void Post(SendOrPostCallback d, object? state)
         {
-
             try
             {
-
                 d(state);
 
             }
             catch (Exception ex)
             {
-
                 Observed = ex;
 
             }

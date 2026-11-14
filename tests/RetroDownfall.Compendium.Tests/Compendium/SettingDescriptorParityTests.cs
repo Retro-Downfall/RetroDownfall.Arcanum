@@ -78,9 +78,9 @@ public sealed class SettingDescriptorParityTests
                 null,
                 [maxInput])!;
 
-            double actualMin = Convert.ToDouble(clampedMin, System.Globalization.CultureInfo.InvariantCulture);
+            decimal actualMin = Convert.ToDecimal(clampedMin, System.Globalization.CultureInfo.InvariantCulture);
 
-            double actualMax = Convert.ToDouble(clampedMax, System.Globalization.CultureInfo.InvariantCulture);
+            decimal actualMax = Convert.ToDecimal(clampedMax, System.Globalization.CultureInfo.InvariantCulture);
 
             if (actualMin != descriptor.Min)
 
@@ -236,14 +236,14 @@ public sealed class SettingDescriptorParityTests
         nameof(ArcanumSettingClamps.DaemonMaxConcurrentJobs))]
     public void Capacity_descriptor_matches_contract_bounds(
         string key,
-        double min,
-        double max,
+        int min,
+        int max,
         string clampName)
     {
         SettingDescriptor descriptor = Assert.Single(SettingDescriptors.All, d => d.Key == key);
 
-        Assert.Equal(min, descriptor.Min);
-        Assert.Equal(max, descriptor.Max);
+        Assert.Equal((decimal)min, descriptor.Min);
+        Assert.Equal((decimal)max, descriptor.Max);
         Assert.Equal(clampName, descriptor.ClampName);
     }
 

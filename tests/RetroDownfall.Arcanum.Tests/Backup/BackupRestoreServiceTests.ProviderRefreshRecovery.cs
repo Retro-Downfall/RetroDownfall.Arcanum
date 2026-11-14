@@ -8,14 +8,86 @@ using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Guild;
 
+using static RetroDownfall.Arcanum.Tests.Backup.BackupRestoreServiceTests;
+
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
 public sealed partial class BackupRestoreServiceTests
 {
+    [Theory]
+    [InlineData("9223372036854775807")]
+    [InlineData("-1")]
+    [InlineData("1.5")]
+    public async Task Restore_refuses_invalid_leased_refresh_revision_before_changing_other_operations(string revision)
+    {
+        await using SqliteConnection connection = new("Data Source=:memory:");
+
+        await connection.OpenAsync();
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = $"""
+            PRAGMA foreign_keys=ON;
+            CREATE TABLE LongRunningOperations(Id TEXT PRIMARY KEY, State INTEGER, RootOperationId TEXT, ParentOperationId TEXT,
+                LeaseOwner TEXT, LeaseExpiresAt TEXT, Revision, TerminalErrorCode TEXT);
+            CREATE TABLE guild_spend_refreshes(OperationId TEXT REFERENCES LongRunningOperations(Id) ON DELETE RESTRICT);
+            INSERT INTO LongRunningOperations VALUES('refresh',1,NULL,NULL,'old-host','2099-01-01', {revision},NULL);
+            INSERT INTO LongRunningOperations VALUES('ordinary',0,NULL,NULL,NULL,NULL,1,NULL);
+            INSERT INTO guild_spend_refreshes VALUES('refresh');
+            """;
+
+        await command.ExecuteNonQueryAsync();
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => BackupRestoreDatabaseWorker.ClearPendingOperationsAsync(connection, default));
+
+        command.CommandText = "SELECT count(*) FROM LongRunningOperations WHERE Id='ordinary' AND State=0";
+
+        Assert.Equal(1L, await command.ExecuteScalarAsync());
+
+        command.CommandText = "SELECT LeaseOwner FROM LongRunningOperations WHERE Id='refresh'";
+
+        Assert.Equal("old-host", await command.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task Restore_keeps_refresh_checkpoint_and_clears_old_lease_even_without_quest_table()
+    {
+        await using SqliteConnection connection = new("Data Source=:memory:");
+
+        await connection.OpenAsync();
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            PRAGMA foreign_keys=ON;
+            CREATE TABLE LongRunningOperations(Id TEXT PRIMARY KEY, State INTEGER, RootOperationId TEXT, ParentOperationId TEXT,
+                LeaseOwner TEXT, LeaseExpiresAt TEXT, Revision, TerminalErrorCode TEXT, CheckpointPayload BLOB);
+            CREATE TABLE guild_spend_refreshes(OperationId TEXT REFERENCES LongRunningOperations(Id) ON DELETE RESTRICT);
+            INSERT INTO LongRunningOperations VALUES('refresh',1,NULL,NULL,'old-host','2099-01-01',7,NULL,x'0102');
+            INSERT INTO LongRunningOperations VALUES('ordinary',0,NULL,NULL,NULL,NULL,1,NULL,NULL);
+            INSERT INTO guild_spend_refreshes VALUES('refresh');
+            """;
+
+        await command.ExecuteNonQueryAsync();
+
+        Assert.Equal(1, await BackupRestoreDatabaseWorker.ClearPendingOperationsAsync(connection, default));
+
+        command.CommandText = "SELECT State || ':' || Revision || ':' || hex(CheckpointPayload) || ':' || (LeaseOwner IS NULL) || ':' || (LeaseExpiresAt IS NULL) FROM LongRunningOperations WHERE Id='refresh'";
+
+        Assert.Equal("1:8:0102:1:1", await command.ExecuteScalarAsync());
+    }
+}
+
+// This fact installs the real process-global workspace fence through host readiness.
+[Collection("WorkspacePathPolicy")]
+public sealed class BackupRestoreRefreshRecoveryTests
+{
     [Fact]
     public async Task Encrypted_archive_parks_real_admitted_refresh_with_restored_authority()
     {
-        Fixture fixture = await CreateFixtureAsync();
+        using BackupRestoreServiceTests owner = new();
+
+        Fixture fixture = await owner.CreateFixtureAsync();
 
         Guid operationId;
 
@@ -119,7 +191,7 @@ public sealed partial class BackupRestoreServiceTests
                 new BackupRestoreEffectDigestCalculator()),
         };
 
-        BackupRestoreResult restored = await Restore(new RecordingSecretStore { GrimoireSecret = fixture.GrimoireSecret }, options).RestoreAsync(
+        BackupRestoreResult restored = await owner.Restore(new RecordingSecretStore { GrimoireSecret = fixture.GrimoireSecret }, options).RestoreAsync(
             new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false,
                 ProtectedStateMode: BackupProtectedStateMode.PurgeProtectedState, ProtectedStateConfirmed: true),
             Passphrase.AsMemory(), default);
@@ -188,68 +260,5 @@ public sealed partial class BackupRestoreServiceTests
         Assert.Equal(events, await RestoreEvidenceAsync(after, "SELECT group_concat(EventSequence || EventKindCode, '|') FROM guild_events"));
 
         Assert.Equal(receipts, await RestoreEvidenceAsync(after, "SELECT group_concat(ReceiptId || EffectId || EvidenceReceiptId || hex(RequestDigest) || hex(OriginalResult) || OriginalEventSequence, '|') FROM (SELECT * FROM guild_spend_receipts ORDER BY ReceiptId)"));
-    }
-
-    [Theory]
-    [InlineData("9223372036854775807")]
-    [InlineData("-1")]
-    [InlineData("1.5")]
-    public async Task Restore_refuses_invalid_leased_refresh_revision_before_changing_other_operations(string revision)
-    {
-        await using SqliteConnection connection = new("Data Source=:memory:");
-
-        await connection.OpenAsync();
-
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.CommandText = $"""
-            PRAGMA foreign_keys=ON;
-            CREATE TABLE LongRunningOperations(Id TEXT PRIMARY KEY, State INTEGER, RootOperationId TEXT, ParentOperationId TEXT,
-                LeaseOwner TEXT, LeaseExpiresAt TEXT, Revision, TerminalErrorCode TEXT);
-            CREATE TABLE guild_spend_refreshes(OperationId TEXT REFERENCES LongRunningOperations(Id) ON DELETE RESTRICT);
-            INSERT INTO LongRunningOperations VALUES('refresh',1,NULL,NULL,'old-host','2099-01-01', {revision},NULL);
-            INSERT INTO LongRunningOperations VALUES('ordinary',0,NULL,NULL,NULL,NULL,1,NULL);
-            INSERT INTO guild_spend_refreshes VALUES('refresh');
-            """;
-
-        await command.ExecuteNonQueryAsync();
-
-        await Assert.ThrowsAsync<InvalidDataException>(() => BackupRestoreDatabaseWorker.ClearPendingOperationsAsync(connection, default));
-
-        command.CommandText = "SELECT count(*) FROM LongRunningOperations WHERE Id='ordinary' AND State=0";
-
-        Assert.Equal(1L, await command.ExecuteScalarAsync());
-
-        command.CommandText = "SELECT LeaseOwner FROM LongRunningOperations WHERE Id='refresh'";
-
-        Assert.Equal("old-host", await command.ExecuteScalarAsync());
-    }
-
-    [Fact]
-    public async Task Restore_keeps_refresh_checkpoint_and_clears_old_lease_even_without_quest_table()
-    {
-        await using SqliteConnection connection = new("Data Source=:memory:");
-
-        await connection.OpenAsync();
-
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.CommandText = """
-            PRAGMA foreign_keys=ON;
-            CREATE TABLE LongRunningOperations(Id TEXT PRIMARY KEY, State INTEGER, RootOperationId TEXT, ParentOperationId TEXT,
-                LeaseOwner TEXT, LeaseExpiresAt TEXT, Revision, TerminalErrorCode TEXT, CheckpointPayload BLOB);
-            CREATE TABLE guild_spend_refreshes(OperationId TEXT REFERENCES LongRunningOperations(Id) ON DELETE RESTRICT);
-            INSERT INTO LongRunningOperations VALUES('refresh',1,NULL,NULL,'old-host','2099-01-01',7,NULL,x'0102');
-            INSERT INTO LongRunningOperations VALUES('ordinary',0,NULL,NULL,NULL,NULL,1,NULL,NULL);
-            INSERT INTO guild_spend_refreshes VALUES('refresh');
-            """;
-
-        await command.ExecuteNonQueryAsync();
-
-        Assert.Equal(1, await BackupRestoreDatabaseWorker.ClearPendingOperationsAsync(connection, default));
-
-        command.CommandText = "SELECT State || ':' || Revision || ':' || hex(CheckpointPayload) || ':' || (LeaseOwner IS NULL) || ':' || (LeaseExpiresAt IS NULL) FROM LongRunningOperations WHERE Id='refresh'";
-
-        Assert.Equal("1:8:0102:1:1", await command.ExecuteScalarAsync());
     }
 }

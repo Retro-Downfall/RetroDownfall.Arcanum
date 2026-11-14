@@ -137,6 +137,65 @@ public sealed partial class GuildLocalHostPolicyTests
     }
 
     [Fact]
+    public async Task Workspace_search_preserves_stored_time_spellings_and_pages_duplicate_instants_once()
+    {
+        await using Fixture f = await Fixture.CreateAsync(localExecution: true);
+
+        Guid workspace = await f.AddWorkspaceAsync();
+
+        Directory.CreateDirectory(Path.Combine(f.WorkspaceRoot, "allowed"));
+
+        string[] names = ["first", "second", "third"];
+
+        for (int index = 0; index < names.Length; index++)
+        {
+            string relative = "allowed/" + names[index] + ".txt";
+
+            string content = "needle " + names[index];
+
+            await File.WriteAllTextAsync(Path.Combine(f.WorkspaceRoot, relative), content);
+
+            await SeedWorkspaceSearchChunkAsync(f, names[index], relative, content,
+                index == 0 ? "2026-01-03T00:00:00Z" : "2026-01-03T00:00:00.0000000Z");
+        }
+
+        GuildCallerContext owner = await f.OperatorAsync();
+
+        GuildGrant grant = f.Request.Grant with { Workspaces = [new(workspace, "allowed", GuildWorkspaceAccess.Read)], Memory = [] };
+
+        var root = await f.IssueAsync(owner, f.Request with { WorkspaceId = workspace, Grant = grant });
+
+        Assert.True(root.IsSuccess, root.Error.Message);
+
+        GuildCallerContext run = await RunCallerAsync(f, owner, root.Value);
+
+        await using var connection = await f.OpenAsync();
+
+        await using ArcanumDbContext db = GrimoireFixture.CreateContext(connection);
+
+        LexiconService lexicon = new(db, NullLogger<LexiconService>.Instance, f.Settings, MemoryErasureTestKeys.Isolated());
+
+        SagaMemoryStore saga = new(db, f.Settings, MemoryErasureTestKeys.Isolated());
+
+        MemorySearchService search = new(db, f.Connections, new MemoryScopeResolver(db, f.Settings), lexicon, lexicon, saga, f.Settings, f.Policy, f.Opener);
+
+        using IDisposable invocation = GuildMemoryInvocationAmbient.Begin(new(f.Authority, run.Execution!));
+
+        MemorySearchRequest request = new("needle", MemorySearchScope.Workspace, root.Value.Quest.SessionId, f.WorkspaceRoot, 1);
+
+        foreach (string name in names)
+        {
+            var page = await search.SearchForInvocationAsync(request, 8192);
+
+            Assert.True(page.IsSuccess, page.Error.Message);
+
+            Assert.Equal("needle " + name, Assert.Single(page.Value.Results).Content);
+
+            request = request with { Continuation = page.Value.Continuation };
+        }
+    }
+
+    [Fact]
     public async Task Workspace_search_skips_stale_and_ungranted_files_and_continues_without_losing_the_next_hit()
     {
         await using Fixture f = await Fixture.CreateAsync(localExecution: true);

@@ -31,88 +31,40 @@ namespace RetroDownfall.Compendium.Ux.Tests.Compendium;
 /// describe the same irreversible external disclosure differently.</para>
 /// </remarks>
 [Collection("AvaloniaBinding")]
-public sealed class CovenantDisclosureDescriptorTests
+public sealed class CovenantDisclosureDescriptorTests(AvaloniaBindingFixture ui)
 {
 
     [Fact]
-    public void Covenant_descriptor_warns_that_eligible_context_is_sent_on_every_provider_attempt()
-    {
+    public Task Covenant_descriptor_warns_that_eligible_context_is_sent_on_every_provider_attempt() =>
+        ui.RunAsync(() =>
+        {
+            SettingDescriptor descriptor = CovenantDescriptor();
 
-        SettingDescriptor descriptor = CovenantDescriptor();
+            Assert.Equal(SettingKind.Bool, descriptor.Kind);
 
-        Assert.Equal(SettingKind.Bool, descriptor.Kind);
+            Assert.Equal(ConfigSection.Features, descriptor.Section);
 
-        Assert.Equal(ConfigSection.Features, descriptor.Section);
+            // The approved copy enumerates the attempt kinds rather than saying "every provider attempt"
+            // as one phrase, because "every" without the list reads as "every turn" and understates it:
+            // one turn can reach several providers. Assert the claim, not one phrasing of it.
+            Assert.Contains("on every primary, fallback, retry, compression, and tool-loop provider attempt", descriptor.Description, StringComparison.Ordinal);
 
-        // The approved copy enumerates the attempt kinds rather than saying "every provider attempt"
-        // as one phrase, because "every" without the list reads as "every turn" and understates it:
-        // one turn can reach several providers. Assert the claim, not one phrasing of it.
-        Assert.Contains("on every primary, fallback, retry, compression, and tool-loop provider attempt", descriptor.Description, StringComparison.Ordinal);
+            Assert.Contains("may use different configured providers or models", descriptor.Description, StringComparison.Ordinal);
 
-        Assert.Contains("may use different configured providers or models", descriptor.Description, StringComparison.Ordinal);
-
-    }
-
-    [Fact]
-    public void Covenant_descriptor_uses_shared_copy_and_links_known_provider_retention_documentation()
-    {
-
-        SettingDescriptor descriptor = CovenantDescriptor();
-
-        Assert.Equal(CovenantExternalRetentionDisclosure.EnablementText, descriptor.Description);
-
-        Assert.Equal(SettingHelpRoute.ConfiguredProviderRetention, descriptor.HelpRoute);
-
-        ImmutableArray<CovenantRetentionHelpTarget> targets =
-            CovenantExternalRetentionDisclosure.ResolveHelpTargets(
-            [
-                new ProviderSettings
-                {
-                    Name = "openai",
-                    Type = AiProviderKind.OpenAICompatible,
-                    Endpoint = "https://api.openai.com/v1",
-                },
-            ]);
-
-        Assert.Contains(
-            targets,
-            target => target.Kind == CovenantRetentionHelpKind.ProviderRetentionDocumentation);
-
-    }
+        });
 
     [Fact]
-    public void Unknown_or_self_hosted_provider_falls_back_to_providers_page_and_operator_guide()
-    {
+    public Task Covenant_descriptor_uses_shared_copy_and_links_known_provider_retention_documentation() =>
+        ui.RunAsync(() =>
+        {
+            SettingDescriptor descriptor = CovenantDescriptor();
 
-        ImmutableArray<CovenantRetentionHelpTarget> targets =
-            CovenantExternalRetentionDisclosure.ResolveHelpTargets(
-            [
-                new ProviderSettings
-                {
-                    Name = "ollama",
-                    Type = AiProviderKind.OpenAICompatible,
-                    Endpoint = "http://localhost:11434/v1",
-                },
-            ]);
+            Assert.Equal(CovenantExternalRetentionDisclosure.EnablementText, descriptor.Description);
 
-        Assert.Contains(targets, target => target.Kind == CovenantRetentionHelpKind.ConfiguredProvidersPage);
+            Assert.Equal(SettingHelpRoute.ConfiguredProviderRetention, descriptor.HelpRoute);
 
-        Assert.Contains(targets, target => target.Kind == CovenantRetentionHelpKind.OperatorGuide);
-
-        Assert.DoesNotContain(
-            targets,
-            target => target.Kind == CovenantRetentionHelpKind.ProviderRetentionDocumentation);
-
-    }
-
-    [Fact]
-    public void Covenant_disclosure_and_help_actions_render_before_the_enable_toggle()
-    {
-
-        using InMemoryConfigurationStore store = new(
-            new ArcanumSettings
-            {
-                Providers =
+            ImmutableArray<CovenantRetentionHelpTarget> targets =
+                CovenantExternalRetentionDisclosure.ResolveHelpTargets(
                 [
                     new ProviderSettings
                     {
@@ -120,52 +72,100 @@ public sealed class CovenantDisclosureDescriptorTests
                         Type = AiProviderKind.OpenAICompatible,
                         Endpoint = "https://api.openai.com/v1",
                     },
-                ],
-            });
+                ]);
 
-        ConfigurationViewModel root = new(
-            store,
-            new NoopDialogService(),
-            new SynchronousUiDispatcher(),
-            NullLogger<ConfigurationViewModel>.Instance,
-            ImmediateArcanumClientMutationBoundary.Instance);
+            Assert.Contains(
+                targets,
+                target => target.Kind == CovenantRetentionHelpKind.ProviderRetentionDocumentation);
 
-        GenericSettingsSectionView view = new()
+        });
+
+    [Fact]
+    public Task Unknown_or_self_hosted_provider_falls_back_to_providers_page_and_operator_guide() =>
+        ui.RunAsync(() =>
         {
-            Section = ConfigSection.Features,
-            DataContext = root,
-        };
+            ImmutableArray<CovenantRetentionHelpTarget> targets =
+                CovenantExternalRetentionDisclosure.ResolveHelpTargets(
+                [
+                    new ProviderSettings
+                    {
+                        Name = "ollama",
+                        Type = AiProviderKind.OpenAICompatible,
+                        Endpoint = "http://localhost:11434/v1",
+                    },
+                ]);
 
-        List<Control> ordered = view.GetLogicalDescendants().OfType<Control>().ToList();
+            Assert.Contains(targets, target => target.Kind == CovenantRetentionHelpKind.ConfiguredProvidersPage);
 
-        int disclosureIndex = ordered.FindIndex(control =>
-            control is TextBlock text
-            && string.Equals(text.Text, CovenantExternalRetentionDisclosure.EnablementText, StringComparison.Ordinal));
+            Assert.Contains(targets, target => target.Kind == CovenantRetentionHelpKind.OperatorGuide);
 
-        int helpIndex = ordered.FindIndex(control =>
-            control is Button button
-            && button.Tag is CovenantRetentionHelpTarget);
+            Assert.DoesNotContain(
+                targets,
+                target => target.Kind == CovenantRetentionHelpKind.ProviderRetentionDocumentation);
 
-        int toggleIndex = ordered.FindIndex(control =>
-            control is LabeledToggle toggle
-            && toggle.DataContext is GenericSettingFieldViewModel field
-            && field.Descriptor.Key == "features.covenant");
+        });
 
-        Assert.True(disclosureIndex >= 0, "The shared enablement disclosure was not rendered.");
+    [Fact]
+    public Task Covenant_disclosure_and_help_actions_render_before_the_enable_toggle() =>
+        ui.RunAsync(() =>
+        {
+            using InMemoryConfigurationStore store = new(
+                new ArcanumSettings
+                {
+                    Providers =
+                    [
+                        new ProviderSettings
+                        {
+                            Name = "openai",
+                            Type = AiProviderKind.OpenAICompatible,
+                            Endpoint = "https://api.openai.com/v1",
+                        },
+                    ],
+                });
 
-        Assert.True(helpIndex >= 0, "No provider-retention help action was rendered.");
+            ConfigurationViewModel root = new(
+                store,
+                new NoopDialogService(),
+                new SynchronousUiDispatcher(),
+                NullLogger<ConfigurationViewModel>.Instance,
+                ImmediateArcanumClientMutationBoundary.Instance);
 
-        Assert.True(toggleIndex >= 0, "The Covenant toggle was not rendered.");
+            GenericSettingsSectionView view = new()
+            {
+                Section = ConfigSection.Features,
+                DataContext = root,
+            };
 
-        Assert.True(
-            disclosureIndex < toggleIndex,
-            "The disclosure must be constructed before the toggle it warns about.");
+            List<Control> ordered = view.GetLogicalDescendants().OfType<Control>().ToList();
 
-        Assert.True(
-            helpIndex < toggleIndex,
-            "The help actions must be constructed before the toggle they explain.");
+            int disclosureIndex = ordered.FindIndex(control =>
+                control is TextBlock text
+                && string.Equals(text.Text, CovenantExternalRetentionDisclosure.EnablementText, StringComparison.Ordinal));
 
-    }
+            int helpIndex = ordered.FindIndex(control =>
+                control is Button button
+                && button.Tag is CovenantRetentionHelpTarget);
+
+            int toggleIndex = ordered.FindIndex(control =>
+                control is LabeledToggle toggle
+                && toggle.DataContext is GenericSettingFieldViewModel field
+                && field.Descriptor.Key == "features.covenant");
+
+            Assert.True(disclosureIndex >= 0, "The shared enablement disclosure was not rendered.");
+
+            Assert.True(helpIndex >= 0, "No provider-retention help action was rendered.");
+
+            Assert.True(toggleIndex >= 0, "The Covenant toggle was not rendered.");
+
+            Assert.True(
+                disclosureIndex < toggleIndex,
+                "The disclosure must be constructed before the toggle it warns about.");
+
+            Assert.True(
+                helpIndex < toggleIndex,
+                "The help actions must be constructed before the toggle they explain.");
+
+        });
 
     /// <summary>
     /// Opening Features must survive a provider row whose credential variable is not a portable
@@ -175,13 +175,66 @@ public sealed class CovenantDisclosureDescriptorTests
     /// arm it: a hand-edited <c>arcanum.json</c> loads the offending value into the row verbatim.
     /// </summary>
     [Fact]
-    public void Features_section_renders_when_a_provider_carries_a_non_portable_credential_variable()
-    {
+    public Task Features_section_renders_when_a_provider_carries_a_non_portable_credential_variable() =>
+        ui.RunAsync(() =>
+        {
+            using InMemoryConfigurationStore store = new(
+                new ArcanumSettings
+                {
+                    Providers =
+                    [
+                        new ProviderSettings
+                        {
+                            Name = "openai",
+                            Type = AiProviderKind.OpenAICompatible,
+                            Endpoint = "https://api.openai.com/v1",
+                            CredentialEnvironmentVariable = "MY-KEY",
+                        },
+                    ],
+                });
 
-        using InMemoryConfigurationStore store = new(
-            new ArcanumSettings
+            ConfigurationViewModel root = new(
+                store,
+                new NoopDialogService(),
+                new SynchronousUiDispatcher(),
+                NullLogger<ConfigurationViewModel>.Instance,
+                ImmediateArcanumClientMutationBoundary.Instance);
+
+            GenericSettingsSectionView view = new()
             {
-                Providers =
+                Section = ConfigSection.Features,
+                DataContext = root,
+            };
+
+            List<Control> ordered = view.GetLogicalDescendants().OfType<Control>().ToList();
+
+            Assert.Contains(
+                ordered,
+                control => control is LabeledToggle toggle
+                    && toggle.DataContext is GenericSettingFieldViewModel field
+                    && field.Descriptor.Key == "features.covenant");
+
+            // The endpoint still resolves the documented retention page, so degrading the projection must
+            // not degrade the disclosure the operator reads before flipping the toggle.
+            Assert.Contains(
+                ordered,
+                control => control is Button button
+                    && button.Tag is CovenantRetentionHelpTarget target
+                    && target.Kind == CovenantRetentionHelpKind.ProviderRetentionDocumentation);
+
+        });
+
+    /// <summary>
+    /// Rendering must not silently accept the value the save path rejects. Building for persistence
+    /// keeps validating, so the operator is still told the name is not portable when it matters.
+    /// </summary>
+    [Fact]
+    public Task Building_providers_for_persistence_still_rejects_a_non_portable_credential_variable() =>
+        ui.RunAsync(() =>
+        {
+            ProvidersSectionViewModel section = new(new NoopDialogService());
+
+            section.LoadFrom(
                 [
                     new ProviderSettings
                     {
@@ -191,78 +244,25 @@ public sealed class CovenantDisclosureDescriptorTests
                         CredentialEnvironmentVariable = "MY-KEY",
                     },
                 ],
-            });
+                defaultModel: null,
+                fastModel: null);
 
-        ConfigurationViewModel root = new(
-            store,
-            new NoopDialogService(),
-            new SynchronousUiDispatcher(),
-            NullLogger<ConfigurationViewModel>.Instance,
-            ImmediateArcanumClientMutationBoundary.Instance);
+            InvalidOperationException failure =
+                Assert.Throws<InvalidOperationException>(() => section.BuildProviders());
 
-        GenericSettingsSectionView view = new()
+            Assert.Contains("not portable", failure.Message, StringComparison.Ordinal);
+
+        });
+
+    [Fact]
+    public Task Every_other_bool_descriptor_renders_without_a_help_route() =>
+        ui.RunAsync(() =>
         {
-            Section = ConfigSection.Features,
-            DataContext = root,
-        };
+            Assert.All(
+                SettingDescriptors.All.Where(descriptor => descriptor.Key != "features.covenant"),
+                descriptor => Assert.Null(descriptor.HelpRoute));
 
-        List<Control> ordered = view.GetLogicalDescendants().OfType<Control>().ToList();
-
-        Assert.Contains(
-            ordered,
-            control => control is LabeledToggle toggle
-                && toggle.DataContext is GenericSettingFieldViewModel field
-                && field.Descriptor.Key == "features.covenant");
-
-        // The endpoint still resolves the documented retention page, so degrading the projection must
-        // not degrade the disclosure the operator reads before flipping the toggle.
-        Assert.Contains(
-            ordered,
-            control => control is Button button
-                && button.Tag is CovenantRetentionHelpTarget target
-                && target.Kind == CovenantRetentionHelpKind.ProviderRetentionDocumentation);
-
-    }
-
-    /// <summary>
-    /// Rendering must not silently accept the value the save path rejects. Building for persistence
-    /// keeps validating, so the operator is still told the name is not portable when it matters.
-    /// </summary>
-    [Fact]
-    public void Building_providers_for_persistence_still_rejects_a_non_portable_credential_variable()
-    {
-
-        ProvidersSectionViewModel section = new(new NoopDialogService());
-
-        section.LoadFrom(
-            [
-                new ProviderSettings
-                {
-                    Name = "openai",
-                    Type = AiProviderKind.OpenAICompatible,
-                    Endpoint = "https://api.openai.com/v1",
-                    CredentialEnvironmentVariable = "MY-KEY",
-                },
-            ],
-            defaultModel: null,
-            fastModel: null);
-
-        InvalidOperationException failure =
-            Assert.Throws<InvalidOperationException>(() => section.BuildProviders());
-
-        Assert.Contains("not portable", failure.Message, StringComparison.Ordinal);
-
-    }
-
-    [Fact]
-    public void Every_other_bool_descriptor_renders_without_a_help_route()
-    {
-
-        Assert.All(
-            SettingDescriptors.All.Where(descriptor => descriptor.Key != "features.covenant"),
-            descriptor => Assert.Null(descriptor.HelpRoute));
-
-    }
+        });
 
     private static SettingDescriptor CovenantDescriptor() =>
         Assert.Single(SettingDescriptors.All, item => item.Key == "features.covenant");

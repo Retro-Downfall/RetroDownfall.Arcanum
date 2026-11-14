@@ -116,6 +116,10 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
         [ObservableProperty] private OutputTokenLimitWireDialect _outputTokenLimitWireDialect;
 
+        [ObservableProperty] private GuildUsageReconciliationSource _guildUsageReconciliation;
+
+        public IReadOnlyList<GuildUsageReconciliationSource> GuildUsageReconciliationValues { get; } = Enum.GetValues<GuildUsageReconciliationSource>();
+
         public IReadOnlyList<OutputTokenLimitWireDialect> OutputTokenLimitWireDialectValues { get; } = Enum.GetValues<OutputTokenLimitWireDialect>();
 
         /// <summary>
@@ -183,7 +187,7 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             if (FamiliarProviders.IsFamiliar(value))
             {
-                _snapshot = _snapshot with { GuildUsageReconciliation = GuildUsageReconciliationSource.None };
+                GuildUsageReconciliation = GuildUsageReconciliationSource.None;
             }
 
             OnPropertyChanged(nameof(IsFamiliar));
@@ -286,6 +290,10 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             OutputTokenLimitWireDialect = snapshot.OutputTokenLimitWireDialect;
 
+            GuildUsageReconciliation = IsHttpProvider
+                ? snapshot.GuildUsageReconciliation
+                : GuildUsageReconciliationSource.None;
+
             Command = snapshot.Command ?? string.Empty;
 
             HiddenModels = string.Join(", ", snapshot.HiddenModels ?? []);
@@ -337,6 +345,7 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
                 Models = [.. Models.Select(static model => model.Build())],
                 HiddenModels = familiar ? SplitList(HiddenModels) : [],
                 ContextWindowLimit = ContextWindowLimit,
+                GuildUsageReconciliation = familiar ? GuildUsageReconciliationSource.None : GuildUsageReconciliation,
                 OutputTokenLimitWireDialect = familiar ? OutputTokenLimitWireDialect.MaxCompletionTokens : OutputTokenLimitWireDialect,
             };
         }

@@ -24,7 +24,7 @@ The [Signet authority](Arcanum.DESIGN.md#234-signets-immutable-grants-and-live-a
 system.
 
 **Stack:** .NET 11 Native AOT · ASP.NET Core Minimal API · macOS arm64 and Windows x64/arm64 (Linux is not a shipping RID) · `Microsoft.Extensions.AI`
-· EF Core 10 + hermetic SQLCipher 4.17.0 · Avalonia
+· EF Core 11 + hermetic SQLCipher 4.17.0 · Avalonia
 
 macOS Native AOT builds require `python3` for an authenticated private-staging correction to the official 11.0.0 GC archive's duplicate Darwin member identity. The correction changes one archive timestamp byte and preserves object/debug/index bytes; unknown inputs fail closed. It does not add a Python runtime dependency to the shipped executable. DESIGN owns the exact staging contract.
 

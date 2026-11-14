@@ -5224,7 +5224,7 @@ internal sealed partial class DataRetentionService(
         tableCommand.Transaction = transaction;
 
         tableCommand.CommandText =
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = @table";
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = @table)";
 
         Add(tableCommand, "@table", table);
 

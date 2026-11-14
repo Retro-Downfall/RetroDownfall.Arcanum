@@ -242,7 +242,7 @@ arcanum key list               # what credentials Arcanum holds (presence and st
 
 **Current operator limitations** — an honest list of what does not work yet, in [`Arcanum.Engineering.md`](docs/Arcanum.Engineering.md#current-operator-limitations). Worth reading before you rely on anything here.
 
-**Stack:** .NET 11 · ASP.NET Core Minimal API · Native AOT on macOS and Windows · `Microsoft.Extensions.AI` · EF Core 10 + hermetic SQLCipher 4.17.0 · Avalonia · MCP client (stdio + HTTP)
+**Stack:** .NET 11 · ASP.NET Core Minimal API · Native AOT on macOS and Windows · `Microsoft.Extensions.AI` · EF Core 11 + hermetic SQLCipher 4.17.0 · Avalonia · MCP client (stdio + HTTP)
 
 ## Contributing
 

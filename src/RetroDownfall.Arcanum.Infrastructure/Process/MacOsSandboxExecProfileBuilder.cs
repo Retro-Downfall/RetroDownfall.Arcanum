@@ -89,10 +89,13 @@ internal static class MacOsSandboxExecProfileBuilder
     [
         "hw.memsize",
         "hw.ncpu",
+        "hw.optional.AdvSIMD",
+        "hw.optional.arm.AdvSIMD",
         "hw.optional.arm.FEAT_AES",
         "hw.optional.arm.FEAT_DotProd",
         "hw.optional.arm.FEAT_LRCPC",
         "hw.optional.arm.FEAT_LRCPC2",
+        "hw.optional.arm.FEAT_LSE",
         "hw.optional.arm.FEAT_RDM",
         "hw.optional.arm.FEAT_SHA1",
         "hw.optional.arm.FEAT_SHA256",

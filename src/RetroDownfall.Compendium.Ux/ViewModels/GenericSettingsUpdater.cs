@@ -225,7 +225,6 @@ public static class GenericSettingsUpdater
             SettingKind.StringArray when value is string[] arr => arr,
             SettingKind.Int when value is double d => (int)Math.Round(d),
             SettingKind.Long when value is double d => (long)Math.Round(d),
-            SettingKind.Float when value is double d => (decimal)d,
             SettingKind.Bool => value is true,
             _ => value,
         };
@@ -439,6 +438,11 @@ public static class GenericSettingsUpdater
         }
 
         Type underlying = Nullable.GetUnderlyingType(targetType) ?? targetType;
+
+        if (underlying == typeof(decimal) && value is double or float)
+        {
+            throw new InvalidCastException("An exact decimal value is required.");
+        }
 
         if (underlying.IsInstanceOfType(value))
         {

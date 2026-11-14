@@ -34,7 +34,7 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
 
     private static readonly Limit[] Register =
     [
-        new("ef-model-code", "Value converters, value generators and comparers a model names", nameof(Production_holds_no_authored_ef_value_converter_generator_comparer_customizer_or_convention)),
+        new("ef-model-code", "Value converters, value generators and comparers a model names", nameof(Production_ef_model_customizations_are_only_the_two_reviewed_enum_comparers)),
         new("root-provider-context", "A context the container disposes when the host's root provider is disposed", nameof(The_only_context_that_outlives_a_scope_is_the_one_pooled_registration)),
         new("unknown-disposable", "a disposable of unknown provenance is not assumed to be a context", nameof(No_authored_context_is_converted_to_a_type_that_is_not_a_context)),
         new("provider-state-change", "a state change the provider makes by itself is not an operation of this lane", nameof(The_connection_state_handler_registry_is_pinned_by_the_inventory_fixtures)),
@@ -541,14 +541,19 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
     // ---------------------------------------------------------------------------------------------------------------------------------
 
     [Fact]
-    public void Production_holds_no_authored_ef_value_converter_generator_comparer_customizer_or_convention()
+    public void Production_ef_model_customizations_are_only_the_two_reviewed_enum_comparers()
     {
         string[] findings = Production(CheckerLimitScans.EfModelCustomization);
 
         Show(nameof(CheckerLimitScans.EfModelCustomization), findings);
 
-        // The model's two conversions are the built-in conversion of an enum to its integer, HasConversion<int>(), which runs framework code only.
-        Assert.Empty(findings);
+        // The complete behavior of these two closed comparers is pinned by NativeAotEnumMetadataBoundaryTests.
+        Assert.Equal(
+            [
+                "type RetroDownfall.Arcanum.Infrastructure.Data.MessageRoleValueComparer derives from Microsoft.EntityFrameworkCore.ChangeTracking.ValueComparer`1",
+                "type RetroDownfall.Arcanum.Infrastructure.Data.WorkspaceTypeValueComparer derives from Microsoft.EntityFrameworkCore.ChangeTracking.ValueComparer`1",
+            ],
+            findings);
     }
 
     [Fact]
@@ -773,7 +778,7 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
             [
                 "Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance in RetroDownfall.Arcanum.Api.ApiBootstrapper.AddArcanumApiServices",
                 "Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance in RetroDownfall.Arcanum.Api.ApiBootstrapper.AddArcanumApiServices",
-                "System.Runtime.InteropServices.NativeLibrary.Load in RetroDownfall.Arcanum.Infrastructure.Data.ArcanumDbContextFactory.InitializeDesignTimeNativeRuntime",
+                "System.Runtime.InteropServices.NativeLibrary.Load in RetroDownfall.Arcanum.Infrastructure.Data.SqliteNativeRuntime.InitializeCore",
             ],
             findings.Where(static finding => !finding.StartsWith("UnsafeAccessor ", StringComparison.Ordinal)));
 

@@ -107,6 +107,10 @@ public sealed class SessionCostPrecisionEvolutionTests
 
         List<string> schemaBefore = await ReadWholeSchemaAsync(connection);
 
+        double costBefore = Assert.IsType<double>(await ScalarAsync(connection,
+            "SELECT \"TotalCostUsd\" FROM \"Sessions\" WHERE \"Id\" = $sessionId;",
+            ("$sessionId", Format(sessionId))));
+
         GrimoireSchemaVersionChainSet failing = VersionEightChainWithInterruption(
             new GrimoireSchemaTransitionStatement(
                 "Transitions.V8.035_injected_failure",
@@ -121,7 +125,7 @@ public sealed class SessionCostPrecisionEvolutionTests
                 1536,
                 CancellationToken.None));
 
-        await AssertVersionSevenStateAsync(connection, sessionId, schemaBefore);
+        await AssertVersionSevenStateAsync(connection, sessionId, schemaBefore, costBefore);
     }
 
     [Fact]
@@ -142,6 +146,10 @@ public sealed class SessionCostPrecisionEvolutionTests
         await SeedSessionAndEntryAsync(connection, sessionId);
 
         List<string> schemaBefore = await ReadWholeSchemaAsync(connection);
+
+        double costBefore = Assert.IsType<double>(await ScalarAsync(connection,
+            "SELECT \"TotalCostUsd\" FROM \"Sessions\" WHERE \"Id\" = $sessionId;",
+            ("$sessionId", Format(sessionId))));
 
         using CancellationTokenSource cancellation = new();
 
@@ -168,7 +176,7 @@ public sealed class SessionCostPrecisionEvolutionTests
                 1536,
                 cancellation.Token));
 
-        await AssertVersionSevenStateAsync(connection, sessionId, schemaBefore);
+        await AssertVersionSevenStateAsync(connection, sessionId, schemaBefore, costBefore);
     }
 
     private static GrimoireSchemaVersionChainSet VersionEightChainWithInterruption(
@@ -211,7 +219,8 @@ public sealed class SessionCostPrecisionEvolutionTests
     private static async Task AssertVersionSevenStateAsync(
         SqliteConnection connection,
         Guid sessionId,
-        List<string> schemaBefore)
+        List<string> schemaBefore,
+        double costBefore)
     {
         Assert.Equal(schemaBefore, await ReadWholeSchemaAsync(connection));
         Assert.Equal("NUMERIC", await ReadCostColumnTypeAsync(connection));
@@ -224,10 +233,15 @@ public sealed class SessionCostPrecisionEvolutionTests
             """));
         Assert.Equal(1L, await ScalarInt64Async(connection, "SELECT COUNT(*) FROM \"Entries\";"));
         Assert.Equal(0L, await ScalarInt64Async(connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
-        Assert.Equal(12.3456789m, await ScalarDecimalAsync(
-            connection,
+        Assert.Equal("real", await ScalarStringAsync(connection,
+            "SELECT typeof(\"TotalCostUsd\") FROM \"Sessions\" WHERE \"Id\" = $sessionId;",
+            ("$sessionId", Format(sessionId))));
+
+        double costAfter = Assert.IsType<double>(await ScalarAsync(connection,
             "SELECT \"TotalCostUsd\" FROM \"Sessions\" WHERE \"Id\" = $sessionId;",
             ("$sessionId", Format(sessionId))));
+
+        Assert.Equal(BitConverter.DoubleToInt64Bits(costBefore), BitConverter.DoubleToInt64Bits(costAfter));
     }
 
     private static async Task SeedSessionAndEntryAsync(SqliteConnection connection, Guid sessionId)
@@ -368,14 +382,6 @@ public sealed class SessionCostPrecisionEvolutionTests
         string sql,
         params (string Name, object Value)[] parameters) =>
         Convert.ToInt64(
-            await ScalarAsync(connection, sql, parameters),
-            CultureInfo.InvariantCulture);
-
-    private static async Task<decimal> ScalarDecimalAsync(
-        SqliteConnection connection,
-        string sql,
-        params (string Name, object Value)[] parameters) =>
-        Convert.ToDecimal(
             await ScalarAsync(connection, sql, parameters),
             CultureInfo.InvariantCulture);
 

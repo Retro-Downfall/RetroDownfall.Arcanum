@@ -58,7 +58,9 @@ public sealed class GuildPortContractTests
             "CohortClosed", "NoEligibleBidder", "BidConflict", "OfferClosed", "DestinationChanged",
             "LeaseConflict", "LeaseLapsed", "WorkspaceIdentityUnavailable", "LeaseReconciliationRequired",
             "SourceConflict", "ContentErased", "CursorGone", "PayloadTooLarge", "Unavailable",
-            "StoragePressure", "MaintenanceDeferred", "Rejected"
+            "StoragePressure", "MaintenanceDeferred", "Rejected",
+            "RefreshCancelled", "SourceExpired", "InitialEvidenceUnavailable",
+            "SpendSourceMissing", "SpendSourceInvalid", "SpendGenerationMissing", "SpendGenerationInvalid", "SpendConfigurationChanged", "SpendCredentialChanged", "SpendAuthorityRetired"
         };
 
         var family = typeof(ErrorCodes).GetNestedType("Guild");

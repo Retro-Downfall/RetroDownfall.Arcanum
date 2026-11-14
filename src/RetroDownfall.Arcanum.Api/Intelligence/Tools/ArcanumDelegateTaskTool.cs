@@ -129,18 +129,37 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
             return "Subagent task failed: A bounded, non-empty prompt is required.";
         }
 
-        long? maxTokens = TryReadInt64(arguments, "max_tokens", out long tokenValue)
-            && tokenValue > 0
-                ? tokenValue
-                : null;
-        decimal? maxCostUsd = TryReadDecimal(arguments, "max_cost_usd", out decimal costValue)
-            && costValue > 0
-                ? costValue
-                : null;
+        bool tokensSupplied = arguments.ContainsKey("max_tokens");
 
-        if (maxTokens is null && maxCostUsd is null)
+        bool costSupplied = arguments.ContainsKey("max_cost_usd");
+
+        if (!tokensSupplied && !costSupplied)
         {
             return "Subagent task failed: A delegated token or cost budget is required.";
+        }
+
+        long? maxTokens = null;
+
+        decimal? maxCostUsd = null;
+
+        if (tokensSupplied)
+        {
+            if (!TryReadInt64(arguments, "max_tokens", out long tokenValue) || tokenValue <= 0)
+            {
+                return "Subagent task failed: A delegated token or cost budget is required.";
+            }
+
+            maxTokens = tokenValue;
+        }
+
+        if (costSupplied)
+        {
+            if (!TryReadDecimal(arguments, "max_cost_usd", out decimal costValue) || costValue <= 0)
+            {
+                return "Subagent task failed: A delegated token or cost budget is required.";
+            }
+
+            maxCostUsd = costValue;
         }
 
         FileReadResult fileResult = TryReadFiles(
@@ -381,7 +400,11 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
         {
             decimal number => Assign(number, out value),
             double number when double.IsFinite(number) =>
-                Assign((decimal)number, out value),
+                decimal.TryParse(
+                    number.ToString("R", CultureInfo.InvariantCulture),
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out value),
             JsonElement { ValueKind: JsonValueKind.Number } element =>
                 element.TryGetDecimal(out value),
             _ => decimal.TryParse(

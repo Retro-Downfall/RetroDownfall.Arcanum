@@ -278,7 +278,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
             Assert.Equal("System.Numerics.Vectors", selected.ContainingAssembly.Identity.Name);
 
-            Assert.Equal(new Version(10, 0, 0, 0), selected.ContainingAssembly.Identity.Version);
+            Assert.Equal(new Version(11, 0, 0, 0), selected.ContainingAssembly.Identity.Version);
 
             Assert.Equal("B03F5F7F11D50A3A", Convert.ToHexString(selected.ContainingAssembly.Identity.PublicKeyToken.AsSpan()));
 

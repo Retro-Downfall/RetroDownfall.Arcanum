@@ -19,220 +19,221 @@ namespace RetroDownfall.Compendium.Ux.Tests.Compendium;
 /// for a non-validation reason must reach the operator.
 /// </summary>
 [Collection("AvaloniaBinding")]
-public sealed class FailClosedEditorTests
+public sealed class FailClosedEditorTests(AvaloniaBindingFixture ui)
 {
 
     [Fact]
-    public async Task Failed_load_blocks_saving_over_the_unread_configuration()
-    {
+    public Task Failed_load_blocks_saving_over_the_unread_configuration() =>
+        ui.RunAsync(async () =>
+        {
+            FakeConfigurationStore store = new(
+                static () => throw new InvalidOperationException(
+                    "Failed to parse arcanum.json: security.futureKnob: Unknown or obsolete configuration path"));
 
-        FakeConfigurationStore store = new(
-            static () => throw new InvalidOperationException(
-                "Failed to parse arcanum.json: security.futureKnob: Unknown or obsolete configuration path"));
+            RecordingDialogService dialogs = new();
 
-        RecordingDialogService dialogs = new();
+            ConfigurationViewModel vm = CreateViewModel(store, dialogs);
 
-        ConfigurationViewModel vm = CreateViewModel(store, dialogs);
+            await WaitForAsync(() => vm.LoadFailed);
 
-        await WaitForAsync(() => vm.LoadFailed);
+            Assert.True(vm.LoadFailed);
 
-        Assert.True(vm.LoadFailed);
+            vm.MarkDirty();
 
-        vm.MarkDirty();
+            Assert.True(vm.IsDirty);
 
-        Assert.True(vm.IsDirty);
+            Assert.False(vm.SaveCommand.CanExecute(null));
 
-        Assert.False(vm.SaveCommand.CanExecute(null));
+            await vm.SaveCommand.ExecuteAsync(null);
 
-        await vm.SaveCommand.ExecuteAsync(null);
+            Assert.Empty(store.Writes);
 
-        Assert.Empty(store.Writes);
+            Assert.Contains(dialogs.Alerts, alert => alert.Title == "Cannot save");
 
-        Assert.Contains(dialogs.Alerts, alert => alert.Title == "Cannot save");
-
-    }
+        });
 
     [Theory]
     [InlineData("success")]
     [InlineData("failure")]
     [InlineData("cancellation")]
-    public async Task Edits_made_while_a_save_is_pending_remain_dirty_saveable_and_close_protected(string completion)
-    {
-        TaskCompletionSource<ConfigurationWriteResult> pendingWrite = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        FakeConfigurationStore store = new(
-            static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } })
+    public Task Edits_made_while_a_save_is_pending_remain_dirty_saveable_and_close_protected(string completion) =>
+        ui.RunAsync(async () =>
         {
-            PendingWrite = pendingWrite.Task,
-        };
+            TaskCompletionSource<ConfigurationWriteResult> pendingWrite = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        RecordingDialogService dialogs = new() { ConfirmResult = false };
+            FakeConfigurationStore store = new(
+                static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } })
+            {
+                PendingWrite = pendingWrite.Task,
+            };
 
-        ConfigurationViewModel vm = CreateViewModel(store, dialogs);
+            RecordingDialogService dialogs = new() { ConfirmResult = false };
 
-        await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
+            ConfigurationViewModel vm = CreateViewModel(store, dialogs);
 
-        vm.Host.Port = 5051;
+            await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
 
-        Task save = vm.SaveCommand.ExecuteAsync(null);
+            vm.Host.Port = 5051;
 
-        await WaitForAsync(() => store.LastWriteAttempt is not null);
+            Task save = vm.SaveCommand.ExecuteAsync(null);
 
-        Assert.Equal(5051, store.LastWriteAttempt!.Host.Port);
+            await WaitForAsync(() => store.LastWriteAttempt is not null);
 
-        Assert.True(vm.IsSaving);
+            Assert.Equal(5051, store.LastWriteAttempt!.Host.Port);
 
-        vm.Host.Port = 5052;
+            Assert.True(vm.IsSaving);
 
-        if (completion == "cancellation")
+            vm.Host.Port = 5052;
+
+            if (completion == "cancellation")
+            {
+                pendingWrite.SetCanceled();
+            }
+            else
+            {
+                pendingWrite.SetResult(completion == "success"
+                    ? new ConfigurationWriteResult(true, [], null)
+                    : new ConfigurationWriteResult(false, [], "The configuration changed on disk."));
+            }
+
+            await save;
+
+            if (completion == "success")
+            {
+                Assert.Equal(5051, Assert.Single(store.Writes).Host.Port);
+            }
+            else
+            {
+                Assert.Empty(store.Writes);
+            }
+
+            Assert.Equal(5052, vm.Host.Port);
+
+            Assert.True(vm.IsDirty);
+
+            Assert.False(vm.IsSaving);
+
+            Assert.True(vm.SaveCommand.CanExecute(null));
+
+            Assert.False(await vm.ConfirmDiscardOnExitAsync());
+
+            Assert.Contains(dialogs.Confirms, confirmation => confirmation.Title == "Unsaved changes");
+        });
+
+    [Fact]
+    public Task Successful_load_after_a_failure_clears_the_block() =>
+        ui.RunAsync(async () =>
         {
-            pendingWrite.SetCanceled();
-        }
-        else
-        {
-            pendingWrite.SetResult(completion == "success"
-                ? new ConfigurationWriteResult(true, [], null)
-                : new ConfigurationWriteResult(false, [], "The configuration changed on disk."));
-        }
+            bool fail = true;
 
-        await save;
+            FakeConfigurationStore store = new(
+                () => fail
+                    ? throw new InvalidOperationException("Failed to parse arcanum.json")
+                    : new ArcanumSettings { Host = new HostSettings { Port = 5055 } });
 
-        if (completion == "success")
+            ConfigurationViewModel vm = CreateViewModel(store, new RecordingDialogService());
+
+            await WaitForAsync(() => vm.LoadFailed);
+
+            fail = false;
+
+            await vm.RefreshCommand.ExecuteAsync(null);
+
+            Assert.False(vm.LoadFailed);
+
+            Assert.Equal(5055, vm.Host.Port);
+
+            vm.MarkDirty();
+
+            Assert.True(vm.SaveCommand.CanExecute(null));
+
+        });
+
+    [Fact]
+    public Task Invalid_generic_field_blocks_save_and_is_reported_against_its_own_key() =>
+        ui.RunAsync(async () =>
         {
-            Assert.Equal(5051, Assert.Single(store.Writes).Host.Port);
-        }
-        else
-        {
+            FakeConfigurationStore store = new(
+                static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } });
+
+            RecordingDialogService dialogs = new();
+
+            ConfigurationViewModel vm = CreateViewModel(store, dialogs);
+
+            await WaitForAsync(() => !vm.LoadFailed && vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
+
+            GenericSectionViewModel section = vm.GetOrCreateGenericSection(ConfigSection.Retention);
+
+            GenericSettingFieldViewModel field = Assert.Single(
+                section.Fields,
+                f => f.Descriptor.Key == "retention.protectedSessionIds");
+
+            field.StringValue = "not-a-session-id";
+
+            Assert.True(vm.IsDirty);
+
+            Assert.True(vm.HasFieldErrors);
+
+            Assert.False(vm.SaveCommand.CanExecute(null));
+
+            Assert.True(vm.ValidationErrorsByPointer.ContainsKey("retention.protectedSessionIds"));
+
+            await vm.SaveCommand.ExecuteAsync(null);
+
             Assert.Empty(store.Writes);
-        }
 
-        Assert.Equal(5052, vm.Host.Port);
+            Assert.Contains(dialogs.Alerts, alert => alert.Title == "Invalid settings");
 
-        Assert.True(vm.IsDirty);
+            Assert.Contains(
+                dialogs.Alerts,
+                alert => alert.Message.Contains("retention.protectedSessionIds", StringComparison.Ordinal));
 
-        Assert.False(vm.IsSaving);
+            Assert.NotEqual("Saved arcanum.json", vm.StatusMessage);
 
-        Assert.True(vm.SaveCommand.CanExecute(null));
+            field.StringValue = "11111111-1111-1111-1111-111111111111";
 
-        Assert.False(await vm.ConfirmDiscardOnExitAsync());
+            Assert.False(vm.HasFieldErrors);
 
-        Assert.Contains(dialogs.Confirms, confirmation => confirmation.Title == "Unsaved changes");
-    }
+            Assert.True(vm.SaveCommand.CanExecute(null));
 
-    [Fact]
-    public async Task Successful_load_after_a_failure_clears_the_block()
-    {
-
-        bool fail = true;
-
-        FakeConfigurationStore store = new(
-            () => fail
-                ? throw new InvalidOperationException("Failed to parse arcanum.json")
-                : new ArcanumSettings { Host = new HostSettings { Port = 5055 } });
-
-        ConfigurationViewModel vm = CreateViewModel(store, new RecordingDialogService());
-
-        await WaitForAsync(() => vm.LoadFailed);
-
-        fail = false;
-
-        await vm.RefreshCommand.ExecuteAsync(null);
-
-        Assert.False(vm.LoadFailed);
-
-        Assert.Equal(5055, vm.Host.Port);
-
-        vm.MarkDirty();
-
-        Assert.True(vm.SaveCommand.CanExecute(null));
-
-    }
+        });
 
     [Fact]
-    public async Task Invalid_generic_field_blocks_save_and_is_reported_against_its_own_key()
-    {
-
-        FakeConfigurationStore store = new(
-            static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } });
-
-        RecordingDialogService dialogs = new();
-
-        ConfigurationViewModel vm = CreateViewModel(store, dialogs);
-
-        await WaitForAsync(() => !vm.LoadFailed && vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
-
-        GenericSectionViewModel section = vm.GetOrCreateGenericSection(ConfigSection.Retention);
-
-        GenericSettingFieldViewModel field = Assert.Single(
-            section.Fields,
-            f => f.Descriptor.Key == "retention.protectedSessionIds");
-
-        field.StringValue = "not-a-session-id";
-
-        Assert.True(vm.IsDirty);
-
-        Assert.True(vm.HasFieldErrors);
-
-        Assert.False(vm.SaveCommand.CanExecute(null));
-
-        Assert.True(vm.ValidationErrorsByPointer.ContainsKey("retention.protectedSessionIds"));
-
-        await vm.SaveCommand.ExecuteAsync(null);
-
-        Assert.Empty(store.Writes);
-
-        Assert.Contains(dialogs.Alerts, alert => alert.Title == "Invalid settings");
-
-        Assert.Contains(
-            dialogs.Alerts,
-            alert => alert.Message.Contains("retention.protectedSessionIds", StringComparison.Ordinal));
-
-        Assert.NotEqual("Saved arcanum.json", vm.StatusMessage);
-
-        field.StringValue = "11111111-1111-1111-1111-111111111111";
-
-        Assert.False(vm.HasFieldErrors);
-
-        Assert.True(vm.SaveCommand.CanExecute(null));
-
-    }
-
-    [Fact]
-    public async Task Save_failure_without_validation_errors_still_reaches_the_operator()
-    {
-
-        FakeConfigurationStore store = new(
-            static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } })
+    public Task Save_failure_without_validation_errors_still_reaches_the_operator() =>
+        ui.RunAsync(async () =>
         {
-            NextWriteResult = new ConfigurationWriteResult(
-                false,
-                [],
-                "arcanum.json changed on disk after it was loaded. Reload the configuration, review the newer values, and save again."),
-        };
+            FakeConfigurationStore store = new(
+                static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } })
+            {
+                NextWriteResult = new ConfigurationWriteResult(
+                    false,
+                    [],
+                    "arcanum.json changed on disk after it was loaded. Reload the configuration, review the newer values, and save again."),
+            };
 
-        RecordingDialogService dialogs = new();
+            RecordingDialogService dialogs = new();
 
-        ConfigurationViewModel vm = CreateViewModel(store, dialogs);
+            ConfigurationViewModel vm = CreateViewModel(store, dialogs);
 
-        await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
+            await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
 
-        vm.Host.Port = 5100;
+            vm.Host.Port = 5100;
 
-        await vm.SaveCommand.ExecuteAsync(null);
+            await vm.SaveCommand.ExecuteAsync(null);
 
-        Assert.Contains(dialogs.Alerts, alert => alert.Title == "Save failed");
+            Assert.Contains(dialogs.Alerts, alert => alert.Title == "Save failed");
 
-        Assert.Contains(
-            dialogs.Alerts,
-            alert => alert.Message.Contains("changed on disk", StringComparison.Ordinal));
+            Assert.Contains(
+                dialogs.Alerts,
+                alert => alert.Message.Contains("changed on disk", StringComparison.Ordinal));
 
-        Assert.NotNull(vm.LastErrorMessage);
+            Assert.NotNull(vm.LastErrorMessage);
 
-        Assert.Contains("changed on disk", vm.LastErrorMessage);
+            Assert.Contains("changed on disk", vm.LastErrorMessage);
 
-        Assert.True(vm.IsDirty);
+            Assert.True(vm.IsDirty);
 
-    }
+        });
 
     /// <summary>
     /// A save that committed but could not be hardened is a success, and treating it as one is the
@@ -241,230 +242,229 @@ public sealed class FailClosedEditorTests
     /// Compendium will ever mention it: the app logs only to the debugger.
     /// </summary>
     [Fact]
-    public async Task Save_that_committed_without_hardening_clears_dirty_and_still_warns_the_operator()
-    {
-
-        FakeConfigurationStore store = new(
-            static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } })
+    public Task Save_that_committed_without_hardening_clears_dirty_and_still_warns_the_operator() =>
+        ui.RunAsync(async () =>
         {
-            NextWriteResult = new ConfigurationWriteResult(
-                true,
-                [],
-                null,
-                "Saved arcanum.json, but its owner-only permissions could not be applied, so other accounts on this machine may be able to read it."),
-        };
+            FakeConfigurationStore store = new(
+                static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } })
+            {
+                NextWriteResult = new ConfigurationWriteResult(
+                    true,
+                    [],
+                    null,
+                    "Saved arcanum.json, but its owner-only permissions could not be applied, so other accounts on this machine may be able to read it."),
+            };
 
-        RecordingDialogService dialogs = new();
+            RecordingDialogService dialogs = new();
 
-        ConfigurationViewModel vm = CreateViewModel(store, dialogs);
+            ConfigurationViewModel vm = CreateViewModel(store, dialogs);
 
-        await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
+            await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
 
-        vm.Host.Port = 5100;
+            vm.Host.Port = 5100;
 
-        await vm.SaveCommand.ExecuteAsync(null);
+            await vm.SaveCommand.ExecuteAsync(null);
 
-        Assert.Single(store.Writes);
+            Assert.Single(store.Writes);
 
-        Assert.False(vm.IsDirty);
+            Assert.False(vm.IsDirty);
 
-        Assert.Null(vm.LastErrorMessage);
+            Assert.Null(vm.LastErrorMessage);
 
-        Assert.Contains(
-            "owner-only permissions could not be applied",
-            vm.StatusMessage,
-            StringComparison.Ordinal);
+            Assert.Contains(
+                "owner-only permissions could not be applied",
+                vm.StatusMessage,
+                StringComparison.Ordinal);
 
-        Assert.Contains(dialogs.Alerts, alert => alert.Title == "Saved with a warning");
+            Assert.Contains(dialogs.Alerts, alert => alert.Title == "Saved with a warning");
 
-        Assert.Contains(
-            dialogs.Alerts,
-            alert => alert.Message.Contains("owner-only permissions", StringComparison.Ordinal));
+            Assert.Contains(
+                dialogs.Alerts,
+                alert => alert.Message.Contains("owner-only permissions", StringComparison.Ordinal));
 
-        Assert.DoesNotContain(dialogs.Alerts, alert => alert.Title == "Save failed");
+            Assert.DoesNotContain(dialogs.Alerts, alert => alert.Title == "Save failed");
 
-    }
-
-    [Fact]
-    public async Task Cancel_keeps_the_external_change_warning_because_it_does_not_re_read_disk()
-    {
-
-        FakeConfigurationStore store = new(
-            static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } });
-
-        ConfigurationViewModel vm = CreateViewModel(store, new RecordingDialogService());
-
-        await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
-
-        vm.Host.Port = 5100;
-
-        store.RaiseExternalChange();
-
-        Assert.True(vm.HasExternalChange);
-
-        Assert.True(vm.IsDirty);
-
-        await vm.CancelCommand.ExecuteAsync(null);
-
-        Assert.False(vm.IsDirty);
-
-        Assert.Equal(5001, vm.Host.Port);
-
-        Assert.True(vm.HasExternalChange);
-
-        Assert.False(vm.SaveCommand.CanExecute(null));
-
-    }
+        });
 
     [Fact]
-    public async Task Closing_with_unsaved_edits_requires_confirmation()
-    {
-
-        FakeConfigurationStore store = new(
-            static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } });
-
-        RecordingDialogService dialogs = new() { ConfirmResult = false };
-
-        ConfigurationViewModel vm = CreateViewModel(store, dialogs);
-
-        await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
-
-        Assert.True(await vm.ConfirmDiscardOnExitAsync());
-
-        Assert.Empty(dialogs.Confirms);
-
-        vm.Host.Port = 5100;
-
-        Assert.False(await vm.ConfirmDiscardOnExitAsync());
-
-        Assert.Contains(dialogs.Confirms, confirm => confirm.Title == "Unsaved changes");
-
-        dialogs.ConfirmResult = true;
-
-        Assert.True(await vm.ConfirmDiscardOnExitAsync());
-
-    }
-
-    [Fact]
-    public async Task A_default_configuration_produces_no_field_errors_in_any_section()
-    {
-
-        FakeConfigurationStore store = new(static () => new ArcanumSettings());
-
-        ConfigurationViewModel vm = CreateViewModel(store, new RecordingDialogService());
-
-        await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
-
-        List<string> offenders = [];
-
-        foreach (ConfigSection section in Enum.GetValues<ConfigSection>())
+    public Task Cancel_keeps_the_external_change_warning_because_it_does_not_re_read_disk() =>
+        ui.RunAsync(async () =>
         {
+            FakeConfigurationStore store = new(
+                static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } });
 
-            GenericSectionViewModel generic = vm.GetOrCreateGenericSection(section);
+            ConfigurationViewModel vm = CreateViewModel(store, new RecordingDialogService());
 
-            offenders.AddRange(generic.Fields
-                .Where(static field => field.HasError)
-                .Select(static field => $"{field.Descriptor.Key}: {field.ErrorMessage}"));
+            await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
 
-        }
+            vm.Host.Port = 5100;
 
-        Assert.True(
-            offenders.Count == 0,
-            $"Default settings must not block Save:{Environment.NewLine}{string.Join(Environment.NewLine, offenders)}");
+            store.RaiseExternalChange();
 
-        Assert.False(vm.HasFieldErrors);
+            Assert.True(vm.HasExternalChange);
 
-    }
+            Assert.True(vm.IsDirty);
 
-    [Fact]
-    public void Malformed_dictionary_json_is_reported_on_the_field_that_owns_it()
-    {
+            await vm.CancelCommand.ExecuteAsync(null);
 
-        SettingDescriptor descriptor = Assert.IsType<SettingDescriptor>(
-            SettingDescriptors.Find("cost.pricing.modelPricing"));
+            Assert.False(vm.IsDirty);
 
-        Assert.Equal(SettingKind.Dictionary, descriptor.Kind);
+            Assert.Equal(5001, vm.Host.Port);
 
-        Assert.NotNull(GenericSettingsUpdater.ResolveValueType(descriptor.Key));
+            Assert.True(vm.HasExternalChange);
 
-        GenericSettingFieldViewModel field = new(descriptor, null);
+            Assert.False(vm.SaveCommand.CanExecute(null));
 
-        Assert.False(field.HasError);
-
-        field.StringValue = "{\"gpt-4o\": {\"inputPer1M\": 2.5,}}";
-
-        Assert.True(field.HasError);
-
-        Assert.Contains("JSON", field.ErrorMessage, StringComparison.OrdinalIgnoreCase);
-
-        field.StringValue = "{\"gpt-4o\": {\"inputPer1M\": 2.5}}";
-
-        Assert.False(field.HasError);
-
-    }
+        });
 
     [Fact]
-    public async Task Certificate_generation_failure_is_reported_and_leaves_https_untouched()
-    {
-
-        HostSectionViewModel host = new();
-
-        RecordingDialogService dialogs = new();
-
-        host.AttachServices(
-            static _ => Task.FromException<LocalCertificateResult>(
-                new IOException("No space left on device")),
-            dialogs);
-
-        host.LoadFrom(new HostSettings());
-
-        await host.GenerateLocalCertificateCommand.ExecuteAsync(null);
-
-        Assert.False(host.HttpsEnabled);
-
-        Assert.Equal(string.Empty, host.HttpsCertificatePath);
-
-        Assert.Equal(string.Empty, host.HttpsPrivateKeyPath);
-
-        Assert.Contains(dialogs.Alerts, alert => alert.Title == "Could not generate certificate");
-
-        Assert.Contains(
-            dialogs.Alerts,
-            alert => alert.Message.Contains("No space left on device", StringComparison.Ordinal));
-
-    }
-
-    [Fact]
-    public void SaveBar_shows_the_save_error_and_keeps_Reload_reachable_when_the_file_is_unreadable()
-    {
-
-        SaveBar bar = new()
+    public Task Closing_with_unsaved_edits_requires_confirmation() =>
+        ui.RunAsync(async () =>
         {
-            IsDirty = true,
-            LastErrorMessage = "arcanum.json changed on disk after it was loaded.",
-        };
+            FakeConfigurationStore store = new(
+                static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } });
 
-        TextBlock status = Assert.IsType<TextBlock>(bar.FindControl<TextBlock>("StatusLabel"));
+            RecordingDialogService dialogs = new() { ConfirmResult = false };
 
-        Button reload = Assert.IsType<Button>(bar.FindControl<Button>("ReloadButton"));
+            ConfigurationViewModel vm = CreateViewModel(store, dialogs);
 
-        Assert.Equal("arcanum.json changed on disk after it was loaded.", status.Text);
+            await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
 
-        Assert.False(reload.IsVisible);
+            Assert.True(await vm.ConfirmDiscardOnExitAsync());
 
-        bar.LoadFailed = true;
+            Assert.Empty(dialogs.Confirms);
 
-        Assert.Contains("Could not read arcanum.json", status.Text);
+            vm.Host.Port = 5100;
 
-        Assert.True(reload.IsVisible);
+            Assert.False(await vm.ConfirmDiscardOnExitAsync());
 
-        bar.LoadFailed = false;
+            Assert.Contains(dialogs.Confirms, confirm => confirm.Title == "Unsaved changes");
 
-        bar.LastErrorMessage = null;
+            dialogs.ConfirmResult = true;
 
-        Assert.Equal("Unsaved changes", status.Text);
+            Assert.True(await vm.ConfirmDiscardOnExitAsync());
 
-    }
+        });
+
+    [Fact]
+    public Task A_default_configuration_produces_no_field_errors_in_any_section() =>
+        ui.RunAsync(async () =>
+        {
+            FakeConfigurationStore store = new(static () => new ArcanumSettings());
+
+            ConfigurationViewModel vm = CreateViewModel(store, new RecordingDialogService());
+
+            await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
+
+            List<string> offenders = [];
+
+            foreach (ConfigSection section in Enum.GetValues<ConfigSection>())
+            {
+                GenericSectionViewModel generic = vm.GetOrCreateGenericSection(section);
+
+                offenders.AddRange(generic.Fields
+                    .Where(static field => field.HasError)
+                    .Select(static field => $"{field.Descriptor.Key}: {field.ErrorMessage}"));
+
+            }
+
+            Assert.True(
+                offenders.Count == 0,
+                $"Default settings must not block Save:{Environment.NewLine}{string.Join(Environment.NewLine, offenders)}");
+
+            Assert.False(vm.HasFieldErrors);
+
+        });
+
+    [Fact]
+    public Task Malformed_dictionary_json_is_reported_on_the_field_that_owns_it() =>
+        ui.RunAsync(() =>
+        {
+            SettingDescriptor descriptor = Assert.IsType<SettingDescriptor>(
+                SettingDescriptors.Find("cost.pricing.modelPricing"));
+
+            Assert.Equal(SettingKind.Dictionary, descriptor.Kind);
+
+            Assert.NotNull(GenericSettingsUpdater.ResolveValueType(descriptor.Key));
+
+            GenericSettingFieldViewModel field = new(descriptor, null);
+
+            Assert.False(field.HasError);
+
+            field.StringValue = "{\"gpt-4o\": {\"inputPer1M\": 2.5,}}";
+
+            Assert.True(field.HasError);
+
+            Assert.Contains("JSON", field.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+
+            field.StringValue = "{\"gpt-4o\": {\"inputPer1M\": 2.5}}";
+
+            Assert.False(field.HasError);
+
+        });
+
+    [Fact]
+    public Task Certificate_generation_failure_is_reported_and_leaves_https_untouched() =>
+        ui.RunAsync(async () =>
+        {
+            HostSectionViewModel host = new();
+
+            RecordingDialogService dialogs = new();
+
+            host.AttachServices(
+                static _ => Task.FromException<LocalCertificateResult>(
+                    new IOException("No space left on device")),
+                dialogs);
+
+            host.LoadFrom(new HostSettings());
+
+            await host.GenerateLocalCertificateCommand.ExecuteAsync(null);
+
+            Assert.False(host.HttpsEnabled);
+
+            Assert.Equal(string.Empty, host.HttpsCertificatePath);
+
+            Assert.Equal(string.Empty, host.HttpsPrivateKeyPath);
+
+            Assert.Contains(dialogs.Alerts, alert => alert.Title == "Could not generate certificate");
+
+            Assert.Contains(
+                dialogs.Alerts,
+                alert => alert.Message.Contains("No space left on device", StringComparison.Ordinal));
+
+        });
+
+    [Fact]
+    public Task SaveBar_shows_the_save_error_and_keeps_Reload_reachable_when_the_file_is_unreadable() =>
+        ui.RunAsync(() =>
+        {
+            SaveBar bar = new()
+            {
+                IsDirty = true,
+                LastErrorMessage = "arcanum.json changed on disk after it was loaded.",
+            };
+
+            TextBlock status = Assert.IsType<TextBlock>(bar.FindControl<TextBlock>("StatusLabel"));
+
+            Button reload = Assert.IsType<Button>(bar.FindControl<Button>("ReloadButton"));
+
+            Assert.Equal("arcanum.json changed on disk after it was loaded.", status.Text);
+
+            Assert.False(reload.IsVisible);
+
+            bar.LoadFailed = true;
+
+            Assert.Contains("Could not read arcanum.json", status.Text);
+
+            Assert.True(reload.IsVisible);
+
+            bar.LoadFailed = false;
+
+            bar.LastErrorMessage = null;
+
+            Assert.Equal("Unsaved changes", status.Text);
+
+        });
 
     /// <summary>
     /// A rejected value that the operator then corrects must stop being reported as rejected. The last
@@ -474,39 +474,39 @@ public sealed class FailClosedEditorTests
     /// still-broken one until another round-trip save.
     /// </summary>
     [Fact]
-    public async Task Editing_after_a_rejected_save_retires_the_previous_verdict()
-    {
-
-        FakeConfigurationStore store = new(
-            static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } })
+    public Task Editing_after_a_rejected_save_retires_the_previous_verdict() =>
+        ui.RunAsync(async () =>
         {
-            NextWriteResult = new ConfigurationWriteResult(
-                false,
-                [new ConfigurationValidationError(
-                    "defaultModel",
-                    "DefaultModel 'no-such-model' does not match any configured provider model.")],
-                "The configuration is not valid."),
-        };
+            FakeConfigurationStore store = new(
+                static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } })
+            {
+                NextWriteResult = new ConfigurationWriteResult(
+                    false,
+                    [new ConfigurationValidationError(
+                        "defaultModel",
+                        "DefaultModel 'no-such-model' does not match any configured provider model.")],
+                    "The configuration is not valid."),
+            };
 
-        ConfigurationViewModel vm = CreateViewModel(store, new RecordingDialogService());
+            ConfigurationViewModel vm = CreateViewModel(store, new RecordingDialogService());
 
-        await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
+            await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
 
-        vm.Providers.DefaultModel = "no-such-model";
+            vm.Providers.DefaultModel = "no-such-model";
 
-        await vm.SaveCommand.ExecuteAsync(null);
+            await vm.SaveCommand.ExecuteAsync(null);
 
-        Assert.True(vm.ValidationErrorsByPointer.ContainsKey("defaultModel"));
+            Assert.True(vm.ValidationErrorsByPointer.ContainsKey("defaultModel"));
 
-        Assert.NotNull(vm.LastErrorMessage);
+            Assert.NotNull(vm.LastErrorMessage);
 
-        vm.Providers.DefaultModel = "gpt-4o";
+            vm.Providers.DefaultModel = "gpt-4o";
 
-        Assert.False(vm.ValidationErrorsByPointer.ContainsKey("defaultModel"));
+            Assert.False(vm.ValidationErrorsByPointer.ContainsKey("defaultModel"));
 
-        Assert.Null(vm.LastErrorMessage);
+            Assert.Null(vm.LastErrorMessage);
 
-    }
+        });
 
     /// <summary>
     /// The polished Host page hosts the same chips control, and its pending entry has to behave the
@@ -514,37 +514,37 @@ public sealed class FailClosedEditorTests
     /// land in the settings when the operator leaves the box, not vanish on the next Save.
     /// </summary>
     [Fact]
-    public async Task Pending_cors_origin_marks_the_editor_dirty_and_commits_on_focus_loss()
-    {
-
-        FakeConfigurationStore store = new(
-            static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } });
-
-        ConfigurationViewModel vm = CreateViewModel(store, new RecordingDialogService());
-
-        await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
-
-        HostPage page = new()
+    public Task Pending_cors_origin_marks_the_editor_dirty_and_commits_on_focus_loss() =>
+        ui.RunAsync(async () =>
         {
-            DataContext = vm,
-        };
+            FakeConfigurationStore store = new(
+                static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } });
 
-        ChipsEditor chips = Assert.Single(page.GetLogicalDescendants().OfType<ChipsEditor>());
+            ConfigurationViewModel vm = CreateViewModel(store, new RecordingDialogService());
 
-        TextBox entry = Assert.IsType<TextBox>(chips.FindControl<TextBox>("NewItemEntry"));
+            await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
 
-        entry.Text = "https://studio.example";
+            HostPage page = new()
+            {
+                DataContext = vm,
+            };
 
-        Assert.True(vm.IsDirty);
+            ChipsEditor chips = Assert.Single(page.GetLogicalDescendants().OfType<ChipsEditor>());
 
-        entry.RaiseEvent(new RoutedEventArgs(InputElement.LostFocusEvent));
+            TextBox entry = Assert.IsType<TextBox>(chips.FindControl<TextBox>("NewItemEntry"));
 
-        Assert.Contains(
-            "https://studio.example",
-            vm.Host.CorsAllowedOrigins,
-            StringComparison.Ordinal);
+            entry.Text = "https://studio.example";
 
-    }
+            Assert.True(vm.IsDirty);
+
+            entry.RaiseEvent(new RoutedEventArgs(InputElement.LostFocusEvent));
+
+            Assert.Contains(
+                "https://studio.example",
+                vm.Host.CorsAllowedOrigins,
+                StringComparison.Ordinal);
+
+        });
 
     private static ConfigurationViewModel CreateViewModel(
         IArcanumConfigurationStore store,
@@ -561,10 +561,8 @@ public sealed class FailClosedEditorTests
 
         for (int attempt = 0; attempt < 100; attempt++)
         {
-
             if (condition())
             {
-
                 return;
 
             }
@@ -632,7 +630,6 @@ public sealed class FailClosedEditorTests
 
         public Task ShowAlertAsync(string title, string message, string cancel = "OK")
         {
-
             Alerts.Add((title, message));
 
             return Task.CompletedTask;
@@ -641,7 +638,6 @@ public sealed class FailClosedEditorTests
 
         public Task<bool> ShowConfirmAsync(string title, string message, string accept = "Yes", string cancel = "No")
         {
-
             Confirms.Add((title, message));
 
             return Task.FromResult(ConfirmResult);

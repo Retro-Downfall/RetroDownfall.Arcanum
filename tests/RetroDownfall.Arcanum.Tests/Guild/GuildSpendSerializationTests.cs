@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -9,6 +10,16 @@ namespace RetroDownfall.Arcanum.Tests.Guild;
 
 public sealed class GuildSpendSerializationTests
 {
+    [Theory]
+    [InlineData(typeof(GuildSpendRefreshRequest[]))]
+    [InlineData(typeof(ImmutableArray<GuildSpendRefreshRequest>))]
+    [InlineData(typeof(GuildSpendRefreshResultDto[]))]
+    [InlineData(typeof(ImmutableArray<GuildSpendRefreshResultDto>))]
+    public void Refresh_collections_have_explicit_generated_metadata(Type type)
+    {
+        Assert.NotNull(GuildJsonContext.Default.GetTypeInfo(type));
+    }
+
     [Theory]
     [InlineData("1e-29")]
     [InlineData("79228162514264337593543950336")]

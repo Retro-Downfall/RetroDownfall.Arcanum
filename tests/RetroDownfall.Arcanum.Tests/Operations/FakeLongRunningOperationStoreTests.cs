@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
+using RetroDownfall.Arcanum.Infrastructure.Operations;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
@@ -153,6 +155,143 @@ public sealed class FakeLongRunningOperationStoreTests
         // 450 rows at 200 a page is three round-trips for the one state that holds them, and one for each of
         // the four open states that hold none.
         Assert.Equal(3 + 4, store.ListCallCount);
+    }
+
+    [Theory]
+    [InlineData(LongRunningOperationState.Running, LongRunningOperationState.Completed, LongRunningOperationState.Completed)]
+    [InlineData(LongRunningOperationState.Waiting, LongRunningOperationState.ReconciliationRequired, LongRunningOperationState.ReconciliationRequired)]
+    [InlineData(LongRunningOperationState.Running, LongRunningOperationState.Abandoned, LongRunningOperationState.Abandoned)]
+    [InlineData(LongRunningOperationState.Cancelling, LongRunningOperationState.ReconciliationRequired, LongRunningOperationState.Abandoned)]
+    [InlineData(LongRunningOperationState.Cancelling, LongRunningOperationState.Completed, LongRunningOperationState.Completed)]
+    public async Task Refresh_owned_settlement_mirrors_live_writer_and_releases_its_lease_once(
+        LongRunningOperationState source, LongRunningOperationState proposal, LongRunningOperationState expected)
+    {
+        DateTimeOffset now = new(2026, 11, 13, 12, 0, 0, TimeSpan.Zero);
+
+        FakeLongRunningOperationStore store = new(new SettlementClock(now.AddDays(-1)));
+
+        LongRunningOperation row = store.Seed(LongRunningOperationKinds.GuildSpendRefresh,
+            LongRunningOperationRecoveryPolicy.ReconcileAndComplete, source) with
+        {
+            LeaseOwner = new string('o', 200),
+            LeaseExpiresAt = now.AddMinutes(1),
+        };
+
+        store.Add(row);
+
+        IGuildRefreshOwnedSettlement settlement = Assert.IsAssignableFrom<IGuildRefreshOwnedSettlement>(store);
+
+        string error = "  " + new string('e', 220) + "  ";
+
+        Assert.Equal(expected, await settlement.TrySettleGuildRefreshAsync(row.Id, row.Revision,
+            "  " + new string('o', 220) + "  ", proposal, error, new SettlementClock(now), CancellationToken.None));
+
+        LongRunningOperation changed = Assert.Single(store.Operations);
+
+        Assert.Equal(row with
+        {
+            State = expected,
+            CompletedAt = source == LongRunningOperationState.Cancelling
+                || proposal is LongRunningOperationState.Completed or LongRunningOperationState.Abandoned ? now : null,
+            LeaseOwner = null,
+            LeaseExpiresAt = null,
+            TerminalErrorCode = source == LongRunningOperationState.Cancelling && proposal != LongRunningOperationState.Completed
+                ? ErrorCodes.Guild.RefreshCancelled : new string('e', 200),
+            Revision = row.Revision + 1,
+        }, changed);
+
+        Assert.Null(await settlement.TrySettleGuildRefreshAsync(row.Id, changed.Revision,
+            new string('o', 200), proposal, null, new SettlementClock(now), CancellationToken.None));
+
+        Assert.Equal(changed, Assert.Single(store.Operations));
+    }
+
+    [Theory]
+    [InlineData("owner")]
+    [InlineData("revision")]
+    [InlineData("maximum-revision")]
+    [InlineData("expired")]
+    [InlineData("expiry-equals-now")]
+    [InlineData("missing-expiry")]
+    [InlineData("kind")]
+    [InlineData("state")]
+    [InlineData("missing-id")]
+    public async Task Refresh_owned_settlement_refuses_unowned_or_stale_rows_without_mutation(string refusal)
+    {
+        DateTimeOffset now = new(2026, 11, 13, 12, 0, 0, TimeSpan.Zero);
+
+        FakeLongRunningOperationStore store = new(new SettlementClock(now));
+
+        LongRunningOperation row = store.Seed(LongRunningOperationKinds.GuildSpendRefresh,
+            LongRunningOperationRecoveryPolicy.ReconcileAndComplete) with { LeaseOwner = "owner", LeaseExpiresAt = now.AddMinutes(1) };
+
+        row = refusal switch
+        {
+            "maximum-revision" => row with { Revision = long.MaxValue },
+            "expired" => row with { LeaseExpiresAt = now.AddTicks(-1) },
+            "expiry-equals-now" => row with { LeaseExpiresAt = now },
+            "missing-expiry" => row with { LeaseExpiresAt = null },
+            "kind" => row with { Kind = LongRunningOperationKinds.A2AOutboundSending },
+            "state" => row with { State = LongRunningOperationState.Completed },
+            _ => row,
+        };
+
+        store.Add(row);
+
+        IGuildRefreshOwnedSettlement settlement = Assert.IsAssignableFrom<IGuildRefreshOwnedSettlement>(store);
+
+        Assert.Null(await settlement.TrySettleGuildRefreshAsync(refusal == "missing-id" ? Guid.NewGuid() : row.Id,
+            refusal == "revision" ? row.Revision + 1 : row.Revision, refusal == "owner" ? "other" : "owner",
+            LongRunningOperationState.Completed, null, new SettlementClock(now), CancellationToken.None));
+
+        Assert.Equal(row, Assert.Single(store.Operations));
+    }
+
+    [Fact]
+    public async Task Refresh_owned_settlement_refuses_cancellation_and_invalid_proposals_before_mutation()
+    {
+        FakeLongRunningOperationStore store = new(TimeProvider.System);
+
+        LongRunningOperation row = store.Seed(LongRunningOperationKinds.GuildSpendRefresh,
+            LongRunningOperationRecoveryPolicy.ReconcileAndComplete, leaseExpiresAt: DateTimeOffset.UtcNow.AddMinutes(1));
+
+        IGuildRefreshOwnedSettlement settlement = Assert.IsAssignableFrom<IGuildRefreshOwnedSettlement>(store);
+
+        using CancellationTokenSource cancelled = new();
+
+        cancelled.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => settlement.TrySettleGuildRefreshAsync(row.Id,
+            row.Revision, "dead-process", LongRunningOperationState.Completed, null, TimeProvider.System, cancelled.Token));
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => settlement.TrySettleGuildRefreshAsync(row.Id,
+            row.Revision, "dead-process", LongRunningOperationState.Running, null, TimeProvider.System, CancellationToken.None));
+
+        Assert.Equal(row, Assert.Single(store.Operations));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Refresh_owned_settlement_rejects_missing_owner_without_mutation(string? owner)
+    {
+        FakeLongRunningOperationStore store = new(TimeProvider.System);
+
+        LongRunningOperation row = store.Seed(LongRunningOperationKinds.GuildSpendRefresh,
+            LongRunningOperationRecoveryPolicy.ReconcileAndComplete);
+
+        IGuildRefreshOwnedSettlement settlement = Assert.IsAssignableFrom<IGuildRefreshOwnedSettlement>(store);
+
+        await Assert.ThrowsAnyAsync<ArgumentException>(() => settlement.TrySettleGuildRefreshAsync(row.Id,
+            row.Revision, owner!, LongRunningOperationState.Completed, null, TimeProvider.System, CancellationToken.None));
+
+        Assert.Equal(row, Assert.Single(store.Operations));
+    }
+
+    private sealed class SettlementClock(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
     }
 
     private static Guid[] Ids(IReadOnlyList<LongRunningOperation> operations) =>

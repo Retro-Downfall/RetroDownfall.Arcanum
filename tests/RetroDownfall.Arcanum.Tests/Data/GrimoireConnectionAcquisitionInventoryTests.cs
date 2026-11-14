@@ -1,5 +1,6 @@
 using System.Reflection;
 
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
@@ -12,7 +13,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
-    private const int ExpectedProductionAcquisitionCount = 571;
+    private const int ExpectedProductionAcquisitionCount = 574;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
@@ -2299,6 +2300,142 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                     && discoveries.Contains(entry.Identity)),
         ];
     }
+
+    [Fact]
+    public void Reviewed_shared_EF_wrappers_have_exact_source_bound_acquisition_metadata()
+    {
+        IReadOnlyList<AcquisitionSource> sources = ProductionSources();
+
+        Assert.Equal(80, GrimoireConnectionAcquisitionScanner.Discover(sources).Count(IsReviewedEfWrapperAcquisition));
+
+        Assert.Empty(FindReviewedEfWrapperRouteViolations(sources, GrimoireConnectionAcquisitionScanner.Catalog()));
+    }
+
+    [Theory]
+    [InlineData("LongRunningOperationStore")]
+    [InlineData("DataRetentionService")]
+    public void Reviewed_shared_EF_wrappers_reject_consistent_but_false_raw_factory_labels(string owner)
+    {
+        IReadOnlyList<GrimoireAcquisitionCatalogEntry> catalog = GrimoireConnectionAcquisitionScanner.Catalog();
+
+        GrimoireAcquisitionCatalogEntry selected = catalog.First(entry => IsReviewedEfWrapperAcquisition(entry.Identity)
+            && entry.Identity.EnclosingType == owner && entry.Identity.CalleeOrConstructedType == "OpenConnectionAsync");
+
+        GrimoireAcquisitionCatalogEntry[] mutated = catalog.Select(entry => entry.Identity == selected.Identity
+            ? entry with { AcquisitionKind = GrimoireAcquisitionKind.ServingRawOrdinary,
+                RuntimeRoute = GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory }
+            : entry).ToArray();
+
+        Assert.Contains(selected.Identity, FindReviewedEfWrapperRouteViolations(ProductionSources(), mutated));
+    }
+
+    [Theory]
+    [InlineData("LongRunningOperationStore")]
+    [InlineData("DataRetentionService")]
+    public void Reviewed_shared_EF_wrappers_must_return_the_same_EF_owned_connection(string owner)
+    {
+        string path = "src/RetroDownfall.Arcanum.Infrastructure/Data/" + owner + ".cs";
+
+        IReadOnlyList<AcquisitionSource> sources = ProductionSources();
+
+        AcquisitionSource source = sources.Single(item => item.RelativePath == path);
+
+        MethodDeclarationSyntax wrapper = CSharpSyntaxTree.ParseText(source.Text).GetRoot().DescendantNodes()
+            .OfType<MethodDeclarationSyntax>().Single(static method => method.Identifier.ValueText == "OpenConnectionAsync");
+
+        string changed = source.Text.Remove(wrapper.Body!.SpanStart, wrapper.Body.Span.Length)
+            .Insert(wrapper.Body.SpanStart, wrapper.Body.ToString().Replace("return connection;",
+                "return new Microsoft.Data.Sqlite.SqliteConnection();", StringComparison.Ordinal));
+
+        AcquisitionSource[] mutated = sources.Select(item => item.RelativePath == path ? item with { Text = changed } : item).ToArray();
+
+        AcquisitionIdentity leaf = new(path, owner, "OpenConnectionAsync(1)", AcquisitionConstructKind.ProviderOpen,
+            "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)");
+
+        Assert.Contains(leaf, FindReviewedEfWrapperRouteViolations(mutated, GrimoireConnectionAcquisitionScanner.Catalog()));
+    }
+
+    private static bool IsReviewedEfWrapperAcquisition(AcquisitionIdentity identity) =>
+        identity.ConstructKind == AcquisitionConstructKind.ProviderOpen
+        && identity.CalleeOrConstructedType is "OpenConnectionAsync" or "db.Database.OpenConnectionAsync"
+        && (identity.EnclosingType == "LongRunningOperationStore"
+                && identity.RelativePath == "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs"
+            || identity.EnclosingType == "DataRetentionService"
+                && identity.RelativePath.StartsWith("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService", StringComparison.Ordinal)
+                && identity.RelativePath.EndsWith(".cs", StringComparison.Ordinal));
+
+    private static IReadOnlyList<AcquisitionIdentity> FindReviewedEfWrapperRouteViolations(
+        IReadOnlyList<AcquisitionSource> sources, IReadOnlyList<GrimoireAcquisitionCatalogEntry> catalog)
+    {
+        List<AcquisitionIdentity> violations = [];
+
+        foreach (AcquisitionIdentity identity in GrimoireConnectionAcquisitionScanner.Discover(sources)
+            .Where(IsReviewedEfWrapperAcquisition))
+        {
+            GrimoireAcquisitionCatalogEntry[] matches = catalog.Where(entry => entry.Identity == identity).ToArray();
+
+            if (matches is not [GrimoireAcquisitionCatalogEntry entry]
+                || entry.PathAuthority != GrimoirePathAuthority.LiveGrimoire
+                || entry.AcquisitionKind != GrimoireAcquisitionKind.ServingEfOrdinary
+                || entry.RuntimeRoute != GrimoireRuntimeAdmissionRoute.SharedEfInterceptor
+                || entry.NonServingProof is not null)
+            {
+                violations.Add(identity);
+            }
+        }
+
+        const string expectedBody = """
+            {
+                DbConnection connection = db.Database.GetDbConnection();
+                if (connection.State != ConnectionState.Open)
+                {
+                    await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+                }
+                return connection;
+            }
+            """;
+
+        string expected = WrapperTokens(SyntaxFactory.ParseStatement(expectedBody));
+
+        foreach (string owner in new[] { "LongRunningOperationStore", "DataRetentionService" })
+        {
+            string path = "src/RetroDownfall.Arcanum.Infrastructure/Data/" + owner + ".cs";
+
+            AcquisitionIdentity leaf = new(path, owner, "OpenConnectionAsync(1)", AcquisitionConstructKind.ProviderOpen,
+                "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)");
+
+            AcquisitionSource[] matchedSources = sources.Where(source => source.RelativePath == path).ToArray();
+
+            if (matchedSources is not [AcquisitionSource source])
+            {
+                violations.Add(leaf);
+
+                continue;
+            }
+
+            MethodDeclarationSyntax[] methods = CSharpSyntaxTree.ParseText(source.Text).GetRoot().DescendantNodes()
+                .OfType<MethodDeclarationSyntax>().Where(static method => method.Identifier.ValueText == "OpenConnectionAsync").ToArray();
+
+            if (methods is not [MethodDeclarationSyntax method]
+                || method.Ancestors().OfType<ClassDeclarationSyntax>().FirstOrDefault() is not { } type
+                || type.Identifier.ValueText != owner
+                || type.ParameterList?.Parameters.Count(parameter => parameter.Identifier.ValueText == "db"
+                    && parameter.Type?.ToString() == "ArcanumDbContext") != 1
+                || method.ReturnType.ToString() != "Task<DbConnection>" || !method.Modifiers.Any(SyntaxKind.AsyncKeyword)
+                || method.ParameterList.Parameters.Count != 1
+                || method.ParameterList.Parameters[0].Identifier.ValueText != "cancellationToken"
+                || method.ParameterList.Parameters[0].Type?.ToString() != "CancellationToken"
+                || method.Body is null || WrapperTokens(method.Body) != expected)
+            {
+                violations.Add(leaf);
+            }
+        }
+
+        return violations;
+    }
+
+    private static string WrapperTokens(SyntaxNode node) =>
+        string.Concat(node.DescendantTokens().Select(static token => token.Text));
 
     private static IReadOnlyList<AcquisitionSource> ProductionSources()
     {

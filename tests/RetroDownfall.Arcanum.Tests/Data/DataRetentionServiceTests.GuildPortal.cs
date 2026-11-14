@@ -155,6 +155,8 @@ public sealed partial class DataRetentionServiceTests
 
         await AcknowledgeRetentionPortalAsync();
 
+        await SeedSettledRetentionQuestAccountAsync();
+
         await ExecuteAsync("""
             INSERT INTO guild_portal_inputs VALUES('14141414-1414-1414-1414-141414141414','11111111-1111-1111-1111-111111111111','12121212-1212-1212-1212-121212121212','2000-01-01T00:00:00.0000000Z');
             INSERT INTO guild_event_streams VALUES('11111111-1111-1111-1111-111111111111',1,0);
@@ -164,7 +166,11 @@ public sealed partial class DataRetentionServiceTests
             VALUES(0,'15151515-1515-1515-1515-151515151515','11111111-1111-1111-1111-111111111111','12121212-1212-1212-1212-121212121212','2000-01-01T00:00:00.0000000Z',2);
             """);
 
-        var recovered = await ReconcileFactoryResetV0Async(CreateService(), "portal-factory-reset-recovery");
+        var service = CreateService();
+
+        Assert.Empty((await service.PlanAsync(new(DataRetentionOperation.FactoryReset))).Conflicts);
+
+        var recovered = await ReconcileFactoryResetV0Async(service, "portal-factory-reset-recovery");
 
         Assert.Equal(1, recovered.Summary.Completed);
 

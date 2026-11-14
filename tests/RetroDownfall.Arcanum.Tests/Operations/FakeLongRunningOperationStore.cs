@@ -18,7 +18,8 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
     : ILongRunningOperationStore,
       ILongRunningOperationGenericRecoveryDiscovery,
-      ILongRunningOperationClassifiedRecoveryLeaseAcquisition
+      ILongRunningOperationClassifiedRecoveryLeaseAcquisition,
+      IGuildRefreshOwnedSettlement
 {
     private readonly ConcurrentDictionary<Guid, LongRunningOperation> _operations = new();
 
@@ -531,6 +532,77 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
         return Task.FromResult<IReadOnlyList<LongRunningOperationCount>>(counts);
     }
 
+    public Task<LongRunningOperationState?> TrySettleGuildRefreshAsync(
+        Guid operationId,
+        long revision,
+        string owner,
+        LongRunningOperationState proposedState,
+        string? errorCode,
+        TimeProvider time,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+
+        if (proposedState is not (LongRunningOperationState.Completed
+            or LongRunningOperationState.ReconciliationRequired
+            or LongRunningOperationState.Abandoned))
+        {
+            throw new ArgumentOutOfRangeException(nameof(proposedState));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        lock (_gate)
+        {
+            DateTimeOffset now = time.GetUtcNow();
+
+            if (!_operations.TryGetValue(operationId, out LongRunningOperation? current)
+                || !string.Equals(current.Kind, LongRunningOperationKinds.GuildSpendRefresh, StringComparison.Ordinal)
+                || current.Revision != revision
+                || current.Revision == long.MaxValue
+                || !string.Equals(current.LeaseOwner, Bound(owner, 200), StringComparison.Ordinal)
+                || current.LeaseExpiresAt is null
+                || current.LeaseExpiresAt <= now
+                || current.State is not (LongRunningOperationState.Running
+                    or LongRunningOperationState.Waiting
+                    or LongRunningOperationState.Cancelling))
+            {
+                return Task.FromResult<LongRunningOperationState?>(null);
+            }
+
+            bool wasCancelling = current.State == LongRunningOperationState.Cancelling;
+
+            bool proposedIsCompleted = proposedState == LongRunningOperationState.Completed;
+
+            LongRunningOperationState newState = wasCancelling && !proposedIsCompleted
+                ? LongRunningOperationState.Abandoned
+                : proposedState;
+
+            DateTimeOffset? completedAt = wasCancelling || proposedIsCompleted
+                || proposedState == LongRunningOperationState.Abandoned
+                ? now
+                : null;
+
+            string? terminalErrorCode = wasCancelling && !proposedIsCompleted
+                ? ErrorCodes.Guild.RefreshCancelled
+                : errorCode is null ? null : Bound(errorCode, 200);
+
+            LongRunningOperation settled = current with
+            {
+                State = newState,
+                CompletedAt = completedAt,
+                LeaseOwner = null,
+                LeaseExpiresAt = null,
+                TerminalErrorCode = terminalErrorCode,
+                Revision = current.Revision + 1,
+            };
+
+            _operations[operationId] = settled;
+
+            return Task.FromResult<LongRunningOperationState?>(newState);
+        }
+    }
+
     private static bool IsRecoverableAttention(LongRunningOperation operation) =>
         operation.State == LongRunningOperationState.ReconciliationRequired
         && ((operation.Kind is LongRunningOperationKinds.DataRetentionPrune
@@ -546,6 +618,13 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
                     operation.TerminalErrorCode,
                     ErrorCodes.Covenant.MaintenanceFailed,
                     StringComparison.Ordinal)));
+
+    private static string Bound(string value, int maxLength)
+    {
+        string trimmed = value.Trim();
+
+        return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength];
+    }
 }
 
 /// <summary>Recording handler that lets a test choose the recovery outcome per kind.</summary>

@@ -1,4 +1,6 @@
 using System.Data;
+using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using SQLitePCL;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -34,6 +36,13 @@ public static class SqliteReaderSmokeEntryPoint
 
     private static void Run(string mode)
     {
+        if (mode == "native-secure-file")
+        {
+            RunNativeSecureFileAsync().GetAwaiter().GetResult();
+
+            return;
+        }
+
         if (mode == "enum-comparer")
         {
             EnumComparerProbe.Run();
@@ -403,5 +412,78 @@ public static class SqliteReaderSmokeEntryPoint
         }
 
         throw new InvalidDataException("The expected typed refusal did not occur.");
+    }
+
+    private static async Task RunNativeSecureFileAsync()
+    {
+        if (RuntimeFeature.IsDynamicCodeSupported)
+        {
+            throw new InvalidOperationException("This proof requires an actual Native AOT apphost.");
+        }
+
+        string root = Directory.CreateTempSubdirectory("arcanum-native-secure-file-").FullName;
+
+        try
+        {
+            byte[] expected = Enumerable.Range(0, 65_536).Select(static index => (byte)(index % 251)).ToArray();
+
+            string path = Path.Combine(root, "seekable.bin");
+
+            await File.WriteAllBytesAsync(path, expected);
+
+            if (SecureFileReader.TryOpenRegularFile(path, null, out FileStream? opened, out FileHandleMetadata metadata)
+                != SecureFileOpenStatus.Success || opened is null || metadata.Kind != FileSystemObjectKind.RegularFile)
+            {
+                throw new InvalidDataException("The owned regular file was not admitted.");
+            }
+
+            await using FileStream stream = opened;
+
+            byte[] bytes = new byte[8];
+
+            await stream.ReadExactlyAsync(bytes);
+
+            if (!bytes.AsSpan().SequenceEqual(expected.AsSpan(0, bytes.Length)))
+            {
+                throw new InvalidDataException("The first secure read changed bytes.");
+            }
+
+            stream.Position = 0;
+
+            if (!SHA256.HashData(stream).AsSpan().SequenceEqual(SHA256.HashData(expected))
+                || !FileHandleIdentityInterop.TryGetHandleMetadata(stream.SafeFileHandle, out FileHandleMetadata current)
+                || !FileHandleIdentity.IdentitiesMatch(metadata.Identity, current.Identity))
+            {
+                throw new InvalidDataException("The secure hash or same-handle identity changed.");
+            }
+
+            foreach (int offset in new[] { 0, 8192, 49152 })
+            {
+                stream.Position = offset;
+
+                await stream.ReadExactlyAsync(bytes);
+
+                if (!bytes.AsSpan().SequenceEqual(expected.AsSpan(offset, bytes.Length)))
+                {
+                    throw new InvalidDataException("Secure async rewind did not retain its exact offset.");
+                }
+            }
+
+            if (!OperatingSystem.IsWindows())
+            {
+                (int descriptor, int status) = SecureFileReader.GetUnixHandleFlagsForTests(stream.SafeFileHandle);
+
+                int nonBlocking = OperatingSystem.IsMacOS() ? 4 : 2048;
+
+                if (descriptor < 0 || status < 0 || (descriptor & 1) == 0 || (status & nonBlocking) != 0 || stream.IsAsync)
+                {
+                    throw new InvalidDataException("The admitted descriptor flags do not preserve seek semantics.");
+                }
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 }

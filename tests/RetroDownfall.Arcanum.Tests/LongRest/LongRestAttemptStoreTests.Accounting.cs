@@ -6,14 +6,19 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 
 public sealed partial class LongRestAttemptStoreTests
 {
+    public static TheoryData<LongRestDispatchAttemptState, long, decimal?, long, decimal?> PaidCountCases => new()
+    {
+        { LongRestDispatchAttemptState.Accepted, 0, null, 2, null },
+        { LongRestDispatchAttemptState.Invalid, 0, 0m, 2, 0.5m },
+        { LongRestDispatchAttemptState.Failed, 0, null, 1, 0.5m },
+        { LongRestDispatchAttemptState.Failed, 0, 0m, 1, 0.5m },
+        { LongRestDispatchAttemptState.Failed, 1, null, 2, null },
+        { LongRestDispatchAttemptState.Failed, 0, 0.2m, 2, 0.7m },
+    };
+
     [Theory]
-    [InlineData(LongRestDispatchAttemptState.Accepted, 0, null, 2, null)]
-    [InlineData(LongRestDispatchAttemptState.Invalid, 0, 0.0, 2, 0.5)]
-    [InlineData(LongRestDispatchAttemptState.Failed, 0, null, 1, 0.5)]
-    [InlineData(LongRestDispatchAttemptState.Failed, 0, 0.0, 1, 0.5)]
-    [InlineData(LongRestDispatchAttemptState.Failed, 1, null, 2, null)]
-    [InlineData(LongRestDispatchAttemptState.Failed, 0, 0.2, 2, 0.7)]
-    public async Task Paid_count_distinguishes_zero_evidence_transport_failure_from_paid_returns(LongRestDispatchAttemptState state, long usage, double? cost, long paidCount, double? totalCost)
+    [MemberData(nameof(PaidCountCases))]
+    public async Task Paid_count_distinguishes_zero_evidence_transport_failure_from_paid_returns(LongRestDispatchAttemptState state, long usage, decimal? cost, long paidCount, decimal? totalCost)
     {
         await using LongRestSweepHarness h = await FixtureAsync();
 
@@ -31,7 +36,7 @@ public sealed partial class LongRestAttemptStoreTests
 
         LongRestDispatchAttempt secondSent = LongRestSweepHarness.Require(await store.MarkSentAsync(second, CancellationToken.None));
 
-        LongRestDispatchCompletion completion = new(state, new(usage, 0, usage, 0, 0), cost is { } known ? (decimal)known : null, null);
+        LongRestDispatchCompletion completion = new(state, new(usage, 0, usage, 0, 0), cost, null);
 
         LongRestSweepHarness.Require(await store.CompleteAttemptAsync(secondSent, completion, CancellationToken.None));
 
@@ -39,7 +44,7 @@ public sealed partial class LongRestAttemptStoreTests
 
         object? storedCost = await h.ScalarAsync("SELECT CostUsd FROM long_rest_provider_effects;");
 
-        Assert.Equal(totalCost is { } total ? ((decimal)total).ToString(System.Globalization.CultureInfo.InvariantCulture) : (object)DBNull.Value, storedCost);
+        Assert.Equal(totalCost is { } total ? total.ToString(System.Globalization.CultureInfo.InvariantCulture) : (object)DBNull.Value, storedCost);
 
         Assert.Equal(1 + usage, await h.ScalarAsync("SELECT InputTokens FROM long_rest_provider_effects;"));
 

@@ -262,6 +262,11 @@ public sealed class BackupInventoryPlannerTests : IDisposable
             databasePassphrase: string.Empty,
             CancellationToken.None);
 
+        BackupPlanComponent selected = Assert.Single(inventory.Plan.Components,
+            component => component.Component == BackupComponent.SessionAttachments);
+
+        Assert.True(selected.Status == BackupComponentStatus.Complete, selected.Detail);
+
         Assert.Equal(
             [descriptor.KeyId],
             inventory.RequiredFileEncryptionKeyIds.Order(StringComparer.Ordinal));
@@ -322,6 +327,11 @@ public sealed class BackupInventoryPlannerTests : IDisposable
             _databasePath,
             databasePassphrase: string.Empty,
             CancellationToken.None);
+
+        BackupPlanComponent selected = Assert.Single(inventory.Plan.Components,
+            component => component.Component == BackupComponent.BatchArtifacts);
+
+        Assert.True(selected.Status == BackupComponentStatus.Complete, selected.Detail);
 
         Assert.Equal(
             [descriptor.KeyId],

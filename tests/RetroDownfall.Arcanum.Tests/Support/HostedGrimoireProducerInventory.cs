@@ -34242,7 +34242,7 @@ internal static partial class HostedGrimoireProducerInventory
             return type is { TypeKind: TypeKind.Class, Arity: 0 }
                 && SymbolEqualityComparer.Default.Equals(type, compilation.GetTypeByMetadataName(metadataType))
                 && SymbolEqualityComparer.Default.Equals(type.ContainingAssembly, core)
-                && assembly.Version == new Version(10, 0, 0, 0) && string.IsNullOrEmpty(assembly.CultureName)
+                && assembly.Version == new Version(11, 0, 0, 0) && string.IsNullOrEmpty(assembly.CultureName)
                 && !assembly.IsRetargetable && assembly.ContentType == System.Reflection.AssemblyContentType.Default
                 && (assembly.Name == "System.Private.CoreLib" && token == "7CEC85D7BEA7798E"
                     || assembly.Name == "System.Runtime" && token == "B03F5F7F11D50A3A")
@@ -34855,7 +34855,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             return SymbolEqualityComparer.Default.Equals(method.ContainingAssembly, core)
                 && SymbolEqualityComparer.Default.Equals(method.ContainingType, compilation.GetTypeByMetadataName(metadataType))
-                && assembly.Version == new Version(10, 0, 0, 0) && string.IsNullOrEmpty(assembly.CultureName)
+                && assembly.Version == new Version(11, 0, 0, 0) && string.IsNullOrEmpty(assembly.CultureName)
                 && !assembly.IsRetargetable && assembly.ContentType == System.Reflection.AssemblyContentType.Default
                 && (assembly.Name == "System.Private.CoreLib" && token == "7CEC85D7BEA7798E"
                     || assembly.Name == "System.Runtime" && token == "B03F5F7F11D50A3A")
@@ -35009,7 +35009,7 @@ internal static partial class HostedGrimoireProducerInventory
             string token = Convert.ToHexString(assembly.PublicKeyToken.AsSpan());
 
             if (!SymbolEqualityComparer.Default.Equals(selected.ContainingAssembly, target.Model.Compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly)
-                || assembly.Version != new Version(10, 0, 0, 0)
+                || assembly.Version != new Version(11, 0, 0, 0)
                 || !string.IsNullOrEmpty(assembly.CultureName)
                 || assembly.IsRetargetable
                 || assembly.ContentType != System.Reflection.AssemblyContentType.Default

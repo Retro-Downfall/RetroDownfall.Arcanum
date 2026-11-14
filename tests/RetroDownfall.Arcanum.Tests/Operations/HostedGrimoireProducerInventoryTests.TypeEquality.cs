@@ -260,7 +260,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Equal(core.Identity, method.ContainingAssembly.Identity);
 
-        Assert.Equal(new Version(10, 0, 0, 0), method.ContainingAssembly.Identity.Version);
+        Assert.Equal(new Version(11, 0, 0, 0), method.ContainingAssembly.Identity.Version);
 
         Assert.Equal(string.Empty, method.ContainingAssembly.Identity.CultureName);
 

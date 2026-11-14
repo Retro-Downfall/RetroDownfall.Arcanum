@@ -1,4 +1,11 @@
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
+
+using RetroDownfall.Arcanum.Infrastructure.Platform;
+using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
+using RetroDownfall.Arcanum.Tests.Process;
+using RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -6,6 +13,43 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
 public sealed class ManagedApphostDocumentWorkerTests
 {
+    [SkippableFact]
+    public async Task Same_build_managed_worker_starts_and_emits_a_pdf_frame_inside_the_required_jail()
+    {
+        Skip.IfNot(MacOsSandboxProbe.IsSandboxExecRunnable(), "Needs a macOS host where sandbox-exec can apply a profile.");
+
+        string apphost = ManagedApphostDocumentWorker.ResolveApphost(
+            Path.Combine(AppContext.BaseDirectory, "document-worker.sha256"), AppContext.BaseDirectory);
+
+        string dotnetRoot = Path.GetFullPath(Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "..", "..", ".."));
+
+        List<string> roots = [dotnetRoot];
+
+        if (dotnetRoot.StartsWith("/opt/homebrew/", StringComparison.Ordinal)) roots.Add("/opt/homebrew/");
+
+        DocumentWorkerLaunch launch = DocumentWorkerLaunch.ForTests(apphost,
+            new Dictionary<string, string> { ["DOTNET_ROOT"] = dotnetRoot }, roots, 256);
+
+        DocumentWorkerProfile profile = DocumentWorkerProfile.For(DocumentWorkerFormat.Pdf);
+
+        DocumentWorkerRunRequest request = ProcessDocumentExtractionWorker.CreateRunRequest(launch, profile);
+
+        CappedChildProcessRunResult run = await CappedChildProcessRunner.RunAsync(
+            request.StartInfo, launch.EnvironmentProfile, request.TotalOutputCapBytes, request.WallClock,
+            request.Limits, new ProcessResourceLimiter(), CancellationToken.None, request.Sandbox,
+            standardInput: PdfFixtures.Read("rotated-text.pdf"), rawStandardOutput: true,
+            maxFileSizeBytes: request.MaxFileSizeBytes);
+
+        DocumentWorkerResult mapped = ProcessDocumentExtractionWorker.Map(run, profile);
+
+        Assert.True(mapped.FailureReason is null,
+            $"Outcome={run.Outcome}; ExitCode={run.ExitCode}; Stderr={run.Stderr.Text}; Failure={mapped.FailureReason}");
+
+        Assert.NotNull(mapped.Outcome);
+
+        Assert.NotEmpty(mapped.Outcome.Pages);
+    }
+
     [Theory]
     [InlineData("current")]
     [InlineData("changed")]
