@@ -27,6 +27,12 @@ if args == ["--info"]:
         sys.exit(1)
     print(" RID: " + os.environ["GUILD_STUB_HOST_RID"])
     sys.exit(0)
+if args and args[0] == "msbuild":
+    if mode == "aot_property_unavailable":
+        sys.exit(1)
+    value = {"aot_property_false": "false", "aot_property_empty": "", "aot_property_invalid": "unknown"}.get(mode, "true")
+    print(value)
+    sys.exit(0)
 if not args or args[0] != "publish":
     sys.exit(90)
 if mode != "no_ilc":
@@ -128,12 +134,38 @@ class GuildAotGateTests(unittest.TestCase):
                 self.assertIn("Release", publish)
                 self.assertEqual(publish[publish.index("-r") + 1], rid)
                 self.assertTrue(publish[1].endswith("RetroDownfall.Arcanum.GuildAotSmoke.csproj"))
-                for setting in ("PublishAot=true", "SelfContained=true", "UseAppHost=true",
+                for setting in ("SelfContained=true", "UseAppHost=true",
                                 "TreatWarningsAsErrors=true", "IlcTreatWarningsAsErrors=true",
                                 "ILLinkTreatWarningsAsErrors=true", "TrimmerSingleWarn=false",
                                 "SuppressTrimAnalysisWarnings=false", "JsonSerializerIsReflectionEnabledByDefault=false"):
                     self.assertIn("-p:" + setting, publish)
                 self.assertFalse(any("NoWarn=" in arg or "WarningsNotAsErrors=" in arg for arg in publish))
+
+    def test_aot_property_is_resolved_on_the_executable_without_overriding_library_projects(self):
+        result = self.run_gate("--rid", "osx-arm64")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.sdk_calls()
+        evaluations = [args for args in calls if args[0] == "msbuild"]
+        self.assertEqual(len(evaluations), 1)
+        evaluation = evaluations[0]
+        self.assertTrue(evaluation[1].endswith("RetroDownfall.Arcanum.GuildAotSmoke.csproj"))
+        self.assertIn("-getProperty:PublishAot", evaluation)
+        self.assertIn("-p:Configuration=Release", evaluation)
+        self.assertIn("-p:RuntimeIdentifier=osx-arm64", evaluation)
+        publish = next(args for args in calls if args[0] == "publish")
+        self.assertLess(calls.index(evaluation), calls.index(publish))
+        for args in (evaluation, publish):
+            self.assertFalse(any("PublishAot=" in arg for arg in args), args)
+
+    def test_missing_false_or_unreadable_executable_aot_property_refuses_before_publish(self):
+        for mode in ("aot_property_false", "aot_property_empty", "aot_property_invalid", "aot_property_unavailable"):
+            with self.subTest(mode=mode):
+                if self.calls.exists():
+                    self.calls.unlink()
+                result = self.run_gate("--rid", "osx-arm64", mode=mode)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("AOT", result.stderr)
+                self.assertFalse(any(args[0] == "publish" for args in self.sdk_calls()))
 
     def test_each_run_uses_fresh_artifacts_output_and_cleans_up(self):
         for _ in range(2):

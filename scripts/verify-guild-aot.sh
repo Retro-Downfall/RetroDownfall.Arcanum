@@ -70,6 +70,24 @@ if [[ "$HOST_RID" != "$RID" ]]; then
   exit 1
 fi
 
+# Resolve the executable's own AOT setting. A global PublishAot override also
+# reaches managed library references and can request a different runtime pack.
+if ! PUBLISH_AOT="$(dotnet msbuild "$PROJECT" \
+  -nologo \
+  -getProperty:PublishAot \
+  -p:Configuration=Release \
+  -p:RuntimeIdentifier="$RID")"; then
+  echo "error: could not inspect the Guild executable's Native AOT setting" >&2
+  exit 1
+fi
+
+PUBLISH_AOT="$(printf '%s' "$PUBLISH_AOT" | tr -d '\r')"
+
+if [[ "$PUBLISH_AOT" != true ]]; then
+  echo "error: the Guild executable must resolve PublishAot=true for Native AOT verification" >&2
+  exit 1
+fi
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/arcanum-guild-aot.XXXXXX")"
 VERIFIED=0
 cleanup() {
@@ -104,7 +122,6 @@ if ! dotnet publish "$PROJECT" \
   --artifacts-path "$WORK/artifacts" \
   --disable-build-servers \
   -m:1 \
-  -p:PublishAot=true \
   -p:SelfContained=true \
   -p:UseAppHost=true \
   -p:TreatWarningsAsErrors=true \
