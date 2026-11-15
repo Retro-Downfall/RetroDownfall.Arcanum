@@ -238,6 +238,51 @@ class GuildOperatorQualificationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.validate_evidence(self.report(rows), manifest, "core", "windows")
 
+    def test_unix_completion_permissions_fact_is_an_exact_windows_skip(self):
+        module = self.tool()
+        manifest = self.fixture_manifest()
+        manifest["allowedSkips"] = self.manifest()["allowedSkips"]
+        method = "Completion_install_leaves_an_existing_target_directory_permissions_alone"
+        display = PREFIX + "Cli.CliCompletionTests." + method
+        rows = [(PREFIX + "Fixture.Required", "passes", "Passed"),
+                (PREFIX + "Fixture.Other", "required_case", "Passed"),
+                (PREFIX + "Cli.CliCompletionTests", method, "NotExecuted", display)]
+        try:
+            summary = module.validate_evidence(self.report(rows), manifest, "core", "windows")
+        except ValueError as error:
+            self.fail(f"The exact Unix-only Windows skip must be accepted: {error}")
+        self.assertEqual([display], summary["allowedSkippedTests"])
+        with self.assertRaisesRegex(ValueError, "unexpected skipped operator witness"):
+            module.validate_evidence(self.report(rows), manifest, "core", "macos")
+
+    def test_allowlisted_fact_skip_refuses_forged_displays_and_definitions(self):
+        module = self.tool()
+        manifest = self.fixture_manifest()
+        display = PREFIX + "Fixture.Required.unix_permissions"
+        manifest["allowedSkips"]["windows"] = [display]
+        passed = [(PREFIX + "Fixture.Required", "passes", "Passed"),
+                  (PREFIX + "Fixture.Other", "required_case", "Passed")]
+        for skipped in ((PREFIX + "Fixture.Other", "unix_permissions", "NotExecuted", display),
+                        (PREFIX + "Fixture.Required", "other_method", "NotExecuted", display),
+                        (PREFIX + "Fixture.Required", "unix_permissions", "NotExecuted", display + "Other"),
+                        (PREFIX + "Fixture.Required", "unix_permissions", "NotExecuted", display + '(shape: "forged")')):
+            with self.subTest(skipped=skipped), self.assertRaisesRegex(ValueError, "unexpected skipped operator witness"):
+                module.validate_evidence(self.report(passed + [skipped]), manifest, "core", "windows")
+        manifest["allowedSkips"]["windows"] = []
+        with self.assertRaisesRegex(ValueError, "unexpected skipped operator witness"):
+            module.validate_evidence(self.report(passed + [(PREFIX + "Fixture.Required", "unix_permissions", "NotExecuted", display)]),
+                                     manifest, "core", "windows")
+
+    def test_allowlisted_fact_skip_cannot_replace_a_mandatory_case(self):
+        module = self.tool()
+        manifest = self.fixture_manifest()
+        display = PREFIX + "Fixture.Other.required_case"
+        manifest["allowedSkips"]["windows"] = [display]
+        rows = [(PREFIX + "Fixture.Required", "passes", "Passed"),
+                (PREFIX + "Fixture.Other", "required_case", "NotExecuted", display)]
+        with self.assertRaisesRegex(ValueError, "required case.*non-passing"):
+            module.validate_evidence(self.report(rows), manifest, "core", "windows")
+
     def test_manifest_refuses_duplicate_selectors_unknown_fields_and_filter_injection(self):
         module = self.tool()
         original = self.fixture_manifest()

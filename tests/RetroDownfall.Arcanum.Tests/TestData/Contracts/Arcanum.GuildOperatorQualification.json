@@ -212,6 +212,9 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Local_scheduler_recovers_committed_start_and_coalesces_wakes_before_rebinding_live_work",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Missing_installation_evidence_refuses_without_minting_a_parallel_generation",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_accepts_an_already_exited_owned_process",
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_does_not_retry_other_errors_or_non_windows",
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_reports_persistent_windows_sharing_violation",
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_retries_only_transient_windows_sharing_violations",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_a_real_occupied_port_after_joining_the_failed_process",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_only_explicit_address_in_use_startup_failure",
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_and_model_card_selection_refuse_protected_erased_and_foreign_sources",
@@ -400,6 +403,9 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Local_scheduler_recovers_committed_start_and_coalesces_wakes_before_rebinding_live_work": 8,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Missing_installation_evidence_refuses_without_minting_a_parallel_generation": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_accepts_an_already_exited_owned_process": 1,
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_does_not_retry_other_errors_or_non_windows": 1,
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_reports_persistent_windows_sharing_violation": 1,
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_retries_only_transient_windows_sharing_violations": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_a_real_occupied_port_after_joining_the_failed_process": 1,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_only_explicit_address_in_use_startup_failure": 4,
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Native_and_model_card_selection_refuse_protected_erased_and_foreign_sources": 6,
@@ -643,6 +649,15 @@
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_accepts_an_already_exited_owned_process": [
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_accepts_an_already_exited_owned_process"
         ],
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_does_not_retry_other_errors_or_non_windows": [
+          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_does_not_retry_other_errors_or_non_windows"
+        ],
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_reports_persistent_windows_sharing_violation": [
+          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_reports_persistent_windows_sharing_violation"
+        ],
+        "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_retries_only_transient_windows_sharing_violations": [
+          "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_cleanup_retries_only_transient_windows_sharing_violations"
+        ],
         "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_a_real_occupied_port_after_joining_the_failed_process": [
           "RetroDownfall.Arcanum.Tests.Guild.GuildLocalHostPolicyTests.Mixed_peer_retries_a_real_occupied_port_after_joining_the_failed_process"
         ],
@@ -741,7 +756,8 @@
       "RetroDownfall.Arcanum.Tests.Api.Tower.CampaignEndpointTests.Import_from_disk_refuses_a_linked_special_or_oversized_campaign_json_without_reading_it_to_the_end(shape: \"symlinked-file\")",
       "RetroDownfall.Arcanum.Tests.Api.Tower.CampaignEndpointTests.Import_from_disk_refuses_a_linked_special_or_oversized_campaign_json_without_reading_it_to_the_end(shape: \"symlinked-directory\")",
       "RetroDownfall.Arcanum.Tests.Api.Tower.CampaignEndpointTests.Import_from_disk_refuses_a_linked_special_or_oversized_campaign_json_without_reading_it_to_the_end(shape: \"fifo\")",
-      "RetroDownfall.Arcanum.Tests.Api.Tower.CampaignEndpointTests.Import_from_disk_refuses_a_linked_special_or_oversized_campaign_json_without_reading_it_to_the_end(shape: \"device-link\")"
+      "RetroDownfall.Arcanum.Tests.Api.Tower.CampaignEndpointTests.Import_from_disk_refuses_a_linked_special_or_oversized_campaign_json_without_reading_it_to_the_end(shape: \"device-link\")",
+      "RetroDownfall.Arcanum.Tests.Cli.CliCompletionTests.Completion_install_leaves_an_existing_target_directory_permissions_alone"
     ]
   },
   "omissions": [

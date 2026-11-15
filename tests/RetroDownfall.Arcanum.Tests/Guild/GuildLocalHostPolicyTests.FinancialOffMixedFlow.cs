@@ -729,6 +729,69 @@ public sealed partial class GuildLocalHostPolicyTests
         await MixedPeer.StopProcessAsync(child);
     }
 
+    [Fact]
+    public async Task Mixed_peer_cleanup_retries_only_transient_windows_sharing_violations()
+    {
+        int attempts = 0;
+
+        int delays = 0;
+
+        await MixedPeer.DeleteHomeAfterTeardownAsync(true, () =>
+        {
+            if (++attempts < 3) throw new CleanupIOException(unchecked((int)0x80070020));
+        }, () => { delays++; return Task.CompletedTask; });
+
+        Assert.Equal(3, attempts);
+
+        Assert.Equal(2, delays);
+    }
+
+    [Fact]
+    public async Task Mixed_peer_cleanup_reports_persistent_windows_sharing_violation()
+    {
+        int attempts = 0;
+
+        int delays = 0;
+
+        var expected = new CleanupIOException(unchecked((int)0x80070020));
+
+        IOException actual = await Assert.ThrowsAsync<CleanupIOException>(() => MixedPeer.DeleteHomeAfterTeardownAsync(true,
+            () => { attempts++; throw expected; }, () => { delays++; return Task.CompletedTask; }));
+
+        Assert.Same(expected, actual);
+
+        Assert.Equal(5, attempts);
+
+        Assert.Equal(4, delays);
+    }
+
+    [Fact]
+    public async Task Mixed_peer_cleanup_does_not_retry_other_errors_or_non_windows()
+    {
+        foreach ((bool windows, int code) in new[] { (true, unchecked((int)0x80070005)), (false, unchecked((int)0x80070020)) })
+        {
+            int attempts = 0;
+
+            int delays = 0;
+
+            var expected = new CleanupIOException(code);
+
+            IOException actual = await Assert.ThrowsAsync<CleanupIOException>(() => MixedPeer.DeleteHomeAfterTeardownAsync(windows,
+                () => { attempts++; throw expected; }, () => { delays++; return Task.CompletedTask; }));
+
+            Assert.Same(expected, actual);
+
+            Assert.Equal(1, attempts);
+
+            Assert.Equal(0, delays);
+        }
+    }
+
+    private sealed class CleanupIOException : IOException
+    {
+        internal CleanupIOException(int code) => HResult = code;
+    }
+
     private sealed record PeerPersistedSnapshot(string Installation, string CurrentInstallation, string PeerId, string GrantRevision, string AuthorityEpoch,
         string TaskId, string ContextId, string QuestId, string ResultId, long Reservations, long Effects, long UnknownEffects, long Results, long Settlements);
 
@@ -971,6 +1034,23 @@ public sealed partial class GuildLocalHostPolicyTests
             }
         }
 
+        internal static async Task DeleteHomeAfterTeardownAsync(bool windows, Action delete, Func<Task> delay)
+        {
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    delete();
+
+                    return;
+                }
+                catch (IOException error) when (windows && error.HResult == unchecked((int)0x80070020) && attempt < 4)
+                {
+                    await delay();
+                }
+            }
+        }
+
         private static async Task<List<Exception>> CleanupAsync(System.Diagnostics.Process? process, IHost? provider, string home)
         {
             List<Exception> failures = [];
@@ -1013,7 +1093,9 @@ public sealed partial class GuildLocalHostPolicyTests
                     {
                         try
                         {
-                            if (Directory.Exists(home)) Directory.Delete(home, true);
+                            if (Directory.Exists(home))
+                                await DeleteHomeAfterTeardownAsync(OperatingSystem.IsWindows(), () => Directory.Delete(home, true),
+                                    () => Task.Delay(TimeSpan.FromMilliseconds(250)));
                         }
                         catch (Exception error)
                         {

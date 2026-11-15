@@ -130,7 +130,7 @@ def validate_evidence(report_bytes, manifest, project, platform):
         if row.get("outcome") == "NotExecuted":
             display = row.get("testName", "")
             identity = definitions.get(row.get("testId"), "")
-            if display not in allowed or not display.startswith(identity + "("):
+            if display not in allowed or not (display == identity or display.startswith(identity + "(")):
                 raise ValueError(f"unexpected skipped operator witness {display!r}")
             skipped.append(display)
     if manifest["profile"] == "guild-a2a":
