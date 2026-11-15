@@ -154,8 +154,8 @@ public partial class LabeledStepper : UserControl
         {
             ValueControl.Text = Value.ToString(System.Globalization.CultureInfo.CurrentCulture);
         }
-
     }
+
     private void RefreshValidation()
     {
         if (string.IsNullOrEmpty(Key) || ValidationErrors is null)
