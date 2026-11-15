@@ -440,7 +440,11 @@ public sealed class McpCommands(
                 static server => string.Equals(
                     server.Status,
                     "running",
-                    StringComparison.OrdinalIgnoreCase))
+                    StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(
+                        server.Status,
+                        "Online",
+                        StringComparison.OrdinalIgnoreCase))
             .SelectMany(
                 static server => server.ProvidedTools.Select(
                     tool => new DiagnosticTool(tool, server.ServerName)))

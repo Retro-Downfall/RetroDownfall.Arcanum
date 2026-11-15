@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Memory;
@@ -22,6 +23,7 @@ using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Memory;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
@@ -566,7 +568,7 @@ public sealed class LexiconErasureEndpointTests
         AIFunction scribe = Assert.IsAssignableFrom<AIFunction>(
             Assert.Single(tools, static tool => string.Equals(tool.Name, "save_memory", StringComparison.Ordinal)));
 
-        InvalidOperationException refused = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        McpToolFailure refused = Assert.IsType<McpToolFailure>(
             await scribe.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>
             {
                 ["name"] = Name,
@@ -574,12 +576,62 @@ public sealed class LexiconErasureEndpointTests
                 ["facts"] = new[] { "returns to the mill" },
             })));
 
-        Assert.Equal(OperatorManaged, refused.Message);
+        Assert.Equal(OperatorManaged, refused.ToString());
+
+        Assert.True(refused.Outcome.Denied);
 
         Assert.Equal(0, await ScalarAsync(
             factory,
             "SELECT count(*) FROM lexicon_entries WHERE NameNormalized = $id AND ScopeCampaignId = '';",
             Name.ToUpperInvariant()));
+
+        await AssertNoOrphanClaimsAsync(factory);
+    }
+
+    [SkippableFact]
+    public async Task A_delete_memory_tool_call_refuses_a_labelled_entry_without_operator_purge_authority()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(
+            new InMemoryOsCredentialStore(),
+            covenant: true,
+            configure: static settings =>
+            {
+                settings.Features.Lexicon = true;
+
+                settings.Features.Annals = false;
+            });
+
+        (_, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        LexiconEntryDto entry = await ScribeAsync(factory, Name, null, ["guards the mill"]);
+
+        await LabelAsync(factory, entry);
+
+        IReadOnlyList<AITool> tools = await factory.Services
+            .GetRequiredService<IMcpConnectionManager>()
+            .GetAvailableToolsAsync(null);
+
+        AIFunction delete = Assert.IsAssignableFrom<AIFunction>(
+            Assert.Single(tools, static tool => string.Equals(tool.Name, "delete_memory", StringComparison.Ordinal)));
+
+        McpToolFailure refused = Assert.IsType<McpToolFailure>(
+            await delete.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?> { ["name"] = Name })));
+
+        Assert.Equal(ToolOutcomeCode.NativePolicyDenied, refused.Outcome.Code);
+
+        Assert.True(refused.Outcome.Denied);
+
+        Assert.Equal("Deleting a labelled artifact requires operator authority issued for a sensitivity retention purge.", refused.ResultText);
+
+        LexiconEntryDetail unchanged = await ShowAsync(driver, Name, null);
+
+        Assert.Equal(entry.Id, unchanged.Entry.Id);
+
+        Assert.Equal(new[] { "guards the mill" }, unchanged.Entry.Facts);
+
+        Assert.Equal(1, await LabelCountAsync(factory, entry.Id));
 
         await AssertNoOrphanClaimsAsync(factory);
     }
@@ -608,13 +660,15 @@ public sealed class LexiconErasureEndpointTests
         AIFunction delete = Assert.IsAssignableFrom<AIFunction>(
             Assert.Single(tools, static tool => string.Equals(tool.Name, "delete_memory", StringComparison.Ordinal)));
 
-        InvalidOperationException refused = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        McpToolFailure refused = Assert.IsType<McpToolFailure>(
             await delete.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>
             {
                 ["name"] = "DAEMON_STATE:Watcher:abc",
             })));
 
-        Assert.Contains("daemon_state", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("daemon_state", refused.ToString(), StringComparison.Ordinal);
+
+        Assert.True(refused.Outcome.Denied);
 
         _ = await ShowAsync(driver, "daemon_state:Watcher:abc", null);
     }

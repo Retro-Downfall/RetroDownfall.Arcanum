@@ -5,6 +5,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Mcp;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -34,9 +35,9 @@ public sealed class McpConnectionManagerInternalServerLoggingTests
             tools.Single(static tool => string.Equals(tool.Name, "read_file", StringComparison.Ordinal)));
 
         // A number where the schema requires a string makes the server's argument deserialization
-        // throw; the handler logs that fault and answers with a generic tool error.
-        InvalidOperationException failure = await Assert.ThrowsAsync<InvalidOperationException>(
-            async () => await readFileChunk.InvokeAsync(
+        // throw; the handler logs that fault and answers with a typed invalid-arguments result.
+        McpToolFailure failure = Assert.IsType<McpToolFailure>(
+            await readFileChunk.InvokeAsync(
                 new AIFunctionArguments(
                     new Dictionary<string, object?>
                     {
@@ -46,7 +47,7 @@ public sealed class McpConnectionManagerInternalServerLoggingTests
                     }),
                 CancellationToken.None));
 
-        Assert.Contains("Invalid arguments for read_file", failure.Message, StringComparison.Ordinal);
+        Assert.Equal(ToolOutcomeCode.InvalidArguments, failure.Outcome.Code);
 
         CapturingLoggerFactory.CapturedLogEntry entry = Assert.Single(
             loggers.Entries,

@@ -1,3 +1,5 @@
+using System.Text.Json;
+using RetroDownfall.Arcanum.Api.Serialization;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -93,16 +95,21 @@ public sealed partial class WizardIntelligenceProviderTests
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings, mcp: mcp, modelTokenEstimator: estimator);
         bool success;
         string terminal;
+        string? terminalJson = null;
+        List<IntelligenceEvent> publicEvents = [];
         if (streaming)
         {
             List<IntelligenceEvent> events = await CollectStreamAsync(wizard, BaseRequest() with { Prompt = "review the evidence", SkipSpellRouting = true, MaxOutputTokens = 64 });
+            publicEvents = events;
             success = events.Any(e => e.Type == IntelligenceEventType.Result);
+            if (success) terminalJson = JsonSerializer.Serialize(events.Single(e => e.Type == IntelligenceEventType.Result), ArcanumJsonContext.Default.IntelligenceEvent);
             terminal = string.Join(";", events.Where(e => e.Type == IntelligenceEventType.Error).Select(e => e.Data + ":" + e.Message));
         }
         else
         {
             Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(BaseRequest() with { Prompt = "review the evidence", SkipSpellRouting = true, MaxOutputTokens = 64 }, InvocationContexts.AttendedSession(), CancellationToken.None);
             success = result.IsSuccess;
+            if (success) terminalJson = JsonSerializer.Serialize(result.Value, ArcanumJsonContext.Default.PromptTurnResult);
             terminal = result.IsFailure ? result.Error.Code + ":" + result.Error.Message : string.Empty;
         }
 
@@ -117,6 +124,31 @@ public sealed partial class WizardIntelligenceProviderTests
         Assert.Equal(!repeatedCycle, success);
         if (repeatedCycle) Assert.Contains(ErrorCodes.Hub.NoProgressDetected, terminal, StringComparison.Ordinal);
         Assert.Equal(repeatedCycle ? 5 : 4, calls.Count);
+        if (!repeatedCycle)
+        {
+            using JsonDocument terminalDocument = JsonDocument.Parse(terminalJson!);
+            Assert.True(terminalDocument.RootElement.TryGetProperty("notices", out JsonElement notices), "Successful native turns must expose operational notices.");
+            JsonElement evictionNotice = Assert.Single(notices.EnumerateArray());
+            Assert.Equal(2, evictionNotice.GetProperty("code").GetInt32());
+            JsonElement eviction = evictionNotice.GetProperty("toolEvidenceEviction");
+            Assert.True(eviction.GetProperty("exchanges").GetInt32() >= 1);
+            Assert.True(eviction.GetProperty("messages").GetInt32() >= 2);
+            Assert.True(eviction.GetProperty("calls").GetInt32() >= 1);
+            Assert.Contains(1, eviction.GetProperty("recentRoundOrdinals").EnumerateArray().Select(e => e.GetInt32()));
+            Assert.DoesNotContain("evidence-0:", terminalJson!, StringComparison.Ordinal);
+            if (streaming)
+            {
+                IntelligenceEvent status = Assert.Single(publicEvents, e => e.Type == IntelligenceEventType.Status && e.Message.Contains("Tool evidence", StringComparison.Ordinal));
+                Assert.True(publicEvents.IndexOf(status) < publicEvents.FindLastIndex(e => e.Type == IntelligenceEventType.Context));
+                using JsonDocument context = JsonDocument.Parse(JsonSerializer.Serialize(publicEvents.Last(e => e.Type == IntelligenceEventType.Context), ArcanumJsonContext.Default.IntelligenceEvent));
+                JsonElement breakdown = context.RootElement.GetProperty("contextBreakdown");
+                Assert.Equal(10000, breakdown.GetProperty("contextWindowLimit").GetInt32());
+                Assert.Equal(64, breakdown.GetProperty("reservedAnswerTokens").GetInt32());
+                Assert.True(breakdown.GetProperty("toolCatalogTokens").GetInt32() > 0);
+                Assert.True(breakdown.GetProperty("toolExchangeTokens").GetInt32() > 0);
+                Assert.Equal(eviction.GetProperty("exchanges").GetInt32(), breakdown.GetProperty("toolEvidenceEviction").GetProperty("exchanges").GetInt32());
+            }
+        }
     }
 
     [Theory]
@@ -191,6 +223,37 @@ public sealed partial class WizardIntelligenceProviderTests
             Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, result.Error.Code);
         }
         Assert.Equal(1, streaming ? chat.StreamingCallCount : chat.BufferedCallCount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ToolLoopEvidence_no_eviction_has_no_public_trim_notice(bool streaming)
+    {
+        ScriptingChatClient chat = new();
+
+        if (streaming) chat.EnqueueStreamTokens("ordinary answer");
+        else chat.EnqueueText("ordinary answer");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        PingRequest request = BaseRequest() with { Prompt = "ordinary question", SkipSpellRouting = true, DisableAllTools = true };
+
+        if (streaming)
+        {
+            List<IntelligenceEvent> events = await CollectStreamAsync(wizard, request);
+
+            Assert.Empty(Assert.Single(events, e => e.Type == IntelligenceEventType.Result).Notices);
+            Assert.DoesNotContain(events, e => e.Notices.Any(n => n.Code == InferenceNoticeCode.ToolEvidenceTrimmed));
+            Assert.All(events.Where(e => e.ContextBreakdown is not null), e => Assert.Null(e.ContextBreakdown!.ToolEvidenceEviction));
+        }
+        else
+        {
+            Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(request, InvocationContexts.AttendedSession(), CancellationToken.None);
+
+            Assert.True(result.IsSuccess);
+            Assert.Empty(result.Value.Notices);
+        }
     }
 
     private sealed class EvidenceContextEstimator(IModelTokenEstimator inner) : IModelTokenEstimator

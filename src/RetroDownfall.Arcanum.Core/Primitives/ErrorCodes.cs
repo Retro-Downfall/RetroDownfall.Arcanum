@@ -336,6 +336,8 @@ public static class ErrorCodes
 
         public const string Error = "Hub.Error";
 
+        public const string IncompleteProviderResponse = "Hub.IncompleteProviderResponse";
+
         /// <summary>Last-resort code for an exception that escaped every endpoint.</summary>
         public const string Unhandled = "Hub.Unhandled";
 

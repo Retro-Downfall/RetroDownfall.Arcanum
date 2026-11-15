@@ -54,6 +54,7 @@ internal sealed class IntelligenceEventProjection
                 new IntelligenceEvent(IntelligenceEventType.Status, status.Message)
                 {
                     DeliveryAcknowledgement = status.DeliveryAcknowledgement,
+                    Notices = status.Notices,
                 },
             ],
 
@@ -142,7 +143,7 @@ internal sealed class IntelligenceEventProjection
                     ToolCall: new IntelligenceToolCallEvent(human.CallId, "ask_human", human.Prompt)),
             ],
 
-            ToolInvocationCompleted completed when completed.Failed =>
+            ToolInvocationCompleted completed when completed.Failed && completed.ToolOutcome is null =>
             [
                 new IntelligenceEvent(
                     IntelligenceEventType.ToolError,
@@ -161,7 +162,7 @@ internal sealed class IntelligenceEventProjection
                         completed.CallId,
                         completed.ToolName,
                         completed.ArgumentsJson),
-                    ToolDenied: completed.Denied),
+                    ToolDenied: completed.Denied) { ToolOutcome = completed.ToolOutcome },
             ],
 
             ToolInvocationCompleted completed =>
@@ -174,7 +175,7 @@ internal sealed class IntelligenceEventProjection
                         completed.CallId,
                         completed.ToolName,
                         completed.ArgumentsJson),
-                    ToolDenied: completed.Denied),
+                    ToolDenied: completed.Denied) { ToolOutcome = completed.ToolOutcome },
             ],
 
             AttachmentRefreshed refreshed =>
@@ -254,6 +255,7 @@ internal sealed class IntelligenceEventProjection
             FinishReason: completed.FinishReason)
         {
             Warnings = completed.Warnings,
+            Notices = completed.Notices,
         };
     }
 }

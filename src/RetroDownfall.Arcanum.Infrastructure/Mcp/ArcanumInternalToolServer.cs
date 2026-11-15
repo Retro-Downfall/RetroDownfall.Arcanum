@@ -1182,7 +1182,7 @@ internal sealed partial class ArcanumInternalToolServer
                 GuildToolInvocationAmbient.Current is null
                     ? message
                     : GuildToolInvocationContext.Format(new(ErrorCodes.Guild.ToolNotGranted,
-                        "The tool is unavailable under the current host policy.")));
+                        "The tool is unavailable under the current host policy.")), denied: true);
 
             if ((call.Name is "save_memory" or "delete_memory") && !_settings.EnableLexiconSystem)
             {
@@ -1229,7 +1229,7 @@ internal sealed partial class ArcanumInternalToolServer
                     : await guildContext.RefuseDispatchAsync(
                         new(GuildToolSourceKind.InternalMcp, "arcanum", call.Name), toolScope.Token).ConfigureAwait(false);
 
-                return BuildToolsCallResponse(rpcId, ToolError(GuildToolInvocationContext.Format(denial)));
+                return BuildToolsCallResponse(rpcId, ToolError(GuildToolInvocationContext.Format(denial), denied: true));
             }
 
             JsonElement toolArguments = call.Arguments;

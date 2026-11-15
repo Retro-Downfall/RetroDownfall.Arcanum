@@ -6,6 +6,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
@@ -156,7 +157,7 @@ internal sealed class McpBridgeTool : AIFunction
 
             _fallbackLogger?.LogWarning(
                 ex,
-                "MCP tool {ToolName} succeeded via global fallback after local transport failure.",
+                "MCP tool {ToolName} returned via global fallback after local transport failure.",
                 _name);
 
             return result;
@@ -196,24 +197,32 @@ internal sealed class McpBridgeTool : AIFunction
                 == TrustedStructuredToolResultKind.WorkspacePatch
             && ApplyPatchInvocationAmbient.Current?.ReceiptHandled == true;
 
+        if (result.IsError == true)
+        {
+            if (client is not (SdkMcpClientWrapper { IsHostOwned: true }
+                or McpClientGeneration { IsGuildHostTransport: true }))
+            {
+                return new McpToolFailure(new ToolOutcome(ToolOutcomeCode.ExternalToolError));
+            }
+
+            if (McpToolFailure.ReadReported(result, _toolOutputCapBytes) is { } reportedFailure)
+            {
+                return reportedFailure;
+            }
+
+            if (McpToolFailure.ReadNative(result.StructuredContent) is { } knownFailure)
+            {
+                return knownFailure;
+            }
+
+            // Unknown native errors remain infrastructure failures. Neither their text nor an
+            // external server's content can select a trusted outcome or become public exception copy.
+            throw new InvalidOperationException("The internal MCP tool returned an unclassified error.");
+        }
+
         string text = McpToolResultFormatter.FormatContentText(
             result,
             receiptHandled ? long.MaxValue : _toolOutputCapBytes);
-
-        if (result.IsError == true)
-        {
-            string errorText = string.IsNullOrWhiteSpace(text) ? "MCP tool returned isError: true." : text;
-
-            // Preserve expected HITL timeout as a typed exception so the tool pipeline can
-            // surface the fixed public message instead of a generic tolerate failure.
-            if (string.Equals(errorText, HumanPromptTimeoutException.DefaultMessage, StringComparison.Ordinal)
-                || errorText.Contains(HumanPromptTimeoutException.DefaultMessage, StringComparison.Ordinal))
-            {
-                throw new HumanPromptTimeoutException();
-            }
-
-            throw new InvalidOperationException(errorText);
-        }
 
         return trustStructuredResult
             && _trustedStructuredResultKind is { } kind
@@ -293,7 +302,7 @@ internal sealed class McpBridgeTool : AIFunction
 [ExcludeFromCodeCoverage] // Reason: MCP content formatting; covered indirectly via McpBridgeTool integration tests.
 internal static class McpToolResultFormatter
 {
-    public static string FormatContentText(CallToolResult result, long maxUtf8Bytes = long.MaxValue)
+    public static string FormatContentText(CallToolResult result, long maxUtf8Bytes = long.MaxValue, bool allowStructuredFallback = true, bool strictUtf8Cap = false)
     {
         ArgumentNullException.ThrowIfNull(result);
 
@@ -301,7 +310,7 @@ internal static class McpToolResultFormatter
 
         if (content is not { Count: > 0 })
         {
-            string fallback = result.StructuredContent is { } structured ? structured.GetRawText() : string.Empty;
+            string fallback = allowStructuredFallback && result.StructuredContent is { } structured ? structured.GetRawText() : string.Empty;
 
             return McpSecurityLimits.TruncateUtf8(fallback, maxUtf8Bytes);
         }
@@ -311,19 +320,43 @@ internal static class McpToolResultFormatter
             return string.Empty;
         }
 
+        string? boundedMarker = null;
+
+        long contentBudget = maxUtf8Bytes;
+
+        if (strictUtf8Cap)
+        {
+            long requiredBytes = 0L;
+
+            foreach (ContentBlock block in content)
+            {
+                string piece = ContentPiece(block);
+
+                requiredBytes += (requiredBytes > 0L ? Encoding.UTF8.GetByteCount(global::System.Environment.NewLine) : 0L)
+                    + Encoding.UTF8.GetByteCount(piece);
+
+                if (requiredBytes > maxUtf8Bytes)
+                {
+                    boundedMarker = maxUtf8Bytes >= 12L ? "\n[truncated]" : maxUtf8Bytes >= 3L ? "…" : ".";
+
+                    contentBudget -= Encoding.UTF8.GetByteCount(boundedMarker);
+
+                    break;
+                }
+            }
+        }
+
         // Accumulate only as far as the UTF-8 budget reaches. Building the whole joined text and cutting
         // it afterwards bounds the output but not the allocation: a result of many large blocks cost the
-        // host a full copy first. The text produced is identical to joining every block and passing it
-        // through McpSecurityLimits.TruncateUtf8, so the caller sees no difference.
+        // host a full copy first. Ordinary formatting retains its existing marker behavior. Reported
+        // native errors reserve the marker inside the cap before accumulating their content.
         StringBuilder sb = new();
 
         long usedBytes = 0L;
 
         foreach (ContentBlock block in content)
         {
-            string piece = block is TextContentBlock { Text.Length: > 0 } textBlock
-                ? textBlock.Text
-                : $"[{block.Type} content omitted]";
+            string piece = ContentPiece(block);
 
             string separator = sb.Length > 0 ? global::System.Environment.NewLine : string.Empty;
 
@@ -331,7 +364,7 @@ internal static class McpToolResultFormatter
 
             long blockBytes = separatorBytes + Encoding.UTF8.GetByteCount(piece);
 
-            if (usedBytes + blockBytes <= maxUtf8Bytes)
+            if (usedBytes + blockBytes <= contentBudget)
             {
                 sb.Append(separator).Append(piece);
 
@@ -342,7 +375,7 @@ internal static class McpToolResultFormatter
 
             // This block crosses the budget: keep the part of it that still fits, mark the cut, and
             // read no further block.
-            long remaining = maxUtf8Bytes - usedBytes;
+            long remaining = contentBudget - usedBytes;
 
             if (remaining < separatorBytes)
             {
@@ -355,13 +388,18 @@ internal static class McpToolResultFormatter
                 sb.Append(piece, 0, Utf8Truncation.ChooseSafeCharCount(piece, remaining - separatorBytes));
             }
 
-            sb.Append(McpSecurityLimits.TruncationMarker(maxUtf8Bytes));
+            sb.Append(boundedMarker ?? McpSecurityLimits.TruncationMarker(maxUtf8Bytes));
 
             break;
         }
 
         return sb.ToString();
     }
+
+    private static string ContentPiece(ContentBlock block) =>
+        block is TextContentBlock { Text.Length: > 0 } textBlock
+            ? textBlock.Text
+            : $"[{block.Type} content omitted]";
 }
 
 /// <summary>

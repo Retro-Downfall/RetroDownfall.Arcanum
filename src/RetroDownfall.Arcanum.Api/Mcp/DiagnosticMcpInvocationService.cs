@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
@@ -241,6 +242,12 @@ public sealed class DiagnosticMcpInvocationService
 
             sw.Stop();
 
+            if (output is McpToolFailure failure)
+            {
+                return Result<DiagnosticMcpInvocationOutcome>.Failure(
+                    new Error(ErrorCodes.Mcp.ToolError, failure.ResultText));
+            }
+
             string text = output switch
             {
                 null => string.Empty,
@@ -270,7 +277,7 @@ public sealed class DiagnosticMcpInvocationService
         catch (InvalidOperationException ex)
         {
 
-            // McpBridgeTool throws InvalidOperationException when the tool returns isError: true.
+            // An unclassified host-owned tool fault remains an exception; reported operation failures return above.
             _logger?.LogWarning(ex, "Diagnostic MCP invocation of '{Tool}' on '{Server}' returned a tool error.", toolName, resolvedServerName);
 
             return Result<DiagnosticMcpInvocationOutcome>.Failure(

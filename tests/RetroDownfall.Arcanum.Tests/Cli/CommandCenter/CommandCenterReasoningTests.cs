@@ -45,6 +45,136 @@ public sealed class CommandCenterReasoningTests
         Assert.Null(entry.SourceEntryId);
     }
 
+    [Theory]
+    [InlineData(ToolOutcomeCode.NotFound)]
+    [InlineData(ToolOutcomeCode.WorkspacePolicyDenied)]
+    [InlineData(null)]
+    public async Task ToolOutcome_native_result_marks_only_the_correlated_call_failed_without_failing_the_turn(ToolOutcomeCode? code)
+    {
+        ToolOutcome? outcome = code is { } value ? new(value) : null;
+
+        const string retainedResult = "retained tool result";
+
+        IntelligenceToolCallEvent call = new("failed-call", "read_file", "{\"relativePath\":\"missing.txt\"}");
+
+        IntelligenceToolCallEvent other = new("other-call", "read_file", "{\"relativePath\":\"present.txt\"}");
+
+        CommandCenterChatRunner runner = CreateRunner(new StaticNdjsonHandler(
+            SerializeFrames(
+                new IntelligenceEvent(IntelligenceEventType.ToolCall, "read_file", ToolCall: call),
+                new IntelligenceEvent(IntelligenceEventType.ToolCall, "read_file", ToolCall: other),
+                new IntelligenceEvent(IntelligenceEventType.ToolResult, "read_file", retainedResult, ToolCall: call)
+                {
+                    ToolOutcome = outcome,
+                },
+                new IntelligenceEvent(IntelligenceEventType.ToolResult, "read_file", "file contents", ToolCall: other),
+                new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, "exact answer"),
+                new IntelligenceEvent(IntelligenceEventType.Result, "exact answer", "exact answer", FinishReason: "stop"))));
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
+        TurnTranscriptReceipt receipt = await runner.RunTurnAsync("read the files", state, updates.Writer, CancellationToken.None);
+
+        IReadOnlyList<IncantationRecord> calls = state.Incantations.Snapshot();
+
+        IncantationRecord record = Assert.Single(calls, record => record.CallId == call.CallId);
+
+        Assert.Equal(call.Name, record.ToolName);
+
+        Assert.Equal(call.ArgumentsJson, record.ArgumentsJson);
+
+        Assert.Equal(retainedResult, record.ResultText);
+
+        Assert.Equal(outcome is null ? IncantationState.Succeeded : IncantationState.Failed, record.State);
+
+        Assert.Equal(outcome?.Message, record.ErrorText);
+
+        IncantationRecord otherRecord = Assert.Single(calls, record => record.CallId == other.CallId);
+
+        Assert.Equal(IncantationState.Succeeded, otherRecord.State);
+
+        Assert.Equal("file contents", otherRecord.ResultText);
+
+        Assert.DoesNotContain(state.Log.Snapshot(), static entry => entry.Kind == SessionLogEntryKind.Error);
+
+        Assert.Equal("exact answer", Assert.Single(state.Log.Snapshot(), static entry => entry.Kind == SessionLogEntryKind.Assistant).Text);
+
+        Assert.True(receipt.DurableResult);
+    }
+
+    [Fact]
+    public async Task ToolOutcome_expected_failure_closes_human_prompt_with_error_notice_without_transcript_error()
+    {
+        ToolOutcome outcome = new(ToolOutcomeCode.ExternalToolError);
+
+        IntelligenceToolCallEvent call = new("human-call", "ask_human", "{\"question\":\"Which file?\",\"promptId\":\"human-prompt\"}");
+
+        List<string?> closedNotices = [];
+
+        CommandCenterChatRunner runner = CreateRunner(new StaticNdjsonHandler(
+            SerializeFrames(
+                new IntelligenceEvent(IntelligenceEventType.ToolCall, "ask_human", ToolCall: call),
+                new IntelligenceEvent(IntelligenceEventType.ToolResult, "ask_human", outcome.Message, ToolCall: call)
+                {
+                    ToolOutcome = outcome,
+                },
+                new IntelligenceEvent(IntelligenceEventType.Result, "done", "done", FinishReason: "stop"))),
+            configureHumanPrompt: coordinator => coordinator.SetUiCallbacks(
+                onShow: static (_, _) => { },
+                onHide: (_, notice) => closedNotices.Add(notice),
+                onStatus: null));
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
+        await runner.RunTurnAsync("operator question", state, updates.Writer, CancellationToken.None);
+
+        Assert.Equal("Human prompt closed (tool error).", Assert.Single(closedNotices));
+
+        Assert.DoesNotContain(state.Log.Snapshot(), static entry => entry.Kind == SessionLogEntryKind.Error);
+    }
+
+    [Theory]
+    [InlineData("", "")]
+    [InlineData(" \t", "        ")]
+    public async Task OutputLimitNotice_Status_survives_empty_result_without_becoming_answer_text(string answer, string renderedAnswer)
+    {
+        InferenceNotice notice = new((InferenceNoticeCode)3);
+
+        CommandCenterChatRunner runner = CreateRunner(new StaticNdjsonHandler(
+            SerializeFrames(
+                new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, answer),
+                new IntelligenceEvent(IntelligenceEventType.Status, notice.Message)
+                {
+                    Notices = [notice],
+                },
+                new IntelligenceEvent(IntelligenceEventType.Result, answer, answer, FinishReason: "length")
+                {
+                    Notices = [notice],
+                })));
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
+        await runner.RunTurnAsync("operator question", state, updates.Writer, CancellationToken.None);
+
+        IReadOnlyList<SessionLogEntry> entries = state.Log.Snapshot();
+
+        Assert.Contains("output limit", notice.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(notice.Message, Assert.Single(entries, static entry => entry.Kind == SessionLogEntryKind.Status).Text);
+
+        Assert.Equal(renderedAnswer, string.Concat(entries.Where(static entry => entry.Kind == SessionLogEntryKind.Assistant).Select(static entry => entry.Text)));
+
+        Assert.DoesNotContain(entries, static entry => entry.Kind == SessionLogEntryKind.Error);
+
+        Assert.All(entries, static entry => Assert.False(entry.Streaming));
+    }
+
     [Fact]
     public async Task Runner_streams_reasoning_into_separate_entry_and_keeps_answer_clean()
     {
@@ -508,7 +638,8 @@ public sealed class CommandCenterReasoningTests
 
     private static CommandCenterChatRunner CreateRunner(
         HttpMessageHandler handler,
-        ILastSessionStore? lastSessionStore = null)
+        ILastSessionStore? lastSessionStore = null,
+        Action<CommandCenterHumanPromptCoordinator>? configureHumanPrompt = null)
     {
         ArcanumApiClient client = new(
             new FakeHttpClientFactory(handler),
@@ -518,11 +649,16 @@ public sealed class CommandCenterReasoningTests
             lastSessionStore ?? new NoopLastSessionStore(),
             NullLogger<SessionWorkspaceService>.Instance);
         CommandCenterHardModalArbiter arbiter = new();
+
+        CommandCenterHumanPromptCoordinator humanPrompt = new(client, arbiter);
+
+        configureHumanPrompt?.Invoke(humanPrompt);
+
         return new CommandCenterChatRunner(
             client,
             new StaticOptionsMonitor(new ArcanumSettings()),
             workspace,
-            new CommandCenterHumanPromptCoordinator(client, arbiter),
+            humanPrompt,
             NullLogger<CommandCenterChatRunner>.Instance);
     }
 

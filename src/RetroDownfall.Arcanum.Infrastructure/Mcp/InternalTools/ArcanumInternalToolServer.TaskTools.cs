@@ -8,7 +8,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 internal sealed partial class ArcanumInternalToolServer
 {
     private Task<McpToolsCallResultWire> ExecuteUnboundTaskAsync(JsonElement arguments, CancellationToken cancellationToken) =>
-        Task.FromResult(ToolError($"{ErrorCodes.Guild.ToolBoundaryUnavailable}: A live Guild Quest invocation is required."));
+        Task.FromResult(ToolError($"{ErrorCodes.Guild.ToolBoundaryUnavailable}: A live Guild Quest invocation is required.", denied: true));
 
     internal static string DescribeGuildTool(string name) => name switch
     {

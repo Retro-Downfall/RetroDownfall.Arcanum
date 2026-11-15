@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
@@ -154,6 +155,17 @@ public sealed record McpToolsCallResultWire
     [JsonPropertyName("structuredContent")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public JsonElement? StructuredContent { get; init; }
+
+    [JsonPropertyName("_meta")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public McpToolResultMetadata? Meta { get; init; }
+}
+
+/// <summary>Host-authored reported outcomes, independent of a tool's structured output schema.</summary>
+public sealed record McpToolResultMetadata
+{
+    [JsonPropertyName("arcanum/toolOutcome")]
+    public required ToolOutcome Outcome { get; init; }
 }
 
 /// <summary>

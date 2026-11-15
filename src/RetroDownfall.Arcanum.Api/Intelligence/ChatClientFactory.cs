@@ -225,7 +225,7 @@ public sealed class ChatClientFactory(
 
         var chatClient = new ChatClient(resolvedModel, credential, options);
 
-        IChatClient meAi = chatClient.AsIChatClient();
+        IChatClient meAi = new CompletionCheckedChatClient(chatClient.AsIChatClient());
 
         guildPolicy.Bind(meAi);
 
@@ -234,6 +234,36 @@ public sealed class ChatClientFactory(
             : null;
 
         return new ChatClientLease(meAi, provider, resolvedModel, ownedHttpClient: null, identity);
+    }
+
+    // The SDK permits a clean SSE EOF without a provider finish reason. Require the
+    // provider's completion metadata before the native turn can report ordinary success.
+    // This wraps only real HTTP adapters; service lookup and the owned transport bindings
+    // still flow through DelegatingChatClient, and no request is retried here.
+    private sealed class CompletionCheckedChatClient(IChatClient inner) : DelegatingChatClient(inner)
+    {
+        public override async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages,
+            ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            bool completed = false;
+
+            await foreach (ChatResponseUpdate update in base.GetStreamingResponseAsync(messages, options, cancellationToken).ConfigureAwait(false))
+            {
+                completed |= update.FinishReason is not null;
+
+                yield return update;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!completed) throw new IncompleteProviderResponseException();
+        }
+    }
+
+    internal sealed class IncompleteProviderResponseException() : Exception("The provider stream ended before reporting completion.")
+    {
     }
 
     internal enum ResolutionFailureReason

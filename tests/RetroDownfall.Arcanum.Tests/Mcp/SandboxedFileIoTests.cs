@@ -153,7 +153,148 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
         Assert.False(File.Exists(missing));
 
-        AssertSandboxError(error);
+        Assert.NotNull(error);
+
+        Assert.True(error.IsError);
+
+        Assert.True(error.StructuredContent.HasValue);
+
+        Assert.Equal("notFound", error.StructuredContent.Value.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public void Metadata_outcome_compares_kernel_root_and_child_spellings()
+    {
+        Assert.True(WorkspacePathPolicy.TryCanonicalize(_workspace.Root, out string? canonicalRoot, out _));
+
+        string kernelRoot = Path.Combine(Path.GetPathRoot(canonicalRoot)!, "kernel-spelling", Guid.NewGuid().ToString("N"));
+
+        string target = Path.Combine(_workspace.Root, "absent-under-alias.txt");
+
+        Func<SafeFileHandle, string?>? resolver = null;
+
+        resolver = handle =>
+        {
+            FileHandleIdentityInterop.TryGetHandleKernelPathForTests = null;
+
+            try
+            {
+                if (!FileHandleIdentityInterop.TryGetHandleKernelPath(handle, out string? realPath)
+                    || !WorkspacePathPolicy.IsPathUnderWorkspace(canonicalRoot, realPath))
+                {
+                    return null;
+                }
+
+                // A kernel spelling can differ from a canonicalized caller spelling (Windows
+                // extended paths and 8.3 aliases). The two handles must be compared in one namespace.
+                return Path.Combine(kernelRoot, Path.GetRelativePath(canonicalRoot, realPath));
+            }
+            finally
+            {
+                FileHandleIdentityInterop.TryGetHandleKernelPathForTests = resolver;
+            }
+        };
+
+        FileHandleIdentityInterop.TryGetHandleKernelPathForTests = resolver;
+
+        try
+        {
+            Assert.False(SandboxedFileIo.TryOpenForRead(_workspace.Root, target, out FileStream? stream, out McpToolsCallResultWire? error));
+
+            Assert.Null(stream);
+
+            Assert.NotNull(error);
+
+            Assert.True(error.StructuredContent.HasValue);
+
+            Assert.Equal("notFound", error.StructuredContent.Value.GetProperty("code").GetString());
+
+            Assert.False(File.Exists(target));
+        }
+        finally
+        {
+            FileHandleIdentityInterop.TryGetHandleKernelPathForTests = null;
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void Metadata_probe_parent_swap_never_classifies_outside_metadata(
+        bool returnDirectoryMetadata,
+        bool outsideTargetExists)
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX link replacement and runs on macOS and Linux only.");
+
+        string outside = CreateOutsideDirectory();
+
+        string parent = Path.Combine(_workspace.Root, "raced-parent");
+
+        Directory.CreateDirectory(parent);
+
+        string target = Path.Combine(parent, "target");
+
+        FileHandleMetadata? originalMetadata = null;
+
+        if (returnDirectoryMetadata)
+        {
+            Directory.CreateDirectory(target);
+
+            Assert.True(FileHandleIdentityInterop.TryGetPathMetadataIgnoringTestSeam(target, out FileHandleMetadata metadata));
+
+            originalMetadata = metadata;
+        }
+
+        if (outsideTargetExists)
+        {
+            Directory.CreateDirectory(Path.Combine(outside, "target"));
+        }
+
+        bool swapped = false;
+
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = path =>
+        {
+            Assert.Equal(target, path);
+
+            Directory.Move(parent, parent + "-original");
+
+            Directory.CreateSymbolicLink(parent, outside);
+
+            swapped = true;
+
+            return originalMetadata;
+        };
+
+        try
+        {
+            Assert.False(SandboxedFileIo.TryOpenForRead(_workspace.Root, target, out FileStream? stream, out McpToolsCallResultWire? error));
+
+            Assert.True(swapped);
+
+            Assert.Null(stream);
+
+            Assert.NotNull(error);
+
+            Assert.True(error.IsError);
+
+            Assert.True(error.StructuredContent.HasValue);
+
+            Assert.Equal("workspacePolicyDenied", error.StructuredContent.Value.GetProperty("code").GetString());
+
+            Assert.Equal(outsideTargetExists, Directory.Exists(Path.Combine(outside, "target")));
+        }
+        finally
+        {
+            FileHandleIdentityInterop.TryGetPathMetadataForTests = null;
+
+            if (swapped)
+            {
+                Directory.Delete(parent);
+            }
+        }
     }
 
     [Fact]

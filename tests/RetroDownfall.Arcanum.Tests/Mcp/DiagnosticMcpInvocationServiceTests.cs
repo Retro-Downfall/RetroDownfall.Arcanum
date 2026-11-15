@@ -18,6 +18,45 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 public sealed class DiagnosticMcpInvocationServiceTests
 {
     [Fact]
+    public async Task Reported_external_bridge_error_remains_a_failed_diagnostic()
+    {
+        using ArcanumTestHomeScope home = new("diagnostic-expected-failure");
+
+        await using McpConnectionManager manager = McpConnectionManagerHarness.Create();
+
+        const string canary = "PRIVATE_PROVIDER_ERROR /private/credential-state";
+
+        DiagnosticMcpClient client = new(canary);
+
+        manager.ClientFactoryForTests = _ => client;
+
+        await manager.RegisterFromConfigAsync(new McpConfig
+        {
+            McpServers = new Dictionary<string, McpServerConfig>(StringComparer.Ordinal)
+            {
+                ["external-srv"] = new() { Command = "arcanum-test-diagnostic-server" },
+            },
+        }, scopeWorkingDirectory: null, CancellationToken.None);
+
+        Result started = await manager.StartAsync("external-srv", workingDirectory: null);
+
+        Assert.True(started.IsSuccess);
+
+        Result<DiagnosticMcpInvocationOutcome> result = await CreateService(manager)
+            .InvokeAsync("echo", default, "external-srv", null, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Mcp.ToolError, result.Error.Code);
+
+        Assert.Contains("external tool reported", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(canary, result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(1, client.InvokeCount);
+    }
+
+    [Fact]
     public async Task Master_pipeline_only_names_are_blocked_from_direct_diagnostic_invocation()
     {
         DiagnosticMcpInvocationService service = CreateService();
@@ -432,7 +471,7 @@ public sealed class DiagnosticMcpInvocationServiceTests
             new TestOptionsMonitor<ArcanumSettings>(settings ?? new ArcanumSettings()),
             NullLogger<DiagnosticMcpInvocationService>.Instance);
 
-    private sealed class DiagnosticMcpClient : IMcpClient
+    private sealed class DiagnosticMcpClient(string? reportedError = null) : IMcpClient
     {
         public int InvokeCount { get; private set; }
 
@@ -458,7 +497,8 @@ public sealed class DiagnosticMcpInvocationServiceTests
 
             return Task.FromResult(new ModelContextProtocol.Protocol.CallToolResult
             {
-                Content = [new ModelContextProtocol.Protocol.TextContentBlock { Text = """{"ok":true}""" }],
+                Content = [new ModelContextProtocol.Protocol.TextContentBlock { Text = reportedError ?? """{"ok":true}""" }],
+                IsError = reportedError is not null,
             });
         }
 

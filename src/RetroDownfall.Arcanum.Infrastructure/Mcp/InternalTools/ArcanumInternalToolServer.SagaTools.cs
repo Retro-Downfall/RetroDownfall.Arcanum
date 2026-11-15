@@ -100,7 +100,7 @@ internal sealed partial class ArcanumInternalToolServer
         {
             _logger?.LogError("search_memory failed ({ExceptionType}).", ex.GetType().Name);
 
-            return ToolError("An internal error occurred during tool execution.");
+            return ToolFault("An internal error occurred during tool execution.");
         }
     }
 

@@ -60,7 +60,14 @@ public sealed record IntelligenceEvent(
     [JsonIgnore]
     internal StreamDeliveryAcknowledgement? DeliveryAcknowledgement { get; init; }
 
+    /// <summary>A code-owned non-success outcome for this toolResult; absent on successful results.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ToolOutcome? ToolOutcome { get; init; }
+
     public IReadOnlyList<string> Warnings { get; init; } = [];
+
+    /// <summary>Content-free operational notices; status frames announce them and results retain them.</summary>
+    public IReadOnlyList<InferenceNotice> Notices { get; init; } = [];
 }
 
 /// <summary>

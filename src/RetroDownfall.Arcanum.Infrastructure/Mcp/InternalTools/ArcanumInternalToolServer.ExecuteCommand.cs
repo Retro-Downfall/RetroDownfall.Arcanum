@@ -22,7 +22,7 @@ internal sealed partial class ArcanumInternalToolServer
     {
         if (!_allowHostProcessTools)
         {
-            return ToolError(Core.Security.HostProcessToolPolicy.DeniedMessage);
+            return ToolError(Core.Security.HostProcessToolPolicy.DeniedMessage, denied: true);
         }
 
         McpToolsCallResultWire? gate = TryRequireWorkspaceRoot();
@@ -204,7 +204,7 @@ internal sealed partial class ArcanumInternalToolServer
 
                 return ToolError(
                     runResult.FilesystemSandboxDenialMessage
-                    ?? ChildProcessSandboxMessages.SandboxUnavailable);
+                    ?? ChildProcessSandboxMessages.SandboxUnavailable, denied: true);
 
             case CappedChildProcessOutcome.ResourceLimitApplyFailed:
 
@@ -213,7 +213,7 @@ internal sealed partial class ArcanumInternalToolServer
                     runResult.ResourceLimitApplyError);
 
                 return ToolError(
-                    "execute_command: the invocation was blocked because OS-level resource limits could not be applied.");
+                    "execute_command: the invocation was blocked because OS-level resource limits could not be applied.", denied: true);
 
             case CappedChildProcessOutcome.MemoryMonitorStopped:
 
@@ -234,7 +234,7 @@ internal sealed partial class ArcanumInternalToolServer
                     runResult.ExceededResource,
                     cancellationToken).ConfigureAwait(false);
 
-                return ToolError(denialMessage);
+                return ToolError(denialMessage, denied: true);
 
             case CappedChildProcessOutcome.IoErrorOnStart:
 
@@ -546,7 +546,12 @@ internal sealed partial class ArcanumInternalToolServer
                 ex.GetType().Name);
 
             return ToolError(
-                "read_command_output: " + ex.Message);
+                ex switch
+                {
+                    KeyNotFoundException => "read_command_output: the requested command-output handle or stream is unavailable. Use an active handle returned by execute_command.",
+                    ArgumentOutOfRangeException => "read_command_output: invalid page range. Use the returned page boundary and a supported byte limit.",
+                    _ => "read_command_output: the requested page could not be decoded. Use a page boundary returned by read_command_output.",
+                });
         }
         catch (Exception ex)
             when (ex is IOException

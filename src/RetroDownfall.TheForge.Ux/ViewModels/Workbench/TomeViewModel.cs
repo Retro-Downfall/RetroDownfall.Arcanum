@@ -756,6 +756,13 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         {
             card.Result = result;
 
+            if (ev.ToolOutcome is { Message.Length: > 0 } outcome)
+            {
+                card.HasError = true;
+
+                card.ErrorMessage = outcome.Message;
+            }
+
             return;
         }
 

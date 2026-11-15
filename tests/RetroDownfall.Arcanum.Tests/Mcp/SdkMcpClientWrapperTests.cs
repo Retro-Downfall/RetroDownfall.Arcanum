@@ -1,4 +1,10 @@
 using System.Text.Json;
+using System.Text;
+using System.Text.Json.Nodes;
+using Microsoft.Extensions.AI;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -568,6 +574,84 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
                     cancellationToken);
             }
         }
+    }
+
+    [Fact]
+    public async Task Covenant_reported_refusal_preserves_its_structured_schema_through_real_bridge()
+    {
+        await using SdkMcpClientWrapper client = await CreateInitializedClientAsync();
+
+        CallToolResult raw = await client.CallToolAsync(CovenantToolNames.ProposeCovenant, new Dictionary<string, object?> { ["key"] = "tone", ["content"] = "brief" });
+
+        Assert.True(raw.IsError);
+
+        JsonElement structured = Assert.IsType<JsonElement>(raw.StructuredContent);
+
+        Assert.Equal(new[] { "status", "code", "message" }, structured.EnumerateObject().Select(static p => p.Name));
+
+        Assert.Equal("failed", structured.GetProperty("status").GetString());
+
+        Assert.Equal("Covenant.Unavailable", structured.GetProperty("code").GetString());
+
+        using JsonDocument schema = JsonDocument.Parse("{}");
+
+        McpBridgeTool bridge = new(CovenantToolNames.ProposeCovenant, "proposal", schema.RootElement, client, 4096);
+
+        McpToolFailure failure = Assert.IsType<McpToolFailure>(await bridge.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?> { ["key"] = "tone", ["content"] = "brief" })));
+
+        Assert.Equal(ToolOutcomeCode.NativeOperationFailed, failure.Outcome.Code);
+
+        Assert.False(failure.Outcome.Denied);
+
+        Assert.Equal("Covenant memory is not available on this installation right now.", failure.ResultText);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(4)]
+    [InlineData(19)]
+    public void Reported_native_error_content_obeys_one_utf8_budget(int cap)
+    {
+        CallToolResult result = new()
+        {
+            IsError = true,
+            Meta = JsonNode.Parse("{\"arcanum/toolOutcome\":{\"code\":\"nativeOperationFailed\"}}")!.AsObject(),
+            Content = [new TextContentBlock { Text = "🙂é retry" }, new TextContentBlock { Text = "🙂é retry" }],
+        };
+
+        McpToolFailure failure = Assert.IsType<McpToolFailure>(McpToolFailure.ReadReported(result, cap));
+
+        Assert.True(Encoding.UTF8.GetByteCount(failure.ResultText) <= cap);
+
+        Assert.DoesNotContain("�", failure.ResultText, StringComparison.Ordinal);
+
+        Assert.Equal(cap == 0 ? "" : cap == 1 ? "." : cap == 4 ? "…" : "🙂é \n[truncated]", failure.ResultText);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Reported_native_error_without_text_never_serializes_structured_payload(int contentKind)
+    {
+        using JsonDocument secret = JsonDocument.Parse("{\"private\":\"structured-content-canary\"}");
+
+        CallToolResult result = new()
+        {
+            IsError = true,
+            Meta = JsonNode.Parse("{\"arcanum/toolOutcome\":{\"code\":\"nativePolicyDenied\"}}")!.AsObject(),
+            Content = contentKind == 2 ? null! : contentKind == 1 ? [new ImageContentBlock { Data = Encoding.UTF8.GetBytes("image-canary"), MimeType = "image/png" }] : [],
+            StructuredContent = secret.RootElement.Clone(),
+        };
+
+        McpToolFailure failure = Assert.IsType<McpToolFailure>(McpToolFailure.ReadReported(result, 4096));
+
+        Assert.True(failure.Outcome.Denied);
+
+        Assert.Equal("The native tool refused the operation under its policy.", failure.ResultText);
+
+        Assert.DoesNotContain("structured-content-canary", failure.ToString(), StringComparison.Ordinal);
     }
 
     private async Task<SdkMcpClientWrapper> CreateInitializedClientAsync()

@@ -403,6 +403,7 @@ public sealed partial class WizardIntelligenceProvider(
                     yield return new TurnStatusChanged(correlation, frame.Message)
                     {
                         DeliveryAcknowledgement = frame.DeliveryAcknowledgement,
+                        Notices = frame.Notices,
                     };
 
                     yield break;
@@ -484,7 +485,9 @@ public sealed partial class WizardIntelligenceProvider(
                     yield break;
 
                 case IntelligenceEventType.ToolResult:
-                    bool failed = _pendingToolError is not null;
+                    bool toleratedFailure = _pendingToolError is not null;
+
+                    bool failed = toleratedFailure || frame.ToolOutcome is not null;
 
                     // The failure reason rides on Data; Message carries the tool name, so reading it
                     // first would report "read_file" as the error text. Message stays as the
@@ -501,10 +504,10 @@ public sealed partial class WizardIntelligenceProvider(
                         frame.Data ?? frame.Message,
                         Failed: failed,
                         Denied: frame.ToolDenied,
-                        ToleratedFailure: failed,
+                        ToleratedFailure: toleratedFailure,
                         PublicErrorText: publicError,
                         Duration: TimeSpan.Zero,
-                        AttachmentPostProcessed: false);
+                        AttachmentPostProcessed: false) { ToolOutcome = frame.ToolOutcome };
 
                     yield break;
 
@@ -526,6 +529,7 @@ public sealed partial class WizardIntelligenceProvider(
                         SessionId: null,
                         StructuredOutputWarning: frame.Warnings.Count > 0)
                     {
+                        Notices = frame.Notices,
                         Reasoning = _reasoning
                             .Select(static run => run.Materialize())
                             .ToArray(),
@@ -1814,6 +1818,26 @@ public sealed partial class WizardIntelligenceProvider(
 
         List<InferenceNotice> operationalNotices = seed?.Notices ?? [];
 
+        InferenceNotice? CaptureToolEvidenceEviction(ContextTokenBreakdown breakdown)
+        {
+            if (breakdown.ToolEvidenceEviction is not { } eviction) return null;
+
+            InferenceNotice notice = new(InferenceNoticeCode.ToolEvidenceTrimmed) { ToolEvidenceEviction = eviction };
+
+            int existingNotice = operationalNotices.FindIndex(static value => value.Code == InferenceNoticeCode.ToolEvidenceTrimmed);
+
+            if (existingNotice >= 0)
+            {
+                operationalNotices[existingNotice] = notice;
+
+                return null;
+            }
+
+            operationalNotices.Add(notice);
+
+            return notice;
+        }
+
         Stopwatch inferenceStopwatch = Stopwatch.StartNew();
 
         Channel<IntelligenceEvent>? liveHumanPromptChannel = null;
@@ -2422,7 +2446,8 @@ public sealed partial class WizardIntelligenceProvider(
                     .Where((_, index) => acceptedAttachedFileIndices.Contains(index))
                     .ToList();
 
-            ToolLoopProgressDetector toolLoopProgressDetector = new();
+            ToolLoopProgressDetector toolLoopProgressDetector = new(
+                operationalNotices.FirstOrDefault(static notice => notice.Code == InferenceNoticeCode.ToolEvidenceTrimmed)?.ToolEvidenceEviction);
 
             PingRequest streamContextRequest = request with
             {
@@ -3208,7 +3233,9 @@ public sealed partial class WizardIntelligenceProvider(
                         streamMaterializationLedger,
                         RemoveSemanticForAttachmentAdmission,
                         out _,
-                        progress: toolLoopProgressDetector);
+                        // Candidate messages are discarded after this attachment fit check. Keep
+                        // their notice-size accounting without publishing hypothetical evictions.
+                        progress: new ToolLoopProgressDetector());
 
                     if (attachmentAdmission.IsFailure)
                     {
@@ -3480,6 +3507,9 @@ public sealed partial class WizardIntelligenceProvider(
                         out ContextTokenBreakdown callBreakdown,
                         systemPromptAttribution: () => selectedSystemPromptBuild.Attribution,
                         progress: toolLoopProgressDetector);
+
+                    if (CaptureToolEvidenceEviction(callBreakdown) is { } evictionNotice && streaming)
+                        yield return new IntelligenceEvent(IntelligenceEventType.Status, evictionNotice.Message) { Notices = [evictionNotice] };
 
                     if (streamContextGate.IsSuccess)
                     {
@@ -3786,7 +3816,18 @@ public sealed partial class WizardIntelligenceProvider(
                                     bool invocationFailure = failureObservation is null
                                         || failureObservation.OriginOf(ex) == NativeModelCallExecutor.FailureOrigin.ModelInvocation;
 
-                                    inferenceError = invocationFailure ? BuildInferenceFailureMessage(lease, ex) : PublicInferenceFailureMessage;
+                                    if (invocationFailure && ex is ChatClientFactory.IncompleteProviderResponseException)
+                                    {
+                                        inferenceTypedError = new Error(
+                                            ErrorCodes.Hub.IncompleteProviderResponse,
+                                            "The provider stream ended before reporting completion. The response is incomplete; retry explicitly if needed.");
+
+                                        inferenceError = inferenceTypedError.Value.Message;
+                                    }
+                                    else
+                                    {
+                                        inferenceError = invocationFailure ? BuildInferenceFailureMessage(lease, ex) : PublicInferenceFailureMessage;
+                                    }
 
                                     // Only a genuine connectivity failure should trigger provider fallback.
                                     classification.IsConnectivityFailure = invocationFailure
@@ -4396,7 +4437,7 @@ public sealed partial class WizardIntelligenceProvider(
                                     yield return wardEvent;
                                 }
 
-                                if (processed.Failed)
+                                if (processed.Failed && processed.ToolOutcome is null)
                                 {
                                     yield return new IntelligenceEvent(
                                         IntelligenceEventType.ToolError,
@@ -4412,7 +4453,7 @@ public sealed partial class WizardIntelligenceProvider(
                                     processed.ResultText,
                                     null,
                                     new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ArgsSnapshot, toolCallIndex),
-                                    ToolDenied: processed.Denied);
+                                    ToolDenied: processed.Denied) { ToolOutcome = processed.ToolOutcome };
 
                                 if (processed.AttachmentRefresh is { } refreshDetail)
                                 {
@@ -4641,180 +4682,256 @@ public sealed partial class WizardIntelligenceProvider(
                             .TokenCount;
 
                     ChatResponse responseForValidation = bufferedFinalResponse
-                        ?? new ChatResponse(new ChatMessage(ChatRole.Assistant, finalText));
+                        ?? new ChatResponse(new ChatMessage(ChatRole.Assistant, finalText))
+                        {
+                            FinishReason = streamFinishReason is { } originalFinishReason ? new ChatFinishReason(originalFinishReason) : null,
+                        };
 
-                    Result<StructuredOutputResult> validationResult;
-                    try
+                    using CancellationTokenSource retryCancellation = CancellationTokenSource.CreateLinkedTokenSource(inferenceToken);
+
+                    Channel<IntelligenceEvent> retryProgress = Channel.CreateBounded<IntelligenceEvent>(new BoundedChannelOptions(4)
                     {
-                        validationResult = await structuredOutputValidator
-                            .ValidateAndRetryAsync(
-                            responseForValidation,
-                            streamSchema,
-                            structuredOutput.StrictMode,
-                            schemaMaxDepth,
-                            contextWindowLimit,
-                            estimateTokenCount,
-                            async (errorMessage, ct) =>
-                            {
-                                chatMessages.Add(new ChatMessage(ChatRole.Assistant, responseForValidation.Text));
+                        SingleReader = true,
+                        SingleWriter = true,
+                        FullMode = BoundedChannelFullMode.Wait,
+                    });
 
-                                chatMessages.Add(new ChatMessage(ChatRole.System, errorMessage));
+                    async Task<Result<StructuredOutputResult>> ValidateWithProgressAsync()
+                    {
+                        // A preceding iterator yield restores the caller's AsyncLocals. Reapply
+                        // the captured turn set before this ordinary async producer starts.
+                        streamTurnAmbients.Apply();
 
-                                ChatOptions retryOptions = lastInferenceChatOptions
-                                    ?? CreateInferenceChatOptions(
-                                        streamUsesTools,
-                                        streamTurnContext.InferenceTools,
-                                        request,
-                                        lease);
-
-                                while (true)
+                        try
+                        {
+                            return await structuredOutputValidator
+                                .ValidateAndRetryAsync(
+                                responseForValidation,
+                                streamSchema,
+                                structuredOutput.StrictMode,
+                                schemaMaxDepth,
+                                contextWindowLimit,
+                                estimateTokenCount,
+                                async (errorMessage, ct) =>
                                 {
-                                    await RefreshCacheLayoutAsync(retryOptions, ct).ConfigureAwait(false);
+                                    chatMessages.Add(new ChatMessage(ChatRole.Assistant, responseForValidation.Text));
 
-                                    Result retryContextGate = EnsureContextBudgetWithMaterializations(
-                                        chatMessages,
-                                        retryOptions,
-                                        lease,
-                                        request,
-                                        streamMaterializationLedger,
-                                        RemoveSemanticMaterialization,
-                                        out ContextTokenBreakdown retryContextBreakdown,
-                                        systemPromptAttribution: () => selectedSystemPromptBuild.Attribution,
-                                        progress: toolLoopProgressDetector);
+                                    chatMessages.Add(new ChatMessage(ChatRole.System, errorMessage));
 
-                                    if (retryContextGate.IsFailure)
+                                    ChatOptions retryOptions = lastInferenceChatOptions
+                                        ?? CreateInferenceChatOptions(
+                                            streamUsesTools,
+                                            streamTurnContext.InferenceTools,
+                                            request,
+                                            lease);
+
+                                    while (true)
                                     {
-                                        throw new ModelCallAdmissionException(retryContextGate.Error);
-                                    }
+                                        await RefreshCacheLayoutAsync(retryOptions, ct).ConfigureAwait(false);
 
-                                    Result retryReservation = await streamAccountingLocal
-                                        .EnsureReservationForContextAsync(
-                                            budgetReservationService,
-                                            settings.Value.ResolvePricing(),
-                                            serviceProvider.GetService<IExternalSpendLedger>(),
-                                            targetModel,
-                                            retryContextBreakdown,
-                                            logger,
-                                            ct)
-                                        .ConfigureAwait(false);
-                                    if (retryReservation.IsFailure)
-                                    {
-                                        throw new ModelCallAdmissionException(retryReservation.Error);
-                                    }
-
-                                    Result<CovenantDispatchAdmission?> retryAdmission = await AcknowledgeCovenantDispatchAsync(
-                                        covenantScope, streamCovenantDispatch, lease, targetModel, false,
-                                        streamSystemPromptDocument, chatMessages, retryOptions, retryContextBreakdown, ct)
-                                        .ConfigureAwait(false);
-
-                                    if (retryAdmission.IsFailure)
-                                    {
-                                        throw new ModelCallAdmissionException(retryAdmission.Error);
-                                    }
-
-                                    PromptCachePlan retryPromptCachePlan = BuildPromptCachePlan(
-                                        lease,
-                                        streamSystemPromptDocument,
-                                        retryOptions,
-                                        PromptCacheSemanticNamespace.Main,
-                                        streamCachePrepared);
-                                    MemoryDelegationProtection? retryProtection = BindProtectedUsage(covenantScope, streamAccountingLocal,
-                                        lease.Provider.Name, targetModel, ModelCallPurpose.StructuredOutputRetry, out MemoryDelegationUsageCommit? retryUsageCommit);
-
-                                    ModelCallOutcome retryCall = await ExecuteWizardAccountedBufferedAsync(
-                                            chatClient,
+                                        Result retryContextGate = EnsureContextBudgetWithMaterializations(
                                             chatMessages,
                                             retryOptions,
-                                            streamAccountingLocal.Budget,
-                                            ModelCallPurpose.StructuredOutputRetry,
-                                            ct,
-                                            BuildModelCallContext(
-                                                lease,
-                                                request,
-                                                retryContextBreakdown,
-                                                retryPromptCachePlan,
-                                                ResolveCallSensitivity(),
-                                                streamCachePrepared?.Bind(chatMessages, retryOptions),
-                                                selectedSystemPromptBuild.Attribution,
-                                            retryProtection,
-                                                CreateTapestryObservation(streamTapestrySelection, streamQueryEmbedding, streamRetrievedTapestry, streamTapestryContext)), retryUsageCommit)
-                                        .ConfigureAwait(false);
+                                            lease,
+                                            request,
+                                            streamMaterializationLedger,
+                                            RemoveSemanticMaterialization,
+                                            out ContextTokenBreakdown retryContextBreakdown,
+                                            systemPromptAttribution: () => selectedSystemPromptBuild.Attribution,
+                                            progress: toolLoopProgressDetector);
 
-                                    if (retryCall.IsFailure)
-                                    {
-                                        if (retryCall.Failure.HasUncertainProviderEffect)
-                                            await streamAccountingLocal.RecordUncertainProviderEffectAsync(budgetReservationService, CancellationToken.None).ConfigureAwait(false);
+                                        InferenceNotice? retryNotice = CaptureToolEvidenceEviction(retryContextBreakdown);
 
-                                        if (TrySelectOrdinaryCacheFallback(retryCall.Failure.RetryDirective))
+                                        if (streaming)
                                         {
-                                            continue;
+                                            if (retryNotice is not null)
+                                                await retryProgress.Writer.WriteAsync(
+                                                    new IntelligenceEvent(IntelligenceEventType.Status, retryNotice.Message) { Notices = [retryNotice] }, ct).ConfigureAwait(false);
+
+                                            await retryProgress.Writer.WriteAsync(
+                                                new IntelligenceEvent(IntelligenceEventType.Context, "Context token accounting", ContextBreakdown: retryContextBreakdown), ct).ConfigureAwait(false);
                                         }
 
-                                        throw retryCall.Failure.Cause
-                                            ?? new ModelCallAdmissionException(retryCall.Error);
+                                        if (retryContextGate.IsFailure)
+                                        {
+                                            throw new ModelCallAdmissionException(retryContextGate.Error);
+                                        }
+
+                                        Result retryReservation = await streamAccountingLocal
+                                            .EnsureReservationForContextAsync(
+                                                budgetReservationService,
+                                                settings.Value.ResolvePricing(),
+                                                serviceProvider.GetService<IExternalSpendLedger>(),
+                                                targetModel,
+                                                retryContextBreakdown,
+                                                logger,
+                                                ct)
+                                            .ConfigureAwait(false);
+                                        if (retryReservation.IsFailure)
+                                        {
+                                            throw new ModelCallAdmissionException(retryReservation.Error);
+                                        }
+
+                                        Result<CovenantDispatchAdmission?> retryAdmission = await AcknowledgeCovenantDispatchAsync(
+                                            covenantScope, streamCovenantDispatch, lease, targetModel, false,
+                                            streamSystemPromptDocument, chatMessages, retryOptions, retryContextBreakdown, ct)
+                                            .ConfigureAwait(false);
+
+                                        if (retryAdmission.IsFailure)
+                                        {
+                                            throw new ModelCallAdmissionException(retryAdmission.Error);
+                                        }
+
+                                        PromptCachePlan retryPromptCachePlan = BuildPromptCachePlan(
+                                            lease,
+                                            streamSystemPromptDocument,
+                                            retryOptions,
+                                            PromptCacheSemanticNamespace.Main,
+                                            streamCachePrepared);
+                                        MemoryDelegationProtection? retryProtection = BindProtectedUsage(covenantScope, streamAccountingLocal,
+                                            lease.Provider.Name, targetModel, ModelCallPurpose.StructuredOutputRetry, out MemoryDelegationUsageCommit? retryUsageCommit);
+
+                                        ModelCallOutcome retryCall = await ExecuteWizardAccountedBufferedAsync(
+                                                chatClient,
+                                                chatMessages,
+                                                retryOptions,
+                                                streamAccountingLocal.Budget,
+                                                ModelCallPurpose.StructuredOutputRetry,
+                                                ct,
+                                                BuildModelCallContext(
+                                                    lease,
+                                                    request,
+                                                    retryContextBreakdown,
+                                                    retryPromptCachePlan,
+                                                    ResolveCallSensitivity(),
+                                                    streamCachePrepared?.Bind(chatMessages, retryOptions),
+                                                    selectedSystemPromptBuild.Attribution,
+                                                retryProtection,
+                                                    CreateTapestryObservation(streamTapestrySelection, streamQueryEmbedding, streamRetrievedTapestry, streamTapestryContext)), retryUsageCommit)
+                                            .ConfigureAwait(false);
+
+                                        if (retryCall.IsFailure)
+                                        {
+                                            if (retryCall.Failure.HasUncertainProviderEffect)
+                                                await streamAccountingLocal.RecordUncertainProviderEffectAsync(budgetReservationService, CancellationToken.None).ConfigureAwait(false);
+
+                                            if (TrySelectOrdinaryCacheFallback(retryCall.Failure.RetryDirective))
+                                            {
+                                                continue;
+                                            }
+
+                                            throw retryCall.Failure.Cause
+                                                ?? new ModelCallAdmissionException(retryCall.Error);
+                                        }
+
+                                        ModelCallResult retryResult = retryCall.Value;
+
+                                        if (retryResult.ContextBreakdown is { } retryBreakdown)
+                                        {
+                                            contextBreakdownsByCall[retryResult.ModelCallId] = retryBreakdown;
+                                        }
+
+                                        ChatResponse retryResponse = retryResult.Response;
+
+                                        ChatCompletionUsage? retryUsage = MapUsageDetails(retryResponse.Usage);
+
+                                        await RecordProviderCallUsageAsync(
+                                                streamAccountingLocal,
+                                                retryUsage,
+                                                lease.Provider.Name,
+                                                targetModel,
+                                                ModelCallPurpose.StructuredOutputRetry,
+                                                CancellationToken.None, retryUsageCommit)
+                                            .ConfigureAwait(false);
+
+                                        SubagentExecutionAmbient.Tracker?.ThrowIfExhausted();
+
+                                        if (ProviderAttemptCommitTracker.CommitsProviderAttempt(retryResult.Reasoning))
+                                        {
+                                            classification.ProviderCommitted = true;
+                                        }
+
+                                        ephemeralReasoningSegments.Clear();
+
+                                        foreach (ModelCallReasoningSegment reasoning in retryResult.Reasoning.Segments)
+                                        {
+                                            ephemeralReasoningSegments.Append(reasoning);
+                                        }
+
+                                        responseForValidation = retryResponse;
+
+                                        bufferedFinalResponse = retryResponse;
+
+                                        if (streaming)
+                                        {
+                                            bufferedOutputFrames.Clear();
+                                            AppendReplacementFramesInContentOrder(
+                                                bufferedOutputFrames,
+                                                retryResult,
+                                                clientReasoningOutput);
+                                            replacementOutputPreservesContentOrder = true;
+                                        }
+
+                                        streamAccumulatedUsage = AccumulateUsage(
+                                            streamAccumulatedUsage,
+                                            retryUsage);
+
+                                        // A completed provider call is recorded before cancellable delivery.
+                                        if (streaming && retryResult.ContextBreakdown is { } reconciledRetryBreakdown)
+                                            await retryProgress.Writer.WriteAsync(
+                                                new IntelligenceEvent(IntelligenceEventType.Context, "Context token accounting", ContextBreakdown: reconciledRetryBreakdown), ct).ConfigureAwait(false);
+
+                                        return retryResponse;
                                     }
-
-                                    ModelCallResult retryResult = retryCall.Value;
-
-                                    if (retryResult.ContextBreakdown is { } retryBreakdown)
-                                    {
-                                        contextBreakdownsByCall[retryResult.ModelCallId] = retryBreakdown;
-                                    }
-
-                                    ChatResponse retryResponse = retryResult.Response;
-
-                                    ChatCompletionUsage? retryUsage = MapUsageDetails(retryResponse.Usage);
-
-                                    await RecordProviderCallUsageAsync(
-                                            streamAccountingLocal,
-                                            retryUsage,
-                                            lease.Provider.Name,
-                                            targetModel,
-                                            ModelCallPurpose.StructuredOutputRetry,
-                                            CancellationToken.None, retryUsageCommit)
-                                        .ConfigureAwait(false);
-
-                                    SubagentExecutionAmbient.Tracker?.ThrowIfExhausted();
-
-                                    if (ProviderAttemptCommitTracker.CommitsProviderAttempt(retryResult.Reasoning))
-                                    {
-                                        classification.ProviderCommitted = true;
-                                    }
-
-                                    ephemeralReasoningSegments.Clear();
-
-                                    foreach (ModelCallReasoningSegment reasoning in retryResult.Reasoning.Segments)
-                                    {
-                                        ephemeralReasoningSegments.Append(reasoning);
-                                    }
-
-                                    responseForValidation = retryResponse;
-
-                                    bufferedFinalResponse = retryResponse;
-
-                                    if (streaming)
-                                    {
-                                        bufferedOutputFrames.Clear();
-                                        AppendReplacementFramesInContentOrder(
-                                            bufferedOutputFrames,
-                                            retryResult,
-                                            clientReasoningOutput);
-                                        replacementOutputPreservesContentOrder = true;
-                                    }
-
-                                    streamAccumulatedUsage = AccumulateUsage(
-                                        streamAccumulatedUsage,
-                                        retryUsage);
-
-                                    return retryResponse;
-                                }
-                            },
-                            inferenceToken)
-                            .ConfigureAwait(false);
+                                },
+                                retryCancellation.Token)
+                                .ConfigureAwait(false);
+                        }
+                        catch (ModelCallAdmissionException ex)
+                        {
+                            return Result<StructuredOutputResult>.Failure(ex.Error);
+                        }
+                        finally
+                        {
+                            retryProgress.Writer.TryComplete();
+                        }
                     }
-                    catch (ModelCallAdmissionException ex)
+
+                    Task<Result<StructuredOutputResult>> validationTask = ValidateWithProgressAsync();
+
+                    Result<StructuredOutputResult> validationResult;
+
+                    try
                     {
-                        validationResult = Result<StructuredOutputResult>.Failure(ex.Error);
+                        await foreach (IntelligenceEvent frame in retryProgress.Reader.ReadAllAsync(inferenceToken).ConfigureAwait(false))
+                        {
+                            yield return frame;
+                        }
+
+                        validationResult = await validationTask.ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        // An abandoned consumer must release a producer blocked on either a full
+                        // diagnostics channel or provider I/O before joining its paid-work owner.
+                        retryProgress.Writer.TryComplete();
+
+                        try
+                        {
+                            await retryCancellation.CancelAsync().ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            try
+                            {
+                                await validationTask.ConfigureAwait(false);
+                            }
+                            catch (Exception)
+                            {
+                                // The normal path above observes and propagates the producer failure.
+                                // During abandonment, only observe it; never orphan provider accounting.
+                            }
+                        }
                     }
 
                     if (validationResult.IsFailure)
@@ -4834,6 +4951,8 @@ public sealed partial class WizardIntelligenceProvider(
                     bufferedFinalResponse = validationResult.Value.Response;
 
                     finalText = bufferedFinalResponse.Text ?? finalText;
+
+                    streamFinishReason = MapChatFinishReasonToOpenAi(bufferedFinalResponse.FinishReason);
 
                     streamAccumulator.Clear();
 
@@ -5056,6 +5175,17 @@ public sealed partial class WizardIntelligenceProvider(
                     CancellationToken.None).ConfigureAwait(false);
             }
 
+            if (string.Equals(streamFinishReason, "length", StringComparison.Ordinal)
+                && string.IsNullOrWhiteSpace(finalText))
+            {
+                InferenceNotice notice = new(InferenceNoticeCode.OutputLimitWithoutAnswer);
+
+                operationalNotices.Add(notice);
+
+                if (streaming)
+                    yield return new IntelligenceEvent(IntelligenceEventType.Status, notice.Message) { Notices = [notice] };
+            }
+
             if (!streaming)
             {
                 classification.BufferedTerminal = Result<PromptTurnResult>.Success(
@@ -5082,7 +5212,8 @@ public sealed partial class WizardIntelligenceProvider(
                 streamAccumulatedUsage,
                 FinishReason: streamFinishReason ?? "stop")
             {
-                Warnings = streamWarnings
+                Warnings = streamWarnings,
+                Notices = operationalNotices.ToArray(),
             };
         }
         finally
@@ -8168,6 +8299,8 @@ public sealed partial class WizardIntelligenceProvider(
                 CovenantConfirmedNoFit = ledger.CovenantConfirmedNoFit,
             };
         }
+
+        breakdown = breakdown with { ToolEvidenceEviction = progress?.Eviction };
 
         Result admission = TurnContextGuards.CheckContextBudget(
             breakdown,

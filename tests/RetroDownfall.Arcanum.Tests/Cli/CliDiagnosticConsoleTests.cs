@@ -29,20 +29,23 @@ public sealed class CliDiagnosticConsoleTests
     private const string Markup = "[bold]diagnostic words[/]";
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void Operational_notice_reaches_stderr_without_tool_calls_and_ignores_unknown_codes(bool known)
+    [InlineData(InferenceNoticeCode.ToolCompatibilityRestart, "continuing without local tools")]
+    [InlineData(InferenceNoticeCode.ToolEvidenceTrimmed, "Tool evidence was trimmed")]
+    [InlineData((InferenceNoticeCode)3, "output limit")]
+    [InlineData((InferenceNoticeCode)int.MaxValue, "")]
+    public void Operational_notice_reaches_stderr_without_tool_calls_and_ignores_unknown_codes(InferenceNoticeCode code, string expected)
     {
         PromptResponseDto response = new("exact answer", null)
         {
-            Notices = [new(known ? InferenceNoticeCode.ToolCompatibilityRestart : (InferenceNoticeCode)int.MaxValue)],
+            Notices = [new(code)],
         };
 
         IThemePalette palette = new ConfiguredThemePalette(new ThemeSemanticColors(), new ThemeSemanticColors());
 
         string written = CaptureError("plain", () => ExecuteResultRendering.WriteExecuteResultAsync(response, palette).GetAwaiter().GetResult());
 
-        Assert.Equal(known, written.Contains("continuing without local tools", StringComparison.Ordinal));
+        if (expected.Length == 0) Assert.Equal(string.Empty, written);
+        else Assert.Contains(expected, written, StringComparison.Ordinal);
 
         Assert.DoesNotContain("exact answer", written, StringComparison.Ordinal);
 

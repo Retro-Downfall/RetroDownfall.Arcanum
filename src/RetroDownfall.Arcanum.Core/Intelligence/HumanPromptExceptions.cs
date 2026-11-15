@@ -1,8 +1,9 @@
 namespace RetroDownfall.Arcanum.Core.Intelligence;
 
 /// <summary>
-/// Maps a legacy/external MCP human-prompt timeout result. Arcanum's own human-prompt registry has
-/// no total wait deadline; it waits for an operator response or caller cancellation.
+/// Represents a human-prompt timeout from a code-owned invocation. External MCP error text does
+/// not construct this exception. Arcanum's own registry has no total wait deadline; it waits for
+/// an operator response or caller cancellation.
 /// </summary>
 public sealed class HumanPromptTimeoutException : Exception
 {

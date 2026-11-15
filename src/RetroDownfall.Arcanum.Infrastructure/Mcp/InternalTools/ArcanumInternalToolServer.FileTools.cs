@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -51,32 +52,29 @@ internal sealed partial class ArcanumInternalToolServer
         {
             _logger?.LogError(ex, "read_file argument deserialization failed.");
 
-            return ToolError("Invalid arguments for read_file.");
+            return ToolError(ToolOutcomeCode.InvalidArguments);
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.RelativePath))
         {
-            return ToolError("read_file requires 'relativePath', 'startLine', and 'endLine'.");
+            return ToolError(ToolOutcomeCode.InvalidArguments);
         }
 
         if (args.StartLine < 1 || args.EndLine < args.StartLine)
         {
-            return ToolError(
-                $"read_file requires 1 <= startLine <= endLine; got startLine={args.StartLine}, endLine={args.EndLine}.");
+            return ToolError(ToolOutcomeCode.InvalidRange);
         }
 
         if (args.StartLine > McpSecurityLimits.ReadFileChunkMaxStartLine)
         {
-            return ToolError(
-                $"read_file: startLine exceeds the maximum ({McpSecurityLimits.ReadFileChunkMaxStartLine}).");
+            return ToolError(ToolOutcomeCode.InvalidRange);
         }
 
         int requestedLines = args.EndLine - args.StartLine + 1;
 
         if (requestedLines > McpSecurityLimits.ReadFileChunkMaxLinesPerRequest)
         {
-            return ToolError(
-                $"read_file: requested range ({requestedLines} lines) exceeds the maximum ({McpSecurityLimits.ReadFileChunkMaxLinesPerRequest} lines per request).");
+            return ToolError(ToolOutcomeCode.InvalidRange);
         }
 
         if (!TryResolveSandboxedPath(args.RelativePath, out string? absolutePath, out McpToolsCallResultWire? resolveErr))
@@ -601,12 +599,12 @@ internal sealed partial class ArcanumInternalToolServer
         {
             _logger?.LogError(ex, "list_directory argument deserialization failed.");
 
-            return ToolError("Invalid arguments for list_directory.");
+            return ToolError(ToolOutcomeCode.InvalidArguments);
         }
 
         if (args is null || string.IsNullOrWhiteSpace(args.RelativePath))
         {
-            return ToolError("list_directory requires 'relativePath'.");
+            return ToolError(ToolOutcomeCode.InvalidArguments);
         }
 
         if (!TryResolveSandboxedPath(args.RelativePath, out string? absolutePath, out McpToolsCallResultWire? resolveErr))
@@ -619,28 +617,33 @@ internal sealed partial class ArcanumInternalToolServer
             return revalidateErr!;
         }
 
+        using SandboxedFileIo.MetadataProbeAnchor? anchor = SandboxedFileIo.CaptureMetadataAnchor(_workspaceRoot!, absolutePath);
+
+        if (anchor is null)
+        {
+            return ToolError(ToolOutcomeCode.WorkspacePolicyDenied);
+        }
+
         return await Task.Run(
-            () => ListDirectoryCore(args, absolutePath, cancellationToken),
+            () => ListDirectoryCore(args, absolutePath, cancellationToken, anchor),
             cancellationToken).ConfigureAwait(false);
     }
 
     private McpToolsCallResultWire ListDirectoryCore(
         ListDirectoryParams args,
         string absolutePath,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SandboxedFileIo.MetadataProbeAnchor anchor)
     {
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (File.Exists(absolutePath) && !Directory.Exists(absolutePath))
-            {
-                return ToolError($"list_directory: path is not a directory: '{absolutePath}'.");
-            }
+            McpToolsCallResultWire? pathError = SandboxedFileIo.ValidateDirectoryForListing(anchor);
 
-            if (!Directory.Exists(absolutePath))
+            if (pathError is not null)
             {
-                return ToolError($"list_directory: directory not found: '{absolutePath}'.");
+                return pathError;
             }
 
             if (!TryDecodeListDirectoryContinuation(
@@ -780,6 +783,11 @@ internal sealed partial class ArcanumInternalToolServer
         {
             return ToolError("list_directory: operation was canceled.");
         }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return SandboxedFileIo.ValidateDirectoryForListing(anchor)
+                ?? ToolError("The directory changed while it was being listed. Retry list_directory.");
+        }
         catch (IOException ex)
         {
             _logger?.LogError(ex, "list_directory: I/O error.");
@@ -790,7 +798,8 @@ internal sealed partial class ArcanumInternalToolServer
         {
             _logger?.LogError(ex, "list_directory: access denied.");
 
-            return ToolError("list_directory: access denied.");
+            return SandboxedFileIo.ValidateDirectoryForListing(anchor)
+                ?? ToolError(ToolOutcomeCode.AccessDenied);
         }
     }
 

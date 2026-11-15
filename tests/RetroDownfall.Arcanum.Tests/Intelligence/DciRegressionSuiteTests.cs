@@ -25,6 +25,8 @@ public sealed class DciRegressionSuiteTests
     [
         "ModelTokenEstimatorTests",
 
+        "ModelTokenEstimatorWireTests",
+
         "PromptCachePlannerTests",
 
         "SystemPromptBuilderResonanceTests",

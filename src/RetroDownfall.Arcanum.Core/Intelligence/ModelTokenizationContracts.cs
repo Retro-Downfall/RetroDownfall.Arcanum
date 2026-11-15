@@ -135,6 +135,9 @@ public sealed record ResolvedModelTokenizationProfile
 
     public required int UnknownImageReserveTokens { get; init; }
 
+    /// <summary>Unknown models retain a conservative UTF-8 byte floor before the safety margin.</summary>
+    public bool UsesUtf8ByteFloor => Type == ModelTokenizationProfileType.UnknownFallback;
+
     public required double Confidence { get; init; }
 }
 
@@ -159,6 +162,18 @@ public sealed record ContextTokenBreakdown
     public required IReadOnlyList<ContextTokenComponent> Components { get; init; }
 
     public IReadOnlyList<int> MessageTokenCounts { get; init; } = [];
+
+    /// <summary>Configured, clamped context window used for admission, not a discovered provider limit.</summary>
+    public int ContextWindowLimit { get; init; }
+
+    /// <summary>Tool catalog estimate before the shared safety margin; included in the Tools component.</summary>
+    public int ToolCatalogTokens { get; init; }
+
+    /// <summary>Retained tool exchange estimate before the shared safety margin; included in Tools.</summary>
+    public int ToolExchangeTokens { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ToolEvidenceEviction? ToolEvidenceEviction { get; init; }
 
     public required int InputTokens { get; init; }
 

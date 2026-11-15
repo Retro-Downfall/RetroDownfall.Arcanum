@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
@@ -93,6 +94,9 @@ public sealed record JsonRpcNotification
 [JsonSerializable(typeof(McpToolContentTextWire))]
 [JsonSerializable(typeof(McpToolContentTextWire[]))]
 [JsonSerializable(typeof(McpToolsCallResultWire))]
+[JsonSerializable(typeof(McpToolResultMetadata))]
+[JsonSerializable(typeof(ToolOutcome))]
+[JsonSerializable(typeof(ToolOutcomeCode))]
 [JsonSerializable(typeof(McpToolDefinitionWire))]
 [JsonSerializable(typeof(McpToolDefinitionWire[]))]
 [JsonSerializable(typeof(ReadFileChunkParams))]

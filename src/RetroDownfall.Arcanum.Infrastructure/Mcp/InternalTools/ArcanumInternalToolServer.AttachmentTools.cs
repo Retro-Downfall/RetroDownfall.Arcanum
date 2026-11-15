@@ -113,7 +113,7 @@ internal sealed partial class ArcanumInternalToolServer
         catch (Exception ex)
         {
             _logger?.LogError(ex, "refresh_session_file selector validation failed.");
-            return ToolError("An internal error occurred during tool execution.");
+            return ToolFault("An internal error occurred during tool execution.");
         }
     }
 
@@ -176,7 +176,7 @@ internal sealed partial class ArcanumInternalToolServer
                 && !(record.Kind == SessionAttachmentKind.Binary
                     && SessionAttachmentComprehensionPolicy.TryGetFormat(record.MimeType, out _)))
             {
-                return ToolError(AttachmentNotInjectableMessage);
+                return ToolError(AttachmentNotInjectableMessage, denied: true);
             }
 
             string text =
@@ -194,7 +194,7 @@ internal sealed partial class ArcanumInternalToolServer
         {
             _logger?.LogError(ex, "attach_session_file failed for logicalName {LogicalName}.", logicalName);
 
-            return ToolError("An internal error occurred during tool execution.");
+            return ToolFault("An internal error occurred during tool execution.");
         }
     }
 

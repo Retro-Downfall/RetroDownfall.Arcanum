@@ -148,6 +148,8 @@ public sealed class ToolExecutionPipeline(
         bool Failed = false)
     {
         public ProviderCallSensitivity? Sensitivity { get; init; }
+
+        public ToolOutcome? ToolOutcome { get; init; }
     }
 
     public sealed record ProcessedToolCall(
@@ -163,6 +165,8 @@ public sealed class ToolExecutionPipeline(
         AttachmentRefreshEvent? AttachmentRefresh = null)
     {
         public ProviderCallSensitivity? Sensitivity { get; init; }
+
+        public ToolOutcome? ToolOutcome { get; init; }
     }
 
     public static List<FunctionCallContent> CollectActionableFunctionCalls(ChatResponse response)
@@ -245,9 +249,9 @@ public sealed class ToolExecutionPipeline(
     /// A call that resolved to no registered function never ran, so it is an <c>error</c> rather
     /// than a <c>success</c> even though the pipeline hands the model a synthetic string result.
     /// </summary>
-    private static string ResolveInvocationOutcome(bool isRegisteredTool, bool denied) =>
+    private static string ResolveInvocationOutcome(bool isRegisteredTool, bool denied, bool failed) =>
         denied ? "denied"
-        : isRegisteredTool ? "success"
+        : isRegisteredTool && !failed ? "success"
         : "error";
 
     /// <summary>
@@ -452,7 +456,7 @@ public sealed class ToolExecutionPipeline(
 
                 RecordToolInvocationMetric(
                     metricToolName,
-                    ResolveInvocationOutcome(isRegisteredTool, wardedExecution.Denied));
+                    ResolveInvocationOutcome(isRegisteredTool, wardedExecution.Denied, wardedExecution.Failed));
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -515,7 +519,7 @@ public sealed class ToolExecutionPipeline(
 
                 RecordToolInvocationMetric(
                     metricToolName,
-                    ResolveInvocationOutcome(isRegisteredTool, wardedExecution.Denied));
+                    ResolveInvocationOutcome(isRegisteredTool, wardedExecution.Denied, wardedExecution.Failed));
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -649,7 +653,7 @@ public sealed class ToolExecutionPipeline(
             applyPatchContext?.ReceiptHandled == true,
             wardedExecution.Denied,
             attachmentRefresh)
-        { Sensitivity = wardedExecution.Sensitivity };
+        { Sensitivity = wardedExecution.Sensitivity, ToolOutcome = wardedExecution.ToolOutcome };
     }
 
     private sealed record RefreshPostProcess(
@@ -1373,6 +1377,12 @@ public sealed class ToolExecutionPipeline(
                 object? result = await guildContext.InvokeBoundAsync(function,
                     fcc.Arguments is { Count: > 0 } ? new AIFunctionArguments(fcc.Arguments) : [], cancellationToken).ConfigureAwait(false);
 
+                if (result is McpToolFailure failure)
+                {
+                    return new WardedToolExecutionResult(failure.ResultText, BufferedWardEventsOrEmpty(wardEvents), failure.Outcome.Denied, Failed: true)
+                    { ToolOutcome = failure.Outcome };
+                }
+
                 if (result is GuildLocalChildToolResult child)
                 {
                     string body = GuildPromptBuilder.Build(child.Authority, GuildEnvelopeKind.Result,
@@ -1409,7 +1419,7 @@ public sealed class ToolExecutionPipeline(
                 .ConfigureAwait(false);
         }
 
-        (string directResult, bool directDenied, ProviderCallSensitivity? sensitivity) = await InvokeToolCallWithSanctumAsync(
+        (string directResult, bool directDenied, ProviderCallSensitivity? sensitivity, ToolOutcome? toolOutcome) = await InvokeToolCallWithSanctumAsync(
             fcc,
             activeSpell,
             chatOptions,
@@ -1420,8 +1430,9 @@ public sealed class ToolExecutionPipeline(
         return new WardedToolExecutionResult(
             directResult,
             BufferedWardEventsOrEmpty(wardEvents),
-            directDenied)
-        { Sensitivity = sensitivity };
+            directDenied,
+            Failed: toolOutcome is not null)
+        { Sensitivity = sensitivity, ToolOutcome = toolOutcome };
     }
 
     private async Task RecordUngatedWardResolutionAsync(
@@ -1627,7 +1638,7 @@ public sealed class ToolExecutionPipeline(
                         Nonce = nonce,
                     });
 
-                    (string text, bool denied, ProviderCallSensitivity? sensitivity) = await InvokeToolCallWithSanctumAsync(
+                    (string text, bool denied, ProviderCallSensitivity? sensitivity, ToolOutcome? toolOutcome) = await InvokeToolCallWithSanctumAsync(
                             fcc,
                             activeSpell,
                             chatOptions,
@@ -1637,7 +1648,7 @@ public sealed class ToolExecutionPipeline(
                         .ConfigureAwait(false);
 
                     return Result<WardedToolExecutionResult>.Success(
-                        new WardedToolExecutionResult(text, wardEvents, denied) { Sensitivity = sensitivity });
+                        new WardedToolExecutionResult(text, wardEvents, denied, Failed: toolOutcome is not null) { Sensitivity = sensitivity, ToolOutcome = toolOutcome });
                 },
                 cancellationToken)
             .ConfigureAwait(false);
@@ -1695,7 +1706,7 @@ public sealed class ToolExecutionPipeline(
         IReadOnlyList<IntelligenceEvent> wardEvents) =>
         new(message, wardEvents, Denied: true);
 
-    private async Task<(string ResultText, bool Denied, ProviderCallSensitivity? Sensitivity)> InvokeToolCallWithSanctumAsync(
+    private async Task<(string ResultText, bool Denied, ProviderCallSensitivity? Sensitivity, ToolOutcome? ToolOutcome)> InvokeToolCallWithSanctumAsync(
         FunctionCallContent fcc,
         ParsedSpell? activeSpell,
         ChatOptions chatOptions,
@@ -1712,7 +1723,7 @@ public sealed class ToolExecutionPipeline(
 
         if (outcome.Enabled && !SanctumEnforcement.AllowsContinuation(outcome.Result, outcome.Mode))
         {
-            return (SanctumDenialMessage(outcome.Result), true, null);
+            return (SanctumDenialMessage(outcome.Result), true, null, null);
         }
 
         // Sanctum cleared the initial URL above; the ward keeps every redirect hop under the same policy.
@@ -1723,9 +1734,14 @@ public sealed class ToolExecutionPipeline(
             chatOptions,
             cancellationToken).ConfigureAwait(false);
 
+        if (rawResult is McpToolFailure failure)
+        {
+            return (failure.ResultText, failure.Outcome.Denied, null, failure.Outcome);
+        }
+
         if (rawResult is Tools.MemoryRecallToolResult recall)
         {
-            return (recall.Text, false, recall.Sensitivity);
+            return (recall.Text, false, recall.Sensitivity, null);
         }
 
         if (rawResult is MemoryDelegationToolResult delegated)
@@ -1733,7 +1749,7 @@ public sealed class ToolExecutionPipeline(
             string text = toolResultMaterializer is null ? delegated.Text
                 : MaterializeToolResultForModel(fcc.Name ?? string.Empty, delegated.Text, toolResultMaterializer);
 
-            return (text, false, delegated.Sensitivity);
+            return (text, false, delegated.Sensitivity, null);
         }
 
         if (rawResult is TrustedStructuredToolResult
@@ -1743,7 +1759,7 @@ public sealed class ToolExecutionPipeline(
             && (exactPatchResult.ReceiptHandled
                 || ApplyPatchInvocationAmbient.Current?.ReceiptHandled == true))
         {
-            return (exactPatchResult.Text, false, null);
+            return (exactPatchResult.Text, false, null, null);
         }
 
         if (toolResultMaterializer is not null)
@@ -1754,10 +1770,10 @@ public sealed class ToolExecutionPipeline(
                 rawResult,
                 toolResultMaterializer);
 
-            return (materialized, false, null);
+            return (materialized, false, null, null);
         }
 
-        return (rawResult?.ToString() ?? string.Empty, false, null);
+        return (rawResult?.ToString() ?? string.Empty, false, null, null);
     }
 
     private sealed class GrimoirePendingReceiptSink(

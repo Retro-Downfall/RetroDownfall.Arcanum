@@ -216,7 +216,13 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
                 TokenEstimateClassification.Estimated, profile.Confidence);
         }
 
+        long toolExchangeTokens = estimates.TryGetValue(ContextTokenSource.Tools, out MutableEstimate? exchanges)
+            ? exchanges.Count : 0;
+
         EstimateTools(estimates, request.Options.Tools, profile, tokenizer);
+
+        long toolCatalogTokens = (estimates.TryGetValue(ContextTokenSource.Tools, out MutableEstimate? tools)
+            ? tools.Count : 0) - toolExchangeTokens;
         EstimateStructuredOutput(estimates, request.Options.ResponseFormat, profile, tokenizer);
 
         if (request.Options.AdditionalProperties is { Count: > 0 } optionProperties)
@@ -320,6 +326,9 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
             Profile = profile,
             Components = components,
             MessageTokenCounts = messageTokenCounts,
+            ContextWindowLimit = ArcanumSettingClamps.ContextWindowLimit(request.Provider.ContextWindowLimit),
+            ToolCatalogTokens = ContextTokenBreakdown.SaturatingInt(toolCatalogTokens),
+            ToolExchangeTokens = ContextTokenBreakdown.SaturatingInt(toolExchangeTokens),
             InputTokens = inputTokens,
             ReservedTokens = reservedTokens,
             ReservedAnswerTokens = Math.Max(0, request.ReservedAnswerTokens),

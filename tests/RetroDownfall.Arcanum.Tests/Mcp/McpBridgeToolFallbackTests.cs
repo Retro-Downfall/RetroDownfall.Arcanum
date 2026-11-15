@@ -2,12 +2,42 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using ModelContextProtocol.Protocol;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Tests.Support;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
 public sealed class McpBridgeToolFallbackTests
 {
+    [Fact]
+    public async Task Fallback_error_result_is_not_logged_as_success()
+    {
+        FakeMcpClient localClient = new(_ => throw new McpTransportUnavailableException(
+            "not dispatched", McpRequestDispatchState.NotDispatched));
+
+        FakeMcpClient fallbackClient = new(_ => Task.FromResult(TextResult("private external failure", isError: true)));
+
+        TestCapturingLogger<McpBridgeTool> logger = new();
+
+        McpBridgeTool tool = new("remote_tool", "description", EmptySchema(), localClient, 4096,
+            fallbackClient: fallbackClient, fallbackLogger: logger);
+
+        McpToolFailure result = Assert.IsType<McpToolFailure>(await tool.InvokeAsync(new AIFunctionArguments(), CancellationToken.None));
+
+        Assert.Equal(ToolOutcomeCode.ExternalToolError, result.Outcome.Code);
+
+        Assert.Equal(1, fallbackClient.CallCount);
+
+        TestLogEntry recorded = Assert.Single(logger.Entries);
+
+        Assert.Contains("global fallback", recorded.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("succeeded", recorded.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("private external failure", recorded.Message, StringComparison.Ordinal);
+    }
+
 
     // W3.4 Group C #6: a transport/connectivity failure on the local server (channel closed /
     // server down) must trigger the global fallback. SdkMcpClientWrapper surfaces
@@ -90,7 +120,10 @@ public sealed class McpBridgeToolFallbackTests
             toolOutputCapBytes: 4096,
             fallbackClient: fallbackClient);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => tool.InvokeAsync(new AIFunctionArguments(), CancellationToken.None).AsTask());
+        McpToolFailure failure = Assert.IsType<McpToolFailure>(
+            await tool.InvokeAsync(new AIFunctionArguments(), CancellationToken.None));
+
+        Assert.Equal(ToolOutcomeCode.ExternalToolError, failure.Outcome.Code);
 
         Assert.Equal(0, fallbackClient.CallCount);
 

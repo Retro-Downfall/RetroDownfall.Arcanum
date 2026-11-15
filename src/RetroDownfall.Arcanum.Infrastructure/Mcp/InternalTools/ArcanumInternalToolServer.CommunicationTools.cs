@@ -61,7 +61,7 @@ internal sealed partial class ArcanumInternalToolServer
         {
             _logger?.LogError(ex, "ask_human await failed.");
 
-            return ToolError("ask_human: an internal error occurred.");
+            return ToolFault("ask_human: an internal error occurred.");
         }
     }
 
@@ -158,14 +158,7 @@ internal sealed partial class ArcanumInternalToolServer
 
             if (r.IsFailure)
             {
-                return new McpToolsCallResultWire
-                {
-                    Content =
-                    [
-                        new McpToolContentTextWire { Text = "failed" },
-                    ],
-                    IsError = true,
-                };
+                return ToolError("failed");
             }
 
             string status = r.Value.Status == CommLinkDeliveryStatus.Delivered
@@ -189,7 +182,7 @@ internal sealed partial class ArcanumInternalToolServer
         {
             _logger?.LogError(ex, "send_notification dispatch failed.");
 
-            return ToolError("An internal error occurred during send_notification.");
+            return ToolFault("An internal error occurred during send_notification.");
         }
     }
 

@@ -486,15 +486,23 @@ public sealed class McpToolCommandTests
         Assert.Contains("external_search", result.Output, StringComparison.Ordinal);
     }
 
-    [Fact]
+    [Theory]
+    [InlineData("Online", true)]
+    [InlineData("ONLINE", true)]
+    [InlineData("running", true)]
+    [InlineData("RuNnInG", true)]
+    [InlineData("Online", false)]
+    [InlineData("ONLINE", false)]
+    [InlineData("running", false)]
+    [InlineData("RuNnInG", false)]
 
-    public void Mcp_invoke_posts_inline_json_to_external_diagnostic_route()
+    public void Mcp_invoke_posts_inline_json_to_external_diagnostic_route(string status, bool specifyServer)
     {
         RecordingHandler handler = new(request =>
         {
             if (request.RequestUri!.AbsolutePath == "/api/intelligence/arsenal")
             {
-                return ArsenalResponse();
+                return ArsenalResponse(status);
             }
 
             McpToolInvokeResponse response = new()
@@ -522,8 +530,7 @@ public sealed class McpToolCommandTests
                 "invoke",
                 "external_search",
                 "{\"query\":\"dragons\"}",
-                "--server",
-                "workspace-server",
+                .. (specifyServer ? new[] { "--server", "workspace-server" } : []),
                 "--workspace",
                 "/srv/workspace",
             ]);
@@ -559,6 +566,75 @@ public sealed class McpToolCommandTests
         Assert.Contains("12ms", result.Error, StringComparison.Ordinal);
 
         Assert.Contains("truncated: no", result.Error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Stopped", true)]
+    [InlineData("Starting", true)]
+    [InlineData("Restarting", true)]
+    [InlineData("Failed", true)]
+    [InlineData("Stopped", false)]
+    [InlineData("Starting", false)]
+    [InlineData("Restarting", false)]
+    [InlineData("Failed", false)]
+
+    public void Mcp_invoke_does_not_post_for_an_offline_server(string status, bool specifyServer)
+    {
+        RecordingHandler handler = new(_ => ArsenalResponse(status));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["mcp", "invoke", "external_search", "{}", .. (specifyServer ? new[] { "--server", "workspace-server" } : [])]);
+
+        Assert.NotEqual(0, result.ExitCode);
+
+        Assert.Single(handler.Requests);
+
+        Assert.DoesNotContain(handler.Requests, request => request.RequestUri!.AbsolutePath == "/api/mcp/tools/invoke");
+    }
+
+    [Fact]
+
+    public void Mcp_invoke_refuses_ambiguous_online_tools_without_posting()
+    {
+        WorkspaceArsenalDto arsenal = Arsenal();
+
+        arsenal.McpServers.Add(new McpServerStatusDto(
+            "another-server", "Online", 1, ["external_search"], null));
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<WorkspaceArsenalDto>(arsenal, true, null),
+            ArcanumJsonContext.Default.ApiResponseWorkspaceArsenalDto));
+
+        CliTestResult result = RunCommand(handler, ["mcp", "invoke", "external_search", "{}"]);
+
+        Assert.NotEqual(0, result.ExitCode);
+
+        Assert.Single(handler.Requests);
+
+        Assert.DoesNotContain(handler.Requests, request => request.RequestUri!.AbsolutePath == "/api/mcp/tools/invoke");
+    }
+
+    [Fact]
+
+    public void Mcp_invoke_propagates_host_diagnostic_disabled_error()
+    {
+        RecordingHandler handler = new(request =>
+            request.RequestUri!.AbsolutePath == "/api/intelligence/arsenal"
+                ? ArsenalResponse()
+                : CreateResponse(
+                    new ApiResponse<McpToolInvokeResponse>(
+                        null, false, new Error("Mcp.DiagnosticDisabled", "Diagnostic invocation is disabled.")),
+                    ArcanumJsonContext.Default.ApiResponseMcpToolInvokeResponse,
+                    HttpStatusCode.NotFound));
+
+        CliTestResult result = RunCommand(handler, ["mcp", "invoke", "external_search", "{}"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Contains("Mcp.DiagnosticDisabled", result.Error, StringComparison.Ordinal);
+
+        Assert.Equal("/api/mcp/tools/invoke", handler.Requests[1].RequestUri!.AbsolutePath);
     }
 
     [Fact]
@@ -941,14 +1017,14 @@ public sealed class McpToolCommandTests
             ["external_search", "external_read"],
             DateTimeOffset.Parse("2026-07-31T12:00:00Z"));
 
-    private static WorkspaceArsenalDto Arsenal() =>
+    private static WorkspaceArsenalDto Arsenal(string status = "Online") =>
         new(
             [],
             ["local_time", "system_info"],
             [
                 new McpServerStatusDto(
                     "workspace-server",
-                    "running",
+                    status,
                     2,
                     ["external_search", "external_read"],
                     null),
@@ -960,9 +1036,9 @@ public sealed class McpToolCommandTests
             new ApiResponse<McpServerInfo[]>(servers, true, null),
             ArcanumJsonContext.Default.ApiResponseMcpServerInfoArray);
 
-    private static HttpResponseMessage ArsenalResponse() =>
+    private static HttpResponseMessage ArsenalResponse(string status = "Online") =>
         CreateResponse(
-            new ApiResponse<WorkspaceArsenalDto>(Arsenal(), true, null),
+            new ApiResponse<WorkspaceArsenalDto>(Arsenal(status), true, null),
             ArcanumJsonContext.Default.ApiResponseWorkspaceArsenalDto);
 
     private static HttpResponseMessage BooleanResponse() =>

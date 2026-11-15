@@ -344,6 +344,7 @@ R	src/RetroDownfall.Arcanum.Core/Intelligence/Models/McpServerStatusDto.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/Models/PromptResponseDto.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/Models/PromptTurnResult.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/Models/ScryingFocusDto.cs
+R	src/RetroDownfall.Arcanum.Core/Intelligence/Models/ToolOutcome.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/Models/UpsertLoreRequest.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/Models/WorkspaceArsenalDto.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/OpenAi/OpenAiToolDefinition.cs
@@ -374,6 +375,7 @@ R	src/RetroDownfall.Arcanum.Core/Intelligence/Spells/UpdateSpellVersionRequest.c
 R	src/RetroDownfall.Arcanum.Core/Intelligence/StructuredToolResults.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/SystemPromptAttributionMap.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/SystemPromptAttributionSpan.cs
+R	src/RetroDownfall.Arcanum.Core/Intelligence/ToolEvidenceEviction.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/ToolInteractionReceipt.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/ToolNameDiagnostic.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/ToolPolicy.cs
@@ -3203,6 +3205,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpLifecycleAdmission.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpSecurityLimits.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpServerBootstrapHostedService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpServerRegistrationComparer.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpToolFailure.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpToolMerger.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpTrustPreviewText.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Mcp/McpWorkspaceTrustPreviewer.cs

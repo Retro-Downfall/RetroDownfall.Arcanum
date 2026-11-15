@@ -174,6 +174,24 @@ class RuntimeRunnerTests(unittest.TestCase):
         self.assertEqual('runner-built', receipt['buildIdentity']['provenance'])
         self.assertIn(str(self.root/'out'/'Tests.pdb'), receipt['buildIdentity']['files'])
 
+    def test_every_runtime_discovery_and_execution_excludes_perf(self):
+        for coverage in (False, True):
+            with self.subTest(coverage=coverage):
+                self.results = self.root / ("coverage-results" if coverage else "ordinary-results")
+                extra = ('--coverage-settings', str(self.settings)) if coverage else ()
+                result = self.invoke(*extra)
+                self.assertEqual(0, result.returncode, result.stdout)
+                children = [event for event in self.events() if event['kind'] in ('discover', 'run')]
+                self.assertEqual(
+                    [('discover', 'base'), ('discover', 'resource'), ('discover', 'remainder'),
+                     ('run', 'resource'), ('run', 'remainder')],
+                    [(event['kind'], event['lane']) for event in children])
+                for child in children:
+                    selected = child['args'][child['args'].index('--filter') + 1]
+                    self.assertIn('Category!=Perf', selected.split('&'), child)
+                    self.assertNotIn('|', selected, child)
+                (self.root / 'events.jsonl').unlink()
+
     def test_every_managed_invocation_obeys_owned_no_server_build_policy(self):
         # Fake child refuses execution, not just a later assertion about command text.
         self.configure('require-no-server')

@@ -557,6 +557,8 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         RunResultText = string.Empty;
 
+        StatusText = "Running.";
+
         Trace.BeginCapture("prompt", Prompt.Id.ToString("D"));
 
         _runCts?.Cancel();
@@ -594,10 +596,13 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
         catch (OperationCanceledException) when (runToken.IsCancellationRequested)
         {
             // Stop or tab close — leave partial output as-is.
+            StatusText = "Run stopped.";
         }
         catch (Exception ex)
         {
             LastError = ex.Message;
+
+            StatusText = "Run failed.";
 
             _foundryFloor.AppendLine($"Scriptorium run error: {ex.Message}");
 
@@ -1029,13 +1034,36 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
             case IntelligenceEventType.Error:
                 LastError = ev.Message;
+
+                StatusText = "Run failed.";
+
                 _foundryFloor.AppendLine($"Scriptorium run error: {ev.Message}");
                 _whispers.Show(WhisperSeverity.Error, "Run failed.");
                 break;
 
+            case IntelligenceEventType.Status:
+                if (!string.IsNullOrWhiteSpace(ev.Message))
+                {
+                    StatusText = ev.Message;
+                }
+                break;
+
             case IntelligenceEventType.Result:
-                StatusText = "Run complete.";
-                _whispers.Show(WhisperSeverity.Success, "Run complete.");
+                InferenceNotice? outputLimitNotice = ev.Notices.FirstOrDefault(
+                    static notice => notice.Code == InferenceNoticeCode.OutputLimitWithoutAnswer);
+
+                bool outputLimited = string.Equals(ev.FinishReason, "length", StringComparison.OrdinalIgnoreCase);
+
+                string completionStatus = outputLimitNotice?.Message
+                    ?? (outputLimited
+                        ? "The model reached an output limit. The answer may be incomplete."
+                        : "Run complete.");
+
+                StatusText = completionStatus;
+
+                _whispers.Show(outputLimitNotice is not null || outputLimited
+                    ? WhisperSeverity.Warning
+                    : WhisperSeverity.Success, completionStatus);
                 break;
 
             case IntelligenceEventType.SessionBound:
@@ -1050,7 +1078,7 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
                 break;
 
             default:
-                // Tool/ward/status events are not surfaced in this slice.
+                // Tool/ward events are not surfaced in this slice.
                 break;
         }
     }

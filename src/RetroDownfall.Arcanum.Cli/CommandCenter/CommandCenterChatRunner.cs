@@ -246,7 +246,7 @@ internal sealed class CommandCenterChatRunner(
                         await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
                         _ = await StopThinkingAsync(state, uiUpdates, cancellationToken).ConfigureAwait(false);
                         IngestToolResult(state, evt);
-                        TryCloseHumanPromptOnToolOutcome(evt, isError: false);
+                        TryCloseHumanPromptOnToolOutcome(evt, isError: evt.ToolOutcome is { Message.Length: > 0 });
                         await uiUpdates.WriteAsync(
                                 new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
                                 cancellationToken)
@@ -590,6 +590,11 @@ internal sealed class CommandCenterChatRunner(
         string? name = NormalizeToolName(evt.ToolCall?.Name ?? evt.Message);
         string? result = evt.Data ?? evt.ToolCall?.ArgumentsJson;
         _ = state.Incantations.UpsertResult(callId, name, result);
+
+        if (evt.ToolOutcome is { Message.Length: > 0 } outcome)
+        {
+            _ = state.Incantations.UpsertError(callId, name, outcome.Message);
+        }
     }
 
     private static void IngestToolError(CommandCenterState state, IntelligenceEvent evt)

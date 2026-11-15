@@ -12,7 +12,7 @@ using Xunit;
 
 namespace RetroDownfall.TheForge.Tests;
 
-public class ScriptoriumViewModelTests
+public partial class ScriptoriumViewModelTests
 {
     [Fact]
     public async Task LoadAsync_PopulatesTemplateAndMetadata()
@@ -451,7 +451,9 @@ public class ScriptoriumViewModelTests
 
         Assert.False(viewModel.IsRunning);
 
-        Assert.Contains("Hel", viewModel.RunResultText);
+        Assert.Equal("Hel", viewModel.RunResultText);
+
+        Assert.Equal("Run stopped.", viewModel.StatusText);
     }
 
     [Fact]
@@ -583,6 +585,8 @@ public class ScriptoriumViewModelTests
 
         public IReadOnlyList<IntelligenceEvent> ExecutionEvents { get; init; } = [];
 
+        public Exception? ExecutionFailure { get; init; }
+
         public bool StallAfterFirstToken { get; init; }
 
         public TaskCompletionSource SignalYielded { get; } = new();
@@ -645,6 +649,11 @@ public class ScriptoriumViewModelTests
                 yield return ev;
 
                 await Task.Yield();
+            }
+
+            if (ExecutionFailure is { } failure)
+            {
+                throw failure;
             }
         }
 

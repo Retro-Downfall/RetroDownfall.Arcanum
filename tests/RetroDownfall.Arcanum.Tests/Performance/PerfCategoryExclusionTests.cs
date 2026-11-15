@@ -11,15 +11,25 @@ public sealed class PerfCategoryExclusionTests
     private const string PerfCategory = "Perf";
 
     [Fact]
-    public void Coverage_run_excludes_the_perf_category()
+    public void Coverage_run_delegates_to_the_runtime_coordinator()
     {
-        string script = File.ReadAllText(
-            Path.Combine(FindRepositoryRoot(), "scripts", "coverage.sh"));
+        // The executable shell contract tests verify delegation and receipts; the coordinator's
+        // executable child-command tests own exclusion in both ordinary and coverage modes.
+        string[] commands = File.ReadAllText(
+                Path.Combine(FindRepositoryRoot(), "scripts", "coverage.sh"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\\\n", " ", StringComparison.Ordinal)
+            .Split('\n')
+            .Select(static line => line.Trim())
+            .Where(static line => line.Length > 0 && !line.StartsWith('#'))
+            .ToArray();
 
-        Assert.Contains(
-            "Category!=Perf",
-            script,
-            StringComparison.Ordinal);
+        string coordinator = Assert.Single(commands, static command =>
+            command.StartsWith("\"$RUNTIME_PYTHON\" \"$ROOT/scripts/runtime_test_runner.py\"", StringComparison.Ordinal));
+
+        Assert.Contains("--coverage-settings \"$RUNSETTINGS\"", coordinator, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(commands, static command => command.StartsWith("dotnet test ", StringComparison.Ordinal));
     }
 
     /// <summary>

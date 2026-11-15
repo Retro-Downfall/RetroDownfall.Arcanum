@@ -104,6 +104,33 @@ public sealed partial class CovenantMutationToolTests
         }
     }
 
+    [Theory]
+    [InlineData(ErrorCodes.Covenant.MaintenanceFailed)]
+    [InlineData(ErrorCodes.Covenant.IntegrityFailure)]
+    [InlineData(ErrorCodes.Covenant.WriteFailed)]
+    public async Task A_probe_fault_does_not_become_a_reported_native_refusal(string code)
+    {
+        await using CovenantToolSession session = await CovenantToolSession.CreateAsync();
+
+        session.RegisterProposalCapability();
+
+        session.HeadProbe.Failure = new Error(code, "PRIVATE_PROBE_FAULT /private/operator-state");
+
+        McpToolsCallResultWire result = await session.CallProposeAsync("response.style", "brief");
+
+        Assert.True(result.IsError);
+
+        Assert.Null(result.Meta);
+
+        Assert.Equal(code, Failure(result).Code);
+
+        Assert.Equal("An internal error occurred during tool execution.", Failure(result).Message);
+
+        Assert.Equal("An internal error occurred during tool execution.", Assert.Single(result.Content).Text);
+
+        Assert.Equal(0, session.Collector.StagedCount);
+    }
+
     private sealed class PrivateFailureCompiler : ICovenantCompiler
     {
         public CovenantCompiledContent Compile(string key, string authoredContent) =>

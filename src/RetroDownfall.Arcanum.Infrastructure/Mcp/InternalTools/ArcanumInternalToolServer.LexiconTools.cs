@@ -52,13 +52,13 @@ internal sealed partial class ArcanumInternalToolServer
                 || !AttachmentMemoryGateAmbient.TryResolve(attachmentId, out provenance))
             {
                 return ToolError(
-                    "save_memory attachment_id must identify attachment content materialized in the current turn.");
+                    "save_memory attachment_id must identify attachment content materialized in the current turn.", denied: true);
             }
         }
         else if (AttachmentMemoryGateAmbient.HasMaterializedAttachmentContent)
         {
             return ToolError(
-                "save_memory requires attachment_id while attachment content is materialized; untrusted attachment instructions cannot authorize memory promotion.");
+                "save_memory requires attachment_id while attachment content is materialized; untrusted attachment instructions cannot authorize memory promotion.", denied: true);
         }
 
         try
@@ -72,7 +72,7 @@ internal sealed partial class ArcanumInternalToolServer
             if (await ResolveLexiconScopeAsync(scope, cancellationToken).ConfigureAwait(false)
                 is not { } lexiconScope)
             {
-                return ToolError(UnresolvedMemoryScopeMessage);
+                return ToolError(UnresolvedMemoryScopeMessage, denied: true);
             }
 
             Result<LexiconEntryDto> result = provenance is null
@@ -85,7 +85,7 @@ internal sealed partial class ArcanumInternalToolServer
 
             if (result.IsFailure)
             {
-                return ToolError(result.Error.Message);
+                return ToolError(result.Error);
             }
 
             LexiconEntryDto entry = result.Value;
@@ -111,7 +111,7 @@ internal sealed partial class ArcanumInternalToolServer
             // can echo them into the rolling log and GET /api/logs.
             _logger?.LogError("save_memory failed ({ExceptionType}).", ex.GetType().Name);
 
-            return ToolError("An internal error occurred during tool execution.");
+            return ToolFault("An internal error occurred during tool execution.");
         }
     }
 
@@ -140,7 +140,7 @@ internal sealed partial class ArcanumInternalToolServer
         if (LexiconDaemonStateNames.Is(name))
         {
             return ToolError(
-                "delete_memory cannot remove Unseen Servant daemon_state entries; clear them via daemon job removal or Lexicon admin tooling.");
+                "delete_memory cannot remove Unseen Servant daemon_state entries; clear them via daemon job removal or Lexicon admin tooling.", denied: true);
         }
 
         try
@@ -154,7 +154,7 @@ internal sealed partial class ArcanumInternalToolServer
             if (await ResolveLexiconScopeAsync(scope, cancellationToken).ConfigureAwait(false)
                 is not { } lexiconScope)
             {
-                return ToolError(UnresolvedMemoryScopeMessage);
+                return ToolError(UnresolvedMemoryScopeMessage, denied: true);
             }
 
             // Retired and pinned entries are the operator's to manage, so they are refused before any
@@ -164,17 +164,17 @@ internal sealed partial class ArcanumInternalToolServer
 
             if (target.IsFailure)
             {
-                return ToolError(target.Error.Message);
+                return ToolError(target.Error);
             }
 
             if (target.Value is { IsRetired: true })
             {
-                return ToolError(LexiconAgentRefusals.RetiredDeletion);
+                return ToolError(LexiconAgentRefusals.RetiredDeletion, denied: true);
             }
 
             if (target.Value is { IsPinned: true })
             {
-                return ToolError(LexiconAgentRefusals.OperatorManaged);
+                return ToolError(LexiconAgentRefusals.OperatorManaged, denied: true);
             }
 
             bool purgedIdentity = false;
@@ -186,7 +186,7 @@ internal sealed partial class ArcanumInternalToolServer
 
                 if (identity.IsFailure)
                 {
-                    return ToolError(identity.Error.Message);
+                    return ToolError(identity.Error);
                 }
 
                 if (identity.Value is { } artifactId)
@@ -195,7 +195,7 @@ internal sealed partial class ArcanumInternalToolServer
 
                     if (purged.IsFailure)
                     {
-                        return ToolError(purged.Error.Message);
+                        return ToolError(purged.Error);
                     }
 
                     if (purged.Value.IsBlocked)
@@ -228,7 +228,7 @@ internal sealed partial class ArcanumInternalToolServer
 
             if (result.IsFailure)
             {
-                return ToolError(result.Error.Message);
+                return ToolError(result.Error);
             }
 
             string text = result.Value
@@ -252,7 +252,7 @@ internal sealed partial class ArcanumInternalToolServer
         {
             _logger?.LogError("delete_memory failed ({ExceptionType}).", ex.GetType().Name);
 
-            return ToolError("An internal error occurred during tool execution.");
+            return ToolFault("An internal error occurred during tool execution.");
         }
     }
 
@@ -299,7 +299,7 @@ internal sealed partial class ArcanumInternalToolServer
                 .SearchArchivesAsync(query, maxResults, cancellationToken)
                 .ConfigureAwait(false);
 
-            return result.IsFailure ? ToolError(result.Error.Message) : BuildBoundedSearchArchivesResult(result.Value);
+            return result.IsFailure ? ToolError(result.Error) : BuildBoundedSearchArchivesResult(result.Value);
         }
         catch (OperationCanceledException)
         {
@@ -309,7 +309,7 @@ internal sealed partial class ArcanumInternalToolServer
         {
             _logger?.LogError("search_history failed ({ExceptionType}).", ex.GetType().Name);
 
-            return ToolError("An internal error occurred during tool execution.");
+            return ToolFault("An internal error occurred during tool execution.");
         }
     }
 

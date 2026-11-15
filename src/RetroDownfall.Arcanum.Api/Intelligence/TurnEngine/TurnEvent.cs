@@ -16,6 +16,8 @@ internal sealed record RunStarted(TurnEventCorrelation Correlation) : TurnEvent(
 internal sealed record TurnStatusChanged(TurnEventCorrelation Correlation, string Message) : TurnEvent(Correlation)
 {
     internal StreamDeliveryAcknowledgement? DeliveryAcknowledgement { get; init; }
+
+    public IReadOnlyList<InferenceNotice> Notices { get; init; } = [];
 }
 
 internal sealed record SessionBound(TurnEventCorrelation Correlation, Guid SessionId) : TurnEvent(Correlation);
@@ -107,7 +109,10 @@ internal sealed record ToolInvocationCompleted(
     bool ToleratedFailure,
     string? PublicErrorText,
     TimeSpan Duration,
-    bool AttachmentPostProcessed) : TurnEvent(Correlation);
+    bool AttachmentPostProcessed) : TurnEvent(Correlation)
+{
+    public ToolOutcome? ToolOutcome { get; init; }
+}
 
 internal sealed record AttachmentRefreshed(
     TurnEventCorrelation Correlation,

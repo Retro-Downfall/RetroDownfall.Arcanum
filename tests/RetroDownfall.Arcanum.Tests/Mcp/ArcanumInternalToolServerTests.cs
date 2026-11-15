@@ -4630,6 +4630,10 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
             Assert.True(result.IsError);
 
             Assert.Contains("Guild.ToolBoundaryUnavailable", result.Content![0].Text!);
+
+            Assert.Equal(ToolOutcomeCode.NativePolicyDenied, result.Meta?.Outcome.Code);
+
+            Assert.True(result.Meta?.Outcome.Denied);
         }
     }
 

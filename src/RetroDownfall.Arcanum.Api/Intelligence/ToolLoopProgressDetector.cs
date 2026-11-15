@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Intelligence;
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Runtime.CompilerServices;
@@ -33,6 +34,52 @@ internal sealed class ToolLoopProgressDetector
     private readonly TextContent _trimNotice = new("Tool evidence trimmed; reread narrowly.");
 
     private int _nextSlot;
+
+    private int _completedRounds;
+
+    private int _evictedExchanges;
+
+    private int _evictedMessages;
+
+    private int _evictedCalls;
+
+    private int _evictedRounds;
+
+    private int _historicalExchanges;
+
+    private readonly Queue<int> _evictedRoundOrdinals = new(RecentRoundWindow);
+
+    internal ToolLoopProgressDetector(ToolEvidenceEviction? previousEviction = null)
+    {
+        if (previousEviction is null) return;
+
+        // Provider fallback rebuilds context, so the same historical exchange can be removed
+        // again. Carry only diagnostic operations; repetition witnesses stay attempt-local.
+        _evictedExchanges = previousEviction.Exchanges;
+
+        _evictedMessages = previousEviction.Messages;
+
+        _evictedCalls = previousEviction.Calls;
+
+        _historicalExchanges = previousEviction.HistoricalExchanges;
+
+        _evictedRounds = Increment(previousEviction.OmittedRoundOrdinals, previousEviction.RecentRoundOrdinals.Count);
+
+        foreach (int ordinal in previousEviction.RecentRoundOrdinals.TakeLast(RecentRoundWindow))
+        {
+            _evictedRoundOrdinals.Enqueue(ordinal);
+        }
+    }
+
+    internal ToolEvidenceEviction? Eviction => _evictedExchanges == 0 ? null : new(
+        _evictedExchanges,
+        _evictedMessages,
+        _evictedCalls,
+        _evictedRoundOrdinals.ToArray(),
+        _evictedRounds - _evictedRoundOrdinals.Count,
+        _historicalExchanges);
+
+    private static int Increment(int value, int amount = 1) => ContextTokenBreakdown.SaturatingInt((long)value + amount);
 
     /// <summary>
     /// Hex digest of the round signature that most recently recurred, for trace/diagnostic capture
@@ -100,7 +147,9 @@ internal sealed class ToolLoopProgressDetector
             }
         }
 
-        RoundEvidence current = new(fingerprint) { ReacquisitionUsed = reacquisitionUsed || reacquiring };
+        _completedRounds = Increment(_completedRounds);
+
+        RoundEvidence current = new(fingerprint, _completedRounds) { ReacquisitionUsed = reacquisitionUsed || reacquiring };
         _recentRounds[_nextSlot] = current;
         _nextSlot = (_nextSlot + 1) % RecentRoundWindow;
 
@@ -134,13 +183,39 @@ internal sealed class ToolLoopProgressDetector
     {
         foreach (ChatMessage message in removed)
         {
-            if (_messageEvidence.TryGetValue(message, out RoundEvidence? evidence)) evidence.EvidenceEvicted = true;
+            _evictedMessages = Increment(_evictedMessages);
+
+            int calls = message.Contents.OfType<FunctionCallContent>().Count();
+
+            _evictedCalls = Increment(_evictedCalls, calls);
+
+            if (calls > 0) _evictedExchanges = Increment(_evictedExchanges);
+
+            if (_messageEvidence.TryGetValue(message, out RoundEvidence? evidence))
+            {
+                if (!evidence.EvidenceEvicted)
+                {
+                    _evictedRounds = Increment(_evictedRounds);
+
+                    if (_evictedRoundOrdinals.Count == RecentRoundWindow) _evictedRoundOrdinals.Dequeue();
+
+                    _evictedRoundOrdinals.Enqueue(evidence.Ordinal);
+                }
+
+                evidence.EvidenceEvicted = true;
+            }
+            else if (calls > 0)
+            {
+                _historicalExchanges = Increment(_historicalExchanges);
+            }
         }
     }
 
-    private sealed class RoundEvidence(byte[] fingerprint)
+    private sealed class RoundEvidence(byte[] fingerprint, int ordinal)
     {
         internal byte[] Fingerprint { get; } = fingerprint;
+
+        internal int Ordinal { get; } = ordinal;
         internal bool EvidenceEvicted { get; set; }
         internal bool ReacquisitionUsed { get; set; }
     }

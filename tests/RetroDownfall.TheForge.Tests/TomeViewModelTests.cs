@@ -20,19 +20,31 @@ public class TomeViewModelTests
 {
     private static readonly Guid SessionId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
 
-    [Fact]
-    public async Task Operational_compatibility_status_is_visible_separately_from_the_assistant_answer()
+    [Theory]
+    [InlineData(InferenceNoticeCode.ToolCompatibilityRestart, "exact answer", "stop")]
+    [InlineData((InferenceNoticeCode)3, "", "length")]
+    [InlineData((InferenceNoticeCode)3, " \t", "length")]
+    public async Task Operational_status_is_visible_separately_from_the_assistant_answer(
+        InferenceNoticeCode code,
+        string answer,
+        string finishReason)
     {
-        InferenceNotice notice = new(InferenceNoticeCode.ToolCompatibilityRestart);
+        InferenceNotice notice = new(code);
 
         FakeTomeDataSource dataSource = new()
         {
             Session = NewSession(),
             PingEvents =
             [
-                new IntelligenceEvent(IntelligenceEventType.Status, notice.Message),
-                new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, "exact answer"),
-                new IntelligenceEvent(IntelligenceEventType.Result, "Complete"),
+                new IntelligenceEvent(IntelligenceEventType.Status, notice.Message)
+                {
+                    Notices = [notice],
+                },
+                new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, answer),
+                new IntelligenceEvent(IntelligenceEventType.Result, answer, answer, FinishReason: finishReason)
+                {
+                    Notices = [notice],
+                },
             ],
         };
 
@@ -44,9 +56,13 @@ public class TomeViewModelTests
 
         await viewModel.SendAsync(CancellationToken.None);
 
-        Assert.Contains(viewModel.Messages, message => message.Role == "status" && message.Content == notice.Message);
+        Assert.False(string.IsNullOrWhiteSpace(notice.Message));
 
-        Assert.Equal("exact answer", Assert.Single(viewModel.Messages, static message => message.Role == "assistant").Content);
+        Assert.Equal(notice.Message, Assert.Single(viewModel.Messages, static message => message.Role == "status").Content);
+
+        Assert.Equal(answer, string.Concat(viewModel.Messages.Where(static message => message.Role == "assistant").Select(static message => message.Content)));
+
+        Assert.DoesNotContain(viewModel.Messages, static message => message.Role == "error");
 
         Assert.Equal("operator question", dataSource.LastPingRequest?.Prompt);
     }
@@ -250,6 +266,68 @@ public class TomeViewModelTests
         Assert.EndsWith(ChatMessageViewModel.ReasoningTruncationMarker, reasoning.Content, StringComparison.Ordinal);
         Assert.Equal(string.Concat(Enumerable.Repeat(answerChunk, 1_001)), assistant.Content);
         Assert.DoesNotContain("abcdefghij", assistant.Content, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(ToolOutcomeCode.NotFound)]
+    [InlineData(ToolOutcomeCode.WorkspacePolicyDenied)]
+    [InlineData(null)]
+    public async Task ToolOutcome_result_preserves_call_and_marks_only_the_failed_tool(ToolOutcomeCode? code)
+    {
+        ToolOutcome? outcome = code is { } value ? new(value) : null;
+
+        const string retainedResult = "retained tool result";
+
+        IntelligenceToolCallEvent call = new("failed-call", "read_file", "{\"relativePath\":\"missing.txt\"}");
+
+        IntelligenceToolCallEvent other = new("other-call", "read_file", "{\"relativePath\":\"present.txt\"}");
+
+        FakeTomeDataSource dataSource = new()
+        {
+            Session = NewSession(),
+            PingEvents =
+            [
+                new IntelligenceEvent(IntelligenceEventType.ToolCall, "read_file", ToolCall: call),
+                new IntelligenceEvent(IntelligenceEventType.ToolCall, "read_file", ToolCall: other),
+                new IntelligenceEvent(IntelligenceEventType.ToolResult, "read_file", retainedResult, ToolCall: call)
+                {
+                    ToolOutcome = outcome,
+                },
+                new IntelligenceEvent(IntelligenceEventType.ToolResult, "read_file", "file contents", ToolCall: other),
+                new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, "exact answer"),
+                new IntelligenceEvent(IntelligenceEventType.Result, "exact answer", "exact answer", FinishReason: "stop"),
+            ],
+        };
+
+        TomeViewModel viewModel = CreateViewModel(dataSource);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        viewModel.InputText = "read the files";
+
+        await viewModel.SendAsync(CancellationToken.None);
+
+        ToolCallCardViewModel card = Assert.Single(viewModel.Messages, message => message.ToolCall?.CallId == call.CallId).ToolCall!;
+
+        Assert.Equal(call.Name, card.Name);
+
+        Assert.Equal(call.ArgumentsJson, card.ArgumentsJson);
+
+        Assert.Equal(retainedResult, card.Result);
+
+        Assert.Equal(outcome is not null, card.HasError);
+
+        Assert.Equal(outcome?.Message, card.ErrorMessage);
+
+        ToolCallCardViewModel otherCard = Assert.Single(viewModel.Messages, message => message.ToolCall?.CallId == other.CallId).ToolCall!;
+
+        Assert.False(otherCard.HasError);
+
+        Assert.Equal("file contents", otherCard.Result);
+
+        Assert.DoesNotContain(viewModel.Messages, static message => message.Role == "error");
+
+        Assert.Equal("exact answer", Assert.Single(viewModel.Messages, static message => message.Role == "assistant").Content);
     }
 
     [Fact]

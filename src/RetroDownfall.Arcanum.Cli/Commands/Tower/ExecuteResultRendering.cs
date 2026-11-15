@@ -17,11 +17,11 @@ internal static class ExecuteResultRendering
     {
         await Console.Out.WriteLineAsync(response.Text).ConfigureAwait(false);
 
-        if (response.Notices.Any(static notice => notice.Code == InferenceNoticeCode.ToolCompatibilityRestart))
+        foreach (InferenceNotice notice in response.Notices.DistinctBy(static value => value.Code).Where(static value => value.Message.Length > 0))
         {
             IAnsiConsole noticeConsole = CliConsoleFactory.CreateDiagnostic();
 
-            noticeConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape(new InferenceNotice(InferenceNoticeCode.ToolCompatibilityRestart).Message)));
+            noticeConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape(notice.Message)));
         }
 
         if (response.ToolCalls is not { Count: > 0 } toolCalls)

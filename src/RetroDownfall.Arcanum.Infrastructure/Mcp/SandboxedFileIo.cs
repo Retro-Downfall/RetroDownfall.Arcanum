@@ -1,3 +1,4 @@
+using Microsoft.Win32.SafeHandles;
 using System.Diagnostics.CodeAnalysis;
 
 using System.Text;
@@ -9,6 +10,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -72,19 +74,34 @@ internal static class SandboxedFileIo
 
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, absolutePath, out string? resolvedFinalPath))
         {
-            error = ToolError(PathEscapesSandboxMessage);
+            error = McpToolFailure.Native(ToolOutcomeCode.WorkspacePolicyDenied);
 
             return false;
         }
 
         string identityPath = Path.GetFullPath(resolvedFinalPath ?? absolutePath);
 
+        using MetadataProbeAnchor? anchor = CaptureMetadataAnchor(workspaceRoot, identityPath);
+
+        if (anchor is null)
+        {
+            error = McpToolFailure.Native(ToolOutcomeCode.WorkspacePolicyDenied);
+
+            return false;
+        }
+
         if (!FileHandleIdentityInterop.TryGetPathMetadata(
                 identityPath,
-                out FileHandleMetadata expectedMetadata)
-            || expectedMetadata.Kind != FileSystemObjectKind.RegularFile)
+                out FileHandleMetadata expectedMetadata))
         {
-            error = ToolError(PathEscapesSandboxMessage);
+            error = ClassifyReadFailure(anchor);
+
+            return false;
+        }
+
+        if (expectedMetadata.Kind != FileSystemObjectKind.RegularFile)
+        {
+            error = ClassifyReadFailure(anchor);
 
             return false;
         }
@@ -94,7 +111,7 @@ internal static class SandboxedFileIo
         // remediation the model can act on -- no spelling of this path has a hard link count of 1.
         if (expectedMetadata.HardLinkCount != 1)
         {
-            error = ToolError(HardLinkAliasingMessage);
+            error = ClassifyReadFailure(anchor, verifyHardLink: true);
 
             return false;
         }
@@ -108,7 +125,9 @@ internal static class SandboxedFileIo
 
         if (openStatus is not SecureFileOpenStatus.Success)
         {
-            error = OpenError(openStatus);
+            error = openStatus is SecureFileOpenStatus.NotFound or SecureFileOpenStatus.AccessDenied
+                ? ClassifyReadFailure(anchor)
+                : OpenError(openStatus);
 
             return false;
         }
@@ -152,7 +171,7 @@ internal static class SandboxedFileIo
     {
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
         {
-            return (false, ToolError(PathEscapesSandboxMessage));
+            return (false, McpToolFailure.Native(ToolOutcomeCode.WorkspacePolicyDenied));
         }
 
         // Git metadata and the .arcanum marker directory are not writable through a model-driven
@@ -162,7 +181,7 @@ internal static class SandboxedFileIo
         if (!allowProtectedPathWrites
             && WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, absolutePath))
         {
-            return (false, ToolError(ProtectedPathMessage));
+            return (false, McpToolFailure.Native(ToolOutcomeCode.ProtectedPathDenied));
         }
 
         string? parentDir = Path.GetDirectoryName(absolutePath);
@@ -177,7 +196,7 @@ internal static class SandboxedFileIo
 
         if (admitted.IsFailure)
         {
-            return (false, ToolError($"{admitted.Error.Code}: {admitted.Error.Message}"));
+            return (false, ToolError($"{admitted.Error.Code}: {admitted.Error.Message}", denied: true));
         }
 
         await using IWorkspaceMutationLease lease = admitted.Value;
@@ -199,11 +218,11 @@ internal static class SandboxedFileIo
             }
             catch (UnauthorizedAccessException)
             {
-                return (false, ToolError("Access denied creating directory."));
+                return (false, ToolError("Access denied creating directory.", denied: true));
             }
             catch (WorkspaceMutationFenceException exception)
             {
-                return (false, ToolError($"{exception.Error.Code}: {exception.Error.Message}"));
+                return (false, ToolError($"{exception.Error.Code}: {exception.Error.Message}", denied: true));
             }
             catch (IOException)
             {
@@ -218,7 +237,7 @@ internal static class SandboxedFileIo
 
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
         {
-            return (false, ToolError(PathEscapesSandboxMessage));
+            return (false, McpToolFailure.Native(ToolOutcomeCode.WorkspacePolicyDenied));
         }
 
         string directory = parentDir ?? workspaceRoot;
@@ -299,11 +318,11 @@ internal static class SandboxedFileIo
         }
         catch (UnauthorizedAccessException)
         {
-            return (false, ToolError("Access denied writing."));
+            return (false, ToolError("Access denied writing.", denied: true));
         }
         catch (WorkspaceMutationFenceException exception)
         {
-            return (false, ToolError($"{exception.Error.Code}: {exception.Error.Message}"));
+            return (false, ToolError($"{exception.Error.Code}: {exception.Error.Message}", denied: true));
         }
         catch (IOException)
         {
@@ -427,7 +446,7 @@ internal static class SandboxedFileIo
         // stream was opened with, and re-checking it would repeat the pre-open check verbatim.
         if (!WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspaceRoot, stream.SafeFileHandle))
         {
-            error = ToolError(PathEscapesSandboxMessage);
+            error = McpToolFailure.Native(ToolOutcomeCode.WorkspacePolicyDenied);
 
             return false;
         }
@@ -437,7 +456,7 @@ internal static class SandboxedFileIo
                 expectedIdentity,
                 out _))
         {
-            error = ToolError(PathEscapesSandboxMessage);
+            error = McpToolFailure.Native(ToolOutcomeCode.WorkspacePolicyDenied);
 
             return false;
         }
@@ -474,7 +493,7 @@ internal static class SandboxedFileIo
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or UnauthorizedAccessException or IOException)
         {
-            error = ToolError(PathEscapesSandboxMessage);
+            error = McpToolFailure.Native(ToolOutcomeCode.WorkspacePolicyDenied);
 
             return false;
         }
@@ -493,14 +512,8 @@ internal static class SandboxedFileIo
     private const string PathEscapesSandboxMessage =
         "That path would leave the workspace sandbox, so the operation was not performed. Please use a path relative to the workspace root.";
 
-    private const string ProtectedPathMessage =
-        "That path is protected workspace metadata (.git or .arcanum) and cannot be written through the file tools, so the operation was not performed.";
-
     private const string BlockedParentDirectoryMessage =
         "A folder on that path is an existing file or a symbolic link that does not lead to a directory (for example, a link whose target does not exist), so the folder cannot be created and nothing was written. Write through the real directory path instead.";
-
-    private const string HardLinkAliasingMessage =
-        "This file has more than one hard link and cannot be read or written through the sandbox.";
 
     private static readonly string[] OpenErrorMessages =
     [
@@ -522,21 +535,173 @@ internal static class SandboxedFileIo
         "The file is not valid UTF-8 text.",
     ];
 
-    private static McpToolsCallResultWire OpenError(
-        SecureFileOpenStatus status) =>
-        ToolError(OpenErrorMessages[(int)status]);
+    internal sealed class MetadataProbeAnchor(
+        SafeFileHandle root,
+        string kernelRoot,
+        string[] components) : IDisposable
+    {
+        internal SafeFileHandle Root { get; } = root;
 
-    private static McpToolsCallResultWire ReadError(
-        SecureFileReadStatus status) =>
-        ToolError(ReadErrorMessages[(int)status]);
+        internal string KernelRoot { get; } = kernelRoot;
 
-    private static McpToolsCallResultWire ToolError(string text) =>
-        new()
+        internal string[] Components { get; } = components;
+
+        public void Dispose() => Root.Dispose();
+    }
+
+    internal static MetadataProbeAnchor? CaptureMetadataAnchor(string workspaceRoot, string path)
+    {
+        if (!WorkspacePathPolicy.TryCanonicalize(workspaceRoot, out string? canonicalRoot, out bool rootExists)
+            || !rootExists
+            || !WorkspacePathPolicy.TryCanonicalize(path, out string? canonicalPath, out _)
+            || !WorkspacePathPolicy.IsPathUnderWorkspace(canonicalRoot, canonicalPath))
         {
-            Content =
-            [
-                new McpToolContentTextWire { Text = text },
-            ],
-            IsError = true,
-        };
+            return null;
+        }
+
+        if (!FileHandleIdentityInterop.TryOpenDirectoryMetadata(canonicalRoot, out SafeFileHandle root, out _))
+        {
+            root.Dispose();
+
+            return null;
+        }
+
+        if (!FileHandleIdentityInterop.TryGetHandleKernelPath(root, out string? kernelRoot))
+        {
+            root.Dispose();
+
+            return null;
+        }
+
+        string relative = Path.GetRelativePath(canonicalRoot, canonicalPath);
+
+        string[] components = relative == "."
+            ? []
+            : relative.Split(
+                [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                StringSplitOptions.RemoveEmptyEntries);
+
+        return new MetadataProbeAnchor(root, kernelRoot, components);
+    }
+
+    internal static McpToolsCallResultWire? ValidateDirectoryForListing(MetadataProbeAnchor anchor) =>
+        InspectPathForOutcome(anchor, expectDirectory: true);
+
+    private static McpToolsCallResultWire ClassifyReadFailure(
+        MetadataProbeAnchor anchor,
+        bool verifyHardLink = false) =>
+        InspectPathForOutcome(anchor, expectDirectory: false, verifyHardLink)!;
+
+    private static McpToolsCallResultWire? InspectPathForOutcome(
+        MetadataProbeAnchor anchor,
+        bool expectDirectory,
+        bool verifyHardLink = false)
+    {
+        // The root and its kernel spelling were retained before the failed metadata query or worker
+        // dispatch. Each probe refuses links and is relative to a retained directory. Kernel-to-kernel
+        // comparisons support Windows extended/short aliases without re-resolving a mutable root.
+        // These probes never read content or replace successful-read or per-entry listing admission.
+        SafeFileHandle current = anchor.Root;
+
+        try
+        {
+            foreach (string component in anchor.Components)
+            {
+                if (!IsMetadataHandleContained(anchor.KernelRoot, current))
+                {
+                    return McpToolFailure.Native(ToolOutcomeCode.WorkspacePolicyDenied);
+                }
+
+                if (FileHandleIdentityInterop.TryOpenDirectoryMetadataRelative(
+                        current,
+                        component,
+                        requestReadControl: false,
+                        out SafeFileHandle directory,
+                        out _))
+                {
+                    if (!ReferenceEquals(current, anchor.Root))
+                    {
+                        current.Dispose();
+                    }
+
+                    current = directory;
+
+                    continue;
+                }
+
+                directory.Dispose();
+
+                SecureFileOpenStatus status = FileHandleIdentityInterop.TryOpenReadOnlyNoFollowRelative(
+                    current,
+                    component,
+                    out SafeFileHandle? file);
+
+                using (file)
+                {
+                    if (!IsMetadataHandleContained(anchor.KernelRoot, current)
+                        || (file is not null && !IsMetadataHandleContained(anchor.KernelRoot, file)))
+                    {
+                        return McpToolFailure.Native(ToolOutcomeCode.WorkspacePolicyDenied);
+                    }
+
+                    if (status is SecureFileOpenStatus.Success)
+                    {
+                        if (expectDirectory)
+                        {
+                            return McpToolFailure.Native(ToolOutcomeCode.NotADirectory);
+                        }
+
+                        if (verifyHardLink
+                            && file is not null
+                            && FileHandleIdentityInterop.TryGetHandleMetadata(file, out FileHandleMetadata metadata)
+                            && metadata.HardLinkCount != 1)
+                        {
+                            return McpToolFailure.Native(ToolOutcomeCode.HardLinkDenied);
+                        }
+
+                        return McpToolFailure.Fault("The file identity could not be safely verified.");
+                    }
+
+                    return OpenError(status);
+                }
+            }
+
+            if (!IsMetadataHandleContained(anchor.KernelRoot, current))
+            {
+                return McpToolFailure.Native(ToolOutcomeCode.WorkspacePolicyDenied);
+            }
+
+            return expectDirectory ? null : McpToolFailure.Native(ToolOutcomeCode.NotAFile);
+        }
+        finally
+        {
+            if (!ReferenceEquals(current, anchor.Root))
+            {
+                current.Dispose();
+            }
+        }
+    }
+
+    private static bool IsMetadataHandleContained(string kernelRoot, SafeFileHandle handle) =>
+        FileHandleIdentityInterop.TryGetHandleKernelPath(handle, out string? kernelPath)
+        && WorkspacePathPolicy.IsPathUnderWorkspace(kernelRoot, kernelPath);
+
+    private static McpToolsCallResultWire OpenError(SecureFileOpenStatus status) => status switch
+    {
+        SecureFileOpenStatus.NotFound => McpToolFailure.Native(ToolOutcomeCode.NotFound),
+        SecureFileOpenStatus.Rejected => McpToolFailure.Native(ToolOutcomeCode.WorkspacePolicyDenied),
+        SecureFileOpenStatus.AccessDenied => McpToolFailure.Native(ToolOutcomeCode.AccessDenied),
+        _ => ToolError(OpenErrorMessages[(int)status]),
+    };
+
+    private static McpToolsCallResultWire ReadError(SecureFileReadStatus status) => status switch
+    {
+        SecureFileReadStatus.NotFound => McpToolFailure.Native(ToolOutcomeCode.NotFound),
+        SecureFileReadStatus.Rejected => McpToolFailure.Native(ToolOutcomeCode.WorkspacePolicyDenied),
+        SecureFileReadStatus.AccessDenied => McpToolFailure.Native(ToolOutcomeCode.AccessDenied),
+        _ => ToolError(ReadErrorMessages[(int)status]),
+    };
+
+    private static McpToolsCallResultWire ToolError(string text, bool denied = false) =>
+        McpToolFailure.Reported(text, denied);
 }

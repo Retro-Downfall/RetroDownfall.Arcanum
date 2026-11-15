@@ -11,6 +11,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed partial class ArcanumInternalToolServer
@@ -69,14 +71,14 @@ internal sealed partial class ArcanumInternalToolServer
         }
 
         return ToolError(
-            $"{toolName}: write size ({byteCount} bytes) exceeds the Sanctum MaxFileWriteMb limit ({maxFileWriteMb} MiB).");
+            $"{toolName}: write size ({byteCount} bytes) exceeds the Sanctum MaxFileWriteMb limit ({maxFileWriteMb} MiB).", denied: true);
     }
 
     private McpToolsCallResultWire? TryRequireWorkspaceRoot()
     {
         if (string.IsNullOrWhiteSpace(_workspaceRoot))
         {
-            return ToolError(WorkspaceNotConfiguredMessage);
+            return ToolError(WorkspaceNotConfiguredMessage, denied: true);
         }
 
         return null;
@@ -89,7 +91,7 @@ internal sealed partial class ArcanumInternalToolServer
             is not { IsValid: true })
         {
             return ToolError(
-                "This mutating filesystem tool requires a bound persisted assistant-turn context.");
+                "This mutating filesystem tool requires a bound persisted assistant-turn context.", denied: true);
         }
 
         return null;
@@ -106,15 +108,14 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (string.IsNullOrWhiteSpace(relativePath))
         {
-            error = ToolError("A non-empty relativePath is required.");
+            error = ToolError(ToolOutcomeCode.InvalidArguments);
 
             return false;
         }
 
         if (Path.IsPathRooted(relativePath))
         {
-            error = ToolError(
-                $"Paths must be relative to the workspace root; rooted paths are not allowed (got: '{relativePath}').");
+            error = ToolError(ToolOutcomeCode.WorkspacePolicyDenied);
 
             return false;
         }
@@ -131,14 +132,14 @@ internal sealed partial class ArcanumInternalToolServer
         {
             _logger?.LogError(ex, "Path resolution failed for relative path.");
 
-            error = ToolError("Could not resolve the specified relative path.");
+            error = ToolError(ToolOutcomeCode.InvalidArguments);
 
             return false;
         }
 
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, resolved, out _))
         {
-            error = ToolError(PathEscapesSandboxMessage);
+            error = ToolError(ToolOutcomeCode.WorkspacePolicyDenied);
 
             return false;
         }
@@ -156,7 +157,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(_workspaceRoot!, absolutePath))
         {
-            error = ToolError(PathEscapesSandboxMessage);
+            error = ToolError(ToolOutcomeCode.WorkspacePolicyDenied);
 
             return false;
         }
@@ -170,20 +171,30 @@ internal sealed partial class ArcanumInternalToolServer
             ? $"{toolName}: {content[0].Text}"
             : $"{toolName}: operation failed.";
 
-        return ToolError(text);
+        return error with { Content = [new McpToolContentTextWire { Text = text }] };
     }
 
-    private static McpToolsCallResultWire ToolError(string text)
-    {
-        return new McpToolsCallResultWire
-        {
-            Content =
-            [
-                new McpToolContentTextWire { Text = text },
-            ],
-            IsError = true,
-        };
-    }
+    private static McpToolsCallResultWire ToolError(ToolOutcomeCode code) =>
+        McpToolFailure.Native(code);
+
+    private static McpToolsCallResultWire ToolError(string text, bool denied = false) =>
+        McpToolFailure.Reported(text, denied);
+
+    private static McpToolsCallResultWire ToolError(Error error) =>
+        IsToolFaultCode(error.Code)
+            ? ToolFault("An internal error occurred during tool execution.")
+            : ToolError(error.Message, denied: error.Code is ErrorCodes.Lexicon.RetiredMutationRefused
+            or ErrorCodes.Lexicon.SuppressedNameRefused
+            or ErrorCodes.Lexicon.PinnedMutationRefused
+            or ErrorCodes.Lexicon.ProtectedMutationRefused
+            or ErrorCodes.Covenant.ForbiddenAuthority);
+
+    private static bool IsToolFaultCode(string code) => code is ErrorCodes.Covenant.MaintenanceFailed
+        or ErrorCodes.Covenant.IntegrityFailure
+        or ErrorCodes.Covenant.WriteFailed;
+
+    private static McpToolsCallResultWire ToolFault(string text) =>
+        McpToolFailure.Fault(text);
 
     private static int CountOccurrences(string source, string value)
     {

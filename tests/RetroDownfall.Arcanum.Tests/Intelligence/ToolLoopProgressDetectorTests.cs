@@ -1,4 +1,6 @@
 using System.Globalization;
+using Microsoft.Extensions.AI;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
@@ -77,6 +79,41 @@ public sealed class ToolLoopProgressDetectorTests
         Assert.False(first.ObserveCompletedRound([entry]));
         Assert.True(first.ObserveCompletedRound([entry]));
         Assert.Null(first.RepeatedSignature);
+    }
+
+    [Fact]
+    public void Eviction_counts_complete_parallel_exchanges_and_bounds_round_correlation_without_payloads()
+    {
+        ToolLoopProgressDetector detector = new();
+
+        Assert.Null(detector.Eviction);
+
+        for (int round = 1; round <= 20; round++)
+        {
+            ChatMessage call = new(ChatRole.Assistant, [new FunctionCallContent("private-id", "private-tool"), new FunctionCallContent("private-id2", "private-tool")]);
+
+            ChatMessage results = new(ChatRole.Tool, [new FunctionResultContent("private-id", "private-result"), new FunctionResultContent("private-id2", "private-result")]);
+
+            Assert.False(detector.ObserveCompletedRound(Round(round.ToString(CultureInfo.InvariantCulture)), [call, results]));
+
+            detector.ObserveTrimmedExchanges([call, results]);
+        }
+
+        ToolEvidenceEviction eviction = Assert.IsType<ToolEvidenceEviction>(detector.Eviction);
+
+        Assert.Equal(20, eviction.Exchanges);
+        Assert.Equal(40, eviction.Messages);
+        Assert.Equal(40, eviction.Calls);
+        Assert.Equal(Enumerable.Range(13, 8), eviction.RecentRoundOrdinals);
+        Assert.Equal(12, eviction.OmittedRoundOrdinals);
+        Assert.Equal(0, eviction.HistoricalExchanges);
+
+        detector.ObserveTrimmedExchanges([new ChatMessage(ChatRole.Assistant, [new FunctionCallContent("old-private", "tool")]), new ChatMessage(ChatRole.Tool, [new FunctionResultContent("old-private", "old-result")])]);
+
+        Assert.Equal(1, detector.Eviction!.HistoricalExchanges);
+        Assert.Equal(21, detector.Eviction.Exchanges);
+        Assert.Equal(8, detector.Eviction.RecentRoundOrdinals.Count);
+        Assert.Equal(20, eviction.Exchanges);
     }
 
     private static IReadOnlyList<ToolLoopProgressEntry> Round(string path) =>

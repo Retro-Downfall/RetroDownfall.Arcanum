@@ -164,7 +164,7 @@ internal sealed partial class ArcanumInternalToolServer
         {
             _logger?.LogError(ex, "propose_covenant failed.");
 
-            return CovenantFailure(ErrorCodes.Covenant.MaintenanceFailed, "An internal error occurred during tool execution.");
+            return CovenantFailure(ErrorCodes.Covenant.MaintenanceFailed, "An internal error occurred during tool execution.", reported: false);
         }
     }
 
@@ -591,11 +591,22 @@ internal sealed partial class ArcanumInternalToolServer
     private McpToolsCallResultWire CovenantFailure(Error error) =>
         CovenantFailure(error.Code, error.Message);
 
-    private McpToolsCallResultWire CovenantFailure(string code, string message)
+    private McpToolsCallResultWire CovenantFailure(string code, string message, bool reported = true)
     {
+        if (IsToolFaultCode(code))
+        {
+            message = "An internal error occurred during tool execution.";
+
+            reported = false;
+        }
+
         CovenantMutationFailureResultWire wire = new(CovenantMutationFailedStatus, code, message);
 
-        return CovenantResult(message, wire, _json.CovenantMutationFailureResultWire, isError: true);
+        McpToolsCallResultWire result = CovenantResult(message, wire, _json.CovenantMutationFailureResultWire, isError: true);
+
+        return reported
+            ? result with { Meta = McpToolFailure.Reported(message, denied: code is ErrorCodes.Covenant.ForbiddenAuthority or ErrorCodes.Covenant.IneligibleTurn).Meta }
+            : result;
     }
 
     private McpToolsCallResultWire CovenantResult<T>(
