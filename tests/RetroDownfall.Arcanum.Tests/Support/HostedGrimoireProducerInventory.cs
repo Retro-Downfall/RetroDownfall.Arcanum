@@ -80,7 +80,8 @@ internal sealed record HostedProducerSite(
     string SyntaxFingerprint = "",
     string? WorkFrontierCapsuleId = null,
     string? EffectFrontierCapsuleId = null,
-    GrimoireWorkKind? AdmittedWorkKind = null)
+    GrimoireWorkKind? AdmittedWorkKind = null,
+    string? RegisteredRootWorkFrontierCapsuleId = null)
 {
     internal string CapsuleId => HostedGrimoireProducerInventory.CapsuleId(this);
 }
@@ -286,11 +287,14 @@ internal sealed record HostedProducerAdmittedStateObservation(
     string FallbackConcreteBindings,
     string FallbackRecoveryBindings,
     string? WorkFrontier,
+    string? RegisteredRootWorkFrontier,
     string? EffectFrontier,
     string? RecoveryEffectFrontier,
     string FieldPublications,
     bool CompletionOwned,
     bool Lifecycle);
+
+internal sealed record HostedProducerRootCompletionObservation(string Operation, bool Lifecycle, bool Planned, bool Returned, bool Complete, bool Fresh);
 
 internal sealed record HostedProducerAnalysisMetrics(
     IReadOnlyList<HostedProducerRecoveryConditionMetric> RecoveryConditions,
@@ -368,9 +372,9 @@ internal static partial class HostedGrimoireProducerInventory
 
     private static readonly Lazy<HostedProducerCapsuleManifest> ReviewedCapsules = new(LoadReviewedCapsules);
 
-    private const string CapsuleManifestHeader = "# arcanum-hosted-producer-capsules v1";
+    private const string CapsuleManifestHeader = "# arcanum-hosted-producer-capsules v2";
 
-    private const string CapsuleManifestColumns = "# root_type\tauthority_operation_id\tsource_path\tenclosing_type\tmember\tmember_identity\tkind\tcallee\tsyntax_ordinal\tsyntax_sha256\twork_frontier_capsule_sha256\teffect_frontier_capsule_sha256\tadmitted_work_kind";
+    private const string CapsuleManifestColumns = "# root_type\tauthority_operation_id\tsource_path\tenclosing_type\tmember\tmember_identity\tkind\tcallee\tsyntax_ordinal\tsyntax_sha256\twork_frontier_capsule_sha256\teffect_frontier_capsule_sha256\tadmitted_work_kind\tregistered_root_work_frontier_capsule_sha256";
 
     private static IReadOnlyList<CSharpCompilation> BuildProductionCompilations()
     {
@@ -1913,7 +1917,7 @@ internal static partial class HostedGrimoireProducerInventory
 
     internal static IReadOnlyList<NonHostedProducerChainEntry> NonHostedCatalog { get; } = AttachNonHostedSites(NonHostedCatalogRoots, ReviewedCapsules.Value.Sites);
 
-    internal static string CapsuleManifestPath => Path.Combine(FindRepositoryRoot(), "tests", "RetroDownfall.Arcanum.Tests", "Support", "hosted-grimoire-producer-capsules-v1.tsv");
+    internal static string CapsuleManifestPath => Path.Combine(FindRepositoryRoot(), "tests", "RetroDownfall.Arcanum.Tests", "Support", "hosted-grimoire-producer-capsules-v2.tsv");
 
     private static HostedProducerCapsuleManifest LoadReviewedCapsules()
     {
@@ -1938,7 +1942,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         if (lines.Count < 2 || lines[1] != CapsuleManifestColumns)
         {
-            diagnostics.Add(new("HOSTED_MANIFEST_COLUMNS_INVALID", lines.Count < 2 ? "<missing>" : lines[1], "The capsule manifest columns must match the v1 contract exactly."));
+            diagnostics.Add(new("HOSTED_MANIFEST_COLUMNS_INVALID", lines.Count < 2 ? "<missing>" : lines[1], "The capsule manifest columns must match the v2 contract exactly."));
         }
 
         for (int index = 2; index < lines.Count; index++)
@@ -1952,9 +1956,9 @@ internal static partial class HostedGrimoireProducerInventory
 
             string[] fields = line.Split('\t');
 
-            if (fields.Length != 13)
+            if (fields.Length != 14)
             {
-                diagnostics.Add(new("HOSTED_MANIFEST_ROW_INVALID", $"line:{index + 1}", $"Expected 13 tab-separated fields, found {fields.Length}."));
+                diagnostics.Add(new("HOSTED_MANIFEST_ROW_INVALID", $"line:{index + 1}", $"Expected 14 tab-separated fields, found {fields.Length}."));
 
                 continue;
             }
@@ -1969,6 +1973,8 @@ internal static partial class HostedGrimoireProducerInventory
             string? workFrontier = ParseOptionalSha256(fields[10], index, "work", diagnostics);
 
             string? effectFrontier = ParseOptionalSha256(fields[11], index, "effect", diagnostics);
+
+            string? registeredRootFrontier = ParseOptionalSha256(fields[13], index, "registered-root-work", diagnostics);
 
             GrimoireWorkKind? admittedWorkKind = null;
 
@@ -2004,7 +2010,8 @@ internal static partial class HostedGrimoireProducerInventory
                 fields[9],
                 workFrontier,
                 effectFrontier,
-                admittedWorkKind);
+                admittedWorkKind,
+                registeredRootFrontier);
 
             sites.Add(site);
         }
@@ -2016,9 +2023,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         foreach (HostedProducerSite site in sites)
         {
-            ValidateManifestFrontier(site, site.WorkFrontierCapsuleId, IsWorkFrontierCallee, "work", sites, diagnostics);
-
-            ValidateManifestFrontier(site, site.EffectFrontierCapsuleId, static callee => callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal), "effect", sites, diagnostics);
+            ValidateManifestSiteFrontiers(site, sites, diagnostics);
 
             bool workFrontier = IsWorkFrontierCallee(site.Callee);
 
@@ -2052,47 +2057,8 @@ internal static partial class HostedGrimoireProducerInventory
 
     private static bool IsSha256(string value) => value.Length == 64 && value.All(static character => character is >= '0' and <= '9' or >= 'A' and <= 'F');
 
-    private static void ValidateManifestFrontier(HostedProducerSite site, string? frontierId, Func<string, bool> isFrontierCallee, string frontierKind, IReadOnlyList<HostedProducerSite> sites, List<HostedProducerInventoryDiagnostic> diagnostics)
-    {
-        if (frontierId is null)
-        {
-            return;
-        }
-
-        HostedProducerSite[] matches = sites.Where(candidate => candidate.RootType == site.RootType && candidate.AuthorityOperationId == site.AuthorityOperationId && candidate.CapsuleId == frontierId && candidate.Kind == HostedProducerSiteKind.EffectFrontier && isFrontierCallee(candidate.Callee)).ToArray();
-
-        // A work acquisition replaces incoming Work with its own capsule while retaining the caller's Effect. Its self-reference
-        // therefore resolves its exact contextual row, provided every alias differs only by that inherited Effect. No consumer or
-        // group reference gets this exception, and conflicting admission facts cannot hide behind the physical capsule identity.
-        bool contextualWorkSelfReference = matches.Length > 1
-            && frontierKind == "work"
-            && site.Kind == HostedProducerSiteKind.EffectFrontier
-            && IsWorkFrontierCallee(site.Callee)
-            && site.CapsuleId == frontierId
-            && site.WorkFrontierCapsuleId == frontierId
-            && site.AdmittedWorkKind.HasValue
-            && matches.Count(candidate => candidate == site) == 1
-            && matches.All(candidate => (candidate with { EffectFrontierCapsuleId = site.EffectFrontierCapsuleId }) == site);
-
-        // A Work-only read with no Effect can select one exact no-Effect acquisition context.
-        // Every other acquisition fact remains identical, and effect/group/handoff references stay strict.
-        bool contextualWorkOnlyReference = matches.Length > 1
-            && frontierKind == "work"
-            && (site.Kind is HostedProducerSiteKind.DatabaseAccess
-                or HostedProducerSiteKind.FileSystemRead
-                or HostedProducerSiteKind.OrdinaryConnectionRoute)
-            && site.EffectFrontierCapsuleId is null
-            && matches[0].WorkFrontierCapsuleId == frontierId
-            && matches[0].AdmittedWorkKind.HasValue
-            && matches.All(candidate =>
-                (candidate with { EffectFrontierCapsuleId = matches[0].EffectFrontierCapsuleId }) == matches[0])
-            && matches.Count(candidate => candidate.EffectFrontierCapsuleId is null) == 1;
-
-        if (matches.Length != 1 && !contextualWorkSelfReference && !contextualWorkOnlyReference)
-        {
-            diagnostics.Add(new("HOSTED_MANIFEST_FRONTIER_UNRESOLVED", StableSiteIdentity(site), $"The exact same-operation {frontierKind} frontier capsule must resolve once; found {matches.Length}."));
-        }
-    }
+    private static void ValidateManifestFrontier(HostedProducerSite site, string? frontierId, Func<string, bool> isFrontierCallee, string frontierKind, IReadOnlyList<HostedProducerSite> sites, List<HostedProducerInventoryDiagnostic> diagnostics) =>
+        ValidateManifestFrontierContext(site, frontierId, isFrontierCallee, frontierKind, sites, diagnostics);
 
     private static IReadOnlyList<HostedProducerInventoryDiagnostic> ValidateManifestRoots(IReadOnlyList<HostedProducerSite> sites) =>
         ValidateManifestRoots(sites, CatalogRoots, NonHostedCatalogRoots, AdditionalProductionRoots);
@@ -2159,7 +2125,8 @@ internal static partial class HostedGrimoireProducerInventory
             site.SyntaxFingerprint,
             site.WorkFrontierCapsuleId ?? "-",
             site.EffectFrontierCapsuleId ?? "-",
-            site.AdmittedWorkKind?.ToString() ?? "-"));
+            site.AdmittedWorkKind?.ToString() ?? "-",
+            site.RegisteredRootWorkFrontierCapsuleId ?? "-"));
 
         return string.Join('\n', new[] { CapsuleManifestHeader, CapsuleManifestColumns }.Concat(rows)) + "\n";
     }
@@ -2336,12 +2303,12 @@ internal static partial class HostedGrimoireProducerInventory
 
     // Fixtures never request premises: this overload has no premise parameter, so every caller that does not
     // use the premise seam below runs with HostedProducerPremises.None and today's strict behaviour.
-    internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSites(IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations, IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog, int evaluationEnvironmentMaximumMembers = DefaultEvaluationEnvironmentMaximumMembers, int evaluationEnvironmentMaximumDepth = DefaultEvaluationEnvironmentMaximumDepth, int traversalMaximumDepth = DefaultTraversalMaximumDepth, int maximumAnalyzedStatesPerRoot = DefaultMaximumAnalyzedStatesPerRoot, HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null, bool auditRecoveryReachabilityParity = false, int rootWorkers = 1, bool reverseRootFamilies = false, Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null, Action<int, int, int, int, bool>? nestedReuseObserver = null) =>
-        DiscoverProducerSitesUnderPremises(HostedProducerPremises.None, compilations, registrations, catalog, nonHostedCatalog, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, recoverySelectionProbe, auditRecoveryReachabilityParity, rootWorkers, reverseRootFamilies, admittedStateObserver, nestedReuseObserver);
+    internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSites(IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations, IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog, int evaluationEnvironmentMaximumMembers = DefaultEvaluationEnvironmentMaximumMembers, int evaluationEnvironmentMaximumDepth = DefaultEvaluationEnvironmentMaximumDepth, int traversalMaximumDepth = DefaultTraversalMaximumDepth, int maximumAnalyzedStatesPerRoot = DefaultMaximumAnalyzedStatesPerRoot, HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null, bool auditRecoveryReachabilityParity = false, int rootWorkers = 1, bool reverseRootFamilies = false, Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null, Action<int, int, int, int, bool>? nestedReuseObserver = null, Action<HostedProducerRootCompletionObservation>? rootCompletionObserver = null) =>
+        DiscoverProducerSitesUnderPremises(HostedProducerPremises.None, compilations, registrations, catalog, nonHostedCatalog, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, recoverySelectionProbe, auditRecoveryReachabilityParity, rootWorkers, reverseRootFamilies, admittedStateObserver, nestedReuseObserver, rootCompletionObserver: rootCompletionObserver);
 
     // The only seam that accepts premises. Its callers are the Production Discovery Entry and the
     // ClosedWorldPremises fixtures; an architecture pin keeps it that way.
-    internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSitesUnderPremises(HostedProducerPremises premises, IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations, IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog, int evaluationEnvironmentMaximumMembers = DefaultEvaluationEnvironmentMaximumMembers, int evaluationEnvironmentMaximumDepth = DefaultEvaluationEnvironmentMaximumDepth, int traversalMaximumDepth = DefaultTraversalMaximumDepth, int maximumAnalyzedStatesPerRoot = DefaultMaximumAnalyzedStatesPerRoot, HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null, bool auditRecoveryReachabilityParity = false, int rootWorkers = 1, bool reverseRootFamilies = false, Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null, Action<int, int, int, int, bool>? nestedReuseObserver = null, IReadOnlyList<HostedProducerServiceEntry>? handoffCatalog = null)
+    internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSitesUnderPremises(HostedProducerPremises premises, IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations, IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog, int evaluationEnvironmentMaximumMembers = DefaultEvaluationEnvironmentMaximumMembers, int evaluationEnvironmentMaximumDepth = DefaultEvaluationEnvironmentMaximumDepth, int traversalMaximumDepth = DefaultTraversalMaximumDepth, int maximumAnalyzedStatesPerRoot = DefaultMaximumAnalyzedStatesPerRoot, HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null, bool auditRecoveryReachabilityParity = false, int rootWorkers = 1, bool reverseRootFamilies = false, Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null, Action<int, int, int, int, bool>? nestedReuseObserver = null, IReadOnlyList<HostedProducerServiceEntry>? handoffCatalog = null, Action<HostedProducerRootCompletionObservation>? rootCompletionObserver = null)
     {
         if (rootWorkers is not (1 or 2 or 3))
         {
@@ -2357,7 +2324,7 @@ internal static partial class HostedGrimoireProducerInventory
         // depend on which isolated worker asks first, and shared by every worker graph.
         InventoryFacts facts = new(compilations);
 
-        ProducerGraph CreateGraph() => new(compilations, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, auditRecoveryReachabilityParity, admittedStateObserver, nestedReuseObserver, ledger, facts, handoffCatalog: handoffCatalog);
+        ProducerGraph CreateGraph() => new(compilations, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, auditRecoveryReachabilityParity, admittedStateObserver, nestedReuseObserver, ledger, facts, handoffCatalog: handoffCatalog, rootCompletionObserver: rootCompletionObserver);
 
         return HostedProducerRootWorkers.OnAnalysisStack(() => rootWorkers == 1
             ? CreateGraph().Discover(registrations, catalog, nonHostedCatalog, recoverySelectionProbe)
@@ -2701,7 +2668,8 @@ internal static partial class HostedGrimoireProducerInventory
         IReadOnlyDictionary<ISymbol, RecoveryTuple>? RecoveryBindings = null,
         RecoveryTuple? RecoveryContext = null,
         IReadOnlyDictionary<ISymbol, BoundValueSource>? ValueBindings = null,
-        IReadOnlySet<IMethodSymbol>? ConstructorContexts = null);
+        IReadOnlySet<IMethodSymbol>? ConstructorContexts = null,
+        IReadOnlySet<ISymbol>? KnownNonCancelableParameters = null);
 
     private sealed partial class ProducerGraph
     {
@@ -2733,6 +2701,7 @@ internal static partial class HostedGrimoireProducerInventory
             string FallbackConcreteBindings,
             string FallbackRecoveryBindings,
             string? WorkFrontier,
+            string? RegisteredRootWorkFrontier,
             string? EffectFrontier,
             string? RecoveryEffectFrontier,
             string FieldPublications,
@@ -3568,6 +3537,8 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly Action<int, int, int, int, bool>? nestedReuseObserver;
 
+        private readonly Action<HostedProducerRootCompletionObservation>? rootCompletionObserver;
+
         private readonly HostedProducerPremiseLedger premises;
 
         private readonly InventoryFacts inventoryFacts;
@@ -3594,7 +3565,8 @@ internal static partial class HostedGrimoireProducerInventory
             HostedProducerPremiseLedger? premises = null,
             InventoryFacts? facts = null,
             bool sitesOnly = false,
-            IReadOnlyList<HostedProducerServiceEntry>? handoffCatalog = null)
+            IReadOnlyList<HostedProducerServiceEntry>? handoffCatalog = null,
+            Action<HostedProducerRootCompletionObservation>? rootCompletionObserver = null)
         {
             this.premises = premises ?? HostedProducerPremiseLedger.None;
 
@@ -3626,6 +3598,8 @@ internal static partial class HostedGrimoireProducerInventory
             this.admittedStateObserver = admittedStateObserver;
 
             this.nestedReuseObserver = nestedReuseObserver;
+
+            this.rootCompletionObserver = rootCompletionObserver;
 
             foreach (CSharpCompilation compilation in compilations)
             {
@@ -3794,7 +3768,7 @@ internal static partial class HostedGrimoireProducerInventory
             return results;
         }
 
-        private TraversalStateIdentity TraversalState(AuthoredMember member, string rootType, string operationId, bool lifecycle, string? inheritedWork, string? inheritedEffect, string? recoveryEffect, SyntaxNode? selection, IReadOnlySet<int>? fieldPublications, bool completionOwned, int? knownEnvironmentToken = null, bool environmentTokenObtained = false)
+        private TraversalStateIdentity TraversalState(AuthoredMember member, string rootType, string operationId, bool lifecycle, WorkAdmissionEvidence? inheritedWork, string? inheritedEffect, string? recoveryEffect, SyntaxNode? selection, IReadOnlySet<int>? fieldPublications, bool completionOwned, int? knownEnvironmentToken = null, bool environmentTokenObtained = false)
         {
             SyntaxNode selected = selection ?? member.Syntax;
 
@@ -3870,7 +3844,8 @@ internal static partial class HostedGrimoireProducerInventory
                 fallbackValue,
                 fallbackConcrete,
                 fallbackRecovery,
-                inheritedWork,
+                inheritedWork?.Physical,
+                inheritedWork?.RegisteredRoot,
                 inheritedEffect,
                 recoveryEffect,
                 fieldPublications is null ? "" : string.Join(",", fieldPublications.Order()),
@@ -4502,7 +4477,8 @@ internal static partial class HostedGrimoireProducerInventory
             && member.RecoveryBindings is not { Count: > 0 }
             && member.RecoveryContext is null
             && member.ValueBindings is not { Count: > 0 }
-            && member.ConstructorContexts is not { Count: > 0 };
+            && member.ConstructorContexts is not { Count: > 0 }
+            && member.KnownNonCancelableParameters is not { Count: > 0 };
 
         private EvaluationEnvironmentAnalysisCounter EvaluationEnvironmentCounter(
             AuthoredMember member)
@@ -4565,6 +4541,8 @@ internal static partial class HostedGrimoireProducerInventory
             try
             {
                 StringBuilder value = new();
+
+                AppendKnownNonCancelableParameterIdentity(value, member);
 
                 bool complete = true;
 
@@ -4802,6 +4780,8 @@ internal static partial class HostedGrimoireProducerInventory
             StringBuilder value,
             AuthoredMember member)
         {
+            AppendKnownNonCancelableParameterIdentity(value, member);
+
             AppendIdentitySection(
                 value,
                 "constructor-contexts",
@@ -4928,6 +4908,8 @@ internal static partial class HostedGrimoireProducerInventory
             AuthoredMember member)
         {
             StringBuilder value = new();
+
+            AppendKnownNonCancelableParameterIdentity(value, member);
 
             void AppendMember(GraphMemberIdentity identity)
             {
@@ -5377,6 +5359,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             candidates.UnionWith(member.ValueBindings?.Keys ?? []);
 
+            candidates.UnionWith(member.KnownNonCancelableParameters ?? Enumerable.Empty<ISymbol>());
+
             HashSet<ISymbol> required = new(SymbolEqualityComparer.Default);
 
             foreach (ISymbol candidate in candidates)
@@ -5423,6 +5407,9 @@ internal static partial class HostedGrimoireProducerInventory
                 ValueBindings = ProjectEvaluationBindings(
                     member.ValueBindings,
                     required),
+                KnownNonCancelableParameters = member.KnownNonCancelableParameters is null
+                    ? null
+                    : new HashSet<ISymbol>(member.KnownNonCancelableParameters.Where(required.Contains), SymbolEqualityComparer.Default),
             };
 
             if (projections is null)
@@ -5673,6 +5660,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             candidates.UnionWith(member.ValueBindings?.Keys ?? []);
 
+            candidates.UnionWith(member.KnownNonCancelableParameters ?? Enumerable.Empty<ISymbol>());
+
             if (candidates.Count == 0)
             {
                 return member;
@@ -5791,6 +5780,9 @@ internal static partial class HostedGrimoireProducerInventory
                 ValueBindings = ProjectEvaluationBindings(
                     member.ValueBindings,
                     required),
+                KnownNonCancelableParameters = member.KnownNonCancelableParameters is null
+                    ? null
+                    : new HashSet<ISymbol>(member.KnownNonCancelableParameters.Where(required.Contains), SymbolEqualityComparer.Default),
             };
         }
 
@@ -5841,6 +5833,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             candidates.UnionWith(callback.ValueBindings?.Keys ?? []);
 
+            candidates.UnionWith(callback.KnownNonCancelableParameters ?? Enumerable.Empty<ISymbol>());
+
             HashSet<ISymbol> retained = new(
                 candidates.Where(candidate =>
                     candidate is not IParameterSymbol
@@ -5879,6 +5873,9 @@ internal static partial class HostedGrimoireProducerInventory
                 ValueBindings = ProjectEvaluationBindings(
                     callback.ValueBindings,
                     retained),
+                KnownNonCancelableParameters = callback.KnownNonCancelableParameters is null
+                    ? null
+                    : new HashSet<ISymbol>(callback.KnownNonCancelableParameters.Where(retained.Contains), SymbolEqualityComparer.Default),
             };
         }
 
@@ -7264,7 +7261,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             try
             {
-                (member, string? rootWork) = CanonicalDeclaredRoot(
+                (member, WorkAdmissionEvidence? rootWork) = CanonicalDeclaredRoot(
                     member,
                     operationId,
                     selection,
@@ -11064,6 +11061,10 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedSystemMemoryContractType(
                     type,
                     expectedType,
+                    trustedAssembly)
+                || IsReviewedConcurrentDictionaryContractType(
+                    type,
+                    expectedType,
                     trustedAssembly))
             && !type.Locations.Any(static location => location.IsInSource);
 
@@ -11084,6 +11085,19 @@ internal static partial class HostedGrimoireProducerInventory
             && AssemblyIdentityMatches(
                 type.ContainingAssembly.Identity,
                 Assembly.Load(new AssemblyName("System.Memory")).GetName());
+
+        // This one closed collection is declared by the concurrent contract facade while
+        // the .NET 11 runtime implements it in CoreLib. Other concurrent types keep their
+        // own identity checks; a namespace or assembly-name prefix grants no trust.
+        private static bool IsReviewedConcurrentDictionaryContractType(
+            ITypeSymbol type,
+            string expectedType,
+            AssemblyName trustedAssembly) =>
+            trustedAssembly.Name == "System.Private.CoreLib"
+            && expectedType == "System.Collections.Concurrent.ConcurrentDictionary`2"
+            && AssemblyIdentityMatches(
+                type.ContainingAssembly.Identity,
+                Assembly.Load(new AssemblyName("System.Collections.Concurrent")).GetName());
 
         private bool IsExactScopedFactoryAlias(
             InvocationExpressionSyntax registration,
@@ -11310,7 +11324,7 @@ internal static partial class HostedGrimoireProducerInventory
             AuthoredMember member,
             InvocationExpressionSyntax dispatch,
             string operationId,
-            string? work)
+            WorkAdmissionEvidence? work)
         {
             TryStatementSyntax? protector = dispatch.Ancestors()
                 .OfType<TryStatementSyntax>()
@@ -11635,7 +11649,7 @@ internal static partial class HostedGrimoireProducerInventory
             string operationId,
             HashSet<TraversalStateIdentity> active,
             bool lifecycle,
-            string? workAdmitted,
+            WorkAdmissionEvidence? workAdmitted,
             string? recoveryEffect)
         {
             RecoveryMatrix matrix = ResolveRecoveryMatrix(call);
@@ -20204,7 +20218,7 @@ internal static partial class HostedGrimoireProducerInventory
             return evidence;
         }
 
-        private TraversalEvidence Traverse(AuthoredMember member, string rootType, string operationId, HashSet<TraversalStateIdentity> active, bool lifecycle, string? inheritedWork = null, string? inheritedEffect = null, SyntaxNode? selection = null, IReadOnlySet<int>? fieldPublications = null, bool completionOwned = false, string? recoveryEffect = null, PlannedRoot? plannedRoot = null)
+        private TraversalEvidence Traverse(AuthoredMember member, string rootType, string operationId, HashSet<TraversalStateIdentity> active, bool lifecycle, WorkAdmissionEvidence? inheritedWork = null, string? inheritedEffect = null, SyntaxNode? selection = null, IReadOnlySet<int>? fieldPublications = null, bool completionOwned = false, string? recoveryEffect = null, PlannedRoot? plannedRoot = null)
         {
             TraversalCompletionFrame? parent = traversalCompletion;
 
@@ -20223,11 +20237,25 @@ internal static partial class HostedGrimoireProducerInventory
 
             traversalCompletion = frame;
 
+            if (rootEntry && independentHostCapture is { Frame: null } initialHostCapture && initialHostCapture.Operation == operationId)
+            {
+                initialHostCapture.Frame = frame;
+            }
+
             bool returned = false;
 
             try
             {
                 TraversalEvidence result = TraverseState(member, rootType, operationId, active, lifecycle, inheritedWork, inheritedEffect, selection, fieldPublications, completionOwned, recoveryEffect, plannedRoot);
+
+                if (rootEntry && independentHostCapture is { } hostCapture && hostCapture.Operation == operationId && ReferenceEquals(hostCapture.Frame, frame))
+                {
+                    hostCapture.Evidence = result;
+
+                    hostCapture.Complete = frame.Complete;
+
+                    hostCapture.Returned = true;
+                }
 
                 if (rootEntry && nestedRootCohort is { Eligible: true, Plan.Lifecycle: true } cohort
                     && !boundedDataProbeEncountered && cohort.Pending.Count != 0
@@ -20253,10 +20281,12 @@ internal static partial class HostedGrimoireProducerInventory
                 if (!frame.FreshNestedPath && parent is not null) parent.FreshNestedPath = false;
 
                 traversalCompletion = parent;
+
+                if (rootEntry) rootCompletionObserver?.Invoke(new(operationId, lifecycle, plannedRoot is not null, returned, frame.Complete, frame.FreshNestedPath));
             }
         }
 
-        private TraversalEvidence TraverseState(AuthoredMember member, string rootType, string operationId, HashSet<TraversalStateIdentity> active, bool lifecycle, string? inheritedWork, string? inheritedEffect, SyntaxNode? selection, IReadOnlySet<int>? fieldPublications, bool completionOwned, string? recoveryEffect, PlannedRoot? plannedRoot)
+        private TraversalEvidence TraverseState(AuthoredMember member, string rootType, string operationId, HashSet<TraversalStateIdentity> active, bool lifecycle, WorkAdmissionEvidence? inheritedWork, string? inheritedEffect, SyntaxNode? selection, IReadOnlySet<int>? fieldPublications, bool completionOwned, string? recoveryEffect, PlannedRoot? plannedRoot)
         {
             bool enteredByExactCall = exactCallEdge;
 
@@ -20283,7 +20313,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             string root = rootType + "|" + rootOperation;
 
-            if (active.Count >= traversalMaximumDepth)
+            if (active.Count + independentHostDepthOffset >= traversalMaximumDepth)
             {
                 if (limitedRoots.Add(root))
                 {
@@ -20312,6 +20342,11 @@ internal static partial class HostedGrimoireProducerInventory
                 environmentToken,
                 environmentTokenObtained);
 
+            if (active.Count == 0 && independentHostCapture is { } hostCapture && hostCapture.Operation == operationId && ReferenceEquals(hostCapture.Frame, traversalCompletion))
+            {
+                hostCapture.State = state;
+            }
+
             if (state.EvaluationEnvironmentToken is null || activeBoundedDataProbe is not null)
             {
                 RefuseTraversalCompletion();
@@ -20327,6 +20362,33 @@ internal static partial class HostedGrimoireProducerInventory
                 && (lifecycle ? selection is null : selection == member.Syntax)
                 && !selectedRoots.ContainsKey(visitKey)
                 && state.EvaluationEnvironmentToken is not null;
+
+            // Receiver binding needs the exact planned lifecycle instance, even if another
+            // declaration selects a disjoint region of this member. This does not qualify
+            // the member for whole-root or nested-body certificate reuse.
+            bool plannedLifecycleReceiverEntry = plannedRoot is { Lifecycle: true } lifecyclePlan
+                && active.Count == 0
+                && activeBoundedDataProbe is null
+                && lifecycle
+                && lifecyclePlan.Operation == operationId
+                && operationId == TypeKey(member.Symbol.ContainingType) + "." + member.Symbol.Name
+                && lifecyclePlan.Member.Syntax == member.Syntax
+                && selection is null
+                && state.EvaluationEnvironmentToken is not null;
+
+            // This is the same independently scheduled root entry, not a completion
+            // certificate. An incomplete result remains incomplete on its later lookup.
+            if (wholePlannedRoot && !lifecycle && activeBoundedDataProbe is null
+                && independentHostResults.TryGetValue(state with { Lifecycle = true }, out IndependentHostCapture? independent)
+                && independent.Operation == operationId && independent.Family == plannedRoot!.Family
+                && independent.Occurrence < plannedRoot.Occurrence)
+            {
+                traversalCompletion!.FreshNestedPath = false;
+
+                if (!independent.Complete) RefuseTraversalCompletion();
+
+                return independent.Evidence;
+            }
 
             // This is a directed planned-root lookup, never a false-state cache alias.
             // Both binders and projections have already produced the exact current inputs.
@@ -20422,6 +20484,13 @@ internal static partial class HostedGrimoireProducerInventory
                     ? active.ToArray()
                     : null;
 
+            if (independentHostSafetyAncestors?.Contains(state) == true)
+            {
+                RefuseTraversalCompletion();
+
+                return TraversalEvidence.Inconclusive;
+            }
+
             if (!active.Add(state))
             {
                 RefuseTraversalCompletion();
@@ -20475,6 +20544,7 @@ internal static partial class HostedGrimoireProducerInventory
                     state.FallbackConcreteBindings,
                     state.FallbackRecoveryBindings,
                     state.WorkFrontier,
+                    state.RegisteredRootWorkFrontier,
                     state.EffectFrontier,
                     state.RecoveryEffectFrontier,
                     state.FieldPublications,
@@ -20701,7 +20771,7 @@ internal static partial class HostedGrimoireProducerInventory
                         // at the operand boundary while retaining the conversion's region.
                         int position = conversion.Operand.Syntax.Span.End + 1;
 
-                        string? workAdmitted = WorkAt(member, conversionSyntax, operationId, ordinary?.WorkKind, inheritedWork, position);
+                        WorkAdmissionEvidence? workAdmitted = WorkAt(member, conversionSyntax, operationId, ordinary?.WorkKind, inheritedWork, position);
 
                         string? effectGroup = EffectAt(member, conversionSyntax, operationId, inheritedEffect, position);
 
@@ -20764,7 +20834,7 @@ internal static partial class HostedGrimoireProducerInventory
                             {
                                 int position = selectedOperation.Operands.Max(static operand => operand.Syntax.Span.End) + 1;
 
-                                string? workAdmitted = WorkAt(member, node, operationId, ordinary?.WorkKind, inheritedWork, position);
+                                WorkAdmissionEvidence? workAdmitted = WorkAt(member, node, operationId, ordinary?.WorkKind, inheritedWork, position);
 
                                 string? effectGroup = EffectAt(member, node, operationId, inheritedEffect, position);
 
@@ -20823,7 +20893,7 @@ internal static partial class HostedGrimoireProducerInventory
                         {
                             int position = selectedOperation.Operands.Max(static operand => operand.Syntax.Span.End) + 1;
 
-                            string? workAdmitted = WorkAt(member, node, operationId, ordinary?.WorkKind, inheritedWork, position);
+                            WorkAdmissionEvidence? workAdmitted = WorkAt(member, node, operationId, ordinary?.WorkKind, inheritedWork, position);
 
                             string? effectGroup = EffectAt(member, node, operationId, inheritedEffect, position);
 
@@ -20905,11 +20975,13 @@ internal static partial class HostedGrimoireProducerInventory
 
                     if (symbol is IMethodSymbol method && node is not MemberAccessExpressionSyntax)
                     {
-                        string? workAdmitted = WorkAt(member, node, operationId, ordinary?.WorkKind, inheritedWork);
+                        WorkAdmissionEvidence? workAdmitted = WorkAt(member, node, operationId, ordinary?.WorkKind, inheritedWork);
 
                         string? effectGroup = EffectAt(member, node, operationId, inheritedEffect);
 
                         string callee = Normalize(method);
+
+                        if (IsReviewedSqliteNativeBootstrapUse(method, node, member)) continue;
 
                         // A call that builds an EF query hands back a value whose execution must be followed from here.
                         if (node is InvocationExpressionSyntax queryBuilding
@@ -21331,8 +21403,31 @@ internal static partial class HostedGrimoireProducerInventory
                             if (TryHostHandoff(member, callbackCall) is { } handoff)
                             {
                                 // A host-owned task transfers to an independently admitted root, never its caller's handles.
+                                AuthoredMember handoffTarget = handoff.Target;
+
+                                if (plannedLifecycleReceiverEntry
+                                    && callbackCall.ArgumentList.Arguments.FirstOrDefault()?.Expression is AnonymousFunctionExpressionSyntax { Body: InvocationExpressionSyntax targetCall }
+                                    && member.Model.GetOperation(targetCall) is IInvocationOperation { IsVirtual: false, Instance: IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance } } invocation
+                                    && !invocation.TargetMethod.IsStatic
+                                    && SymbolEqualityComparer.Default.Equals(invocation.TargetMethod.OriginalDefinition, handoff.Target.Symbol.OriginalDefinition)
+                                    && SymbolEqualityComparer.Default.Equals(invocation.TargetMethod.ContainingType, member.Symbol.ContainingType))
+                                {
+                                    // The exact hosted Start dispatches on its own instance. Reconstruct only that instance's
+                                    // registered receiver context; no caller arguments or admission cross the handoff.
+                                    handoffTarget = BindLifecycleRootFactoryContext(handoff.Target);
+
+                                    handoffTarget = BindDeclaredRootFactoryContext(handoffTarget, handoff.Root.OperationId, handoff.Selection);
+                                }
+
+                                if (TryTraverseIndependentHost(member, callbackCall, handoff, handoffTarget, plannedRoot, plannedLifecycleReceiverEntry, active, out TraversalEvidence independentEvidence))
+                                {
+                                    emittedEvidence = MergeEvidence(emittedEvidence, independentEvidence);
+
+                                    continue;
+                                }
+
                                 emittedEvidence = MergeEvidence(emittedEvidence, Traverse(
-                                    handoff.Target,
+                                    handoffTarget,
                                     handoff.RootType,
                                     handoff.Root.OperationId,
                                     active,
@@ -21359,7 +21454,11 @@ internal static partial class HostedGrimoireProducerInventory
 
                             bool awaitableReturn = !returnedAwaitableIsStoredValue && (TypeKey(method.ReturnType) is "System.Threading.Tasks.Task" or "System.Threading.Tasks.Task`1" or "System.Threading.Tasks.ValueTask" or "System.Threading.Tasks.ValueTask`1");
 
-                            SyntaxNode? completion = awaitableReturn ? CompletionPoint(member, callbackCall, completionOwned) : lazyCallback ? LazyCompletionPoint(member, callbackCall) : synchronousCallback ? callbackCall : null;
+                            SyntaxNode? taskAggregateCompletion = lazyCallback
+                                ? ExactTaskArrayAggregateCompletion(member, callbackCall, completionOwned)
+                                : null;
+
+                            SyntaxNode? completion = awaitableReturn ? CompletionPoint(member, callbackCall, completionOwned) : lazyCallback ? taskAggregateCompletion ?? LazyCompletionPoint(member, callbackCall, completionOwned) : synchronousCallback ? callbackCall : null;
 
                             // A lazy operator runs its callbacks on every MoveNext of its consumer, so a consuming loop is judged at
                             // its operand, its back-edge and its end, exactly as a lazy iterator result is.
@@ -21367,9 +21466,9 @@ internal static partial class HostedGrimoireProducerInventory
                                 ? LazyConsumptionPositions(completion)
                                 : [null];
 
-                            string? completionWork = completion is null
+                            WorkAdmissionEvidence? completionWork = completion is null
                                 ? null
-                                : CommonFrontier(completionPositions.Select(completionPosition => WorkAt(
+                                : CommonWorkFrontier(completionPositions.Select(completionPosition => WorkAt(
                                     member,
                                     completion,
                                     operationId,
@@ -21454,7 +21553,7 @@ internal static partial class HostedGrimoireProducerInventory
                                 {
                                     bool callbackOwned = owned
                                         && (body.Symbol.IsAsync != true
-                                            || awaitableReturn && !body.Symbol.ReturnsVoid);
+                                            || (awaitableReturn || taskAggregateCompletion is not null) && !body.Symbol.ReturnsVoid);
 
                                     everyBodyOwned &= callbackOwned;
 
@@ -21590,11 +21689,11 @@ internal static partial class HostedGrimoireProducerInventory
 
                                 bool ownedByIteratorConsumer = consumption is null && completionOwned && IsIteratorMember(member);
 
-                                string? consumedWork = ownedByIteratorConsumer
+                                WorkAdmissionEvidence? consumedWork = ownedByIteratorConsumer
                                     ? workAdmitted
                                     : consumption is null
                                         ? null
-                                        : CommonFrontier(LazyConsumptionPositions(consumption).Select(consumedPosition => WorkAt(member, consumption, operationId, ordinary?.WorkKind, inheritedWork, consumedPosition)));
+                                        : CommonWorkFrontier(LazyConsumptionPositions(consumption).Select(consumedPosition => WorkAt(member, consumption, operationId, ordinary?.WorkKind, inheritedWork, consumedPosition)));
 
                                 if ((!ownedByIteratorConsumer && consumption is null) || consumedWork != workAdmitted)
                                 {
@@ -21988,7 +22087,7 @@ internal static partial class HostedGrimoireProducerInventory
                         (bool reads, bool writes, ExpressionSyntax? assignedValue) =
                             PropertyAccessorModes(propertyReference, node);
 
-                        string? workAdmitted = WorkAt(member, node, operationId, ordinary?.WorkKind, inheritedWork);
+                        WorkAdmissionEvidence? workAdmitted = WorkAt(member, node, operationId, ordinary?.WorkKind, inheritedWork);
 
                         string? effectGroup = EffectAt(member, node, operationId, inheritedEffect);
 
@@ -22025,7 +22124,8 @@ internal static partial class HostedGrimoireProducerInventory
                             && property.Name == "Value"
                             && node is MemberAccessExpressionSyntax lazyValue)
                         {
-                            if (IsProvenCreatedLazyRead(member, lazyValue))
+                            if (IsReviewedSqliteNativeBootstrapLazyRead(member, lazyValue)
+                                || IsProvenCreatedLazyRead(member, lazyValue))
                             {
                                 continue;
                             }
@@ -22267,7 +22367,7 @@ internal static partial class HostedGrimoireProducerInventory
                             ? authoredEvent.AddMethod
                             : authoredEvent.RemoveMethod;
 
-                        string? workAdmitted = WorkAt(
+                        WorkAdmissionEvidence? workAdmitted = WorkAt(
                             member,
                             node,
                             operationId,
@@ -22472,7 +22572,7 @@ internal static partial class HostedGrimoireProducerInventory
 
                         int exit = expressionUsing.Statement.Span.End - 1;
 
-                        string? retainedWork = WorkAt(member, resource, operationId, ordinary?.WorkKind, inheritedWork, exit, resource);
+                        WorkAdmissionEvidence? retainedWork = WorkAt(member, resource, operationId, ordinary?.WorkKind, inheritedWork, exit, resource);
 
                         string? retainedEffect = EffectAt(member, resource, operationId, inheritedEffect, exit, resource);
 
@@ -22554,7 +22654,7 @@ internal static partial class HostedGrimoireProducerInventory
 
                             string? disposalGroup = EffectAt(member, declaration, operationId, inheritedEffect, disposeAt, declaration);
 
-                            string? retainedWork = WorkAt(member, declaration, operationId, ordinary?.WorkKind, inheritedWork, disposeAt, declaration);
+                            WorkAdmissionEvidence? retainedWork = WorkAt(member, declaration, operationId, ordinary?.WorkKind, inheritedWork, disposeAt, declaration);
 
                             emittedEvidence = MergeEvidence(emittedEvidence, AddSite(HostedProducerSiteKind.FileSystemEffect, type.ToDisplayString() + "." + (asynchronous ? "DisposeAsync" : "Dispose"), member, rootType, operationId, node, disposalGroup, retainedWork));
                         }
@@ -22574,7 +22674,7 @@ internal static partial class HostedGrimoireProducerInventory
 
                                 int position = DisposalPosition(declaration);
 
-                                string? retainedWork = WorkAt(member, declaration, operationId, ordinary?.WorkKind, inheritedWork, position, declaration);
+                                WorkAdmissionEvidence? retainedWork = WorkAt(member, declaration, operationId, ordinary?.WorkKind, inheritedWork, position, declaration);
 
                                 string? retainedEffect = EffectAt(member, declaration, operationId, inheritedEffect, position, declaration);
 
@@ -22912,6 +23012,55 @@ internal static partial class HostedGrimoireProducerInventory
         }
 
         private static int DisposalPosition(VariableDeclarationSyntax declaration) => declaration.Parent is UsingStatementSyntax statement ? statement.Statement.Span.End - 1 : declaration.Ancestors().OfType<BlockSyntax>().First().CloseBraceToken.SpanStart;
+
+        // Equal positions can denote successive cleanup steps at one boundary. Inner
+        // using owners finish before an enclosing using statement's resource; same-block
+        // local declarations unwind in reverse declaration order. Ordinary queries and
+        // unrelated syntax trees keep the existing source-position rule.
+        private static bool UsingAdmissionEndedBefore(
+            VariableDeclarationSyntax owner,
+            int position,
+            SyntaxNode? disposing)
+        {
+            int endedAt = DisposalPosition(owner);
+
+            if (endedAt < position) return true;
+
+            if (endedAt != position || disposing is null) return false;
+
+            // No variable in a declaration borrows that declaration's own teardown.
+            // This deliberately over-refuses mixed multi-variable declarations.
+            if (owner == disposing || IsInsideDisposingUsingBody(owner, disposing)) return true;
+
+            return disposing is VariableDeclarationSyntax
+                {
+                    Parent: LocalDeclarationStatementSyntax
+                    {
+                        UsingKeyword.RawKind: not 0,
+                        Parent: BlockSyntax disposingBlock,
+                    },
+                } resource
+                && owner.Parent is LocalDeclarationStatementSyntax
+                {
+                    UsingKeyword.RawKind: not 0,
+                    Parent: BlockSyntax ownerBlock,
+                }
+                && ownerBlock == disposingBlock
+                && owner.SpanStart >= resource.SpanStart;
+        }
+
+        private static bool ExpressionUsingAdmissionEndedBefore(
+            UsingStatementSyntax owner,
+            int position,
+            SyntaxNode? disposing) =>
+            owner.Span.End < position
+            || disposing is not null && owner.Statement.Span.End - 1 == position
+                && (owner.Expression == disposing || IsInsideDisposingUsingBody(owner, disposing));
+
+        private static bool IsInsideDisposingUsingBody(SyntaxNode owner, SyntaxNode disposing) =>
+            disposing.Parent is UsingStatementSyntax statement
+            && (statement.Declaration == disposing || statement.Expression == disposing)
+            && owner.AncestorsAndSelf().Contains(statement.Statement);
 
         private static bool IsExplicitlyUnknownDisposable(AuthoredMember member, ExpressionSyntax resource)
         {
@@ -24739,7 +24888,15 @@ internal static partial class HostedGrimoireProducerInventory
 
             ISymbol? previousProbe = activeBoundedDataProbe;
 
+            int previousHostDepthOffset = independentHostDepthOffset;
+
+            HashSet<TraversalStateIdentity>? previousHostSafety = independentHostSafetyAncestors;
+
             activeBoundedDataProbe = resolution.Storage;
+
+            independentHostDepthOffset = 0;
+
+            independentHostSafetyAncestors = null;
 
             try
             {
@@ -24756,6 +24913,10 @@ internal static partial class HostedGrimoireProducerInventory
             finally
             {
                 activeBoundedDataProbe = previousProbe;
+
+                independentHostDepthOffset = previousHostDepthOffset;
+
+                independentHostSafetyAncestors = previousHostSafety;
 
                 if (diagnostics.Count > diagnosticStart)
                 {
@@ -25682,8 +25843,13 @@ internal static partial class HostedGrimoireProducerInventory
             return all.Length != 0 && all.All(frontier => frontier == all[0]) ? all[0] : null;
         }
 
-        private SyntaxNode? LazyCompletionPoint(AuthoredMember member, InvocationExpressionSyntax source)
+        private SyntaxNode? LazyCompletionPoint(AuthoredMember member, InvocationExpressionSyntax source, bool inheritedCompletion = false)
         {
+            if (ExactTaskArrayAggregateCompletion(member, source, inheritedCompletion) is { } aggregateCompletion)
+            {
+                return aggregateCompletion;
+            }
+
             SyntaxNode? Consumption(SyntaxNode expression)
             {
                 foreach (SyntaxNode ancestor in expression.AncestorsAndSelf())
@@ -25935,6 +26101,8 @@ internal static partial class HostedGrimoireProducerInventory
         {
             string callee = Normalize(method);
 
+            if (IsReviewedSqliteNativeBootstrapUse(method, node, context)) return false;
+
             if (HasRejectedCampaignEncodingArgument(method, node, model, context))
             {
                 return true;
@@ -25971,6 +26139,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedAbsentProgressReport(method, node, context)
                 || IsReviewedNamedHttpFactoryCreation(method, node, context)
                 || IsReviewedHttpConnectStorageMethod(method)
+                || IsReviewedHttpMetadataMethod(method, node, context)
                 || IsReviewedEffectFreeExternalMember(
                     method,
                     node,
@@ -26766,6 +26935,10 @@ internal static partial class HostedGrimoireProducerInventory
         {
             string callee = Normalize(property);
 
+            if ((!mutation || property.Name == "Justification"
+                    && node?.AncestorsAndSelf().OfType<AttributeSyntax>().Any() == true)
+                && IsReviewedSqliteNativeBootstrapUse(property, node, context)) return false;
+
             if (Vocabulary.ContainsKey(callee)
                 || IsPureFileSystemMetadataProperty(property)
                 || IsReviewedEnumeratorProperty(
@@ -26787,6 +26960,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedA2AProperty(property, mutation)
                 || IsReviewedA2AHttpStorageProperty(property, mutation)
                 || IsReviewedHttpConnectStorageProperty(property, mutation)
+                || IsReviewedHttpMetadataProperty(property, mutation, node, context)
                 || IsExactInfiniteSdkNetworkTimeoutInitializer(property, mutation, node, model)
                 || IsReviewedNonProducerExternalMember(property, mutation)
                 || !mutation && IsReviewedInMemoryXmlReaderMember(property, node, model, context)
@@ -26832,6 +27006,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || ReviewedNonProducerExternalMembers.Contains(Normalize(method))
                 || IsReviewedExactNativeImport(method)
                 || IsReviewedExactBoundedExternalMember(method)
+                || IsReviewedExactMonitorMember(method)
                 || IsExactEmbeddingSdkAdapterFactory(method)
                 || IsReviewedDatabaseSupportMember(method)
                     && !TrackingBlockedByIdentityResolution(method)
@@ -26844,6 +27019,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedFloatVectorMember(method, node, model, context)
                 || IsReviewedExactInMemoryConstruction(method)
                 || IsReviewedInMemoryJsonMember(method, node, model, context)
+                || IsReviewedInMemoryBinaryWriterMember(method, node, model, context)
                 || IsExactFrameworkStreamBaseConstructor(method)
                 || IsReviewedAsyncStateMachineMember(method)
                 || IsReviewedExactFrameworkScalarOperator(method, node, model, context)
@@ -30905,6 +31081,8 @@ internal static partial class HostedGrimoireProducerInventory
                     {
                         string callee = Normalize(method);
 
+                        if (IsReviewedSqliteNativeBootstrapUse(method, node, member)) continue;
+
                         if (Vocabulary.ContainsKey(callee)
                             || callee is "Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.CreateScope"
                                 or "Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.CreateAsyncScope"
@@ -31131,7 +31309,7 @@ internal static partial class HostedGrimoireProducerInventory
                     }
 
                     if (query is not null && current is IPropertyReferenceOperation unknownProperty
-                        && !IsMaintenanceRevocationValueProjection(unknownProperty.Property, model.Compilation))
+                        && !IsLeaseValueProjection(unknownProperty.Property, model.Compilation))
                     {
                         query.Complete = false;
 
@@ -31139,9 +31317,9 @@ internal static partial class HostedGrimoireProducerInventory
                     }
 
                     if (current is IPropertyReferenceOperation property
-                        && IsMaintenanceRevocationValueProjection(property.Property, model.Compilation))
+                        && IsLeaseValueProjection(property.Property, model.Compilation))
                     {
-                        // This protocol property returns a token value, not the lease receiver.
+                        // These exact protocol properties return values, not the lease receiver.
                         // Getter and argument effects are still visited by the normal call traversal.
                         continue;
                     }
@@ -31175,11 +31353,10 @@ internal static partial class HostedGrimoireProducerInventory
             return origins;
         }
 
-        private bool IsMaintenanceRevocationValueProjection(
+        private bool IsLeaseValueProjection(
             IPropertySymbol property,
             Compilation consumingCompilation) =>
-            property.MetadataName == "MaintenanceRevocation"
-            && !property.IsStatic
+            !property.IsStatic
             && !property.IsIndexer
             && !property.ReturnsByRef
             && !property.ReturnsByRefReadonly
@@ -31192,10 +31369,18 @@ internal static partial class HostedGrimoireProducerInventory
                 property.ContainingType,
                 "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease",
                 consumingCompilation)
-            && IsExactFrameworkType(
-                property.Type,
-                "System.Threading.CancellationToken",
-                typeof(CancellationToken).Assembly.GetName());
+            && (property.MetadataName switch
+            {
+                "MaintenanceRevocation" => IsExactFrameworkType(
+                    property.Type,
+                    "System.Threading.CancellationToken",
+                    typeof(CancellationToken).Assembly.GetName()),
+                "Generation" => IsExactFrameworkType(
+                    property.Type,
+                    "System.Int64",
+                    typeof(long).Assembly.GetName()),
+                _ => false,
+            });
 
         private readonly record struct ReturnedAdmissionProof(
             string Origin,
@@ -33584,6 +33769,9 @@ internal static partial class HostedGrimoireProducerInventory
 
             Dictionary<ISymbol, BoundValueSource> valueBindings = new(SymbolEqualityComparer.Default);
 
+            // Rebuild own facts per call: an unknown call cannot inherit a prior None context.
+            HashSet<ISymbol> nonCancelableParameters = new(SymbolEqualityComparer.Default);
+
             foreach (IParameterSymbol parameter in target.Symbol.Parameters.Where(static parameter => parameter.Type.TypeKind == TypeKind.Delegate && parameter.HasExplicitDefaultValue && parameter.ExplicitDefaultValue is null))
             {
                 absentCallables.Add(parameter);
@@ -33596,6 +33784,13 @@ internal static partial class HostedGrimoireProducerInventory
                     IParameterSymbol targetParameter = target.Symbol.Parameters[parameter.Ordinal];
 
                     bindings[targetParameter] = BoundAdmissionOrigins(caller, argument.Expression);
+
+                    if (argument.RefKind == RefKind.None
+                        && RequiresNonCancelableParameterFact(target, targetParameter)
+                        && IsExactNonCancelableToken(caller, argument.Expression))
+                    {
+                        nonCancelableParameters.Add(targetParameter);
+                    }
 
                     if (argument.RefKind is not RefKind.Out
                         && (RequiresExactValueProvenance(target, targetParameter)
@@ -33696,6 +33891,7 @@ internal static partial class HostedGrimoireProducerInventory
                 && concreteBindings.Count == 0
                 && recoveryBindings.Count == 0
                 && valueBindings.Count == 0
+                && nonCancelableParameters.Count == 0
                 && caller.RecoveryContext is null
                 && (target.AdmissionBindings is null
                     || target.AdmissionBindings.Count == 0)
@@ -33709,7 +33905,8 @@ internal static partial class HostedGrimoireProducerInventory
                     || target.RecoveryBindings.Count == 0)
                 && target.RecoveryContext is null
                 && (target.ValueBindings is null
-                    || target.ValueBindings.Count == 0))
+                    || target.ValueBindings.Count == 0)
+                && target.KnownNonCancelableParameters is not { Count: > 0 })
             {
                 return target;
             }
@@ -33723,6 +33920,7 @@ internal static partial class HostedGrimoireProducerInventory
                 RecoveryBindings = recoveryBindings,
                 RecoveryContext = caller.RecoveryContext,
                 ValueBindings = valueBindings,
+                KnownNonCancelableParameters = nonCancelableParameters,
             };
 
             _ = TryRegisterEvaluationEnvironmentToken(bound);
@@ -42285,6 +42483,7 @@ internal static partial class HostedGrimoireProducerInventory
                     IsSealed: false,
                 } openStaticType
                     && !IsTrustedCleanupDispatchBase(openStaticType)
+                    && !(resource is not null && HasClosedHttpHandlerDispatch(member, resource, openStaticType, exactCandidates))
                     && exactCandidates.Any(candidate => !SameBoundType(
                         candidate.Type,
                         member.Model.Compilation,
@@ -42631,7 +42830,8 @@ internal static partial class HostedGrimoireProducerInventory
         {
             external = null;
 
-            if (IsReviewedInMemoryJsonMember(cleanup, resource, member.Model, member)) return true;
+            if (IsReviewedInMemoryJsonMember(cleanup, resource, member.Model, member)
+                || IsReviewedInMemoryBinaryWriterMember(cleanup, resource, member.Model, member)) return true;
 
             if (cleanup.Locations.Any(static location => location.IsInSource)
                 || AuthoredCompilationIdentity(
@@ -42644,6 +42844,9 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 return false;
             }
+
+            if (resource is not null
+                && TryResolveClosedHttpConstructionExternalCleanup(member, resource, exactType, cleanup, out external)) return true;
 
             string callee = Normalize(cleanup);
 
@@ -42787,6 +42990,8 @@ internal static partial class HostedGrimoireProducerInventory
             external = null;
 
             if (TryResolveA2AHttpCleanup(member, resource, staticType, name, out external)) return true;
+
+            if (TryResolveClosedHttpConstructionCleanup(member, resource, staticType, name, out external)) return true;
 
             if (name == "Dispose"
                 && (IsExactFrameworkType(staticType, "System.IDisposable", typeof(IDisposable).Assembly.GetName())
@@ -47069,6 +47274,12 @@ internal static partial class HostedGrimoireProducerInventory
                     context);
             }
 
+            if (expression is ConditionalAccessExpressionSyntax absentHttpFactory
+                && IsExactAbsentConditionalHttpHandlerFactory(member, absentHttpFactory, context))
+            {
+                return new([], true, false);
+            }
+
             if (expression is ConditionalExpressionSyntax conditional)
             {
                 if (TrySelectDormantHttpConnectConditional(member, conditional, out ExpressionSyntax selected))
@@ -50429,7 +50640,8 @@ internal static partial class HostedGrimoireProducerInventory
                         member.Model.Compilation,
                         out bool exact))
                 {
-                    activations.Add((candidate, exact));
+                    activations.Add((candidate, exact || HasExactOmittedOptionalFactoryDefault(
+                        candidate, constructor, parameter, member.Model.Compilation)));
                 }
             }
 
@@ -53062,7 +53274,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (local is null)
             {
-                return LiveInheritedAdmission(member, site, inherited, position);
+                return LiveInheritedAdmission(member, site, inherited, position, disposing);
             }
 
             // The effect of a group begun here carries the origin of the lease it was begun on, as the group's own site records it.
@@ -53076,10 +53288,9 @@ internal static partial class HostedGrimoireProducerInventory
             return EffectOf(RootOperation(operationId), local, begunOn);
         }
 
-        private string? WorkAt(AuthoredMember member, SyntaxNode site, string operationId, GrimoireWorkKind? kind, string? inherited, int? position = null, SyntaxNode? disposing = null)
+        private WorkAdmissionEvidence? WorkAt(AuthoredMember member, SyntaxNode site, string operationId, GrimoireWorkKind? kind, WorkAdmissionEvidence? inherited, int? position = null, SyntaxNode? disposing = null)
         {
-            RetainedAdmissionAnalysisCounter analysis =
-                RetainedAdmissionCounter(member);
+            RetainedAdmissionAnalysisCounter analysis = RetainedAdmissionCounter(member);
 
             analysis.AuthorityQueries++;
 
@@ -53090,12 +53301,32 @@ internal static partial class HostedGrimoireProducerInventory
                 return inherited;
             }
 
-            string? local = kind is null ? null : FindRetainedAdmission(member, site, "TryAcquireWorkLease", kind, position, disposing);
+            string? local = kind is null ? null : FindRetainedAdmission(member, site, "TryAcquireWorkLease", kind,
+                position, disposing, inherited?.RegisteredRoot);
 
-            return local is null ? LiveInheritedAdmission(member, site, inherited, position) : RootOperation(operationId) + "@work:" + local;
+            string? registeredRoot = LiveInheritedAdmission(member, site, inherited?.RegisteredRoot, position, disposing);
+
+            if (local is not null)
+            {
+                string physical = RootOperation(operationId) + "@work:" + local;
+
+                // Returned-lease helpers retain their existing exact-kind proof. A direct
+                // different-kind lease keeps its own origin and only the independently live root.
+                if (DirectRetainedWorkKind(member, local) is not { } localKind || localKind == kind)
+                    return WorkAdmissionEvidence.Both(physical);
+
+                if (registeredRoot is null && kind is not null
+                    && FindRetainedAdmission(member, site, "TryAcquireWorkLease", kind, position, disposing) is { } exactLocal)
+                    registeredRoot = RootOperation(operationId) + "@work:" + exactLocal;
+
+                return WorkAdmissionEvidence.Create(physical, registeredRoot);
+            }
+
+            return WorkAdmissionEvidence.Create(
+                LiveInheritedAdmission(member, site, inherited?.Physical, position, disposing), registeredRoot);
         }
 
-        private string? LiveInheritedAdmission(AuthoredMember member, SyntaxNode site, string? inherited, int? atPosition)
+        private string? LiveInheritedAdmission(AuthoredMember member, SyntaxNode site, string? inherited, int? atPosition, SyntaxNode? disposing = null)
         {
             if (inherited is null)
             {
@@ -53109,16 +53340,39 @@ internal static partial class HostedGrimoireProducerInventory
 
             origin = inherited.Contains("@effect:", StringComparison.Ordinal) ? origin : origin[(origin.IndexOf(':') + 1)..];
 
-            return AdmissionEndedBefore(member, origin, atPosition ?? site.SpanStart, []) ? null : inherited;
+            return AdmissionEndedBefore(member, origin, atPosition ?? site.SpanStart, [], disposing) ? null : inherited;
         }
 
-        private bool AdmissionEndedBefore(AuthoredMember member, string origin, int position, HashSet<GraphMemberIdentity> path)
+        private bool AdmissionEndedBefore(AuthoredMember member, string origin, int position, HashSet<GraphMemberIdentity> path, SyntaxNode? disposing = null)
         {
             GraphMemberIdentity identity = MemberIdentity(member);
 
             if (!path.Add(identity))
             {
                 return true;
+            }
+
+            // This private query only invalidates existing authority. Seed a predeclared
+            // out local here so its aliases can end that origin, without adding future
+            // out writes to the global may-origin sets used by returned-lease proofs.
+            if (AdmissionSyntax(member).AdmissionCalls.FirstOrDefault(call => Location(call) == origin) is { } admission
+                && member.Model.GetOperation(admission) is IInvocationOperation acquired
+                && Normalize(acquired.TargetMethod) is LeaseAcquisitionCallee or LeaseGroupCallee
+                && IsExactAuthoredProtocolType(acquired.TargetMethod.ContainingType,
+                    TypeKey(acquired.TargetMethod.ContainingType), member.Model.Compilation)
+                && acquired.Arguments.Where(argument => argument.Parameter?.RefKind == RefKind.Out).Take(2).ToArray()
+                    is [IArgumentOperation { Value: ILocalReferenceOperation { Local: { } local } }]
+                && local.DeclaringSyntaxReferences is [SyntaxReference outDeclaration]
+                && outDeclaration.GetSyntax() is VariableDeclaratorSyntax)
+            {
+                member = member with
+                {
+                    AdmissionBindings = MergeAdmissionBindings(member.AdmissionBindings,
+                        new Dictionary<ISymbol, IReadOnlySet<string>>(SymbolEqualityComparer.Default)
+                        {
+                            [local] = new HashSet<string>(StringComparer.Ordinal) { origin, InexactLeaseOrigin },
+                        }),
+                };
             }
 
             bool Matches(ExpressionSyntax expression) => AdmissionOrigins(member, expression, new HashSet<ISymbol>(SymbolEqualityComparer.Default)).Contains(origin);
@@ -53150,8 +53404,8 @@ internal static partial class HostedGrimoireProducerInventory
                     }
 
                     if (node is InvocationExpressionSyntax { Expression: MemberAccessExpressionSyntax { Name.Identifier.ValueText: "Dispose" or "DisposeAsync" } access } disposal && disposal.Span.End < position && Carries(access.Expression)
-                        || node is UsingStatementSyntax { Expression: { } resource } statement && statement.Span.End < position && Carries(resource)
-                        || node is VariableDeclarationSyntax declaration && (declaration.Parent is LocalDeclarationStatementSyntax { UsingKeyword.RawKind: not 0 } || declaration.Parent is UsingStatementSyntax) && DisposalPosition(declaration) < position && declaration.Variables.Any(variable => variable.Initializer is not null && Carries(variable.Initializer.Value)))
+                        || node is UsingStatementSyntax { Expression: { } resource } statement && ExpressionUsingAdmissionEndedBefore(statement, position, disposing) && Carries(resource)
+                        || node is VariableDeclarationSyntax declaration && (declaration.Parent is LocalDeclarationStatementSyntax { UsingKeyword.RawKind: not 0 } || declaration.Parent is UsingStatementSyntax) && UsingAdmissionEndedBefore(declaration, position, disposing) && declaration.Variables.Any(variable => variable.Initializer is not null && Carries(variable.Initializer.Value)))
                     {
                         return true;
                     }
@@ -53701,7 +53955,7 @@ internal static partial class HostedGrimoireProducerInventory
             return analysis;
         }
 
-        private string? FindRetainedAdmission(AuthoredMember member, SyntaxNode site, string admissionName, GrimoireWorkKind? kind, int? atPosition = null, SyntaxNode? disposing = null)
+        private string? FindRetainedAdmission(AuthoredMember member, SyntaxNode site, string admissionName, GrimoireWorkKind? kind, int? atPosition = null, SyntaxNode? disposing = null, string? inheritedRootWitness = null)
         {
             int position = atPosition ?? site.SpanStart;
 
@@ -53723,9 +53977,17 @@ internal static partial class HostedGrimoireProducerInventory
 
                 string expected = admissionName == "TryAcquireWorkLease" ? "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease" : "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup";
 
-                if (Normalize(method) != expected || kind is not null && member.Model.GetSymbolInfo(admission.ArgumentList.Arguments[0].Expression).Symbol?.Name != kind.ToString())
+                if (Normalize(method) != expected) continue;
+
+                if (admissionName == "TryAcquireWorkLease" && kind is { } expectedKind)
                 {
-                    continue;
+                    GrimoireWorkKind? actualKind = KnownAcquisitionWorkKind(member, admission);
+
+                    // A known local kind is eligible only while the inherited registered
+                    // admission is live at that acquisition. Its later expiry does not
+                    // erase the physical lease; WorkAt revalidates root liveness at use.
+                    if (actualKind is null || actualKind != expectedKind
+                        && LiveInheritedAdmission(member, admission, inheritedRootWitness, admission.SpanStart) is null) continue;
                 }
 
                 // The Single Gate Census: a lease from a gate the census does not trust retains nothing.
@@ -53965,7 +54227,7 @@ internal static partial class HostedGrimoireProducerInventory
 
                 if (retained)
                 {
-                    bool disposed = AdmissionEndedBefore(member, Location(admission), position, []);
+                    bool disposed = AdmissionEndedBefore(member, Location(admission), position, [], disposing);
 
                     if (disposed)
                     {
@@ -53977,7 +54239,7 @@ internal static partial class HostedGrimoireProducerInventory
             }
 
             if (admissionName == "TryBeginExternalEffectGroup"
-                && FindManuallyRetainedEffectAdmission(member, syntax, site, position) is { } manualEffect)
+                && FindManuallyRetainedEffectAdmission(member, syntax, site, position, disposing) is { } manualEffect)
             {
                 return manualEffect;
             }
@@ -54140,7 +54402,7 @@ internal static partial class HostedGrimoireProducerInventory
                 }
 
                 if ((!usingOwned && !manuallyOwned)
-                    || AdmissionEndedBefore(member, proof.Origin, position, []))
+                    || AdmissionEndedBefore(member, proof.Origin, position, [], disposing))
                 {
                     continue;
                 }
@@ -54155,7 +54417,8 @@ internal static partial class HostedGrimoireProducerInventory
             AuthoredMember member,
             AdmissionSyntaxPlan syntax,
             SyntaxNode site,
-            int position)
+            int position,
+            SyntaxNode? disposing)
         {
             static bool IsNullInitialization(
                 SemanticModel model,
@@ -54432,7 +54695,8 @@ internal static partial class HostedGrimoireProducerInventory
                         member,
                         Location(admission),
                         position,
-                        []))
+                        [],
+                        disposing))
                 {
                     continue;
                 }
@@ -54497,8 +54761,12 @@ internal static partial class HostedGrimoireProducerInventory
         {
             SemanticModel model = member.Model;
 
+            if (IsReviewedSqliteNativeBootstrapUse(method, node, member)) return null;
+
             if (IsReviewedInMemoryJsonMember(method, node, model, member)
-                || IsReviewedHttpConnectStorageMethod(method)) return null;
+                || IsReviewedInMemoryBinaryWriterMember(method, node, model, member)
+                || IsReviewedHttpConnectStorageMethod(method)
+                || IsReviewedHttpMetadataMethod(method, node, member)) return null;
 
             if (IsA2AHttpProviderMethod(method, node, member)
                 || IsReviewedHttpConnectProviderConstruction(method, node, member)) return HostedProducerSiteKind.ProviderCall;
@@ -54900,7 +55168,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             string type = TypeKey(definition.ContainingType);
 
-            return type == "Microsoft.Data.Sqlite.SqliteCommand"
+            return IsExactSqliteParameterCollectionClear(definition)
+                || type == "Microsoft.Data.Sqlite.SqliteCommand"
                     && definition.Name is "CreateParameter" or "Dispose" or "DisposeAsync"
                 || type == "Microsoft.Data.Sqlite.SqliteConnection"
                     && definition.Name is ".ctor" or "CreateCommand" or "Dispose" or "DisposeAsync"
@@ -55024,7 +55293,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         private static bool IsPureFileSystemMetadataProperty(IPropertySymbol property) => TypeKey(property.ContainingType) == "System.IO.FileInfo" && property.Name is "Name" or "FullName" or "Extension" or "DirectoryName" or "Directory" || TypeKey(property.ContainingType) == "System.IO.FileStream" && property.Name is "Name" or "Position" or "SafeFileHandle";
 
-        private TraversalEvidence AddSite(HostedProducerSiteKind kind, string callee, AuthoredMember member, string rootType, string operationId, SyntaxNode node, string? effectGroup = null, string? workAdmitted = null)
+        private TraversalEvidence AddSite(HostedProducerSiteKind kind, string callee, AuthoredMember member, string rootType, string operationId, SyntaxNode node, string? effectGroup = null, WorkAdmissionEvidence? workAdmitted = null)
         {
             if (activeBoundedDataProbe is { } lazyStorage)
             {
@@ -55112,7 +55381,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (ordinary is not null && kind != HostedProducerSiteKind.EffectFrontier)
             {
-                if (workAdmitted is null)
+                if (workAdmitted?.Physical is null || workAdmitted?.RegisteredRoot is null)
                 {
                     diagnostics.Add(new("HOSTED_SITE_WORK_FRONTIER_MISSING", operationId + "/site@" + Location(node), callee));
                 }
@@ -55123,18 +55392,41 @@ internal static partial class HostedGrimoireProducerInventory
                 }
             }
 
+            GrimoireWorkKind? admittedWorkKind = null;
+
+            if (callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal) && node is InvocationExpressionSyntax workAdmission)
+            {
+                admittedWorkKind = KnownAcquisitionWorkKind(member, workAdmission);
+            }
+
+            if (callee == RootLeaseFormalCallee)
+            {
+                admittedWorkKind = ordinary?.WorkKind;
+            }
+
             if (kind == HostedProducerSiteKind.EffectFrontier && IsWorkFrontierCallee(callee))
             {
-                workAdmitted = rootOperation + "@work:" + Location(node);
+                string physical = rootOperation + "@work:" + Location(node);
 
-                admissionCapsules[workAdmitted] = capsuleId;
+                string? registeredRoot = ordinary?.WorkKind is { } expectedKind && admittedWorkKind == expectedKind
+                    ? physical
+                    : workAdmitted?.RegisteredRoot;
+
+                workAdmitted = WorkAdmissionEvidence.Create(physical, registeredRoot);
+
+                admissionCapsules[physical] = capsuleId;
             }
 
             operationId = rootOperation;
 
-            if (workAdmitted is not null)
+            if (workAdmitted?.Physical is { } physicalWork)
             {
-                operationId += "/work@" + Uri.EscapeDataString(workAdmitted);
+                operationId += "/work@" + Uri.EscapeDataString(physicalWork);
+            }
+
+            if (workAdmitted?.RegisteredRoot is { } rootWork)
+            {
+                operationId += "/registered-root-work@" + Uri.EscapeDataString(rootWork);
             }
 
             if (kind == HostedProducerSiteKind.EffectFrontier && callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal)
@@ -55156,25 +55448,18 @@ internal static partial class HostedGrimoireProducerInventory
                 operationId += "/workKind=" + workKind.Name;
             }
 
-            GrimoireWorkKind? admittedWorkKind = null;
-
-            if (callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal) && node is InvocationExpressionSyntax workAdmission && workAdmission.ArgumentList.Arguments.FirstOrDefault()?.Expression is { } workKindExpression && member.Model.GetSymbolInfo(workKindExpression).Symbol is IFieldSymbol admittedKind && Enum.TryParse(admittedKind.Name, out GrimoireWorkKind parsedKind))
-            {
-                admittedWorkKind = parsedKind;
-            }
-
-            if (callee == RootLeaseFormalCallee)
-            {
-                admittedWorkKind = ordinary?.WorkKind;
-            }
-
-            string? workFrontierCapsuleId = workAdmitted is not null && admissionCapsules.TryGetValue(workAdmitted, out string? workCapsule)
+            string? workFrontierCapsuleId = workAdmitted?.Physical is { } physicalFrontier && admissionCapsules.TryGetValue(physicalFrontier, out string? workCapsule)
                 ? workCapsule
                 : null;
 
             string? effectFrontierCapsuleId = effectGroup is not null && admissionCapsules.TryGetValue(effectGroup, out string? effectCapsule)
                 ? effectCapsule
                 : null;
+
+            string? registeredRootCapsuleId = workAdmitted?.RegisteredRoot is { } registeredRootFrontier
+                && admissionCapsules.TryGetValue(registeredRootFrontier, out string? rootCapsule)
+                    ? rootCapsule
+                    : null;
 
             HostedProducerSite site = new(
                 rootType,
@@ -55190,7 +55475,8 @@ internal static partial class HostedGrimoireProducerInventory
                 syntaxFingerprint,
                 workFrontierCapsuleId,
                 effectFrontierCapsuleId,
-                admittedWorkKind);
+                admittedWorkKind,
+                registeredRootCapsuleId);
 
             string stableIdentity = StableSiteIdentity(site);
 
@@ -55400,6 +55686,11 @@ internal static partial class HostedGrimoireProducerInventory
 
                 CheckIdentity(site.Member.Length == 0 ? site.MemberIdentity : site.Member, diagnostics);
 
+                // Actual v2 rows use the same exact contextual resolver as parsing.
+                // Deliberately unversioned fixtures retain their explicit compatibility path.
+                if (site.AuthorityOperationId.Length != 0)
+                    ValidateManifestSiteFrontiers(site, sites, diagnostics);
+
                 if (!site.OperationId.StartsWith(operation.OperationId + "/", StringComparison.Ordinal) && site.OperationId != operation.OperationId || site.RootType != catalog.FirstOrDefault(service => service.Operations.Contains(operation))?.ServiceType && !nonHostedCatalog.Any(chain => chain.ChainId == operation.OperationId && chain.EnclosingType == site.RootType))
                 {
                     diagnostics.Add(new("HOSTED_SITE_ROOT_MISMATCH", SiteIdentity(site), "The site must belong to this exact operation and owner root."));
@@ -55421,9 +55712,16 @@ internal static partial class HostedGrimoireProducerInventory
                     diagnostics.Add(new(LeaseHandoffUndeclaredCode, SiteIdentity(site), "A handoff binding row must name a declared lease-handoff operation of its own service."));
                 }
 
-                if (ordinary && site.Kind != HostedProducerSiteKind.EffectFrontier && !operation.Sites.Any(frontier => frontier.Kind == HostedProducerSiteKind.EffectFrontier && FrontierIdentity(site, "work") is { } lease && lease == FrontierIdentity(frontier, "work") && IsWorkFrontierCallee(frontier.Callee) && (frontier.Callee != RootLeaseFormalCallee || operation.LeaseFormal is not null) && (frontier.AdmittedWorkKind == operation.WorkKind || frontier.OperationId.Contains("/workKind=" + operation.WorkKind, StringComparison.Ordinal))))
+                if (ordinary && site.Kind != HostedProducerSiteKind.EffectFrontier && (!operation.Sites.Any(frontier => frontier.Kind == HostedProducerSiteKind.EffectFrontier && RegisteredRootFrontierIdentity(site) is { } lease && lease == FrontierIdentity(frontier, "work") && IsWorkFrontierCallee(frontier.Callee) && (frontier.Callee != RootLeaseFormalCallee || operation.LeaseFormal is not null) && (frontier.AdmittedWorkKind == operation.WorkKind || site.AuthorityOperationId.Length == 0 && frontier.OperationId.Contains("/workKind=" + operation.WorkKind, StringComparison.Ordinal)))
+                    || !operation.Sites.Any(frontier => frontier.Kind == HostedProducerSiteKind.EffectFrontier
+                        && FrontierIdentity(site, "work") is { } physical
+                        && physical == FrontierIdentity(frontier, "work")
+                        && IsWorkFrontierCallee(frontier.Callee)
+                        && (frontier.AdmittedWorkKind is { } physicalKind && Enum.IsDefined(physicalKind)
+                            || site.AuthorityOperationId.Length == 0 && frontier.OperationId.Contains("/workKind=" + operation.WorkKind, StringComparison.Ordinal))
+                        && (frontier.Callee != RootLeaseFormalCallee || operation.LeaseFormal is not null))))
                 {
-                    diagnostics.Add(new("HOSTED_SITE_WORK_FRONTIER_MISSING", SiteIdentity(site), "Ordinary work requires admission for its declared work kind before scopes and effects."));
+                    diagnostics.Add(new("HOSTED_SITE_WORK_FRONTIER_MISSING", SiteIdentity(site), "Ordinary work requires its still-live registered-root admission of the declared work kind before scopes and effects."));
                 }
 
                 if (ordinary && RequiresExternalEffect(site.Kind, site.Callee) && !operation.Sites.Any(frontier => frontier.Kind == HostedProducerSiteKind.EffectFrontier && EffectIdentity(site) is { } group && group == EffectIdentity(frontier) && frontier.Callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal)))
@@ -55461,7 +55759,7 @@ internal static partial class HostedGrimoireProducerInventory
             return SiteIdentity(site);
         }
 
-        return string.Join('|', site.RootType, site.AuthorityOperationId, site.CapsuleId, site.WorkFrontierCapsuleId ?? "-", site.EffectFrontierCapsuleId ?? "-", site.AdmittedWorkKind?.ToString() ?? "-");
+        return string.Join('|', site.RootType, site.AuthorityOperationId, site.CapsuleId, site.WorkFrontierCapsuleId ?? "-", site.EffectFrontierCapsuleId ?? "-", site.AdmittedWorkKind?.ToString() ?? "-", site.RegisteredRootWorkFrontierCapsuleId ?? "-");
     }
 
     internal static string CapsuleId(HostedProducerSite site) => CapsuleId(site.SourcePath, site.MemberIdentity, site.Kind, site.Callee, site.SyntaxOrdinal, site.SyntaxFingerprint);
@@ -55485,13 +55783,23 @@ internal static partial class HostedGrimoireProducerInventory
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(tokens.ToString())));
     }
 
+    // Legacy hand-authored catalog fixtures have no stable capsule contract. Their exact physical
+    // frontier remains the root witness; versioned discovered/parsed rows must name it explicitly.
+    private static string? RegisteredRootFrontierIdentity(HostedProducerSite site) =>
+        site.AuthorityOperationId.Length == 0
+            ? FrontierIdentity(site, "work")
+            : site.RegisteredRootWorkFrontierCapsuleId;
+
     private static string? EffectIdentity(HostedProducerSite site) => FrontierIdentity(site, "effect");
 
     private static string? FrontierIdentity(HostedProducerSite site, string kind)
     {
-        string? stable = kind == "work"
-            ? site.WorkFrontierCapsuleId
-            : site.EffectFrontierCapsuleId;
+        string? stable = kind switch
+        {
+            "work" => site.WorkFrontierCapsuleId,
+            "registered-root-work" => site.RegisteredRootWorkFrontierCapsuleId,
+            _ => site.EffectFrontierCapsuleId,
+        };
 
         if (stable is not null)
         {

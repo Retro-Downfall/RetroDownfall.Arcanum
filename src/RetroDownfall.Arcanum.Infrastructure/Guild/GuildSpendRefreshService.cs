@@ -396,23 +396,28 @@ internal sealed class GuildSpendRefreshService(GuildQuestStore quests, GuildSpen
 
         using CancellationTokenSource stopHeartbeat = new();
 
-        Task heartbeat = MonitorAsync(operationId, owner, work, attempt, stopHeartbeat.Token);
-
         Result<GuildSpendCorrectionResultDto> result;
+
+        Task heartbeat = MonitorAsync(operationId, owner, work, attempt, stopHeartbeat.Token);
 
         try
         {
-            result = await ObserveAndApplyAsync(caller, questId, effectId, refreshId, owner, provider, model, before, guard, attempt.Token).ConfigureAwait(false);
-        }
-        catch (Exception)
-        {
-            // The admitted operation must retain its identity even if transport disposal fails.
-            result = Unavailable;
+            try
+            {
+                result = await ObserveAndApplyAsync(caller, questId, effectId, refreshId, owner, provider, model, before, guard, attempt.Token).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // The admitted operation must retain its identity even if transport disposal fails.
+                result = Unavailable;
+            }
+            finally
+            {
+                await stopHeartbeat.CancelAsync().ConfigureAwait(false);
+            }
         }
         finally
         {
-            await stopHeartbeat.CancelAsync().ConfigureAwait(false);
-
             await heartbeat.ConfigureAwait(false);
         }
 

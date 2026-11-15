@@ -17,7 +17,12 @@ rm -f -- "$results/core.trx" "$results/compendium.trx" \
   "$results/core-summary.json" "$results/compendium-summary.json"
 dotnet --info > "$results/sdk-info.txt"
 git rev-parse HEAD > "$results/commit.txt"
+git rev-parse 'HEAD^{tree}' > "$results/tree.txt"
 git status --porcelain --untracked-files=all > "$results/worktree-status.txt"
+if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
+  test "$(cat "$results/commit.txt")" = "$GITHUB_SHA"
+  test ! -s "$results/worktree-status.txt"
+fi
 cp tests/RetroDownfall.Arcanum.Tests/TestData/Contracts/Arcanum.GuildOperatorQualification.json "$results/witness-manifest.json"
 
 # Runsettings carry the complete filter without Windows command-line length/truncation limits.
@@ -43,3 +48,11 @@ dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj
 python3 scripts/guild_operator_qualification.py validate --project core --platform "$operator_platform" \
   --manifest "$results/witness-manifest.json" \
   --report "$results/core.trx" --summary-json "$results/core-summary.json"
+
+# Local dirty-source runs retain their status; CI evidence must describe one clean candidate.
+git status --porcelain --untracked-files=all > "$results/worktree-status-after.txt"
+if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
+  test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+  test "$(git rev-parse 'HEAD^{tree}')" = "$(cat "$results/tree.txt")"
+  test ! -s "$results/worktree-status-after.txt"
+fi

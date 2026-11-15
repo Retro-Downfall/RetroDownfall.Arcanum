@@ -53,14 +53,14 @@ internal static partial class HostedGrimoireProducerInventory
         // Spine does for a paid door whose lease departed: the group stands, and every send under it needs its own Work, which
         // HOSTED_SITE_WORK_FRONTIER_MISSING reports at the send. What the group must not do is meet a Work the same member starts
         // afterwards, because a send under both would pair the Effect of one lease with the Work of another.
-        private bool LeaseReceiverIsLiveWork(AuthoredMember member, InvocationExpressionSyntax group, string? work)
+        private bool LeaseReceiverIsLiveWork(AuthoredMember member, InvocationExpressionSyntax group, WorkAdmissionEvidence? work)
         {
             if (!LeaseReceiverProven(member, group, out string? origin))
             {
                 return false;
             }
 
-            if (work is not null)
+            if (work?.Physical is not null)
             {
                 return WorkOrigin(work) == origin;
             }
@@ -70,7 +70,7 @@ internal static partial class HostedGrimoireProducerInventory
         }
 
         // The shell's recovery group is begun on a lease the shell itself acquired, never on one it was handed or acquired twice.
-        private bool LeaseReceiverIsOwnAcquisition(AuthoredMember member, InvocationExpressionSyntax group, string? work)
+        private bool LeaseReceiverIsOwnAcquisition(AuthoredMember member, InvocationExpressionSyntax group, WorkAdmissionEvidence? work)
         {
             if (!LeaseReceiverIsLiveWork(member, group, work) || !LeaseReceiverProven(member, group, out string? origin))
             {
@@ -106,11 +106,16 @@ internal static partial class HostedGrimoireProducerInventory
             return marker < 0 ? null : effect[(marker + EffectLeaseMarker.Length)..];
         }
 
-        private static string? WorkOrigin(string work)
+        private static string? WorkOrigin(WorkAdmissionEvidence? work)
         {
-            int marker = work.LastIndexOf("@work:", StringComparison.Ordinal);
+            if (work?.Physical is not { } physical)
+            {
+                return null;
+            }
 
-            return marker < 0 ? null : work[(marker + "@work:".Length)..];
+            int marker = physical.LastIndexOf("@work:", StringComparison.Ordinal);
+
+            return marker < 0 ? null : physical[(marker + "@work:".Length)..];
         }
 
         private HostedProducerInventoryDiagnostic EffectLeaseMismatch(string operationId, SyntaxNode site, string callee) => new(

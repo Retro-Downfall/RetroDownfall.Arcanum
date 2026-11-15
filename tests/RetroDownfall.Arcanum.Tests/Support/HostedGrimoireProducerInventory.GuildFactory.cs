@@ -495,7 +495,7 @@ internal static partial class HostedGrimoireProducerInventory
             certificate.admissionCapsules["http-connect-contract/effect"] = "http-connect-contract-effect";
 
             _ = certificate.Traverse(callback, "http-connect-contract", "http-connect-contract", [], false,
-                "http-connect-contract/work", "http-connect-contract/effect", completionOwned: true);
+                WorkAdmissionEvidence.Both("http-connect-contract/work"), "http-connect-contract/effect", completionOwned: true);
 
             bool complete = certificate.diagnostics.Count == 0
                 && certificate.sites.Values.All(static site => site.Kind == HostedProducerSiteKind.ProviderCall
@@ -611,6 +611,8 @@ internal static partial class HostedGrimoireProducerInventory
 
         private bool HasOwnedHttpConnectResult(AuthoredMember member, ExpressionSyntax expression, HashSet<GraphMemberIdentity> path, int depth = 0, HttpFactoryProofWork? work = null)
         {
+            if (member.Symbol.IsAsync && !HasStockAsyncPublication(member)) return false;
+
             work ??= httpConnectManualWork ?? new(maximumAnalyzedStatesPerRoot);
 
             if (depth >= traversalMaximumDepth || !work.TryTake()) return false;
@@ -664,7 +666,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             try
             {
-                if (member.Symbol.IsAsync && member.Symbol.ReturnsVoid) return false;
+                if (member.Symbol.IsAsync && !HasStockAsyncPublication(member)) return false;
 
                 bool returnedAwaitableOwned = ownsReturn && IsAwaitable(member.Symbol.ReturnType);
 

@@ -23,7 +23,7 @@ sys.modules[SPEC.name] = CLASSIFIER
 SPEC.loader.exec_module(CLASSIFIER)
 
 MANIFEST_PATH = (
-    REPOSITORY / "tests" / "RetroDownfall.Arcanum.Tests" / "Support" / "hosted-grimoire-producer-capsules-v1.tsv"
+    REPOSITORY / "tests" / "RetroDownfall.Arcanum.Tests" / "Support" / "hosted-grimoire-producer-capsules-v2.tsv"
 )
 
 ACQUISITION = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease"
@@ -68,7 +68,11 @@ def site(
 
 
 def manifest(*rows: "CLASSIFIER.Row", name: str = "m") -> "CLASSIFIER.Manifest":
-    return CLASSIFIER.Manifest(list(rows), name)
+    return CLASSIFIER.Manifest(list(rows), name, version=1)
+
+
+def manifest_v2(*rows: "CLASSIFIER.Row", name: str = "m") -> "CLASSIFIER.Manifest":
+    return CLASSIFIER.Manifest(list(rows), name, version=2)
 
 
 def classify(committed, regenerated, edited=(), parity=None, sources=None):
@@ -808,7 +812,7 @@ class ClassifyManifestDiffTests(unittest.TestCase):
     def test_every_rule_has_a_unique_name_a_lane_a_side_and_a_summary(self) -> None:
         names = [rule.name for rule in CLASSIFIER.RULES]
 
-        self.assertEqual(8, len(names))
+        self.assertEqual(9, len(names))
 
         self.assertEqual(len(names), len(set(names)))
 
@@ -1956,6 +1960,324 @@ def write_manifest(path: Path, rows) -> None:
     lines = [CLASSIFIER.HEADER, CLASSIFIER.COLUMNS, *("\t".join(row) for row in sorted(rows))]
 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+class RegisteredRootManifestTests(unittest.TestCase):
+    def test_v2_preserves_the_explicit_registered_root_column(self):
+        row = site("src/Read.cs")
+        columns = CLASSIFIER.LEGACY_COLUMNS + "\tregistered_root_work_frontier_capsule_sha256"
+        fields = list(row[:13]) + ["A" * 64]
+        parsed = CLASSIFIER.parse_manifest(
+            "# arcanum-hosted-producer-capsules v2\n" + columns + "\n" + "\t".join(fields) + "\n", "v2"
+        )
+        self.assertEqual(14, len(parsed.rows[0]))
+        self.assertEqual("A" * 64, parsed.rows[0][-1])
+
+    def test_v1_does_not_infer_a_registered_root_from_physical_work(self):
+        row = site("src/Read.cs", work="B" * 64)
+        parsed = CLASSIFIER.parse_manifest(
+            CLASSIFIER.LEGACY_HEADER + "\n" + CLASSIFIER.LEGACY_COLUMNS + "\n"
+            + "\t".join(row[:13]) + "\n", "historical"
+        )
+        self.assertEqual("B" * 64, parsed.rows[0].work)
+        self.assertEqual("-", parsed.rows[0].registered_root_work)
+        self.assertEqual(1, parsed.version)
+
+    def test_registered_root_reference_requires_its_own_operation_and_work_frontier(self):
+        frontier = site("src/Worker.cs", callee=ACQUISITION, kind="EffectFrontier", admitted="WorkspaceIndexing")
+        frontier = frontier._replace(work=frontier.capsule_id, registered_root_work=frontier.capsule_id)
+        consumer = site("src/Read.cs")._replace(registered_root_work=frontier.capsule_id)
+        self.assertEqual([], CLASSIFIER.unresolved_references(manifest_v2(frontier, consumer), consumer))
+        self.assertEqual([frontier.capsule_id], CLASSIFIER.unresolved_references(manifest_v2(consumer), consumer))
+        foreign = frontier._replace(authority_operation_id="Other.Run")
+        self.assertEqual([frontier.capsule_id], CLASSIFIER.unresolved_references(manifest_v2(foreign, consumer), consumer))
+
+    def test_changed_registered_root_is_not_only_an_effect_withdrawal(self):
+        before = site("src/Read.cs", work="A" * 64, effect="B" * 64)._replace(registered_root_work="C" * 64)
+        after = before._replace(effect="-", registered_root_work="D" * 64)
+        self.assertFalse(CLASSIFIER.withdraws_effect(
+            before, "-", CLASSIFIER.Context(manifest_v2(before), manifest_v2(), manifest_v2(after))))
+        self.assertFalse(CLASSIFIER.withdraws_effect(
+            after, "+", CLASSIFIER.Context(manifest_v2(before), manifest_v2(after), None)))
+        same_root = before._replace(effect="-")
+        self.assertTrue(CLASSIFIER.withdraws_effect(
+            before, "-", CLASSIFIER.Context(manifest_v2(before), manifest_v2(), manifest_v2(same_root))))
+
+    def test_registered_root_cannot_mix_foreign_contexts_with_the_same_capsule(self):
+        frontier = site("src/Worker.cs", callee=ACQUISITION, kind="EffectFrontier", admitted="WorkspaceIndexing")
+        frontier = frontier._replace(work=frontier.capsule_id, registered_root_work=frontier.capsule_id)
+        consumer = site("src/Read.cs")._replace(registered_root_work=frontier.capsule_id)
+        wrong_operation = frontier._replace(authority_operation_id="Other.Run")
+        wrong_root = frontier._replace(root_type="Other")
+        self.assertEqual([frontier.capsule_id], CLASSIFIER.unresolved_references(manifest_v2(wrong_root, consumer), consumer))
+        self.assertEqual([frontier.capsule_id], CLASSIFIER.unresolved_references(manifest_v2(wrong_operation, wrong_root, consumer), consumer))
+        for candidates in ((frontier, wrong_root), (wrong_root, frontier)):
+            self.assertEqual([], CLASSIFIER.unresolved_references(manifest_v2(*candidates, consumer), consumer))
+
+
+class RegisteredRootPhysicalContextTests(unittest.TestCase):
+    @staticmethod
+    def rows():
+        root = site("src/Root.cs", callee=ACQUISITION, kind="EffectFrontier", admitted="LongRunningOperationRecovery")
+        root = root._replace(work=root.capsule_id, registered_root_work=root.capsule_id)
+        inner = site("src/Inner.cs", callee=ACQUISITION, kind="EffectFrontier", admitted="GuildStorage")
+        inner = inner._replace(work=inner.capsule_id, registered_root_work=root.capsule_id)
+        group = site("src/Group.cs", callee=GROUP, kind="EffectFrontier")
+        group = group._replace(work=inner.capsule_id, effect=group.capsule_id, registered_root_work=root.capsule_id)
+        consumer = site("src/Send.cs", callee="System.IO.File.Delete", kind="FileSystemEffect")
+        consumer = consumer._replace(work=inner.capsule_id, effect=group.capsule_id, registered_root_work=root.capsule_id)
+        return root, inner, group, consumer
+
+    def test_sole_physical_targets_cannot_lend_another_registered_context(self):
+        root, inner, group, consumer = self.rows()
+        other = site("src/OtherRoot.cs", callee=ACQUISITION, kind="EffectFrontier", admitted="LongRunningOperationRecovery")
+        other = other._replace(work=other.capsule_id, registered_root_work=other.capsule_id)
+        forged = consumer._replace(registered_root_work=other.capsule_id)
+        self.assertCountEqual([inner.capsule_id, group.capsule_id],
+            CLASSIFIER.unresolved_references(manifest_v2(root, other, inner, group, forged), forged))
+
+    def test_effect_target_must_match_current_physical_work(self):
+        root, inner, group, consumer = self.rows()
+        forged = consumer._replace(work=root.capsule_id)
+        self.assertEqual([group.capsule_id], CLASSIFIER.unresolved_references(manifest_v2(root, inner, group, forged), forged))
+
+    def test_two_root_contexts_select_the_explicit_one_without_filling_a_missing_root(self):
+        root, inner, group, consumer = self.rows()
+        other = site("src/OtherRoot.cs", callee=ACQUISITION, kind="EffectFrontier", admitted="LongRunningOperationRecovery")
+        other = other._replace(work=other.capsule_id, registered_root_work=other.capsule_id)
+        second_inner = inner._replace(registered_root_work=other.capsule_id)
+        second_group = group._replace(registered_root_work=other.capsule_id)
+        rows = manifest_v2(root, other, inner, second_inner, group, second_group, consumer)
+        self.assertEqual([], CLASSIFIER.unresolved_references(rows, consumer))
+        departed = consumer._replace(registered_root_work="-")
+        self.assertCountEqual([inner.capsule_id, group.capsule_id], CLASSIFIER.unresolved_references(rows, departed))
+        self.assertEqual("-", departed.registered_root_work)
+        self.assertEqual([], CLASSIFIER.unresolved_references(manifest_v2(root, inner, group, departed), departed))
+
+
+
+    def test_historical_acquisition_effect_does_not_require_the_new_root_pair(self):
+        root, inner, group, _ = self.rows()
+        other = site("src/OtherRoot.cs", callee=ACQUISITION, kind="EffectFrontier", admitted="LongRunningOperationRecovery")
+        other = other._replace(work=other.capsule_id, registered_root_work=other.capsule_id)
+        acquired = inner._replace(registered_root_work=other.capsule_id, effect=group.capsule_id)
+        self.assertEqual([], CLASSIFIER.unresolved_references(manifest_v2(root, other, acquired, group), acquired))
+        ambiguous = group._replace(registered_root_work=other.capsule_id)
+        self.assertEqual([group.capsule_id], CLASSIFIER.unresolved_references(
+            manifest_v2(root, other, acquired, group, ambiguous), acquired))
+
+    def test_nonordinary_null_work_and_root_keep_only_a_unique_structural_effect(self):
+        group = site("src/Group.cs", callee=GROUP, kind="EffectFrontier")
+        group = group._replace(effect=group.capsule_id)
+        consumer = site("src/Startup.cs", kind="FileSystemEffect")._replace(effect=group.capsule_id)
+        self.assertEqual([], CLASSIFIER.unresolved_references(manifest_v2(group, consumer), consumer))
+        self.assertEqual("-", consumer.work)
+        self.assertEqual("-", consumer.registered_root_work)
+        sibling = group._replace(registered_root_work="A" * 64)
+        self.assertEqual([group.capsule_id], CLASSIFIER.unresolved_references(manifest_v2(group, sibling, consumer), consumer))
+
+    def test_conflicting_intrinsic_aliases_are_rejected_before_root_selection(self):
+        root, inner, group, consumer = self.rows()
+        for conflicting in (inner._replace(admitted_work_kind="WorkspaceIndexing"), inner._replace(work=root.capsule_id)):
+            conflicting = conflicting._replace(registered_root_work="A" * 64)
+            self.assertEqual([inner.capsule_id], CLASSIFIER.unresolved_references(
+                manifest_v2(root, inner, conflicting, group, consumer), consumer))
+
+    def test_work_only_read_requires_proven_unrelated_incoming_groups(self):
+        root = site('src/Root.cs', callee=ACQUISITION, kind='EffectFrontier', admitted='GuildMaintenance')
+        root = root._replace(work=root.capsule_id, registered_root_work=root.capsule_id)
+        parent = site('src/Parent.cs', callee=ACQUISITION, kind='EffectFrontier', admitted='GuildStorage')
+        parent = parent._replace(work=parent.capsule_id, registered_root_work=root.capsule_id)
+        first = site('src/FirstGroup.cs', callee=GROUP, kind='EffectFrontier')
+        first = first._replace(work=root.capsule_id, registered_root_work=root.capsule_id, effect=first.capsule_id)
+        second = site('src/SecondGroup.cs', callee=GROUP, kind='EffectFrontier')
+        second = second._replace(work=parent.capsule_id, registered_root_work=root.capsule_id, effect=second.capsule_id)
+        child = site('src/Child.cs', callee=ACQUISITION, kind='EffectFrontier', admitted='GuildStorage')
+        child = child._replace(work=child.capsule_id, registered_root_work=root.capsule_id)
+        a, b = child._replace(effect=first.capsule_id), child._replace(effect=second.capsule_id)
+        read = site('src/Read.cs')._replace(work=child.capsule_id, registered_root_work=root.capsule_id)
+        rows = [root, parent, first, second, a, b, read]
+        self.assertEqual([], CLASSIFIER.unresolved_references(manifest_v2(*rows), read))
+        for bad in ([root, parent, first, a, b, read], [root, parent, first, first, second, a, b, read],
+                    [root, first, second, a, b, read], [root, parent, first, second, a, a, read],
+                    [root, parent, parent._replace(admitted_work_kind="Other", registered_root_work="F" * 64), first, second, a, b, read],
+                    [root, parent, first, second, a, b, read._replace(effect=first.capsule_id)]):
+            with self.subTest(bad=bad):
+                self.assertIn(child.capsule_id, CLASSIFIER.unresolved_references(manifest_v2(*bad), bad[-1]))
+
+    def test_same_root_self_and_no_effect_exceptions_do_not_accept_duplicate_rows(self):
+        root, inner, _, consumer = self.rows()
+        incoming = inner._replace(effect="D" * 64)
+        read = consumer._replace(kind="DatabaseAccess", effect="-")
+        rows = manifest_v2(root, inner, incoming, read)
+        self.assertEqual([], CLASSIFIER.unresolved_references(rows, inner))
+        self.assertEqual([], CLASSIFIER.unresolved_references(rows, read))
+        duplicate = manifest_v2(root, inner, inner, incoming, read)
+        self.assertEqual([inner.capsule_id], CLASSIFIER.unresolved_references(duplicate, inner))
+        self.assertEqual([inner.capsule_id], CLASSIFIER.unresolved_references(duplicate, read))
+
+    def test_acquisition_callee_predicate_matches_the_csharp_manifest_contract(self):
+        root = site("src/Root.cs", callee="Fixture.Gate.TryAcquireWorkLease", kind="EffectFrontier", admitted="WorkspaceIndexing")
+        root = root._replace(work=root.capsule_id, registered_root_work=root.capsule_id)
+        consumer = site("src/Read.cs")._replace(work=root.capsule_id, registered_root_work=root.capsule_id)
+        self.assertEqual([], CLASSIFIER.unresolved_references(manifest_v2(root, consumer), consumer))
+
+
+class VersionMigrationAndStartupWitnessTests(unittest.TestCase):
+    def test_v1_unknown_provenance_pairs_losslessly_with_v2_and_preserves_counts(self):
+        work = site('src/Work.cs', callee=ACQUISITION, kind='EffectFrontier', admitted='GuildStorage')
+        work = work._replace(work=work.capsule_id, registered_root_work=work.capsule_id)
+        old = site('src/Reader.cs', work=work.capsule_id)
+        new = old._replace(registered_root_work=work.capsule_id)
+        result = CLASSIFIER.classify(manifest(old, old), manifest_v2(work, new), frozenset(), manifest_v2(work, new))
+        paired = [item for item in result if item.label == 'v1-provenance']
+        self.assertEqual(2, len(paired))
+        self.assertEqual(1, sum(item.side == '-' and item.row == old for item in paired))
+        self.assertEqual(1, sum(item.side == '+' and item.row == new for item in paired))
+        self.assertEqual(1, sum(item.side == '-' and item.row == old and item.label != 'v1-provenance' for item in result))
+        self.assertTrue(all('unknown' in item.detail for item in paired))
+
+    def test_v1_unknown_and_v2_none_require_exact_parity_witness(self):
+        row = site('src/Reader.cs')
+        with_witness = CLASSIFIER.classify(manifest(row), manifest_v2(row), frozenset(), manifest_v2(row))
+        without_witness = CLASSIFIER.classify(manifest(row), manifest_v2(row), frozenset(), manifest_v2())
+        self.assertEqual(['v1-provenance', 'v1-provenance'], [x.label for x in with_witness])
+        self.assertEqual(2, len(without_witness))
+        self.assertTrue(all(x.label == 'd' for x in without_witness))
+        later = row._replace(registered_root_work='A' * 64)
+        delta = CLASSIFIER.classify(manifest_v2(row), manifest_v2(later), frozenset(), manifest_v2(row))
+        self.assertTrue(all(x.label != 'v1-provenance' for x in delta))
+
+    def test_v1_removal_stages_against_its_unique_parity_refinement(self):
+        work = site('src/Work.cs', callee=ACQUISITION, kind='EffectFrontier', admitted='GuildStorage')
+        work = work._replace(work=work.capsule_id, registered_root_work=work.capsule_id)
+        old = site('src/Reader.cs', work=work.capsule_id)
+        p = manifest_v2(work, old._replace(registered_root_work=work.capsule_id))
+        result = CLASSIFIER.classify(manifest(work._replace(registered_root_work='-'), old), manifest_v2(), frozenset(), p)
+        removal = next(x for x in result if x.side == '-' and x.row == old)
+        self.assertEqual('source', removal.stage)
+
+    def test_paired_legacy_provider_is_not_a_removed_call(self):
+        row = site('src/Provider.cs', kind='ProviderCall', root=PID_ROOT, operation=PID_OPERATION)
+        c, n, p = manifest(row), manifest_v2(row), manifest_v2(row)
+        labelled = CLASSIFIER.classify(c, n, frozenset(), p)
+        removal = next(x for x in CLASSIFIER.check_invariants(c, n, labelled, p) if x.name == 'provider-call-removals')
+        self.assertEqual([], removal.violations)
+
+    def test_unframed_legacy_none_requires_parity_and_preserves_occurrence_counts(self):
+        row = site('src/Provider.cs', kind='ProviderCall', root=PID_ROOT, operation=PID_OPERATION)
+        def violations(c, n, p):
+            return next(x.violations for x in CLASSIFIER.check_invariants(c, n, parity=p) if x.name == 'provider-call-frames')
+        self.assertTrue(violations(manifest(row), manifest_v2(row), manifest_v2()))
+        self.assertEqual([], violations(manifest(row), manifest_v2(row), manifest_v2(row)))
+        self.assertEqual(1, len(violations(manifest(row), manifest_v2(row, row), manifest_v2(row))))
+
+    def test_unframed_v1_provenance_requires_exact_parity_before_treating_as_existing(self):
+        work = site('src/Work.cs', callee=ACQUISITION, kind='EffectFrontier', admitted='GuildStorage', root=PID_ROOT, operation=PID_OPERATION)
+        work = work._replace(work=work.capsule_id, registered_root_work=work.capsule_id)
+        old = site('src/Provider.cs', kind='ProviderCall', root=PID_ROOT, operation=PID_OPERATION)
+        new = old._replace(registered_root_work=work.capsule_id)
+        def violations(parity):
+            return next(x.violations for x in CLASSIFIER.check_invariants(manifest(old), manifest_v2(work, new), parity=parity)
+                        if x.name == 'provider-call-frames')
+        self.assertEqual([], violations(manifest_v2(work, new)))
+        self.assertTrue(violations(manifest_v2(work)))
+
+    def test_unresolved_v2_provenance_is_not_paired(self):
+        old = site('src/Reader.cs')
+        new = old._replace(registered_root_work='A' * 64)
+        result = CLASSIFIER.classify(manifest(old), manifest_v2(new), frozenset())
+        self.assertTrue(all(item.label != 'v1-provenance' for item in result))
+
+    def test_physical_guild_work_separation_requires_exact_parity_and_kinds(self):
+        root = site('src/Root.cs', callee=ACQUISITION, kind='EffectFrontier', admitted='GuildMaintenance')
+        root = root._replace(work=root.capsule_id, registered_root_work=root.capsule_id)
+        inner = site('src/Inner.cs', callee=ACQUISITION, kind='EffectFrontier', admitted='GuildStorage')
+        inner = inner._replace(work=inner.capsule_id, registered_root_work=root.capsule_id)
+        old = site('src/Reader.cs', work=root.capsule_id)
+        new = old._replace(work=inner.capsule_id, registered_root_work=root.capsule_id)
+        p = manifest_v2(root, inner, new)
+        old_root = root._replace(registered_root_work='-')
+        result = CLASSIFIER.classify(manifest(old_root, old), manifest_v2(root, inner, new), frozenset(), p)
+        matches = [x for x in result if x.row in (old, new)]
+        self.assertEqual(['c', 'c'], sorted(x.label for x in matches))
+        self.assertTrue(all(x.rule == 'physical-work-root-separation' for x in matches))
+        for bad in (new._replace(work=root.capsule_id), new._replace(effect='F' * 64),
+                    new._replace(syntax_sha256='F' * 64), new._replace(registered_root_work='F' * 64)):
+            result = CLASSIFIER.classify(manifest(old_root, old), manifest_v2(root, inner, bad), frozenset(), p)
+            self.assertFalse(any(x.row == bad and x.rule == 'physical-work-root-separation' for x in result))
+        result = CLASSIFIER.classify(manifest(old_root, old), manifest_v2(root, inner, new), frozenset(), manifest_v2())
+        self.assertFalse(any(x.rule == 'physical-work-root-separation' for x in result))
+
+    def test_physical_work_rule_rejects_mutated_parity_and_candidate_contexts(self):
+        root = site('src/Root.cs', callee=ACQUISITION, kind='EffectFrontier', admitted='GuildMaintenance')
+        root = root._replace(work=root.capsule_id, registered_root_work=root.capsule_id)
+        inner = site('src/Inner.cs', callee=ACQUISITION, kind='EffectFrontier', admitted='GuildStorage')
+        inner = inner._replace(work=inner.capsule_id, registered_root_work=root.capsule_id)
+        old = site('src/Reader.cs', work=root.capsule_id)
+        new = old._replace(work=inner.capsule_id, registered_root_work=root.capsule_id)
+        effect = site('src/Group.cs', callee=GROUP, kind='EffectFrontier')
+        effect = effect._replace(work=inner.capsule_id, registered_root_work=root.capsule_id, effect=effect.capsule_id)
+        cases = [
+            (root, inner._replace(admitted_work_kind='Other'), new, []),
+            (root._replace(admitted_work_kind='Other'), inner, new, []),
+            (root, inner, new._replace(effect=effect.capsule_id), [effect]),
+            (root, inner, new._replace(registered_root_work=inner.capsule_id), []),
+            (root, inner, new._replace(admitted_work_kind='GuildStorage'), []),
+        ]
+        for r, w, candidate, extra in cases:
+            with self.subTest(root=r, work=w, candidate=candidate):
+                parity = manifest_v2(r, w, candidate, *extra)
+                context = CLASSIFIER.Context(manifest(root._replace(registered_root_work='-'), old), parity, parity)
+                self.assertFalse(CLASSIFIER.physical_work_root_separation(candidate, '+', context))
+
+    def test_spend_reach_callers_follow_the_actual_identity_and_quest_paths(self):
+        identities = {'ExecuteAsync', 'ReadGenerationAsync', 'GetNativeOperatorPrincipalWithinAsync',
+                      'ReadCatalogAsync', 'ReadIndexColumnsAsync', 'ReadIndexListAsync'}
+        quest = {'AuthorizeLocateAsync', 'CurrentIdentityAsync', 'ScopeAsync', 'RegistrationAsync',
+                 'ValidateOwnersAsync', 'RequireInboundRootWithinAsync', 'RequireInboundRootForPeerWithinAsync'}
+        for _, path, member, _, group in CLASSIFIER._GUILD_SPEND_REACH_SITES:
+            if path.startswith(('Guild/GuildLocalHostPolicy', 'Guild/GuildWorkspaceLeaseStore', 'Data/Schema/')):
+                with self.subTest(path=path, member=member):
+                    self.assertEqual('identity' if member in identities else 'quest', group)
+                    self.assertIn(member, identities | quest)
+
+    def test_spend_refresh_reach_is_exact_and_requires_new_caller(self):
+        entry = CLASSIFIER.GUILD_SPEND_REFRESH_REACHES[0]
+        row = site(entry.source_path, callee=entry.callee, member=entry.member, root=entry.root_type, operation=entry.operation)
+        edited = frozenset({entry.caller})
+        sources = FakeSources(base={entry.caller: ''}, head={entry.caller: entry.marker})
+        self.assertIsNotNone(CLASSIFIER.prove_reach(row, '+', edited, sources)[0])
+        self.assertIsNone(CLASSIFIER.prove_reach(row._replace(authority_operation_id='Other'), '+', edited, sources)[0])
+        self.assertIsNone(CLASSIFIER.prove_reach(row, '+', edited, FakeSources(base={entry.caller: ''}, head={entry.caller: ''}))[0])
+        self.assertIsNone(CLASSIFIER.prove_reach(row, '+', frozenset(), sources)[0])
+
+    def test_exact_selected_startup_group_witness_only(self):
+        root = 'LongRunningOperationStartupHostedService'
+        operation = ('RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:'
+                     'RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0~ABC')
+        group = site('src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildSpendRefreshService.cs', callee=GROUP,
+                     kind='EffectFrontier', member='RunClaimedAsync', root=root, operation=operation)
+        group = group._replace(enclosing_type='RetroDownfall.Arcanum.Infrastructure.Guild.GuildSpendRefreshService')
+        provider = site('src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildOpenRouterSpendReader.cs', callee='System.IO.Stream.ReadAsync', kind='ProviderCall',
+                        member='ReadAsync', root=root, operation=operation, effect=group.capsule_id)
+        provider = provider._replace(enclosing_type='RetroDownfall.Arcanum.Infrastructure.Guild.GuildSpendObservation')
+        def violations(row, witness):
+            return next(x.violations for x in CLASSIFIER.check_invariants(manifest(), manifest_v2(witness, row))
+                        if x.name == 'provider-call-frames')
+        self.assertEqual([], violations(provider, group))
+        conflicting = group._replace(work='B' * 64)
+        ambiguous = next(x.violations for x in CLASSIFIER.check_invariants(manifest(), manifest_v2(group, conflicting, provider))
+                         if x.name == 'provider-call-frames')
+        self.assertTrue(ambiguous)
+        self.assertTrue(violations(provider._replace(registered_root_work='C' * 64), group))
+        for changed, witness in ((provider._replace(effect='-'), group),
+                                 (provider._replace(effect='F' * 64), group),
+                                 (provider._replace(callee='Unknown.Send'), group),
+                                 (provider._replace(authority_operation_id=operation.replace('RunStartupPassAsync', 'Other')), group),
+                                 (provider._replace(authority_operation_id='ContinueInBackgroundAsync'), group),
+                                 (provider, group._replace(member='Other'))):
+            self.assertTrue(violations(changed, witness))
 
 
 if __name__ == "__main__":

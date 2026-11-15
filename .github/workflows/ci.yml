@@ -37,6 +37,11 @@ on:
           - both
           - macos
           - windows
+      operator-native-aot:
+        description: Also run the three Windows x64 native gates in guild-operator (opt-in)
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -1718,10 +1723,10 @@ jobs:
     defaults:
       run:
         shell: bash
-    # This opt-in profile keeps the existing platform choices and job ceiling. Its explicit
-    # witness manifest retains operator, complete port/scheduler/recovery and shared-store checks;
-    # the broader guild-execution profile remains available without a scope change.
-    timeout-minutes: 90
+    # The default and macOS legs keep 90 minutes. Explicit Windows native qualification adds
+    # three independent publishes, so give that opt-in leg 150 minutes without a retry dispatch.
+    # This ceiling provides headroom; it is not a measured duration or a reason to omit witnesses.
+    timeout-minutes: ${{ inputs.operator-native-aot && matrix.os == 'windows-latest' && 150 || 90 }}
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -1743,6 +1748,57 @@ jobs:
 
       - name: Qualify explicit Guild operator witnesses
         run: ./scripts/qualify-guild-operator.sh
+
+      - name: Install ripgrep for optional Windows native gates
+        if: inputs.operator-native-aot && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (-not (Get-Command rg -CommandType Application -ErrorAction SilentlyContinue)) {
+            choco install ripgrep --version=15.2.0 --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+          rg --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Audit optional win-x64 Native AOT diagnostics
+        if: inputs.operator-native-aot && runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          results=.tmp/guild-operator-qualification/win-x64-native
+          mkdir -p "$results"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git rev-parse HEAD > "$results/commit.txt"
+          git rev-parse 'HEAD^{tree}' > "$results/tree.txt"
+          git status --porcelain --untracked-files=all > "$results/worktree-status.txt"
+          test ! -s "$results/worktree-status.txt"
+          rg --version
+          ./scripts/verify-aot-il-warnings.sh win-x64 2>&1 | tee "$results/diagnostics.log"
+
+      - name: Verify optional Guild Native AOT graph (win-x64)
+        if: inputs.operator-native-aot && runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          ./scripts/verify-guild-aot.sh --rid win-x64 2>&1 | tee .tmp/guild-operator-qualification/win-x64-native/guild-aot.log
+
+      - name: Verify optional win-x64 shipping executable and provider-contract smoke
+        if: inputs.operator-native-aot && runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          ./scripts/verify-shipping-publish.sh --rid win-x64 2>&1 | tee .tmp/guild-operator-qualification/win-x64-native/shipping.log
+
+      - name: Record completed optional Windows native candidate
+        if: inputs.operator-native-aot && runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          results=.tmp/guild-operator-qualification/win-x64-native
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$(cat "$results/tree.txt")"
+          git status --porcelain --untracked-files=all > "$results/worktree-status-after.txt"
+          test ! -s "$results/worktree-status-after.txt"
+          printf '%s\n' 'All three win-x64 native gates completed for the recorded clean candidate.' > "$results/completed.txt"
 
       - name: Upload focused evidence
         if: always()

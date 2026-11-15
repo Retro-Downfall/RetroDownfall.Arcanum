@@ -185,7 +185,7 @@ internal static partial class HostedGrimoireProducerInventory
             IParameterSymbol Formal,
             ParameterSyntax FormalSyntax,
             string Origin,
-            string Work);
+            WorkAdmissionEvidence Work);
 
         private readonly Dictionary<string, string> leaseHandoffRootTypes = new(StringComparer.Ordinal);
 
@@ -226,7 +226,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         // The declared root as its traversal starts: the lifecycle and declared-root factory contexts, then, for a handoff root, the
         // formal bound to its own origin and the Work that origin mints.
-        private (AuthoredMember Member, string? Work) CanonicalDeclaredRoot(AuthoredMember member, string operationId, SyntaxNode? selection, bool lifecycle)
+        private (AuthoredMember Member, WorkAdmissionEvidence? Work) CanonicalDeclaredRoot(AuthoredMember member, string operationId, SyntaxNode? selection, bool lifecycle)
         {
             member = BindLifecycleRootFactoryContext(member);
 
@@ -249,7 +249,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             _ = TryRegisterEvaluationEnvironmentToken(bound);
 
-            return (bound, RootOperation(operationId) + "@work:" + origin);
+            return (bound, WorkAdmissionEvidence.Both(RootOperation(operationId) + "@work:" + origin));
         }
 
         private LeaseHandoffRoot? LeaseHandoffRootFor(HostedProducerOperationEntry entry)
@@ -268,11 +268,11 @@ internal static partial class HostedGrimoireProducerInventory
                 && SelectRoot(raw, entry.OperationId) is { } selection && selection == raw.Syntax
                 && leaseHandoffRootTypes.TryGetValue(entry.OperationId, out string? rootType))
             {
-                (AuthoredMember member, string? work) = CanonicalDeclaredRoot(raw, entry.OperationId, selection, lifecycle: false);
+                (AuthoredMember member, WorkAdmissionEvidence? work) = CanonicalDeclaredRoot(raw, entry.OperationId, selection, lifecycle: false);
 
                 if (work is not null && LeaseHandoffFormal(member, entry) is var (formal, syntax))
                 {
-                    root = new(entry, rootType, member, selection, formal, syntax, Location(syntax), work);
+                    root = new(entry, rootType, member, selection, formal, syntax, Location(syntax), work.Value);
                 }
             }
 
@@ -310,7 +310,7 @@ internal static partial class HostedGrimoireProducerInventory
             string rootType,
             string operationId,
             HostedProducerOperationEntry? callerRoot,
-            string? work,
+            WorkAdmissionEvidence? work,
             string? effect,
             string? recoveryEffect)
         {
@@ -342,7 +342,7 @@ internal static partial class HostedGrimoireProducerInventory
             int targetCount,
             string rootType,
             HostedProducerOperationEntry? callerRoot,
-            string? work,
+            WorkAdmissionEvidence? work,
             string? effect,
             string? recoveryEffect,
             HostedProducerOperationEntry entry,
@@ -392,7 +392,7 @@ internal static partial class HostedGrimoireProducerInventory
                 return "an external-effect group is open at the call";
             }
 
-            if (work is null)
+            if (work?.Physical is null || work?.RegisteredRoot is null)
             {
                 return "the caller holds no live Work at the call";
             }

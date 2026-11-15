@@ -8,7 +8,7 @@ import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
-from scripts.tests.test_ci_scope_workflow import ROOT, job, matrix_hosts, selected_inventory
+from scripts.tests.test_ci_scope_workflow import ROOT, WORKFLOW, job, step, matrix_hosts, selected_inventory
 from scripts.tests.trx_fixture import NS, append_summary
 
 MANIFEST = ROOT / "tests/RetroDownfall.Arcanum.Tests/TestData/Contracts/Arcanum.GuildOperatorQualification.json"
@@ -57,6 +57,12 @@ def authored_scheduler_displays(path):
                 rendered = []
                 for name, value in zip(names, values):
                     text = str(value) if isinstance(value, bool) else json.dumps(value, ensure_ascii=False)
+                    if isinstance(value, str) and len(value) > 50:
+                        # xUnit 2.9.3 ArgumentFormatter: these reviewed plain ASCII values
+                        # keep the first 50 characters, then append three middle dots outside quotes.
+                        if any(ord(char) < 32 or ord(char) > 126 or char in '\\"' for char in value):
+                            raise AssertionError("Review escaped or Unicode long argument display explicitly: " + method)
+                        text = json.dumps(value[:50], ensure_ascii=False) + "···"
                     rendered.append(name + ": " + text)
                 displays.append(case + "(" + ", ".join(rendered) + ")")
         result[case] = sorted(displays)
@@ -105,7 +111,7 @@ class GuildOperatorQualificationTests(unittest.TestCase):
                 selected, _ = selected_inventory("workflow_dispatch", "guild-operator", platform)
                 self.assertEqual(support | {("guild-operator", host) for host in hosts}, set(selected))
         focused = job("guild-operator")
-        self.assertIn("timeout-minutes: 90", focused)
+        self.assertIn("timeout-minutes: ${{ inputs.operator-native-aot && matrix.os == 'windows-latest' && 150 || 90 }}", focused)
         self.assertIn("run: ./scripts/qualify-guild-operator.sh", focused)
         self.assertIn("if: always()", focused)
         self.assertNotIn("continue-on-error", focused)
@@ -244,6 +250,120 @@ class GuildOperatorQualificationTests(unittest.TestCase):
                 path = Path(temporary) / "manifest.json"
                 path.write_text(json.dumps(manifest))
                 with self.assertRaises(ValueError): module.load_manifest(path)
+
+    def test_long_ascii_inline_argument_uses_xunit_quoted_prefix_and_middle_dots(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "LongArgument.cs"
+            source.write_text('''namespace Fixture;
+public sealed class LongArgumentTests
+{
+    [Theory]
+    [InlineData("Unhandled exception. System.IO.IOException: Failed to bind to address http://127.0.0.1:1234: address already in use.", true)]
+    [InlineData("Peer credential unavailable", false)]
+    public void Classifies(string output, bool expected) { }
+}
+''')
+            case = "Fixture.LongArgumentTests.Classifies"
+            self.assertEqual({case: [
+                case + '(output: "Peer credential unavailable", expected: False)',
+                case + '(output: "Unhandled exception. System.IO.IOException: Failed"···, expected: True)',
+            ]}, authored_scheduler_displays(source))
+
+    def test_spend_refresh_partials_and_runtime_contracts_are_explicit_witnesses(self):
+        declaration = self.manifest()["projects"]["core"]
+        sources = set(declaration["caseSources"])
+        directory = ROOT / "tests/RetroDownfall.Arcanum.Tests/Guild"
+        affected = {str(path.relative_to(ROOT)) for path in directory.glob("GuildLocalHostPolicyTests.Refresh*.cs")
+                    if authored_methods(path)}
+        affected.update("tests/RetroDownfall.Arcanum.Tests/Guild/GuildLocalHostPolicyTests." + name + ".cs"
+                        for name in ("SpendCorrections", "SpendRefreshAfterRevocation"))
+        affected.update("tests/RetroDownfall.Arcanum.Tests/Data/DataRetentionServiceTests." + name + ".cs"
+                        for name in ("GuildRefreshPins", "GuildSpendInventory", "GuildCleanup"))
+        affected.update("tests/RetroDownfall.Arcanum.Tests/Operations/HostedGrimoireProducerInventoryTests." + name + ".cs"
+                        for name in ("RefreshTrackerSelector", "NestedHeartbeatAdmission", "ActualGuildHeartbeatFinally"))
+        self.assertLessEqual(affected, sources)
+        for source in sorted(affected):
+            for case, displays in authored_scheduler_displays(ROOT / source).items():
+                self.assertEqual(displays, declaration["requiredCaseDisplays"].get(case), case)
+        for name in (
+            "Api.GrimoireMaintenanceLiveGuildRefreshTests",
+            "Api.GuildRefreshRetryEndpointTests",
+            "Backup.BackupRestoreRefreshRecoveryTests",
+            "Configuration.GuildUsageReconciliationConfigurationTests",
+            "Data.ExactUsdTextAccumulationTests",
+            "Data.Schema.GuildRefreshNormalizedIndexTests",
+            "Data.Schema.GuildSpendRefreshIndexTests",
+            "Data.Schema.GuildSpendSchemaTests",
+            "Guild.GuildOpenRouterSpendParserTests",
+            "Guild.GuildSpendCorrectionPolicyTests",
+            "Guild.GuildSpendRefreshConfigurationTests",
+            "Guild.GuildSpendRefreshTrackerCleanupScopeTests",
+            "Guild.GuildSpendRefreshTrackerOperationTests",
+            "Guild.GuildSpendSerializationTests",
+            "Operations.FakeLongRunningOperationStoreTests",
+            "Operations.LongRunningOperationRecoveryAdmissionTests",
+            "Operations.LongRunningOperationRecoveryRegistryTests",
+            "Operations.RecoveryHandlerCoverageTests",
+            "Operations.RecoveryHandlerServingCompositionTests",
+            "Security.GuildSpendRefreshCredentialMutationTests",
+        ):
+            self.assertIn(PREFIX + name, declaration["requiredClasses"])
+        for name in ("Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_waits_for_real_terminal_refresh_body_disposal_and_heartbeat",
+                     "Api.GrimoireMaintenanceLiveGuildRefreshTests.Factory_reset_no_refresh_control_with_same_capture_fixture_reaches_commit",
+                     "Build.AiReflectionProductionClosureTests.Every_compiled_production_project_is_free_of_unsafe_ai_reflection_entry_points",
+                     "Data.UtcInstantPersistenceBoundaryTests.Every_direct_SQL_instant_parameter_is_canonical_at_its_binding_site"):
+            self.assertEqual(1, declaration["requiredCaseRows"].get(PREFIX + name))
+        compendium = self.manifest()["projects"]["compendium"]
+        for name in ("FamiliarProviderEditorTests.Guild_source_survives_ordinary_edits_but_is_cleared_when_switching_to_a_Familiar",
+                     "GenericSettingsSectionViewTests.Existing_Guild_reconciliation_configuration_is_editable_in_the_provider_page"):
+            self.assertEqual(1, compendium["requiredCaseRows"].get("RetroDownfall.Compendium.Ux.Tests.Compendium." + name))
+
+    def test_operator_shell_records_clean_ci_candidate_before_and_after_evidence(self):
+        script = (ROOT / "scripts/qualify-guild-operator.sh").read_text()
+        self.assertIn("git rev-parse 'HEAD^{tree}' > \"$results/tree.txt\"", script)
+        self.assertEqual(2, script.count('if [[ "${GITHUB_ACTIONS:-}" == true ]]; then'))
+        self.assertIn('test "$(cat "$results/commit.txt")" = "$GITHUB_SHA"', script)
+        self.assertIn('test ! -s "$results/worktree-status.txt"', script)
+        self.assertIn('test "$(git rev-parse HEAD)" = "$GITHUB_SHA"', script)
+        self.assertIn('test ! -s "$results/worktree-status-after.txt"', script)
+
+    def test_windows_native_gates_are_opt_in_and_reuse_the_existing_fail_closed_scripts(self):
+        workflow = WORKFLOW.read_text()
+        declaration = re.search(r"^      operator-native-aot:\n(.*?)(?=^      [^ ]|^permissions:)", workflow, re.M | re.S)
+        self.assertIsNotNone(declaration)
+        self.assertRegex(declaration.group(1), r"(?m)^        type: boolean$")
+        self.assertRegex(declaration.group(1), r"(?m)^        default: false$")
+        focused = job("guild-operator")
+        names = (
+            "Install ripgrep for optional Windows native gates",
+            "Audit optional win-x64 Native AOT diagnostics",
+            "Verify optional Guild Native AOT graph (win-x64)",
+            "Verify optional win-x64 shipping executable and provider-contract smoke",
+            "Record completed optional Windows native candidate",
+        )
+        for name in names:
+            body = step(focused, name)
+            self.assertIn("if: inputs.operator-native-aot && runner.os == 'Windows'", body)
+            self.assertNotIn("continue-on-error", body)
+        for name in re.findall(r"^  ([\w-]+):", workflow.split("\njobs:\n", 1)[1], re.M):
+            if name != "guild-operator":
+                self.assertNotIn("inputs.operator-native-aot", job(name), name)
+        self.assertIn("choco install ripgrep --version=15.2.0 --yes --no-progress", step(focused, names[0]))
+        self.assertIn("rg --version", step(focused, names[0]))
+        commands = ("./scripts/verify-aot-il-warnings.sh win-x64",
+                    "./scripts/verify-guild-aot.sh --rid win-x64",
+                    "./scripts/verify-shipping-publish.sh --rid win-x64")
+        for name, command in zip(names[1:4], commands):
+            body = step(focused, name)
+            self.assertIn("set -euo pipefail", body)
+            self.assertIn(command + " 2>&1 | tee ", body)
+        positions = [focused.index("- name: " + name) for name in names]
+        self.assertEqual(sorted(positions), positions)
+        self.assertLess(focused.index("run: ./scripts/qualify-guild-operator.sh"), positions[0])
+        self.assertLess(positions[-1], focused.index("- name: Upload focused evidence"))
+        self.assertIn('test "$(git rev-parse HEAD)" = "$GITHUB_SHA"', step(focused, names[-1]))
+        self.assertIn('test ! -s "$results/worktree-status-after.txt"', step(focused, names[-1]))
+        self.assertIn('"$results/completed.txt"', step(focused, names[-1]))
 
     def test_shell_harness_uses_distinct_evidence_and_manifest_for_each_project(self):
         path = ROOT / "scripts/qualify-guild-operator.sh"

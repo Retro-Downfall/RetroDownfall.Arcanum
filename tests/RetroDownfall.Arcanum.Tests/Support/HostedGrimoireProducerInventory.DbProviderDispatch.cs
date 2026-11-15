@@ -34,6 +34,7 @@ internal static partial class HostedGrimoireProducerInventory
         "Microsoft.Data.Sqlite.SqliteConnection",
         "Microsoft.Data.Sqlite.SqliteCommand",
         "Microsoft.Data.Sqlite.SqliteParameter",
+        "Microsoft.Data.Sqlite.SqliteParameterCollection",
         "Microsoft.Data.Sqlite.SqliteConnectionStringBuilder",
     };
 
@@ -58,7 +59,6 @@ internal static partial class HostedGrimoireProducerInventory
     {
         "Microsoft.Data.Sqlite.SqliteDataReader",
         "Microsoft.Data.Sqlite.SqliteTransaction",
-        "Microsoft.Data.Sqlite.SqliteParameterCollection",
     };
 
     // The assemblies whose provider types the dispatch closure trusts, by exact identity.
@@ -444,7 +444,8 @@ internal static partial class HostedGrimoireProducerInventory
             && IsTrustedProviderAssembly(creator.ContainingAssembly)
             && IsClosedProviderReceiver(context, access.Expression, creator, wrapper: true, depth + 1);
 
-        // The parameter collection of a closed command is the command's own: a non-extensible framework object.
+        // The parameter collection of an exact framework command is its framework-created instance;
+        // the collection type itself is extensible, so an opaque collection receives no such proof.
         private bool IsFrameworkParametersOfClosedCommand(AuthoredMember context, ExpressionSyntax receiver, int depth) =>
             receiver is MemberAccessExpressionSyntax { Name.Identifier.ValueText: "Parameters" } access
             && context.Model.GetSymbolInfo(access).Symbol is IPropertySymbol { Name: "Parameters", IsStatic: false } property

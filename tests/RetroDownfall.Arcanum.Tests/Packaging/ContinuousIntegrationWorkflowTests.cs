@@ -1740,6 +1740,8 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// </summary>
     private const int MaximumJobTimeoutMinutes = 270;
 
+    private const string GuildOperatorNativeTimeoutExpression = "${{ inputs.operator-native-aot && matrix.os == 'windows-latest' && 150 || 90 }}";
+
     [Fact]
     public void Focused_execution_platform_choice_is_local_and_retains_a_measured_job_budget()
     {
@@ -1749,7 +1751,11 @@ public sealed class ContinuousIntegrationWorkflowTests
         {
             WorkflowJob focused = Assert.Single(jobs, job => job.Id == profile);
 
-            Assert.Contains("timeout-minutes: 90", focused.Body, StringComparison.Ordinal);
+            string expectedTimeout = profile == "guild-operator"
+                ? GuildOperatorNativeTimeoutExpression
+                : "90";
+
+            Assert.Contains("timeout-minutes: " + expectedTimeout, focused.Body, StringComparison.Ordinal);
 
             Assert.Contains("inputs.execution-platform", focused.Body, StringComparison.Ordinal);
 
@@ -1793,6 +1799,18 @@ public sealed class ContinuousIntegrationWorkflowTests
                 // bound for every other job rather than widening the repository-wide allowance.
                 int maximum = Path.GetFileName(workflow) == "ci.yml"
                     && job.Id is "windows-suite" or "windows-arm64-suite" ? 360 : MaximumJobTimeoutMinutes;
+
+                // Accept only this reviewed conditional budget; all other jobs still require literals.
+                if (Path.GetFileName(workflow) == "ci.yml"
+                    && job.Id == "guild-operator"
+                    && declared == GuildOperatorNativeTimeoutExpression)
+                {
+                    Assert.InRange(90, 1, MaximumJobTimeoutMinutes);
+
+                    Assert.InRange(150, 1, MaximumJobTimeoutMinutes);
+
+                    continue;
+                }
 
                 if (declared is null
                     || !int.TryParse(declared, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int minutes)

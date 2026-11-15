@@ -2204,6 +2204,10 @@ internal sealed class CovenantErasureCoordinator(
                 }
             }
 
+            // Both pre-erasure aborts use the session selected by the completed open attempt.
+            // The outer reference stays available to exception cleanup.
+            GrimoireOfflineTransitionPhaseSession? openedPhases = phases;
+
             if (quiesced.IsFailure)
             {
                 return await AbortBeforeErasureOrRetainAuthenticatedAsync(
@@ -2212,7 +2216,7 @@ internal sealed class CovenantErasureCoordinator(
                     ownerId,
                     lease,
                     progress,
-                    phases,
+                    openedPhases,
                     closure,
                     stranded,
                     authenticatedEvidence is not null,
@@ -2249,7 +2253,7 @@ internal sealed class CovenantErasureCoordinator(
                         ownerId,
                         lease,
                         progress,
-                        phases,
+                        openedPhases,
                         closure,
                         stranded,
                         authenticatedEvidence is not null,
@@ -2557,6 +2561,29 @@ internal sealed class CovenantErasureCoordinator(
                     interrupted).ConfigureAwait(false);
         }
 
+        return await PublishVerifiedErasureAndCloseAsync(
+            operation,
+            state,
+            ownerId,
+            lease,
+            progress,
+            phases,
+            closure,
+            candidate,
+            authenticatedEvidence).ConfigureAwait(false);
+    }
+
+    private async Task<Result<CovenantErasureCompletion>> PublishVerifiedErasureAndCloseAsync(
+        LongRunningOperation operation,
+        CovenantErasureCheckpointState state,
+        string ownerId,
+        CovenantExclusiveLease lease,
+        CovenantErasureProgress progress,
+        GrimoireOfflineTransitionPhaseSession? phases,
+        CovenantGrimoireClosure? closure,
+        CovenantVerifiedCandidateState candidate,
+        GrimoireOfflineTransitionRecoveryEvidence? authenticatedEvidence)
+    {
         // The caller no longer owns cancellation after the immutable proof succeeds. Publication and
         // writer restart share one bounded lifecycle token after the in-memory phase check below;
         // the separately bounded disposition then decides whether admission reopens.

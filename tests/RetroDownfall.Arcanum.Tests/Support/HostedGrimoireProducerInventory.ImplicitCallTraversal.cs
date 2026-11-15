@@ -1261,7 +1261,7 @@ internal static partial class HostedGrimoireProducerInventory
             HashSet<TraversalStateIdentity> active,
             bool lifecycle,
             GrimoireWorkKind? workKind,
-            string? inheritedWork,
+            WorkAdmissionEvidence? inheritedWork,
             string? inheritedEffect,
             string? recoveryEffect)
         {
@@ -1323,7 +1323,7 @@ internal static partial class HostedGrimoireProducerInventory
             HashSet<TraversalStateIdentity> active,
             bool lifecycle,
             GrimoireWorkKind? workKind,
-            string? inheritedWork,
+            WorkAdmissionEvidence? inheritedWork,
             string? inheritedEffect,
             string? recoveryEffect)
         {
@@ -1331,7 +1331,7 @@ internal static partial class HostedGrimoireProducerInventory
             // traversed under no frontier at all.
             bool deferred = call.Kind == ImplicitCallKind.DeferredFormatHole;
 
-            string? work = deferred ? null : WorkAt(member, call.Anchor, operationId, workKind, inheritedWork, step.Position);
+            WorkAdmissionEvidence? work = deferred ? null : WorkAt(member, call.Anchor, operationId, workKind, inheritedWork, step.Position);
 
             string? effect = deferred ? null : EffectAt(member, call.Anchor, operationId, inheritedEffect, step.Position);
 
@@ -1362,7 +1362,7 @@ internal static partial class HostedGrimoireProducerInventory
             string site,
             HashSet<TraversalStateIdentity> active,
             bool lifecycle,
-            string? work,
+            WorkAdmissionEvidence? work,
             string? effect,
             string? recoveryEffect,
             IReadOnlyList<CallbackValue>? values = null)
@@ -1444,7 +1444,7 @@ internal static partial class HostedGrimoireProducerInventory
             HashSet<TraversalStateIdentity> active,
             bool lifecycle,
             GrimoireWorkKind? workKind,
-            string? inheritedWork,
+            WorkAdmissionEvidence? inheritedWork,
             string? inheritedEffect,
             string? recoveryEffect)
         {
@@ -1470,7 +1470,7 @@ internal static partial class HostedGrimoireProducerInventory
                 return TraversalEvidence.NoEvidence;
             }
 
-            string? work = WorkAt(member, declaration, operationId, workKind, inheritedWork, declaration.SpanStart);
+            WorkAdmissionEvidence? work = WorkAt(member, declaration, operationId, workKind, inheritedWork, declaration.SpanStart);
 
             string? effect = EffectAt(member, declaration, operationId, inheritedEffect, declaration.SpanStart);
 

@@ -290,8 +290,8 @@ internal static partial class HostedGrimoireProducerInventory
         // Token Identity. The exact System.Threading.CancellationToken carries no cleanup obligation, no ownership and no
         // authority. Copying one hands on a reference to a source that only the source itself can dispose, so a token is
         // never what a cleanup resolves against, a lambda that captures one needs no more than the lambda already has, and
-        // where a token came from decides nothing the traversal reads. A parameter of this type is therefore never bound to its
-        // source, which would split the states of every helper that forwards a token by every call chain that supplied it.
+        // supplier provenance is not retained. The separately demanded positive noncancelability fact records no source.
+        // A parameter of this type is never bound to its source, which would split every forwarding helper by supplier chain.
         // A source (CancellationTokenSource) and a registration (CancellationTokenRegistration) are disposable, are different
         // types and keep their provenance.
         private static bool IsExactCancellationToken(ITypeSymbol? type) =>

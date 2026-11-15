@@ -1848,9 +1848,49 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         HostedProducerSite openRead = Assert.Single(observed, static site =>
             site.Callee == "RetroDownfall.Arcanum.Core.Storage.ISessionAttachmentStore.OpenReadAsync");
 
-        Assert.NotNull(openRead.WorkFrontierCapsuleId);
+        const string indexingWorkId = "C36D4CE6B86A9415E3D8A7A8F2928CD5000E791CE289E56423A12C6D1C0AFA5D";
 
-        // Guild access retains both physical reads inside the exact ReadBytesAsync callback.
+        const string guildWorkId = "0CD36752D26E948D73BFE8340D1BFE2BD071AA8635ACB13CBF8100EF63547C3B";
+
+        const string acquireWork = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease";
+
+        HostedProducerSite indexingWork = Assert.Single(observed, static site => site.Callee == acquireWork
+            && site.EnclosingType == "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService"
+            && site.Member == "ProcessOneAsync");
+
+        HostedProducerSite guildWork = Assert.Single(observed, static site => site.Callee == acquireWork
+            && site.EnclosingType == "RetroDownfall.Arcanum.Infrastructure.Guild.SignetAuthority"
+            && site.Member == "WithInstallationAsync");
+
+        Assert.Equal(indexingWorkId, indexingWork.CapsuleId);
+
+        Assert.Equal(GrimoireWorkKind.SessionAttachmentIndexing, indexingWork.AdmittedWorkKind);
+
+        Assert.Equal(guildWorkId, guildWork.CapsuleId);
+
+        Assert.Equal(GrimoireWorkKind.GuildStorage, guildWork.AdmittedWorkKind);
+
+        Assert.All(new[] { indexingWork, guildWork }, static site =>
+        {
+            Assert.Equal("RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.ExecuteAsync", site.AuthorityOperationId);
+
+            Assert.Equal(HostedProducerSiteKind.EffectFrontier, site.Kind);
+
+            Assert.Equal(site.CapsuleId, site.WorkFrontierCapsuleId);
+
+            Assert.Equal(indexingWorkId, site.RegisteredRootWorkFrontierCapsuleId);
+
+            Assert.Null(site.EffectFrontierCapsuleId);
+        });
+
+        Assert.Equal(indexingWorkId, openRead.WorkFrontierCapsuleId);
+
+        Assert.Equal(indexingWorkId, openRead.RegisteredRootWorkFrontierCapsuleId);
+
+        Assert.Null(openRead.EffectFrontierCapsuleId);
+
+        // Direct/active access and newly admitted Guild access retain distinct physical
+        // Work origins for both reads, under the same registered indexing root.
         const string readIdentity = "M:RetroDownfall.Arcanum.Infrastructure.Data.SessionAttachmentStore.ReadBytesAsync(RetroDownfall.Arcanum.Core.Storage.SessionAttachmentRecord,System.Threading.CancellationToken)/lambda#0~F15223B19FBDCF918147F9EBACCAB1538E12741F5C199DCAFCA58C641FBB15EE";
 
         HostedProducerSite[] reads = [.. observed.Where(static site =>
@@ -1858,17 +1898,25 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             && site.MemberIdentity == readIdentity
             && site.Callee == "System.IO.Stream.ReadAsync")];
 
-        Assert.Equal(2, reads.Length);
+        (string Fingerprint, string? Work)[] expectedReads =
+        [
+            ("06F61F341416DD8A46029CA4320529598D131BD2597E18179CB4AC0C9F77C2E7", guildWorkId),
+            ("06F61F341416DD8A46029CA4320529598D131BD2597E18179CB4AC0C9F77C2E7", indexingWorkId),
+            ("5AC3AE8C8F51684422B9FD1CCEB2255667FE7988E26A400870C98090F8A253DE", guildWorkId),
+            ("5AC3AE8C8F51684422B9FD1CCEB2255667FE7988E26A400870C98090F8A253DE", indexingWorkId),
+        ];
 
-        Assert.Equal<string>(
-            ["06F61F341416DD8A46029CA4320529598D131BD2597E18179CB4AC0C9F77C2E7", "5AC3AE8C8F51684422B9FD1CCEB2255667FE7988E26A400870C98090F8A253DE"],
-            reads.Select(static site => site.SyntaxFingerprint).Order(StringComparer.Ordinal));
+        Assert.Equal(expectedReads, reads.Select(static site => (Fingerprint: site.SyntaxFingerprint, Work: site.WorkFrontierCapsuleId))
+            .OrderBy(static read => read.Fingerprint, StringComparer.Ordinal)
+            .ThenBy(static read => read.Work, StringComparer.Ordinal));
 
-        Assert.All(reads, site =>
+        Assert.All(reads, static site =>
         {
             Assert.Equal(HostedProducerSiteKind.FileSystemRead, site.Kind);
 
-            Assert.Equal(openRead.WorkFrontierCapsuleId, site.WorkFrontierCapsuleId);
+            Assert.Equal("RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.ExecuteAsync", site.AuthorityOperationId);
+
+            Assert.Equal(indexingWorkId, site.RegisteredRootWorkFrontierCapsuleId);
 
             Assert.Null(site.EffectFrontierCapsuleId);
         });

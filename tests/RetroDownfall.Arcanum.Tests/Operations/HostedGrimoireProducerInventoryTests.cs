@@ -26121,6 +26121,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
     [Theory]
     [InlineData("absent", false, true, false)]
+    [InlineData("factory-omitted", false, true, false)]
+    [InlineData("factory-unrelated-omitted", true, false, false)]
     [InlineData("registered", false, false, true)]
     [InlineData("unknown-factory", true, false, false)]
     [InlineData("descriptor-type-local", true, false, false)]
@@ -26153,11 +26155,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             _ => string.Empty,
         };
 
-        string ownerRegistration = sourceKind == "explicit-owner-argument"
+        string ownerRegistration = sourceKind is "explicit-owner-argument" or "factory-unrelated-omitted"
             ? "services.AddSingleton(static _ => new Worker(UnknownCapacity.Value)); "
                 + "services.AddHostedService<Worker>(static sp => sp.GetRequiredService<Worker>());"
-            : "services.AddSingleton<Worker>(); "
-                + "services.AddHostedService<Worker>(static sp => sp.GetRequiredService<Worker>());";
+            : sourceKind == "factory-omitted"
+                ? "services.AddSingleton(static _ => new Worker()); services.AddHostedService<Worker>(static sp => sp.GetRequiredService<Worker>());"
+                : "services.AddSingleton<Worker>(); "
+                    + "services.AddHostedService<Worker>(static sp => sp.GetRequiredService<Worker>());";
 
         string acquisition = sourceKind == "forwarding-conversion"
             ? "if (!_capacity.TryAcquire(out System.IDisposable? capacityLease)) "
@@ -26249,7 +26253,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 StringComparison.Ordinal)
             .Replace(
                 "public class Worker : IHostedService",
-                "internal sealed class Worker(ICapacity? capacity = null) : IHostedService",
+                sourceKind == "factory-unrelated-omitted"
+                    ? "internal sealed class Worker(ICapacity? capacity = null, object? unrelated = null) : IHostedService"
+                    : "internal sealed class Worker(ICapacity? capacity = null) : IHostedService",
                 StringComparison.Ordinal)
             .Replace(
                 "public async Task StartAsync",

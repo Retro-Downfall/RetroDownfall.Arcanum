@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Guild;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Conclave;
 using RetroDownfall.Arcanum.Core.Serialization;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Guild;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -379,6 +380,8 @@ internal static class GuildAotSmoke
 
         ExerciseLiteralsAndBoundaries();
 
+        ExerciseSpendReconciliation();
+
         ExerciseWorkspaceLeaseInfrastructure();
 
         ExerciseWorkspaceLeaseKernelAsync().GetAwaiter().GetResult();
@@ -416,6 +419,356 @@ internal static class GuildAotSmoke
         Console.WriteLine("Guild Native AOT graph smoke passed.");
 
         return 0;
+    }
+
+    private static void ExerciseSpendReconciliation()
+    {
+        Guid questId = Id;
+
+        Guid effectId = Guid.Parse("b2222222-2222-4222-8222-222222222222");
+
+        Guid receiptId = Guid.Parse("c3333333-3333-4333-8333-333333333333");
+
+        Guid requestId = Guid.Parse("d4444444-4444-4444-8444-444444444444");
+
+        Guid operationId = Guid.Parse("e5555555-5555-4555-8555-555555555555");
+
+        Guid sourceId = Guid.Parse("f6666666-6666-4666-8666-666666666666");
+
+        Guid dispatchId = Guid.Parse("a7777777-7777-4777-8777-777777777777");
+
+        Guid runId = Guid.Parse("b8888888-8888-4888-8888-888888888888");
+
+        Guid remoteQuestId = Guid.Parse("c9999999-9999-4999-8999-999999999999");
+
+        Guid providerReceiptId = Guid.Parse("d0000000-0000-4000-8000-000000000001");
+
+        Guid remoteReceiptId = Guid.Parse("e0000000-0000-4000-8000-000000000002");
+
+        Guid refreshId = Guid.Parse("f0000000-0000-4000-8000-000000000003");
+
+        const decimal usd = 0.1234567890123456789012345678m;
+
+        const long inputTokens = long.MaxValue - 100;
+
+        const long outputTokens = 100;
+
+        const long cachedTokens = 25;
+
+        const long reasoningTokens = 7;
+
+        string digest = new('A', 64);
+
+        DateTimeOffset acceptedAt = Instant.AddTicks(1234567);
+
+        GuildSpendAmountsRequest amounts = new(inputTokens, outputTokens, cachedTokens, reasoningTokens, usd);
+
+        Exercise(amounts, GuildJsonContext.Default.GuildSpendAmountsRequest);
+
+        Require(RoundTrip(amounts, GuildJsonContext.Default.GuildSpendAmountsRequest) == amounts,
+            "Spend request dimensions and exact USD must survive generated native serialization.");
+
+        GuildSpendFacts facts = new(inputTokens, outputTokens, cachedTokens, reasoningTokens, usd, true, true, false);
+
+        Exercise(facts, GuildJsonContext.Default.GuildSpendFacts);
+
+        Require(RoundTrip(facts, GuildJsonContext.Default.GuildSpendFacts) == facts
+            && checked(facts.InputTokens + facts.OutputTokens) == long.MaxValue,
+            "Spend facts must retain valid Int64 totals and uncertainty without numeric narrowing.");
+
+        GuildSpendCorrectionRequest correction = new(requestId, 17, GuildSpendOrigin.OperatorAttested, amounts, digest);
+
+        Exercise(correction, GuildJsonContext.Default.GuildSpendCorrectionRequest);
+
+        Require(RoundTrip(correction, GuildJsonContext.Default.GuildSpendCorrectionRequest) == correction,
+            "Correction identity, revision, attestation origin, facts and digest must remain distinct.");
+
+        GuildSpendLocalTokensDto localTokens = new(inputTokens, outputTokens, cachedTokens, reasoningTokens);
+
+        Exercise(localTokens, GuildJsonContext.Default.GuildSpendLocalTokensDto);
+
+        Require(RoundTrip(localTokens, GuildJsonContext.Default.GuildSpendLocalTokensDto) == localTokens,
+            "Local spend token dimensions must not be reordered or dropped.");
+
+        GuildSpendEvidenceFactsDto localFacts = new(usd, long.MaxValue, true, true, false, localTokens);
+
+        Exercise(localFacts, GuildJsonContext.Default.GuildSpendEvidenceFactsDto);
+
+        Require(RoundTrip(localFacts, GuildJsonContext.Default.GuildSpendEvidenceFactsDto) == localFacts,
+            "Known local totals must retain both uncertainty flags and their exact token split.");
+
+        GuildSpendEvidenceFactsDto remoteFacts = localFacts with { LocalTokens = null };
+
+        Exercise(remoteFacts, GuildJsonContext.Default.GuildSpendEvidenceFactsDto);
+
+        Require(RoundTrip(remoteFacts, GuildJsonContext.Default.GuildSpendEvidenceFactsDto) == remoteFacts,
+            "Remote cumulative spend must preserve an absent local token split.");
+
+        GuildSpendReceiptDto receipt = new(receiptId, questId, effectId, GuildSpendOrigin.OperatorAttested,
+            digest, localFacts, 17, 19, acceptedAt);
+
+        Exercise(receipt, GuildJsonContext.Default.GuildSpendReceiptDto);
+
+        Require(RoundTrip(receipt, GuildJsonContext.Default.GuildSpendReceiptDto) == receipt,
+            "Receipt identity, physical source, evidence revision, event sequence and exact timestamp must survive.");
+
+        GuildSpendCorrectionResultDto corrected = new(receipt, false);
+
+        Exercise(corrected, GuildJsonContext.Default.GuildSpendCorrectionResultDto);
+
+        Require(RoundTrip(corrected, GuildJsonContext.Default.GuildSpendCorrectionResultDto) == corrected,
+            "A newly accepted correction must retain its immutable receipt and replay disposition.");
+
+        GuildSpendCorrectionResultDto replayed = corrected with { Replayed = true };
+
+        Exercise(replayed, GuildJsonContext.Default.GuildSpendCorrectionResultDto);
+
+        Require(RoundTrip(replayed, GuildJsonContext.Default.GuildSpendCorrectionResultDto) == replayed,
+            "A replayed correction must remain distinguishable from a new acceptance.");
+
+        GuildSpendReceiptDto providerReceipt = receipt with
+        {
+            ReceiptId = providerReceiptId, Origin = GuildSpendOrigin.ProviderReported,
+            EvidenceRevision = 18, EventSequence = 21,
+        };
+
+        Exercise(providerReceipt, GuildJsonContext.Default.GuildSpendReceiptDto);
+
+        Require(RoundTrip(providerReceipt, GuildJsonContext.Default.GuildSpendReceiptDto) == providerReceipt,
+            "Provider-reported receipts must preserve provenance separately from Operator attestations.");
+
+        GuildSpendRefreshRequest refresh = new(refreshId);
+
+        Exercise(refresh, GuildJsonContext.Default.GuildSpendRefreshRequest);
+
+        Require(RoundTrip(refresh, GuildJsonContext.Default.GuildSpendRefreshRequest) == refresh,
+            "Refresh idempotency identity must survive generated native serialization.");
+
+        GuildSpendRefreshResultDto[] refreshOutcomes =
+        [
+            new(operationId, providerReceipt, false, false, false, null, false),
+            new(operationId, providerReceipt, true, false, false, null, false),
+            new(operationId, null, false, true, false, null, false),
+            new(operationId, null, false, false, true, "Guild.ReconciliationRequired", false),
+            new(operationId, null, false, false, false, "Guild.RefreshCancelled", true),
+        ];
+
+        foreach (GuildSpendRefreshResultDto outcome in refreshOutcomes)
+        {
+            Exercise(outcome, GuildJsonContext.Default.GuildSpendRefreshResultDto);
+
+            Require(RoundTrip(outcome, GuildJsonContext.Default.GuildSpendRefreshResultDto) == outcome,
+                "Refresh acceptance, replay, in-flight, attention and terminal cancellation must retain every field.");
+        }
+
+        GuildSpendSourceDto source = new(effectId, receiptId, 17, GuildSpendOrigin.OperatorAttested);
+
+        Exercise(source, GuildJsonContext.Default.GuildSpendSourceDto);
+
+        Require(RoundTrip(source, GuildJsonContext.Default.GuildSpendSourceDto) == source,
+            "Physical spend source identity must retain its effect, receipt, revision and origin tuple.");
+
+        GuildSpendEffectDto effect = new(questId, effectId, GuildSpendEffectKind.LocalProvider, localFacts,
+            17, receiptId, null, "sourceUnavailable");
+
+        Exercise(effect, GuildJsonContext.Default.GuildSpendEffectDto);
+
+        Require(RoundTrip(effect, GuildJsonContext.Default.GuildSpendEffectDto) == effect,
+            "A physical spend effect must retain facts, last receipt and independent eligibility reasons.");
+
+        GuildSpendEffectDto remoteEffect = effect with
+        {
+            QuestId = remoteQuestId, EffectId = remoteQuestId, Kind = GuildSpendEffectKind.Remote, Facts = remoteFacts,
+            EvidenceRevision = 19, LastReceiptId = remoteReceiptId, OperatorIneligibility = "remoteEffect",
+            ProviderIneligibility = "remoteEffect",
+        };
+
+        Exercise(remoteEffect, GuildJsonContext.Default.GuildSpendEffectDto);
+
+        Require(RoundTrip(remoteEffect, GuildJsonContext.Default.GuildSpendEffectDto) == remoteEffect,
+            "Remote physical effects must preserve their kind and lack of local token dimensions.");
+
+        GuildSpendEffectPageDto effects = new([effect], "native-effect-cursor", 23);
+
+        Exercise(effects, GuildJsonContext.Default.GuildSpendEffectPageDto);
+
+        GuildSpendEffectPageDto restoredEffects = RoundTrip(effects, GuildJsonContext.Default.GuildSpendEffectPageDto);
+
+        Require(restoredEffects.Items.Length == 1 && restoredEffects.Items.SequenceEqual(effects.Items)
+            && restoredEffects.NextCursor == effects.NextCursor && restoredEffects.SnapshotSequence == effects.SnapshotSequence
+            && restoredEffects.StateConsistency == effects.StateConsistency,
+            "Effect pages must retain nonempty ordered contents, continuation and snapshot semantics.");
+
+        GuildSpendReceiptDto remoteReceipt = receipt with
+        {
+            ReceiptId = remoteReceiptId, QuestId = remoteQuestId, EffectId = remoteQuestId, Origin = GuildSpendOrigin.RemoteReport,
+            EvidenceDigest = null, Facts = remoteFacts, EvidenceRevision = 19, EventSequence = 23,
+        };
+
+        Exercise(remoteReceipt, GuildJsonContext.Default.GuildSpendReceiptDto);
+
+        Require(RoundTrip(remoteReceipt, GuildJsonContext.Default.GuildSpendReceiptDto) == remoteReceipt,
+            "Remote receipts must retain their Quest-bound effect, absent digest and cumulative facts without local token dimensions.");
+
+        GuildSpendReceiptPageDto receipts = new([receipt, providerReceipt], "native-receipt-cursor", 23);
+
+        Exercise(receipts, GuildJsonContext.Default.GuildSpendReceiptPageDto);
+
+        GuildSpendReceiptPageDto restoredReceipts = RoundTrip(receipts, GuildJsonContext.Default.GuildSpendReceiptPageDto);
+
+        Require(restoredReceipts.Items.Length == 2 && restoredReceipts.Items.SequenceEqual(receipts.Items)
+            && restoredReceipts.NextCursor == receipts.NextCursor && restoredReceipts.SnapshotSequence == receipts.SnapshotSequence
+            && restoredReceipts.StateConsistency == receipts.StateConsistency,
+            "Receipt pages must retain original ordered receipts and their independent continuation state.");
+
+        foreach (decimal exact in new[] { 0.0000000000000000000000000001m, decimal.MaxValue })
+        {
+            GuildSpendAmountsRequest boundary = amounts with { Usd = exact };
+
+            Exercise(boundary, GuildJsonContext.Default.GuildSpendAmountsRequest);
+
+            Require(RoundTrip(boundary, GuildJsonContext.Default.GuildSpendAmountsRequest) == boundary,
+                "Spend USD must retain the smallest positive decimal and decimal.MaxValue exactly.");
+        }
+
+        foreach (string number in new[] { "1e-29", "79228162514264337593543950336", "0.12345678901234567890123456789" })
+            RejectJson("{\"usd\":" + number + "}", GuildJsonContext.Default.GuildSpendAmountsRequest);
+
+        GuildSpendAmountsRequest omitted = JsonSerializer.Deserialize("{}", GuildJsonContext.Default.GuildSpendAmountsRequest)!;
+
+        GuildSpendAmountsRequest explicitNull = JsonSerializer.Deserialize(
+            "{\"inputTokens\":null,\"outputTokens\":null,\"cachedTokens\":null,\"reasoningTokens\":null,\"usd\":null}",
+            GuildJsonContext.Default.GuildSpendAmountsRequest)!;
+
+        Require(omitted.InputTokens is null && omitted.OutputTokens is null && omitted.CachedTokens is null
+            && omitted.ReasoningTokens is null && omitted.Usd is null && explicitNull == omitted,
+            "Missing nullable amounts must remain missing; wire decoding must not invent complete measurements.");
+
+        (GuildSpendOrigin Origin, string Wire)[] origins =
+        [
+            (GuildSpendOrigin.LocalResponse, "localResponse"),
+            (GuildSpendOrigin.RemoteReport, "remoteReport"),
+            (GuildSpendOrigin.OperatorAttested, "operatorAttested"),
+            (GuildSpendOrigin.ProviderReported, "providerReported"),
+        ];
+
+        foreach ((GuildSpendOrigin origin, string wire) in origins)
+        {
+            Exercise(origin, GuildJsonContext.Default.GuildSpendOrigin);
+
+            Require(JsonSerializer.Serialize(origin, GuildJsonContext.Default.GuildSpendOrigin) == $"\"{wire}\""
+                && RoundTrip(origin, GuildJsonContext.Default.GuildSpendOrigin) == origin,
+                "Spend provenance must retain its exact closed wire literal.");
+        }
+
+        RejectJson("2", GuildJsonContext.Default.GuildSpendOrigin);
+
+        RejectJson("\"future-origin\"", GuildJsonContext.Default.GuildSpendOrigin);
+
+        RejectJson("{\"origin\":2}", GuildJsonContext.Default.GuildSpendCorrectionRequest);
+
+        RejectJson("{\"origin\":\"future-origin\"}", GuildJsonContext.Default.GuildSpendCorrectionRequest);
+
+        (GuildSpendEffectKind Kind, string Wire)[] kinds =
+        [
+            (GuildSpendEffectKind.LocalProvider, "localProvider"),
+            (GuildSpendEffectKind.Remote, "remote"),
+        ];
+
+        foreach ((GuildSpendEffectKind kind, string wire) in kinds)
+        {
+            Exercise(kind, GuildJsonContext.Default.GuildSpendEffectKind);
+
+            Require(JsonSerializer.Serialize(kind, GuildJsonContext.Default.GuildSpendEffectKind) == $"\"{wire}\""
+                && RoundTrip(kind, GuildJsonContext.Default.GuildSpendEffectKind) == kind,
+                "Physical effect kind must retain its exact closed wire literal.");
+        }
+
+        RejectJson("0", GuildJsonContext.Default.GuildSpendEffectKind);
+
+        RejectJson("\"future-effect\"", GuildJsonContext.Default.GuildSpendEffectKind);
+
+        (GuildSpendSourceDto Source, long Sequence, Guid QuestId, Guid ObjectId, long Revision)[] spendEvents =
+        [
+            (new(effectId, sourceId, 1, GuildSpendOrigin.LocalResponse), 13, questId, questId, 73),
+            (source, receipt.EventSequence, questId, questId, 74),
+            (new(effectId, providerReceiptId, 18, GuildSpendOrigin.ProviderReported), providerReceipt.EventSequence, questId, questId, 75),
+            (new(remoteQuestId, remoteReceiptId, 19, GuildSpendOrigin.RemoteReport), remoteReceipt.EventSequence,
+                remoteQuestId, remoteReceiptId, remoteReceipt.EvidenceRevision),
+        ];
+
+        foreach ((GuildSpendSourceDto eventSource, long sequence, Guid eventQuestId, Guid objectId, long revision) in spendEvents)
+        {
+            GuildChangeEventDto changed = new(sequence, GuildEventKind.SpendChanged, objectId, revision, [], eventQuestId, eventSource);
+
+            Exercise(changed, GuildJsonContext.Default.GuildChangeEventDto);
+
+            GuildChangeEventDto restored = RoundTrip(changed, GuildJsonContext.Default.GuildChangeEventDto);
+
+            Require(restored.EventKind == GuildEventKind.SpendChanged && restored.EventSequence == sequence
+                && restored.ObjectId == objectId && restored.QuestId == eventQuestId && restored.Revision == revision
+                && restored.ContentRefs.IsEmpty && restored.SpendSource == eventSource,
+                "SpendChanged must preserve each origin's ObjectId/revision convention, Quest identity and physical source tuple without content.");
+        }
+
+        GuildChangeEventDto legacy = new(29, GuildEventKind.SpendChanged, questId, 91, [], questId);
+
+        Exercise(legacy, GuildJsonContext.Default.GuildChangeEventDto);
+
+        GuildChangeEventDto restoredLegacy = RoundTrip(legacy, GuildJsonContext.Default.GuildChangeEventDto);
+
+        Require(restoredLegacy.SpendSource is null && restoredLegacy.ObjectId == questId && restoredLegacy.Revision == 91
+            && restoredLegacy.QuestId == questId && restoredLegacy.EventKind == GuildEventKind.SpendChanged
+            && restoredLegacy.EventSequence == 29 && restoredLegacy.ContentRefs.IsEmpty,
+            "Legacy spend invalidations must not acquire a fabricated physical source.");
+
+        GuildInitialBillSnapshot snapshot = new(effectId, questId, dispatchId, sourceId, runId,
+            BillableOperationType.Chat, "openrouter", "sample/model", "guild", Instant, acceptedAt,
+            inputTokens, outputTokens, reasoningTokens, cachedTokens, "{\"source\":\"native-smoke\"}",
+            "0.1234567890123456789012345678", BillableOperationStatus.Completed, "gen-native-smoke");
+
+        byte[] snapshotBytes = JsonSerializer.SerializeToUtf8Bytes(snapshot, GuildSpendStorageJsonContext.Default.GuildInitialBillSnapshot);
+
+        GuildInitialBillSnapshot restoredSnapshot = RoundTrip(snapshot, GuildSpendStorageJsonContext.Default.GuildInitialBillSnapshot);
+
+        Require(restoredSnapshot == snapshot && snapshotBytes.AsSpan().SequenceEqual(
+            JsonSerializer.SerializeToUtf8Bytes(restoredSnapshot, GuildSpendStorageJsonContext.Default.GuildInitialBillSnapshot)),
+            "The original physical bill snapshot must preserve every identity, token dimension, exact cost spelling and canonical byte.");
+
+        GuildBudgetEffect savedEffect = new(new(effectId, questId, dispatchId, runId, GuildBudgetEffectKind.LocalProvider,
+            sourceId, Guid.Parse("a0000000-0000-4000-8000-000000000004"), decimal.MaxValue, long.MaxValue),
+            usd, long.MaxValue, true, true, GuildBudgetEffectState.Complete, 1);
+
+        byte[] effectBytes = JsonSerializer.SerializeToUtf8Bytes(savedEffect, GuildSpendStorageJsonContext.Default.GuildBudgetEffect);
+
+        GuildBudgetEffect restoredSavedEffect = RoundTrip(savedEffect, GuildSpendStorageJsonContext.Default.GuildBudgetEffect);
+
+        Require(restoredSavedEffect == savedEffect && effectBytes.AsSpan().SequenceEqual(
+            JsonSerializer.SerializeToUtf8Bytes(restoredSavedEffect, GuildSpendStorageJsonContext.Default.GuildBudgetEffect)),
+            "The saved physical effect must retain its original request, reservation, totals, uncertainty and canonical bytes.");
+
+        byte[] receiptBytes = JsonSerializer.SerializeToUtf8Bytes(receipt, GuildSpendStorageJsonContext.Default.GuildSpendReceiptDto);
+
+        GuildSpendReceiptDto restoredStoredReceipt = RoundTrip(receipt, GuildSpendStorageJsonContext.Default.GuildSpendReceiptDto);
+
+        Require(restoredStoredReceipt == receipt && receiptBytes.AsSpan().SequenceEqual(
+            JsonSerializer.SerializeToUtf8Bytes(restoredStoredReceipt, GuildSpendStorageJsonContext.Default.GuildSpendReceiptDto)),
+            "An immutable correction receipt must retain its originally accepted result and canonical stored bytes.");
+
+        GuildSpendRefreshCheckpoint checkpoint = new(1, refreshId, questId,
+            Guid.Parse("b0000000-0000-4000-8000-000000000005"), effectId, sourceId, operationId,
+            Guid.Parse("c0000000-0000-4000-8000-000000000006"), Guid.Parse("d0000000-0000-4000-8000-000000000007"),
+            Guid.Parse("e0000000-0000-4000-8000-000000000008"), Guid.Parse("f0000000-0000-4000-8000-000000000009"),
+            Guid.Parse("a0000000-0000-4000-8000-000000000010"), "admitted");
+
+        byte[] checkpointBytes = JsonSerializer.SerializeToUtf8Bytes(checkpoint, GuildSpendRefreshCheckpointJsonContext.Default.GuildSpendRefreshCheckpoint);
+
+        GuildSpendRefreshCheckpoint restoredCheckpoint = RoundTrip(checkpoint, GuildSpendRefreshCheckpointJsonContext.Default.GuildSpendRefreshCheckpoint);
+
+        Require(restoredCheckpoint == checkpoint && restoredCheckpoint.Version == 1 && restoredCheckpoint.Phase == "admitted"
+            && checkpointBytes.Length <= 2048 && checkpointBytes.AsSpan().SequenceEqual(
+                JsonSerializer.SerializeToUtf8Bytes(restoredCheckpoint, GuildSpendRefreshCheckpointJsonContext.Default.GuildSpendRefreshCheckpoint)),
+            "The version-1 refresh checkpoint must retain every data identity, admitted phase and canonical recovery bytes.");
     }
 
     private static async Task ExerciseWorkspaceLeaseKernelAsync()
@@ -571,7 +924,7 @@ internal static class GuildAotSmoke
         RoundTrip(ImmutableArray.Create(value), (JsonTypeInfo<ImmutableArray<T>>)GuildJsonContext.Default.GetTypeInfo(typeof(ImmutableArray<T>))!);
     }
 
-    private static void RoundTrip<T>(T value, JsonTypeInfo<T> metadata)
+    private static T RoundTrip<T>(T value, JsonTypeInfo<T> metadata)
     {
         string json = JsonSerializer.Serialize(value, metadata);
 
@@ -583,6 +936,8 @@ internal static class GuildAotSmoke
         }
 
         Require(json == JsonSerializer.Serialize(restored, metadata), "A generated Guild graph failed to round-trip.");
+
+        return restored;
     }
 
     private static void ExerciseLiteralsAndBoundaries()
@@ -653,7 +1008,7 @@ internal static class GuildAotSmoke
             return;
         }
 
-        throw new InvalidOperationException("A closed Guild enum accepted an unsupported literal.");
+        throw new InvalidOperationException("A generated Guild contract accepted an unsupported JSON value.");
     }
 
     private static void Require(bool condition, string message)

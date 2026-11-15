@@ -60,8 +60,6 @@ internal static partial class HostedGrimoireProducerInventory
 
         Collection("System.Collections.Generic.Stack`1", typeof(Stack<>));
 
-        Collection("System.Collections.Concurrent.ConcurrentDictionary`2", typeof(ConcurrentDictionary<,>), enumerator: false);
-
         Collection("System.Collections.Concurrent.ConcurrentQueue`1", typeof(ConcurrentQueue<>), enumerator: false);
 
         Collection("System.Collections.Immutable.ImmutableArray`1", typeof(ImmutableArray<>));
@@ -101,6 +99,9 @@ internal static partial class HostedGrimoireProducerInventory
     {
         Dictionary<string, AssemblyName> anchors = new(ClosedEnumerationAnchors, StringComparer.Ordinal);
 
+        // A subclass can reimplement IEnumerable even though the public enumerator is nonvirtual.
+        anchors["System.Collections.Concurrent.ConcurrentDictionary`2"] = typeof(ConcurrentDictionary<,>).Assembly.GetName();
+
         anchors["System.Collections.Generic.SortedSet`1"] = typeof(SortedSet<>).Assembly.GetName();
 
         anchors["System.Collections.Generic.SortedSet`1.Enumerator"] = typeof(SortedSet<>).Assembly.GetName();
@@ -119,12 +120,14 @@ internal static partial class HostedGrimoireProducerInventory
     // The framework runtime types the implementer-only members above are trusted for. A member declared by an
     // unsealed framework type (GenericAcl, ReadOnlyCollectionBase, SortedSet<T>) calls abstract or virtual
     // members of its subclass, so it is safe to run only when the value is exactly one of these types: an
-    // authored subclass that overrides those members is not, whatever the declaring type is.
+    // authored subclass that overrides those members is not, whatever the declaring type is. ConcurrentDictionary
+    // also requires an exact runtime origin because a subclass can reimplement its enumeration interfaces.
     private static readonly IReadOnlyDictionary<string, AssemblyName> ExactEnumerationRuntimeAnchors = BuildExactEnumerationRuntimeAnchors();
 
     private static IReadOnlyDictionary<string, AssemblyName> BuildExactEnumerationRuntimeAnchors() =>
         new Dictionary<string, AssemblyName>(StringComparer.Ordinal)
         {
+            ["System.Collections.Concurrent.ConcurrentDictionary`2"] = typeof(ConcurrentDictionary<,>).Assembly.GetName(),
             ["System.Collections.Generic.SortedSet`1"] = typeof(SortedSet<>).Assembly.GetName(),
             ["System.Collections.Generic.SortedSet`1.Enumerator"] = typeof(SortedSet<>).Assembly.GetName(),
             ["System.Collections.Immutable.ImmutableArray`1.Builder"] = typeof(System.Collections.Immutable.ImmutableArray<>).Assembly.GetName(),
@@ -1539,7 +1542,7 @@ internal static partial class HostedGrimoireProducerInventory
             HashSet<TraversalStateIdentity> active,
             bool lifecycle,
             GrimoireWorkKind? workKind,
-            string? inheritedWork,
+            WorkAdmissionEvidence? inheritedWork,
             string? inheritedEffect,
             string? recoveryEffect)
         {
@@ -1559,7 +1562,7 @@ internal static partial class HostedGrimoireProducerInventory
 
                 int[] positions = [queryEntry, queryBackEdge, queryExit];
 
-                string? queryWork = CommonFrontier(positions.Select(position => WorkAt(member, node, operationId, workKind, inheritedWork, position)));
+                WorkAdmissionEvidence? queryWork = CommonWorkFrontier(positions.Select(position => WorkAt(member, node, operationId, workKind, inheritedWork, position)));
 
                 string? queryEffect = CommonFrontier(positions.Select(position => EffectAt(member, node, operationId, inheritedEffect, position)));
 
@@ -1610,19 +1613,19 @@ internal static partial class HostedGrimoireProducerInventory
 
             int exit = node is CommonForEachStatementSyntax whole ? Math.Max(backEdge, whole.Span.End) : entry;
 
-            (string? Work, string? Effect) FrontierAt(int position) =>
+            (WorkAdmissionEvidence? Work, string? Effect) FrontierAt(int position) =>
                 (WorkAt(member, node, operationId, workKind, inheritedWork, position),
                     EffectAt(member, node, operationId, inheritedEffect, position));
 
             // A frontier survives a span only if the same one is live at both of its ends, because disposal is
             // monotone in position: whatever ended before the later end has ended for everything between.
-            (string? Work, string? Effect) Across(params int[] positions)
+            (WorkAdmissionEvidence? Work, string? Effect) Across(params int[] positions)
             {
-                (string? Work, string? Effect) first = FrontierAt(positions[0]);
+                (WorkAdmissionEvidence? Work, string? Effect) first = FrontierAt(positions[0]);
 
                 foreach (int position in positions.Skip(1))
                 {
-                    (string? Work, string? Effect) next = FrontierAt(position);
+                    (WorkAdmissionEvidence? Work, string? Effect) next = FrontierAt(position);
 
                     if (next.Work != first.Work)
                     {
@@ -1640,7 +1643,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             foreach (EnumerationTarget target in resolution.Targets)
             {
-                (string? work, string? effect) = target.Timing switch
+                (WorkAdmissionEvidence? work, string? effect) = target.Timing switch
                 {
                     EnumerationStepTiming.Entry => FrontierAt(entry),
                     EnumerationStepTiming.Iteration => Across(entry, backEdge),
@@ -1696,7 +1699,7 @@ internal static partial class HostedGrimoireProducerInventory
 
                 DeconstructionSteps(deconstruction, binding.ElementType, null, entry, deconstructions);
 
-                (string? work, string? effect) = Across(entry, backEdge);
+                (WorkAdmissionEvidence? work, string? effect) = Across(entry, backEdge);
 
                 foreach (ImplicitCallStep step in deconstructions)
                 {
@@ -1722,7 +1725,7 @@ internal static partial class HostedGrimoireProducerInventory
             // head and DisposeAsync at the exit. The awaiter members of each are calls the compiler makes where the loop awaits.
             if (binding.Asynchronous && binding.Bound)
             {
-                foreach ((ITypeSymbol? awaitable, string awaited, (string? Work, string? Effect) frontier) in new (ITypeSymbol?, string, (string?, string?))[]
+                foreach ((ITypeSymbol? awaitable, string awaited, (WorkAdmissionEvidence? Work, string? Effect) frontier) in new (ITypeSymbol?, string, (WorkAdmissionEvidence?, string?))[]
                 {
                     (binding.MoveNext?.ReturnType, "moveNext-await", Across(entry, backEdge)),
                     (binding.Dispose?.ReturnType, "dispose-await", Across(entry, exit)),
@@ -1765,7 +1768,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             foreach (IMethodSymbol conversion in binding.Conversions)
             {
-                (string? work, string? effect) = Across(entry, backEdge);
+                (WorkAdmissionEvidence? work, string? effect) = Across(entry, backEdge);
 
                 if (Resolve(conversion, member.Model.Compilation) is { } conversionTarget)
                 {

@@ -161,7 +161,7 @@ internal static partial class HostedGrimoireProducerInventory
             string operationId,
             HashSet<TraversalStateIdentity> active,
             bool lifecycle,
-            string? workAdmitted,
+            WorkAdmissionEvidence? workAdmitted,
             string? effectGroup,
             string? recoveryEffect)
         {

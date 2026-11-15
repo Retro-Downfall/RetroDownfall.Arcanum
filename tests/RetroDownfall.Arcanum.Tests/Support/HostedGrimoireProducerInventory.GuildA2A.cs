@@ -230,7 +230,7 @@ internal static partial class HostedGrimoireProducerInventory
         private static bool IsReviewedA2AHttpStorageProperty(IPropertySymbol property, bool mutation) =>
             property is { IsStatic: false, IsIndexer: false }
             && (mutation ? property.SetMethod : property.GetMethod) is { IsVirtual: false, IsAbstract: false }
-            && (!mutation && IsExactHttpResponseContent(property)
+            && (!mutation && (IsExactHttpResponseContent(property) || IsExactHttpResponseStatusProperty(property))
                 || !mutation && property.Name == "Headers"
                     && IsExactFrameworkType(property.ContainingType, "System.Net.Http.HttpContent", typeof(HttpContent).Assembly.GetName())
                 || property.Name == (mutation ? "MaxResponseContentBufferSize" : "DefaultRequestHeaders")
@@ -390,7 +390,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                 ISymbol? accessed = member.Model.GetSymbolInfo(access).Symbol;
 
-                if (accessed is IPropertySymbol property && IsExactHttpResponseContent(property)) continue;
+                if (accessed is IPropertySymbol property
+                    && (IsExactHttpResponseContent(property) || IsReadOnlyHttpResponseStatusUse(property, access))) continue;
 
                 if (accessed is IMethodSymbol method && IsExactFrameworkType(method.ContainingType,
                         "System.Net.Http.HttpResponseMessage", typeof(HttpResponseMessage).Assembly.GetName())

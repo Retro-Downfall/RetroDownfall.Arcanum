@@ -35,7 +35,7 @@ dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.
 ./scripts/verify-shipping-publish.sh --rid osx-arm64  # exact Native AOT apphost + in-process provider-contract smoke
 ./scripts/verify-native-sqlcipher.sh --rid osx-arm64   # native provenance, hashes, symbols, compile options
 ```
-Run everything from the repo root. The warning gates require ripgrep, the native provenance gate requires `jq`, and each fails closed naming a missing command — `brew install ripgrep jq` covers those gates; add `lld` only when using a pre-10.0.12 macOS SDK. Don't rely on `workspace_check` as a bootstrap verifier for untrusted repos — it executes repo-authored code and requires explicit feature enablement, trusted workspace bytes, and an eligible macOS containment/runtime chain. Its Ward record is informational.
+Run everything from the repo root. The runtime coordinator and coverage adapter require Python 3.11 or later. The warning gates require ripgrep, the native provenance gate requires `jq`, and each fails closed naming a missing command — `brew install ripgrep jq` covers those gates; add `lld` only when using a pre-10.0.12 macOS SDK. Don't rely on `workspace_check` as a bootstrap verifier for untrusted repos — it executes repo-authored code and requires explicit feature enablement, trusted workspace bytes, and an eligible macOS containment/runtime chain. Its Ward record is informational.
 
 ## Adding things — quick checklists
 - **New endpoint:** add to `MapArcanumEndpoints` → return `ApiResponse<T>` (or a documented streaming shape) → register the payload type on `ArcanumJsonContext` → `.WithName(...)` → explicit `JsonTypeInfo` on any failable `Results.Json` → update `Arcanum.DESIGN.md` §4.3 and `Arcanum.API.md` as applicable.
