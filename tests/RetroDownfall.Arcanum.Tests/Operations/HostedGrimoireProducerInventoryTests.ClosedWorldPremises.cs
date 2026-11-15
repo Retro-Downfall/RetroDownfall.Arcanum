@@ -2003,6 +2003,29 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Empty(offenders);
     }
 
+    private static void AssertAuthoredEnumerablesPremiseHolds(CSharpCompilation compilation)
+    {
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises(
+            [compilation], HostedProducerPremises.AuthoredEnumerablesAbsentByUse);
+
+        Assert.True(ledger.Holds(HostedProducerPremises.AuthoredEnumerablesAbsentByUse));
+
+        Assert.Empty(ledger.Violations);
+    }
+
+    private static void AssertAuthoredSqliteParametersViolateProviderClosure(CSharpCompilation compilation)
+    {
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises(
+            [compilation], HostedProducerPremises.DbProviderTypesClosedByUse);
+
+        Assert.False(ledger.Holds(HostedProducerPremises.DbProviderTypesClosedByUse));
+
+        Assert.Contains(ledger.Violations, static diagnostic => diagnostic.Code == "HOSTED_PREMISE_VIOLATED"
+            && diagnostic.Identity == "DbProviderTypesClosedByUse"
+            && diagnostic.Detail.Contains("AuthoredSqliteParameters", StringComparison.Ordinal)
+            && diagnostic.Detail.Contains("System.Data.Common.DbParameterCollection", StringComparison.Ordinal));
+    }
+
     // The two regimes a fixture of the EF lane is judged under: strict, which every fixture has, and the production regime
     // (the closed-world facts the shipped tree is judged under). The fixtures of the lane name the regime with a flag; this
     // is the one place that turns the flag into a request for the facts. A fixture that also counts the states the walk admits

@@ -115,14 +115,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         if (shape is "foreign-derived" or "opaque")
         {
-            HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises(
-                [compilation], HostedProducerPremises.AuthoredEnumerablesAbsentByUse);
-
             // This existing premise excludes analyzed-source implementations only.
             // It cannot turn this foreign or opaque value into the base runtime type.
-            Assert.True(ledger.Holds(HostedProducerPremises.AuthoredEnumerablesAbsentByUse));
-
-            Assert.Empty(ledger.Violations);
+            AssertAuthoredEnumerablesPremiseHolds(compilation);
         }
 
         HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);

@@ -20,11 +20,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
     private const string SettleAdmittedReconcilerType = "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationReconciler";
 
-    // Whitespace-insensitive SHA-256 of each method's text. SettleDiscoveredRuntimeAsync is byte-identical to the base
-    // (b15d6960); SettleAdmittedAsync differs from it only by the inline acquisition hunk. Any other edit must be a decision.
+    // Whitespace-insensitive SHA-256 of each method's text. SettleAdmittedAsync retains the inline acquisition shell.
+    // SettleDiscoveredRuntimeAsync atomically claims process ownership and releases that exact claim in finally around
+    // the classified lease acquisition and settlement. Any other edit must be a decision.
     private const string SettleAdmittedTextDigest = "5A04B39544819B040A62C18B8BBE14B420C7371C5B9E8D2F4FC8ECEA185C7486";
 
-    private const string SettleDiscoveredRuntimeTextDigest = "B312CA4CFAED8FEBA7FD7824631D2720EAEB7CAB7D42AB1A6CA81CD5736D51BA";
+    private const string SettleDiscoveredRuntimeTextDigest = "7932FD3DA3FF4C39D795BF567B62BF3754126E4A57CA6327C85302D99DAA32DE";
 
     [Fact]
     public void SettleAdmittedGrammarProductionTextIsThePinnedInlineAcquisitionShell()

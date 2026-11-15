@@ -175,6 +175,11 @@ internal static partial class HostedGrimoireProducerInventory
     // fails on one, so a member a later framework version adds cannot be silently classed as none of these.
     internal static string EfOperatorVerdict(string typeKey, string name)
     {
+        // FullJoin is inventoried explicitly but has no reviewed EF query-flow proof.
+        if (name == "FullJoin"
+            && typeKey is "System.Linq.Enumerable" or "System.Linq.Queryable" or "System.Linq.AsyncEnumerable")
+            return "Refused";
+
         switch (typeKey)
         {
             case "System.Linq.Enumerable":

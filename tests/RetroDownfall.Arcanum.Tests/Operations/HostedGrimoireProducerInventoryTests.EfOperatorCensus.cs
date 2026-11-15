@@ -53,14 +53,17 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("System.Linq.Enumerable", "OrderBy", "Builder")]
     [InlineData("System.Linq.Enumerable", "CountBy", "Builder")]
     [InlineData("System.Linq.Enumerable", "LeftJoin", "Builder")]
+    [InlineData("System.Linq.Enumerable", "FullJoin", "Refused")]
     [InlineData("System.Linq.Enumerable", "ToList", "Terminal")]
     [InlineData("System.Linq.Enumerable", "First", "Terminal")]
     [InlineData("System.Linq.Enumerable", "Count", "Terminal")]
     [InlineData("System.Linq.Enumerable", "Repeat", "Refused")]
     [InlineData("System.Linq.Enumerable", "TryGetNonEnumeratedCount", "Refused")]
     [InlineData("System.Linq.Queryable", "Where", "Builder")]
+    [InlineData("System.Linq.Queryable", "FullJoin", "Refused")]
     [InlineData("System.Linq.Queryable", "First", "Terminal")]
     [InlineData("System.Linq.AsyncEnumerable", "Where", "Builder")]
+    [InlineData("System.Linq.AsyncEnumerable", "FullJoin", "Refused")]
     [InlineData("System.Linq.AsyncEnumerable", "ToListAsync", "Terminal")]
     [InlineData("System.Threading.Tasks.TaskAsyncEnumerableExtensions", "ConfigureAwait", "Builder")]
     [InlineData("System.Threading.Tasks.TaskAsyncEnumerableExtensions", "WithCancellation", "Builder")]
@@ -74,6 +77,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("Microsoft.EntityFrameworkCore.RelationalQueryableExtensions", "CreateDbCommand", "Refused")]
     [InlineData("System.Linq.Enumerable", "ThisOperatorDoesNotExist", "Unknown")]
     [InlineData("System.Linq.ParallelEnumerable", "ToList", "Unknown")]
+    [InlineData("System.Linq.ParallelEnumerable", "FullJoin", "Unknown")]
     public void TheVerdictOfAnOperatorIsExactAndNeverGuessed(string key, string name, string verdict)
     {
         Assert.Equal(verdict, HostedGrimoireProducerInventory.EfOperatorVerdict(key, name));

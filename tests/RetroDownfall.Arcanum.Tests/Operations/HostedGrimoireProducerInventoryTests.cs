@@ -18024,9 +18024,44 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Contains(selected, static site => site.Callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal));
 
-        Assert.Contains(selected, static site => site.Callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal));
+        HostedProducerSite group = Assert.Single(selected, static site => site.Callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal));
+
+        HostedProducerSite effect = Assert.Single(selected, static site => site.Callee == "System.IO.File.Delete");
+
+        Assert.Equal(effect.WorkFrontierCapsuleId, group.WorkFrontierCapsuleId);
+
+        Assert.Equal(effect.RegisteredRootWorkFrontierCapsuleId, group.RegisteredRootWorkFrontierCapsuleId);
 
         Assert.Empty(HostedGrimoireProducerInventory.Validate([new("Worker", [root with { Sites = selected }])], [], new(["Worker"], []), new(selected, discovery.Diagnostics)).Diagnostics);
+    }
+
+    [Fact]
+    public void SelectedOperationRefusesAnInnerGroupPairedWithOuterWork()
+    {
+        string types = AdmissionTypes.Replace("WorkspaceIndexing = 4", "WorkspaceIndexing = 4, GuildStorage = 20", StringComparison.Ordinal);
+
+        string source = FixtureSource(AcquireWork + " if (!gate.TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind.GuildStorage, out var inner)) return Task.CompletedTask; using var heldInner = inner; if (!heldInner.TryBeginExternalEffectGroup(out var group)) return Task.CompletedTask; using var heldGroup = group; System.IO.File.Delete(\"path\");", types);
+
+        HostedProducerOperationEntry root = OrdinaryRoot(CallRoot(source, "System.IO.File.Delete"));
+
+        HostedProducerDiscovery<HostedProducerSite> discovery = DiscoverWithRoots(source, root);
+
+        HostedProducerSite[] selected = discovery.Items.Where(site => site.OperationId.StartsWith(root.OperationId, StringComparison.Ordinal)).ToArray();
+
+        HostedProducerSite effect = Assert.Single(selected, static site => site.Callee == "System.IO.File.Delete");
+
+        HostedProducerSite outer = Assert.Single(selected, static site => site.Callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal)
+            && site.AdmittedWorkKind == GrimoireWorkKind.WorkspaceIndexing);
+
+        Assert.Equal(outer.WorkFrontierCapsuleId, effect.WorkFrontierCapsuleId);
+
+        Assert.Equal(outer.RegisteredRootWorkFrontierCapsuleId, effect.RegisteredRootWorkFrontierCapsuleId);
+
+        Assert.Null(effect.EffectFrontierCapsuleId);
+
+        Assert.Contains(discovery.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_ADMISSION_EFFECT_LEASE_MISMATCH" && diagnostic.Detail.StartsWith("System.IO.File.Delete;", StringComparison.Ordinal));
+
+        Assert.Contains(discovery.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_ADMISSION_RECEIVER_MISMATCH");
     }
 
     [Theory]
@@ -44136,7 +44171,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
             namespace RetroDownfall.Arcanum.Infrastructure.Data
             {
-                public enum GrimoireWorkKind { ApprenticeExecution = 9 }
+                public enum GrimoireWorkKind { ApprenticeExecution = 8 }
 
                 public interface IGrimoireWorkLease : IDisposable
                 {

@@ -210,7 +210,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Equal("System.Runtime", equatableDefinition.ContainingAssembly.Identity.Name);
 
-        Assert.Equal(10, equatableDefinition.ContainingAssembly.Identity.Version.Major);
+        Assert.Equal(11, equatableDefinition.ContainingAssembly.Identity.Version.Major);
 
         Assert.Equal("b03f5f7f11d50a3a", Convert.ToHexString(equatableDefinition.ContainingAssembly.Identity.PublicKeyToken.ToArray()).ToLowerInvariant());
 

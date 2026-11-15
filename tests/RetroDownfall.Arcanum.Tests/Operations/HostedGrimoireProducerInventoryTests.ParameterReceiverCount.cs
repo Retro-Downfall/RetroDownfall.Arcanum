@@ -57,15 +57,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.True(count.GetMethod!.IsVirtual || count.GetMethod.IsOverride);
 
-        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises(
-            [compilation], HostedProducerPremises.DbProviderTypesClosedByUse);
-
-        Assert.False(ledger.Holds(HostedProducerPremises.DbProviderTypesClosedByUse));
-
-        Assert.Contains(ledger.Violations, static diagnostic => diagnostic.Code == "HOSTED_PREMISE_VIOLATED"
-            && diagnostic.Identity == "DbProviderTypesClosedByUse"
-            && diagnostic.Detail.Contains("AuthoredSqliteParameters", StringComparison.Ordinal)
-            && diagnostic.Detail.Contains("System.Data.Common.DbParameterCollection", StringComparison.Ordinal));
+        AssertAuthoredSqliteParametersViolateProviderClosure(compilation);
 
         HostedProducerDiscovery<HostedProducerSite> result = DiscoverUnderRegime(compilation, production);
 

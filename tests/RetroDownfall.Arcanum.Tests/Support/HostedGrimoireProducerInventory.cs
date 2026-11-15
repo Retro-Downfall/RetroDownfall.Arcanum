@@ -20614,7 +20614,9 @@ internal static partial class HostedGrimoireProducerInventory
 
                         if (admission is not null && member.Model.GetSymbolInfo(admission).Symbol is IMethodSymbol gate)
                         {
-                            emittedEvidence = MergeEvidence(emittedEvidence, AddSite(HostedProducerSiteKind.EffectFrontier, Normalize(gate), member, rootType, operationId, admission));
+                            WorkAdmissionEvidence? admissionWork = WorkAt(member, admission, operationId, ordinary.WorkKind, inheritedWork);
+
+                            emittedEvidence = MergeEvidence(emittedEvidence, AddSite(HostedProducerSiteKind.EffectFrontier, Normalize(gate), member, rootType, operationId, admission, workAdmitted: admissionWork));
                         }
                     }
                 }
