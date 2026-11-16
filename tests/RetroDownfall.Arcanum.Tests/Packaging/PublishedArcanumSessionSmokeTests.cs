@@ -305,6 +305,8 @@ public sealed partial class PublishedArcanumSessionSmokeTests
 
             await ExercisePartialOutputLimitAsync(client, provider, priorCalls: 12, deadline.Token);
 
+            await ExerciseMalformedProviderCallsAsync(client, provider, deadline.Token);
+
             Assert.Equal(0, provider.RuntimeMutationCount);
 
             await AssertCampaignRegistrationFoldsUnicodeNormalizationAsync(
@@ -1168,6 +1170,8 @@ public sealed partial class PublishedArcanumSessionSmokeTests
                     Annals = false,
                     Covenant = true,
                     AgentMemoryRecall = true,
+
+                    ClientTools = true,
                 },
                 Workspaces = new WorkspaceSettings
                 {
@@ -1338,7 +1342,7 @@ public sealed partial class PublishedArcanumSessionSmokeTests
         string StandardError,
         IReadOnlyList<Exception> Failures);
 
-    internal sealed class FakeOpenAiProvider : IAsyncDisposable
+    internal sealed partial class FakeOpenAiProvider : IAsyncDisposable
     {
         private readonly WebApplication _application;
 
@@ -1447,6 +1451,8 @@ public sealed partial class PublishedArcanumSessionSmokeTests
                 bool streaming = request.RootElement.TryGetProperty("stream", out var stream) && stream.GetBoolean();
 
                 int count = Interlocked.Increment(ref provider!._requestCount);
+
+                if (await provider.TryWriteMalformedProviderCallAsync(context, model, authorization, prompt, streaming, request.RootElement)) return;
 
                 if (prompt == PartialOutputLimitPrompt)
                 {

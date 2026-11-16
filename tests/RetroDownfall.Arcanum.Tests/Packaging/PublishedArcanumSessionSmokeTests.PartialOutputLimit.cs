@@ -1,10 +1,14 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using Xunit;
 
@@ -15,6 +19,177 @@ public sealed partial class PublishedArcanumSessionSmokeTests
     private const string PartialOutputLimitPrompt = "published-partial-output-limit";
 
     private const string PartialOutputProgress = "I will begin the implementation and then run the tests.\n";
+
+    private const string InvalidProviderCallPrompt = "published-invalid-provider-call";
+
+    private const string CompleteLengthCallPrompt = "published-complete-length-call";
+
+    private const string InvalidProviderArguments = "{\"unfinished\":";
+
+    private const string UnexpectedProviderContinuation = "published-unexpected-invalid-call-continuation";
+
+    private static async Task ExerciseMalformedProviderCallsAsync(HttpClient client, FakeOpenAiProvider provider, CancellationToken ct)
+    {
+        List<ProviderCallRefusalObservation> observations = [];
+
+        foreach (bool streaming in new[] { false, true })
+        {
+            foreach (bool forwarding in new[] { false, true })
+            {
+                using HttpResponseMessage created = await client.PostAsync("api/sessions",
+                    JsonContent.Create(new CreateSessionRequest(null, "published invalid provider call"), ArcanumJsonContext.Default.CreateSessionRequest), ct);
+
+                Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+                Guid sessionId = (await ReadDataAsync(created, ArcanumJsonContext.Default.ApiResponseSessionDetailDto, ct)).Id;
+
+                string prompt = $"{InvalidProviderCallPrompt}-{streaming}-{forwarding}";
+
+                using JsonDocument schema = JsonDocument.Parse("""{"type":"object","properties":{},"additionalProperties":false}""");
+
+                PingRequest ping = new(prompt, Model: ExpectedModel, SessionId: sessionId,
+                    DisableMcpTools: true, SkipSpellRouting: true, MaxOutputTokens: 32, ForwardClientTools: forwarding,
+                    ClientTools: forwarding ? [new OpenAiToolDefinition("function", new OpenAiFunctionDefinition("get_local_system_time", Parameters: schema.RootElement.Clone()))] : null);
+
+                int before = provider.RequestCount;
+
+                using HttpResponseMessage response = await client.PostAsync(streaming ? "api/intelligence/ping-stream" : "api/intelligence/ping",
+                    JsonContent.Create(ping, ArcanumJsonContext.Default.PingRequest), ct);
+
+                string? errorCode;
+
+                int exposedCalls;
+
+                bool terminalSuccess;
+
+                if (streaming)
+                {
+                    Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                    string ndjson = await response.Content.ReadAsStringAsync(ct);
+
+                    IntelligenceEvent[] frames = ndjson.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                        .Select(line => JsonSerializer.Deserialize(line, ArcanumJsonContext.Default.IntelligenceEvent)!).ToArray();
+
+                    errorCode = frames.SingleOrDefault(static frame => frame.Type == IntelligenceEventType.Error)?.Data;
+
+                    exposedCalls = frames.Count(static frame => frame.Type is IntelligenceEventType.ToolCall or IntelligenceEventType.ToolResult
+                        or IntelligenceEventType.Warded or IntelligenceEventType.WardResolved);
+
+                    terminalSuccess = frames.Any(static frame => frame.Type == IntelligenceEventType.Result);
+                }
+                else
+                {
+                    ApiResponse<PromptResponseDto>? envelope = await JsonSerializer.DeserializeAsync(await response.Content.ReadAsStreamAsync(ct),
+                        ArcanumJsonContext.Default.ApiResponsePromptResponseDto, ct);
+
+                    Assert.NotNull(envelope);
+
+                    errorCode = envelope.Error?.Code;
+
+                    exposedCalls = envelope.Data?.ToolCalls?.Count ?? 0;
+
+                    terminalSuccess = envelope.IsSuccess || response.IsSuccessStatusCode;
+                }
+
+                using HttpResponseMessage entriesResponse = await client.GetAsync($"api/sessions/{sessionId:D}/entries?limit=20", ct);
+
+                EntryDto[] entries = await ReadDataAsync(entriesResponse, ArcanumJsonContext.Default.ApiResponseEntryDtoArray, ct);
+
+                observations.Add(new ProviderCallRefusalObservation(streaming, forwarding, errorCode, exposedCalls, terminalSuccess,
+                    entries.Count(static entry => entry.ToolName is not null || entry.Content.StartsWith("[ToolResult:", StringComparison.Ordinal)),
+                    provider.RequestCount - before));
+            }
+
+            // A complete call remains usable even when the same provider finish reason is length.
+            string controlPrompt = $"{CompleteLengthCallPrompt}-{streaming}";
+
+            PingRequest control = new(controlPrompt, Model: ExpectedModel, DisableMcpTools: true, SkipSpellRouting: true, MaxOutputTokens: 32);
+
+            int controlBefore = provider.RequestCount;
+
+            using HttpResponseMessage controlResponse = await client.PostAsync(streaming ? "api/intelligence/ping-stream" : "api/intelligence/ping",
+                JsonContent.Create(control, ArcanumJsonContext.Default.PingRequest), ct);
+
+            Assert.Equal(HttpStatusCode.OK, controlResponse.StatusCode);
+
+            if (streaming)
+            {
+                string ndjson = await controlResponse.Content.ReadAsStringAsync(ct);
+
+                IntelligenceEvent[] frames = ndjson.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(line => JsonSerializer.Deserialize(line, ArcanumJsonContext.Default.IntelligenceEvent)!).ToArray();
+
+                Assert.DoesNotContain(frames, static frame => frame.Type == IntelligenceEventType.Error);
+
+                Assert.Single(frames, static frame => frame.Type == IntelligenceEventType.ToolCall);
+
+                Assert.Single(frames, static frame => frame.Type == IntelligenceEventType.ToolResult);
+
+                Assert.Equal(FakeOpenAiProvider.OrdinaryToolFinal, Assert.Single(frames, static frame => frame.Type == IntelligenceEventType.Result).Message);
+            }
+            else
+            {
+                PromptResponseDto result = await ReadDataAsync(controlResponse, ArcanumJsonContext.Default.ApiResponsePromptResponseDto, ct);
+
+                Assert.Equal(FakeOpenAiProvider.OrdinaryToolFinal, result.Text);
+            }
+
+            Assert.Equal(2, provider.RequestCount - controlBefore);
+        }
+
+        // Observe every SDK/native/forwarding lane before failing against an older installed apphost.
+        Assert.All(observations, static observation =>
+        {
+            Assert.True(observation.ErrorCode == ErrorCodes.Hub.ProviderToolCallInvalid
+                && observation.ExposedCalls == 0 && !observation.TerminalSuccess
+                && observation.PersistedCalls == 0 && observation.ProviderCalls == 1, observation.ToString());
+        });
+    }
+
+    private sealed record ProviderCallRefusalObservation(bool Streaming, bool Forwarding, string? ErrorCode,
+        int ExposedCalls, bool TerminalSuccess, int PersistedCalls, int ProviderCalls);
+
+    internal sealed partial class FakeOpenAiProvider
+    {
+        private readonly ConcurrentDictionary<string, int> _malformedCallPhases = new(StringComparer.Ordinal);
+
+        private async Task<bool> TryWriteMalformedProviderCallAsync(HttpContext context, string model, string authorization,
+            string prompt, bool streaming, JsonElement payload)
+        {
+            bool invalid = prompt.StartsWith(InvalidProviderCallPrompt + "-", StringComparison.Ordinal);
+
+            if (!invalid && !prompt.StartsWith(CompleteLengthCallPrompt + "-", StringComparison.Ordinal)) return false;
+
+            int phase = _malformedCallPhases.AddOrUpdate(prompt, 0, static (_, previous) => previous + 1);
+
+            _requests.Enqueue(new ProviderRequest(model, authorization, prompt, streaming, payload.Clone()));
+
+            if (phase > 1)
+            {
+                context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+
+                return true;
+            }
+
+            string message = phase == 0
+                ? "\"role\":\"assistant\",\"tool_calls\":[{" + (streaming ? "\"index\":0," : "")
+                    + "\"id\":\"call-published-invalid-arguments\",\"type\":\"function\",\"function\":{\"name\":\"get_local_system_time\",\"arguments\":\""
+                    + JsonEncodedText.Encode(invalid ? InvalidProviderArguments : "{}") + "\"}}]"
+                : "\"role\":\"assistant\",\"content\":\"" + (invalid ? UnexpectedProviderContinuation : OrdinaryToolFinal) + "\"";
+
+            string body = "{\"id\":\"chatcmpl-invalid-provider-call\",\"object\":\"" + (streaming ? "chat.completion.chunk" : "chat.completion")
+                + "\",\"created\":0,\"model\":\"published-smoke-model\",\"choices\":[{\"index\":0,\"" + (streaming ? "delta" : "message")
+                + "\":{" + message + "},\"finish_reason\":\"" + (phase == 0 ? "length" : "stop")
+                + "\"}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":32,\"total_tokens\":52}}";
+
+            context.Response.ContentType = streaming ? "text/event-stream" : "application/json";
+
+            await context.Response.WriteAsync(streaming ? "data: " + body + "\n\ndata: [DONE]\n\n" : body, context.RequestAborted);
+
+            return true;
+        }
+    }
 
     private static async Task ExercisePartialOutputLimitAsync(HttpClient client, FakeOpenAiProvider provider,
         int priorCalls, CancellationToken ct)

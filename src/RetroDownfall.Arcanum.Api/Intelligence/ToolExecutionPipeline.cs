@@ -176,6 +176,17 @@ public sealed class ToolExecutionPipeline(
             .ToList();
     }
 
+    internal static Result ValidateProviderToolCalls(IReadOnlyList<FunctionCallContent> calls)
+    {
+        // The SDK retains malformed argument JSON as a parse exception and may leave Arguments
+        // null. Null alone also represents legitimate no-argument calls, so do not erase the
+        // exception by serializing that call as an empty object before validating the whole set.
+        return calls.Any(static call => call.Exception is not null)
+            ? Result.Failure(new Error(ErrorCodes.Hub.ProviderToolCallInvalid,
+                "A provider tool call carried arguments that are not valid JSON."))
+            : Result.Success();
+    }
+
     private static readonly ConditionalWeakTable<FunctionCallContent, string> _fallbackCallIds = new();
 
     public string ResolveCallId(FunctionCallContent fcc)

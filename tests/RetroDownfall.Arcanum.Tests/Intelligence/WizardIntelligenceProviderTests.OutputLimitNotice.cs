@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -224,6 +225,160 @@ public sealed partial class WizardIntelligenceProviderTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OutputLimitNotice_actual_sdk_preserves_synthetic_visible_content_at_length(bool streaming)
+    {
+        ArcanumSettings settings = DefaultSettings();
+
+        using OutputLimitHttpFactory http = new(streaming, cleanEof: false, answer: "visible synthetic answer");
+
+        ChatClientFactory factory = new(http, new TestOptionsMonitor<ArcanumSettings>(settings), new OutputLimitCredentialResolver());
+
+        OutputLimitObservation observed = await ObserveOutputLimitTurnAsync(CreateWizard(new(), settings, factory: factory), streaming, OutputLimitRequest());
+
+        Assert.True(observed.Success, observed.WireJson);
+
+        Assert.Equal("visible synthetic answer", observed.Text);
+
+        Assert.Equal("length", observed.FinishReason);
+
+        Assert.Equal(4, (int)Assert.Single(observed.Notices).Code);
+
+        AssertOutputLimitUsage(observed.Usage);
+
+        Assert.Equal(1, http.Sends);
+    }
+
+    [Fact]
+    public async Task OutputLimitNotice_actual_sdk_reasoning_extension_only_is_not_a_visible_answer()
+    {
+        const string privateCanary = "synthetic-private-reasoning-canary";
+
+        ArcanumSettings settings = DefaultSettings();
+
+        string body = SyntheticSse("{\"role\":\"assistant\",\"reasoning_content\":\"" + privateCanary + "\"}", "length");
+
+        using SyntheticOutputHttpFactory http = new(true, body);
+
+        ChatClientFactory factory = new(http, new TestOptionsMonitor<ArcanumSettings>(settings), new OutputLimitCredentialResolver());
+
+        OutputLimitObservation observed = await ObserveOutputLimitTurnAsync(CreateWizard(new(), settings, factory: factory), true,
+            OutputLimitRequest() with { Reasoning = null });
+
+        Assert.True(observed.Success, observed.WireJson);
+
+        Assert.Equal(string.Empty, observed.Text);
+
+        Assert.Equal("length", observed.FinishReason);
+
+        Assert.Equal(3, (int)Assert.Single(observed.Notices).Code);
+
+        Assert.DoesNotContain(privateCanary, observed.WireJson, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(observed.Events, static frame => frame.Type == IntelligenceEventType.Token || frame.Type == IntelligenceEventType.Reasoning);
+
+        Assert.Equal(1, http.Sends);
+    }
+
+    [Fact]
+    public async Task OutputLimitNotice_actual_sdk_executes_a_complete_fragmented_tool_call_once()
+    {
+        ArcanumSettings settings = DefaultSettings();
+
+        string first = SyntheticToolSse("{}", "tool_calls");
+
+        string second = SyntheticSse("{\"role\":\"assistant\",\"content\":\"tool complete\"}", "stop");
+
+        using SyntheticOutputHttpFactory http = new(true, first, second);
+
+        ChatClientFactory factory = new(http, new TestOptionsMonitor<ArcanumSettings>(settings), new OutputLimitCredentialResolver());
+
+        OutputLimitObservation observed = await ObserveOutputLimitTurnAsync(CreateWizard(new(), settings, factory: factory), true,
+            OutputLimitRequest() with { DisableAllTools = false, DisableMcpTools = true });
+
+        Assert.True(observed.Success, observed.WireJson);
+
+        Assert.Equal("tool complete", observed.Text);
+
+        Assert.Equal("get_local_system_time", Assert.Single(observed.ToolCalls).Name);
+
+        Assert.Equal(2, http.Sends);
+    }
+
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, false)]
+    [InlineData(false, false, true)]
+    [InlineData(true, false, true)]
+    public async Task OutputLimitNotice_actual_sdk_does_not_execute_truncated_tool_arguments(bool streaming, bool forward, bool mixed)
+    {
+        ArcanumSettings settings = DefaultSettings();
+
+        string arguments = "{\"synthetic-malformed-canary\":";
+
+        string body = mixed ? SyntheticMixedToolResponse(streaming, arguments)
+            : streaming ? SyntheticToolSse(arguments, "length") : SyntheticToolBuffered(arguments, "length");
+
+        using SyntheticOutputHttpFactory http = new(streaming, body);
+
+        ChatClientFactory factory = new(http, new TestOptionsMonitor<ArcanumSettings>(settings), new OutputLimitCredentialResolver());
+
+        FakeGrimoireRepository grimoire = new();
+
+        OutputLimitObservation observed = await ObserveOutputLimitTurnAsync(CreateWizard(new(), settings, grimoire: grimoire, factory: factory), streaming,
+            OutputLimitRequest() with
+            {
+                DisableAllTools = false,
+                DisableMcpTools = true,
+                ForwardClientTools = forward,
+                ClientTools = forward ? [new OpenAiToolDefinition("function", new OpenAiFunctionDefinition("get_local_system_time"))] : null,
+            });
+
+        Assert.True(observed.ToolCalls.Count == 0
+            && observed.Events.All(static frame => frame.Type != IntelligenceEventType.ToolResult)
+            && grimoire.AppendToolInteractionCallCount == 0 && http.Sends == 1
+            && !observed.Success && observed.WireJson.Contains(ErrorCodes.Hub.ProviderToolCallInvalid, StringComparison.Ordinal),
+            $"Incomplete arguments produced {observed.ToolCalls.Count} tool-call events, "
+            + $"{observed.Events.Count(static frame => frame.Type == IntelligenceEventType.ToolResult)} tool-result events, "
+            + $"{observed.Events.Count(static frame => frame.Type == IntelligenceEventType.ToolError)} tool-error events, "
+            + $"{observed.Events.Count(static frame => frame.Type == IntelligenceEventType.ToolResult && !frame.ToolDenied && frame.ToolOutcome is null)} non-denied results, "
+            + $"{grimoire.AppendToolInteractionCallCount} persisted tool interactions, {http.Sends} provider sends, "
+            + $"success={observed.Success}, and typedInvalid={observed.WireJson.Contains(ErrorCodes.Hub.ProviderToolCallInvalid, StringComparison.Ordinal)}.");
+
+        Assert.DoesNotContain("synthetic-malformed-canary", observed.WireJson, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("{}", false)]
+    [InlineData("{\"unfinished\":", true)]
+    public async Task OutputLimitNotice_sdk_reports_malformed_tool_argument_metadata(string arguments, bool malformed)
+    {
+        ArcanumSettings settings = DefaultSettings();
+
+        using SyntheticOutputHttpFactory http = new(true, SyntheticToolSse(arguments, malformed ? "length" : "tool_calls"));
+
+        ChatClientFactory factory = new(http, new TestOptionsMonitor<ArcanumSettings>(settings), new OutputLimitCredentialResolver());
+
+        using ChatClientLease lease = await factory.ResolveClientAsync(null, CancellationToken.None);
+
+        List<ChatResponseUpdate> updates = [];
+
+        await foreach (ChatResponseUpdate update in lease.ChatClient.GetStreamingResponseAsync(
+            [new MeAiChatMessage(ChatRole.User, "synthetic request")], new ChatOptions(), CancellationToken.None))
+        {
+            updates.Add(update);
+        }
+
+        FunctionCallContent call = Assert.Single(ToolExecutionPipeline.CollectActionableFunctionCalls(updates.ToChatResponse()));
+
+        Assert.True((call.Exception is not null) == malformed,
+            $"Expected malformed={malformed}; exception present={call.Exception is not null}, arguments null={call.Arguments is null}, raw type={call.RawRepresentation?.GetType().FullName ?? "null"}.");
+    }
+
+    [Theory]
     [InlineData("")]
     [InlineData("partial visible answer")]
     public async Task OutputLimitNotice_actual_sdk_clean_eof_without_finish_metadata_is_incomplete_not_success_or_length(string answer)
@@ -372,6 +527,92 @@ public sealed partial class WizardIntelligenceProviderTests
         IReadOnlyList<PromptToolCall> ToolCalls,
         string TerminalJson,
         string WireJson);
+
+    private static string SyntheticChunk(string delta, string? finishReason = null) =>
+        "data: {\"id\":\"synthetic-wire\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"wizard-test-model\",\"choices\":[{\"index\":0,\"delta\":"
+        + delta + ",\"finish_reason\":" + JsonSerializer.Serialize(finishReason, AdHocJson.Options) + "}]}\n\n";
+
+    private static string SyntheticSse(string delta, string finishReason) =>
+        SyntheticChunk(delta) + SyntheticChunk("{}", finishReason)
+        + "data: {\"id\":\"synthetic-wire\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"wizard-test-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":8,\"total_tokens\":18}}\n\n"
+        + "data: [DONE]\n\n";
+
+    private static string SyntheticToolSse(string arguments, string finishReason)
+    {
+        int split = Math.Max(1, arguments.Length / 2);
+
+        string first = "{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"synthetic-call\",\"type\":\"function\",\"function\":{\"name\":\"get_local_system_time\",\"arguments\":"
+            + JsonSerializer.Serialize(arguments[..split], AdHocJson.Options) + "}}]}";
+
+        string second = "{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":"
+            + JsonSerializer.Serialize(arguments[split..], AdHocJson.Options) + "}}]}";
+
+        return SyntheticChunk(first) + SyntheticSse(second, finishReason);
+    }
+
+    private static string SyntheticToolBuffered(string arguments, string finishReason) =>
+        "{\"id\":\"synthetic-wire\",\"object\":\"chat.completion\",\"created\":1,\"model\":\"wizard-test-model\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"synthetic-call\",\"type\":\"function\",\"function\":{\"name\":\"get_local_system_time\",\"arguments\":"
+        + JsonSerializer.Serialize(arguments, AdHocJson.Options) + "}}]},\"finish_reason\":" + JsonSerializer.Serialize(finishReason, AdHocJson.Options) + "}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":8,\"total_tokens\":18}}";
+
+    private static string SyntheticMixedToolResponse(bool streaming, string arguments)
+    {
+        string valid = "{\"id\":\"valid-first\",\"type\":\"function\",\"function\":{\"name\":\"get_local_system_time\",\"arguments\":\"{}\"}}";
+
+        string invalid = "{\"id\":\"invalid-second\",\"type\":\"function\",\"function\":{\"name\":\"get_local_system_time\",\"arguments\":"
+            + JsonSerializer.Serialize(arguments, AdHocJson.Options) + "}}";
+
+        if (streaming)
+        {
+            valid = valid.Insert(1, "\"index\":0,");
+
+            invalid = invalid.Insert(1, "\"index\":1,");
+
+            return SyntheticSse("{\"role\":\"assistant\",\"tool_calls\":[" + valid + "," + invalid + "]}", "length");
+        }
+
+        return "{\"id\":\"synthetic-wire\",\"object\":\"chat.completion\",\"created\":1,\"model\":\"wizard-test-model\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"tool_calls\":["
+            + valid + "," + invalid + "]},\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":8,\"total_tokens\":18}}";
+    }
+
+    private sealed class SyntheticOutputHttpFactory(bool streaming, params string[] responses) : IHttpClientFactory, IDisposable
+    {
+        private readonly List<HttpClient> _clients = [];
+
+        private readonly string[] _responses = responses;
+
+        private readonly bool _streaming = streaming;
+
+        public int Sends { get; private set; }
+
+        public HttpClient CreateClient(string name)
+        {
+            HttpClient client = new(new Handler(this));
+
+            _clients.Add(client);
+
+            return client;
+        }
+
+        public void Dispose()
+        {
+            foreach (HttpClient client in _clients) client.Dispose();
+        }
+
+        private sealed class Handler(SyntheticOutputHttpFactory owner) : HttpMessageHandler
+        {
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                int index = owner.Sends++;
+
+                string body = index < owner._responses.Length ? owner._responses[index] : SyntheticSse("{}", "stop");
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = ProviderSdkTestTransport.Content(body, owner._streaming ? "text/event-stream" : "application/json"),
+                });
+            }
+        }
+    }
 
     private sealed class OutputLimitCredentialResolver : IProviderApiKeyResolver
     {

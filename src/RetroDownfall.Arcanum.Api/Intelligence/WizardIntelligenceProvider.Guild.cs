@@ -178,6 +178,10 @@ public sealed partial class WizardIntelligenceProvider : IGuildLocalInferenceRun
 
             List<FunctionCallContent> calls = ToolExecutionPipeline.CollectActionableFunctionCalls(called.Value.Response);
 
+            Result callAdmission = ToolExecutionPipeline.ValidateProviderToolCalls(calls);
+
+            if (callAdmission.IsFailure) return callAdmission.Error;
+
             if (calls.Count == 0)
             {
                 string text = called.Value.Response.Text;

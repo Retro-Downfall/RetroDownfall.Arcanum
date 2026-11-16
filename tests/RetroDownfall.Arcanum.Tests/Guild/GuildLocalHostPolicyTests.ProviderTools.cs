@@ -34,6 +34,7 @@ public sealed partial class GuildLocalHostPolicyTests
     [InlineData("negative-token")]
     [InlineData("overflow-token")]
     [InlineData("zero-usage")]
+    [InlineData("malformed-mixed")]
     public async Task Qualified_provider_tool_loop_uses_closed_registry_and_one_bill_per_actual_round(string? readinessLoss)
     {
         using IDisposable history = WorkspaceMutationFence.IsolateProcessHistoryForTests();
@@ -117,6 +118,23 @@ public sealed partial class GuildLocalHostPolicyTests
 
             var result = await runtime.Runtime.ExecuteTurnAsync(new(effectStore, driver, dispatch.Value), input.Value,
                 new("Solve the admitted task using the permitted child tool.", DisableAllTools: false), default);
+
+            if (readinessLoss == "malformed-mixed")
+            {
+                Assert.Equal(0, children.Calls);
+
+                Assert.True(result.IsFailure);
+
+                Assert.Equal(ErrorCodes.Hub.ProviderToolCallInvalid, result.Error.Code);
+
+                Assert.Single(transport.Bodies);
+
+                Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM guild_quests"));
+
+                Assert.Equal(1L, await f.ScalarAsync("SELECT count(*) FROM BillableOperations WHERE InputTokens=7 AND OutputTokens=3"));
+
+                return;
+            }
 
             if (readinessLoss == "absent")
             {
@@ -272,7 +290,9 @@ public sealed partial class GuildLocalHostPolicyTests
 
             if (BeforeResponse is not null) await BeforeResponse(Bodies.Count);
 
-            string message = Bodies.Count == 1 && PromptOnly
+            string message = Bodies.Count == 1 && UsageVariant == "malformed-mixed"
+                ? """{"role":"assistant","content":null,"tool_calls":[{"id":"valid-first","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\"}"}},{"id":"invalid-second","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":"}}]}"""
+                : Bodies.Count == 1 && PromptOnly
                 ? """{"role":"assistant","content":null,"tool_calls":[{"id":"call-child","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\"}"}}]}"""
                 : Bodies.Count == 1
                 ? """{"role":"assistant","content":null,"tool_calls":[{"id":"call-child","type":"function","function":{"name":"delegate_task","arguments":"{\"prompt\":\"child task\",\"max_cost_usd\":1}"}}]}"""

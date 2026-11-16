@@ -4146,6 +4146,20 @@ public sealed partial class WizardIntelligenceProvider(
                     }
 
                     List<FunctionCallContent> toolCalls = ToolExecutionPipeline.CollectActionableFunctionCalls(combinedRound);
+
+                    Result toolCallAdmission = ToolExecutionPipeline.ValidateProviderToolCalls(toolCalls);
+
+                    if (toolCallAdmission.IsFailure)
+                    {
+                        inferenceTypedError = toolCallAdmission.Error;
+
+                        inferenceError = toolCallAdmission.Error.Message;
+
+                        streamAccountingStatus = InferenceRunStatus.Failed;
+
+                        break;
+                    }
+
                     IReadOnlyList<TextReasoningContent> rawRoundReasoning =
                         CollectRawReasoningContent(combinedRound);
 
