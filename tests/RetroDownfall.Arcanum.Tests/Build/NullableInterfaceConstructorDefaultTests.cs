@@ -199,6 +199,12 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/TurnEngine/TurnEngine.cs:TurnEngine:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/TurnEngine/TurnEngine.cs:TurnEngine:settings"] = "the composed host supplies the scoped IOptionsSnapshot, and Wizard compatibility construction passes its snapshot for the initial foreground runtime reservation; direct non-provider engine fixtures need no configured resource. Actual configured client factories also reserve the frozen resource before credentials",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/LongRestProviderClientFactory.cs:LongRestProviderClientFactory:settings"] = "the composed host supplies IOptionsMonitor for frozen runtime identity and final routing validation; null supports existing unbound direct fixtures only. ProviderResourceKey refuses a nonempty LocalRuntimeId when settings are absent, before credentials or physical dispatch",
+
+        ["src/RetroDownfall.Arcanum.Api/ProvingGrounds/MemoryEvaluation/MemoryEvaluationProviderClientFactory.cs:MemoryEvaluationProviderClientFactory:settings"] = "the composed host supplies IOptionsMonitor for frozen runtime identity and final routing validation; null supports existing unbound direct fixtures only. ProviderResourceKey refuses a nonempty LocalRuntimeId when settings are absent, before credentials or physical dispatch",
+
         ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:attachmentMemoryProvenanceStore"] = "every use of the IAttachmentMemoryProvenanceStore is null-safe; absence disables an observation, not a refusal",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:budgetReservationService"] = "owner is container-activated and IBudgetReservationService is registered; the container supplies it in a composed host",

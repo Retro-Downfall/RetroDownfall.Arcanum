@@ -324,6 +324,9 @@ internal interface IGrimoireWorkLease : IAsyncDisposable
 
     CancellationToken MaintenanceRevocation { get; }
 
+    /// <summary>Signals closing immediately, solely to yield provider work that has not been admitted.</summary>
+    CancellationToken ProviderAdmissionRevocation { get; }
+
     /// <summary>The lease's maintenance obligation, including before cancellation callbacks run.</summary>
     bool MaintenanceRevocationPending { get; }
 

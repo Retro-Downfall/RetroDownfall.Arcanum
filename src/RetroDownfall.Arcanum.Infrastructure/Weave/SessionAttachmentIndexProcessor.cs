@@ -398,6 +398,8 @@ internal sealed class SessionAttachmentIndexProcessor(
 
             await using IGrimoireExternalEffectGroup effect = effectGroup!;
 
+            using IDisposable providerWait = RetroDownfall.Arcanum.Core.Intelligence.ProviderWorkWaitAmbient.Push(batchLease.ProviderAdmissionRevocation);
+
             string[] inputs = chunkBatch
                 .Select(static chunk => chunk.Text)
                 .ToArray();
@@ -413,6 +415,10 @@ internal sealed class SessionAttachmentIndexProcessor(
                 batch = await weave
                     .EmbedBatchAsync(inputs, cancellationToken)
                     .ConfigureAwait(false);
+            }
+            catch (RetroDownfall.Arcanum.Core.Intelligence.ProviderWorkDeferredException)
+            {
+                return SessionAttachmentIndexOutcome.DeferredForMaintenance;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

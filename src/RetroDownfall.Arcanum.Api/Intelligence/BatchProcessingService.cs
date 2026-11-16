@@ -480,6 +480,8 @@ internal sealed class BatchProcessingService(
 
                     await using (pageGroup!)
                     {
+                        using IDisposable providerWait = ProviderWorkWaitAmbient.Push(lease.ProviderAdmissionRevocation);
+
                         IReadOnlyList<PreparedBatchRequestLine>? attemptedPage = null;
 
                         try

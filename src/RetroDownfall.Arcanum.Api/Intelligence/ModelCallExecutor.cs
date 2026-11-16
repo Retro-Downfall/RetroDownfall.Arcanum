@@ -37,6 +37,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
     private readonly TapestryInvocationValidator? _tapestryInvocationValidator;
 
+    internal ProviderWorkCoordinator? WorkCoordinator { get; }
+
     public ModelCallExecutor(IModelTokenEstimator tokenEstimator)
         : this(tokenEstimator, settings: null, logger: (ILogger?)null)
     {
@@ -44,9 +46,11 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
     public ModelCallExecutor(
         IModelTokenEstimator tokenEstimator,
-        IOptionsMonitor<ArcanumSettings>? settings)
+        IOptionsMonitor<ArcanumSettings>? settings,
+        ProviderWorkCoordinator? providerWorkCoordinator = null)
         : this(tokenEstimator, settings, logger: (ILogger?)null)
     {
+        WorkCoordinator = providerWorkCoordinator;
     }
 
     public ModelCallExecutor(IModelTokenEstimator tokenEstimator, IOptionsMonitor<ArcanumSettings>? settings,
@@ -70,9 +74,11 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
     public ModelCallExecutor(IModelTokenEstimator tokenEstimator, IOptionsMonitor<ArcanumSettings>? settings,
         ILogger<ModelCallExecutor> logger, PromptCacheDispatchValidator? promptCacheDispatchValidator,
-        ITapestryProviderValidator? tapestryValidator, TapestryInvocationValidator tapestryInvocationValidator)
+        ITapestryProviderValidator? tapestryValidator, TapestryInvocationValidator tapestryInvocationValidator,
+        ProviderWorkCoordinator? providerWorkCoordinator = null)
         : this(tokenEstimator, settings, (ILogger?)logger, promptCacheDispatchValidator, tapestryValidator, tapestryInvocationValidator)
     {
+        WorkCoordinator = providerWorkCoordinator;
     }
 
     internal ModelCallExecutor(IModelTokenEstimator tokenEstimator, IOptionsMonitor<ArcanumSettings>? settings,
@@ -313,6 +319,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
         try
         {
+            using IDisposable? providerWork = await EnterProviderWorkAsync(chatClient, context?.Provider, cancellationToken).ConfigureAwait(false);
+
             SubagentExecutionAmbient.Tracker?.BeginModelCall();
 
             if (await ValidateDispatchAsync(chatClient, messages, options, context, cancellationToken).ConfigureAwait(false) is { } dispatchError)
@@ -362,8 +370,16 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
                 }
                 else
                 {
-                    response = await chatClient.GetResponseAsync(
-                        providerPayload.Messages, providerPayload.Options, providerToken).ConfigureAwait(false);
+                    try
+                    {
+                        response = await chatClient.GetResponseAsync(
+                            providerPayload.Messages, providerPayload.Options, providerToken).ConfigureAwait(false);
+                    }
+                    catch (Exception refusal) when (ProviderWorkClientIdentity.Lookup(chatClient)?.TryConsumeNoSend(refusal) == true)
+                    {
+                        return ModelCallOutcome.Failed(new ModelCallFailure(purpose, modelCallId,
+                            new Error(ErrorCodes.Hub.Error, "The configured local runtime route changed before transport."), Cause: null, ModelCallRetryDirective.None));
+                    }
                 }
             }
             catch (AggregateException ex) when (retrievalScope.IsTerminalRefusal(ex) || dispatchScope?.IsTerminalRefusal(ex) == true)
@@ -415,6 +431,10 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         {
             return ModelCallOutcome.Failed(new ModelCallFailure(purpose, modelCallId, ex.Error, Cause: null, ex.RetryDirective)
             { HasUncertainProviderEffect = ex.HasUncertainProviderEffect });
+        }
+        catch (ProviderWorkDeferredException)
+        {
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -519,6 +539,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         UsageDetails? finalUsage = null;
 
         UsageDetails? protectedUsage = null;
+
+        using IDisposable? providerWork = await EnterProviderWorkAsync(chatClient, context?.Provider, cancellationToken).ConfigureAwait(false);
 
         SubagentExecutionAmbient.Tracker?.BeginModelCall();
 
@@ -742,6 +764,11 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
             if (observation is not null) observation.Stage = FailureOrigin.ModelInvocation;
 
             return (await stream.MoveNextAsync().ConfigureAwait(false), null);
+        }
+        catch (Exception refusal) when (ProviderWorkClientIdentity.Lookup(client)?.TryConsumeNoSend(refusal) == true)
+        {
+            return (false, new PromptCacheDispatchException(new Error(ErrorCodes.Hub.Error,
+                "The configured local runtime route changed before transport."), ModelCallRetryDirective.None));
         }
         catch (PromptCacheDispatchException refusal)
         {

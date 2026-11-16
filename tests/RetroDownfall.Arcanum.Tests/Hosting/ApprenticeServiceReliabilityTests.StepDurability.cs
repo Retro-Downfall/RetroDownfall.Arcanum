@@ -20,6 +20,55 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 public sealed partial class ApprenticeServiceReliabilityTests
 {
     [Fact]
+    public async Task Provider_deferral_after_tool_effect_stops_with_operator_review_required()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        CancellationSensitiveRepository repo = new(RunningApprenticeWithOneStep(apprenticeId));
+
+        DeferringAfterToolIntelligence intelligence = new();
+
+        using ApprenticeService service = CreateService(repo, CreateCapacitySettings(), new CapturingLogger<ApprenticeService>(), intelligence);
+
+        Assert.True(TryAcquireExecutionSlot(service, apprenticeId));
+
+        BeginExecutionTask(service, apprenticeId);
+
+        await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Apprentice persisted = repo.Get(apprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Failed.ToString(), persisted.Status);
+        Assert.Contains("inspect", persisted.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, intelligence.ToolEffects);
+        Assert.Equal(1, intelligence.StreamCalls);
+    }
+
+    private sealed class DeferringAfterToolIntelligence : IArcanumIntelligenceProvider
+    {
+        internal int ToolEffects { get; private set; }
+
+        internal int StreamCalls { get; private set; }
+
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken, InferenceAuditContext? auditContext = null) => throw new NotImplementedException();
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(PingRequest request, ArcanumInvocationContext invocationContext,
+            [EnumeratorCancellation] CancellationToken cancellationToken, InferenceAuditContext? auditContext = null)
+        {
+            StreamCalls++;
+            ToolEffects++;
+
+            yield return new IntelligenceEvent(IntelligenceEventType.ToolResult, Message: "write_file", Data: "completed",
+                ToolCall: new IntelligenceToolCallEvent("completed-tool", "write_file", "{}"));
+
+            await Task.Yield();
+
+            throw new ProviderWorkDeferredException(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task Pause_during_shifting_fate_does_not_rerun_the_completed_step()
     {
         Guid apprenticeId = Guid.NewGuid();

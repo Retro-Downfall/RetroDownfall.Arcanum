@@ -67,6 +67,12 @@
                                        IsVisible="{Binding IsHttpProvider}"
                                        Placeholder="OPENAI_API_KEY" />
 
+                <controls:LabeledEntry Label="Local runtime"
+                                       Description="Optional declared physical runtime shared by this provider and its aliases. Leave blank for ordinary independent HTTP dispatch."
+                                       Text="{Binding LocalRuntimeId, Mode=TwoWay}"
+                                       IsVisible="{Binding IsHttpProvider}"
+                                       Placeholder="desktop-ollama" />
+
                 <StackPanel Spacing="8" IsVisible="{Binding IsFamiliar}">
 
                   <controls:LabeledEntry Label="Command"

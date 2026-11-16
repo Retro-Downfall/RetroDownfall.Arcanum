@@ -177,6 +177,26 @@ public sealed class PublishedArcanumSessionSmokeTests
 
             Assert.False(metadataData.GetProperty("listenAny").GetBoolean());
 
+            using HttpResponseMessage runtimeResponse = await client.GetAsync("api/local-runtimes/published-runtime", deadline.Token);
+
+            LocalRuntimeInspection runtime = await ReadDataAsync(runtimeResponse, ArcanumJsonContext.Default.ApiResponseLocalRuntimeInspection, deadline.Token);
+
+            Assert.True(runtimeResponse.IsSuccessStatusCode);
+
+            Assert.Equal("published-runtime-version", runtime.RuntimeVersion);
+
+            Assert.True(runtime.Capabilities.ModelResidencyRetention);
+
+            Assert.False(runtime.Capabilities.KvSnapshotRestore);
+
+            Assert.False(runtime.Capabilities.BeforeUnloadNotification);
+
+            Assert.Equal(ExpectedModel, Assert.Single(runtime.LoadedModels).Name);
+
+            Assert.Equal(2, provider.ManagementRequestCount);
+
+            Assert.Equal(0, provider.RequestCount);
+
             CliResult cli = await RunPublishedCliAsync(
                 executable,
                 isolation,
@@ -210,6 +230,7 @@ public sealed class PublishedArcanumSessionSmokeTests
             Assert.Equal($"Bearer {ProviderKey}", providerRequest.Authorization);
             Assert.Equal(ExpectedPrompt, providerRequest.Prompt);
             Assert.True(providerRequest.Streaming);
+            Assert.Equal(-1, providerRequest.Payload.GetProperty("keep_alive").GetInt32());
             Assert.Equal(1, provider.RequestCount);
 
             using HttpResponseMessage sessionsResponse = await client.GetAsync(
@@ -281,6 +302,8 @@ public sealed class PublishedArcanumSessionSmokeTests
             await ExerciseMemoryDelegationAsync(client, provider, priorCalls: 7, deadline.Token);
 
             await ExerciseMemoryRecallAsync(client, provider, priorCalls: 10, deadline.Token);
+
+            Assert.Equal(0, provider.RuntimeMutationCount);
 
             await AssertCampaignRegistrationFoldsUnicodeNormalizationAsync(
                 client,
@@ -1107,6 +1130,15 @@ public sealed class PublishedArcanumSessionSmokeTests
                     Port = hostPort,
                 },
                 DefaultModel = ExpectedModel,
+                LocalRuntimes =
+                [
+                    new LocalRuntimeSettings
+                    {
+                        Id = "published-runtime",
+                        Adapter = LocalRuntimeAdapterCatalog.Ollama,
+                        ManagementEndpoint = providerEndpoint.GetLeftPart(UriPartial.Authority),
+                    },
+                ],
                 Providers =
                 [
                     new ProviderSettings
@@ -1114,6 +1146,7 @@ public sealed class PublishedArcanumSessionSmokeTests
                         Name = "published-smoke",
                         Type = AiProviderKind.OpenAICompatible,
                         Endpoint = providerEndpoint.AbsoluteUri,
+                        LocalRuntimeId = "published-runtime",
                         CredentialEnvironmentVariable = ProviderKeyVariable,
                         Models = [new ModelEntry(ExpectedModel, SupportsTools: true)],
                         // The tool-capable fake model must fit the real advertised server schemas.
@@ -1312,6 +1345,10 @@ public sealed class PublishedArcanumSessionSmokeTests
 
         private int _requestCount;
 
+        private int _managementRequestCount;
+
+        private int _runtimeMutationCount;
+
         private int? _delegationStart;
 
         private int? _ordinaryStart;
@@ -1344,6 +1381,10 @@ public sealed class PublishedArcanumSessionSmokeTests
 
         public int RequestCount => Volatile.Read(ref _requestCount);
 
+        public int ManagementRequestCount => Volatile.Read(ref _managementRequestCount);
+
+        public int RuntimeMutationCount => Volatile.Read(ref _runtimeMutationCount);
+
         public static async Task<FakeOpenAiProvider> StartAsync()
         {
             WebApplicationBuilder builder = WebApplication.CreateSlimBuilder(
@@ -1361,6 +1402,33 @@ public sealed class PublishedArcanumSessionSmokeTests
 
             WebApplication application = builder.Build();
             FakeOpenAiProvider? provider = null;
+
+            application.MapGet("/api/version", async context =>
+            {
+                Interlocked.Increment(ref provider!._managementRequestCount);
+
+                context.Response.ContentType = "application/json";
+
+                await context.Response.WriteAsync("""{"version":"published-runtime-version"}""", context.RequestAborted);
+            });
+
+            application.MapGet("/api/ps", async context =>
+            {
+                Interlocked.Increment(ref provider!._managementRequestCount);
+
+                context.Response.ContentType = "application/json";
+
+                await context.Response.WriteAsync("""{"models":[{"name":"published-smoke-model","digest":"published-model-digest","size":123}]}""", context.RequestAborted);
+            });
+
+            application.MapPost("/api/generate", context =>
+            {
+                Interlocked.Increment(ref provider!._runtimeMutationCount);
+
+                context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+
+                return Task.CompletedTask;
+            });
 
             application.MapPost("/v1/chat/completions", async context =>
             {

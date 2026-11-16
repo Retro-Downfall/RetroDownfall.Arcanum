@@ -4299,6 +4299,44 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         }
     }
 
+    [SkippableFact]
+    public async Task Deferred_embedding_keeps_paid_saga_summary_for_retry()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "The operator prefers tabs.");
+
+        FakeWeaveService weave = new()
+        {
+            OnEmbedAsync = call => call == 1
+                ? Task.FromException(new RetroDownfall.Arcanum.Core.Intelligence.ProviderWorkDeferredException(CancellationToken.None))
+                : Task.CompletedTask,
+        };
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = """{ "memories": [{ "content": "The operator prefers tabs.", "attachmentId": null }] }""",
+        };
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopes, EmbeddingSettings embeddings, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        await using AsyncServiceScope scope = scopes.CreateAsyncScope();
+
+        Assert.Equal(SagaExtractionOutcome.DeferredForMaintenance,
+            await ExtractWithLeaseAsync(service, scope.ServiceProvider, sessionId, embeddings, settings, CancellationToken.None));
+        Assert.Equal(0, await CountMemoriesAsync());
+
+        Assert.Equal(SagaExtractionOutcome.Completed,
+            await ExtractWithLeaseAsync(service, scope.ServiceProvider, sessionId, embeddings, settings, CancellationToken.None));
+        Assert.Equal(1, intelligence.CallCount);
+        Assert.Equal(2, weave.EmbedCallCount);
+        Assert.Equal(1, await CountMemoriesAsync());
+    }
+
     /// <summary>
     /// An embedding endpoint that stops answering makes the transport give up with a cancellation the host never
     /// asked for. That is the same embedding outage as a refused connection, not a model-shape failure, so it
@@ -6162,6 +6200,8 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         public long Generation => inner.Generation;
 
         public CancellationToken MaintenanceRevocation => inner.MaintenanceRevocation;
+
+        public CancellationToken ProviderAdmissionRevocation => inner.ProviderAdmissionRevocation;
 
         public bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
 

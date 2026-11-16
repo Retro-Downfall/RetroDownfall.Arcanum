@@ -3159,6 +3159,8 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
             public CancellationToken MaintenanceRevocation => maintenanceRevocation;
 
+            public CancellationToken ProviderAdmissionRevocation => innerWork.ProviderAdmissionRevocation;
+
             public bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
 
             public bool TryBeginExternalEffectGroup(

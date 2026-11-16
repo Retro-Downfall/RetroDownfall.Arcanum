@@ -90,6 +90,7 @@ public sealed class LongRestConfigurationEpoch : IDisposable, ILongRestConfigura
         {
             Features = new() { LongRest = settings.Features?.LongRest is true, Covenant = settings.Features?.Covenant is true },
             Providers = settings.Providers ?? [],
+            LocalRuntimes = settings.LocalRuntimes ?? [],
             DefaultModel = settings.DefaultModel,
             FastModel = settings.FastModel,
             Integrations = new() { Embeddings = settings.Integrations?.Embeddings ?? new() },

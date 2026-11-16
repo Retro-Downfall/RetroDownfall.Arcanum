@@ -25,6 +25,7 @@ public sealed class ConfigurationSurfaceContractTests
         "Features",
         "Host",
         "Integrations",
+        "LocalRuntimes",
         "Providers",
         "Retention",
         "Security",
@@ -214,6 +215,7 @@ public sealed class ConfigurationSurfaceContractTests
     [Theory]
     [InlineData("Host", "HostSettings")]
     [InlineData("Providers", "ProviderSettings")]
+    [InlineData("LocalRuntimes", "LocalRuntimeSettings")]
     [InlineData("Security", "SecuritySettings")]
     [InlineData("Workspaces", "WorkspaceSettings")]
     [InlineData("Features", "FeatureSettings")]

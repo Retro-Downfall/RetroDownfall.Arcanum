@@ -1434,6 +1434,38 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Unsent_second_batch_defers_and_preserves_first_batch_checkpoint()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistAsync(sessionId, MultiBatchText());
+
+        GrimoireConnectionAdmissionGate gate = OpenGate();
+
+        FakeWeaveService weave = new()
+        {
+            OnEmbed = batch => batch == 2
+                ? Task.FromException(new RetroDownfall.Arcanum.Core.Intelligence.ProviderWorkDeferredException(CancellationToken.None))
+                : Task.CompletedTask,
+        };
+
+        SessionAttachmentIndexingService service = CreateService(BuildScopeFactory(weave), gate);
+
+        SessionAttachmentIndexOutcome outcome = await service.ProcessOneAsync(
+            Dequeue(service, new SessionAttachmentIndexRequest(attachment.Id, sessionId, Attempt: 1)), CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexDisposition.DeferredForMaintenance, outcome.Disposition);
+
+        SessionAttachmentIndexState state = await _index!.GetStateAsync(attachment.Id, CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Pending, state.Status);
+        Assert.Equal(64, state.NextChunkIndex);
+        Assert.Equal(64, (await _index.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None)).Length);
+    }
+
+    [SkippableFact]
     public async Task ProcessOneAsync_ClosedBetweenBatches_ResumesTheCheckpointAfterExactReopen()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -2388,6 +2420,8 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         public long Generation => inner.Generation;
 
         public CancellationToken MaintenanceRevocation => inner.MaintenanceRevocation;
+
+        public CancellationToken ProviderAdmissionRevocation => inner.ProviderAdmissionRevocation;
 
         public bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
 

@@ -766,6 +766,8 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
 
         public CancellationToken MaintenanceRevocation => Revocation.Token;
 
+        public CancellationToken ProviderAdmissionRevocation => CancellationToken.None;
+
         public bool MaintenanceRevocationPending => Revocation.IsCancellationRequested;
 
         public bool TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effectGroup)

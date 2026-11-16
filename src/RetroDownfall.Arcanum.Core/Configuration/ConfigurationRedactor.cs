@@ -21,6 +21,13 @@ public static class ConfigurationRedactor
         return Clone(settings) with
         {
             Providers = redactedProviders,
+
+            LocalRuntimes = (settings.LocalRuntimes ?? []).Select(static runtime =>
+            {
+                LocalRuntimeSettings normalized = runtime ?? new();
+
+                return normalized with { ManagementEndpoint = MaskRequired(normalized.ManagementEndpoint) };
+            }).ToArray(),
         };
     }
 
@@ -52,9 +59,27 @@ public static class ConfigurationRedactor
             .Select(p => MergeProvider(Normalize(p), currentByName))
             .ToArray();
 
+        Dictionary<string, LocalRuntimeSettings> currentRuntimes = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (LocalRuntimeSettings? runtime in current.LocalRuntimes ?? [])
+        {
+            if (!string.IsNullOrWhiteSpace(runtime?.Id)) currentRuntimes.TryAdd(runtime.Id, runtime);
+        }
+
+        LocalRuntimeSettings[] mergedRuntimes = (request.LocalRuntimes ?? []).Select(runtime =>
+        {
+            LocalRuntimeSettings normalized = runtime ?? new();
+
+            return !string.IsNullOrWhiteSpace(normalized.Id) && currentRuntimes.TryGetValue(normalized.Id, out LocalRuntimeSettings? saved)
+                ? normalized with { ManagementEndpoint = RestoreMaskRequired(normalized.ManagementEndpoint, saved.ManagementEndpoint) }
+                : normalized;
+        }).ToArray();
+
         return Clone(request) with
         {
             Providers = mergedProviders,
+
+            LocalRuntimes = mergedRuntimes,
         };
     }
 
@@ -79,6 +104,12 @@ public static class ConfigurationRedactor
 
             }
 
+        }
+
+        foreach (LocalRuntimeSettings? runtime in merged.LocalRuntimes ?? [])
+        {
+            if (runtime?.ManagementEndpoint == MaskSentinel)
+                return Result.Failure(new Error("Config.UnresolvedMask", "A runtime has a masked management endpoint; supply the real endpoint when adding a runtime."));
         }
 
         return Result.Success();

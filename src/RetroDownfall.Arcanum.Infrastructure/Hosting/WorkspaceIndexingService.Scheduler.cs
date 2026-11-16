@@ -391,6 +391,8 @@ internal sealed partial class WorkspaceIndexingService
 
     private async Task RunHandleAsync(WorkspaceHandle handle)
     {
+        using IDisposable providerScope = RetroDownfall.Arcanum.Core.Intelligence.ProviderWorkAmbient.Push(null);
+
         WorkspaceEntry entry = handle.Entry;
 
         CancellationToken cancellationToken = handle.Cancellation.Token;

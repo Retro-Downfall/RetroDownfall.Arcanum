@@ -110,6 +110,8 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
         [ObservableProperty] private string _endpoint = string.Empty;
 
+        [ObservableProperty] private string _localRuntimeId = string.Empty;
+
         [ObservableProperty] private string _credentialEnvironmentVariable = string.Empty;
 
         [ObservableProperty] private int _contextWindowLimit;
@@ -188,6 +190,8 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
             if (FamiliarProviders.IsFamiliar(value))
             {
                 GuildUsageReconciliation = GuildUsageReconciliationSource.None;
+
+                LocalRuntimeId = string.Empty;
             }
 
             OnPropertyChanged(nameof(IsFamiliar));
@@ -283,6 +287,8 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             Endpoint = snapshot.Endpoint;
 
+            LocalRuntimeId = IsHttpProvider ? snapshot.LocalRuntimeId ?? string.Empty : string.Empty;
+
             CredentialEnvironmentVariable =
                 snapshot.CredentialEnvironmentVariable ?? string.Empty;
 
@@ -338,6 +344,7 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
                 // value from a row that used to be OpenAI-compatible would fail validation and imply
                 // Arcanum holds a key it never reads.
                 Endpoint = familiar ? string.Empty : Endpoint,
+                LocalRuntimeId = familiar ? null : NullIfWhiteSpace(LocalRuntimeId),
                 CredentialEnvironmentVariable = familiar
                     ? null
                     : NullIfWhiteSpace(CredentialEnvironmentVariable),

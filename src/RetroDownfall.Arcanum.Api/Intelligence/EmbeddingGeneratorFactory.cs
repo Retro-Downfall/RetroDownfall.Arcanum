@@ -59,8 +59,7 @@ public sealed class EmbeddingGeneratorFactory(
     // OpenAICompatible generators are process-lifetime cached, keyed by provider/model/endpoint/credential
     // fingerprint — constructing the thin IEmbeddingGenerator wrapper has no per-call cost worth avoiding
     // beyond object churn.
-    private readonly ConcurrentDictionary<string, IEmbeddingGenerator<string, Embedding<float>>> _generators =
-        new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<(string Client, string? Runtime, ProviderResourceKey? Resource), IEmbeddingGenerator<string, Embedding<float>>> _generators = new();
 
     public async Task<EmbeddingGeneratorLease> ResolveGeneratorAsync(CancellationToken cancellationToken)
     {
@@ -93,17 +92,26 @@ public sealed class EmbeddingGeneratorFactory(
                 $"Unsupported provider type '{provider.Type}' for embeddings provider '{provider.Name}'. Only {nameof(AiProviderKind.OpenAICompatible)} is supported.");
         }
 
+        provider = PromptCacheClientIdentity.Freeze(provider);
+
+        ProviderWorkClientIdentity providerWork = new(provider, arc, optionsMonitor);
+
+        string model = embeddings.Model;
+
+        await providerWork.ReserveForegroundAsync(cancellationToken).ConfigureAwait(false);
+
         string? providerApiKey = await _apiKeyResolver
             .ResolveAsync(provider, cancellationToken)
             .ConfigureAwait(false);
 
-        return CreateOpenAiCompatibleLease(provider, embeddings.Model, providerApiKey);
+        return CreateOpenAiCompatibleLease(provider, model, providerApiKey, providerWork);
     }
 
     private EmbeddingGeneratorLease CreateOpenAiCompatibleLease(
         ProviderSettings provider,
         string model,
-        string? providerApiKey)
+        string? providerApiKey,
+        ProviderWorkClientIdentity providerWork)
     {
         string resolvedApiKey = providerApiKey ?? KeylessOpenAiPlaceholder;
 
@@ -116,16 +124,18 @@ public sealed class EmbeddingGeneratorFactory(
         string cacheKey = CacheKey(provider, model, resolvedApiKey);
 
         IEmbeddingGenerator<string, Embedding<float>> generator = _generators.GetOrAdd(
-            cacheKey,
-            _ => BuildOpenAiCompatibleGenerator(provider, model, resolvedApiKey));
+            (cacheKey, providerWork.LocalRuntimeId?.ToUpperInvariant(), providerWork.Resource),
+            _ => providerWork.Bind(BuildOpenAiCompatibleGenerator(provider, model, resolvedApiKey, providerWork)));
 
-        return new EmbeddingGeneratorLease(generator, ownsGenerator: false, new(provider.Name, model));
+        return new EmbeddingGeneratorLease(generator, ownsGenerator: false, new(provider.Name, model),
+            providerWork.Resource, providerWork.Endpoint, providerWork.LocalRuntimeId);
     }
 
     private IEmbeddingGenerator<string, Embedding<float>> BuildOpenAiCompatibleGenerator(
         ProviderSettings provider,
         string model,
-        string resolvedApiKey)
+        string resolvedApiKey,
+        ProviderWorkClientIdentity providerWork)
     {
         ApiKeyCredential credential = new(resolvedApiKey);
 
@@ -143,6 +153,8 @@ public sealed class EmbeddingGeneratorFactory(
         };
 
         options.AddPolicy(new TapestryProviderPolicy(_tapestryValidator, provider.Name, model, embedding: true), PipelinePosition.BeforeTransport);
+
+        options.AddPolicy(providerWork.DispatchPolicy, PipelinePosition.BeforeTransport);
 
         var embeddingClient = new EmbeddingClient(model, credential, options);
 
@@ -176,16 +188,31 @@ public sealed class EmbeddingGeneratorLease : IDisposable
     internal EmbeddingGeneratorLease(
         IEmbeddingGenerator<string, Embedding<float>> generator,
         bool ownsGenerator,
-        EmbeddingProvenance? provenance = null)
+        EmbeddingProvenance? provenance = null,
+        ProviderResourceKey? resource = null,
+        Uri? endpoint = null,
+        string? localRuntimeId = null)
     {
         Generator = generator;
 
         Provenance = provenance;
 
+        Resource = resource;
+
+        Endpoint = endpoint;
+
+        LocalRuntimeId = localRuntimeId;
+
         _ownsGenerator = ownsGenerator;
     }
 
     internal EmbeddingProvenance? Provenance { get; }
+
+    internal ProviderResourceKey? Resource { get; }
+
+    internal Uri? Endpoint { get; }
+
+    internal string? LocalRuntimeId { get; }
 
     public IEmbeddingGenerator<string, Embedding<float>> Generator { get; }
 

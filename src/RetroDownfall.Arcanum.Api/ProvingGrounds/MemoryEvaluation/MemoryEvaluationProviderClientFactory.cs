@@ -2,6 +2,7 @@ using System.ClientModel;
 using System.ClientModel.Primitives;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
 using OpenAI;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -18,27 +19,33 @@ public sealed class MemoryEvaluationProviderClientFactory : IDisposable
 {
     private readonly IProviderApiKeyResolver _keys;
 
+    private readonly IOptionsMonitor<ArcanumSettings>? _settings;
+
     private readonly HttpClient _httpClient;
 
     private int _disposed;
 
-    public MemoryEvaluationProviderClientFactory(IProviderApiKeyResolver keys)
+    public MemoryEvaluationProviderClientFactory(IProviderApiKeyResolver keys, IOptionsMonitor<ArcanumSettings>? settings = null)
     {
         ArgumentNullException.ThrowIfNull(keys);
 
         _keys = keys;
 
+        _settings = settings;
+
         _httpClient = CreateOwnedHttpClient();
     }
 
     // Alternate owned-handler test path. Production DI selects the public constructor.
-    internal MemoryEvaluationProviderClientFactory(IProviderApiKeyResolver keys, HttpMessageHandler handler)
+    internal MemoryEvaluationProviderClientFactory(IProviderApiKeyResolver keys, HttpMessageHandler handler, IOptionsMonitor<ArcanumSettings>? settings = null)
     {
         ArgumentNullException.ThrowIfNull(keys);
 
         ArgumentNullException.ThrowIfNull(handler);
 
         _keys = keys;
+
+        _settings = settings;
 
         _httpClient = new HttpClient(new MemoryEvaluationBoundedResponseHandler(handler), disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
     }
@@ -56,6 +63,12 @@ public sealed class MemoryEvaluationProviderClientFactory : IDisposable
             throw new InvalidOperationException("Provider output-token limit wire dialect is not defined.");
         }
 
+        provider = PromptCacheClientIdentity.Freeze(provider);
+
+        ProviderWorkClientIdentity providerWork = new(provider, _settings?.CurrentValue, _settings);
+
+        await providerWork.ReserveForegroundAsync(ct).ConfigureAwait(false);
+
         Result<string?> key = await ResolveCredentialAsync(provider, ct).ConfigureAwait(false);
 
         if (key.IsFailure) return key.Error;
@@ -66,9 +79,11 @@ public sealed class MemoryEvaluationProviderClientFactory : IDisposable
 
         options.AddPolicy(new OutputTokenLimitWirePolicy(dialect), PipelinePosition.PerCall);
 
+        options.AddPolicy(providerWork.DispatchPolicy, PipelinePosition.BeforeTransport);
+
         OpenAI.Chat.ChatClient client = new(model, new ApiKeyCredential(key.Value ?? "no-key"), options);
 
-        return new ChatClientLease(client.AsIChatClient(), provider, model, ownedHttpClient: null);
+        return new ChatClientLease(providerWork.Bind(client.AsIChatClient()), provider, model, ownedHttpClient: null);
     }
 
     public void Dispose()

@@ -1400,7 +1400,7 @@ These commands expose the reusable preset service directly. [`arcanum setup`](#a
 
 Safely inspect, validate, edit, and open Arcanum configuration.
 
-Inspects and changes `arcanum.json` through descriptor-backed parsing and validation. `get` and `set` use dotted descriptor paths such as `host.port` or `providers.0.endpoint`. Secrets stay redacted; sensitive provider endpoint values come from stdin or a hidden prompt.
+Inspects and changes `arcanum.json` through descriptor-backed parsing and validation. `get` and `set` use dotted descriptor paths such as `host.port`, `providers.0.endpoint` or `localRuntimes.0.managementEndpoint`. Secrets stay redacted; sensitive inference and runtime-management endpoint values come from stdin or a hidden prompt. A provider's `localRuntimeId` binds it to an explicitly configured built-in runtime adapter; runtime declarations and shared `resourceGroup` values are described in the Compendium configuration reference.
 
 | Command | Explanation | Additional command options |
 |---|---|---|

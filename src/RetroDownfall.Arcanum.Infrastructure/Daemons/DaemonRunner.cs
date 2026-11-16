@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Daemons;
 using RetroDownfall.Arcanum.Core.Events;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 
@@ -152,8 +153,12 @@ public sealed class DaemonRunner(
         }
         catch (Exception ex)
         {
+            string message = ex is ProviderWorkDeferredException
+                ? "Maintenance interrupted the daemon after work may have run. Inspect its effects before restarting."
+                : ex.Message;
+
             DaemonExecutionSummary summary = await repository
-                .FailAsync(executionId, ex.Message, CancellationToken.None)
+                .FailAsync(executionId, message, CancellationToken.None)
                 .ConfigureAwait(false);
 
             PublishEvent(
@@ -161,7 +166,7 @@ public sealed class DaemonRunner(
                 runId,
                 DaemonEventType.Failed,
                 DateTimeOffset.UtcNow,
-                ex.Message,
+                message,
                 durationMilliseconds: ElapsedMilliseconds(startedAt));
 
             return Result<DaemonExecutionSummary>.Success(summary);

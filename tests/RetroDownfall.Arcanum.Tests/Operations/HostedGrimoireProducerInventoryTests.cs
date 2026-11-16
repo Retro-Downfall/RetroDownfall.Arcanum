@@ -13688,6 +13688,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("direct", true)]
     [InlineData("linked", true)]
     [InlineData("linked-local", true)]
+    [InlineData("provider-direct", true)]
+    [InlineData("provider-linked", true)]
+    [InlineData("provider-boxed", false)]
+    [InlineData("provider-ambient", true)]
+    [InlineData("provider-ambient-escape", false)]
+    [InlineData("provider-counterfeit", false)]
     [InlineData("unsupported-binding-condition", false)]
     [InlineData("recovery-kind-linked", true)]
     [InlineData("conditional-releases-lease", false)]
@@ -13721,7 +13727,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         string before = shape switch
         {
-            "boxed" => "GC.KeepAlive((object)lease);",
+            "boxed" or "provider-boxed" => "GC.KeepAlive((object)lease);",
             "composite" => "GC.KeepAlive((lease, 1));",
             "wrapper" => "GC.KeepAlive(new CapturedLease(lease));",
             "returned-alias" => "var alias = LeaseAliases.Return(lease); GC.KeepAlive(alias);",
@@ -13735,11 +13741,16 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         string tokenValue = shape switch
         {
             "control" => "token",
+            "provider-direct" or "provider-linked" or "provider-boxed" or "provider-ambient" or "provider-ambient-escape" => "lease.ProviderAdmissionRevocation",
+            "provider-counterfeit" => "new Counterfeit.LeaseToken(lease).ProviderAdmissionRevocation",
             "counterfeit-namespace" or "getter" => "new Counterfeit.LeaseToken(lease).MaintenanceRevocation",
             _ => "lease.MaintenanceRevocation",
         };
 
-        string link = shape == "direct" ? "" : "using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, " + tokenValue + ");";
+        string link = shape is "direct" or "provider-direct" ? "" : "using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, " + tokenValue + ");";
+
+        if (shape is "provider-ambient" or "provider-ambient-escape")
+            link = shape == "provider-ambient" ? "using var scope = WaitAmbient.Push(lease.ProviderAdmissionRevocation);" : "using var scope = WaitAmbient.PushLease(lease);";
 
         bool linkedSourceBoundary = shape is "unsupported-binding-condition" or "recovery-kind-linked" or "cts-subclass" or "unknown-cts-formal"
             or "reassigned-cts" or "authored-token-property" or "authored-link-factory" or "linked-captured-input"
@@ -13776,7 +13787,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         string callToken = shape switch
         {
-            "direct" => tokenValue,
+            "direct" or "provider-direct" => tokenValue,
+            "provider-ambient" or "provider-ambient-escape" => "token",
             "unknown-cts-formal" => "Counterfeit.TokenFactory.ReadToken(linked)",
             "authored-token-property" => "new Counterfeit.LeaseToken(lease).Token",
             _ => "linked.Token",
@@ -13818,6 +13830,34 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
             internal sealed class CapturedLease(IDisposable handle) { internal IDisposable Handle => handle; }
 
+            internal static class WaitAmbient
+            {
+                private static readonly AsyncLocal<Scope?> Current = new();
+
+                internal static IDisposable Push(CancellationToken token)
+                {
+                    Scope scope = new(token, Live(Current.Value), null);
+                    Current.Value = scope;
+                    return scope;
+                }
+
+                internal static IDisposable PushLease(IDisposable lease)
+                {
+                    Scope scope = new(default, Live(Current.Value), lease);
+                    Current.Value = scope;
+                    return scope;
+                }
+
+                private static Scope? Live(Scope? scope) => scope;
+
+                private sealed class Scope(CancellationToken token, Scope? previous, IDisposable? lease) : IDisposable
+                {
+                    internal CancellationToken Token => token;
+                    internal IDisposable? Lease => lease;
+                    public void Dispose() { if (ReferenceEquals(Current.Value, this)) Current.Value = Live(previous); }
+                }
+            }
+
             internal static class LeaseAliases
             {
                 internal static IDisposable Return(IDisposable handle) => handle;
@@ -13828,7 +13868,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             }
             """;
 
-        helpers += "namespace Counterfeit { internal sealed class LeaseToken(IDisposable captured) { internal CancellationToken Token => default; internal CancellationToken MaintenanceRevocation { get { "
+        helpers += "namespace Counterfeit { internal sealed class LeaseToken(IDisposable captured) { internal CancellationToken Token => default; internal CancellationToken ProviderAdmissionRevocation => default; internal CancellationToken MaintenanceRevocation { get { "
             + (shape == "getter" ? "System.IO.File.Delete(\"getter-effect\"); captured.Dispose();" : "") + " return default; } } } }";
 
         helpers += """
@@ -13878,7 +13918,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 """;
         }
 
-        string contracts = AdmissionTypes.Replace("bool TryBeginExternalEffectGroup", "System.Threading.CancellationToken MaintenanceRevocation { get; } bool TryBeginExternalEffectGroup", StringComparison.Ordinal);
+        string contracts = AdmissionTypes.Replace("bool TryBeginExternalEffectGroup", "System.Threading.CancellationToken MaintenanceRevocation { get; } System.Threading.CancellationToken ProviderAdmissionRevocation { get; } bool TryBeginExternalEffectGroup", StringComparison.Ordinal);
 
         string infrastructureName = shape == "counterfeit-assembly" ? "Counterfeit.Infrastructure" : "RetroDownfall.Arcanum.Infrastructure";
 

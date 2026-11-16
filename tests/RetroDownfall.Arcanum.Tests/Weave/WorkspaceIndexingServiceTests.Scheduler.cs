@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -8,6 +9,36 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 
 public sealed partial class WorkspaceIndexingServiceTests
 {
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Detached_workspace_handle_does_not_inherit_foreground_owner(bool active)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("one.cs", "class One {}");
+
+        TaskCompletionSource<IProviderWorkOwner?> observed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        FakeWeaveService weave = new() { OnEmbed = () => observed.TrySetResult(ProviderWorkAmbient.Owner) };
+
+        WorkspaceIndexingService service = CreateService(weave, out _);
+
+        using (ProviderWorkAmbient.Push(new TestProviderOwner(active)))
+        {
+            Assert.True(service.QueueIndexNow(_workspace.Root).IsSuccess);
+        }
+
+        Assert.Null(await observed.Task.WaitAsync(TimeSpan.FromSeconds(30)));
+
+        await DrainWorkspaceSchedulerAsync(service);
+    }
+
+    private sealed class TestProviderOwner(bool active) : IProviderWorkOwner
+    {
+        public bool IsActive => active;
+    }
+
     [SkippableFact]
     public async Task Manual_burst_coalesces_without_overflow_or_per_request_runtime_state()
     {

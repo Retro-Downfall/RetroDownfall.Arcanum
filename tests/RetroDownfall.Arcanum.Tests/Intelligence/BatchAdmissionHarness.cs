@@ -129,6 +129,8 @@ internal sealed class BatchAdmissionGate : IGrimoireConnectionAdmissionGate
 
         public CancellationToken MaintenanceRevocation => inner.MaintenanceRevocation;
 
+        public CancellationToken ProviderAdmissionRevocation => inner.ProviderAdmissionRevocation;
+
         public bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
 
         public bool TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effectGroup)

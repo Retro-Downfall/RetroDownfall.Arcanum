@@ -759,7 +759,8 @@ public sealed partial class WeaveServiceTests
         Func<IServiceScopeFactory, IServiceScopeFactory>? decorateScopes = null,
         RetroDownfall.Arcanum.Core.Weave.Tapestry.ITapestryProviderValidator? tapestryValidator = null,
         ILogger<WeaveService>? logger = null,
-        IOptionsMonitor<ArcanumSettings>? options = null)
+        IOptionsMonitor<ArcanumSettings>? options = null,
+        ProviderWorkCoordinator? providerWorkCoordinator = null)
     {
         ServiceCollection collection = new();
 
@@ -781,7 +782,7 @@ public sealed partial class WeaveServiceTests
             factory ?? new FakeEmbeddingGeneratorFactory(),
             options ?? new TestOptionsMonitor<ArcanumSettings>(settings),
             decorateScopes is null ? scopes : decorateScopes(scopes),
-            logger ?? NullLogger<WeaveService>.Instance, tapestryValidator);
+            logger ?? NullLogger<WeaveService>.Instance, tapestryValidator, providerWorkCoordinator);
     }
 
     /// <summary>Counts the scopes a call opens and the ones it actually gives back.</summary>

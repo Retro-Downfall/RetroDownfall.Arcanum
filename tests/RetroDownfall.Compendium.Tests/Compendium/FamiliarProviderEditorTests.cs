@@ -16,6 +16,27 @@ namespace RetroDownfall.Compendium.Ux.Tests.Compendium;
 /// </summary>
 public sealed class FamiliarProviderEditorTests
 {
+    [Fact]
+    public void Local_runtime_reference_survives_edits_and_is_cleared_on_a_Familiar()
+    {
+        ProvidersSectionViewModel section = new(new StubDialogService());
+
+        section.LoadFrom([new ProviderSettings { Name = "local", Endpoint = "http://localhost:11434/v1", LocalRuntimeId = "desktop", Models = ["primary"] }], null, null);
+
+        var row = Assert.Single(section.Providers);
+
+        row.Name = "renamed";
+
+        Assert.Equal("desktop", Assert.Single(section.BuildProviders()).LocalRuntimeId);
+
+        row.Type = AiProviderKind.CodexCli;
+
+        Assert.Null(Assert.Single(section.BuildProviders()).LocalRuntimeId);
+
+        row.Type = AiProviderKind.OpenAICompatible;
+
+        Assert.Null(Assert.Single(section.BuildProviders()).LocalRuntimeId);
+    }
 
     [Fact]
     public void Guild_source_survives_ordinary_edits_but_is_cleared_when_switching_to_a_Familiar()

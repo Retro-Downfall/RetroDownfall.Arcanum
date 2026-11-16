@@ -226,7 +226,8 @@ public sealed partial class WizardIntelligenceProvider(
             return _turnCoordinator.Value;
         }
 
-        return new TurnExecutionCoordinator(new TurnEngine.TurnEngine(this));
+        return new TurnExecutionCoordinator(new TurnEngine.TurnEngine(this,
+            providerWork: (ModelCallExecutor as NativeModelCallExecutor)?.WorkCoordinator, settings: settings));
     }
 
     /// <summary>
@@ -859,6 +860,10 @@ public sealed partial class WizardIntelligenceProvider(
                     {
                         lease = await chatClientFactory.ResolveClientAsync(provider, resolvedModel, inferenceToken).ConfigureAwait(false);
                     }
+                    catch (ProviderWorkDeferredException)
+                    {
+                        throw;
+                    }
                     catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
                     {
                         throw;
@@ -1031,6 +1036,10 @@ public sealed partial class WizardIntelligenceProvider(
                     await eventSink(frame, callerToken).ConfigureAwait(false);
                 }
             }
+        }
+        catch (ProviderWorkDeferredException)
+        {
+            throw;
         }
         catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
         {
@@ -1209,6 +1218,10 @@ public sealed partial class WizardIntelligenceProvider(
                     {
                         moved = await singleEnumerator.MoveNextAsync().ConfigureAwait(false);
                     }
+                    catch (ProviderWorkDeferredException)
+                    {
+                        throw;
+                    }
                     catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
                     {
                         throw;
@@ -1306,6 +1319,10 @@ public sealed partial class WizardIntelligenceProvider(
                     {
                         candidateLease = await chatClientFactory.ResolveClientAsync(candidateProvider, candidateModel, inferenceToken).ConfigureAwait(false);
                     }
+                    catch (ProviderWorkDeferredException)
+                    {
+                        throw;
+                    }
                     catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
                     {
                         throw;
@@ -1371,6 +1388,10 @@ public sealed partial class WizardIntelligenceProvider(
                 try
                 {
                     hasFirst = await enumerator.MoveNextAsync().ConfigureAwait(false);
+                }
+                catch (ProviderWorkDeferredException)
+                {
+                    throw;
                 }
                 catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
                 {
@@ -1452,6 +1473,10 @@ public sealed partial class WizardIntelligenceProvider(
                     try
                     {
                         movedPre = await enumerator.MoveNextAsync().ConfigureAwait(false);
+                    }
+                    catch (ProviderWorkDeferredException)
+                    {
+                        throw;
                     }
                     catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
                     {
@@ -1559,6 +1584,10 @@ public sealed partial class WizardIntelligenceProvider(
                     try
                     {
                         moved = await enumerator.MoveNextAsync().ConfigureAwait(false);
+                    }
+                    catch (ProviderWorkDeferredException)
+                    {
+                        throw;
                     }
                     catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
                     {
@@ -1750,6 +1779,10 @@ public sealed partial class WizardIntelligenceProvider(
                 try
                 {
                     moved = await iterator.MoveNextAsync().ConfigureAwait(false);
+                }
+                catch (ProviderWorkDeferredException)
+                {
+                    throw;
                 }
                 catch (OperationCanceledException) when (callerToken.IsCancellationRequested || inferenceToken.IsCancellationRequested)
                 {
@@ -3769,6 +3802,10 @@ public sealed partial class WizardIntelligenceProvider(
                                 try
                                 {
                                     hasNext = await streamEnumerator.MoveNextAsync().ConfigureAwait(false);
+                                }
+                                catch (ProviderWorkDeferredException)
+                                {
+                                    throw;
                                 }
                                 catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
                                 {
@@ -6254,6 +6291,10 @@ public sealed partial class WizardIntelligenceProvider(
 
             return embedResult.Value;
         }
+        catch (ProviderWorkDeferredException)
+        {
+            throw;
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             outcome = "The shared retrieval embedding was cancelled; token usage is unknown.";
@@ -6321,6 +6362,10 @@ public sealed partial class WizardIntelligenceProvider(
             workspaceIndexingService.RegisterWorkspace(normalizedWorkingDirectory);
 
             normalizedWorkingDirectory = workspaceIndexingService.ResolveIndexedWorkspacePath(normalizedWorkingDirectory);
+        }
+        catch (ProviderWorkDeferredException)
+        {
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -6392,6 +6437,10 @@ public sealed partial class WizardIntelligenceProvider(
             diagnostics?.Set(RetrievalSource.Workspace, chunks.Length == 0 ? RetrievalReason.NotMaterialized : RetrievalReason.Retrieved);
 
             return chunks.Length == 0 ? null : chunks;
+        }
+        catch (ProviderWorkDeferredException)
+        {
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -6514,6 +6563,10 @@ public sealed partial class WizardIntelligenceProvider(
             diagnostics?.Set(RetrievalSource.Saga, memories.Count == 0 ? RetrievalReason.NotMaterialized : RetrievalReason.Retrieved);
 
             return memories.Count == 0 ? null : [.. memories];
+        }
+        catch (ProviderWorkDeferredException)
+        {
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -6714,6 +6767,10 @@ public sealed partial class WizardIntelligenceProvider(
             diagnostics?.Set(RetrievalSource.Tapestry, result.Value.Count == 0 ? RetrievalReason.NoHits : RetrievalReason.Retrieved);
 
             return result.Value.Count > 0 ? [.. result.Value] : null;
+        }
+        catch (ProviderWorkDeferredException)
+        {
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
@@ -7109,6 +7166,10 @@ public sealed partial class WizardIntelligenceProvider(
             diagnostics?.Set(RetrievalSource.Attachment, chunks.Length == 0 ? RetrievalReason.NoHits : RetrievalReason.Retrieved);
 
             return chunks.Length == 0 ? null : chunks;
+        }
+        catch (ProviderWorkDeferredException)
+        {
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -8711,6 +8772,10 @@ public sealed partial class WizardIntelligenceProvider(
 
             await inferenceAuditLogger.LogAsync(record, cancellationToken).ConfigureAwait(false);
         }
+        catch (ProviderWorkDeferredException)
+        {
+            throw;
+        }
         catch (OperationCanceledException)
         {
             throw;
@@ -8927,6 +8992,10 @@ public sealed partial class WizardIntelligenceProvider(
                     costUsd,
                     cancellationToken)
                 .ConfigureAwait(false);
+        }
+        catch (ProviderWorkDeferredException)
+        {
+            throw;
         }
         catch (OperationCanceledException)
         {

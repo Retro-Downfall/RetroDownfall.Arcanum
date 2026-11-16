@@ -42,6 +42,97 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 [Collection(HostedServiceLifetimeCollection.Name)]
 public sealed class LoremasterTests
 {
+    [Fact]
+    public async Task Deferred_campaign_fold_reuses_completed_contribution_after_reopen()
+    {
+        LoremasterHarness harness = new();
+
+        harness.Settings.Features.CampaignRollups = true;
+
+        await harness.Service.StartAsync(CancellationToken.None);
+        await harness.NextStepAsync("sweep");
+        await harness.NextStepAsync("scope-dispose");
+
+        TaskCompletionSource<IGrimoireClosingOwner> closingStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        harness.CampaignMaintenance.BeforeCampaignAsync = (_, _) =>
+        {
+            IGrimoireClosingOwner closing = harness.Gate.Inner.BeginOrResumeExclusive(Owner()).Value;
+            closingStarted.TrySetResult(closing);
+            return Task.FromException(new ProviderWorkDeferredException(CancellationToken.None));
+        };
+
+        Assert.True(harness.Queue.TryQueue(harness.Repository.Session.Id));
+
+        await using IGrimoireClosingOwner owner = await closingStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        try
+        {
+            Assert.True((await harness.Gate.Inner.DrainRequestAndWorkAsync(owner, CancellationToken.None)).IsSuccess);
+            Assert.Single(harness.CampaignMaintenance.ProcessedSessions.Distinct());
+            Assert.Equal(1, harness.Queue.PendingCountForTesting);
+
+            harness.CampaignMaintenance.BeforeCampaignAsync = static (_, _) => Task.CompletedTask;
+            await ReopenAsync(harness.Gate.Inner, owner);
+            await harness.NextStepAsync("rollup");
+            await harness.NextStepAsync("scope-dispose");
+
+            Assert.Equal(2, harness.CampaignMaintenance.SessionCalls);
+            Assert.Equal(1, harness.CampaignMaintenance.ContributionEffects);
+            Assert.Equal(1, harness.CampaignMaintenance.CampaignCalls);
+        }
+        finally
+        {
+            await harness.Service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
+    [Fact]
+    public async Task Unsent_summary_defers_until_reopen_without_losing_the_session()
+    {
+        LoremasterHarness harness = new();
+
+        await harness.Service.StartAsync(CancellationToken.None);
+        await harness.NextStepAsync("sweep");
+        await harness.NextStepAsync("scope-dispose");
+
+        TaskCompletionSource<IGrimoireClosingOwner> closingStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        harness.OnStepAsync = (step, _) =>
+        {
+            if (step != "provider") return Task.CompletedTask;
+
+            IGrimoireClosingOwner closing = harness.Gate.Inner.BeginOrResumeExclusive(Owner()).Value;
+            closingStarted.TrySetResult(closing);
+
+            return Task.FromException(new ProviderWorkDeferredException(CancellationToken.None));
+        };
+
+        Assert.True(harness.Queue.TryQueue(harness.Repository.Session.Id));
+
+        await using IGrimoireClosingOwner owner = await closingStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        try
+        {
+            Assert.True((await harness.Gate.Inner.DrainRequestAndWorkAsync(owner, CancellationToken.None)).IsSuccess);
+            Assert.Equal(1, harness.Queue.PendingCountForTesting);
+            Assert.Equal(0, harness.Repository.Rollups);
+
+            harness.OnStepAsync = static (_, _) => Task.CompletedTask;
+
+            await ReopenAsync(harness.Gate.Inner, owner);
+            await harness.NextStepAsync("rollup");
+            await harness.NextStepAsync("scope-dispose");
+
+            Assert.Equal(2, harness.Intelligence.Calls);
+            Assert.Equal(1, harness.Repository.Rollups);
+        }
+        finally
+        {
+            await harness.Service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -280,9 +371,15 @@ public sealed class LoremasterTests
 
         public Func<Guid, CancellationToken, Task> BeforeSessionAsync { get; set; } = static (_, _) => Task.CompletedTask;
 
+        public Func<Guid, CancellationToken, Task> BeforeCampaignAsync { get; set; } = static (_, _) => Task.CompletedTask;
+
         public Channel<Guid> ExecutedSessions { get; } = Channel.CreateUnbounded<Guid>();
 
         public ConcurrentQueue<Guid> ProcessedSessions { get; } = new();
+
+        private readonly ConcurrentDictionary<Guid, byte> _completedContributions = new();
+
+        public int ContributionEffects => _completedContributions.Count;
 
         public ConcurrentQueue<Guid> FoldedCampaigns { get; } = new();
 
@@ -346,6 +443,8 @@ public sealed class LoremasterTests
 
             SessionCalls++;
 
+            _ = _completedContributions.TryAdd(sessionId, 0);
+
             ProcessedSessions.Enqueue(sessionId);
 
             ExecutedSessions.Writer.TryWrite(sessionId);
@@ -355,16 +454,18 @@ public sealed class LoremasterTests
             return Result<CampaignRollupMaintenanceResult>.Success(new(deferred ? 0 : ContributionPages, deferred, deferred ? "Protected" : null));
         }
 
-        public Task<Result<CampaignRollupMaintenanceResult>> ProcessCampaignAsync(Guid campaignId,
+        public async Task<Result<CampaignRollupMaintenanceResult>> ProcessCampaignAsync(Guid campaignId,
             CampaignRollupMaintenanceCapability? capability, CancellationToken cancellationToken)
         {
             Assert.Null(capability);
+
+            await BeforeCampaignAsync(campaignId, cancellationToken);
 
             CampaignCalls++;
 
             FoldedCampaigns.Enqueue(campaignId);
 
-            return Task.FromResult(Result<CampaignRollupMaintenanceResult>.Success(new(FoldDeferred ? 0 : 1, FoldDeferred, FoldDeferred ? "Protected" : null)));
+            return Result<CampaignRollupMaintenanceResult>.Success(new(FoldDeferred ? 0 : 1, FoldDeferred, FoldDeferred ? "Protected" : null));
         }
 
         public Task<IReadOnlyList<Guid>> FindPendingContributionsAsync(DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken, Guid? afterSessionId = null)

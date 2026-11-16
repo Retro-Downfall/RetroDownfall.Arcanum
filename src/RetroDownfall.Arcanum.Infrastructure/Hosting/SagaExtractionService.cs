@@ -1235,6 +1235,8 @@ public sealed class SagaExtractionService : BackgroundService
 
             await using IGrimoireExternalEffectGroup effect = effectGroup!;
 
+            using IDisposable providerWait = RetroDownfall.Arcanum.Core.Intelligence.ProviderWorkWaitAmbient.Push(workLease.ProviderAdmissionRevocation);
+
             long pageCursor = cursor?.EntrySequence ?? 0L;
 
             IReadOnlyList<SagaExtractionCandidate>? memories = TakeUnembeddedPage(
@@ -1282,6 +1284,10 @@ public sealed class SagaExtractionService : BackgroundService
                 try
                 {
                     result = await intelligence.ExecutePromptAsync(ping, ArcanumInvocationContext.None, cancellationToken).ConfigureAwait(false);
+                }
+                catch (RetroDownfall.Arcanum.Core.Intelligence.ProviderWorkDeferredException)
+                {
+                    return new SagaExtractionAttemptResult(SagaExtractionOutcome.DeferredForMaintenance);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -1390,6 +1396,16 @@ public sealed class SagaExtractionService : BackgroundService
                 try
                 {
                     embedResult = await weave.EmbedAsync(trimmed, cancellationToken).ConfigureAwait(false);
+                }
+                catch (RetroDownfall.Arcanum.Core.Intelligence.ProviderWorkDeferredException)
+                {
+                    attemptContext.FailureCountsTowardAbandonment = false;
+
+                    _unembeddedPages[sessionId] = new SagaExtractionUnembeddedPage(
+                        pageCursor, pageRequest.AfterEntrySequenceExclusive, pageRequest.ThroughEntrySequence,
+                        newEntries[^1].Sequence, newEntries.Count, memories);
+
+                    return new SagaExtractionAttemptResult(SagaExtractionOutcome.DeferredForMaintenance);
                 }
                 catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
                 {

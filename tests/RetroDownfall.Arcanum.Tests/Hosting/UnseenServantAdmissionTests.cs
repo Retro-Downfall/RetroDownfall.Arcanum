@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -10,6 +11,39 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 
 public sealed class UnseenServantAdmissionTests
 {
+    [Fact]
+    public async Task Closing_wakes_unsent_daemon_wait_and_records_failed_run_once()
+    {
+        await using UnseenServantAdmissionHarness harness = new();
+
+        await harness.ConfigureDueJobAsync();
+
+        TaskCompletionSource waiting = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        harness.OnStep = async (step, _) =>
+        {
+            if (!step.StartsWith("runner:", StringComparison.Ordinal)) return;
+
+            CancellationToken admission = ProviderWorkWaitAmbient.CancellationToken;
+            waiting.TrySetResult();
+
+            try { await Task.Delay(Timeout.InfiniteTimeSpan, admission); }
+            catch (OperationCanceledException) when (admission.IsCancellationRequested)
+            {
+                harness.RunnerStatus = RetroDownfall.Arcanum.Core.Daemons.DaemonJobStatus.Failed;
+            }
+        };
+
+        harness.Dispatch();
+        await waiting.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await using IGrimoireClosingOwner closing = harness.Inner.BeginOrResumeExclusive(Owner()).Value;
+
+        Assert.True((await harness.Inner.DrainRequestAndWorkAsync(closing, CancellationToken.None).AsTask().WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
+        Assert.Single(harness.Events, static step => step.StartsWith("runner:", StringComparison.Ordinal));
+        Assert.Single(harness.Store.Rows);
+    }
+
     [Fact]
     public async Task CleanupCadenceIsStampedOnlyAfterTheAdmittedLeaseFinishesDisposing()
     {

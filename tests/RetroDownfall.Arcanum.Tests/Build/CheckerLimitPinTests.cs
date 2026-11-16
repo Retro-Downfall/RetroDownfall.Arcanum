@@ -1043,10 +1043,16 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
     /// <summary>The authored types that override a framework virtual member and reach a site: where each is constructed, and why it is outside the claim.</summary>
     private static readonly (string Type, string[] ConstructedIn, string Reason)[] ReviewedFrameworkOverrides =
     [
+        (P + "Api.Intelligence.ChatClientFactory.CompletionCheckedChatClient", [P + "Api.Intelligence.ChatClientFactory.CreateOpenAiCompatibleLease"],
+            "Validates completion metadata while forwarding the existing classified streaming model call. The runtime identity wrapper delegates that same call through this wrapper; neither adds an independent provider effect."),
         (P + "Api.Intelligence.OpenAiRequestAugmentingHandler", [],
             "A message handler of the OpenAI-compatible provider client, built by the client factory. It forwards the request the classified model call makes, so its send is that call."),
         (P + "Api.Intelligence.OpenAiRequestAugmentingHandler.PrefixedStream", [P + "Api.Intelligence.OpenAiRequestAugmentingHandler.ResponseMentionsStrictAsync"],
             "Replays a response body that handler has already read, inside the handler's send."),
+        (P + "Api.Intelligence.ProviderWorkClientIdentity.BoundChatClient", [P + "Api.Intelligence.ProviderWorkClientIdentity.Bind"],
+            "Carries the frozen route and validates exact no-send evidence around the existing classified chat call. Service lookup exposes metadata only; the wrapper grants no authority and creates no independent provider work."),
+        (P + "Api.Intelligence.ProviderWorkClientIdentity.BoundEmbeddingGenerator", [P + "Api.Intelligence.ProviderWorkClientIdentity.Bind"],
+            "Carries the frozen route and validates exact no-send evidence around the existing classified embedding call. Service lookup exposes metadata only; the wrapper grants no authority and creates no independent provider work."),
         (P + "Api.Intelligence.TapestryProviderPolicy",
             [P + "Api.Intelligence.ChatClientFactory.CreateOpenAiCompatibleLease", P + "Api.Intelligence.EmbeddingGeneratorFactory.BuildOpenAiCompatibleGenerator"],
             "The SDK invokes the build observation policy before physical attempts of the classified chat/embedding call. It adds read-only admitted source/model validation within that existing effect and grants no authority or independent provider work."),

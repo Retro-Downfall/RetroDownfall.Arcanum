@@ -28,6 +28,7 @@ internal sealed partial class ApprenticeService(
     IGrimoireConnectionAdmissionGate admissionGate,
     IApprenticeExecutionCapacity? executionCapacity = null) : BackgroundService, IApprenticeRuntime
 {
+    private const string ProviderDeferredAfterEffects = "Maintenance interrupted the Apprentice after work may have run. Inspect its effects before restarting.";
     private readonly ConcurrentDictionary<Guid, ExecutionLease> _executionTokens = new();
 
     private readonly ConcurrentDictionary<Guid, long> _executionGenerations = new();
@@ -1336,6 +1337,8 @@ internal sealed partial class ApprenticeService(
 
     private async Task RunApprenticeAsync(Guid apprenticeId, long generation)
     {
+        using IDisposable providerWork = ProviderWorkAmbient.Push(null);
+
         DateTimeOffset runStarted = DateTimeOffset.UtcNow;
 
         bool ownsExecutionToken = false;
@@ -1694,6 +1697,8 @@ internal sealed partial class ApprenticeService(
 
         await using IGrimoireExternalEffectGroup effectGroup = admittedGroup!;
 
+        using IDisposable providerWait = ProviderWorkWaitAmbient.Push(lease.ProviderAdmissionRevocation);
+
         // The group begins before any start event/provider call and remains through durable plan
         // and status publication, so maintenance sees either none or the concluded plan unit.
         try
@@ -1907,6 +1912,8 @@ internal sealed partial class ApprenticeService(
 
         // One attempt is the atomic effect unit, including retry/failure evidence, child stamping,
         // Shifting Fate, and the final checkpoint. Retry memory lives on the retained task above it.
+        using IDisposable providerWait = ProviderWorkWaitAmbient.Push(lease.ProviderAdmissionRevocation);
+
         try
         {
             int stepIndex = attemptMemory.StepIndex;
@@ -2191,6 +2198,8 @@ internal sealed partial class ApprenticeService(
 
         // Simulacrum branches share this one frontier. Their fresh nested scopes are bounded by the
         // existing branch semaphore and never claim independent effect groups.
+        using IDisposable providerWait = ProviderWorkWaitAmbient.Push(lease.ProviderAdmissionRevocation);
+
         try
         {
             IArcanumIntelligenceProvider intelligence = ResolveUnitIntelligence(services, apprenticeId);
@@ -2376,7 +2385,8 @@ internal sealed partial class ApprenticeService(
             await FailApprenticeAsync(
                 repo,
                 apprentice,
-                IsGuildExecution(apprenticeId) ? "The qualified Guild unit stopped." : exception.Message,
+                IsGuildExecution(apprenticeId) ? "The qualified Guild unit stopped."
+                    : exception is ProviderWorkDeferredException ? ProviderDeferredAfterEffects : exception.Message,
                 apprenticeId,
                 CancellationToken.None).ConfigureAwait(false);
         }
@@ -3276,7 +3286,7 @@ internal sealed partial class ApprenticeService(
                 stepIndex,
                 StepResultKind.Terminal,
                 null,
-                ApprenticeExecutionPolicy.SanitizeOperatorMessage(ex.Message),
+                ApprenticeExecutionPolicy.SanitizeOperatorMessage(ex is ProviderWorkDeferredException ? ProviderDeferredAfterEffects : ex.Message),
                 false,
                 0,
                 castSendings.SnapshotUnsettled());

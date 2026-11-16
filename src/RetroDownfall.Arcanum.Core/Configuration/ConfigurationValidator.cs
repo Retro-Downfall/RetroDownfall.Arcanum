@@ -959,6 +959,41 @@ public sealed class ConfigurationValidator(
         HashSet<string> seenProviderNames = new(StringComparer.OrdinalIgnoreCase);
         List<EnvironmentVariableReference> environmentReferences = [];
 
+        HashSet<string> runtimeIds = new(StringComparer.OrdinalIgnoreCase);
+
+        LocalRuntimeSettings[] runtimes = settings.LocalRuntimes ?? [];
+
+        for (int index = 0; index < runtimes.Length; index++)
+        {
+            string pointer = $"localRuntimes[{index}]";
+
+            LocalRuntimeSettings? runtime = runtimes[index];
+
+            if (runtime is null)
+            {
+                errors.Add(new(pointer, "Runtime entry must be a JSON object."));
+
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(runtime.Id) || runtime.Id != runtime.Id.Trim() || !runtimeIds.Add(runtime.Id))
+                errors.Add(new($"{pointer}.id", "Runtime Id must be nonblank, unpadded and unique case-insensitively."));
+
+            if (!LocalRuntimeAdapterCatalog.IsKnown(runtime.Adapter))
+                errors.Add(new($"{pointer}.adapter", "Runtime Adapter must name a shipped adapter: ollama."));
+
+            if (runtime.ResourceGroup is not null && (string.IsNullOrWhiteSpace(runtime.ResourceGroup) || runtime.ResourceGroup != runtime.ResourceGroup.Trim()))
+                errors.Add(new($"{pointer}.resourceGroup", "ResourceGroup must be nonblank and unpadded when provided."));
+
+            if (!LocalRuntimeAdapterCatalog.TryGetManagementUri(runtime, out _))
+                errors.Add(new($"{pointer}.managementEndpoint", "ManagementEndpoint must be an absolute HTTP(S) URI without user info, query or fragment."));
+
+            ValidateOptionalEnvironmentVariableName(runtime.CredentialEnvironmentVariable, $"{pointer}.credentialEnvironmentVariable", errors);
+
+            if (!string.IsNullOrWhiteSpace(runtime.CredentialEnvironmentVariable))
+                AddEnvironmentVariableReference(runtime.CredentialEnvironmentVariable.Trim(), $"{pointer}.credentialEnvironmentVariable", environmentReferences);
+        }
+
         for (int providerIndex = 0; providerIndex < providers.Length; providerIndex++)
         {
             ProviderSettings provider = providers[providerIndex];
@@ -1010,6 +1045,11 @@ public sealed class ConfigurationValidator(
             }
 
             bool isFamiliar = FamiliarProviders.IsFamiliar(provider.Type);
+
+            if (provider.LocalRuntimeId is not null
+                && (provider.Type != AiProviderKind.OpenAICompatible || string.IsNullOrWhiteSpace(provider.LocalRuntimeId)
+                    || provider.LocalRuntimeId != provider.LocalRuntimeId.Trim() || !runtimeIds.Contains(provider.LocalRuntimeId)))
+                errors.Add(new($"{providerPointer}.localRuntimeId", "LocalRuntimeId must reference a declared local runtime on an OpenAI-compatible provider."));
 
             ModelEntry[] models = provider.Models ?? [];
 

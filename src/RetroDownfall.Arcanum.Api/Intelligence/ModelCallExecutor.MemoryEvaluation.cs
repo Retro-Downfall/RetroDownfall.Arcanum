@@ -49,6 +49,8 @@ public sealed partial class ModelCallExecutor
 
         MemoryEvaluationSendEvidence evidence = new(index, pairIndex, arm, envelope, envelope.Digest, plan.DestinationDigest, envelope.Sensitivity.Digest);
 
+        using IDisposable? providerWork = await EnterProviderWorkAsync(chatClient, context.Provider, ct).ConfigureAwait(false);
+
         await beforeSend(evidence, ct).ConfigureAwait(false);
 
         ct.ThrowIfCancellationRequested();
@@ -60,6 +62,10 @@ public sealed partial class ModelCallExecutor
         try
         {
             response = await chatClient.GetResponseAsync(messages, options, ct).ConfigureAwait(false);
+        }
+        catch (Exception refusal) when (ProviderWorkClientIdentity.Lookup(chatClient)?.TryConsumeNoSend(refusal) == true)
+        {
+            return new Error(ErrorCodes.MemoryEvaluation.StaleConfiguration, "The exact evaluation provider route changed before transport.");
         }
         catch (MemoryEvaluationRejectedResponseException rejected)
         {

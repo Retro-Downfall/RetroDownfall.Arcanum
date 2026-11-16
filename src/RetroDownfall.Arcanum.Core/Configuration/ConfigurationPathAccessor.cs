@@ -353,9 +353,11 @@ public static class ConfigurationPathAccessor
         string[] segments = Split(key);
 
         return segments.Length == 3
-            && string.Equals(segments[0], "providers", StringComparison.OrdinalIgnoreCase)
             && int.TryParse(segments[1], NumberStyles.None, CultureInfo.InvariantCulture, out _)
-            && string.Equals(segments[2], "endpoint", StringComparison.OrdinalIgnoreCase);
+            && ((string.Equals(segments[0], "providers", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(segments[2], "endpoint", StringComparison.OrdinalIgnoreCase))
+                || (string.Equals(segments[0], "localRuntimes", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(segments[2], "managementEndpoint", StringComparison.OrdinalIgnoreCase)));
     }
 
     /// <summary>

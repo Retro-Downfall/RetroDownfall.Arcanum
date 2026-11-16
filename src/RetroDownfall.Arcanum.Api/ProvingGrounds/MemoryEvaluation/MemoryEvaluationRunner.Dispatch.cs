@@ -96,7 +96,14 @@ internal sealed partial class MemoryEvaluationRunner
 
                 ct.ThrowIfCancellationRequested();
 
-                if (sent.IsFailure) throw new EvaluationStopped(failure == MemoryEvaluationReason.None ? MemoryEvaluationReason.ProviderFailure : failure);
+                if (sent.IsFailure)
+                {
+                    MemoryEvaluationReason reason = failure != MemoryEvaluationReason.None ? failure
+                        : sent.Error.Code == ErrorCodes.MemoryEvaluation.StaleConfiguration ? MemoryEvaluationReason.StaleConfiguration
+                        : MemoryEvaluationReason.ProviderFailure;
+
+                    throw new EvaluationStopped(reason);
+                }
 
                 progress.AddSend(sent.Value);
 

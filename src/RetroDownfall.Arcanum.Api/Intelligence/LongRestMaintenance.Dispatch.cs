@@ -136,6 +136,8 @@ internal sealed partial class LongRestMaintenance
 
                 try
                 {
+                    using IDisposable providerWait = ProviderWorkWaitAmbient.Push(admission.ProviderAdmissionRevocation);
+
                     result = await provider.ExecuteAsync(payload, UnrestrictedTurnBudget.Instance,
                         BeforeSend, providerAdmission, dispatch.Token).ConfigureAwait(false);
                 }
@@ -149,6 +151,15 @@ internal sealed partial class LongRestMaintenance
                         await ReleaseUnsentAsync(attempt).ConfigureAwait(false);
 
                     throw new Refused(refusal.Error);
+                }
+                catch (ProviderWorkDeferredException)
+                {
+                    if (attempt.State == LongRestDispatchAttemptState.Prepared)
+                    {
+                        await ReleaseUnsentAsync(attempt).ConfigureAwait(false);
+                    }
+
+                    throw new LongRestMaintenanceDeferredException(admission.ProviderAdmissionRevocation);
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException && attempt.State == LongRestDispatchAttemptState.Sent)
                 {

@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -28,7 +29,8 @@ public sealed class WeaveService(
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
     IServiceScopeFactory scopeFactory,
     ILogger<WeaveService> logger,
-    ITapestryProviderValidator? tapestryValidator) : IWeaveService
+    ITapestryProviderValidator? tapestryValidator,
+    ProviderWorkCoordinator? providerWorkCoordinator = null) : IWeaveService
 {
     /// <summary>Existing ordinary-only construction; an active Tapestry observation still fails closed.</summary>
     public WeaveService(IEmbeddingGeneratorFactory generatorFactory, IOptionsMonitor<ArcanumSettings> optionsMonitor,
@@ -398,6 +400,43 @@ public sealed class WeaveService(
             .ConfigureAwait(false);
 
         attempt.Provenance = lease.Provenance;
+
+        using IDisposable? providerWork = providerWorkCoordinator is not null && lease.Resource is { } resource
+            ? await providerWorkCoordinator.EnterCallAsync(resource,
+                ProviderWorkAmbient.Owner as ProviderWorkCoordinator.ForegroundTurn, cancellationToken).ConfigureAwait(false)
+            : null;
+
+        // A queued generator retains its exact physical endpoint. Never send an old queued batch
+        // after the operator changes the feature, model, provider endpoint or runtime binding underneath it.
+        if (lease.Endpoint is { } frozenEndpoint && lease.Provenance is { } frozenIdentity)
+        {
+            ArcanumSettings currentSettings = optionsMonitor.CurrentValue;
+
+            EmbeddingSettings current = currentSettings.ResolveEmbeddings();
+
+            if (!current.Enabled || !string.Equals(current.Provider, frozenIdentity.Provider, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(current.Model, frozenIdentity.Model, StringComparison.Ordinal)
+                || !ProviderResolver.TryResolveProviderByName(currentSettings, frozenIdentity.Provider, out ProviderSettings? currentProvider)
+                || currentProvider is null || currentProvider.Type != AiProviderKind.OpenAICompatible
+                || !Uri.TryCreate(currentProvider.Endpoint, UriKind.Absolute, out Uri? currentEndpoint)
+                || !string.Equals(currentEndpoint.AbsoluteUri, frozenEndpoint.AbsoluteUri, StringComparison.Ordinal)
+                || !string.Equals(currentProvider.LocalRuntimeId, lease.LocalRuntimeId, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new EmbeddingIdentityChangedException();
+            }
+
+            try
+            {
+                if (ProviderResourceKey.FromProvider(currentProvider, currentSettings) != lease.Resource)
+                {
+                    throw new EmbeddingIdentityChangedException();
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                throw new EmbeddingIdentityChangedException();
+            }
+        }
 
         if (TapestryBuildContext.Current is not null)
         {

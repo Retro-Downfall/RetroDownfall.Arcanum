@@ -325,6 +325,8 @@ public sealed class LongRestSweepAdmissionOwnershipTests
 
         public CancellationToken MaintenanceRevocation => CancellationToken.None;
 
+        public CancellationToken ProviderAdmissionRevocation => CancellationToken.None;
+
         public bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
 
         internal int Disposals { get; private set; }

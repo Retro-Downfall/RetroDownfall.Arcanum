@@ -11,6 +11,16 @@ internal static class ArcanumErrorMapper
     public static int ResolveStatusCode(string errorCode) =>
         errorCode switch
         {
+            ErrorCodes.LocalRuntime.NotFound => StatusCodes.Status404NotFound,
+
+            ErrorCodes.LocalRuntime.InvalidConfiguration => StatusCodes.Status400BadRequest,
+
+            ErrorCodes.LocalRuntime.AdapterUnavailable or ErrorCodes.LocalRuntime.CredentialUnavailable => StatusCodes.Status503ServiceUnavailable,
+
+            ErrorCodes.LocalRuntime.InvalidResponse or ErrorCodes.LocalRuntime.HttpFailure or ErrorCodes.LocalRuntime.RequestFailed => StatusCodes.Status502BadGateway,
+
+            ErrorCodes.LocalRuntime.Timeout => StatusCodes.Status504GatewayTimeout,
+
             ErrorCodes.Guild.InvalidRequest or ErrorCodes.Guild.CursorInvalid => StatusCodes.Status400BadRequest,
 
             ErrorCodes.Guild.Forbidden

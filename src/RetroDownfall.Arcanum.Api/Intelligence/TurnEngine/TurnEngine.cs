@@ -1,5 +1,7 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -12,7 +14,9 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 /// </summary>
 internal sealed class TurnEngine(
     ITurnPipelineRunner pipelineRunner,
-    ILogger<TurnEngine>? logger = null) : ITurnEventSource
+    ILogger<TurnEngine>? logger = null,
+    ProviderWorkCoordinator? providerWork = null,
+    IOptionsSnapshot<ArcanumSettings>? settings = null) : ITurnEventSource
 {
     private readonly ITurnPipelineRunner _pipelineRunner =
         pipelineRunner ?? throw new ArgumentNullException(nameof(pipelineRunner));
@@ -75,6 +79,10 @@ internal sealed class TurnEngine(
             {
                 await producer.ConfigureAwait(false);
             }
+            catch (ProviderWorkDeferredException)
+            {
+                throw;
+            }
             catch (OperationCanceledException)
             {
                 // Abandoned run — the pipeline unwound on the producer token as instructed.
@@ -99,6 +107,25 @@ internal sealed class TurnEngine(
     {
         try
         {
+            using ProviderWorkCoordinator.ForegroundTurn? ownedTurn = request.InvocationContext.IsOperatorSurface
+                ? providerWork?.BeginForegroundTurn((message, token) => emitter.EmitAsync(
+                    new TurnStatusChanged(emitter.NextCorrelation(), message), token))
+                : null;
+
+            ProviderWorkCoordinator.ForegroundTurn? owner = ownedTurn
+                ?? ProviderWorkAmbient.ChildOwner as ProviderWorkCoordinator.ForegroundTurn;
+
+            // This ordinary async producer encloses every iterator segment and tool call. A headless
+            // turn starts with no priority unless the awaited subagent handoff explicitly passed it.
+            using IDisposable providerScope = ProviderWorkAmbient.Push(owner);
+
+            if (owner is not null && settings is not null
+                && ProviderResolver.TryResolveProviderForModel(settings.Value, request.Request.Model, out ProviderSettings? primary, out _)
+                && primary is not null && ProviderResourceKey.FromProvider(primary, settings.Value) is { } primaryResource)
+            {
+                await owner.ReserveAsync(primaryResource, executionToken).ConfigureAwait(false);
+            }
+
             if (request.ResponseMode == TurnResponseMode.Buffered)
             {
                 await _pipelineRunner
@@ -111,6 +138,10 @@ internal sealed class TurnEngine(
                     .RunStreamingIntoEmitterAsync(request, emitter, auditContext, executionToken)
                     .ConfigureAwait(false);
             }
+        }
+        catch (ProviderWorkDeferredException)
+        {
+            throw;
         }
         catch (OperationCanceledException) when (executionToken.IsCancellationRequested)
         {

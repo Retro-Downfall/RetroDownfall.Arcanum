@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -166,6 +167,8 @@ internal sealed class TapestryWeavingService(
 
             await using IGrimoireExternalEffectGroup group = admittedGroup!;
 
+            using IDisposable providerWait = ProviderWorkWaitAmbient.Push(lease.ProviderAdmissionRevocation);
+
             try
             {
                 outcomes.Add(await weaver.WeaveAsync(treeScope, embeddings, cancellationToken).ConfigureAwait(false));
@@ -173,6 +176,10 @@ internal sealed class TapestryWeavingService(
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (ProviderWorkDeferredException)
+            {
+                return new(TapestrySweepStatus.DeferredForMaintenance, outcomes);
             }
             catch (Exception ex)
             {

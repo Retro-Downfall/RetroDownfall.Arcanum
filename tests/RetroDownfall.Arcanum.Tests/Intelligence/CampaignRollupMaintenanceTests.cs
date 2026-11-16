@@ -18,6 +18,79 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class CampaignRollupMaintenanceTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Unsent_clean_summary_yields_to_closure_and_can_resume_without_billing(bool campaign)
+    {
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10));
+
+        using CancellationTokenSource closure = new();
+
+        using ProviderWorkCoordinator coordinator = new();
+
+        ReservedReservations reservations = new();
+
+        Harness harness = new(providerWork: coordinator, reservations: reservations);
+
+        harness.Settings.Providers[0].LocalRuntimeId = "desktop";
+
+        harness.Settings.LocalRuntimes = [new() { Id = "desktop", Adapter = "ollama", ManagementEndpoint = "http://localhost:11434" }];
+
+        using ProviderWorkCoordinator.ForegroundTurn foreground = coordinator.BeginForegroundTurn();
+
+        await foreground.ReserveAsync(ProviderResourceKey.FromProvider(harness.Settings.Providers[0], harness.Settings)!.Value, deadline.Token);
+
+        Task<Result<CampaignRollupMaintenanceResult>> pending;
+
+        using (ProviderWorkWaitAmbient.Push(closure.Token))
+        {
+            pending = campaign
+                ? harness.Service.ProcessCampaignAsync(Campaign, null, deadline.Token)
+                : harness.Service.ProcessSessionAsync(Session, null, null, deadline.Token);
+        }
+
+        Assert.False(pending.IsCompleted);
+
+        Assert.Equal(1, harness.Executor.ClosedCalls);
+
+        closure.Cancel();
+
+        await Assert.ThrowsAsync<ProviderWorkDeferredException>(() => pending.WaitAsync(deadline.Token));
+
+        Assert.Equal(0, harness.Provider.Calls);
+
+        Assert.Empty(harness.Runs.Operations);
+
+        Assert.Empty(harness.Store.Outputs);
+
+        Assert.Empty(harness.Journal.Drafts);
+
+        Assert.Null(harness.Checkpoints.Disclosure);
+
+        Assert.Equal([InferenceRunStatus.Failed], harness.Runs.Completed);
+
+        Assert.Equal(1, reservations.Released);
+
+        Assert.Equal(0, reservations.Reconciled);
+
+        Assert.Empty(harness.Logger.Entries);
+
+        foreground.Dispose();
+
+        Result<CampaignRollupMaintenanceResult> resumed = campaign
+            ? await harness.Service.ProcessCampaignAsync(Campaign, null, deadline.Token)
+            : await harness.Service.ProcessSessionAsync(Session, null, null, deadline.Token);
+
+        Assert.True(resumed.IsSuccess, resumed.Error.Message);
+
+        Assert.True(resumed.Value.PublishedPages > 0);
+
+        Assert.NotEmpty(harness.Store.Outputs);
+
+        Assert.True(harness.Provider.Calls > 0);
+    }
+
     internal static async Task<Result<CampaignRollupMaintenanceResult>> OperationalFailureAsync(string failure, bool campaign)
     {
         Harness harness = new();
@@ -986,7 +1059,8 @@ public sealed class CampaignRollupMaintenanceTests
 
         public ExecutorProbe Executor { get; }
 
-        public Harness(CampaignRollupDeferralWarnings? warnings = null)
+        public Harness(CampaignRollupDeferralWarnings? warnings = null, ProviderWorkCoordinator? providerWork = null,
+            IBudgetReservationService? reservations = null)
         {
             Clients = new(Provider, Settings);
 
@@ -994,13 +1068,13 @@ public sealed class CampaignRollupMaintenanceTests
 
             Estimator = new(estimator);
 
-            Executor = new(new ModelCallExecutor(estimator));
-
             TestOptionsMonitor<ArcanumSettings> options = new(Settings);
+
+            Executor = new(providerWork is null ? new ModelCallExecutor(estimator) : new ModelCallExecutor(estimator, options, providerWork));
 
             Service = new(Store, Checkpoints, Clients, Executor, Estimator,
                 options, new BudgetMonitor(null!, null!, options, NullLogger<BudgetMonitor>.Instance), Journal,
-                Logger, Runs, new UnconfiguredReservations(), Audit, warnings ?? new CampaignRollupDeferralWarnings(TimeProvider.System));
+                Logger, Runs, reservations ?? new UnconfiguredReservations(), Audit, warnings ?? new CampaignRollupDeferralWarnings(TimeProvider.System));
         }
 
         public async Task<CovenantTurnLease> AuthorityAsync() =>
@@ -1132,6 +1206,43 @@ public sealed class CampaignRollupMaintenanceTests
         public Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default) => throw new InvalidOperationException();
 
         public Task<int> SweepExpiredAsync(DateTimeOffset utcNow, CancellationToken cancellationToken = default) => throw new InvalidOperationException();
+    }
+
+    private sealed class ReservedReservations : IBudgetReservationService
+    {
+        public int Released { get; private set; }
+
+        public int Reconciled { get; private set; }
+
+        public Task<Result<BudgetReservation>> ReserveAsync(BudgetReservationRequest request, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<BudgetReservation>.Success(new(Guid.NewGuid(), request.RunId, request.BudgetPeriod,
+                request.ReservedUsd, 0m, BudgetReservationStatus.Reserved, request.ExpiresAt, DateTimeOffset.UtcNow)));
+
+        public Task<Result> AdjustAsync(Guid reservationId, decimal reservedUsd, CancellationToken cancellationToken = default) => Task.FromResult(Result.Success());
+
+        public Task<Result> RecheckDailyLimitAsync(Guid reservationId, decimal delegatedSpendUsd, CancellationToken cancellationToken = default) => Task.FromResult(Result.Success());
+
+        public Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task ReconcileAsync(Guid reservationId, decimal actualCostUsd, CancellationToken cancellationToken = default)
+        {
+            Reconciled++;
+
+            return Task.CompletedTask;
+        }
+
+        public Task ReleaseAsync(Guid reservationId, CancellationToken cancellationToken = default)
+        {
+            Released++;
+
+            return Task.CompletedTask;
+        }
+
+        public Task<decimal> GetTodayCommittedSpendAsync(CancellationToken cancellationToken = default) => Task.FromResult(0m);
+
+        public Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default) => Task.FromResult(0m);
+
+        public Task<int> SweepExpiredAsync(DateTimeOffset utcNow, CancellationToken cancellationToken = default) => Task.FromResult(0);
     }
 
     private sealed class ProviderDouble : IChatClient

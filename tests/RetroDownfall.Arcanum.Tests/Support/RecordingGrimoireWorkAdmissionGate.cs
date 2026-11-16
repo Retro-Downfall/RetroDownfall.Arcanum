@@ -323,6 +323,8 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
         public CancellationToken MaintenanceRevocation => inner.MaintenanceRevocation;
 
+        public CancellationToken ProviderAdmissionRevocation => inner.ProviderAdmissionRevocation;
+
         public bool MaintenanceRevocationPending => inner.MaintenanceRevocationPending;
 
         public bool TryBeginExternalEffectGroup(

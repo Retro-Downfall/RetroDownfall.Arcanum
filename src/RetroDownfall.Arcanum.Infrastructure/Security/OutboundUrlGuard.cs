@@ -81,7 +81,7 @@ public static class OutboundUrlGuard
         ValidateUrlCoreAsync(url, allowPrivateAndLoopback: true, dnsResolver, diagnosticCodes: true, cancellationToken);
 
     /// <summary>
-    /// Validates public provider endpoints referenced by <see cref="ArcanumSettings"/> before
+    /// Validates configured provider and runtime management endpoints referenced by <see cref="ArcanumSettings"/> before
     /// persistence. Secret-backed targets such as CommLink are resolved and validated only at
     /// their dispatch boundary.
     /// </summary>
@@ -119,6 +119,26 @@ public static class OutboundUrlGuard
                 return Result.Failure(new Error(
                     BlockedErrorCode,
                     $"Provider '{provider.Name}' endpoint: {endpoint.Error.Message}"));
+            }
+        }
+
+        foreach (LocalRuntimeSettings? runtime in settings.LocalRuntimes ?? [])
+        {
+            if (runtime is null || string.IsNullOrWhiteSpace(runtime.ManagementEndpoint))
+            {
+                continue;
+            }
+
+            Result endpoint = await ValidateProviderEndpointAsync(
+                runtime.ManagementEndpoint,
+                dnsResolver,
+                cancellationToken).ConfigureAwait(false);
+
+            if (endpoint.IsFailure)
+            {
+                return Result.Failure(new Error(
+                    BlockedErrorCode,
+                    $"Local runtime '{runtime.Id}' management endpoint: {endpoint.Error.Message}"));
             }
         }
 

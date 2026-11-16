@@ -84,20 +84,24 @@ public sealed class ChatClientFactory(
                 "No AI model could be resolved. Configure Arcanum:Providers (with non-empty Models) and Arcanum:DefaultModel, or pass a model override that matches a configured model.");
         }
 
-        return ResolveClientCoreAsync(provider, resolvedModel, arc.Features.DynamicContextInjectionV2, snapshot, observation, cancellationToken);
+        return ResolveClientCoreAsync(provider, resolvedModel, arc.Features.DynamicContextInjectionV2, snapshot, observation, arc, cancellationToken);
     }
 
     public Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken)
     {
         object? observation = ActiveResolution.Value?.Enter(this);
 
-        bool enabled = optionsMonitor.CurrentValue.Features.DynamicContextInjectionV2;
+        ArcanumSettings arc = optionsMonitor.CurrentValue;
+
+        bool enabled = arc.Features.DynamicContextInjectionV2;
 
         PromptCacheConfigurationSnapshot? snapshot = enabled ? promptCacheConfigurationEpoch?.Capture() : null;
 
-        enabled = snapshot?.ReadSettings().Features.DynamicContextInjectionV2 ?? enabled;
+        arc = snapshot?.ReadSettings() ?? arc;
 
-        return ResolveClientCoreAsync(provider, resolvedModel, enabled, snapshot, observation, cancellationToken);
+        enabled = arc.Features.DynamicContextInjectionV2;
+
+        return ResolveClientCoreAsync(provider, resolvedModel, enabled, snapshot, observation, arc, cancellationToken);
     }
 
     private async Task<ChatClientLease> ResolveClientCoreAsync(
@@ -106,6 +110,7 @@ public sealed class ChatClientFactory(
         bool enabled,
         PromptCacheConfigurationSnapshot? snapshot,
         object? observation,
+        ArcanumSettings configuration,
         CancellationToken cancellationToken)
     {
         if (!Enum.IsDefined(provider.OutputTokenLimitWireDialect))
@@ -115,6 +120,13 @@ public sealed class ChatClientFactory(
 
         // Freeze the declared wire contract before any asynchronous credential resolution.
         provider = PromptCacheClientIdentity.Freeze(provider);
+
+        // Validate and capture the declared runtime before credential resolution can yield. Never
+        // infer a native runtime extension from a hostname, model name, or provider display name.
+        ProviderWorkClientIdentity? providerWork = provider.Type == AiProviderKind.OpenAICompatible
+            ? new(provider, configuration, optionsMonitor) : null;
+
+        if (providerWork is not null) await providerWork.ReserveForegroundAsync(cancellationToken).ConfigureAwait(false);
 
         if (FamiliarProviders.IsFamiliar(provider))
         {
@@ -133,14 +145,14 @@ public sealed class ChatClientFactory(
                 .ResolveWithIdentityAsync(provider, cancellationToken)
                 .ConfigureAwait(false);
 
-            return CreateOpenAiCompatibleLease(provider, resolvedModel, captured.Secret, snapshot?.Stamp, captured.Stamp);
+            return CreateOpenAiCompatibleLease(provider, resolvedModel, captured.Secret, providerWork!, snapshot?.Stamp, captured.Stamp);
         }
 
         string? resolvedApiKey = await _apiKeyResolver
             .ResolveAsync(provider, cancellationToken)
             .ConfigureAwait(false);
 
-        return CreateOpenAiCompatibleLease(provider, resolvedModel, resolvedApiKey);
+        return CreateOpenAiCompatibleLease(provider, resolvedModel, resolvedApiKey, providerWork!);
     }
 
     /// <summary>
@@ -181,6 +193,7 @@ public sealed class ChatClientFactory(
         ProviderSettings provider,
         string resolvedModel,
         string? resolvedApiKey,
+        ProviderWorkClientIdentity providerWork,
         PromptCacheConfigurationStamp? configurationStamp = null,
         ProviderCredentialStamp? credentialStamp = null)
     {
@@ -205,6 +218,11 @@ public sealed class ChatClientFactory(
 
         options.AddPolicy(new OutputTokenLimitWirePolicy(provider.OutputTokenLimitWireDialect), PipelinePosition.PerCall);
 
+        if (providerWork.Ollama)
+        {
+            options.AddPolicy(new OllamaForegroundRetentionPolicy(), PipelinePosition.PerCall);
+        }
+
         options.AddPolicy(new TapestryProviderPolicy(_tapestryValidator, provider.Name, resolvedModel, embedding: false), PipelinePosition.BeforeTransport);
 
         options.AddPolicy(new TapestryRetrievalDispatchPolicy(provider.Name, resolvedModel), PipelinePosition.BeforeTransport);
@@ -223,9 +241,11 @@ public sealed class ChatClientFactory(
 
         options.AddPolicy(guildPolicy, PipelinePosition.BeforeTransport);
 
+        options.AddPolicy(providerWork.DispatchPolicy, PipelinePosition.BeforeTransport);
+
         var chatClient = new ChatClient(resolvedModel, credential, options);
 
-        IChatClient meAi = new CompletionCheckedChatClient(chatClient.AsIChatClient());
+        IChatClient meAi = providerWork.Bind(new CompletionCheckedChatClient(chatClient.AsIChatClient()));
 
         guildPolicy.Bind(meAi);
 

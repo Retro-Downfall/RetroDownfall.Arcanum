@@ -323,35 +323,44 @@ internal sealed class Loremaster(
 
                 await using (IGrimoireExternalEffectGroup held = maintenanceGroup!)
                 {
-                    ICampaignRollupMaintenance maintenance = iterationScope.ServiceProvider.GetRequiredService<ICampaignRollupMaintenance>();
+                    using IDisposable providerWait = ProviderWorkWaitAmbient.Push(lease.ProviderAdmissionRevocation);
 
-                    Result<CampaignRollupMaintenanceResult> contribution = await maintenance.ProcessSessionAsync(
-                        sessionId, null, null, stoppingToken).ConfigureAwait(false);
-
-                    if (contribution.IsFailure)
+                    try
                     {
-                        hostLogger.LogWarning("Campaign Logger: Contribution maintenance failed for Campaign {CampaignId}, Session {SessionId} ({Code}).",
-                            campaignId, sessionId, contribution.Error.Code);
+                        ICampaignRollupMaintenance maintenance = iterationScope.ServiceProvider.GetRequiredService<ICampaignRollupMaintenance>();
 
-                        return LoremasterSessionDisposition.Concluded;
+                        Result<CampaignRollupMaintenanceResult> contribution = await maintenance.ProcessSessionAsync(
+                            sessionId, null, null, stoppingToken).ConfigureAwait(false);
+
+                        if (contribution.IsFailure)
+                        {
+                            hostLogger.LogWarning("Campaign Logger: Contribution maintenance failed for Campaign {CampaignId}, Session {SessionId} ({Code}).",
+                                campaignId, sessionId, contribution.Error.Code);
+
+                            return LoremasterSessionDisposition.Concluded;
+                        }
+
+                        Result<CampaignRollupMaintenanceResult> folded = await maintenance.ProcessCampaignAsync(
+                            campaignId, null, stoppingToken).ConfigureAwait(false);
+
+                        if (folded.IsFailure)
+                        {
+                            hostLogger.LogWarning("Campaign Logger: Campaign continuity failed for Campaign {CampaignId} ({Code}).", campaignId, folded.Error.Code);
+
+                            return LoremasterSessionDisposition.Concluded;
+                        }
+
+                        if (contribution.Value.Deferred || folded.Value.Deferred)
+                        {
+                            hostLogger.LogDebug("Campaign Logger: Summary maintenance remains pending for Campaign {CampaignId}, Session {SessionId}.", campaignId, sessionId);
+
+                            // A deferred source must never fall through into ordinary Summary/Entry reads.
+                            return LoremasterSessionDisposition.Concluded;
+                        }
                     }
-
-                    Result<CampaignRollupMaintenanceResult> folded = await maintenance.ProcessCampaignAsync(
-                        campaignId, null, stoppingToken).ConfigureAwait(false);
-
-                    if (folded.IsFailure)
+                    catch (ProviderWorkDeferredException)
                     {
-                        hostLogger.LogWarning("Campaign Logger: Campaign continuity failed for Campaign {CampaignId} ({Code}).", campaignId, folded.Error.Code);
-
-                        return LoremasterSessionDisposition.Concluded;
-                    }
-
-                    if (contribution.Value.Deferred || folded.Value.Deferred)
-                    {
-                        hostLogger.LogDebug("Campaign Logger: Summary maintenance remains pending for Campaign {CampaignId}, Session {SessionId}.", campaignId, sessionId);
-
-                        // A deferred source must never fall through into ordinary Summary/Entry reads.
-                        return LoremasterSessionDisposition.Concluded;
+                        return LoremasterSessionDisposition.DeferredForMaintenance;
                     }
                 }
             }
@@ -529,6 +538,8 @@ internal sealed class Loremaster(
 
         await using IGrimoireExternalEffectGroup group = admittedGroup!;
 
+        using IDisposable summaryProviderWait = ProviderWorkWaitAmbient.Push(lease.ProviderAdmissionRevocation);
+
         try
         {
             Result<PromptTurnResult> result = await intelligence
@@ -572,6 +583,10 @@ internal sealed class Loremaster(
                 "Campaign Logger: Updated campaign summary for session {SessionId} through {BatchEndUtc:o}.",
                 sessionId,
                 batchEndUtc);
+        }
+        catch (ProviderWorkDeferredException)
+        {
+            return LoremasterSessionDisposition.DeferredForMaintenance;
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {

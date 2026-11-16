@@ -1198,6 +1198,7 @@ internal static partial class HostedGrimoireProducerInventory
         "System.ClientModel.Primitives.ClientPipelineOptions.RetryPolicy",
         "System.ClientModel.Primitives.ClientPipelineOptions.Transport",
         "System.Collections.Generic.LinkedListNode`1.Value",
+        "System.Collections.Generic.LinkedListNode`1.List",
         "System.Collections.Generic.LinkedList`1.Count",
         "System.Collections.Generic.LinkedList`1.Last",
         "System.Collections.Generic.LinkedList`1.First",
@@ -27010,6 +27011,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedExactBoundedExternalMember(method)
                 || IsReviewedExactMonitorMember(method)
                 || IsExactEmbeddingSdkAdapterFactory(method)
+                || IsExactAiDelegatingConstructor(method)
                 || IsReviewedDatabaseSupportMember(method)
                     && !TrackingBlockedByIdentityResolution(method)
                     && ReviewedProviderMemberIsClosed(method, node, model, context)
@@ -31373,7 +31375,7 @@ internal static partial class HostedGrimoireProducerInventory
                 consumingCompilation)
             && (property.MetadataName switch
             {
-                "MaintenanceRevocation" => IsExactFrameworkType(
+                "MaintenanceRevocation" or "ProviderAdmissionRevocation" => IsExactFrameworkType(
                     property.Type,
                     "System.Threading.CancellationToken",
                     typeof(CancellationToken).Assembly.GetName()),
@@ -42850,6 +42852,8 @@ internal static partial class HostedGrimoireProducerInventory
             if (resource is not null
                 && TryResolveClosedHttpConstructionExternalCleanup(member, resource, exactType, cleanup, out external)) return true;
 
+            if (resource is not null && TryResolveClosedAiDelegatingExternalCleanup(member, resource, cleanup)) return true;
+
             string callee = Normalize(cleanup);
 
             if (TypeKey(exactType) == "System.IO.StreamReader"
@@ -42994,6 +42998,12 @@ internal static partial class HostedGrimoireProducerInventory
             if (TryResolveA2AHttpCleanup(member, resource, staticType, name, out external)) return true;
 
             if (TryResolveClosedHttpConstructionCleanup(member, resource, staticType, name, out external)) return true;
+
+            if (name == "Dispose"
+                && (IsExactFrameworkType(staticType, "System.IDisposable", typeof(IDisposable).Assembly.GetName())
+                    || IsExactFrameworkType(staticType, "Microsoft.Extensions.AI.IChatClient", typeof(Microsoft.Extensions.AI.IChatClient).Assembly.GetName())
+                    || IsExactEmbeddingGeneratorContract(staticType))
+                && HasClosedAiAdapterCleanupValue(member, resource, new CleanupProvenanceContext(), new(StringComparer.Ordinal))) return true;
 
             if (name == "Dispose"
                 && (IsExactFrameworkType(staticType, "System.IDisposable", typeof(IDisposable).Assembly.GetName())

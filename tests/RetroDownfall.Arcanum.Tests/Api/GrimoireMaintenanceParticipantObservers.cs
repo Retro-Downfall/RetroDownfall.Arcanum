@@ -2010,6 +2010,8 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
         public CancellationToken MaintenanceRevocation => actual.MaintenanceRevocation;
 
+        public CancellationToken ProviderAdmissionRevocation => actual.ProviderAdmissionRevocation;
+
         public bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
 
         public bool TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effectGroup)

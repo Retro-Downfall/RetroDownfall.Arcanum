@@ -978,6 +978,8 @@ public sealed class LongRunningOperationStartupHostedServiceTests
 
             public CancellationToken MaintenanceRevocation => CancellationToken.None;
 
+            public CancellationToken ProviderAdmissionRevocation => CancellationToken.None;
+
             public bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
 
             public bool TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effectGroup)

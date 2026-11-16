@@ -1,6 +1,7 @@
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Daemons;
 using RetroDownfall.Arcanum.Core.Events;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Daemons;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
@@ -10,6 +11,22 @@ namespace RetroDownfall.Arcanum.Tests.Daemons;
 
 public sealed class DaemonRunnerTests
 {
+    [Fact]
+    public async Task Deferred_provider_after_effect_is_recorded_failed_with_inspection_guidance()
+    {
+        FakeDaemonJob job = new("job", "Job", true) { Failure = new ProviderWorkDeferredException(CancellationToken.None) };
+
+        DaemonRunner runner = CreateRunner([job], null, out InMemoryDaemonExecutionRepository repository);
+
+        Result<DaemonExecutionSummary> result = await runner.RunScheduledAsync("job", CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(DaemonJobStatus.Failed, result.Value.Status);
+        Assert.Contains("inspect", result.Value.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(await repository.GetHistoryAsync("job", CancellationToken.None));
+        Assert.Equal(1, job.Effects);
+    }
+
     [Fact]
     public async Task RunAsync_returns_not_found_for_missing_job()
     {
@@ -343,6 +360,10 @@ public sealed class DaemonRunnerTests
         /// </summary>
         public bool IgnoresCancellation { get; init; }
 
+        public Exception? Failure { get; init; }
+
+        public int Effects { get; private set; }
+
         public Task StartedTask => _started.Task;
 
         public void SignalCompletion() => _completionSignal.TrySetResult();
@@ -350,6 +371,13 @@ public sealed class DaemonRunnerTests
         public async Task RunAsync(CancellationToken ct)
         {
             _started.TrySetResult();
+
+            if (Failure is not null)
+            {
+                Effects++;
+
+                throw Failure;
+            }
 
             if (RunUntilSignal)
             {

@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -24,6 +25,28 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 [Trait("Category", "Integration")]
 public sealed class EntryWeavingServiceTests : IAsyncLifetime
 {
+    [SkippableFact]
+    public async Task Unsent_provider_deferral_retries_without_recording_failure()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content awaiting embedding");
+
+        FakeWeaveService weave = new() { OnEmbed = () => Task.FromException(new ProviderWorkDeferredException(CancellationToken.None)) };
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        Assert.Equal(EntryWeavingTickOutcome.DeferredForMaintenance, await service.RunTickAsync(embeddings, CancellationToken.None));
+
+        weave.OnEmbed = null;
+
+        Assert.Equal(EntryWeavingTickOutcome.Woven, await service.RunTickAsync(embeddings, CancellationToken.None));
+        Assert.Equal(1, await CountEntryEmbeddingsAsync());
+        Assert.Equal(2, weave.EmbedBatchCallCount);
+    }
+
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;

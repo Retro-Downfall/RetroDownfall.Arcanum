@@ -486,6 +486,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
                 foreach (WorkLease work in _workLeases)
                 {
+                    revocations.Add(work.ProviderAdmissionRevocationSource);
+
                     // An effect winner finishes its durable group before cancellation. The
                     // obligation belongs to the lease and survives a proven stage-one abort.
                     work.RevocationPending = true;
@@ -2175,6 +2177,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
         internal CancellationTokenSource Revocation { get; } = new();
 
+        internal CancellationTokenSource ProviderAdmissionRevocationSource { get; } = new();
+
         internal bool IsReleased => Volatile.Read(ref _released) != 0;
 
         internal bool ScopeDisposed { get; set; }
@@ -2190,6 +2194,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         public long Generation { get; }
 
         public CancellationToken MaintenanceRevocation => Revocation.Token;
+
+        public CancellationToken ProviderAdmissionRevocation => ProviderAdmissionRevocationSource.Token;
 
         public bool MaintenanceRevocationPending
         {

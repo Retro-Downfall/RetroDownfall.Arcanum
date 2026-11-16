@@ -6,6 +6,25 @@ namespace RetroDownfall.Arcanum.Core.Primitives;
 /// </summary>
 public static class ErrorCodes
 {
+    public static class LocalRuntime
+    {
+        public const string NotFound = "LocalRuntime.NotFound";
+
+        public const string AdapterUnavailable = "LocalRuntime.AdapterUnavailable";
+
+        public const string InvalidConfiguration = "LocalRuntime.InvalidConfiguration";
+
+        public const string InvalidResponse = "LocalRuntime.InvalidResponse";
+
+        public const string CredentialUnavailable = "LocalRuntime.CredentialUnavailable";
+
+        public const string HttpFailure = "LocalRuntime.HttpFailure";
+
+        public const string Timeout = "LocalRuntime.Timeout";
+
+        public const string RequestFailed = "LocalRuntime.RequestFailed";
+    }
+
     /// <summary>Guild contract errors; their HTTP mappings belong to the API error mapper.</summary>
     public static class Guild
     {

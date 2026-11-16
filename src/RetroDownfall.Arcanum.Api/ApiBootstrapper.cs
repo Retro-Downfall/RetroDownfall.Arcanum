@@ -613,6 +613,12 @@ public static class ApiBootstrapper
 
         services.AddSingleton<TapestryInvocationValidator>();
 
+        services.AddSingleton<ProviderWorkCoordinator>();
+
+        services.AddArcanumLocalRuntimeAdapters();
+
+        services.AddSingleton<LocalRuntimeInspector>();
+
         services.AddSingleton<IModelCallExecutor, ModelCallExecutor>();
 
         services.AddSingleton<IToolResultMaterializer, ToolResultMaterializer>();
@@ -1558,6 +1564,8 @@ public static class ApiBootstrapper
         apiGroup.MapCodexEndpoints();
 
         apiGroup.MapProviderTestEndpoints();
+
+        apiGroup.MapLocalRuntimeEndpoints();
 
         apiGroup.MapProvingGroundsEndpoints();
         ProvingGrounds.MemoryEvaluation.MemoryEvaluationEndpoints.MapMemoryEvaluationEndpoints(apiGroup);

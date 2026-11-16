@@ -12,6 +12,9 @@ internal static class NonBillableSurfaces
 
     public const string ProviderTest = "POST /api/providers/test";
 
+    /// <summary>Native runtime metadata only; never requests model loading or inference.</summary>
+    public const string LocalRuntimeInspection = "GET /api/local-runtimes/{runtimeId}";
+
     public const string ManaPreflight = "POST /api/intelligence/mana";
 
     /// <summary>

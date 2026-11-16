@@ -65,6 +65,8 @@ public sealed partial class ModelCallExecutor
 
         try
         {
+            using IDisposable? providerWork = await EnterProviderWorkAsync(chatClient, context.Provider, cancellationToken).ConfigureAwait(false);
+
             await beforeSend(cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -82,7 +84,17 @@ public sealed partial class ModelCallExecutor
 
             SubagentExecutionAmbient.Tracker?.BeginModelCall();
 
-            ChatResponse response = await chatClient.GetResponseAsync(messages, options, cancellationToken).ConfigureAwait(false);
+            ChatResponse response;
+
+            try
+            {
+                response = await chatClient.GetResponseAsync(messages, options, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception refusal) when (ProviderWorkClientIdentity.Lookup(chatClient)?.TryConsumeNoSend(refusal) == true)
+            {
+                return ClosedCampaignAdmissionError();
+            }
+
             UsageDetails? usage = response.Usage;
 
             breakdown = ReconcileAndRecord(breakdown, usage, context)!;
@@ -91,6 +103,10 @@ public sealed partial class ModelCallExecutor
 
             return new CampaignMaintenanceCallResult(modelCallId, ReadClosedCampaignText(response), usage,
                 response.FinishReason?.ToString(), breakdown);
+        }
+        catch (ProviderWorkDeferredException)
+        {
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

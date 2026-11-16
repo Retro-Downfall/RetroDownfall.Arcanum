@@ -8,6 +8,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -198,6 +199,8 @@ internal sealed class EntryWeavingService(
 
         await using IGrimoireExternalEffectGroup effect = effectGroup!;
 
+        using IDisposable providerWait = ProviderWorkWaitAmbient.Push(lease.ProviderAdmissionRevocation);
+
         List<string> contents = pending.ConvertAll(static p => p.Content);
 
         // The host token, never the lease's revocation. Once the frontier is won maintenance waits
@@ -207,6 +210,10 @@ internal sealed class EntryWeavingService(
         try
         {
             embedResult = await weaveService.EmbedBatchAsync(contents, cancellationToken).ConfigureAwait(false);
+        }
+        catch (ProviderWorkDeferredException)
+        {
+            return EntryWeavingTickOutcome.DeferredForMaintenance;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

@@ -1811,6 +1811,8 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
 
     private sealed class FakeWeaveService : IWeaveService
     {
+        public Action? OnEmbed { get; set; }
+
         public string? FailForContentContaining { get; set; }
 
         public int EmbedBatchCallCount { get; private set; }
@@ -1826,6 +1828,8 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         public Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
         {
+            OnEmbed?.Invoke();
+
             EmbedBatchCallCount++;
 
             EmbedBatches.Add([.. texts]);

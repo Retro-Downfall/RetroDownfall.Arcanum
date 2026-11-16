@@ -195,7 +195,13 @@ internal sealed partial class WorkspaceIndexingService(
 
                 await using IGrimoireExternalEffectGroup effect = admittedEffect!;
 
-                FileIndexOutcome indexed = await IndexFileAsync(
+                using IDisposable providerWait = RetroDownfall.Arcanum.Core.Intelligence.ProviderWorkWaitAmbient.Push(workLease.ProviderAdmissionRevocation);
+
+                FileIndexOutcome indexed;
+
+                try
+                {
+                    indexed = await IndexFileAsync(
                     db,
                     workspacePath,
                     relativePath,
@@ -204,6 +210,13 @@ internal sealed partial class WorkspaceIndexingService(
                     info.LastWriteTimeUtc,
                     info.Length,
                     cancellationToken).ConfigureAwait(false);
+                }
+                catch (RetroDownfall.Arcanum.Core.Intelligence.ProviderWorkDeferredException)
+                {
+                    consumed = false;
+
+                    return WorkspaceUnitOutcome.Deferred;
+                }
 
                 if (indexed == FileIndexOutcome.Failed)
                 {
@@ -387,6 +400,8 @@ internal sealed partial class WorkspaceIndexingService(
 
                 await using IGrimoireExternalEffectGroup effect = admittedEffect!;
 
+                using IDisposable providerWait = RetroDownfall.Arcanum.Core.Intelligence.ProviderWorkWaitAmbient.Push(workLease.ProviderAdmissionRevocation);
+
                 FileIndexOutcome indexed = await IndexFileAsync(
                     db,
                     workspacePath,
@@ -429,6 +444,10 @@ internal sealed partial class WorkspaceIndexingService(
 
                         break;
                 }
+            }
+            catch (RetroDownfall.Arcanum.Core.Intelligence.ProviderWorkDeferredException)
+            {
+                return WorkspaceUnitOutcome.Deferred;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

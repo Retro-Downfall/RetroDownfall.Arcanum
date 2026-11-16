@@ -53,6 +53,12 @@ public static class FamiliarSecretEnvironmentNames
         _ = names.Add(EnvironmentCredentialResolver.GetHttpsCertificatePasswordEnvironmentVariableName(
             settings.Host?.Https ?? new HttpsSettings()));
 
+        foreach (LocalRuntimeSettings? runtime in settings.LocalRuntimes ?? [])
+        {
+            if (!string.IsNullOrWhiteSpace(runtime?.CredentialEnvironmentVariable))
+                _ = names.Add(runtime.CredentialEnvironmentVariable.Trim());
+        }
+
         _ = names.Add(EnvironmentCredentialResolver.GetCommLinkWebhookUrlEnvironmentVariableName(
             settings.ResolveCommLink()));
 

@@ -1,8 +1,11 @@
 using System.Collections.Immutable;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.ProvingGrounds.MemoryEvaluation;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -25,6 +28,37 @@ namespace RetroDownfall.Arcanum.Tests.ProvingGrounds;
 [Collection("Grimoire")]
 public sealed class MemoryEvaluationRunnerTests
 {
+    [Theory]
+    [InlineData("MemoryEvaluation.StaleConfiguration", MemoryEvaluationReason.StaleConfiguration)]
+    [InlineData("MemoryEvaluation.ProviderFailure", MemoryEvaluationReason.ProviderFailure)]
+    public async Task Final_executor_refusal_retains_its_reason_and_conservative_reservation_without_usage(string code, MemoryEvaluationReason reason)
+    {
+        await using var f = await Fixture.Create();
+
+        ModelTokenEstimator estimator = new(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
+
+        f.Physical.Provider = new(f.Physical.Clients, f.Physical.Epoch, new FinalExecutorRefusal(code), estimator,
+            new TurnRunWriter(f.Physical.H.Saga.Context), f.Physical.Reservations);
+
+        var result = await f.Runner.RunAsync(f.Request, f.Scope, default);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(reason, result.Value.Report!.Decision.Reason);
+
+        Assert.Equal(0, result.Value.Report.Aggregate.ValidPairs);
+
+        Assert.Null(result.Value.Report.Cost);
+
+        Assert.Empty(f.Physical.Server.Bodies);
+
+        Assert.Equal(1, f.Journal.Acknowledgements);
+
+        Assert.Equal(0L, await f.Physical.H.ScalarAsync("SELECT count(*) FROM BillableOperations;"));
+
+        Assert.Equal(1L, await f.Physical.H.ScalarAsync($"SELECT count(*) FROM BudgetReservations WHERE Status = {(int)RetroDownfall.Arcanum.Core.Storage.BudgetReservationStatus.UncertainPaid};"));
+    }
+
     [Fact]
     public async Task Three_pairs_commit_before_dispatch_and_replay_without_hydration_or_billing()
     {
@@ -889,6 +923,35 @@ public sealed class MemoryEvaluationRunnerTests
 
             return result;
         }
+    }
+
+    // The physical-policy suite proves the exact no-send exception. Here the supported executor
+    // result seam isolates how the real provider/accounting and runner retain that refusal.
+    private sealed class FinalExecutorRefusal(string code) : IModelCallExecutor
+    {
+        public async Task<Result<MemoryEvaluationArmResult>> ExecuteMemoryEvaluationAsync(IChatClient chatClient,
+            MemoryEvaluationExecutionPlan plan, int pairIndex, MemoryEvaluationArm arm, ITurnBudget budget,
+            Func<MemoryEvaluationSendEvidence, CancellationToken, Task> beforeSend, Func<MemoryEvaluationUsage, Task> recordUsage,
+            ModelCallContext context, CancellationToken ct)
+        {
+            var messages = MemoryEvaluationProviderCallFreezer.Messages(plan, arm);
+
+            var options = MemoryEvaluationProviderCallFreezer.MapOptions(plan.Request.Request.Options, context.Model);
+
+            var envelope = MemoryEvaluationProviderCallFreezer.Freeze(plan, arm, context, options, messages);
+
+            int index = pairIndex * 2 + (plan.SendOrder[pairIndex * 2] == arm ? 0 : 1);
+
+            await beforeSend(new(index, pairIndex, arm, envelope, envelope.Digest, plan.DestinationDigest, envelope.Sensitivity.Digest), ct);
+
+            return new Error(code, "The controlled final dispatch was refused.");
+        }
+
+        public Task<ModelCallOutcome> ExecuteBufferedAsync(IChatClient chatClient, IList<ChatMessage> messages, ChatOptions options,
+            ITurnBudget budget, ModelCallPurpose purpose, CancellationToken cancellationToken, ModelCallContext? context) => throw new NotSupportedException();
+
+        public IAsyncEnumerable<ModelCallUpdate> ExecuteStreamingAsync(IChatClient chatClient, IList<ChatMessage> messages, ChatOptions options,
+            ITurnBudget budget, ModelCallPurpose purpose, CancellationToken cancellationToken, ModelCallContext? context) => throw new NotSupportedException();
     }
 
     private sealed class Journal(Fixture fixture) : ICovenantDisclosureJournal

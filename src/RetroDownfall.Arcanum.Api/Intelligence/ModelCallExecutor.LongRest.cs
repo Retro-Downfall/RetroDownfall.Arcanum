@@ -56,9 +56,15 @@ public sealed partial class ModelCallExecutor
 
         try
         {
+            using IDisposable? providerWork = await EnterProviderWorkAsync(chatClient, chat.Context.Provider, cancellationToken).ConfigureAwait(false);
+
             try
             {
                 await beforeSend(cancellationToken).ConfigureAwait(false);
+            }
+            catch (ProviderWorkDeferredException)
+            {
+                throw;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -101,7 +107,19 @@ public sealed partial class ModelCallExecutor
 
             dispatched = true;
 
-            ChatResponse response = await chatClient.GetResponseAsync(messages, options, cancellationToken).ConfigureAwait(false);
+            ChatResponse response;
+
+            try
+            {
+                response = await chatClient.GetResponseAsync(messages, options, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception refusal) when (ProviderWorkClientIdentity.Lookup(chatClient)?.TryConsumeNoSend(refusal) == true)
+            {
+                beforeSendRefusal = new(new Error(ErrorCodes.LongRest.ConfigurationChanged,
+                    "The exact Long Rest provider route changed before transport."), nameof(ProviderWorkClientIdentity));
+
+                throw beforeSendRefusal;
+            }
 
             dispatched = false;
 
@@ -120,6 +138,10 @@ public sealed partial class ModelCallExecutor
             _logger?.LogWarning("Long Rest physical-send fence refused before provider dispatch; provider {Provider}, model {Model}, operation {OperationId}, exception type {ExceptionType}.",
                 LongRestProviderFailure.Label(chat.Context.Provider.Name), LongRestProviderFailure.Label(chat.Context.Model), payload.Work.OperationId, refusal.ExceptionType);
 
+            throw;
+        }
+        catch (ProviderWorkDeferredException)
+        {
             throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -175,9 +197,15 @@ public sealed partial class ModelCallExecutor
 
         try
         {
+            using IDisposable? providerWork = await EnterProviderWorkAsync(embeddingClient, embedding.Provider, cancellationToken).ConfigureAwait(false);
+
             try
             {
                 await beforeSend(cancellationToken).ConfigureAwait(false);
+            }
+            catch (ProviderWorkDeferredException)
+            {
+                throw;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -209,7 +237,19 @@ public sealed partial class ModelCallExecutor
 
             dispatched = true;
 
-            GeneratedEmbeddings<Embedding<float>> response = await embeddingClient.GenerateAsync(input, options, cancellationToken).ConfigureAwait(false);
+            GeneratedEmbeddings<Embedding<float>> response;
+
+            try
+            {
+                response = await embeddingClient.GenerateAsync(input, options, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception refusal) when (ProviderWorkClientIdentity.Lookup(embeddingClient)?.TryConsumeNoSend(refusal) == true)
+            {
+                beforeSendRefusal = new(new Error(ErrorCodes.LongRest.ConfigurationChanged,
+                    "The exact Long Rest provider route changed before transport."), nameof(ProviderWorkClientIdentity));
+
+                throw beforeSendRefusal;
+            }
 
             dispatched = false;
 
@@ -235,6 +275,10 @@ public sealed partial class ModelCallExecutor
             _logger?.LogWarning("Long Rest physical-send fence refused before provider dispatch; provider {Provider}, model {Model}, operation {OperationId}, exception type {ExceptionType}.",
                 LongRestProviderFailure.Label(embedding.Provider.Name), LongRestProviderFailure.Label(embedding.Model), payload.Work.OperationId, refusal.ExceptionType);
 
+            throw;
+        }
+        catch (ProviderWorkDeferredException)
+        {
             throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

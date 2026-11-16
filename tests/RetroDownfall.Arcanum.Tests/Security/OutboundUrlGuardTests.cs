@@ -350,6 +350,34 @@ public sealed class OutboundUrlGuardTests
         Assert.Contains("Provider 'ollama-local' endpoint", result.Error.Message, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("http://169.254.169.254/private-path", false)]
+    [InlineData("http://runtime-management.test/private-path", false)]
+    [InlineData("http://localhost:11434/private-path", true)]
+    [InlineData("http://10.1.2.3:11434/private-path", true)]
+    public async Task Known_runtime_management_endpoints_receive_provider_egress_validation_before_persistence(string endpoint, bool allowed)
+    {
+        _dns.Add("runtime-management.test", IPAddress.Parse("169.254.169.254"));
+
+        ArcanumSettings settings = new()
+        {
+            LocalRuntimes = [new() { Id = "desktop", Adapter = "ollama", ManagementEndpoint = endpoint }],
+        };
+
+        Result result = await ValidateArcanumSettingsAsync(settings);
+
+        Assert.Equal(allowed, result.IsSuccess);
+
+        if (!allowed)
+        {
+            Assert.Equal(OutboundUrlGuard.BlockedErrorCode, result.Error.Code);
+
+            Assert.Contains("Local runtime 'desktop' management endpoint", result.Error.Message, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("private-path", result.Error.Message, StringComparison.Ordinal);
+        }
+    }
+
     [Fact]
     public async Task ValidateUntrustedUrlAsync_HostnameResolvingToPrivateIp_Fails()
     {

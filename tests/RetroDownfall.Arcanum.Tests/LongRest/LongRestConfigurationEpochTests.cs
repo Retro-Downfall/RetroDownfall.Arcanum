@@ -12,6 +12,8 @@ public sealed class LongRestConfigurationEpochTests
     [InlineData("model")]
     [InlineData("pricing")]
     [InlineData("endpoint")]
+    [InlineData("runtime-group")]
+    [InlineData("runtime-origin")]
     public void Returning_to_identical_values_never_revives_an_earlier_stamp(string transition)
     {
         NotifyingOptions options = new(Settings());
@@ -34,6 +36,10 @@ public sealed class LongRestConfigurationEpochTests
             case "pricing": changed.Cost.Pricing.DefaultPricing.InputPer1M = 7m; break;
 
             case "endpoint": changed.Providers[0].Endpoint = "https://other.test/v1"; break;
+
+            case "runtime-group": changed.LocalRuntimes = [new() { Id = "desktop", Adapter = "ollama", ManagementEndpoint = "http://localhost:11434", ResourceGroup = "changed-group" }]; break;
+
+            case "runtime-origin": changed.LocalRuntimes = [new() { Id = "desktop", Adapter = "ollama", ManagementEndpoint = "http://localhost:11435" }]; break;
         }
 
         options.Set(changed);

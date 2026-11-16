@@ -3,6 +3,7 @@ using System.ClientModel.Primitives;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using OpenAI;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -18,17 +19,21 @@ public sealed class LongRestProviderClientFactory : IDisposable
 {
     private readonly IProviderApiKeyResolver _keys;
 
+    private readonly IOptionsMonitor<ArcanumSettings>? _settings;
+
     private readonly HttpClient _httpClient;
 
     private readonly ILogger<LongRestProviderClientFactory> _logger;
 
     private int _disposed;
 
-    public LongRestProviderClientFactory(IProviderApiKeyResolver keys, ILogger<LongRestProviderClientFactory> logger)
+    public LongRestProviderClientFactory(IProviderApiKeyResolver keys, ILogger<LongRestProviderClientFactory> logger, IOptionsMonitor<ArcanumSettings>? settings = null)
     {
         ArgumentNullException.ThrowIfNull(keys);
 
         _keys = keys;
+
+        _settings = settings;
 
         _logger = logger;
 
@@ -36,13 +41,15 @@ public sealed class LongRestProviderClientFactory : IDisposable
     }
 
     // Alternate owned-handler test path. Production DI selects the public constructor.
-    internal LongRestProviderClientFactory(IProviderApiKeyResolver keys, HttpMessageHandler handler, ILogger<LongRestProviderClientFactory> logger)
+    internal LongRestProviderClientFactory(IProviderApiKeyResolver keys, HttpMessageHandler handler, ILogger<LongRestProviderClientFactory> logger, IOptionsMonitor<ArcanumSettings>? settings = null)
     {
         ArgumentNullException.ThrowIfNull(keys);
 
         ArgumentNullException.ThrowIfNull(handler);
 
         _keys = keys;
+
+        _settings = settings;
 
         _logger = logger;
 
@@ -62,6 +69,12 @@ public sealed class LongRestProviderClientFactory : IDisposable
             throw new InvalidOperationException("Provider output-token limit wire dialect is not defined.");
         }
 
+        selection = selection with { Provider = PromptCacheClientIdentity.Freeze(selection.Provider) };
+
+        ProviderWorkClientIdentity providerWork = new(selection.Provider, _settings?.CurrentValue, _settings);
+
+        await providerWork.ReserveForegroundAsync(ct).ConfigureAwait(false);
+
         Result<string?> key = await ResolveCredentialAsync(selection, operationId, ct).ConfigureAwait(false);
 
         if (key.IsFailure) return key.Error;
@@ -72,9 +85,11 @@ public sealed class LongRestProviderClientFactory : IDisposable
 
         options.AddPolicy(new OutputTokenLimitWirePolicy(dialect), PipelinePosition.PerCall);
 
+        options.AddPolicy(providerWork.DispatchPolicy, PipelinePosition.BeforeTransport);
+
         OpenAI.Chat.ChatClient client = new(selection.Model, new ApiKeyCredential(key.Value ?? "no-key"), options);
 
-        return new ChatClientLease(client.AsIChatClient(), selection.Provider, selection.Model, ownedHttpClient: null);
+        return new ChatClientLease(providerWork.Bind(client.AsIChatClient()), selection.Provider, selection.Model, ownedHttpClient: null);
     }
 
     public async Task<Result<EmbeddingGeneratorLease>> ResolveEmbeddingAsync(LongRestProviderSelection selection, CancellationToken ct, Guid? operationId = null)
@@ -82,6 +97,12 @@ public sealed class LongRestProviderClientFactory : IDisposable
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
         if (selection.Provider.Type != AiProviderKind.OpenAICompatible || selection.Dimensions <= 0) return Unsupported();
+
+        selection = selection with { Provider = PromptCacheClientIdentity.Freeze(selection.Provider) };
+
+        ProviderWorkClientIdentity providerWork = new(selection.Provider, _settings?.CurrentValue, _settings);
+
+        await providerWork.ReserveForegroundAsync(ct).ConfigureAwait(false);
 
         Result<string?> key = await ResolveCredentialAsync(selection, operationId, ct).ConfigureAwait(false);
 
@@ -91,9 +112,12 @@ public sealed class LongRestProviderClientFactory : IDisposable
 
         OpenAIClientOptions options = Options(selection);
 
+        options.AddPolicy(providerWork.DispatchPolicy, PipelinePosition.BeforeTransport);
+
         OpenAI.Embeddings.EmbeddingClient client = new(selection.Model, new ApiKeyCredential(key.Value ?? "no-key"), options);
 
-        return new EmbeddingGeneratorLease(client.AsIEmbeddingGenerator(), ownsGenerator: true);
+        return new EmbeddingGeneratorLease(providerWork.Bind(client.AsIEmbeddingGenerator()), ownsGenerator: true,
+            new(selection.Provider.Name, selection.Model), providerWork.Resource, providerWork.Endpoint, providerWork.LocalRuntimeId);
     }
 
     public void Dispose()

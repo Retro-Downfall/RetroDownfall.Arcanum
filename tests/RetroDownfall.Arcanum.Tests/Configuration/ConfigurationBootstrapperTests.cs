@@ -1,6 +1,9 @@
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Cli.Commands;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
@@ -52,6 +55,90 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
         File.WriteAllText(path, """{"Arcanum":{"providers":[]}}""");
 
         ConfigurationBootstrapper.ValidateArcanumConfigurationFile(path);
+    }
+
+    [Fact]
+    public void Persisted_runtime_declarations_survive_CLI_startup_options_composition()
+    {
+        string directory = ArcanumPaths.GrimoireDirectory;
+
+        Directory.CreateDirectory(directory);
+
+        string path = Path.Combine(directory, "arcanum.json");
+
+        File.WriteAllText(path, """
+            {
+              "Arcanum": {
+                "defaultModel": "fixture-model",
+                "localRuntimes": [{"id":"desktop","adapter":"ollama","resourceGroup":"desktop-gpu","managementEndpoint":"http://localhost:11434"}],
+                "providers": [{"name":"local","endpoint":"http://localhost:11434/v1","localRuntimeId":"desktop","models":["fixture-model"]}]
+              }
+            }
+            """);
+
+        ArcanumSettings persisted = ConfigurationBootstrapper.LoadPersistedArcanumSettings();
+
+        Assert.Equal("desktop", Assert.Single(persisted.LocalRuntimes).Id);
+
+        ServiceCollection services = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, new ConfigurationManager());
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        ArcanumSettings startup = provider.GetRequiredService<IOptions<ArcanumSettings>>().Value;
+
+        LocalRuntimeSettings runtime = Assert.Single(startup.LocalRuntimes);
+
+        Assert.Equal("desktop", runtime.Id);
+
+        Assert.Equal("ollama", runtime.Adapter);
+
+        Assert.Equal("desktop-gpu", runtime.ResourceGroup);
+
+        Assert.Equal("http://localhost:11434", runtime.ManagementEndpoint);
+
+        Assert.Equal(runtime.Id, Assert.Single(startup.Providers).LocalRuntimeId);
+
+        var validation = new ConfigurationValidator().Validate(startup);
+
+        Assert.True(validation.IsSuccess, validation.Error.Message);
+    }
+
+    [Fact]
+    public void Startup_snapshot_copy_preserves_every_public_root_setting()
+    {
+        ArcanumSettings source = new();
+
+        ArcanumSettings destination = new();
+
+        var properties = typeof(ArcanumSettings).GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+
+        foreach (var property in properties)
+        {
+            Type type = property.PropertyType;
+
+            if (type == typeof(string)) property.SetValue(source, "snapshot-" + property.Name);
+            else if (type.IsArray) property.SetValue(source, Array.CreateInstance(type.GetElementType()!, 1));
+            else if (type.IsEnum) property.SetValue(source, Enum.GetValues(type).Cast<object>().First(value => !Equals(value, property.GetValue(destination))));
+
+            Assert.False(type.IsValueType
+                    ? Equals(property.GetValue(source), property.GetValue(destination))
+                    : ReferenceEquals(property.GetValue(source), property.GetValue(destination)),
+                $"The copy fixture must seed a distinct value for root setting {property.Name}.");
+        }
+
+        ConfigurationBootstrapper.CopySettings(source, destination);
+
+        foreach (var property in properties)
+        {
+            object? expected = property.GetValue(source);
+
+            object? actual = property.GetValue(destination);
+
+            Assert.True(property.PropertyType.IsValueType ? Equals(expected, actual) : ReferenceEquals(expected, actual),
+                $"The startup options copy omitted root setting {property.Name}.");
+        }
     }
 
     [Theory]

@@ -1,11 +1,13 @@
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
+using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -15,6 +17,21 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 // that attempt behind: a Prepared row cannot be certified as not sent by a same-boot abort, so it would stop a clean readmission for good.
 public sealed partial class LongRestMaintenanceTests
 {
+    [Fact]
+    public async Task Unsent_provider_deferral_withdraws_prepared_attempt_before_parking()
+    {
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false);
+
+        f.DispatchObserved = _ => throw new ProviderWorkDeferredException(CancellationToken.None);
+
+        Exception? deferred = await Record.ExceptionAsync(() => f.ResumeAdmittedAsync(f.Operation, CancellationToken.None));
+
+        Assert.IsType<LongRestMaintenanceDeferredException>(deferred);
+        Assert.Equal(0, f.Handler.SendCount);
+        Assert.Equal(0L, await ScalarLongAsync(f, "SELECT count(*) FROM long_rest_provider_effects;"));
+        Assert.Equal(0L, await UnsettledEffectsAsync(f));
+    }
+
     private static async Task RetryAfterDrainedReopenAsync(MaintenanceFixture f, string reason)
     {
         // A same-boot drained maintenance abort (a backup or a reset) reopens admission at a later generation.

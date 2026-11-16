@@ -2,6 +2,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
@@ -240,6 +241,12 @@ internal sealed class TapestryWeaver(
             }
 
             return outcome;
+        }
+        catch (ProviderWorkDeferredException)
+        {
+            await AbandonGenerationBestEffortAsync(generationId).ConfigureAwait(false);
+
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

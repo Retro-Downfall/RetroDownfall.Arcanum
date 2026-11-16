@@ -126,6 +126,8 @@ internal sealed class SubagentRunner(
 
             try
             {
+                using IDisposable providerWork = ProviderWorkAmbient.AllowChild();
+
                 result = await turnCoordinator.Value
                     .ExecuteBufferedAsync(
                         childRequest,

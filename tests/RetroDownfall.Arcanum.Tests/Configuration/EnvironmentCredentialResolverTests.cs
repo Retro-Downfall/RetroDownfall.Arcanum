@@ -23,6 +23,7 @@ public sealed class EnvironmentCredentialResolverTests : IDisposable
                 nameof(ProviderSettings.Endpoint),
                 nameof(ProviderSettings.GuildUsageReconciliation),
                 nameof(ProviderSettings.HiddenModels),
+                nameof(ProviderSettings.LocalRuntimeId),
                 nameof(ProviderSettings.Models),
                 nameof(ProviderSettings.Name),
                 nameof(ProviderSettings.OutputTokenLimitWireDialect),

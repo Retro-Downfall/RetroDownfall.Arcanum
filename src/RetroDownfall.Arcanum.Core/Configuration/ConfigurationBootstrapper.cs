@@ -98,6 +98,7 @@ public static class ConfigurationBootstrapper
         destination.Edition = source.Edition;
         destination.Host = source.Host;
         destination.Providers = source.Providers;
+        destination.LocalRuntimes = source.LocalRuntimes;
         destination.DefaultModel = source.DefaultModel;
         destination.FastModel = source.FastModel;
         destination.Security = source.Security;

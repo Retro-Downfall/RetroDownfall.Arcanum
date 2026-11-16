@@ -15,6 +15,8 @@ public sealed record ArcanumSettings
 
     public ProviderSettings[] Providers { get; set; } = [];
 
+    public LocalRuntimeSettings[] LocalRuntimes { get; set; } = [];
+
     public string? DefaultModel { get; set; }
 
     public string? FastModel { get; set; }

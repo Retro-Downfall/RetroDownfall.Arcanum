@@ -261,6 +261,8 @@ public sealed class SessionAttachmentIndexProcessorCancelledParseTests(GrimoireF
 
         public CancellationToken MaintenanceRevocation => CancellationToken.None;
 
+        public CancellationToken ProviderAdmissionRevocation => CancellationToken.None;
+
         public bool MaintenanceRevocationPending => false;
 
         public bool TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effectGroup)

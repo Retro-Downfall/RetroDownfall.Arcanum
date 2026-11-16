@@ -89,6 +89,10 @@ public sealed class CampaignRollupProviderClientFactory : ICampaignRollupProvide
             JsonSerializer.SerializeToUtf8Bytes(provider, ConfigurationJsonContext.Default.ProviderSettings),
             ConfigurationJsonContext.Default.ProviderSettings)!;
 
+        ProviderWorkClientIdentity providerWork = new(provider, configuration, _settings);
+
+        await providerWork.ReserveForegroundAsync(cancellationToken).ConfigureAwait(false);
+
         string? key = await _apiKeyResolver.ResolveAsync(provider, cancellationToken).ConfigureAwait(false);
 
         OpenAIClientOptions options = new()
@@ -101,9 +105,11 @@ public sealed class CampaignRollupProviderClientFactory : ICampaignRollupProvide
 
         options.AddPolicy(new OutputTokenLimitWirePolicy(provider.OutputTokenLimitWireDialect), PipelinePosition.PerCall);
 
+        options.AddPolicy(providerWork.DispatchPolicy, PipelinePosition.BeforeTransport);
+
         OpenAI.Chat.ChatClient client = new(model, new ApiKeyCredential(key ?? "no-key"), options);
 
-        return Result<ChatClientLease?>.Success(new(client.AsIChatClient(), provider, model, ownedHttpClient: null));
+        return Result<ChatClientLease?>.Success(new(providerWork.Bind(client.AsIChatClient()), provider, model, ownedHttpClient: null));
     }
 
     public void Dispose()

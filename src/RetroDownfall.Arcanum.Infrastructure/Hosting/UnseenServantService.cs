@@ -437,6 +437,8 @@ internal sealed class UnseenServantService(
 
         await using IGrimoireExternalEffectGroup group = effectGroup!;
 
+        using IDisposable providerWait = RetroDownfall.Arcanum.Core.Intelligence.ProviderWorkWaitAmbient.Push(lease.ProviderAdmissionRevocation);
+
         Result<DaemonExecutionSummary> result = await daemonRunner
             .RunScheduledAsync(daemonId, stoppingToken)
             .ConfigureAwait(false);

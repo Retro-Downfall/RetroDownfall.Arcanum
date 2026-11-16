@@ -5,6 +5,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -15,6 +17,73 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed partial class BatchProcessingServiceTests
 {
+    [Fact]
+    public async Task Closing_during_unsent_batch_line_keeps_completed_sibling_and_seals_interrupted_line()
+    {
+        BatchAdmissionGate gate = new();
+
+        DeferredBatchProvider provider = new();
+
+        await using AdmissionService harness = CreateAdmissionService(gate,
+            configure: services => services.AddSingleton<IArcanumIntelligenceProvider>(provider));
+
+        BatchRecord batch = await SeedAdmissionBatchAsync(2);
+
+        Task processing = harness.Service.ProcessBatchAsync(batch, CancellationToken.None);
+
+        await provider.SecondEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10));
+
+        while (!(await _batches!.ListLineCheckpointsAsync(batch.Id, 1, 2)).Any(line => line.State == BatchLineCheckpointState.Completed))
+            await Task.Delay(10, deadline.Token);
+
+        await using IGrimoireClosingOwner closing = gate.Close();
+
+        Assert.True((await gate.Inner.DrainRequestAndWorkAsync(closing, CancellationToken.None).AsTask().WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
+
+        IReadOnlyList<BatchLineCheckpoint> checkpoints = await _batches.ListLineCheckpointsAsync(batch.Id, 1, 2);
+
+        Assert.Equal(2, checkpoints.Count);
+        Assert.Contains(checkpoints, line => line.Outcome == BatchRequestOutcome.Completed);
+        Assert.Contains(checkpoints, line => line.Outcome == BatchRequestOutcome.Failed);
+        Assert.Equal(2, provider.Calls);
+
+        await gate.ReopenAsync(closing);
+        await processing.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(2, provider.Calls);
+    }
+
+    private sealed class DeferredBatchProvider : IArcanumIntelligenceProvider
+    {
+        private int _calls;
+
+        internal int Calls => Volatile.Read(ref _calls);
+
+        internal TaskCompletionSource SecondEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, ArcanumInvocationContext invocationContext,
+            CancellationToken cancellationToken, InferenceAuditContext? auditContext = null)
+        {
+            if (Interlocked.Increment(ref _calls) == 1) return new PromptTurnResult("completed", null);
+
+            CancellationToken admission = ProviderWorkWaitAmbient.CancellationToken;
+            SecondEntered.TrySetResult();
+
+            try { await Task.Delay(Timeout.InfiniteTimeSpan, admission); }
+            catch (OperationCanceledException) when (admission.IsCancellationRequested) { throw new ProviderWorkDeferredException(admission); }
+
+            throw new InvalidOperationException();
+        }
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(PingRequest request, ArcanumInvocationContext invocationContext,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken, InferenceAuditContext? auditContext = null)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
