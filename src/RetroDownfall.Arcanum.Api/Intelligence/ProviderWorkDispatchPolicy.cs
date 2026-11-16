@@ -78,4 +78,3 @@ internal sealed class ProviderWorkDispatchPolicy(ProviderWorkClientIdentity iden
         public void Dispose() => owner._current.Value = previous;
     }
 }
-
