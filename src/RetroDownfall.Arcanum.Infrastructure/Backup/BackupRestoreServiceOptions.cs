@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -19,7 +20,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 /// </remarks>
 internal sealed record CovenantSelectiveImportServices(
     ICovenantOperationGate Gate,
-    IProtectedArtifactTransferStore TransferStore);
+    IProtectedArtifactTransferStore TransferStore)
+{
+    /// <summary>The read-only authority verifier supplied by stopped-host production composition.</summary>
+    internal StoppedHostCovenantAuthority? StoppedHostAuthority { get; init; }
+}
 
 internal sealed class BackupRestoreServiceOptions
 {

@@ -462,11 +462,7 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ISecretStore>(),
                 sp.GetRequiredService<IGrimoireDbPassphraseSource>()));
 
-        services.TryAddSingleton<IHostProcessToolsRecoveryStartupClassifier>(
-            static sp => new HostProcessToolsRecoveryStartupClassifier(
-                sp.GetRequiredService<IHostProcessToolsMarkerStore>(),
-                sp.GetRequiredService<IHostProcessToolsEnvironmentProbe>(),
-                sp.GetRequiredService<IHostProcessToolsMarkerPairJoiner>()));
+        AddHostProcessToolsRecoveryStartupClassifier(services);
 
         services.TryAddSingleton<ICovenantRecoveryAuthorityBootstrapper>(
             static sp => new CovenantRecoveryAuthorityBootstrapper(
@@ -769,14 +765,7 @@ public static class ServiceCollectionExtensions
 
         // Resolved lazily by the stopped-host data service, for the global and all scopes only. The
         // workspace scope never constructs either of the two below and never reads the master key.
-        services.TryAddScoped(static provider =>
-            new StoppedHostCovenantAuthority(
-                provider.GetRequiredService<CovenantRuntimeGenerationProvider>(),
-                provider.GetRequiredService<CovenantAvailability>(),
-                provider.GetRequiredService<CovenantEnvelopeMasterKeyProvider>(),
-                provider.GetRequiredService<IHostProcessToolsRecoveryStartupClassifier>(),
-                provider.GetRequiredService<CovenantHealthyCatalogErasureGuard>(),
-                provider.GetRequiredService<ISecretStore>()));
+        AddStoppedHostCovenantAuthority(services);
 
         // Lends the held installation lock to the transition journal's phase authority for one call, so
         // the reset service receives the exact held lock explicitly and never looks one up.
@@ -825,6 +814,8 @@ public static class ServiceCollectionExtensions
         services.AddArcanumClientMutationCoordination();
 
         services.AddMemoryErasureKeyring();
+
+        AddStoppedHostCovenantAuthority(services);
 
         services.TryAddSingleton(BackupStatePaths.Default);
 
@@ -934,6 +925,29 @@ public static class ServiceCollectionExtensions
                     serviceProvider.GetRequiredService<TimeProvider>()));
     }
 
+    private static void AddHostProcessToolsRecoveryStartupClassifier(IServiceCollection services)
+    {
+        services.TryAddSingleton<IHostProcessToolsRecoveryStartupClassifier>(
+            static sp => new HostProcessToolsRecoveryStartupClassifier(
+                sp.GetRequiredService<IHostProcessToolsMarkerStore>(),
+                sp.GetRequiredService<IHostProcessToolsEnvironmentProbe>(),
+                sp.GetRequiredService<IHostProcessToolsMarkerPairJoiner>()));
+    }
+
+    private static void AddStoppedHostCovenantAuthority(IServiceCollection services)
+    {
+        AddHostProcessToolsRecoveryStartupClassifier(services);
+
+        services.TryAddScoped(static provider =>
+            new StoppedHostCovenantAuthority(
+                provider.GetRequiredService<CovenantRuntimeGenerationProvider>(),
+                provider.GetRequiredService<CovenantAvailability>(),
+                provider.GetRequiredService<CovenantEnvelopeMasterKeyProvider>(),
+                provider.GetRequiredService<IHostProcessToolsRecoveryStartupClassifier>(),
+                provider.GetRequiredService<CovenantHealthyCatalogErasureGuard>(),
+                provider.GetRequiredService<ISecretStore>()));
+    }
+
     /// <summary>
     /// Resolves the protected selective-import path, or reports that this installation has none.
     /// </summary>
@@ -954,16 +968,15 @@ public static class ServiceCollectionExtensions
             return null;
         }
 
-        ICovenantOperationGate? gate = serviceProvider.GetService<ICovenantOperationGate>();
-
-        return gate is null
-            ? null
-            : new CovenantSelectiveImportServices(
-                gate,
-                new ProtectedArtifactTransferStore(
-                    CovenantSqliteConnectionInitializer.Instance,
-                    serviceProvider.GetRequiredService<TimeProvider>(),
-                    serviceProvider.GetRequiredService<IEncryptedBlobStore>()));
+        return new CovenantSelectiveImportServices(
+            serviceProvider.GetRequiredService<ICovenantOperationGate>(),
+            new ProtectedArtifactTransferStore(
+                CovenantSqliteConnectionInitializer.Instance,
+                serviceProvider.GetRequiredService<TimeProvider>(),
+                serviceProvider.GetRequiredService<IEncryptedBlobStore>()))
+        {
+            StoppedHostAuthority = serviceProvider.GetRequiredService<StoppedHostCovenantAuthority>(),
+        };
     }
 
     /// <summary>

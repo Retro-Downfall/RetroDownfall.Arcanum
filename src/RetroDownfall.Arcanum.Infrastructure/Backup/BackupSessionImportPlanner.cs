@@ -144,17 +144,22 @@ internal static class BackupSessionImportPlanner
 
         }
 
-        ImmutableArray<byte[]> manifestItems = await ReadManifestItemsAsync(
+        Result<ImmutableArray<byte[]>> manifestItems = await ReadManifestItemsAsync(
             source,
             sourceSessionId,
             cancellationToken).ConfigureAwait(false);
+
+        if (manifestItems.IsFailure)
+        {
+            return manifestItems.Error;
+        }
 
         ProtectedSessionTransferCounts counts = await ReadCountsAsync(
             source,
             sourceSessionId,
             cancellationToken).ConfigureAwait(false);
 
-        CovenantDigest manifest = ProtectedSessionTransferDigests.Manifest(manifestItems);
+        CovenantDigest manifest = ProtectedSessionTransferDigests.Manifest(manifestItems.Value);
 
         CovenantDigest sourceEvidence = ComputeSourceEvidence(sourceSessionId, manifest, counts);
 
@@ -321,7 +326,7 @@ internal static class BackupSessionImportPlanner
     /// <summary>
     /// Rebuilds the exact ordered preimages the transfer store commits to.
     /// </summary>
-    private static async Task<ImmutableArray<byte[]>> ReadManifestItemsAsync(
+    private static async Task<Result<ImmutableArray<byte[]>>> ReadManifestItemsAsync(
         SqliteConnection source,
         Guid sessionId,
         CancellationToken cancellationToken)
@@ -350,8 +355,15 @@ internal static class BackupSessionImportPlanner
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
 
+                if (reader.GetValue(1) is not long sequence)
+                {
+                    return new Error(
+                        ErrorCodes.Covenant.IntegrityFailure,
+                        "An archived Entry has a non-integer sequence.");
+                }
+
                 items.Add(Encoding.UTF8.GetBytes(
-                    $"entry:{reader.GetString(0)}:{reader.GetValue(1)}"));
+                    $"entry:{reader.GetString(0)}:{sequence}"));
 
             }
 

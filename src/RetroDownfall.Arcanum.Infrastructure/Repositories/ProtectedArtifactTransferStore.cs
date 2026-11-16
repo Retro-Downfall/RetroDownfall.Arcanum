@@ -272,8 +272,13 @@ internal sealed class ProtectedArtifactTransferStore(
                 "The archive does not contain the requested Session.");
         }
 
-        ImmutableArray<EntryRow> entries =
+        Result<ImmutableArray<EntryRow>> entries =
             await ReadEntriesAsync(source, request.SourceSessionId, cancellationToken).ConfigureAwait(false);
+
+        if (entries.IsFailure)
+        {
+            return entries.Error;
+        }
 
         ImmutableArray<AttachmentRow> attachments =
             await ReadAttachmentsAsync(source, request.SourceSessionId, cancellationToken)
@@ -283,7 +288,7 @@ internal sealed class ProtectedArtifactTransferStore(
             await ReadFinalizationsAsync(source, request.SourceSessionId, cancellationToken)
                 .ConfigureAwait(false);
 
-        return new SourceSessionGraph(session, entries, attachments, finalizations);
+        return new SourceSessionGraph(session, entries.Value, attachments, finalizations);
     }
 
     /// <summary>
@@ -1373,7 +1378,7 @@ internal sealed class ProtectedArtifactTransferStore(
             : null;
     }
 
-    private static async Task<ImmutableArray<EntryRow>> ReadEntriesAsync(
+    private static async Task<Result<ImmutableArray<EntryRow>>> ReadEntriesAsync(
         SqliteConnection source,
         Guid sessionId,
         CancellationToken cancellationToken)
@@ -1382,7 +1387,7 @@ internal sealed class ProtectedArtifactTransferStore(
                 .TableExistsAsync(source, "Entries", cancellationToken)
                 .ConfigureAwait(false))
         {
-            return [];
+            return ImmutableArray<EntryRow>.Empty;
         }
 
         ImmutableArray<EntryRow>.Builder builder = ImmutableArray.CreateBuilder<EntryRow>();
@@ -1403,13 +1408,20 @@ internal sealed class ProtectedArtifactTransferStore(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            if (reader.GetValue(5) is not long sequence)
+            {
+                return new Error(
+                    ErrorCodes.Covenant.IntegrityFailure,
+                    "An archived Entry has a non-integer sequence.");
+            }
+
             builder.Add(new EntryRow(
                 reader.GetString(0),
                 Value(reader, 1),
                 Value(reader, 2),
                 Value(reader, 3),
                 UtcInstantText.Normalize(reader.GetString(4)),
-                Value(reader, 5),
+                sequence,
                 Value(reader, 6),
                 Value(reader, 7),
                 Value(reader, 8),
@@ -1542,7 +1554,7 @@ internal sealed class ProtectedArtifactTransferStore(
         object Content,
         object ModelUsed,
         object CreatedAt,
-        object Sequence,
+        long Sequence,
         object ToolCallId,
         object ToolName,
         object ToolArguments,

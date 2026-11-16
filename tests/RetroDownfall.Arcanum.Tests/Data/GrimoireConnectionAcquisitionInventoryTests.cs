@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
-    private const int ExpectedProductionAcquisitionCount = 574;
+    private const int ExpectedProductionAcquisitionCount = 576;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
@@ -1460,6 +1460,69 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 GrimoireRuntimeAdmissionRoute.ExactNonServingProof)]);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.InvalidClassification);
+    }
+
+    [Fact]
+    public void Idle_observer_open_retains_the_exact_live_ordinary_factory_route()
+    {
+        GrimoireAcquisitionCatalogEntry entry = Assert.Single(
+            GrimoireConnectionAcquisitionScanner.Catalog(), static candidate =>
+                candidate.Identity.EnclosingType == "GuildLocalQuestScheduler"
+                && candidate.Identity.EnclosingMember == "ObserveIdleAsync(5)");
+
+        Assert.Equal(AcquisitionConstructKind.MarkedRouteInvocation, entry.Identity.ConstructKind);
+
+        Assert.Equal("connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,lifetime.Token)",
+            entry.Identity.Fingerprint);
+
+        Assert.Equal(GrimoirePathAuthority.LiveGrimoire, entry.PathAuthority);
+
+        Assert.Equal(GrimoireAcquisitionKind.ServingRawOrdinary, entry.AcquisitionKind);
+
+        Assert.Equal(GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory, entry.RuntimeRoute);
+
+        Assert.Null(entry.NonServingProof);
+
+        Assert.Empty(GrimoireConnectionAcquisitionScanner.Validate([entry.Identity], [entry]));
+    }
+
+    [Fact]
+    public void Selective_import_preflight_has_exact_stopped_host_maintenance_proof()
+    {
+        GrimoireAcquisitionCatalogEntry entry = Assert.Single(
+            GrimoireConnectionAcquisitionScanner.Catalog(), static candidate =>
+                candidate.Identity.EnclosingType == "BackupRestoreService"
+                && candidate.Identity.EnclosingMember == "PrepareSelectiveImportAuthorityAsync(4)");
+
+        Assert.Equal(AcquisitionConstructKind.ProviderOpen, entry.Identity.ConstructKind);
+
+        Assert.Equal("BackupRestoreDatabaseWorker.OpenAsync(_paths.DatabasePath,grimoireSecret,readOnly:true,cancellationToken)",
+            entry.Identity.Fingerprint);
+
+        Assert.Equal(GrimoirePathAuthority.StoppedHostGrimoire, entry.PathAuthority);
+
+        Assert.Equal(GrimoireAcquisitionKind.StoppedHostMaintenance, entry.AcquisitionKind);
+
+        AssertExactProof(entry, GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            ExactNonServingProofKind.ExactStoppedHostMaintenanceOwner);
+
+        Assert.Empty(GrimoireConnectionAcquisitionScanner.Validate([entry.Identity], [entry]));
+
+        ExactNonServingProof proof = Assert.IsType<ExactNonServingProof>(entry.NonServingProof);
+
+        GrimoireAcquisitionCatalogEntry[] mismatches =
+        [
+            entry with { PathAuthority = GrimoirePathAuthority.LiveGrimoire },
+            entry with { AcquisitionKind = GrimoireAcquisitionKind.StoppedHostRecovery },
+            entry with { RuntimeRoute = GrimoireRuntimeAdmissionRoute.StoppedHostConnectionFactory },
+            entry with { RuntimeRoute = GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory },
+            entry with { NonServingProof = proof with { Kind = ExactNonServingProofKind.StoppedHostAuthority } },
+            entry with { NonServingProof = null },
+        ];
+
+        Assert.All(mismatches, changed => Assert.Contains(
+            GrimoireConnectionAcquisitionScanner.Validate([entry.Identity], [changed]),
+            static failure => failure.Code == InventoryFailureCode.InvalidClassification));
     }
 
     [Fact]

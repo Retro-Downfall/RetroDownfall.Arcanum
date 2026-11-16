@@ -32,6 +32,14 @@ internal static partial class HostedGrimoireProducerInventory
             && IsExactFrameworkType(method.ContainingType, "SQLitePCL.raw", typeof(SQLitePCL.raw).Assembly.GetName())
             && IsExactFrameworkType(handle.Type, "SQLitePCL.sqlite3", typeof(SQLitePCL.sqlite3).Assembly.GetName());
 
+        // Interrupt changes the state of a native connection and remains a database
+        // effect. Its caller must retain the ordinary work frontier like any other use.
+        private static bool IsExactSqliteInterrupt(IMethodSymbol method) =>
+            method is { IsStatic: true, Arity: 0, Name: "sqlite3_interrupt", MethodKind: MethodKind.Ordinary, ReturnsVoid: true }
+            && method.Parameters is [{ RefKind: RefKind.None } handle]
+            && IsExactFrameworkType(method.ContainingType, "SQLitePCL.raw", typeof(SQLitePCL.raw).Assembly.GetName())
+            && IsExactFrameworkType(handle.Type, "SQLitePCL.sqlite3", typeof(SQLitePCL.sqlite3).Assembly.GetName());
+
         // Component.Dispose dispatches Dispose(bool) and then Disposed handlers. An exact
         // runtime type alone therefore cannot certify it. Only a fresh, nonescaping command
         // with these reviewed uses can have no handler attached before its compiler cleanup.

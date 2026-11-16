@@ -54,6 +54,8 @@ internal enum GrimoireAcquisitionKind : byte
     ClosedRestoreDestinationInventory = 11,
 
     ClosedRestoreReconciliation = 12,
+
+    StoppedHostMaintenance = 13,
 }
 
 internal enum AcquisitionConstructKind : byte
@@ -124,6 +126,8 @@ internal enum ExactNonServingProofKind : byte
     ExactClosedRestoreOwner = 8,
 
     ExactClosedRestoreDestinationOwner = 9,
+
+    ExactStoppedHostMaintenanceOwner = 10,
 }
 
 internal enum InventoryFailureCode : byte
@@ -1073,6 +1077,13 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingEfOrdinary,
             GrimoireRuntimeAdmissionRoute.SharedEfInterceptor,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Guild/GuildLocalQuestScheduler.cs", "GuildLocalQuestScheduler", "ObserveIdleAsync(5)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,lifetime.Token)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
 
         new(
@@ -2699,6 +2710,13 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireAcquisitionKind.ClosedRestoreReconciliation,
             GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
             new(ExactNonServingProofKind.ExactClosedRestoreOwner, "BackupRestoreCovenantCoordinator.CompleteCommittedAsync(5)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreService.cs", "BackupRestoreService", "PrepareSelectiveImportAuthorityAsync(4)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(_paths.DatabasePath,grimoireSecret,readOnly:true,cancellationToken)"),
+            GrimoirePathAuthority.StoppedHostGrimoire,
+            GrimoireAcquisitionKind.StoppedHostMaintenance,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.ExactStoppedHostMaintenanceOwner, "BackupRestoreService.PrepareSelectiveImportAuthorityAsync(4)", 0)),
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreService.cs", "BackupRestoreService", "PrepareStagedGenerationAsync(13)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(stagedDatabase,grimoireSecret,readOnly:false,cancellationToken)"),
@@ -5136,10 +5154,20 @@ internal static class GrimoireConnectionAcquisitionScanner
                 _ => false,
             },
 
-            GrimoirePathAuthority.StoppedHostGrimoire =>
-                entry.AcquisitionKind == GrimoireAcquisitionKind.StoppedHostRecovery
-                && entry.RuntimeRoute == GrimoireRuntimeAdmissionRoute.StoppedHostConnectionFactory
-                && HasProof(entry, ExactNonServingProofKind.StoppedHostAuthority),
+            GrimoirePathAuthority.StoppedHostGrimoire => entry.AcquisitionKind switch
+            {
+                GrimoireAcquisitionKind.StoppedHostRecovery =>
+                    entry.RuntimeRoute == GrimoireRuntimeAdmissionRoute.StoppedHostConnectionFactory
+                    && HasProof(entry, ExactNonServingProofKind.StoppedHostAuthority),
+
+                // The selective-import preflight asserts the exact retained installation lock before
+                // its query-only open. It does not use the reset-only stopped-host connection factory.
+                GrimoireAcquisitionKind.StoppedHostMaintenance =>
+                    entry.RuntimeRoute == GrimoireRuntimeAdmissionRoute.ExactNonServingProof
+                    && HasProof(entry, ExactNonServingProofKind.ExactStoppedHostMaintenanceOwner),
+
+                _ => false,
+            },
 
             GrimoirePathAuthority.PreReadinessGrimoire =>
                 entry.AcquisitionKind == GrimoireAcquisitionKind.BootstrapOrShutdown

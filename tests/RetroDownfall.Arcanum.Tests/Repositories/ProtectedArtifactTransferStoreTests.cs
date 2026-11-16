@@ -420,6 +420,51 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         Assert.Equal(0, await CountDestinationAsync("Sessions"));
     }
 
+    [Theory]
+    [InlineData("'not-an-integer'")]
+    [InlineData("1.5")]
+    [InlineData("X'01'")]
+    public async Task A_noninteger_entry_sequence_is_refused_before_any_destination_write(string sequenceSql)
+    {
+        await _source.ExecuteAsync($"UPDATE Entries SET Sequence={sequenceSql} WHERE Role=0", CancellationToken.None);
+
+        // Claim the exact malformed source manifest, rather than testing an ordinary digest
+        // mismatch. The store must validate the scalar's type before trusting that claim.
+        ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion = await CommitAsync(request);
+
+        Assert.True(completion.Result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, completion.Result.Error.Code);
+
+        Assert.Equal(0, await CountDestinationAsync("Sessions"));
+
+        Assert.Equal(0, await CountDestinationAsync("Entries"));
+
+        Assert.Equal(0, await CountDestinationAsync("protected_session_transfer_intents"));
+
+        Assert.Empty(Directory.EnumerateFiles(_destinationAttachments, "*", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task Entry_sequences_beyond_Int32_are_imported_without_narrowing()
+    {
+        await _source.ExecuteAsync("UPDATE Entries SET Sequence=Sequence+4294967295", CancellationToken.None);
+
+        ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion = await CommitAsync(request);
+
+        Assert.True(completion.Result.IsSuccess, completion.Result.Error.Message);
+
+        Assert.Equal(2, await CountDestinationAsync("Entries"));
+
+        Assert.Equal(4294967296L, await _destination.ScalarLongAsync("SELECT MIN(Sequence) FROM Entries", CancellationToken.None));
+
+        Assert.Equal(4294967297L, await _destination.ScalarLongAsync("SELECT MAX(Sequence) FROM Entries", CancellationToken.None));
+    }
+
     [Fact]
     public async Task A_manifest_that_does_not_match_the_source_graph_is_refused()
     {
@@ -1293,7 +1338,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             while (await reader.ReadAsync(CancellationToken.None))
             {
                 items.Add(System.Text.Encoding.UTF8.GetBytes(
-                    $"entry:{reader.GetString(0)}:{reader.GetInt32(1)}"));
+                    $"entry:{reader.GetString(0)}:{reader.GetValue(1)}"));
             }
         }
 

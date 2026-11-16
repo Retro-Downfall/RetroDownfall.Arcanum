@@ -18,6 +18,8 @@ using RetroDownfall.Arcanum.Infrastructure.Coordination;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
+
 using Serilog;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -1106,6 +1108,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                     phases,
                     extractRoot,
                     stagedRoot,
+                    maintenance,
                     cancellationToken).ConfigureAwait(false);
             }
 
@@ -2412,6 +2415,33 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         }
     }
 
+    private async Task<Result> PrepareSelectiveImportAuthorityAsync(
+        StoppedHostCovenantAuthority authority,
+        ArcanumMaintenanceLock? maintenance,
+        string grimoireSecret,
+        CancellationToken cancellationToken)
+    {
+        // The verifier borrows the restore's exact stopped-host ownership. Capture the independent
+        // marker before opening the query-only destination, and close it before merging keys or
+        // opening the protected transfer's write connection. Nothing bootstraps or repairs here.
+        (maintenance ?? throw new InvalidOperationException(
+            "Protected selective import requires the held installation maintenance lock."))
+            .AssertHeldFor(_paths.GrimoireDirectory);
+
+        Result<HostProcessToolsRecoveryMarkerSnapshot> marker = authority.CaptureMarker();
+
+        if (marker.IsFailure)
+        {
+            return Result.Failure(marker.Error);
+        }
+
+        await using SqliteConnection connection = await BackupRestoreDatabaseWorker
+            .OpenAsync(_paths.DatabasePath, grimoireSecret, readOnly: true, cancellationToken)
+            .ConfigureAwait(false);
+
+        return await authority.EnsureAsync(connection, marker.Value, cancellationToken).ConfigureAwait(false);
+    }
+
     private async Task<BackupRestoreResult> ImportSelectedSessionsAsync(
         BackupRestoreRequest request,
         Guid operationId,
@@ -2419,6 +2449,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
         List<BackupRestorePhaseRecord> phases,
         string extractRoot,
         string stagedRoot,
+        ArcanumMaintenanceLock? maintenance,
         CancellationToken cancellationToken)
     {
         SecretStoreReadResult destinationSecret = await _secretStore
@@ -2438,6 +2469,18 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         "backup.restore_import_destination_unavailable",
                         "Importing Sessions requires an initialized local Grimoire this machine can open."),
                 ]);
+        }
+
+        if (_options.SelectiveImport?.StoppedHostAuthority is { } authority)
+        {
+            Result established = await PrepareSelectiveImportAuthorityAsync(
+                authority, maintenance, destinationSecret.Value, cancellationToken).ConfigureAwait(false);
+
+            if (established.IsFailure)
+            {
+                return Rejected(operationId, plan, phases,
+                    [new BackupVerifyIssue("backup.restore_import_refused", established.Error.Message)]);
+            }
         }
 
         BackupSecretRewrapResult merged = await new BackupSecretRewrapper(_secretStore, _options.FileEncryptionKeys)

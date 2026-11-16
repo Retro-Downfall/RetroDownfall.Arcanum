@@ -76,8 +76,8 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 /// the protected erasure over the process's own composition, under a claim an authenticated reset
 /// record made (§10.20.3).</para>
 /// </remarks>
-[Collection("ProcessEnvironment")]
-public sealed partial class InstallationResetStoppedHostCovenantTests : IDisposable
+[Collection("WorkspacePathPolicy")]
+public sealed partial class InstallationResetStoppedHostCovenantTests : IDisposable, IClassFixture<GrimoireFixture>
 {
     private const string MasterApiKey = "stopped-host-reset-master-api-key";
 

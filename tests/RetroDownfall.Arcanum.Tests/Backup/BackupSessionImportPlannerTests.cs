@@ -310,12 +310,47 @@ public sealed class BackupSessionImportPlannerTests : IDisposable
 
     }
 
+    [Theory]
+    [InlineData("'not-an-integer'")]
+    [InlineData("1.5")]
+    [InlineData("X'01'")]
+    public async Task A_noninteger_entry_sequence_is_refused_instead_of_formatted_into_a_manifest(string sequenceSql)
+    {
+        await using ImportedSessionSourceLease lease = await OpenSourceAsync(sequenceSql);
+
+        Result<ImportedSessionTransferRequest> planned = await BackupSessionImportPlanner.PlanAsync(
+            lease, UnboundSessionId, [], CancellationToken.None);
+
+        Assert.True(planned.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, planned.Error.Code);
+    }
+
+    [Fact]
+    public async Task Entry_sequences_beyond_Int32_preserve_the_exact_canonical_manifest()
+    {
+        await using ImportedSessionSourceLease lease = await OpenSourceAsync("4294967296", "4294967297");
+
+        Result<ImportedSessionTransferRequest> planned = await BackupSessionImportPlanner.PlanAsync(
+            lease, UnboundSessionId, [], CancellationToken.None);
+
+        Assert.True(planned.IsSuccess, planned.Error.Message);
+
+        Assert.Equal(ProtectedSessionTransferDigests.Manifest(
+        [
+            Preimage($"entry:{Stored(UserEntryId)}:4294967296"),
+            Preimage($"entry:{Stored(AssistantEntryId)}:4294967297"),
+            Preimage($"attachment:{AttachmentRelativePath}:{AttachmentContentSha256}:16"),
+            Preimage($"finalization:{Stored(AssistantEntryId)}"),
+        ]), planned.Value.SourceManifestDigest);
+    }
+
     private static byte[] Preimage(string item) => Encoding.UTF8.GetBytes(item);
 
-    private async Task<ImportedSessionSourceLease> OpenSourceAsync()
+    private async Task<ImportedSessionSourceLease> OpenSourceAsync(string firstSequenceSql = "1", string secondSequenceSql = "2")
     {
 
-        string secret = await SeedSourceAsync();
+        string secret = await SeedSourceAsync(firstSequenceSql, secondSequenceSql);
 
         string attachments = Path.Combine(_root, "attachments");
 
@@ -331,7 +366,7 @@ public sealed class BackupSessionImportPlannerTests : IDisposable
 
     }
 
-    private async Task<string> SeedSourceAsync()
+    private async Task<string> SeedSourceAsync(string firstSequenceSql = "1", string secondSequenceSql = "2")
     {
 
         string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
@@ -398,12 +433,12 @@ public sealed class BackupSessionImportPlannerTests : IDisposable
                 INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt",
                                        "Sequence", "ToolCallId", "ToolName", "ToolArguments", "IsPinned")
                 VALUES ('{Stored(UserEntryId)}', '{Stored(UnboundSessionId)}', 0, 'ask', '',
-                        '2026-01-01T00:00:00Z', 1, NULL, NULL, NULL, 0);
+                        '2026-01-01T00:00:00Z', {firstSequenceSql}, NULL, NULL, NULL, 0);
 
                 INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt",
                                        "Sequence", "ToolCallId", "ToolName", "ToolArguments", "IsPinned")
                 VALUES ('{Stored(AssistantEntryId)}', '{Stored(UnboundSessionId)}', 1, 'answer',
-                        'model', '2026-01-01T00:00:00Z', 2, NULL, NULL, NULL, 0);
+                        'model', '2026-01-01T00:00:00Z', {secondSequenceSql}, NULL, NULL, NULL, 0);
 
                 INSERT INTO "SessionAttachments"
                     ("Id", "SessionId", "State", "LogicalKey", "OriginalFileName", "Version",

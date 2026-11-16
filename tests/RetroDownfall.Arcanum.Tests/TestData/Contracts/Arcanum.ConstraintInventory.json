@@ -9997,9 +9997,9 @@
         "ConclaveArchmage.DispatchAsync": "250 milliseconds between durable blocking-child result checks",
         "GuildLocalPort.CompleteAsync": "250 milliseconds between stopped-descendant frontier checks",
         "GuildLocalPort.WaitAsync": "250 milliseconds between accepted-answer checks",
-        "GuildLocalQuestScheduler.DiscoverAsync": "1 second between pending-work discovery passes"
+        "GuildLocalQuestScheduler.DiscoverAsync": "1 second between recovery passes or same-connection observations while Guild is disabled and globally settled"
       },
-      "currentValue": "Cooperative polling: 50 ms for capacity, 250 ms for child/frontier/answer state and 1 second for pending discovery; no total wait or iteration ceiling",
+      "currentValue": "Cooperative polling: 50 ms for capacity, 250 ms for child/frontier/answer state and 1 second for recovery or observation when disabled and settled; no total wait or iteration ceiling",
       "owner": "host",
       "enforcementPoint": "Awaited cancellation-aware coordination loops outside the short Signet root gate",
       "userVisibleBehavior": "Waiting work continues until the durable condition, explicit cancellation, revoked admission or unavailable evidence ends it; these delays do not expire a Quest.",
@@ -10007,7 +10007,7 @@
       "threatOrFailureModel": "Busy loops could monopolize CPU or repeatedly contend on SQLite while an independent child, human answer or shared capacity is pending.",
       "classification": "Required physical resource protection",
       "action": "retain",
-      "replacementOrContinuation": "Continue polling under the same owned execution and cancellation token; capacity is reacquired before a parent resumes provider work, and all started scopes drain on shutdown.",
+      "replacementOrContinuation": "Continue polling under the same owned execution and cancellation token; disabled, globally settled discovery observes the retained connection and resumes recovery when its proof changes. Capacity is reacquired before a parent resumes provider work, and all started scopes drain on shutdown.",
       "tests": [
         "GuildCapacityTests",
         "GuildLocalHostPolicyTests",

@@ -61,6 +61,8 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
     private int _stopping;
 
+    private long _configurationEpoch;
+
     public bool IsAvailable => Volatile.Read(ref _ready) == 1 && Volatile.Read(ref _stopping) == 0 && CanDrive(settings.CurrentValue)
         && readiness.RequireExecutionReady().IsSuccess;
 
@@ -179,21 +181,55 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
     {
         CancellationToken ct = lifetime.Token;
 
+        long observedGeneration = admission.CurrentGeneration;
+
+        using IDisposable? subscription = settings.OnChange((_, _) => Interlocked.Increment(ref _configurationEpoch));
+
         try
         {
             using PeriodicTimer cadence = new(TimeSpan.FromSeconds(1), time);
 
             do
             {
-                await RefreshReadinessAsync(ct).ConfigureAwait(false);
+                if (observedGeneration != admission.CurrentGeneration)
+                {
+                    observedGeneration = admission.CurrentGeneration;
+
+                    _accountingScanAfter = null;
+                }
+
+                ArcanumSettings publication = settings.CurrentValue;
+
+                long epoch = Interlocked.Read(ref _configurationEpoch);
+
+                bool healthy = await RefreshReadinessAsync(ct).ConfigureAwait(false);
 
                 if (!settings.CurrentValue.Features.Guild)
-                    await RequestDisabledCancellationAsync(ct).ConfigureAwait(false);
+                    healthy &= await RequestDisabledCancellationAsync(ct).ConfigureAwait(false);
 
-                await DiscoverPendingAsync(ct).ConfigureAwait(false);
+                healthy &= await DiscoverPendingAsync(ct).ConfigureAwait(false);
+
+                if (healthy && !publication.Features.Guild && ReferenceEquals(publication, settings.CurrentValue)
+                    && epoch == Interlocked.Read(ref _configurationEpoch) && admission.IsOrdinaryGeneration(observedGeneration)
+                    && _pending.IsEmpty && _accountingScanAfter is null)
+                {
+                    IdleObservationResult result = await ObserveIdleAsync(cadence, publication, epoch, observedGeneration, ct).ConfigureAwait(false);
+
+                    if (result.Generation is { } generation && !admission.IsOrdinaryGeneration(generation))
+                    {
+                        _accountingScanAfter = null;
+
+                        observedGeneration = await admission.WaitForNextOpenGenerationAsync(generation, ct).ConfigureAwait(false);
+
+                        continue;
+                    }
+
+                    if (result.RestartImmediately) continue;
+                }
+
+                if (!await cadence.WaitForNextTickAsync(ct).ConfigureAwait(false)) break;
             }
-
-            while (await cadence.WaitForNextTickAsync(ct).ConfigureAwait(false));
+            while (true);
         }
         finally
         {
@@ -201,9 +237,251 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
         }
     }
 
-    internal async Task DiscoverPendingAsync(CancellationToken ct)
+    private readonly record struct IdleObservationResult(bool RestartImmediately, long? Generation);
+
+    private async Task<IdleObservationResult> ObserveIdleAsync(PeriodicTimer cadence, ArcanumSettings publication,
+        long epoch, long expectedGeneration, CancellationToken ct)
     {
-        if (!admission.TryAcquireWorkLease(GrimoireWorkKind.GuildStorage, out IGrimoireWorkLease? acquired) || acquired is null) return;
+        if (!admission.TryAcquireWorkLease(GrimoireWorkKind.GuildStorage, out IGrimoireWorkLease? acquired) || acquired is null)
+            return default;
+
+        await using IGrimoireWorkLease work = acquired;
+
+        using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct, work.MaintenanceRevocation);
+
+        long generation = work.Generation;
+
+        try
+        {
+            Result<IGrimoireOrdinaryConnectionLease> opened;
+
+            try
+            {
+                opened = await connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, lifetime.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                return new(false, generation);
+            }
+
+            if (opened.IsFailure) return new(false, generation);
+
+            await using IGrimoireOrdinaryConnectionLease connection = opened.Value;
+
+            RecoveryObservation observation;
+
+            try
+            {
+                observation = new(connection.Connection, publication, epoch, lifetime.Token);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                return new(false, generation);
+            }
+
+            if (generation != expectedGeneration || !ObservationCurrent(observation, work)
+                || !await observation.ProveAsync(ct).ConfigureAwait(false) || !ObservationCurrent(observation, work))
+                return new(false, generation);
+
+            while (await cadence.WaitForNextTickAsync(lifetime.Token).ConfigureAwait(false))
+            {
+                if (!ObservationCurrent(observation, work)
+                    || !await observation.ObserveAsync(ct).ConfigureAwait(false) || !ObservationCurrent(observation, work))
+                    return new(true, generation);
+            }
+
+            return new(false, generation);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && work.MaintenanceRevocation.IsCancellationRequested)
+        {
+            return new(true, generation);
+        }
+    }
+
+    private bool ObservationCurrent(RecoveryObservation observation, IGrimoireWorkLease work) =>
+        !work.MaintenanceRevocationPending && !work.MaintenanceRevocation.IsCancellationRequested && admission.IsOrdinaryGeneration(work.Generation)
+        && ReferenceEquals(observation.Publication, settings.CurrentValue)
+        && !settings.CurrentValue.Features.Guild && observation.Epoch == Interlocked.Read(ref _configurationEpoch)
+        && _pending.IsEmpty && _accountingScanAfter is null;
+
+    // This connection is an observation hint only. The normal recovery paths remain the sole
+    // authority for acting on any work found by the global census.
+    private sealed class RecoveryObservation
+    {
+        private const string QuietCensus = """
+            SELECT CASE WHEN
+                EXISTS(SELECT 1 FROM guild_quests c WHERE c.AccountingStateCode IS NOT 0)
+                OR EXISTS(SELECT 1 FROM guild_quests c
+                    WHERE (EXISTS(SELECT 1 FROM guild_local_executions local WHERE local.QuestId=c.Id)
+                        OR EXISTS(SELECT 1 FROM guild_remote_executions remote WHERE remote.QuestId=c.Id)) AND
+            """ + GuildQuestRetentionPins.StoppedExecutionUnresolved + """
+                )
+                OR EXISTS(SELECT 1 FROM guild_quest_start_intents intent JOIN guild_quests quest ON quest.Id=intent.QuestId
+                    WHERE (EXISTS(SELECT 1 FROM guild_local_executions binding WHERE binding.QuestId=quest.Id)
+                        OR EXISTS(SELECT 1 FROM guild_remote_executions remote WHERE remote.QuestId=quest.Id))
+                        AND NOT EXISTS(SELECT 1 FROM guild_result_receipts receipt WHERE receipt.QuestId=quest.Id)
+                        AND quest.Retired=0)
+                OR EXISTS(SELECT 1 FROM guild_quests quest JOIN guild_quest_start_intents intent ON quest.Id=intent.QuestId
+                    WHERE quest.CancellationRequested=1 AND quest.CancellationConverged=0 AND
+                        ((quest.Retired=0 AND (EXISTS(SELECT 1 FROM guild_local_executions binding WHERE binding.QuestId=quest.Id)
+                            OR (EXISTS(SELECT 1 FROM guild_remote_executions remote WHERE remote.QuestId=quest.Id)
+                                AND NOT EXISTS(SELECT 1 FROM guild_quests parent WHERE parent.Id=quest.ParentQuestId AND parent.CancellationRequested=1))))
+                         OR (quest.Retired=1 AND EXISTS(SELECT 1 FROM guild_local_executions binding WHERE binding.QuestId=quest.Id))))
+                OR EXISTS(SELECT 1 FROM guild_cohorts WHERE typeof(StateCode) <> 'integer' OR StateCode NOT IN(4,5,6))
+                OR EXISTS(SELECT 1 FROM guild_cohort_stop_frontiers WHERE Completed IS NOT 1)
+            THEN 0 ELSE 1 END
+            """;
+
+        private readonly SqliteConnection _connection;
+
+        private readonly CancellationToken _token;
+
+        private readonly SQLitePCL.sqlite3 _handle;
+
+        private (long Schema, long Data, long Changes)? _stamp;
+
+        internal RecoveryObservation(SqliteConnection connection,
+            ArcanumSettings publication, long epoch, CancellationToken token)
+        {
+            _connection = connection;
+
+            _token = token;
+
+            _handle = connection.Handle ?? throw new InvalidOperationException("The observer has no SQLite handle.");
+
+            Publication = publication;
+
+            Epoch = epoch;
+        }
+
+        internal ArcanumSettings Publication { get; }
+
+        internal long Epoch { get; }
+
+        internal CancellationToken Token => _token;
+
+        internal async Task<bool> ObserveAsync(CancellationToken ct)
+        {
+            try
+            {
+                (long Schema, long Data, long Changes) current = await ReadStampAsync().ConfigureAwait(false);
+
+                return _stamp == current || await ProveAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception) { Token.ThrowIfCancellationRequested(); _stamp = null; return false; }
+        }
+
+        internal async Task<bool> ProveAsync(CancellationToken ct)
+        {
+            try
+            {
+                var before = await ReadStampAsync().ConfigureAwait(false);
+
+                bool quiet = await RunAttemptAsync(transactional: true, async (connection, transaction, token) =>
+                {
+                    Result available = await GuildStorageAvailability.CheckAsync(connection, transaction, token).ConfigureAwait(false);
+
+                    token.ThrowIfCancellationRequested();
+
+                    if (available.IsFailure) return false;
+
+                    await using SqliteCommand command = connection.CreateCommand();
+
+                    command.Transaction = transaction;
+
+                    command.CommandText = QuietCensus;
+
+                    object? value = await command.ExecuteScalarAsync(token).ConfigureAwait(false);
+
+                    token.ThrowIfCancellationRequested();
+
+                    return value is long number && number == 1;
+                }).ConfigureAwait(false);
+
+                var after = await ReadStampAsync().ConfigureAwait(false);
+
+                _stamp = quiet && before == after ? after : null;
+
+                return _stamp is not null;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception) { Token.ThrowIfCancellationRequested(); _stamp = null; return false; }
+        }
+
+        private Task<(long Schema, long Data, long Changes)> ReadStampAsync() =>
+            RunAttemptAsync(transactional: false, async (connection, _, token) =>
+            {
+                await using SqliteCommand command = connection.CreateCommand();
+
+                command.CommandText = "SELECT (SELECT schema_version FROM pragma_schema_version), (SELECT data_version FROM pragma_data_version), total_changes()";
+
+                await using SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+
+                if (!await reader.ReadAsync(token).ConfigureAwait(false)
+                    || reader.GetValue(0) is not long schema || reader.GetValue(1) is not long data || reader.GetValue(2) is not long changes
+                    || await reader.ReadAsync(token).ConfigureAwait(false))
+                    throw new InvalidOperationException("The observer stamp is unavailable.");
+
+                return (schema, data, changes);
+            });
+
+        private async Task<T> RunAttemptAsync<T>(bool transactional, Func<SqliteConnection, SqliteTransaction?, CancellationToken, Task<T>> action)
+        {
+            SqliteConnection connection = _connection;
+
+            Token.ThrowIfCancellationRequested();
+
+            if (connection.State != System.Data.ConnectionState.Open || !ReferenceEquals(connection.Handle, _handle))
+                throw new InvalidOperationException("The observer connection changed.");
+
+            CancellationTokenRegistration interrupt = Token.Register(static handle => SQLitePCL.raw.sqlite3_interrupt((SQLitePCL.sqlite3)handle!), _handle);
+
+            (int ProviderSeconds, int NativeMilliseconds)? timeout = null;
+
+            SqliteTransaction? transaction = null;
+
+            try
+            {
+                timeout = SqliteBusyRetry.BeginShortAttempt(connection, Token);
+
+                if (transactional) transaction = connection.BeginTransaction(deferred: true);
+
+                T result = await action(connection, transaction, Token).ConfigureAwait(false);
+
+                Token.ThrowIfCancellationRequested();
+
+                return result;
+            }
+            catch (SqliteException exception) when (exception.SqliteErrorCode == 9 && Token.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(Token);
+            }
+            finally
+            {
+                interrupt.Dispose();
+
+                try
+                {
+                    if (transaction is not null) await transaction.DisposeAsync().ConfigureAwait(false);
+                }
+                finally
+                {
+                    if (timeout is { } original && !SqliteBusyRetry.TryRestoreShortAttempt(connection, original))
+                        throw new InvalidOperationException("The observer connection settings could not be restored.");
+                }
+            }
+        }
+
+    }
+
+    internal async Task<bool> DiscoverPendingAsync(CancellationToken ct)
+    {
+        if (!admission.TryAcquireWorkLease(GrimoireWorkKind.GuildStorage, out IGrimoireWorkLease? acquired) || acquired is null) return false;
 
         await using IGrimoireWorkLease work = acquired;
 
@@ -213,13 +491,13 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
         {
             // Cohort decisions and stop frontiers remain recovery work even while Guild
             // execution is disabled. They never rebind the creator's work authority.
-            await DiscoverCohortsAsync(lifetime.Token).ConfigureAwait(false);
+            bool healthy = await DiscoverCohortsAsync(lifetime.Token).ConfigureAwait(false);
 
-            await DiscoverAccountingRecoveryAsync(lifetime.Token).ConfigureAwait(false);
+            healthy &= await DiscoverAccountingRecoveryAsync(lifetime.Token).ConfigureAwait(false);
 
             // Cascade discovery is independent of the live execution task. A parent waiting
             // for its descendants cannot suppress the durable stop work that lets it finish.
-            await DiscoverCancellationFrontiersAsync(work, lifetime.Token).ConfigureAwait(false);
+            healthy &= await DiscoverCancellationFrontiersAsync(work, lifetime.Token).ConfigureAwait(false);
 
             Guid? after = null;
 
@@ -229,11 +507,13 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
                 // Availability includes retained-lock filesystem identity, so its probe belongs
                 // inside the admitted scan scope just like the database page it protects.
-                if (!IsAvailable) return;
+                if (!IsAvailable) return healthy;
 
                 var page = await ReadPendingIdsWithinAsync(after, lifetime.Token).ConfigureAwait(false);
 
-                if (page.IsFailure || page.Value.IsEmpty) return;
+                if (page.IsFailure) return false;
+
+                if (page.Value.IsEmpty) return healthy;
 
                 foreach (Guid questId in page.Value) Enqueue(questId);
 
@@ -243,14 +523,16 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
         catch (OperationCanceledException) when (!ct.IsCancellationRequested && work.MaintenanceRevocation.IsCancellationRequested)
         {
             Volatile.Write(ref _ready, 0);
+
+            return false;
         }
     }
 
-    private async Task DiscoverAccountingRecoveryAsync(CancellationToken ct)
+    private async Task<bool> DiscoverAccountingRecoveryAsync(CancellationToken ct)
     {
         var opened = await connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, ct).ConfigureAwait(false);
 
-        if (opened.IsFailure) return;
+        if (opened.IsFailure) return false;
 
         List<(Guid Root, Guid Quest)> candidates = [];
 
@@ -264,7 +546,7 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
             Result available = await GuildStorageAvailability.CheckAsync(held.Connection, transaction, ct).ConfigureAwait(false);
 
-            if (available.IsFailure) return;
+            if (available.IsFailure) return false;
 
             await using SqliteCommand command = held.Connection.CreateCommand();
 
@@ -280,7 +562,7 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
             {
                 scanned++;
 
-                if (reader.IsDBNull(0) || reader.GetValue(0) is not string id) return;
+                if (reader.IsDBNull(0) || reader.GetValue(0) is not string id) return false;
 
                 last = id;
 
@@ -296,37 +578,44 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
         // A restart begins a fresh bounded census; an uninterrupted scan eventually wraps.
         _accountingScanAfter = scanned == 100 ? last : null;
 
-        if (candidates.Count == 0) return;
+        if (candidates.Count == 0) return true;
 
         await using AsyncServiceScope scope = scopes.CreateAsyncScope();
 
         GuildQuestStore? store = scope.ServiceProvider.GetService<GuildQuestStore>();
 
-        if (store is null) return;
+        if (store is null) return false;
+
+        bool healthy = true;
 
         foreach (var candidate in candidates)
         {
             ct.ThrowIfCancellationRequested();
 
-            _ = await store.RefreshAccountingProjectionAsync(candidate.Root, candidate.Quest, ct).ConfigureAwait(false);
+            if ((await store.RefreshAccountingProjectionAsync(candidate.Root, candidate.Quest, ct).ConfigureAwait(false)).IsFailure)
+                healthy = false;
         }
+
+        return healthy;
     }
 
-    private async Task DiscoverCohortsAsync(CancellationToken ct)
+    private async Task<bool> DiscoverCohortsAsync(CancellationToken ct)
     {
         await using AsyncServiceScope scope = scopes.CreateAsyncScope();
 
         GuildCohortStore? cohorts = scope.ServiceProvider.GetService<GuildCohortStore>();
 
-        if (cohorts is null) return;
+        if (cohorts is null) return false;
 
         GuildLocalHostPolicy policy = scope.ServiceProvider.GetRequiredService<GuildLocalHostPolicy>();
 
         var caller = await policy.CreateNativeOperatorAsync(Guid.NewGuid(), ct).ConfigureAwait(false);
 
-        if (caller.IsFailure) return;
+        if (caller.IsFailure) return false;
 
         GuildCohortWorkCursor? after = null;
+
+        bool healthy = true;
 
         while (true)
         {
@@ -334,20 +623,20 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
             var page = await cohorts.ReadWorkPageAsync(caller.Value, after, ct).ConfigureAwait(false);
 
-            if (page.IsFailure) return;
+            if (page.IsFailure) return false;
 
             foreach (Guid cohortId in page.Value.CohortIds)
             {
-                _ = await cohorts.ReconcileAsync(caller.Value, cohortId, ct).ConfigureAwait(false);
+                if ((await cohorts.ReconcileAsync(caller.Value, cohortId, ct).ConfigureAwait(false)).IsFailure) healthy = false;
             }
 
-            if (page.Value.NextAfter is not { } next) return;
+            if (page.Value.NextAfter is not { } next) return healthy;
 
             after = next;
         }
     }
 
-    private async Task DiscoverCancellationFrontiersAsync(IGrimoireWorkLease work, CancellationToken ct)
+    private async Task<bool> DiscoverCancellationFrontiersAsync(IGrimoireWorkLease work, CancellationToken ct)
     {
         await using AsyncServiceScope scope = scopes.CreateAsyncScope();
 
@@ -357,7 +646,9 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
         var caller = await policy.CreateNativeOperatorAsync(Guid.NewGuid(), ct).ConfigureAwait(false);
 
-        if (caller.IsFailure) return;
+        if (caller.IsFailure) return false;
+
+        bool healthy = true;
 
         Guid? after = null;
 
@@ -365,7 +656,9 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
         {
             var roots = await ReadPendingIdsWithinAsync(after, ct, cancellationFrontiers: true).ConfigureAwait(false);
 
-            if (roots.IsFailure || roots.Value.IsEmpty) return;
+            if (roots.IsFailure) return false;
+
+            if (roots.Value.IsEmpty) return healthy;
 
             foreach (Guid root in roots.Value)
             {
@@ -381,11 +674,12 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
                 {
                     var page = await store.ReadCancellationWorkPageAsync(caller.Value, root, sequence, ct).ConfigureAwait(false);
 
-                    if (page.IsFailure) break;
+                    if (page.IsFailure) { healthy = false; break; }
 
                     if (page.Value.IsEmpty)
                     {
-                        _ = await store.RefreshCancellationConvergenceAsync(caller.Value, root, ct).ConfigureAwait(false);
+                        if ((await store.RefreshCancellationConvergenceAsync(caller.Value, root, ct).ConfigureAwait(false)).IsFailure)
+                            healthy = false;
 
                         break;
                     }
@@ -396,7 +690,7 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
                         var digest = GuildQuestIntent.Compute(child.QuestId, request);
 
-                        if (digest.IsFailure) continue;
+                        if (digest.IsFailure) { healthy = false; continue; }
 
                         // Persist the ordinary receipt before any port call. Revision races are
                         // retried by the next scan; accepted children disappear from work pages.
@@ -404,6 +698,7 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
                             new(request.IdempotencyKey, digest.Value), child.QuestId, request, ct).ConfigureAwait(false);
 
                         if (accepted.IsSuccess) Enqueue(child.QuestId);
+                        else healthy = false;
                     }
 
                     sequence = page.Value[^1].IssuedSequence;
@@ -414,7 +709,7 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
         }
     }
 
-    private async Task RequestDisabledCancellationAsync(CancellationToken ct)
+    private async Task<bool> RequestDisabledCancellationAsync(CancellationToken ct)
     {
         CancellationToken callerCancellation = ct;
 
@@ -424,7 +719,7 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
             {
                 Volatile.Write(ref _ready, 0);
 
-                return;
+                return false;
             }
 
             await using IGrimoireWorkLease work = acquired;
@@ -441,23 +736,29 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
             var caller = await policy.CreateNativeOperatorAsync(Guid.NewGuid(), ct).ConfigureAwait(false);
 
-            if (caller.IsFailure) return;
+            if (caller.IsFailure) return false;
 
             Guid? after = null;
+
+            bool healthy = true;
 
             while (!settings.CurrentValue.Features.Guild)
             {
                 var page = await ReadPendingIdsAsync(after, ct).ConfigureAwait(false);
 
-                if (page.IsFailure || page.Value.IsEmpty) return;
+                if (page.IsFailure) return false;
+
+                if (page.Value.IsEmpty) return healthy;
 
                 foreach (Guid questId in page.Value)
                 {
-                    if (settings.CurrentValue.Features.Guild) return;
+                    if (settings.CurrentValue.Features.Guild) return false;
 
                     var found = await store.GetAsync(caller.Value, questId, ct).ConfigureAwait(false);
 
-                    if (found.IsFailure || found.Value.Quest.ResultReceiptId is not null) continue;
+                    if (found.IsFailure) { healthy = false; continue; }
+
+                    if (found.Value.Quest.ResultReceiptId is not null) continue;
 
                     if (!found.Value.Quest.CancellationRequested)
                     {
@@ -465,13 +766,13 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
                         var digest = GuildQuestIntent.Compute(questId, request);
 
-                        if (digest.IsFailure) continue;
+                        if (digest.IsFailure) { healthy = false; continue; }
 
                         // Revision conflicts are retried from the next durable scan; accepted flags suppress duplicate receipts.
                         var accepted = await store.RequestCancellationAsync(caller.Value,
                             new(request.IdempotencyKey, digest.Value), questId, request, ct).ConfigureAwait(false);
 
-                        if (accepted.IsFailure) continue;
+                        if (accepted.IsFailure) { healthy = false; continue; }
                     }
 
                     await DrainCancellationAsync(work, scope.ServiceProvider, caller.Value, questId, ct).ConfigureAwait(false);
@@ -479,10 +780,14 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
                 after = page.Value[^1];
             }
+
+            return false;
         }
         catch (OperationCanceledException) when (!callerCancellation.IsCancellationRequested)
         {
             Volatile.Write(ref _ready, 0);
+
+            return false;
         }
         catch (OperationCanceledException) when (callerCancellation.IsCancellationRequested)
         {
@@ -491,19 +796,21 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
         catch (Exception exception)
         {
             logger.LogWarning("Guild disabled-work cancellation is unavailable ({ExceptionType}).", exception.GetType().Name);
+
+            return false;
         }
     }
 
     private static bool CanDrive(ArcanumSettings current) => GuildLocalExecutionAdmission.IsAvailable(current)
         || GuildRemotePort.IsTransportEnabled(current);
 
-    private async Task RefreshReadinessAsync(CancellationToken ct)
+    private async Task<bool> RefreshReadinessAsync(CancellationToken ct)
     {
         if (!CanDrive(settings.CurrentValue) || Volatile.Read(ref _stopping) != 0)
         {
             Volatile.Write(ref _ready, 0);
 
-            return;
+            return Volatile.Read(ref _stopping) == 0;
         }
 
         CancellationToken callerCancellation = ct;
@@ -514,7 +821,7 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
             {
                 Volatile.Write(ref _ready, 0);
 
-                return;
+                return false;
             }
 
             await using IGrimoireWorkLease work = acquired;
@@ -531,7 +838,7 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
             {
                 Volatile.Write(ref _ready, 0);
 
-                return;
+                return false;
             }
 
             await using AsyncServiceScope scope = scopes.CreateAsyncScope();
@@ -550,7 +857,7 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
             {
                 Volatile.Write(ref _ready, 0);
 
-                return;
+                return false;
             }
 
             var caller = await policy.CreateNativeOperatorAsync(Guid.NewGuid(), ct).ConfigureAwait(false);
@@ -559,10 +866,14 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
                 : Result<ImmutableArray<Guid>>.Failure(caller.Error);
 
             Volatile.Write(ref _ready, inventory.IsSuccess ? 1 : 0);
+
+            return inventory.IsSuccess;
         }
         catch (OperationCanceledException) when (!callerCancellation.IsCancellationRequested)
         {
             Volatile.Write(ref _ready, 0);
+
+            return false;
         }
         catch (OperationCanceledException) when (callerCancellation.IsCancellationRequested)
         {
@@ -573,6 +884,8 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
             Volatile.Write(ref _ready, 0);
 
             logger.LogDebug("Guild scheduler readiness is unavailable ({ExceptionType}).", exception.GetType().Name);
+
+            return false;
         }
     }
 

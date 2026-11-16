@@ -21258,7 +21258,21 @@ internal static partial class HostedGrimoireProducerInventory
                                 .Select(static argument => argument.Expression)
                                 .ToArray();
 
-                            emittedEvidence = MergeEvidence(
+                            if (IsJoinedSqliteInterruptRegistration(member, detachedCarrier, method, operationId,
+                                ordinary?.WorkKind, inheritedWork, workAdmitted))
+                            {
+                                foreach (ExpressionSyntax callback in detachedCallbacks)
+                                {
+                                    foreach (AuthoredMember body in ResolveCallableTargets(callback, member.Model, member.CallableBindings, member.AbsentCallables))
+                                    {
+                                        emittedEvidence = MergeEvidence(emittedEvidence,
+                                            Traverse(BindExternalCallbackContext(member, body), rootType,
+                                                operationId + "/callback@" + Location(node), active, lifecycle,
+                                                inheritedWork: workAdmitted, inheritedEffect: null, completionOwned: true));
+                                    }
+                                }
+                            }
+                            else emittedEvidence = MergeEvidence(
                                 emittedEvidence,
                                 TraverseDetachedExternalCallbacks(
                                     member,
@@ -27010,6 +27024,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedExactNativeImport(method)
                 || IsReviewedExactBoundedExternalMember(method)
                 || IsReviewedExactMonitorMember(method)
+                || IsReviewedObserverFrameworkMechanic(method)
                 || IsExactEmbeddingSdkAdapterFactory(method)
                 || IsExactAiDelegatingConstructor(method)
                 || IsReviewedDatabaseSupportMember(method)
@@ -43321,7 +43336,7 @@ internal static partial class HostedGrimoireProducerInventory
             return !replacement && !descriptorConstruction;
         }
 
-        private static bool SameExactServiceCollectionReceiver(
+        private bool SameExactServiceCollectionReceiver(
             InvocationExpressionSyntax left,
             SemanticModel leftModel,
             InvocationExpressionSyntax right,
@@ -43337,9 +43352,8 @@ internal static partial class HostedGrimoireProducerInventory
                 && Receiver(right) is { } rightReceiver
                 && leftModel.GetSymbolInfo(leftReceiver).Symbol is { } leftSymbol
                 && rightModel.GetSymbolInfo(rightReceiver).Symbol is { } rightSymbol
-                && SymbolEqualityComparer.Default.Equals(
-                    leftSymbol,
-                    rightSymbol);
+                && (SymbolEqualityComparer.Default.Equals(leftSymbol, rightSymbol)
+                    || HasExactForwardedOptionsCollection(leftSymbol, rightSymbol, rightModel));
         }
 
         private bool HasExactClosedOptionsComposition(
@@ -55095,6 +55109,7 @@ internal static partial class HostedGrimoireProducerInventory
             string type = TypeKey(method.ContainingType);
 
             return IsExactSqliteBusyTimeout(method)
+                || IsExactSqliteInterrupt(method)
                 || IsExactBorrowedSqliteColumnRead(method)
                 || type == "Microsoft.Data.Sqlite.SqliteCommand"
                     && method.Name.StartsWith("Execute", StringComparison.Ordinal)

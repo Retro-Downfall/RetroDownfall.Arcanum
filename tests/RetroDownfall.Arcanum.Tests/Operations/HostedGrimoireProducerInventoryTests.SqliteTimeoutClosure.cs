@@ -13,6 +13,103 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 public sealed partial class HostedGrimoireProducerInventoryTests
 {
     [Theory]
+    [InlineData("joined", true)]
+    [InlineData("unjoined", false)]
+    [InlineData("escaped", false)]
+    [InlineData("early-release", false)]
+    [InlineData("conditional-release", false)]
+    [InlineData("conditional", false)]
+    [InlineData("reassigned", false)]
+    [InlineData("alias", false)]
+    [InlineData("async-void", false)]
+    [InlineData("different-handle", false)]
+    [InlineData("async-helper", false)]
+    [InlineData("detached-child", false)]
+    public void HostedInterruptRegistrationRequiresExactJoinedWorkLifetime(string shape, bool owned)
+    {
+        string admission = AcquireWork.Replace("return Task.CompletedTask;", "return;", StringComparison.Ordinal);
+
+        string callback = shape switch
+        {
+            "async-void" => "static async state => { await Task.Yield(); SQLitePCL.raw.sqlite3_interrupt((SQLitePCL.sqlite3)state!); }",
+            "different-handle" => "static state => SQLitePCL.raw.sqlite3_interrupt(HandleSource.Other())",
+            "async-helper" => "static state => HandleSource.InterruptLater((SQLitePCL.sqlite3)state!)",
+            "detached-child" => "static state => { _ = Task.Run(() => SQLitePCL.raw.sqlite3_interrupt((SQLitePCL.sqlite3)state!)); }",
+            _ => "static state => SQLitePCL.raw.sqlite3_interrupt((SQLitePCL.sqlite3)state!)",
+        };
+
+        string registration = "var connection = new Microsoft.Data.Sqlite.SqliteConnection(); var registration = token.Register(" + callback + ", connection.Handle);";
+
+        string tail = shape switch
+        {
+            "joined" => "try { await Task.CompletedTask; } finally { registration.Dispose(); }",
+            "escaped" => "RegistrationEscape.Accept(registration); try { await Task.CompletedTask; } finally { registration.Dispose(); }",
+            "early-release" => "try { lease.Dispose(); await Task.CompletedTask; } finally { registration.Dispose(); }",
+            "conditional-release" => "try { if (System.Environment.TickCount == 0) lease.Dispose(); await Task.CompletedTask; } finally { registration.Dispose(); }",
+            "conditional" => "try { await Task.CompletedTask; } finally { if (System.Environment.TickCount == 0) registration.Dispose(); }",
+            "reassigned" => "registration = default; try { await Task.CompletedTask; } finally { registration.Dispose(); }",
+            "alias" => "var alias = registration; try { await Task.CompletedTask; } finally { alias.Dispose(); }",
+            "async-void" => "try { await Task.CompletedTask; } finally { registration.Dispose(); }",
+            "different-handle" => "try { await Task.CompletedTask; } finally { registration.Dispose(); }",
+            "async-helper" => "try { await Task.CompletedTask; } finally { registration.Dispose(); }",
+            "detached-child" => "try { await Task.CompletedTask; } finally { registration.Dispose(); }",
+            _ => "await Task.CompletedTask;",
+        };
+
+        HostedProducerDiscovery<HostedProducerSite> result = TimeoutDiscovery(admission + registration + tail,
+            "internal static class RegistrationEscape { internal static extern void Accept(System.Threading.CancellationTokenRegistration registration); } internal static class HandleSource { internal static SQLitePCL.sqlite3 Other() => null!; internal static async void InterruptLater(SQLitePCL.sqlite3 handle) { await Task.Yield(); SQLitePCL.raw.sqlite3_interrupt(handle); } }");
+
+        HostedProducerSite site = Assert.Single(result.Items, static site => site.Callee == "SQLitePCL.raw.sqlite3_interrupt");
+
+        Assert.Equal(owned, site.WorkFrontierCapsuleId is not null);
+
+        Assert.Equal(!owned, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+    }
+
+    [Fact]
+    public void HostedJoinedRegistrationStillReportsOtherCallbackEffects()
+    {
+        string admission = AcquireWork.Replace("return Task.CompletedTask;", "return;", StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result = TimeoutDiscovery(admission + "var connection = new Microsoft.Data.Sqlite.SqliteConnection(); var registration = token.Register(static state => { SQLitePCL.raw.sqlite3_interrupt((SQLitePCL.sqlite3)state!); System.IO.File.Delete(\"callback-effect\"); }, connection.Handle); try { await Task.CompletedTask; } finally { registration.Dispose(); }");
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING");
+    }
+
+    [Theory]
+    [InlineData("none", false)]
+    [InlineData("work", true)]
+    [InlineData("released", false)]
+    public void HostedNativeInterruptRequiresLiveWork(string admission, bool admitted)
+    {
+        string prefix = admission == "none" ? "" : AcquireWork.Replace("return Task.CompletedTask;", "return;", StringComparison.Ordinal);
+
+        if (admission == "released") prefix += " lease.Dispose(); ";
+
+        HostedProducerDiscovery<HostedProducerSite> result = TimeoutDiscovery(prefix + "var connection = new Microsoft.Data.Sqlite.SqliteConnection(); SQLitePCL.raw.sqlite3_interrupt(connection.Handle); await Task.CompletedTask;");
+
+        HostedProducerSite site = Assert.Single(result.Items, static site => site.Callee == "SQLitePCL.raw.sqlite3_interrupt");
+
+        Assert.Equal(HostedProducerSiteKind.DatabaseAccess, site.Kind);
+
+        Assert.Equal(admitted, site.WorkFrontierCapsuleId is not null);
+    }
+
+    [Fact]
+    public void HostedAuthoredInterruptLookalikeCannotHideEffects()
+    {
+        const string authored = "namespace SQLitePCL { public sealed class sqlite3 { } public static class raw { public static void sqlite3_interrupt(sqlite3 handle) { System.IO.File.Delete(\"counterfeit-interrupt\"); } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = TimeoutDiscovery("SQLitePCL.raw.sqlite3_interrupt(null!); await Task.CompletedTask;", authored);
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Items, static site => site.Callee == "SQLitePCL.raw.sqlite3_interrupt" && site.Kind == HostedProducerSiteKind.DatabaseAccess);
+    }
+
+    [Theory]
     [InlineData("connection")]
     [InlineData("command")]
     [InlineData("base-command")]
