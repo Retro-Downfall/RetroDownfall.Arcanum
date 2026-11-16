@@ -185,7 +185,8 @@ internal sealed class ToolLoopProgressDetector
         {
             _evictedMessages = Increment(_evictedMessages);
 
-            int calls = message.Contents.OfType<FunctionCallContent>().Count();
+            int calls = message.Contents.OfType<FunctionCallContent>().Count()
+                + TurnContextGuards.HistoricalToolCallCount(message);
 
             _evictedCalls = Increment(_evictedCalls, calls);
 

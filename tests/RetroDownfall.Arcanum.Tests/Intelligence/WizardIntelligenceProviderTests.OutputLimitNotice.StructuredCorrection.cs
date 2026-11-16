@@ -60,6 +60,9 @@ public sealed partial class WizardIntelligenceProviderTests
 
         Assert.DoesNotContain(observed.Events, static frame => frame.Notices.Any(notice => (int)notice.Code == 3));
 
+        Assert.Equal(finalFinishReason == "length" ? 1 : 0,
+            observed.Notices.Count(static notice => notice.Code == InferenceNoticeCode.OutputLimitWithPartialAnswer));
+
         if (streaming)
         {
             Assert.Equal(correctedAnswer, string.Concat(observed.Events

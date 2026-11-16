@@ -24,6 +24,7 @@ public class TomeViewModelTests
     [InlineData(InferenceNoticeCode.ToolCompatibilityRestart, "exact answer", "stop")]
     [InlineData((InferenceNoticeCode)3, "", "length")]
     [InlineData((InferenceNoticeCode)3, " \t", "length")]
+    [InlineData((InferenceNoticeCode)4, "Earlier progress only.", "length")]
     public async Task Operational_status_is_visible_separately_from_the_assistant_answer(
         InferenceNoticeCode code,
         string answer,

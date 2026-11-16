@@ -138,11 +138,12 @@ public sealed class CommandCenterReasoningTests
     }
 
     [Theory]
-    [InlineData("", "")]
-    [InlineData(" \t", "        ")]
-    public async Task OutputLimitNotice_Status_survives_empty_result_without_becoming_answer_text(string answer, string renderedAnswer)
+    [InlineData("", "", 3)]
+    [InlineData(" \t", "        ", 3)]
+    [InlineData("Earlier progress only.", "Earlier progress only.", 4)]
+    public async Task OutputLimitNotice_Status_survives_result_without_becoming_answer_text(string answer, string renderedAnswer, int code)
     {
-        InferenceNotice notice = new((InferenceNoticeCode)3);
+        InferenceNotice notice = new((InferenceNoticeCode)code);
 
         CommandCenterChatRunner runner = CreateRunner(new StaticNdjsonHandler(
             SerializeFrames(

@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.AI;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -15,6 +17,65 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 internal static class TurnContextGuards
 {
+    private static readonly ConditionalWeakTable<MeAiChatMessage, HistoricalToolExchange> HistoricalExchanges = new();
+
+    // Legacy tool writes have no call id on their result. The dedicated persistence metadata,
+    // append positions and exact paired representation establish a group, never marker text alone.
+    internal static bool IsPersistedToolExchange(Entry call, Entry result, Guid sessionId)
+    {
+        if (sessionId == Guid.Empty || call.SessionId != sessionId || result.SessionId != sessionId
+            || call.Id == Guid.Empty || result.Id == Guid.Empty || call.Id == result.Id
+            || call.Sequence <= 0 || call.Sequence == long.MaxValue || result.Sequence != call.Sequence + 1
+            || call.CreatedAt != result.CreatedAt || call.ModelUsed != result.ModelUsed
+            || call.Role != MessageRole.Assistant || result.Role != MessageRole.System
+            || string.IsNullOrWhiteSpace(call.ToolName) || call.ToolArguments is null
+            || result.ToolName is not null || result.ToolArguments is not null || result.ToolCallId is not null
+            || !string.Equals(call.Content, $"[ToolCall: {call.ToolName}({call.ToolArguments})]", StringComparison.Ordinal)
+            || !result.Content.StartsWith("[ToolResult: ", StringComparison.Ordinal)
+            || !result.Content.EndsWith(']'))
+        {
+            return false;
+        }
+
+        // The normal writer uses an empty string for a call with no arguments. Nonempty
+        // arguments must retain the object serialized by that writer; they are never executed.
+        if (call.ToolArguments.Length == 0) return true;
+
+        try
+        {
+            using JsonDocument arguments = JsonDocument.Parse(call.ToolArguments);
+
+            return arguments.RootElement.ValueKind == JsonValueKind.Object;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    internal static void RegisterHistoricalToolExchange(MeAiChatMessage call, MeAiChatMessage result) =>
+        HistoricalExchanges.Add(call, new HistoricalToolExchange(result, call.Text, result.Text));
+
+    internal static int HistoricalToolCallCount(MeAiChatMessage call) =>
+        HistoricalExchanges.TryGetValue(call, out HistoricalToolExchange? exchange)
+            && exchange.Matches(call, exchange.Result) ? 1 : 0;
+
+    private static bool IsHistoricalToolExchange(MeAiChatMessage call, MeAiChatMessage result) =>
+        HistoricalExchanges.TryGetValue(call, out HistoricalToolExchange? exchange)
+            && ReferenceEquals(exchange.Result, result) && exchange.Matches(call, result);
+
+    // No provider property or executable function content carries this witness. Its lifetime is
+    // tied to the mapped call instance; removed payloads are not held by a process-wide transcript.
+    private sealed record HistoricalToolExchange(MeAiChatMessage Result, string CallText, string ResultText)
+    {
+        internal bool Matches(MeAiChatMessage call, MeAiChatMessage result) =>
+            call.Role == ChatRole.Assistant && result.Role == ChatRole.System
+            && call.Contents.Count == 1 && call.Contents[0] is TextContent
+            && result.Contents.Count == 1 && result.Contents[0] is TextContent
+            && string.Equals(call.Text, CallText, StringComparison.Ordinal)
+            && string.Equals(result.Text, ResultText, StringComparison.Ordinal);
+    }
+
     public const string IdempotencyTerminalItemKey = "Arcanum.IdempotencyTerminal";
 
     /// <summary>
@@ -154,8 +215,19 @@ internal static class TurnContextGuards
         {
             int removeAt = -1;
 
+            bool historical = false;
+
             for (int i = 0; i < messages.Count - 1; i++)
             {
+                if (IsHistoricalToolExchange(messages[i], messages[i + 1]))
+                {
+                    removeAt = i;
+
+                    historical = true;
+
+                    break;
+                }
+
                 if (messages[i].Role == ChatRole.System)
                 {
                     continue;
@@ -182,9 +254,9 @@ internal static class TurnContextGuards
             // A stateless transcript maps N parallel tool calls to ONE assistant message followed by
             // N tool messages, so removing a fixed pair would split the turn and leave orphan tool
             // results that every OpenAI-compatible provider rejects. Take the whole contiguous run.
-            int removeCount = 1;
+            int removeCount = historical ? 2 : 1;
 
-            while (removeAt + removeCount < messages.Count
+            while (!historical && removeAt + removeCount < messages.Count
                 && (messages[removeAt + removeCount].Role == ChatRole.Tool
                     || messages[removeAt + removeCount].Contents.Any(static c => c is FunctionResultContent)))
             {

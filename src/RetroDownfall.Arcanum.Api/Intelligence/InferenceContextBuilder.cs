@@ -43,6 +43,8 @@ internal sealed record ContextCompressionRequest
 
     public required string NewUserPrompt { get; init; }
 
+    public bool PreserveToolHistory { get; init; }
+
     public required ChatClientLease Lease { get; init; }
 
     public required ChatOptions ChatOptions { get; init; }
@@ -130,12 +132,13 @@ public sealed class InferenceContextBuilder(
     public static List<MeAiChatMessage> BuildInitialMeAiChatMessages(
         PingRequest request,
         Session? thread,
-        string newUserPrompt)
+        string newUserPrompt,
+        bool preserveToolHistory = false)
     {
 
         List<MeAiChatMessage> messages = HasStatelessMessages(request)
             ? MapStatelessMessagesToMeAi(request.StatelessMessages!)
-            : MapGrimoireToMeAiMessages(thread, newUserPrompt);
+            : MapGrimoireToMeAiMessages(thread, newUserPrompt, preserveToolHistory);
 
         AttachScryingFociToLastMessage(messages, request.ScryingFoci);
 
@@ -281,7 +284,8 @@ public sealed class InferenceContextBuilder(
         List<MeAiChatMessage> rebuilt = MapFilteredGrimoireToMeAiMessages(
             thread,
             thread.LastSummarizedMessageAt.Value,
-            context.NewUserPrompt);
+            context.NewUserPrompt,
+            context.PreserveToolHistory);
 
         string augmentedSystem = SystemPromptBuilder.Build(
             request,
@@ -339,56 +343,78 @@ public sealed class InferenceContextBuilder(
 
     }
 
-    internal static List<MeAiChatMessage> MapGrimoireToMeAiMessages(Session? session, string newUserPrompt)
+    internal static List<MeAiChatMessage> MapGrimoireToMeAiMessages(
+        Session? session,
+        string newUserPrompt,
+        bool preserveToolHistory = false) =>
+        MapHistory(session, newUserPrompt, null, preserveToolHistory);
+
+    private static List<MeAiChatMessage> MapHistory(
+        Session? session,
+        string newUserPrompt,
+        DateTime? watermarkExclusive,
+        bool preserveToolHistory)
     {
+        if (session is null) return [new MeAiChatMessage(ChatRole.User, newUserPrompt)];
 
-        if (session is null)
+        // Sequence is the append order even when timestamps tie or the clock moves backwards.
+        // Stable ordering also keeps synthetic/nonpersisted zero-sequence fixtures as plain text.
+        List<Entry> ordered = session.Entries.OrderBy(static entry => entry.Sequence).ToList();
+
+        while (ordered.Count > 0 && ordered[^1].Role == MessageRole.Assistant
+            && string.IsNullOrEmpty(ordered[^1].Content) && !ordered[^1].IsPinned)
         {
-
-            return [new MeAiChatMessage(ChatRole.User, newUserPrompt)];
-
-        }
-
-        var ordered = session.Entries.ToList();
-
-        while (ordered.Count > 0
-
-            && ordered[^1].Role == MessageRole.Assistant
-
-            && string.IsNullOrEmpty(ordered[^1].Content))
-        {
-
             ordered.RemoveAt(ordered.Count - 1);
-
         }
 
-        var list = new List<MeAiChatMessage>(ordered.Count + 1);
+        List<MeAiChatMessage> messages = new(ordered.Count + 1);
 
-        foreach (var m in ordered)
+        bool Included(Entry entry) => watermarkExclusive is null || entry.IsPinned
+            || entry.CreatedAt.UtcDateTime > watermarkExclusive.Value;
+
+        for (int index = 0; index < ordered.Count; index++)
         {
+            Entry entry = ordered[index];
 
-            ChatRole role = m.Role switch
+            if (index + 1 < ordered.Count
+                && TurnContextGuards.IsPersistedToolExchange(entry, ordered[index + 1], session.Id))
             {
+                Entry result = ordered[++index];
 
-                MessageRole.User => ChatRole.User,
+                // Recognize the original pair before filtering. A pin on either half protects
+                // the whole exchange, including the partner preceding a summary watermark.
+                if (!Included(entry) && !Included(result)) continue;
 
-                MessageRole.Assistant => ChatRole.Assistant,
+                MeAiChatMessage callMessage = MapHistoryEntry(entry);
 
-                MessageRole.System => ChatRole.System,
+                MeAiChatMessage resultMessage = MapHistoryEntry(result);
 
-                _ => ChatRole.User,
+                messages.Add(callMessage);
 
-            };
+                messages.Add(resultMessage);
 
-            list.Add(new MeAiChatMessage(role, m.Content));
-
+                if (!preserveToolHistory && !entry.IsPinned && !result.IsPinned)
+                    TurnContextGuards.RegisterHistoricalToolExchange(callMessage, resultMessage);
+            }
+            else if (Included(entry))
+            {
+                // Malformed/orphaned entries and marker lookalikes remain ordinary text.
+                messages.Add(MapHistoryEntry(entry));
+            }
         }
 
-        list.Add(new MeAiChatMessage(ChatRole.User, newUserPrompt));
+        messages.Add(new MeAiChatMessage(ChatRole.User, newUserPrompt));
 
-        return list;
-
+        return messages;
     }
+
+    private static MeAiChatMessage MapHistoryEntry(Entry entry) => new(entry.Role switch
+    {
+        MessageRole.User => ChatRole.User,
+        MessageRole.Assistant => ChatRole.Assistant,
+        MessageRole.System => ChatRole.System,
+        _ => ChatRole.User,
+    }, entry.Content);
 
     internal static int ComputeEffectiveCompressionLimit(int contextWindowLimit, int thresholdPercent)
     {
@@ -406,62 +432,9 @@ public sealed class InferenceContextBuilder(
     private static List<MeAiChatMessage> MapFilteredGrimoireToMeAiMessages(
         Session session,
         DateTime watermarkExclusive,
-        string newUserPrompt)
-    {
-
-        List<Entry> pinned = session.Entries
-            .Where(m => m.IsPinned)
-            .ToList();
-
-        List<Entry> afterWatermark = session.Entries
-            .Where(m => m.CreatedAt.UtcDateTime > watermarkExclusive && !m.IsPinned)
-            .ToList();
-
-        List<Entry> ordered = pinned
-            .Concat(afterWatermark)
-            .OrderBy(m => m.CreatedAt)
-            .ToList();
-
-        ordered = TurnContextGuards.DropOrphanToolHalves(ordered);
-
-        while (ordered.Count > 0
-
-            && ordered[^1].Role == MessageRole.Assistant
-
-            && string.IsNullOrEmpty(ordered[^1].Content))
-        {
-
-            ordered.RemoveAt(ordered.Count - 1);
-
-        }
-
-        var list = new List<MeAiChatMessage>(ordered.Count + 1);
-
-        foreach (Entry m in ordered)
-        {
-
-            ChatRole role = m.Role switch
-            {
-
-                MessageRole.User => ChatRole.User,
-
-                MessageRole.Assistant => ChatRole.Assistant,
-
-                MessageRole.System => ChatRole.System,
-
-                _ => ChatRole.User,
-
-            };
-
-            list.Add(new MeAiChatMessage(role, m.Content));
-
-        }
-
-        list.Add(new MeAiChatMessage(ChatRole.User, newUserPrompt));
-
-        return list;
-
-    }
+        string newUserPrompt,
+        bool preserveToolHistory) =>
+        MapHistory(session, newUserPrompt, watermarkExclusive, preserveToolHistory);
 
     /// <summary>
     /// Maps stateless <see cref="CoreChatMessage"/> transcripts to <c>Microsoft.Extensions.AI</c>

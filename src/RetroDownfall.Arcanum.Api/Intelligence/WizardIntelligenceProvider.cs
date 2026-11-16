@@ -2557,7 +2557,8 @@ public sealed partial class WizardIntelligenceProvider(
             List<MeAiChatMessage> chatMessages = InferenceContextBuilder.BuildInitialMeAiChatMessages(
                 streamContextRequest,
                 thread,
-                prompt);
+                prompt,
+                preserveToolHistory: covenantScope?.HistoryTainted is true);
 
             string? streamCodexContent = await CodexReader
                 .ReadCodexAsync(
@@ -3173,6 +3174,8 @@ public sealed partial class WizardIntelligenceProvider(
 
                                 NewUserPrompt = prompt,
 
+                                PreserveToolHistory = covenantScope?.HistoryTainted is true,
+
                                 Lease = lease,
 
                                 ChatOptions = attachmentAdmissionOptions,
@@ -3382,7 +3385,8 @@ public sealed partial class WizardIntelligenceProvider(
                     chatMessages = InferenceContextBuilder.BuildInitialMeAiChatMessages(
                         streamContextRequest,
                         thread,
-                        prompt);
+                        prompt,
+                        preserveToolHistory: covenantScope?.HistoryTainted is true);
 
                     InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
 
@@ -3458,6 +3462,8 @@ public sealed partial class WizardIntelligenceProvider(
                                 Messages = chatMessages,
                                 Thread = thread,
                                 NewUserPrompt = prompt,
+
+                                PreserveToolHistory = covenantScope?.HistoryTainted is true,
                                 Lease = lease,
                                 ChatOptions = streamChatOptions,
                                 CodexContent = streamCodexContent,
@@ -5212,10 +5218,13 @@ public sealed partial class WizardIntelligenceProvider(
                     CancellationToken.None).ConfigureAwait(false);
             }
 
-            if (string.Equals(streamFinishReason, "length", StringComparison.Ordinal)
-                && string.IsNullOrWhiteSpace(finalText))
+            if (string.Equals(streamFinishReason, "length", StringComparison.Ordinal))
             {
-                InferenceNotice notice = new(InferenceNoticeCode.OutputLimitWithoutAnswer);
+                // Earlier progress and partial final text remain model output; neither establishes
+                // completion when the selected final call explicitly exhausted its output limit.
+                InferenceNotice notice = new(string.IsNullOrWhiteSpace(finalText)
+                    ? InferenceNoticeCode.OutputLimitWithoutAnswer
+                    : InferenceNoticeCode.OutputLimitWithPartialAnswer);
 
                 operationalNotices.Add(notice);
 

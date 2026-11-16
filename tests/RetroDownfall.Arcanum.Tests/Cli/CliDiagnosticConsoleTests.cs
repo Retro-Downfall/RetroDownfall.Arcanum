@@ -32,6 +32,7 @@ public sealed class CliDiagnosticConsoleTests
     [InlineData(InferenceNoticeCode.ToolCompatibilityRestart, "continuing without local tools")]
     [InlineData(InferenceNoticeCode.ToolEvidenceTrimmed, "Tool evidence was trimmed")]
     [InlineData((InferenceNoticeCode)3, "output limit")]
+    [InlineData((InferenceNoticeCode)4, "output limit")]
     [InlineData((InferenceNoticeCode)int.MaxValue, "")]
     public void Operational_notice_reaches_stderr_without_tool_calls_and_ignores_unknown_codes(InferenceNoticeCode code, string expected)
     {

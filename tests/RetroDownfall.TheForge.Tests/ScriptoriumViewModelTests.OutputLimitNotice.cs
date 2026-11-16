@@ -7,6 +7,47 @@ namespace RetroDownfall.TheForge.Tests;
 
 public partial class ScriptoriumViewModelTests
 {
+    [Fact]
+    public async Task PartialOutputLimit_notice_is_preferred_to_generic_length_copy_without_changing_answer()
+    {
+        const string answer = "Earlier progress only.";
+
+        InferenceNotice notice = new((InferenceNoticeCode)4);
+
+        FakePromptEditorDataSource dataSource = new()
+        {
+            Prompt = NewPromptDetail(),
+            ExecutionEvents =
+            [
+                new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, answer),
+                new IntelligenceEvent(IntelligenceEventType.Status, notice.Message) { Notices = [notice] },
+                new IntelligenceEvent(IntelligenceEventType.Result, answer, answer, FinishReason: "length") { Notices = [notice] },
+            ],
+        };
+
+        FakeWhispersService whispers = new();
+
+        using ScriptoriumViewModel viewModel = NewScriptorium(dataSource, whispers: whispers);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        viewModel.RunUserMessage = "operator question";
+
+        await viewModel.ExecuteAsync(CancellationToken.None);
+
+        Assert.Equal(answer, viewModel.RunResultText);
+
+        Assert.False(string.IsNullOrWhiteSpace(notice.Message));
+
+        Assert.Equal(notice.Message, viewModel.StatusText);
+
+        Assert.Equal(notice.Message, Assert.Single(whispers.Calls).Message);
+
+        Assert.Equal(WhisperSeverity.Warning, Assert.Single(whispers.Calls).Severity);
+
+        Assert.Equal(1, dataSource.ExecuteCallCount);
+    }
+
     [Theory]
     [InlineData("", true)]
     [InlineData(" \t\n", true)]

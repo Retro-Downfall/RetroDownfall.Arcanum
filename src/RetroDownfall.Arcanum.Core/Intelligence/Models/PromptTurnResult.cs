@@ -39,6 +39,8 @@ public enum InferenceNoticeCode
     ToolEvidenceTrimmed = 2,
 
     OutputLimitWithoutAnswer = 3,
+
+    OutputLimitWithPartialAnswer = 4,
 }
 
 /// <summary>Only code-owned fixed copy is projected; undefined codes carry no message.</summary>
@@ -52,6 +54,8 @@ public sealed record InferenceNotice(InferenceNoticeCode Code)
         InferenceNoticeCode.ToolCompatibilityRestart => "This model does not support tools; continuing without local tools.",
         InferenceNoticeCode.ToolEvidenceTrimmed => "Tool evidence was trimmed to fit the configured context window. The model may need to reread it narrowly; use fewer tools or smaller results to retain more evidence.",
         InferenceNoticeCode.OutputLimitWithoutAnswer => "The model reached an output limit without returning a visible answer. Try a narrower request or explicitly choose a larger output limit.",
+
+        InferenceNoticeCode.OutputLimitWithPartialAnswer => "The model reached an output limit. The visible response may be incomplete and does not confirm that the requested work finished. Review the retained output and tool results before explicitly continuing.",
         _ => string.Empty,
     };
 }

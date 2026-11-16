@@ -42,7 +42,7 @@ namespace RetroDownfall.Arcanum.Tests.Packaging;
 /// model qualification is deliberately local-only.
 /// </summary>
 [Collection("ApiHost")]
-public sealed class PublishedArcanumSessionSmokeTests
+public sealed partial class PublishedArcanumSessionSmokeTests
 {
     private const string PublishedExecutableVariable = "ARCANUM_PUBLISHED_EXECUTABLE";
 
@@ -302,6 +302,8 @@ public sealed class PublishedArcanumSessionSmokeTests
             await ExerciseMemoryDelegationAsync(client, provider, priorCalls: 7, deadline.Token);
 
             await ExerciseMemoryRecallAsync(client, provider, priorCalls: 10, deadline.Token);
+
+            await ExercisePartialOutputLimitAsync(client, provider, priorCalls: 12, deadline.Token);
 
             Assert.Equal(0, provider.RuntimeMutationCount);
 
@@ -1355,6 +1357,10 @@ public sealed class PublishedArcanumSessionSmokeTests
 
         private int? _recallStart;
 
+        private int _partialBufferedCount;
+
+        private int _partialStreamingCount;
+
         internal const string OrdinaryToolPrompt = "published-ordinary-protected-tool";
 
         internal const string OrdinaryToolFinal = "published-ordinary-protected-final";
@@ -1441,6 +1447,26 @@ public sealed class PublishedArcanumSessionSmokeTests
                 bool streaming = request.RootElement.TryGetProperty("stream", out var stream) && stream.GetBoolean();
 
                 int count = Interlocked.Increment(ref provider!._requestCount);
+
+                if (prompt == PartialOutputLimitPrompt)
+                {
+                    int partialPhase = (streaming
+                        ? Interlocked.Increment(ref provider._partialStreamingCount)
+                        : Interlocked.Increment(ref provider._partialBufferedCount)) - 1;
+
+                    if (partialPhase > 1)
+                    {
+                        context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+
+                        return;
+                    }
+
+                    provider._requests.Enqueue(new ProviderRequest(model, authorization, prompt, streaming, request.RootElement.Clone()));
+
+                    await WriteDelegationAsync(context, partialPhase, streaming, ordinary: true, partialOutput: true);
+
+                    return;
+                }
 
                 if (provider._recallStart is null && prompt == RecallPrompt) provider._recallStart = count;
 
@@ -1531,18 +1557,19 @@ public sealed class PublishedArcanumSessionSmokeTests
             return provider;
         }
 
-        private static async Task WriteDelegationAsync(HttpContext context, int phase, bool streaming, bool ordinary = false)
+        private static async Task WriteDelegationAsync(HttpContext context, int phase, bool streaming, bool ordinary = false, bool partialOutput = false)
         {
             string arguments = ordinary ? "{}" : "{\"prompt\":\"published-delegation-child\",\"max_tokens\":256,\"memory_grant\":\"memory\"}";
             string name = ordinary ? "get_local_system_time" : "delegate_task";
-            string content = ordinary ? OrdinaryToolFinal : phase == 1 ? DelegationChildAnswer : DelegationFinal;
+            string content = partialOutput ? string.Empty : ordinary ? OrdinaryToolFinal : phase == 1 ? DelegationChildAnswer : DelegationFinal;
             string message = phase == 0
-                ? "\"role\":\"assistant\",\"tool_calls\":[{" + (streaming ? "\"index\":0," : "")
+                ? "\"role\":\"assistant\"," + (partialOutput ? "\"content\":\"" + JsonEncodedText.Encode(PartialOutputProgress) + "\"," : "")
+                    + "\"tool_calls\":[{" + (streaming ? "\"index\":0," : "")
                     + "\"id\":\"call-published-delegation\",\"type\":\"function\",\"function\":{\"name\":\"" + name + "\",\"arguments\":\"" + JsonEncodedText.Encode(arguments) + "\"}}]"
                 : "\"role\":\"assistant\",\"content\":\"" + JsonEncodedText.Encode(content) + "\"";
             string body = "{\"id\":\"chatcmpl-delegation\",\"object\":\"" + (streaming ? "chat.completion.chunk" : "chat.completion")
                 + "\",\"created\":0,\"model\":\"published-smoke-model\",\"choices\":[{\"index\":0,\"" + (streaming ? "delta" : "message")
-                + "\":{" + message + "},\"finish_reason\":\"" + (phase == 0 ? "tool_calls" : "stop")
+                + "\":{" + message + "},\"finish_reason\":\"" + (phase == 0 ? "tool_calls" : partialOutput ? "length" : "stop")
                 + "\"}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":4,\"total_tokens\":24}}";
             context.Response.ContentType = streaming ? "text/event-stream" : "application/json";
             await context.Response.WriteAsync(streaming ? "data: " + body + "\n\ndata: [DONE]\n\n" : body, context.RequestAborted);

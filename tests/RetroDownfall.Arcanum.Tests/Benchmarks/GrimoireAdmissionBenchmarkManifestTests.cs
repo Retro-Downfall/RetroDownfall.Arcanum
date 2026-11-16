@@ -70,7 +70,80 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
     }
 
     [Fact]
-    public void Checked_in_input_catalog_exactly_closes_every_tracked_benchmark_and_product_input()
+    public async Task Candidate_input_inventory_keeps_present_source_and_excludes_deleted_or_ignored_outputs()
+    {
+        Support.TempWorkspace workspace = new();
+
+        await workspace.InitializeAsync();
+
+        try
+        {
+            void Git(params string[] arguments)
+            {
+                ProcessStartInfo start = new("git")
+                {
+                    WorkingDirectory = workspace.Root,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                };
+
+                foreach (string argument in arguments) start.ArgumentList.Add(argument);
+
+                using global::System.Diagnostics.Process process = global::System.Diagnostics.Process.Start(start)!;
+
+                _ = process.StandardOutput.ReadToEnd();
+
+                string error = process.StandardError.ReadToEnd();
+
+                process.WaitForExit();
+
+                Assert.True(process.ExitCode == 0, error);
+            }
+
+            Git("init", "--quiet");
+
+            string exclusions = workspace.WriteFile(".git/empty-global-excludes", string.Empty);
+
+            Git("config", "core.excludesFile", exclusions);
+
+            Git("config", "core.quotePath", "true");
+
+            workspace.WriteFile(".gitignore", "bin/\nobj/\n");
+
+            workspace.WriteFile("src/RetroDownfall.Arcanum.Core/Tracked.cs", "// tracked candidate input");
+
+            string removed = workspace.WriteFile("src/RetroDownfall.Arcanum.Core/Removed.cs", "// unstaged deletion");
+
+            Git("add", ".gitignore", "src/RetroDownfall.Arcanum.Core/Tracked.cs", "src/RetroDownfall.Arcanum.Core/Removed.cs");
+
+            File.Delete(removed);
+
+            workspace.WriteFile("src/RetroDownfall.Arcanum.Infrastructure/New runtime Ω.cs", "// newly authored candidate input");
+
+            workspace.WriteFile("src/RetroDownfall.Arcanum.Infrastructure/obj/Generated.cs", "// ignored generated input");
+
+            workspace.WriteFile("src/RetroDownfall.Arcanum.Infrastructure/bin/Generated.cs", "// ignored build output");
+
+            workspace.WriteFile("notes.cs", "// outside the selected product and benchmark roots");
+
+            string[] selected = GitCandidateFiles(workspace.Root)
+                .Where(IsSelectedCSharp)
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+
+            Assert.Equal(
+                ["src/RetroDownfall.Arcanum.Core/Tracked.cs", "src/RetroDownfall.Arcanum.Infrastructure/New runtime Ω.cs"],
+                selected);
+        }
+        finally
+        {
+            await workspace.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public void Checked_in_input_catalog_exactly_closes_every_candidate_benchmark_and_product_input()
     {
         string root = FindRepositoryRoot();
 
@@ -113,9 +186,9 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
                     static segment => segment is "" or "." or "..");
             });
 
-        string[] tracked = GitTrackedFiles(root);
+        string[] candidateFiles = GitCandidateFiles(root);
 
-        HashSet<string> expected = tracked.Where(
+        HashSet<string> expected = candidateFiles.Where(
                 static path => IsSelectedCSharp(path)
                     || path.StartsWith("vendor/Microsoft.Data.Sqlite.Core/", StringComparison.Ordinal)
                     || path.StartsWith(
@@ -359,17 +432,26 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
             || path.StartsWith("src/RetroDownfall.Arcanum.Infrastructure/", StringComparison.Ordinal)
             || path.StartsWith("src/RetroDownfall.Arcanum.Secrets/", StringComparison.Ordinal));
 
-    private static string[] GitTrackedFiles(string root)
+    private static string[] GitCandidateFiles(string root)
     {
         ProcessStartInfo start = new("git")
         {
             WorkingDirectory = root,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
             UseShellExecute = false,
         };
 
         start.ArgumentList.Add("ls-files");
+
+        start.ArgumentList.Add("--cached");
+
+        start.ArgumentList.Add("--others");
+
+        start.ArgumentList.Add("--exclude-standard");
+
+        start.ArgumentList.Add("-z");
 
         using global::System.Diagnostics.Process process = global::System.Diagnostics.Process.Start(start)!;
 
@@ -381,7 +463,9 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
 
         Assert.True(process.ExitCode == 0, error);
 
-        return output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return output.Split('\0', StringSplitOptions.RemoveEmptyEntries)
+            .Where(path => File.Exists(Path.Combine(root, path)))
+            .ToArray();
     }
 
     private static string ShapeDigest(IEnumerable<(string Path, bool Optional)> entries)

@@ -1050,7 +1050,8 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
             case IntelligenceEventType.Result:
                 InferenceNotice? outputLimitNotice = ev.Notices.FirstOrDefault(
-                    static notice => notice.Code == InferenceNoticeCode.OutputLimitWithoutAnswer);
+                    static notice => notice.Code is InferenceNoticeCode.OutputLimitWithoutAnswer
+                        or InferenceNoticeCode.OutputLimitWithPartialAnswer);
 
                 bool outputLimited = string.Equals(ev.FinishReason, "length", StringComparison.OrdinalIgnoreCase);
 

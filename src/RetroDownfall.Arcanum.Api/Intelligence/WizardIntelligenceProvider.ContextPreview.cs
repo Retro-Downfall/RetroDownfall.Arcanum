@@ -237,7 +237,9 @@ public sealed partial class WizardIntelligenceProvider
 
             thread,
 
-            turn.Prompt);
+            turn.Prompt,
+
+            preserveToolHistory: previewCovenantScope.HistoryTainted);
 
         SessionContextPinMaterialization pins =
 
@@ -609,6 +611,8 @@ public sealed partial class WizardIntelligenceProvider
 
                     NewUserPrompt = turn.Prompt,
 
+                    PreserveToolHistory = previewCovenantScope.HistoryTainted,
+
                     Lease = lease,
 
                     ChatOptions = options,
@@ -657,13 +661,13 @@ public sealed partial class WizardIntelligenceProvider
         // The attribution map is the only producer of the two Covenant token lanes. Without it the
         // estimator emits a zero-token CovenantProposed row and inspection reports "no effective
         // content" for a prompt that is carrying the operator's standing agreement.
-        ContextTokenBreakdown breakdown = ModelTokenEstimator.EstimateContext(
+        ContextTokenBreakdown Measure(IReadOnlyList<MeAiChatMessage> candidate) => ModelTokenEstimator.EstimateContext(
             new ModelTokenizationRequest(
                 lease.Provider,
 
                 lease.ResolvedModel,
 
-                finalMessages,
+                candidate,
 
                 options,
 
@@ -672,6 +676,22 @@ public sealed partial class WizardIntelligenceProvider
                 callContext.ReservedReasoningTokens,
 
                 document.BuildResult().Attribution));
+
+        ContextTokenBreakdown breakdown = Measure(finalMessages);
+
+        int contextLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
+
+        if (breakdown.TotalTokens > contextLimit)
+        {
+            // Preview uses the same complete-exchange eviction as dispatch, with no provider
+            // call, persisted mutation or dispatch-rejection metric from this diagnostic read.
+            ToolLoopProgressDetector progress = new();
+
+            _ = TurnContextGuards.TryTrimOldestToolExchanges(
+                finalMessages, candidate => Measure(candidate).TotalTokens, contextLimit, progress);
+
+            breakdown = Measure(finalMessages) with { ToolEvidenceEviction = progress.Eviction };
+        }
 
         // The counters live on the breakdown the reason-builder reads. On the dispatch path a ledger
         // merges them in; the preview has no ledger, so the admission's own numbers are merged here

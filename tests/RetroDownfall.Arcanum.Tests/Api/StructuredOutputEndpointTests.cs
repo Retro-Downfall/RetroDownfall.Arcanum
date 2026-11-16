@@ -17,11 +17,13 @@ public sealed class StructuredOutputEndpointTests
     }
 
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(false, true)]
-    [InlineData(true, false)]
-    [InlineData(true, true)]
-    public async Task Operational_notice_header_is_separate_from_schema_warning_and_fingerprint(bool schemaWarning, bool notice)
+    [InlineData(false, false, 1)]
+    [InlineData(false, true, 1)]
+    [InlineData(true, false, 1)]
+    [InlineData(true, true, 1)]
+    [InlineData(false, true, 4)]
+    [InlineData(true, true, 4)]
+    public async Task Operational_notice_header_is_separate_from_schema_warning_and_fingerprint(bool schemaWarning, bool notice, int code)
     {
         IReadOnlyList<InferenceNotice>? oldNotices = _factory.FakeIntelligence.NextNotices;
 
@@ -32,7 +34,7 @@ public sealed class StructuredOutputEndpointTests
             _factory.FakeIntelligence.NextWarnings = schemaWarning ? ["schema-only warning"] : [];
 
             _factory.FakeIntelligence.NextNotices = notice
-                ? [new(InferenceNoticeCode.ToolCompatibilityRestart), new(InferenceNoticeCode.ToolCompatibilityRestart)]
+                ? [new((InferenceNoticeCode)code), new((InferenceNoticeCode)code)]
                 : [new((InferenceNoticeCode)int.MaxValue)];
 
             using HttpClient client = _factory.CreateAuthenticatedClient();
@@ -48,15 +50,19 @@ public sealed class StructuredOutputEndpointTests
 
             Assert.Equal(schemaWarning, response.Headers.Contains("X-Arcanum-Structured-Output-Warning"));
 
-            Assert.Equal(notice, response.Headers.Contains("X-Arcanum-Notice"));
+            // The OpenAI-compatible surface publishes only the existing compatibility-restart
+            // header. Native output-limit notices stay on the native DTO/event contract.
+            bool compatibilityNotice = notice && code == (int)InferenceNoticeCode.ToolCompatibilityRestart;
+
+            Assert.Equal(compatibilityNotice, response.Headers.Contains("X-Arcanum-Notice"));
 
             Assert.DoesNotContain("notices", body, StringComparison.OrdinalIgnoreCase);
 
-            if (notice)
+            if (compatibilityNotice)
             {
                 string header = Assert.Single(response.Headers.GetValues("X-Arcanum-Notice"));
 
-                Assert.Equal(new InferenceNotice(InferenceNoticeCode.ToolCompatibilityRestart).Message, header);
+                Assert.Equal(new InferenceNotice((InferenceNoticeCode)code).Message, header);
 
                 Assert.InRange(header.Length, 1, 256);
 
