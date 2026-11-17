@@ -10,15 +10,17 @@ CONFIGURATION=Release
 EXECUTABLE=""
 TEST_FILTER='FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumSessionSmokeTests.Published_executable_creates_initial_session_and_completes_provider_contract_exchange'
 EXPECTED_SMOKE_RECEIPT='published-session-smoke:v1'
+REASONING_TEST_FILTER='FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumSessionSmokeTests.Published_ollama_tool_continuation_replays_reasoning_without_persisting_it'
+EXPECTED_REASONING_RECEIPT='published-reasoning-continuation:v1'
 
 usage() {
   cat <<'EOF'
 Usage: verify-published-apphost.sh --executable <published-apphost> [--configuration <name>]
 
 Builds the managed smoke harness without warnings, then exercises exactly the supplied published
-apphost as both host and CLI through the deterministic first-session provider-contract test. The
-test must write the expected success receipt after all assertions and cleanup. This gate never
-publishes or substitutes a product binary.
+apphost as both host and CLI through the deterministic first-session provider-contract test, and
+checks Ollama reasoning continuation with a loopback provider. Each test must write its expected
+success receipt after all assertions and cleanup. This gate never publishes or substitutes a product binary.
 EOF
 }
 
@@ -151,11 +153,15 @@ trap cleanup EXIT
 
 TEST_BUILD_LOG="$WORK/test-build.log"
 TEST_LOG="$WORK/test.log"
+REASONING_TEST_LOG="$WORK/reasoning-test.log"
 SMOKE_RECEIPT="$WORK/published-session-smoke.receipt"
 SMOKE_RECEIPT_FOR_TEST="$SMOKE_RECEIPT"
+REASONING_RECEIPT="$WORK/published-reasoning-continuation.receipt"
+REASONING_RECEIPT_FOR_TEST="$REASONING_RECEIPT"
 
 if [[ "$WINDOWS_HOST" -eq 1 ]]; then
   SMOKE_RECEIPT_FOR_TEST="$(cygpath -w "$SMOKE_RECEIPT")"
+  REASONING_RECEIPT_FOR_TEST="$(cygpath -w "$REASONING_RECEIPT")"
 fi
 
 reject_warnings() {
@@ -236,4 +242,27 @@ require_exact_receipt \
   "$EXPECTED_SMOKE_RECEIPT" \
   "selected smoke test"
 
-echo "==> Exact published apphost is warning-free and its first-session provider contract is healthy"
+rm -f "$REASONING_RECEIPT"
+
+echo "==> Exercising Ollama reasoning continuation on the exact published apphost"
+ARCANUM_PUBLISHED_EXECUTABLE="$SMOKE_EXECUTABLE" \
+ARCANUM_PUBLISHED_REASONING_RECEIPT="$REASONING_RECEIPT_FOR_TEST" \
+dotnet test "$TEST_PROJECT" \
+  -c "$CONFIGURATION" \
+  --blame-hang-timeout 15m \
+  --blame-hang-dump-type none \
+  --filter "$REASONING_TEST_FILTER" \
+  --artifacts-path "$WORK/test-artifacts" \
+  --disable-build-servers \
+  -m:1 \
+  --no-build \
+  --no-restore \
+  2>&1 | tee "$REASONING_TEST_LOG"
+
+reject_warnings "$REASONING_TEST_LOG"
+require_exact_receipt \
+  "$REASONING_RECEIPT" \
+  "$EXPECTED_REASONING_RECEIPT" \
+  "reasoning smoke test"
+
+echo "==> Exact published apphost is warning-free and its first-session and reasoning provider contracts are healthy"

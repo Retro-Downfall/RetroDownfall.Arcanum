@@ -245,7 +245,11 @@ public sealed class ChatClientFactory(
 
         var chatClient = new ChatClient(resolvedModel, credential, options);
 
-        IChatClient meAi = providerWork.Bind(new CompletionCheckedChatClient(chatClient.AsIChatClient()));
+        IChatClient adapter = chatClient.AsIChatClient();
+
+        if (providerWork.Ollama) adapter = new OllamaReasoningChatClient(adapter);
+
+        IChatClient meAi = providerWork.Bind(new CompletionCheckedChatClient(adapter));
 
         guildPolicy.Bind(meAi);
 

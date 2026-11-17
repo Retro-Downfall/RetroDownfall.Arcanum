@@ -10,6 +10,10 @@ public sealed class PublishedApphostVerificationScriptTests
         "FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumSessionSmokeTests."
         + "Published_executable_creates_initial_session_and_completes_provider_contract_exchange";
 
+    private const string ReasoningFilter =
+        "FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumSessionSmokeTests."
+        + "Published_ollama_tool_continuation_replays_reasoning_without_persisting_it";
+
     private static void RequirePosixScriptFixture() =>
         Skip.If(
             OperatingSystem.IsWindows(),
@@ -35,7 +39,7 @@ public sealed class PublishedApphostVerificationScriptTests
     }
 
     [SkippableFact]
-    public async Task Gate_runs_only_the_exact_published_smoke_and_accepts_its_receipt()
+    public async Task Gate_runs_both_exact_published_smokes_and_accepts_their_receipts()
     {
         RequirePosixScriptFixture();
 
@@ -50,10 +54,41 @@ public sealed class PublishedApphostVerificationScriptTests
         string dotnetLog = File.ReadAllText(fixture.DotnetLog);
 
         Assert.Contains($"--filter {PublishedFilter}", dotnetLog, StringComparison.Ordinal);
-        string publishedExecutable = ReadLoggedValue(dotnetLog, "published-executable=");
+        Assert.Contains($"--filter {ReasoningFilter}", dotnetLog, StringComparison.Ordinal);
 
-        Assert.True(Path.IsPathFullyQualified(publishedExecutable));
-        Assert.Equal(Path.GetFileName(fixture.Executable), Path.GetFileName(publishedExecutable));
+        string[] publishedExecutables = dotnetLog.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Where(static line => line.StartsWith("published-executable=", StringComparison.Ordinal))
+            .Select(static line => line["published-executable=".Length..]).ToArray();
+
+        Assert.Equal(2, publishedExecutables.Length);
+
+        Assert.All(publishedExecutables, publishedExecutable =>
+        {
+            Assert.True(Path.IsPathFullyQualified(publishedExecutable));
+            Assert.Equal(Path.GetFileName(fixture.Executable), Path.GetFileName(publishedExecutable));
+        });
+    }
+
+    [SkippableTheory]
+    [InlineData("missing")]
+    [InlineData("skipped")]
+    [InlineData("wrong-filter")]
+    [InlineData("invalid")]
+    public async Task Gate_rejects_a_missing_skipped_or_invalid_reasoning_smoke_receipt(string mode)
+    {
+        RequirePosixScriptFixture();
+
+        using ScriptFixture fixture = new(receiptKind: "published");
+
+        fixture.EnvironmentOverrides["FAKE_REASONING_RECEIPT_MODE"] = mode;
+
+        ScriptResult result = await fixture.RunAsync(
+            Path.Combine(fixture.RepositoryRoot, "scripts", "verify-published-apphost.sh"),
+            "--executable", fixture.Executable);
+
+        Assert.NotEqual(0, result.ExitCode);
+
+        Assert.Contains("reasoning smoke test did not execute successfully", result.StandardError, StringComparison.Ordinal);
     }
 
     [SkippableFact]
@@ -265,7 +300,14 @@ public sealed class PublishedApphostVerificationScriptTests
         string[] dotnetLog = File.ReadAllLines(fixture.DotnetLog);
 
         Assert.Single(dotnetLog, line => line.StartsWith("publish ", StringComparison.Ordinal));
-        string smokeExecutable = ReadLoggedValue(string.Join("\n", dotnetLog), "published-executable=");
+        string[] smokeExecutables = dotnetLog.Where(static line => line.StartsWith("published-executable=", StringComparison.Ordinal))
+            .Select(static line => line["published-executable=".Length..]).ToArray();
+
+        Assert.Equal(2, smokeExecutables.Length);
+
+        string smokeExecutable = smokeExecutables[0];
+
+        Assert.Equal(smokeExecutable, smokeExecutables[1]);
 
         Assert.Contains(Path.GetFileName(fixture.Root) + "/process-temp/arcanum-shipping-verify.", smokeExecutable, StringComparison.Ordinal);
         Assert.EndsWith("/publish/RetroDownfall.Arcanum.Cli", smokeExecutable, StringComparison.Ordinal);
@@ -922,6 +964,7 @@ public sealed class PublishedApphostVerificationScriptTests
                 printf 'long-rest-opt-in=%s\n' "${ARCANUM_RUN_LOCAL_OLLAMA_LONG_REST_QUALIFICATION:-}" >> "${FAKE_DOTNET_LOG:?}"
 
                 expected_published='FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumSessionSmokeTests.Published_executable_creates_initial_session_and_completes_provider_contract_exchange'
+                expected_reasoning='FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumSessionSmokeTests.Published_ollama_tool_continuation_replays_reasoning_without_persisting_it'
                 expected_ollama='FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumOllamaQualificationTests.Published_native_aot_preserves_corrected_file_context_and_runs_vision_across_restart'
                 expected_long_rest='FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumOllamaLongRestQualificationTests.Published_native_aot_long_rest_sweeps_recovers_a_killed_host_and_leaves_turns_unharmed'
                 selected=''
@@ -944,6 +987,14 @@ public sealed class PublishedApphostVerificationScriptTests
                         printf '%s' 'trailing-bytes' >> "${ARCANUM_PUBLISHED_SMOKE_RECEIPT:?}"
                       fi
                     fi
+
+                    if [[ "$selected" == "$expected_reasoning" ]]; then
+                      case "${FAKE_REASONING_RECEIPT_MODE:-valid}" in
+                        valid) printf '%s\n' 'published-reasoning-continuation:v1' > "${ARCANUM_PUBLISHED_REASONING_RECEIPT:?}" ;;
+                        invalid) printf '%s\n' 'invalid' > "${ARCANUM_PUBLISHED_REASONING_RECEIPT:?}" ;;
+                        missing | skipped | wrong-filter) ;;
+                      esac
+                    fi
                     ;;
                   published-crlf)
                     if [[ "$selected" == "$expected_published" ]]; then
@@ -952,6 +1003,10 @@ public sealed class PublishedApphostVerificationScriptTests
                       if [[ "${FAKE_APPEND_RECEIPT_BYTES_WITHOUT_NEWLINE:-0}" == 1 ]]; then
                         printf '%s' 'trailing-bytes' >> "${ARCANUM_PUBLISHED_SMOKE_RECEIPT:?}"
                       fi
+                    fi
+
+                    if [[ "$selected" == "$expected_reasoning" ]]; then
+                      printf '%s\r\n' 'published-reasoning-continuation:v1' > "${ARCANUM_PUBLISHED_REASONING_RECEIPT:?}"
                     fi
                     ;;
                   ollama-perplexity | ollama-perplexity-crlf)

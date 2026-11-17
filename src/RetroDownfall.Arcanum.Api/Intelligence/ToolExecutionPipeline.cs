@@ -299,7 +299,8 @@ public sealed class ToolExecutionPipeline(
         FunctionCallContent fcc,
         string callId,
         string resultText,
-        IReadOnlyList<TextReasoningContent>? reasoningContents = null)
+        IReadOnlyList<TextReasoningContent>? reasoningContents = null,
+        string? assistantText = null)
     {
         // The pinned OpenAI adapter rebuilds outgoing calls from these public fields and ignores
         // ChatToolCall transport bookkeeping. Project that known representation before materialization;
@@ -319,13 +320,18 @@ public sealed class ToolExecutionPipeline(
             }
             : fcc;
 
-        List<AIContent> assistantContents = new((reasoningContents?.Count ?? 0) + 1);
+        List<AIContent> assistantContents = new((reasoningContents?.Count ?? 0) + 2);
 
         if (reasoningContents is not null)
         {
             // Preserve the provider's original objects (including opaque ProtectedData) only in
             // this in-memory, same-provider continuation chain.
             assistantContents.AddRange(reasoningContents);
+        }
+
+        if (!string.IsNullOrEmpty(assistantText))
+        {
+            assistantContents.Add(new TextContent(assistantText));
         }
 
         assistantContents.Add(normalizedCall);

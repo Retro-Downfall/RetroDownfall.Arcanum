@@ -1452,6 +1452,8 @@ public sealed partial class PublishedArcanumSessionSmokeTests
 
                 int count = Interlocked.Increment(ref provider!._requestCount);
 
+                if (await provider.TryWriteReasoningContinuationAsync(context, model, authorization, prompt, streaming, request.RootElement)) return;
+
                 if (await provider.TryWriteMalformedProviderCallAsync(context, model, authorization, prompt, streaming, request.RootElement)) return;
 
                 if (prompt == PartialOutputLimitPrompt)

@@ -113,6 +113,8 @@ Subagents have no ambient memory or tools. An explicitly authorized memory-deleg
 
 For a model response containing several calls, Arcanum appends every assistant-call/tool-result pair first. Successful `attach_session_file` and `refresh_session_file` materializations accumulate in a pending list. Only after the loop has appended the last result does it add one User message carrying the queued `TextContent` / `DataContent`.
 
+The first assistant-call message also retains the current provider round's visible text and same-provider reasoning. Later calls in that round do not repeat either, and later rounds retain only their own new text. The same rule applies when the first call is an unavailable `ask_human` and receives a synthetic denial. Explicit Ollama runtime bindings preserve the provider's thinking through the SDK transport into the next assistant request; this continuation state remains ephemeral and does not become a persisted Session answer or override client disclosure settings.
+
 ```mermaid
 flowchart TD
     A["Provider returns one or more tool calls"] --> B["Execute call 1"]

@@ -4275,7 +4275,8 @@ public sealed partial class WizardIntelligenceProvider(
                                                 fcc,
                                                 denied.CallId,
                                                 denied.ResultText,
-                                                toolCallIndex == 0 ? rawRoundReasoning : null);
+                                                toolCallIndex == 0 ? rawRoundReasoning : null,
+                                                toolCallIndex == 0 ? combinedRound.Text : null);
 
                                             // The model has been told it was denied; recording that
                                             // is bookkeeping and outlives the caller's token.
@@ -4298,6 +4299,7 @@ public sealed partial class WizardIntelligenceProvider(
                                                                targetModel,
                                                                auditContext,
                                                                toolCallIndex == 0 ? rawRoundReasoning : null,
+                                                               toolCallIndex == 0 ? combinedRound.Text : null,
                                                                inferenceToken,
                                                                covenantScope)
                                                                .ConfigureAwait(false))
@@ -4455,7 +4457,8 @@ public sealed partial class WizardIntelligenceProvider(
                                     invokeFcc,
                                     processed.CallId,
                                     processed.ResultText,
-                                    toolCallIndex == 0 ? rawRoundReasoning : null);
+                                    toolCallIndex == 0 ? rawRoundReasoning : null,
+                                    toolCallIndex == 0 ? combinedRound.Text : null);
 
                                 SubagentParentContextInjector.AppendBudgetFailureIfRequired(
                                     chatMessages,
@@ -5735,6 +5738,7 @@ public sealed partial class WizardIntelligenceProvider(
         string targetModel,
         InferenceAuditContext? auditContext,
         IReadOnlyList<TextReasoningContent>? reasoningContents,
+        string? assistantText,
         [EnumeratorCancellation] CancellationToken cancellationToken, CovenantTurnScope? covenantScope = null)
     {
         ToolExecutionPipeline.ProcessedToolCall denied = CreateSyntheticAskHumanDenial(fcc, message);
@@ -5748,7 +5752,8 @@ public sealed partial class WizardIntelligenceProvider(
             fcc,
             denied.CallId,
             denied.ResultText,
-            reasoningContents);
+            reasoningContents,
+            assistantText);
 
         // Bookkeeping for a denial the model has already been handed: not the caller's to cancel.
         await PersistToolInteractionAsync(covenantScope, grimoireTurn,
