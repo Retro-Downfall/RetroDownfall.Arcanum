@@ -1045,6 +1045,8 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
     [
         (P + "Api.Intelligence.ChatClientFactory.CompletionCheckedChatClient", [P + "Api.Intelligence.ChatClientFactory.CreateOpenAiCompatibleLease"],
             "Validates completion metadata while forwarding the existing classified streaming model call. The runtime identity wrapper delegates that same call through this wrapper; neither adds an independent provider effect."),
+        (P + "Api.Intelligence.OllamaReasoningChatClient", [P + "Api.Intelligence.ChatClientFactory.CreateOpenAiCompatibleLease"],
+            "Preserves Ollama reasoning within the existing classified chat call; it grants no authority and creates no independent provider effect."),
         (P + "Api.Intelligence.OpenAiRequestAugmentingHandler", [],
             "A message handler of the OpenAI-compatible provider client, built by the client factory. It forwards the request the classified model call makes, so its send is that call."),
         (P + "Api.Intelligence.OpenAiRequestAugmentingHandler.PrefixedStream", [P + "Api.Intelligence.OpenAiRequestAugmentingHandler.ResponseMentionsStrictAsync"],
