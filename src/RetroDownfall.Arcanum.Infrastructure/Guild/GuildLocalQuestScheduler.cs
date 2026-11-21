@@ -229,6 +229,7 @@ internal sealed class GuildLocalQuestScheduler(IServiceScopeFactory scopes, IOpt
 
                 if (!await cadence.WaitForNextTickAsync(ct).ConfigureAwait(false)) break;
             }
+
             while (true);
         }
         finally
