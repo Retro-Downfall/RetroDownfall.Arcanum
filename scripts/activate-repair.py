@@ -673,7 +673,7 @@ def swap(operation, record, key, expected_layout):
     staged = operation.parent / "qualification" / "install"
     client_lock = profile.parent / f".arcanum-client-mutation-{profile.name}.lock"
     maintenance_lock = profile.parent / f".arcanum-maintenance-{profile.name}.lock"
-    with lock(client_lock), lock(maintenance_lock):
+    with lock(maintenance_lock), lock(client_lock):
         assert_no_non_activation_control(profile)
         verify_unchanged_config(profile, record)
         require(layout(operation, record) == expected_layout, "installationChanged",

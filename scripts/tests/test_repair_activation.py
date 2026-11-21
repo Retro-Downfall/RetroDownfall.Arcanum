@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import hashlib
 import http.client
 import importlib.util
@@ -10,6 +12,8 @@ import signal
 import socket
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
+from threading import Event
 import time
 import unittest
 import uuid
@@ -19,6 +23,70 @@ import test_repair_qualification as qualification
 
 
 CONTROLLER = qualification.ROOT / "scripts" / "activate-repair.py"
+
+
+@unittest.skipUnless(os.name == "posix", "requires the controller's POSIX installation locks")
+class ActivationLockOrderTests(unittest.TestCase):
+    def test_maintenance_owner_can_enter_client_gate_during_contending_activation(self):
+        spec = importlib.util.spec_from_file_location("repair_activation_lock_test", CONTROLLER)
+        controller = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(controller)
+        real_lock = controller.lock
+
+        with TemporaryDirectory(prefix="arcanum-activation-lock-order-") as folder:
+            root = Path(folder).resolve()
+            profile = root / "arcanum"
+            profile.mkdir(mode=0o700)
+            database = profile / "arcanum.db"
+            database.write_bytes(b"disposable retained database")
+            (profile / "arcanum.json").write_text("{}\n")
+            installed = root / "installed"
+            installed.mkdir(mode=0o700)
+            installed_apphost = installed / controller.APPHOST
+            installed_apphost.write_bytes(b"prior executable fixture")
+            operation = root / "activation" / "operation.json"
+            candidate = operation.parent / "qualification" / "install"
+            candidate.mkdir(parents=True, mode=0o700)
+            candidate_apphost = candidate / controller.APPHOST
+            candidate_apphost.write_bytes(b"candidate executable fixture")
+            record = {"profile": str(profile), "profileIdentity": controller.profile_identity(profile),
+                      "installDirectory": str(installed)}
+            maintenance = root / ".arcanum-maintenance-arcanum.lock"
+            client = root / ".arcanum-client-mutation-arcanum.lock"
+            activation_reached_maintenance = Event()
+            resume_activation = Event()
+
+            @contextmanager
+            def observe_lock(path, operation=False):
+                if path == maintenance:
+                    activation_reached_maintenance.set()
+                    if not resume_activation.wait(timeout=5):
+                        raise TimeoutError("maintenance owner did not finish its client-gate attempt")
+                with real_lock(path, operation=operation):
+                    yield
+
+            with real_lock(maintenance), ThreadPoolExecutor(max_workers=1) as workers:
+                with mock.patch.object(controller, "lock", observe_lock):
+                    activation = workers.submit(controller.swap, operation, record, "unused-fixture-key", "prior")
+                    owner_entered_client = False
+                    try:
+                        self.assertTrue(activation_reached_maintenance.wait(timeout=5))
+                        try:
+                            with real_lock(client):
+                                owner_entered_client = True
+                        except controller.ActivationError as error:
+                            self.assertEqual(error.code, "installationBusy")
+                    finally:
+                        resume_activation.set()
+
+                    with self.assertRaises(controller.ActivationError) as refused:
+                        activation.result(timeout=5)
+
+            self.assertEqual(refused.exception.code, "installationBusy")
+            self.assertTrue(owner_entered_client, "Activation withheld the client gate from the maintenance owner.")
+            self.assertEqual(installed_apphost.read_bytes(), b"prior executable fixture")
+            self.assertEqual(candidate_apphost.read_bytes(), b"candidate executable fixture")
+            self.assertEqual(database.read_bytes(), b"disposable retained database")
 
 
 @unittest.skipUnless(sys.platform == "darwin" and shutil.which("openssl"), "requires the macOS packaging and signature fixture")
