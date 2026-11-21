@@ -76,7 +76,8 @@ public sealed class ToolExecutionPipeline(
     GrimoireTurnWriter? grimoireTurnWriter = null,
     IAttachmentSourceResolver? attachmentSourceResolver = null,
     CovenantToolEgressGuard? covenantEgressGuard = null,
-    ICovenantAuthoritySnapshotProvider? covenantAuthority = null)
+    ICovenantAuthoritySnapshotProvider? covenantAuthority = null,
+    IToolInvocationStore? toolInvocationStore = null)
 {
     /// <summary>
     /// Synthesized tool result text when an unexpected (infrastructure-fault) exception is tolerated
@@ -104,6 +105,8 @@ public sealed class ToolExecutionPipeline(
         public Guid? PersistedSessionId { get; init; }
 
         public Guid? AssistantEntryId { get; init; }
+
+        internal SessionTurnClaimLease? ClaimLease { get; init; }
 
         public string? InvocationId { get; init; }
 
@@ -426,6 +429,24 @@ public sealed class ToolExecutionPipeline(
                 BufferedWardEventsOrEmpty(wardEvents));
         }
 
+        ToolInvocationRecovery? recovery = null;
+
+        if (isRegisteredTool && toolInvocationStore is not null && grimoireTurnWriter is not null
+            && !string.Equals(toolName, CovenantToolNames.RetireCovenant, StringComparison.Ordinal)
+            && (turnContext.GuildTools ?? GuildToolInvocationAmbient.Current) is null
+            && turnContext.PersistedSessionId is { } recoverySession && recoverySession != Guid.Empty
+            && turnContext.AssistantEntryId is { } recoveryAssistant && recoveryAssistant != Guid.Empty
+            && turnContext.ModelUsed is { Length: > 0 } recoveryModel)
+        {
+            ToolInvocationIdentity identity = new(recoveryAssistant.ToString("D"), providerToolCallId, toolRoundOrdinal, callOrdinal, toolName);
+
+            recovery = new(toolInvocationStore, grimoireTurnWriter,
+                ToolInvocationKey.Capture(recoverySession, recoveryAssistant, identity, argsSnapshot), identity,
+                turnContext.ClaimLease, argsSnapshot, recoveryModel);
+
+            await recovery.PrepareAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         ApplyPatchInvocationContext? applyPatchContext = null;
 
         if (isApplyPatch)
@@ -441,7 +462,7 @@ public sealed class ToolExecutionPipeline(
                     toolName),
                 argsSnapshot,
                 turnContext.ModelUsed!,
-                DateTimeOffset.UtcNow,
+                recovery?.CreatedAt ?? DateTimeOffset.UtcNow,
                 new GrimoirePendingReceiptSink(grimoireTurnWriter!));
         }
 
@@ -481,7 +502,8 @@ public sealed class ToolExecutionPipeline(
                     wardEvents,
                     cancellationToken,
                     liveWardEmit,
-                    observer)
+                    observer,
+                    recovery)
                     .ConfigureAwait(false);
 
                 RecordToolInvocationMetric(
@@ -544,7 +566,8 @@ public sealed class ToolExecutionPipeline(
                     wardEvents,
                     cancellationToken,
                     liveWardEmit,
-                    observer)
+                    observer,
+                    recovery)
                     .ConfigureAwait(false);
 
                 RecordToolInvocationMetric(
@@ -561,6 +584,25 @@ public sealed class ToolExecutionPipeline(
 
                 throw;
             }
+        }
+
+        if (isApplyPatch && recovery is { AdmittedForDispatch: true }
+            && applyPatchContext?.ReceiptHandled != true && wardedExecution.FailureEvidence?.Effect == TurnEffectState.NotDispatched)
+        {
+            await recovery.ReleaseUndispatchedAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        if (recovery is { AdmittedForDispatch: true } && wardedExecution.Failed
+            && wardedExecution.ToolOutcome is null && wardedExecution.FailureEvidence is null)
+        {
+            wardedExecution = wardedExecution with
+            {
+                ResultText = wardedExecution.ResultText + " Reconcile invocation " + recovery.ReceiptId.ToString("D") + " in this Session.",
+                FailureEvidence = new(TurnFailurePhase.ToolExecution, TurnEffectState.Unknown, TurnRecoveryAction.ReconcileTool)
+                {
+                    InvocationId = recovery.ReceiptId,
+                },
+            };
         }
 
         IReadOnlyList<AIContent>? additionalContext = null;
@@ -672,6 +714,15 @@ public sealed class ToolExecutionPipeline(
             }
         }
 
+        bool receiptHandled = applyPatchContext?.ReceiptHandled == true || recovery?.ReusedReceipt == true;
+
+        if (recovery is { AdmittedForDispatch: true } && executedSuccessfully && wardedExecution.FailureEvidence is null
+            && !turnContext.ProtectedContent && wardedExecution.Sensitivity is null
+            && toolName is not ("attach_session_file" or "refresh_session_file"))
+        {
+            receiptHandled |= await recovery.RecordResultAsync(resultText, receiptHandled, CancellationToken.None).ConfigureAwait(false);
+        }
+
         return new ProcessedToolCall(
             callId,
             toolName,
@@ -680,7 +731,7 @@ public sealed class ToolExecutionPipeline(
             wardedExecution.WardEvents,
             wardedExecution.Failed || !isRegisteredTool,
             additionalContext,
-            applyPatchContext?.ReceiptHandled == true,
+            receiptHandled,
             wardedExecution.Denied,
             attachmentRefresh)
         { Sensitivity = wardedExecution.Sensitivity, ToolOutcome = wardedExecution.ToolOutcome, FailureEvidence = wardedExecution.FailureEvidence };
@@ -1379,7 +1430,8 @@ public sealed class ToolExecutionPipeline(
         List<IntelligenceEvent>? wardEvents,
         CancellationToken cancellationToken,
         Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null,
-        Func<ToolExecutionEvent, ValueTask>? observer = null)
+        Func<ToolExecutionEvent, ValueTask>? observer = null,
+        ToolInvocationRecovery? recovery = null)
     {
         string toolName = fcc.Name ?? string.Empty;
 
@@ -1459,7 +1511,8 @@ public sealed class ToolExecutionPipeline(
             turnContext,
             argsSnapshot,
             BufferedWardEventsOrEmpty(wardEvents),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            recovery).ConfigureAwait(false);
     }
 
     private async Task RecordUngatedWardResolutionAsync(
@@ -1738,7 +1791,8 @@ public sealed class ToolExecutionPipeline(
         TurnContext turnContext,
         string argsSnapshot,
         IReadOnlyList<IntelligenceEvent> wardEvents,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ToolInvocationRecovery? recovery = null)
     {
         SanctumEnforcementOutcome outcome = await EnforceSanctumAsync(
             fcc,
@@ -1757,6 +1811,46 @@ public sealed class ToolExecutionPipeline(
 
         // Sanctum cleared the initial URL above; the ward keeps every redirect hop under the same policy.
         using IDisposable? egressWard = BeginSanctumEgressWard(fcc, turnContext);
+
+        if (recovery is not null)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var admitted = await recovery.AdmitOrRecoverAsync(cancellationToken).ConfigureAwait(false);
+
+            if (admitted.IsFailure)
+            {
+                return new(admitted.Error.Message + " Invocation " + recovery.ReceiptId.ToString("D") + ".", wardEvents, Failed: true)
+                {
+                    FailureEvidence = new(TurnFailurePhase.ToolPrecondition,
+                        recovery.CompletionRecorded ? TurnEffectState.Completed : TurnEffectState.Unknown, TurnRecoveryAction.ReconcileTool)
+                    {
+                        InvocationId = recovery.ReceiptId,
+                    },
+                };
+            }
+
+            if (admitted.Value is { } saved)
+            {
+                if (ApplyPatchInvocationAmbient.Current is { } patch)
+                {
+                    patch.RecordHandoffOutcome(MandatoryToolInteractionAppendOutcome.RecoveredCommitted);
+
+                    if (PatchReceiptNeedsReconciliation(saved))
+                    {
+                        return new(saved, wardEvents, Failed: true)
+                        {
+                            FailureEvidence = new(TurnFailurePhase.ToolExecution, TurnEffectState.Unknown, TurnRecoveryAction.ReconcileTool)
+                            {
+                                InvocationId = recovery.ReceiptId,
+                            },
+                        };
+                    }
+                }
+
+                return new(saved, wardEvents);
+            }
+        }
 
         object? rawResult = await InvokeToolCallAsync(
             fcc,
@@ -1803,6 +1897,20 @@ public sealed class ToolExecutionPipeline(
         }
 
         return new(rawResult?.ToString() ?? string.Empty, wardEvents) { FailureEvidence = (rawResult as TrustedStructuredToolResult)?.FailureEvidence };
+    }
+
+    private static bool PatchReceiptNeedsReconciliation(string serializedResult)
+    {
+        try
+        {
+            var result = JsonSerializer.Deserialize(serializedResult, McpJsonSerializerContext.Default.WorkspacePatchToolResultEnvelope);
+
+            return result is null || result.Status == "rollback_incomplete";
+        }
+        catch (JsonException)
+        {
+            return true;
+        }
     }
 
     internal sealed class GrimoirePendingReceiptSink(

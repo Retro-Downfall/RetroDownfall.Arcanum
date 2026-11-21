@@ -5394,6 +5394,7 @@ public sealed partial class WizardIntelligenceProvider(
             WorkspaceRoot = ResolveSanctumWorkspaceRoot(request, sanctum.Campaign),
             PersistedSessionId = grimoireTurn.SessionId,
             AssistantEntryId = grimoireTurn.AssistantEntryId,
+            ClaimLease = grimoireTurn.ClaimLease,
             InvocationId = grimoireTurn.AssistantEntryId?.ToString("D"),
             ModelUsed = targetModel,
             Invocation = invocation,

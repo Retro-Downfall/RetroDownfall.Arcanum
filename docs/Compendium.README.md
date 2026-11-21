@@ -133,6 +133,8 @@ A model's `reasoning` block carries exactly the two keys above. `providers.model
 
 ### Security and workspaces
 
+Session tool recovery uses the tool's current workspace and Sanctum authority. The Session's existing execution permissions govern a safe retry after a pre-dispatch interruption. An unresolved effect remains fenced while Arcanum checks the same invocation's receipt.
+
 | Descriptor key | Type and default | Bounds | Semantics |
 |---|---|---|---|
 | `security.allowUnsandboxedToolChildren` | `bool`, `false` | — | Explicitly permits process tools without an OS filesystem jail where that escape hatch is supported; it does not bypass Sanctum denials. |

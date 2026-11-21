@@ -428,6 +428,21 @@ public sealed class GrimoireTurnWriter(
         }
     }
 
+    internal Task<MandatoryToolInteractionProbeResult> ProbeToolInvocationReceiptAsync(
+        MandatoryToolInteractionProbe probe, CancellationToken ct) =>
+        grimoire.ProbeMandatoryToolInteractionAsync(probe, ct);
+
+    internal async Task<MandatoryToolInteractionAppendResult> PersistToolInvocationReceiptAsync(
+        MandatoryToolInteraction interaction, CancellationToken ct)
+    {
+        var append = await grimoire.AppendMandatoryToolInteractionAsync(interaction, ct).ConfigureAwait(false);
+
+        if (append.Outcome is MandatoryToolInteractionAppendOutcome.NewlyCommitted or MandatoryToolInteractionAppendOutcome.RecoveredCommitted)
+            await TryPublishMandatoryToolInteractionAsync(interaction.SessionId, interaction.Receipt, ct).ConfigureAwait(false);
+
+        return append;
+    }
+
     internal async ValueTask<ApplyPatchReceiptProbeResult>
         ProbeApplyPatchReceiptAsync(
             ApplyPatchReceiptProbe probe,
@@ -780,7 +795,7 @@ public sealed class GrimoireTurnWriter(
         {
             logger.LogWarning(
                 exception,
-                "Session event hub could not publish mandatory apply_patch receipt {ReceiptId}.",
+                "Session event hub could not publish durable tool receipt {ReceiptId}.",
                 receipt.Id);
         }
     }

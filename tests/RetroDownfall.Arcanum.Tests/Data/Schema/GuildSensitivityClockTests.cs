@@ -99,7 +99,7 @@ public sealed class GuildSensitivityClockTests
 
         Assert.True(upgraded.Core.IsHealthy);
 
-        Assert.Equal(40, upgraded.Core.SchemaVersion);
+        Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, upgraded.Core.SchemaVersion);
 
         Assert.Equal(0L, await ClockAsync(connection));
 

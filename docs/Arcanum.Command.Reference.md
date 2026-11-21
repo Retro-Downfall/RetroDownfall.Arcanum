@@ -652,6 +652,8 @@ Manage and continue sessions through the Arcanum API.
 
 Provides the complete durable session lifecycle. Optional session selectors accept a GUID, exact title, unique title prefix, saved session context, or an interactive picker when allowed.
 
+If an interrupted tool reports a reconciliation ID, retain it with the Session ID. The [Session API](Arcanum.API.md#818-session-api) reports the exact disposition and any saved result Entry. Use `arcanum session entries <session> --json` to inspect the original result in the Session transcript.
+
 Sessions do not impose a total entry-count or fork-depth ceiling. The code-owned per-Session pinned-entry cap remains unchanged and is enforced atomically by the host. Entry listings page, long unsummarized history consolidates in timestamp-group-safe checkpoints, and provider-context materialization adds no second pin-count ceiling: it retains per-item/per-turn byte protections while explicitly reporting deferred accepted pins.
 
 | Command | Explanation | Additional command options |

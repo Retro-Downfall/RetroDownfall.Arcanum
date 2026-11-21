@@ -152,6 +152,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ApiResponse<List<RetroDownfall.Arcanum.Core.Tower.SessionSummaryDto>>))]
 [JsonSerializable(typeof(RetroDownfall.Arcanum.Core.Tower.SessionDetailDto))]
 [JsonSerializable(typeof(ApiResponse<RetroDownfall.Arcanum.Core.Tower.SessionDetailDto>))]
+[JsonSerializable(typeof(ApiResponse<ToolInvocationEvidence>))]
 [JsonSerializable(typeof(GrimoireEntryDto))]
 [JsonSerializable(typeof(List<GrimoireEntryDto>))]
 [JsonSerializable(typeof(ApiResponse<List<GrimoireEntryDto>>))]

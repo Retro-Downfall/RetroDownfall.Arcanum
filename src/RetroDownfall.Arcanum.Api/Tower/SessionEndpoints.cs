@@ -175,6 +175,24 @@ internal static class SessionEndpoints
         .WithName("GetSession");
 
         apiGroup.MapGet(
+            "/sessions/{id:guid}/tool-invocations/{invocationId:guid}",
+            async (Guid id, Guid invocationId, IToolInvocationStore store, HttpContext ctx) =>
+            {
+                var found = await store.ReadAsync(id, invocationId, ctx.RequestAborted).ConfigureAwait(false);
+
+                Result<ToolInvocationEvidence> result = found.IsFailure ? found.Error
+                    : found.Value is { } evidence ? evidence
+                    : new Error(ErrorCodes.Session.NotFound, "This Session tool invocation was not found.");
+
+                ctx.Response.Headers.CacheControl = "no-store";
+
+                return Results.Json(ApiResponse<ToolInvocationEvidence>.FromResult(result, Activity.Current?.Id ?? ctx.TraceIdentifier),
+                    ArcanumJsonContext.Default.ApiResponseToolInvocationEvidence,
+                    statusCode: result.IsSuccess ? StatusCodes.Status200OK : ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
+            })
+        .WithName("GetSessionToolInvocation");
+
+        apiGroup.MapGet(
             "/sessions/{id:guid}/entries",
             async (
                 Guid id,

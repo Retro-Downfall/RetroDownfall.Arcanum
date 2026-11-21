@@ -119,7 +119,7 @@ public sealed class GuildSchemaTests
 
         Assert.True(upgraded.GuildCanonical.IsHealthy);
 
-        Assert.Equal(40, upgraded.Core.SchemaVersion);
+        Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, upgraded.Core.SchemaVersion);
 
         await using SqliteCommand command = connection.CreateCommand();
 

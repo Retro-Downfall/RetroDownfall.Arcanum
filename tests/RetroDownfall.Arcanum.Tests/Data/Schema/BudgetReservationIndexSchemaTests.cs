@@ -59,7 +59,7 @@ public sealed class BudgetReservationIndexSchemaTests
         var initial = await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(connection, 64, CancellationToken.None,
             evolve ? Core39Chains() : null);
 
-        Assert.Equal(evolve ? 39 : 40, initial.Core.SchemaVersion);
+        Assert.Equal(evolve ? 39 : GrimoireSchemaVersionChains.CoreSchemaVersion, initial.Core.SchemaVersion);
 
         await using SqliteCommand command = connection.CreateCommand();
 
@@ -77,7 +77,7 @@ public sealed class BudgetReservationIndexSchemaTests
         {
             var upgraded = await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(connection, 64, CancellationToken.None);
 
-            Assert.Equal(40, upgraded.Core.SchemaVersion);
+            Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, upgraded.Core.SchemaVersion);
         }
 
         const string query = "SELECT RunId FROM BudgetReservations WHERE lower(replace(Id, '-', '')) = $id ORDER BY RunId";
@@ -122,9 +122,9 @@ public sealed class BudgetReservationIndexSchemaTests
     }
 
     [Fact]
-    public void Current_core_fingerprint_and_index_ownership_are_exact()
+    public void Version_forty_fingerprint_and_index_ownership_are_exact()
     {
-        Assert.Equal("FEEE1C2184FD0748760F91F4121FD675E2C977FFC406B609A6FD0E58FFE97E59", GrimoireSchemaCatalog.CoreSchemaFingerprint);
+        Assert.Equal(CoreSchemaVersionFortyFixture.PublishedFingerprint, CoreSchemaVersionFortyFixture.Fingerprint);
 
         GrimoireSchemaTierOwnershipRegistry registry = GrimoireSchemaTierOwnershipRegistry.CreateDefault();
 
@@ -170,7 +170,7 @@ public sealed class BudgetReservationIndexSchemaTests
 
         var upgraded = await GrimoireSchemaTestInstaller.InstallAndDrainCoreAsync(reopened, 64, CancellationToken.None);
 
-        Assert.Equal(40, upgraded.Core.SchemaVersion);
+        Assert.Equal(GrimoireSchemaVersionChains.CoreSchemaVersion, upgraded.Core.SchemaVersion);
 
         await using SqliteCommand check = reopened.CreateCommand();
 
@@ -181,7 +181,7 @@ public sealed class BudgetReservationIndexSchemaTests
 
     private static GrimoireSchemaVersionChainSet Failing40Chains()
     {
-        GrimoireSchemaVersionChainSet current = GrimoireSchemaVersionChains.Default;
+        GrimoireSchemaVersionChainSet current = CoreSchemaVersionFortyFixture.ChainSet();
 
         GrimoireSchemaVersionChain core = current.ForTier(GrimoireSchemaTransactionTier.Core);
 
@@ -202,7 +202,7 @@ public sealed class BudgetReservationIndexSchemaTests
     }
 
     private static IReadOnlyList<GrimoireSchemaObject> Core39Objects() =>
-        [.. GrimoireSchemaCatalog.CoreObjects.Select(definition => definition.Name == "BudgetReservations"
+        [.. CoreSchemaVersionFortyFixture.Objects.Select(definition => definition.Name == "BudgetReservations"
             ? definition with { Sql = definition.Sql.Replace("\nCREATE INDEX IF NOT EXISTS \"IX_BudgetReservations_Id_Norm\" ON \"BudgetReservations\" (lower(replace(\"Id\", '-', '')));\n", "", StringComparison.Ordinal) }
             : definition)];
 

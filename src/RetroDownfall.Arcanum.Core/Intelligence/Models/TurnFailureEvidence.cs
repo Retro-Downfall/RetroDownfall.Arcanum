@@ -12,6 +12,9 @@ public sealed record TurnFailureEvidence(TurnFailurePhase Phase, TurnEffectState
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public TurnFailureOutput? Output { get; init; }
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? InvocationId { get; init; }
+
     public static TurnFailureEvidence? FromToolOutcome(ToolOutcome? outcome, string name, int round, int index)
     {
         // A native read or listing has one lookup. An external server cannot supply these native
@@ -95,4 +98,7 @@ public enum TurnRecoveryAction
 
     [JsonStringEnumMemberName("readToolOutput")]
     ReadToolOutput,
+
+    [JsonStringEnumMemberName("reconcileTool")]
+    ReconcileTool,
 }

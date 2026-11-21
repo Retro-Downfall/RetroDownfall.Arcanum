@@ -2405,6 +2405,8 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ISessionTurnClaimLookup>(static sp => sp.GetRequiredService<SessionTurnClaimStore>());
 
+        services.AddScoped<IToolInvocationStore, SqliteToolInvocationStore>();
+
         services.AddScoped<ICampaignRollupStore, CampaignRollupStore>();
 
         services.AddScoped<ICampaignMaintenanceCheckpointStore, CampaignMaintenanceCheckpointStore>();
