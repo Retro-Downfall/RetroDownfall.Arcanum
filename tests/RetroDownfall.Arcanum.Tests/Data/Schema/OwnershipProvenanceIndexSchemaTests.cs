@@ -20,14 +20,18 @@ public sealed class OwnershipProvenanceIndexSchemaTests
         Assert.DoesNotContain(CoreSchemaVersionTwentyNineFixture.Objects,
             static item => item.Sql.Contains(IndexName, StringComparison.Ordinal));
 
-        // The captured predecessor is Core-only; its ChainSet uses the current optional-family heads.
-        Assert.Equal(41, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        GrimoireSchemaVersionChainSet captured = CoreSchemaVersionTwentyNineFixture.ChainSet();
 
-        Assert.Equal(7, GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion);
+        Assert.Equal(29, captured.ForTier(GrimoireSchemaTransactionTier.Core).HeadVersion);
 
-        Assert.Equal(1, GrimoireSchemaVersionChains.CovenantAcceleratorSchemaVersion);
+        Assert.Equal(GrimoireSchemaVersionChains.CovenantCanonicalSchemaVersion,
+            captured.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical).HeadVersion);
 
-        Assert.Equal(19, GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion);
+        Assert.Equal(GrimoireSchemaVersionChains.CovenantAcceleratorSchemaVersion,
+            captured.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator).HeadVersion);
+
+        Assert.Equal(GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion,
+            captured.ForTier(GrimoireSchemaTransactionTier.GuildCanonical).HeadVersion);
     }
 
     [Fact]
