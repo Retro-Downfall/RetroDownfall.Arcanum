@@ -717,7 +717,11 @@ public sealed class ToolExecutionPipeline(
 
         bool receiptHandled = applyPatchContext?.ReceiptHandled == true || recovery?.ReusedReceipt == true;
 
-        if (recovery is { AdmittedForDispatch: true } && executedSuccessfully && wardedExecution.FailureEvidence is null
+        bool observedWorkspaceCheck = toolName == ToolRiskClassifier.WorkspaceCheckToolName
+            && wardedExecution.FailureEvidence is { Phase: TurnFailurePhase.ToolExecution, Effect: TurnEffectState.Completed };
+
+        if (recovery is { AdmittedForDispatch: true } && executedSuccessfully
+            && (wardedExecution.FailureEvidence is null || observedWorkspaceCheck)
             && !turnContext.ProtectedContent && wardedExecution.Sensitivity is null
             && toolName is not ("attach_session_file" or "refresh_session_file"))
         {
@@ -1849,7 +1853,12 @@ public sealed class ToolExecutionPipeline(
                     }
                 }
 
-                return new(saved, wardEvents);
+                return new(saved, wardEvents)
+                {
+                    FailureEvidence = ResolveRegisteredFunction(chatOptions, fcc.Name) is McpBridgeTool { OwnsWorkspaceCheckResult: true }
+                        ? ReadCompletedWorkspaceCheckFailure(saved)
+                        : null,
+                };
             }
         }
 
@@ -1898,6 +1907,25 @@ public sealed class ToolExecutionPipeline(
         }
 
         return new(rawResult?.ToString() ?? string.Empty, wardEvents) { FailureEvidence = (rawResult as TrustedStructuredToolResult)?.FailureEvidence };
+    }
+
+    private static TurnFailureEvidence? ReadCompletedWorkspaceCheckFailure(string serializedResult)
+    {
+        try
+        {
+            var result = JsonSerializer.Deserialize(serializedResult, McpJsonSerializerContext.Default.WorkspaceCheckToolResultEnvelope);
+
+            if (result is not { Status: "failed", ExitCode: not null })
+            {
+                return null;
+            }
+
+            return ArcanumInternalToolServer.ObserveWorkspaceCheckFailure(result);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private static bool PatchReceiptNeedsReconciliation(string serializedResult)

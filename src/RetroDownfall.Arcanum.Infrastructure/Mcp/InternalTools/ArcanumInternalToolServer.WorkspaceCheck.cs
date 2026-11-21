@@ -8,17 +8,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed partial class ArcanumInternalToolServer
 {
-
     private async Task<McpToolsCallResultWire> ExecuteWorkspaceCheckAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
-
         McpToolsCallResultWire? gate = TryRequireWorkspaceRoot();
 
         if (gate is not null)
         {
-
             return gate;
         }
 
@@ -27,7 +24,6 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (!capability.IsEligible)
         {
-
             return BuildBoundedStructuredWorkspaceCheckResult(
                 new WorkspaceCheckToolResultEnvelope
                 {
@@ -41,21 +37,18 @@ internal sealed partial class ArcanumInternalToolServer
 
         try
         {
-
             request = JsonSerializer.Deserialize(
                 arguments,
                 _json.WorkspaceCheckParams);
         }
         catch (JsonException)
         {
-
             request = null;
         }
 
         if (request is null
             || string.IsNullOrWhiteSpace(request.Profile))
         {
-
             return BuildBoundedStructuredWorkspaceCheckResult(
                 new WorkspaceCheckToolResultEnvelope
                 {
@@ -89,16 +82,17 @@ internal sealed partial class ArcanumInternalToolServer
             if (output is not null)
             {
                 result = result with { Output = output };
-                evidence = evidence with { Output = output, NextAction = TurnRecoveryAction.ReadToolOutput };
+                evidence = ObserveWorkspaceCheckFailure(result);
             }
         }
 
         return BuildBoundedStructuredWorkspaceCheckResult(result, evidence);
     }
 
-    private static TurnFailureEvidence? ObserveWorkspaceCheckFailure(
-        WorkspaceCheckToolResultEnvelope result) =>
-        result.ProcessStartFailure ?? (result.Status switch
+    internal static TurnFailureEvidence? ObserveWorkspaceCheckFailure(
+        WorkspaceCheckToolResultEnvelope result)
+    {
+        TurnFailureEvidence? evidence = result.ProcessStartFailure ?? (result.Status switch
         {
             "ok" => null,
             "invalid_request" => new(TurnFailurePhase.ToolArguments, TurnEffectState.NotDispatched, TurnRecoveryAction.CorrectArguments),
@@ -109,6 +103,11 @@ internal sealed partial class ArcanumInternalToolServer
                 new(TurnFailurePhase.ToolExecution, TurnEffectState.Completed, TurnRecoveryAction.InspectWorkspace),
             _ => new(TurnFailurePhase.ToolExecution, TurnEffectState.Unknown, TurnRecoveryAction.InspectWorkspace),
         });
+
+        return evidence is not null && result.Output is { } output
+            ? evidence with { Output = output, NextAction = TurnRecoveryAction.ReadToolOutput }
+            : evidence;
+    }
 
     private McpToolsCallResultWire BuildBoundedStructuredWorkspaceCheckResult(
         WorkspaceCheckToolResultEnvelope result,

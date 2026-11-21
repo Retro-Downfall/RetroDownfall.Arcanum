@@ -16,9 +16,11 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Mcp;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
@@ -26,6 +28,107 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 [Collection("Grimoire")]
 public sealed class ToolInvocationRecoveryTests(GrimoireFixture database)
 {
+    [SkippableFact]
+    public Task Exact_replay_reuses_a_completed_failed_workspace_check_with_its_original_recovery_action() => WithActiveTurnAsync(async turn =>
+    {
+        var runtime = new CompletedFailedWorkspaceCheck();
+
+        await using var native = await SdkMcpClientWrapperTests.CreateInitializedClientAsync(turn.Workspace, runtime);
+
+        var check = Assert.Single(await native.GetToolsAsync(), static tool => tool.Name == "workspace_check")
+            .WithTrustedStructuredResult(TrustedStructuredToolResultKind.WorkspaceCheck);
+
+        ChatOptions options = new() { Tools = [check] };
+
+        FunctionCallContent call = new("failed-check-replay", "workspace_check",
+            new Dictionary<string, object?> { ["profile"] = "dotnet-build" });
+
+        var first = await turn.InvokeAsync(call, options);
+
+        var replayed = await turn.InvokeAsync(call, options);
+
+        Assert.Equal(1, runtime.Invocations);
+
+        var output = Assert.IsType<TurnFailureOutput>(first.FailureEvidence?.Output);
+
+        Assert.Equal(first.ResultText, replayed.ResultText);
+
+        Assert.Contains("\"status\":\"failed\"", replayed.ResultText, StringComparison.Ordinal);
+
+        Assert.Contains("\"exitCode\":1", replayed.ResultText, StringComparison.Ordinal);
+
+        Assert.Equal(TurnFailurePhase.ToolExecution, replayed.FailureEvidence?.Phase);
+
+        Assert.Equal(TurnEffectState.Completed, replayed.FailureEvidence?.Effect);
+
+        Assert.Equal(TurnRecoveryAction.ReadToolOutput, replayed.FailureEvidence?.NextAction);
+
+        Assert.Equal(output.Handle, replayed.FailureEvidence?.Output?.Handle);
+
+        Assert.Equal(output.Streams, replayed.FailureEvidence?.Output?.Streams);
+
+        Assert.True(replayed.ReceiptHandled);
+
+        var lookalike = new SameNamedWorkspaceCheck(first.ResultText);
+
+        ChatOptions externalOptions = new() { Tools = [lookalike] };
+
+        FunctionCallContent externalCall = new("untrusted-check-replay", "workspace_check", call.Arguments);
+
+        var externalResult = await turn.InvokeAsync(externalCall, externalOptions, round: 2);
+
+        var externalReplay = await turn.InvokeAsync(externalCall, externalOptions, round: 2);
+
+        Assert.Equal(1, lookalike.Invocations);
+
+        Assert.Equal(externalResult.ResultText, externalReplay.ResultText);
+
+        Assert.Null(externalReplay.FailureEvidence);
+    });
+
+    private sealed class CompletedFailedWorkspaceCheck : IWorkspaceCheckRuntime
+    {
+        public int Invocations { get; private set; }
+
+        public WorkspaceCheckExecutionStatus GetStatus(string workspaceRoot) => new(true, false, "available");
+
+        public bool CanReadRetainedOutput(string workspaceRoot) => true;
+
+        public Task<WorkspaceCheckToolResultEnvelope> RunAsync(
+            WorkspaceCheckRuntimeRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Invocations++;
+
+            return Task.FromResult(new WorkspaceCheckToolResultEnvelope
+            {
+                Status = "failed",
+                Code = "check_failed",
+                ExitCode = 1,
+                StandardError = "error CS0029: project fixture",
+            });
+        }
+    }
+
+    private sealed class SameNamedWorkspaceCheck(string result) : AIFunction
+    {
+        public int Invocations { get; private set; }
+
+        public override string Name => "workspace_check";
+
+        public override JsonElement JsonSchema => JsonDocument.Parse("""{"type":"object"}""").RootElement.Clone();
+
+        protected override ValueTask<object?> InvokeCoreAsync(
+            AIFunctionArguments arguments, CancellationToken cancellationToken)
+        {
+            Invocations++;
+
+            return ValueTask.FromResult<object?>(result);
+        }
+    }
+
     [SkippableFact]
     public Task Concurrent_reconnect_keeps_an_interrupted_effect_fenced_without_another_dispatch() => WithActiveTurnAsync(async turn =>
     {
@@ -388,8 +491,8 @@ public sealed class ToolInvocationRecoveryTests(GrimoireFixture database)
         GrimoireRepository Transcript, Func<Task> InterruptAsync)
     {
         internal Task<ToolExecutionPipeline.ProcessedToolCall> InvokeAsync(FunctionCallContent call, ChatOptions options,
-            Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null) =>
+            Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null, int round = 1) =>
             CreatePipeline().ProcessSingleToolCallAsync(call, Request, options, null, Request.SessionId!.Value.ToString("D"), Context,
-                suppressInvocationFailures: false, cancellationToken: default, liveWardEmit: liveWardEmit, toolRoundOrdinal: 1);
+                suppressInvocationFailures: false, cancellationToken: default, liveWardEmit: liveWardEmit, toolRoundOrdinal: round);
     }
 }

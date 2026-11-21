@@ -21,6 +21,7 @@ using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Tests.Support;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 using RetroDownfall.Arcanum.Tests.Workspaces;
 using RetroDownfall.Arcanum.Tests.Guild;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -671,9 +672,13 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
         Assert.Null(result.FailureEvidence?.Output);
     }
 
-    private async Task<SdkMcpClientWrapper> CreateInitializedClientAsync()
+    private Task<SdkMcpClientWrapper> CreateInitializedClientAsync() =>
+        CreateInitializedClientAsync(_workspace.Root);
+
+    internal static async Task<SdkMcpClientWrapper> CreateInitializedClientAsync(
+        string workspaceRoot, IWorkspaceCheckRuntime? workspaceCheckRuntime = null)
     {
-        string normalizedRoot = Path.GetFullPath(_workspace.Root);
+        string normalizedRoot = Path.GetFullPath(workspaceRoot);
 
         IntelligenceSettings settings = ArcanumRuntimeDefaults.Intelligence with
         {
@@ -709,7 +714,8 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
             scopeFactory,
             pacer,
             normalizedRoot,
-            settings);
+            settings,
+            workspaceCheckRuntime);
 
         SdkMcpClientWrapper client = new(
             clientTransport,
@@ -733,7 +739,8 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
         IServiceScopeFactory scopeFactory,
         IUnseenServantPacer pacer,
         string workspaceRoot,
-        IntelligenceSettings intelligenceSettings)
+        IntelligenceSettings intelligenceSettings,
+        IWorkspaceCheckRuntime? workspaceCheckRuntime = null)
     {
         (System.Threading.Channels.ChannelWriter<string> toServer, System.Threading.Channels.ChannelReader<string> fromServer, ArcanumInternalToolServer server) =
             InProcessMcpTransport.CreateServerChannelPair(
@@ -750,7 +757,8 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
             attachmentsToolEnabled: false,
             maxJsonRpcLineBytes: 2_097_152,
             logger: NullLogger<ArcanumInternalToolServer>.Instance,
-            allowHostProcessTools: true);
+            allowHostProcessTools: true,
+            workspaceCheckRuntime: workspaceCheckRuntime);
 
         _ = Task.Run(() => server.RunAsync(CancellationToken.None));
 

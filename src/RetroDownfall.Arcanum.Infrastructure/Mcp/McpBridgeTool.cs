@@ -47,6 +47,10 @@ internal sealed class McpBridgeTool : AIFunction
 
     internal long ToolOutputCapBytes => _toolOutputCapBytes;
 
+    internal bool OwnsWorkspaceCheckResult =>
+        _trustedStructuredResultKind == TrustedStructuredToolResultKind.WorkspaceCheck
+        && IsHostResultTransport(_client);
+
     public McpBridgeTool(
         string name,
         string description,
@@ -198,8 +202,7 @@ internal sealed class McpBridgeTool : AIFunction
                 == TrustedStructuredToolResultKind.WorkspacePatch
             && ApplyPatchInvocationAmbient.Current?.ReceiptHandled == true;
 
-        bool isHostTransport = client is SdkMcpClientWrapper { IsHostOwned: true }
-            or McpClientGeneration { IsGuildHostTransport: true };
+        bool isHostTransport = IsHostResultTransport(client);
 
         if (result.IsError == true)
         {
@@ -241,6 +244,9 @@ internal sealed class McpBridgeTool : AIFunction
             }
             : text;
     }
+
+    private static bool IsHostResultTransport(IMcpClient client) =>
+        client is SdkMcpClientWrapper { IsHostOwned: true } or McpClientGeneration { IsGuildHostTransport: true };
 
     private static TurnFailureEvidence? ReadOwnerFailureEvidence(CallToolResult result)
     {
