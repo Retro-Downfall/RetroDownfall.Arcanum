@@ -11,12 +11,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 
 public sealed partial class A2AClientService
 {
-    private static readonly GuildJsonContext PortalWire = new(new JsonSerializerOptions
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        AllowDuplicateProperties = false,
-    });
-
     private const int MaxPortalReceiptBytes = GuildPortalMessageProtocol.MaximumReceiptQueryBytes;
 
     /// <summary>Opens a guarded channel without crossing the durable informational handoff boundary.</summary>
@@ -100,6 +94,12 @@ public sealed partial class A2AClientService
     internal sealed class GuildPortalPeer(A2AClientService owner, string destination, Uri endpoint, AgentCard card, bool receiptOnly)
         : IDisposable
     {
+        private static readonly GuildJsonContext PortalWire = new(new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            AllowDuplicateProperties = false,
+        });
+
         private int _closed;
 
         internal Task<Result<GuildPortalMessageDeliveryReceipt>> SendAsync(GuildPortalMessageRequest message, CancellationToken ct)

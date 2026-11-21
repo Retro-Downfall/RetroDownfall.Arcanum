@@ -32,16 +32,25 @@ internal static partial class HostedGrimoireProducerInventory
     {
         internal (bool Complete, IReadOnlyList<HostedProducerInventoryDiagnostic> Diagnostics) ProbeNamedHttpFactoryCreation(string type, string name)
         {
-            AuthoredMember member = AuthoredMembers.Single(candidate => TypeKey(candidate.Symbol.ContainingType) == type && candidate.Symbol.Name == name);
+            bool found = false;
 
-            InvocationExpressionSyntax call = member.Syntax.DescendantNodes().OfType<InvocationExpressionSyntax>()
-                .Single(invocation => member.Model.GetSymbolInfo(invocation).Symbol is IMethodSymbol method && IsExactLongRestHttpFactoryMethod(method));
+            foreach (AuthoredMember member in AuthoredMembers.Where(candidate => TypeKey(candidate.Symbol.ContainingType) == type && candidate.Symbol.Name == name))
+            {
+                foreach (InvocationExpressionSyntax call in member.Syntax.DescendantNodes().OfType<InvocationExpressionSyntax>())
+                {
+                    if (member.Model.GetSymbolInfo(call).Symbol is not IMethodSymbol target || !IsExactLongRestHttpFactoryMethod(target)) continue;
 
-            IMethodSymbol target = (IMethodSymbol)member.Model.GetSymbolInfo(call).Symbol!;
+                    found = true;
 
-            bool complete = IsReviewedNamedHttpFactoryCreation(target, call, member);
+                    if (!IsReviewedNamedHttpFactoryCreation(target, call, member))
+                        diagnostics.Add(new("HOSTED_SITE_UNCLASSIFIED", Location(call), Normalize(target)));
+                }
+            }
 
-            return (complete, diagnostics.ToArray());
+            if (!found)
+                diagnostics.Add(new("HOSTED_NAMED_HTTP_FACTORY_PROBE_UNRESOLVED", type + "." + name, "No exact IHttpClientFactory.CreateClient call was found."));
+
+            return (diagnostics.Count == 0, diagnostics.ToArray());
         }
 
         private readonly Dictionary<(string Name, BoundTypeIdentity Consumer), bool> namedHttpFactoryCertificates = [];

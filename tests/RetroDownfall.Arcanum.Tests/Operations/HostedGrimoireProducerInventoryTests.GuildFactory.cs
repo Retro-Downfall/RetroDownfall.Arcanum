@@ -1,5 +1,7 @@
 using Microsoft.CodeAnalysis;
 
+using Microsoft.CodeAnalysis.CSharp;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
@@ -13,6 +15,19 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             "RetroDownfall.Arcanum.Infrastructure.A2A.A2AClientService", "CreateOutboundClient");
 
         Assert.True(result.Complete, HostedGrimoireProducerInventory.RenderDiagnosticReport(result.Diagnostics));
+    }
+
+    [Theory]
+    [InlineData("internal void Use() => Use(0); internal void Use(int index) { _ = _factory.CreateClient(\"A2AOutbound\"); }", true)]
+    [InlineData("internal void Use() { _ = _factory.CreateClient(\"A2AOutbound\"); _ = _factory.CreateClient(\"A2AOutbound\"); }", true)]
+    [InlineData("internal void Use() { _ = _factory.CreateClient(\"A2AOutbound\"); } internal void Use(int index) { _ = FactoryInput.UnknownFactory.CreateClient(\"A2AOutbound\"); }", false)]
+    [InlineData("internal void Use() => Use(0); internal void Use(int index) { }", false)]
+    public void GuildNamedHttpFactoryProfileRequiresEveryAuthoredFactoryCall(string consumerMethods, bool expected)
+    {
+        var result = HostedGrimoireProducerInventory.ProbeNamedHttpFactoryCreation(
+            [CompileNamedFactory("", consumerMethods)], "NamedConsumer", "Use");
+
+        Assert.Equal(expected, result.Complete);
     }
 
     [Fact]
@@ -93,7 +108,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             && diagnostic.Detail == "System.Net.Http.IHttpClientFactory.CreateClient");
     }
 
-    private static HostedProducerDiscovery<HostedProducerSite> DiscoverNamedFactory(string mutation = "")
+    private static HostedProducerDiscovery<HostedProducerSite> DiscoverNamedFactory(string mutation = "") =>
+        DiscoverGuildA2ACompilation(CompileNamedFactory(mutation));
+
+    private static CSharpCompilation CompileNamedFactory(string mutation, string? consumerMethods = null)
     {
         string config = "static client => { client.Timeout = Timeout.InfiniteTimeSpan; client.MaxResponseContentBufferSize = 16777216; }";
 
@@ -292,7 +310,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             "internal void Use() { new Relay(this).Use(); } internal void CreateNamed() { _ = _factory.CreateClient(\"A2AOutbound\"); }",
             StringComparison.Ordinal) + "sealed class Relay(NamedConsumer owner) { internal void Use() => owner.CreateNamed(); }";
 
-        return DiscoverGuildA2ACompilation(CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api"));
+        if (consumerMethods is not null) source = source.Replace(
+            "internal void Use() { _ = _factory.CreateClient(\"A2AOutbound\"); }", consumerMethods, StringComparison.Ordinal);
+
+        return CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api");
     }
 
     [Theory]
