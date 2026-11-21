@@ -37042,12 +37042,17 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         string lease = "";
 
+        SyntaxTree? resourceKey = null;
+
         if (shape is "actual-lease" or "custom-lease")
         {
-            string file = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src/RetroDownfall.Arcanum.Api/Intelligence/EmbeddingGeneratorFactory.cs");
+            string directory = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src/RetroDownfall.Arcanum.Api/Intelligence");
 
-            lease = CSharpSyntaxTree.ParseText(File.ReadAllText(file)).GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
+            lease = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(directory, "EmbeddingGeneratorFactory.cs"))).GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
                 .Single(static declaration => declaration.Identifier.ValueText == "EmbeddingGeneratorLease").ToString();
+
+            resourceKey = CSharpSyntaxTree.ParseText("global using RetroDownfall.Arcanum.Api.Intelligence; using System;\n"
+                + File.ReadAllText(Path.Combine(directory, "ProviderResourceKey.cs")), path: "src/ProviderResourceKey.cs");
 
             body = "using EmbeddingGeneratorLease lease = new(" + factory + ", ownsGenerator: true);";
         }
@@ -37062,6 +37067,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 + "internal sealed class AuthoredGenerator : " + generator + " { public void Dispose() { System.IO.File.Delete(\"authored-generator-dispose\"); } public object? GetService(Type serviceType, object? serviceKey = null) => null; public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(System.Collections.Generic.IEnumerable<string> values, EmbeddingGenerationOptions? options = null, CancellationToken token = default) => throw new NotSupportedException(); }");
 
         CSharpCompilation compilation = CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api");
+
+        if (resourceKey is not null) compilation = compilation.AddSyntaxTrees(resourceKey);
 
         if (shape == "foreign-assembly")
         {
@@ -37798,9 +37805,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 && diagnostic.Detail == "System.IObservable`1.Subscribe");
         }
 
-        ImplicitObjectCreationExpressionSyntax sdk = factoryOverlay.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>()
-            .Single(static method => method.Identifier.ValueText == "ResolveEmbeddingAsync")
-            .DescendantNodes().OfType<ImplicitObjectCreationExpressionSyntax>().Single();
+        BaseObjectCreationExpressionSyntax sdk = FindLongRestEmbeddingSdkConstruction(api, factoryOverlay);
 
         // Local typed transport acceptance is independent of this conditional source contract.
         Assert.DoesNotContain(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
@@ -38121,9 +38126,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         Assert.Contains(result.Items, static site => site.RootType == "LongRestSweepHostedService" && site.SourcePath == factoryPath
             && site.EnclosingType == factoryType && site.Member == "ResolveEmbeddingAsync" && site.Callee == "System.IO.File.Exists");
 
-        ImplicitObjectCreationExpressionSyntax sdk = factoryOverlay.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>()
-            .Single(static method => method.Identifier.ValueText == "ResolveEmbeddingAsync")
-            .DescendantNodes().OfType<ImplicitObjectCreationExpressionSyntax>().Single();
+        BaseObjectCreationExpressionSyntax sdk = FindLongRestEmbeddingSdkConstruction(api, factoryOverlay);
 
         // The planned root establishes analysis coverage only. This separate finite source
         // relationship is conditional; shipping/AOT/live gates qualify actual runtime activation.

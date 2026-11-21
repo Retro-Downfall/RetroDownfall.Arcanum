@@ -119,6 +119,77 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         return resolved.Expression is MemberAccessExpressionSyntax resolvedAccess && Property(resolvedAccess.Expression, scope, "ServiceProvider");
     }
 
+    private static BaseObjectCreationExpressionSyntax FindLongRestEmbeddingSdkConstruction(CSharpCompilation compilation, SyntaxTree tree)
+    {
+        INamedTypeSymbol? sdkType = compilation.GetTypeByMetadataName("OpenAI.Embeddings.EmbeddingClient");
+
+        Assert.NotNull(sdkType);
+
+        Assert.Equal("OpenAI", sdkType.ContainingAssembly.Identity.Name);
+
+        MethodDeclarationSyntax resolve = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(),
+            static method => method.Identifier.ValueText == "ResolveEmbeddingAsync");
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        BaseObjectCreationExpressionSyntax creation = Assert.Single(resolve.DescendantNodes().OfType<BaseObjectCreationExpressionSyntax>(),
+            candidate => SymbolEqualityComparer.Default.Equals(model.GetTypeInfo(candidate).Type, sdkType));
+
+        var constructor = Assert.IsAssignableFrom<IMethodSymbol>(model.GetSymbolInfo(creation).Symbol);
+
+        Assert.Equal(MethodKind.Constructor, constructor.MethodKind);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(constructor.ContainingType, sdkType));
+
+        Assert.Collection(constructor.Parameters,
+            parameter => Assert.Equal(SpecialType.System_String, parameter.Type.SpecialType),
+            parameter => Assert.True(SymbolEqualityComparer.Default.Equals(parameter.Type,
+                compilation.GetTypeByMetadataName("System.ClientModel.ApiKeyCredential"))),
+            parameter => Assert.True(SymbolEqualityComparer.Default.Equals(parameter.Type,
+                compilation.GetTypeByMetadataName("OpenAI.OpenAIClientOptions"))));
+
+        return creation;
+    }
+
+    [Theory]
+    [InlineData("implicit", true)]
+    [InlineData("explicit", true)]
+    [InlineData("missing", false)]
+    [InlineData("duplicate", false)]
+    [InlineData("different-overload", false)]
+    public void LongRestEmbeddingSdkSourcePinRequiresExactlyOneBoundConstruction(string shape, bool reviewed)
+    {
+        const string construction = "OpenAI.Embeddings.EmbeddingClient sdk = new(\"model\", new System.ClientModel.ApiKeyCredential(\"fixture\"), options);";
+
+        string body = shape switch
+        {
+            "implicit" => construction,
+            "explicit" => construction.Replace("sdk = new(", "sdk = new OpenAI.Embeddings.EmbeddingClient(", StringComparison.Ordinal),
+            "missing" => "",
+            "duplicate" => construction + construction.Replace("Client sdk =", "Client other =", StringComparison.Ordinal),
+            "different-overload" => "OpenAI.Embeddings.EmbeddingClient sdk = new(\"model\", \"fixture\");",
+            _ => throw new ArgumentOutOfRangeException(nameof(shape)),
+        };
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack($$"""
+            public static class LongRestProviderClientFactory
+            {
+                public static void ResolveEmbeddingAsync(OpenAI.OpenAIClientOptions options)
+                {
+                    System.Uri otherConstruction = new("https://fixture.invalid");
+                    {{body}}
+                }
+            }
+            """, "RetroDownfall.Arcanum.Api");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        if (reviewed) Assert.Contains("\"model\"", FindLongRestEmbeddingSdkConstruction(compilation, tree).ToString(), StringComparison.Ordinal);
+        else Assert.ThrowsAny<Xunit.Sdk.XunitException>(() => FindLongRestEmbeddingSdkConstruction(compilation, tree));
+    }
+
     // One connection per send is a statement about assignments, not about text: a comment is not a setting, a later assignment or a compound
     // assignment overrides one, and a conditional one is optional. The method must assign the property exactly once, as a statement of its
     // own at the top of the method body or of its protected block, and the value must be TimeSpan.Zero.
@@ -161,10 +232,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         ConstructorDeclarationSyntax constructor = Assert.Single(factory.Members.OfType<ConstructorDeclarationSyntax>(),
             static constructor => constructor.Modifiers.Any(static token => token.ValueText == "public"));
 
-        Assert.Equal(["IProviderApiKeyResolver", "ILogger<LongRestProviderClientFactory>"],
+        Assert.Equal(["IProviderApiKeyResolver", "ILogger<LongRestProviderClientFactory>", "IOptionsMonitor<ArcanumSettings>?"],
             constructor.ParameterList.Parameters.Select(static parameter => parameter.Type!.ToString()));
 
-        Assert.All(constructor.ParameterList.Parameters, static parameter => Assert.Null(parameter.Default));
+        Assert.All(constructor.ParameterList.Parameters.Take(2), static parameter => Assert.Null(parameter.Default));
+
+        Assert.True(constructor.ParameterList.Parameters[2].Default?.Value.IsKind(SyntaxKind.NullLiteralExpression));
 
         Assert.DoesNotContain(factory.DescendantNodes().OfType<IdentifierNameSyntax>(), static name => name.Identifier.ValueText == "IHttpClientFactory");
 
