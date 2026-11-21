@@ -402,6 +402,8 @@ Successful endpoints use `Results.Ok(ApiResponse<T>.FromResult(result, traceId))
 
 - **`POST /api/mcp/reload`** and **`POST /api/intelligence/arsenal`** — Optional JSON body **`OptionalWorkspaceRequest`** (`{ "workingDirectory": "..." }` only). Responses remain `ApiResponse<T>` as today. The arsenal passes the MCP manager only the *normalized* workspace root: a `workingDirectory` that does not normalize to a workspace is treated as no workspace, so its server statuses come from the global surface alone and no workspace-local MCP configuration is resolved from the raw request text.
 
+**Repair activation drain.** `POST /api/server/repair-drain` requires the operator credential from the local loopback connection. Submit `activationId`, the exact `processId` and `startTime` from authenticated `GET /api/meta`, and the 64-digit hex SHA-256 of the qualification receipt in `qualificationSha256`. A **200** `ApiResponse<RepairActivationDrainReceipt>` repeats those fields and returns `drained: true` once active requests, admitted work and connection opens have drained. The same activation and boot may read back that receipt. A changed boot or competing maintenance owner gets **409**. A remote authenticated request receives **403**. The gate remains closed for the matching shutdown. The repair controller uses authenticated `POST /api/server/quit` for a foreground host or its existing launchd job for a managed host. A historical host without the drain remains running while the repair is staged.
+
 ### 8.5 NDJSON streaming pipeline
 
 `/api/intelligence/ping-stream` uses NDJSON (`application/x-ndjson`) for real-time token streaming:

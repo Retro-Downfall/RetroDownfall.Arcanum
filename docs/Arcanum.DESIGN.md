@@ -4286,6 +4286,24 @@ macOS profile and per-invocation temp roots are created owner-only and captured 
 
 **API:** **`GET/PUT /api/campaigns/{campaignId}/sanctum`**, **`GET /api/campaigns/{campaignId}/sanctum/breaches`** (paginated: `limit` default 100 clamp 1–1,000, `before` ISO 8601 cursor, `tool` filter; returns `ApiResponse<SanctumBreachQueryResult>` with `Items` + `HasMore`). Protected by **`ApiKeyEndpointFilter`**. Default **`Enabled: false`** on existing and new campaigns (opt-in per campaign). Path-shaped breach detail fields (`RequestedPath`, `ResolvedPath`, `WorkspaceRoot`) are redacted to their filename component (**`SanctumPathRedactor`**) before serialization.
 
+### Qualified repair activation and stopped-host recovery
+
+The maintenance controller stages the independently signed installed application closure under the installed closure’s parent. The reviewed projection uses the `arcanum` apphost, native libraries and packaged licenses. The raw publish and its symbols stay with the qualification evidence. It pins the signing key, qualification receipt and payload hashes, observer executable and contract, physical closure and profile identities, existing configuration, and intended Session. The owner-only authenticated journal lives beside the application closure and remains readable when the service is stopped. A signed package without proved state compatibility stays staged.
+
+A current authenticated boot closes its existing Grimoire request and work admission under the exact repair activation and qualification digest. Its receipt covers completed request, work and connection drain. A running historical boot without that route keeps serving and the staged repair waits for actual stopped-host proof. The controller checks the retained Session and any known pending invocation before activation. The existing client-mutation and maintenance locks guard the stopped, same-volume closure exchange. Its startup lock also serializes normal automatic launch attempts. The launchd path unloads and reloads the existing owned job with its unchanged plist.
+
+The staged application and prior closure are verified against their recorded file and directory identities before exchange and after interruption. The restarted process must report the expected application, boot and profile over the authenticated listener. The pinned observer runs against that same process. The controller checks the retained Session and invocation again before releasing continuation. An unresolved dispatched invocation continues to require reconciliation. A startup or observation failure restores the prior closure and verifies its readiness when the controller can prove the candidate has stopped safely. The profile and workspace stay outside the exchange.
+
+The packaged activation test runs on Apple silicon macOS with Python 3.11 or later. Pass the affected and repaired installation projections, the signed maintainer qualification bundle, and its independently provisioned public key.
+
+```sh
+python3 scripts/tests/test_repair_activation_native.py \
+  --affected-install <affected-install-dir> --repaired-install <repaired-install-dir> \
+  --bundle <qualification-dir> --public-key <operator-public.pem>
+```
+
+The test uses a disposable profile under the operating system’s temporary directory and a loopback fixture provider. In one retained Session it proves the original build’s wire mismatch, refusal of an invalid staging key, a post-swap behavior failure and recovery of the prior closure, then successful buffered and streaming continuation on the repaired build. At each transition it verifies the original Entry IDs and content, attachment bytes, configuration, launcher, and workspace. The fixture provider requires the original answer to appear in the continued turn’s context and observes one original tool request.
+
 ### 11.16 Session lifecycle (`/api/sessions`)
 
 **Purpose:** Grimoire-backed multi-turn chat threads for The Forge, CLI, intelligence persistence, and operator tooling. **Sessions** and **Entries** are the single conversation store (API §8.18).

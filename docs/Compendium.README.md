@@ -133,6 +133,8 @@ Manual Session compaction has a narrower applicability rule than inference routi
 
 A model's `reasoning` block carries exactly the two keys above. `providers.models.reasoning.controlSupport`, `.supportsSummary`, `.supportsFull`, `.supportsStreaming`, `.reportsReasoningTokens`, and `.allowsClientOutput` are not part of the configuration contract: `ModelReasoningSettings` has no such members, the `ModelEntry` JSON converter skips them on read and never writes them, and the host aborts startup on a file that declares any of them (`ConfigurationStartupValidator` via `ConfigurationValidator.RejectObsoleteKeys`). Compendium loads such a file without complaint and drops the keys on the next save, so a file that still carries them must be edited before the host will start. Arcanum derives the corresponding behaviour from the declared wire dialect and budget instead.
 
+Qualified repair activation uses the configured local loopback listener and the existing profile and launch mode. The stored provider, model roles and credentials remain in the profile during the application closure exchange. The operator’s maintenance API credential comes from the maintenance process environment. The independent behavior verifier receives that credential and no configured provider credentials.
+
 ### Security and workspaces
 
 Session tool recovery uses the tool's current workspace and Sanctum authority. The Session's existing execution permissions govern a safe retry after a pre-dispatch interruption. An unresolved effect remains fenced while Arcanum checks the same invocation's receipt.

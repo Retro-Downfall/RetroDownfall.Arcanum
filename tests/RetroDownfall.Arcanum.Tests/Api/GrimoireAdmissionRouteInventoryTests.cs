@@ -29,7 +29,7 @@ public sealed class GrimoireAdmissionRouteInventoryTests
     }
 
     /// <summary>
-    /// Exactly four composed routes are exempt, and all are exempt for a stated reason.
+    /// Exactly five composed routes are exempt, and all are exempt for a stated reason.
     /// </summary>
     /// <remarks>
     /// Presence because it must authenticate the local server before a client retrieves its API key,
@@ -41,13 +41,14 @@ public sealed class GrimoireAdmissionRouteInventoryTests
     /// opens nothing; refusing it strands a reset between its host-apply proof and its offline
     /// continuation. Local runtime inspection reads only configuration and native runtime metadata,
     /// opening no Grimoire connection or inference call; maintenance must not hide its diagnostics.
+    /// Repair activation drain owns the close and must return its same-boot receipt while admission is closed.
     ///
     /// <para>The factory-reset route is deliberately absent even though it shares the recovery-host
     /// marker with these two. It is the request maintenance runs for, and it has to hold a lease so
     /// the erasure can promote it out of its own drain.</para>
     /// </remarks>
     [Fact]
-    public void Exactly_presence_health_runtime_inspection_and_quit_stand_outside_grimoire_admission()
+    public void Only_the_reviewed_control_and_diagnostic_routes_stand_outside_grimoire_admission()
     {
         _ = _factory.CreateAuthenticatedClient();
 
@@ -65,7 +66,7 @@ public sealed class GrimoireAdmissionRouteInventoryTests
                 .OrderBy(static name => name, StringComparer.Ordinal),
         ];
 
-        Assert.Equal(["GetArcanumPresenceProof", "GetHealth", "GetLocalRuntimeInspection", "QuitServer"], exempt);
+        Assert.Equal(["DrainServerForRepairActivation", "GetArcanumPresenceProof", "GetHealth", "GetLocalRuntimeInspection", "QuitServer"], exempt);
 
         Endpoint presence = Assert.Single(
             endpoints.Endpoints,

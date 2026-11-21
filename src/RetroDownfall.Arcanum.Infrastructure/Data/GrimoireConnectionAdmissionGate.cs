@@ -414,9 +414,24 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     public Result<IGrimoireClosingOwner> BeginOrResumeExclusive(
         CovenantExclusiveRecoveryOwner owner,
         IGrimoireRequestLease? initiatingRequest = null,
-        DbConnection? scopedConnection = null)
+        DbConnection? scopedConnection = null) =>
+        BeginOrResumeClosing(owner, null, initiatingRequest, scopedConnection);
+
+    internal Result<IGrimoireClosingOwner> BeginOrResumeRepairActivationDrain(Guid activationId, CovenantDigest qualificationDigest)
     {
-        if (!owner.IsValid)
+        if (activationId == Guid.Empty || !qualificationDigest.IsValid)
+            return Result<IGrimoireClosingOwner>.Failure(LifecycleConflict("The repair activation drain requires an exact identity."));
+
+        return BeginOrResumeClosing(default, new RepairDrainIdentity(activationId, qualificationDigest), null, null);
+    }
+
+    private Result<IGrimoireClosingOwner> BeginOrResumeClosing(
+        CovenantExclusiveRecoveryOwner owner,
+        RepairDrainIdentity? repairDrain,
+        IGrimoireRequestLease? initiatingRequest,
+        DbConnection? scopedConnection)
+    {
+        if (!owner.IsValid && repairDrain is null)
         {
             return Result<IGrimoireClosingOwner>.Failure(
                 LifecycleConflict("An uninitialized Covenant owner cannot close Grimoire admission."));
@@ -460,7 +475,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
                 _memoryDelegationDrain = Task.WhenAll(MemoryDelegation?.CloseForMaintenance() ?? []);
 
-                _closure = new Closure(owner, promoted, scopedConnection);
+                _closure = new Closure(owner, repairDrain, promoted, scopedConnection);
 
                 if (promoted is not null)
                 {
@@ -498,10 +513,10 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                     }
                 }
             }
-            else if (_closure is null || _closure.Owner != owner)
+            else if (_closure is null || _closure.Owner != owner || _closure.RepairDrain != repairDrain)
             {
                 return Result<IGrimoireClosingOwner>.Failure(
-                    LifecycleConflict("Another Covenant owner already controls Grimoire admission."));
+                    LifecycleConflict("Another maintenance owner already controls Grimoire admission."));
             }
             else if (initiatingRequest is not null
                 && (!ReferenceEquals(_closure.InitiatingRequest, initiatingRequest)
@@ -2017,12 +2032,17 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         AbandonedWhileOpen = 5,
     }
 
+    private readonly record struct RepairDrainIdentity(Guid ActivationId, CovenantDigest QualificationDigest);
+
     private sealed class Closure(
         CovenantExclusiveRecoveryOwner owner,
+        RepairDrainIdentity? repairDrain,
         RequestLease? initiatingRequest,
         DbConnection? scopedConnection)
     {
         internal CovenantExclusiveRecoveryOwner Owner { get; } = owner;
+
+        internal RepairDrainIdentity? RepairDrain { get; } = repairDrain;
 
         internal RequestLease? InitiatingRequest { get; } = initiatingRequest;
 

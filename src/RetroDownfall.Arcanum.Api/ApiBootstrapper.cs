@@ -470,6 +470,8 @@ public static class ApiBootstrapper
 
         services.AddSingleton<ArcanumHealthChecker>();
 
+        services.AddSingleton<RepairActivationDrain>();
+
         services.AddScoped<GrimoireStatsService>();
 
         services.AddSingleton<IHumanPromptRegistry, HumanPromptRegistry>();
@@ -1489,6 +1491,8 @@ public static class ApiBootstrapper
         apiGroup.MapHealthEndpoints();
 
         apiGroup.MapServerLifecycleEndpoints();
+
+        apiGroup.MapRepairActivationDrain();
 
         apiGroup.MapBudgetEndpoints();
 

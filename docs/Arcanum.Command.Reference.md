@@ -1315,6 +1315,21 @@ The result reports what happened as `reconciliation.erasureApplication`: `sagaMe
 
 Restored attachment snapshots stay readable even when their originating workspace does not exist here, but their live provenance is demoted to `WorkspaceUnavailable` until the workspace is explicitly rebound and revalidated. Trusted MCP workspace metadata is withheld rather than installed, and `Host:ListenAny` is reset to `false`: neither is authorization that transfers between machines. `new-profile-root` installs data only and never writes secret protection for another root, so adopt that generation with a `replace-installation` restore before using it. When the configuration component has a committed preset generation, its authenticated entries also contain the paired `arcanum.preset.json` and `arcanum.preset.rollback.json`; the transient preset journal is never included. Restore the pair only beside its matching `arcanum.json` during a coordinated recovery. An incomplete or mismatched pair fails the configuration component. A pending journal prevents capture of a possibly mid-transaction configuration until preset recovery runs.
 
+### Activate a qualified macOS repair
+
+Run the checked-in maintenance script from the trusted Arcanum release checkout with Python 3.11 or later. Provide the existing operator API key in `ARCANUM_API_KEY` to the maintenance process. Use the independently provisioned public key and behavior verifier.
+
+```text
+python3 scripts/activate-repair.py stage --bundle <qualification-dir> --public-key <operator.pem> --install-dir <installed-closure-dir> --profile <grimoire-directory> --api-url <loopback-http-origin> --session <session-id> --behavior-check <trusted-executable>
+python3 scripts/activate-repair.py apply --operation <returned-journal>
+python3 scripts/activate-repair.py status --operation <returned-journal>
+python3 scripts/activate-repair.py recover --operation <returned-journal>
+```
+
+Stage while the existing host can authenticate and reopen the intended Session. Apply verifies the private staged copy before taking the live host out of service. A historical host that cannot attest its drain must first be stopped through its existing lifecycle. For a historical macOS launchd service with `KeepAlive` enabled, unload the job from its owning GUI domain and keep its plist in place. Run `apply` again with the same journal so the controller can re-register the service. Recover uses the same operation and reads the physical file layout to complete activation or restore the prior closure. All actions emit one JSON result. Phase changes are reported on stderr. A verified restart reports `applied`. `continuationReady` also requires a safe retained invocation boundary.
+
+The behavior verifier is staged once under `ollama-reasoning-continuation-v1`. It receives `--api-url`, `--session`, `--process-id`, `--apphost-sha256`, `--activation-id`, and the operator API credential in its private environment. A pass returns one JSON document with `contract`, `activationId`, `sessionId`, `processId`, `apphostSha256`, and `disposition: "passed"` for the verified running instance. Apply and recover use the same pinned verifier.
+
 ### `arcanum data`
 
 A fresh ordinary data mutation (including an initial prune snapshot only when its current live owner and exact V0/null/null checkpoint positively prove no candidate effect) that cannot acquire its database writer within the five-second native attempt budget reports `Data.Conflict`, its durable operation identity and guidance to let conflicting work finish. If terminal bookkeeping is also blocked, inspect that identity and preserve its existing journal before retrying. A retained V0 prune may recover and continue under its existing expiry policy; this refusal does not promise abandonment. Unreadable or changed ownership/progress retains reconciliation guidance. Cancellation is checked between roughly one-second actual provider attempts. Independent best-effort cleanup may exceed its 500 ms deadline by one synchronous slice plus scheduling; these limits are not a hard command wall-clock promise. A later prune or factory continuation can already have effects and retains its existing recovery guidance. No destructive body or COMMIT is replayed.

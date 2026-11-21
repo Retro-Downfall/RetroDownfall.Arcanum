@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Api.Hosting;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using RetroDownfall.Arcanum.Api.Intelligence;
@@ -99,6 +100,8 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ConfigurationValidationError))]
 [JsonSerializable(typeof(ConfigurationValidationError[]))]
 [JsonSerializable(typeof(ApiResponse<bool>))]
+[JsonSerializable(typeof(RepairActivationDrainRequest))]
+[JsonSerializable(typeof(ApiResponse<RepairActivationDrainReceipt>))]
 [JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(Error))]
 [JsonSerializable(typeof(PingRequest))]
