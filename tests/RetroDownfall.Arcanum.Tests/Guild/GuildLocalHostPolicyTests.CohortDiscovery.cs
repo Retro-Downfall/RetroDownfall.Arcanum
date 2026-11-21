@@ -19,26 +19,27 @@ public sealed partial class GuildLocalHostPolicyTests
 
         Assert.Contains(cohort.Id, first.Value.CohortIds);
 
-        Assert.Equal(2, first.Value.NextAfter!.Phase);
+        var after = first.Value.NextAfter;
 
-        var second = await cohorts.ReadWorkPageAsync(owner, first.Value.NextAfter, default);
+        for (int phase = 2; phase <= 7; phase++)
+        {
+            Assert.NotNull(after);
 
-        Assert.True(second.IsSuccess, second.Error.Message);
+            Assert.Equal(phase, after.Phase);
 
-        Assert.Empty(second.Value.CohortIds);
+            Assert.Null(after.LastId);
 
-        Assert.Equal(3, second.Value.NextAfter!.Phase);
+            Assert.Null(after.LastFrontierId);
 
-        var third = await cohorts.ReadWorkPageAsync(owner, second.Value.NextAfter, default);
+            var page = await cohorts.ReadWorkPageAsync(owner, after, default);
 
-        Assert.True(third.IsSuccess, third.Error.Message);
+            Assert.True(page.IsSuccess, page.Error.Message);
 
-        Assert.Equal(4, third.Value.NextAfter!.Phase);
+            Assert.Empty(page.Value.CohortIds);
 
-        var fourth = await cohorts.ReadWorkPageAsync(owner, third.Value.NextAfter, default);
+            after = page.Value.NextAfter;
+        }
 
-        Assert.True(fourth.IsSuccess, fourth.Error.Message);
-
-        Assert.Null(fourth.Value.NextAfter);
+        Assert.Null(after);
     }
 }
