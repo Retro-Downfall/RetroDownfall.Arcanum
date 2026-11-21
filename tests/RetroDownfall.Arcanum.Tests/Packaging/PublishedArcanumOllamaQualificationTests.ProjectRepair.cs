@@ -1,9 +1,12 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text.Json;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
 using static RetroDownfall.Arcanum.Tests.Intelligence.WizardIntelligenceProviderTests;
@@ -108,6 +111,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
             ProjectRepairPhase("published Native AOT host is ready");
 
+            await RequireProjectRepairWorkspaceCheckAsync(api, workspace, ct);
+
             Guid session = await CreateRecoverySessionAsync(api);
 
             PingRequest original = ProjectRepairRequest(workspace, session, model);
@@ -188,6 +193,34 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
             CaptureLocalProjectRepairDisk(workspace);
 
             isolation.Delete();
+        }
+    }
+
+    private static async Task RequireProjectRepairWorkspaceCheckAsync(HttpClient api, string workspace, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            using var request = JsonContent.Create(new OptionalWorkspaceRequest(workspace), ArcanumJsonContext.Default.OptionalWorkspaceRequest);
+
+            using HttpResponseMessage response = await api.PostAsync("/api/intelligence/arsenal", request, cancellationToken);
+
+            response.EnsureSuccessStatusCode();
+
+            var arsenal = await response.Content.ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseWorkspaceArsenalDto, cancellationToken);
+
+            WorkspaceCheckCapabilityDto capability = Assert.IsType<WorkspaceCheckCapabilityDto>(arsenal?.Data?.WorkspaceCheck);
+
+            if (capability.Available)
+            {
+                ProjectRepairPhase("published host confirmed workspace_check for the project");
+
+                return;
+            }
+
+            Assert.True(capability.Reason.Contains("refresh is in progress", StringComparison.Ordinal),
+                $"The project repair witness requires workspace_check before inference. The host reported: {capability.Reason}");
+
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
         }
     }
 }

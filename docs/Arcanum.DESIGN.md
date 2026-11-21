@@ -5155,6 +5155,8 @@ dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj
   --filter 'FullyQualifiedName~Published_native_host_lets_resident_model_repair_project'
 ```
 
+Before starting inference, the packaged witness asks the host for the disposable workspace’s `workspaceCheck` capability. If the selected SDK falls outside a trusted installation root, the test reports the host’s reason before submitting the assignment to the model.
+
 Set `ARCANUM_TEST_LOCAL_PROJECT_REPAIR_PHASES` to a fresh writable file path to retain phase and tool-result evidence. The companion files contain diagnostics from the fixture and its original and repaired source. Prompts, hidden reasoning, and credentials are excluded from these receipts.
 
 
