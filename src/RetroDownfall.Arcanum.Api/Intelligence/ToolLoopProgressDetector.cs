@@ -1,4 +1,7 @@
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using System.Text.Json;
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Runtime.CompilerServices;
@@ -10,7 +13,10 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 internal readonly record struct ToolLoopProgressEntry(
     string ToolName,
     string ArgumentsJson,
-    string ResultText);
+    string ResultText,
+    TurnFailurePhase? FailurePhase = null,
+    TurnEffectState? Effect = null,
+    TurnRecoveryAction? NextAction = null);
 
 /// <summary>
 /// Detects repetition in the last eight completed tool rounds. An exact host-owned message witness
@@ -87,19 +93,50 @@ internal sealed class ToolLoopProgressDetector
     /// </summary>
     public string? RepeatedSignature { get; private set; }
 
+    internal bool ReacquiredEvictedRound { get; private set; }
+
+    internal bool RecentlyObserved(string diagnostic) =>
+        _recentRounds.Any(round => round is not null && (round.Diagnostics & DiagnosticFlag(diagnostic)) != 0);
+
     private byte[]? _protectedKey;
 
     /// <summary>Preserves equality within this turn without retaining protected text or a stable digest.</summary>
-    public ToolLoopProgressEntry CreateEntry(string toolName, string argumentsJson, string resultText, bool protect)
+    public ToolLoopProgressEntry CreateEntry(string toolName, string argumentsJson, string resultText, bool protect,
+        TurnFailureEvidence? failure = null)
     {
-        if (!protect)
+        argumentsJson = CanonicalArguments(argumentsJson);
+
+        if (failure?.Output is { } output && Guid.TryParseExact(output.Handle, "N", out _))
         {
-            return new(toolName, argumentsJson, resultText);
+            // The owner mints this opaque locator after collecting the evidence. A new locator
+            // for the same result does not make the workspace observation fresh.
+            resultText = resultText.Replace(output.Handle, "<retained-output>", StringComparison.Ordinal);
         }
 
-        _protectedKey ??= RandomNumberGenerator.GetBytes(32);
+        if (protect)
+        {
+            _protectedKey ??= RandomNumberGenerator.GetBytes(32);
 
-        return new(toolName, Protect(argumentsJson), Protect(resultText));
+            argumentsJson = Protect(argumentsJson);
+
+            resultText = Protect(resultText);
+        }
+
+        return new(toolName, argumentsJson, resultText, failure?.Phase, failure?.Effect, failure?.NextAction);
+    }
+
+    private static string CanonicalArguments(string json)
+    {
+        if (json.Length == 0 || json.Length > ArcanumCanonicalJsonV1.MaxInputUtf8Bytes) return json;
+
+        try
+        {
+            return Encoding.UTF8.GetString(ArcanumCanonicalJsonV1.Canonicalize(json));
+        }
+        catch (Exception exception) when (exception is ArgumentException or JsonException)
+        {
+            return json;
+        }
     }
 
     private string Protect(string content) =>
@@ -138,6 +175,8 @@ internal sealed class ToolLoopProgressDetector
         // including when several retained observations have this same fingerprint.
         bool reacquiring = repeated && allEvidenceEvicted && !reacquisitionUsed;
 
+        ReacquiredEvictedRound = reacquiring;
+
         if (reacquiring)
         {
             foreach (RoundEvidence? previous in _recentRounds)
@@ -149,7 +188,12 @@ internal sealed class ToolLoopProgressDetector
 
         _completedRounds = Increment(_completedRounds);
 
-        RoundEvidence current = new(fingerprint, _completedRounds) { ReacquisitionUsed = reacquisitionUsed || reacquiring };
+        int diagnostics = 0;
+
+        foreach (ToolLoopProgressEntry entry in entries)
+            diagnostics |= DiagnosticFlag(entry.ToolName);
+
+        RoundEvidence current = new(fingerprint, _completedRounds, diagnostics) { ReacquisitionUsed = reacquisitionUsed || reacquiring };
         _recentRounds[_nextSlot] = current;
         _nextSlot = (_nextSlot + 1) % RecentRoundWindow;
 
@@ -212,11 +256,22 @@ internal sealed class ToolLoopProgressDetector
         }
     }
 
-    private sealed class RoundEvidence(byte[] fingerprint, int ordinal)
+    private static int DiagnosticFlag(string tool) => tool switch
+    {
+        "read_file" => 1,
+        "list_directory" => 2,
+        "search_workspace" => 4,
+        ToolRiskClassifier.ReadToolOutputToolName => 8,
+        _ => 0,
+    };
+
+    private sealed class RoundEvidence(byte[] fingerprint, int ordinal, int diagnostics)
     {
         internal byte[] Fingerprint { get; } = fingerprint;
 
         internal int Ordinal { get; } = ordinal;
+
+        internal int Diagnostics { get; } = diagnostics;
         internal bool EvidenceEvicted { get; set; }
         internal bool ReacquisitionUsed { get; set; }
     }
@@ -236,6 +291,12 @@ internal sealed class ToolLoopProgressDetector
             AppendString(hash, entry.ArgumentsJson);
 
             AppendString(hash, entry.ResultText);
+
+            AppendInt32(hash, (int?)entry.FailurePhase ?? -1);
+
+            AppendInt32(hash, (int?)entry.Effect ?? -1);
+
+            AppendInt32(hash, (int?)entry.NextAction ?? -1);
         }
 
         return hash.GetHashAndReset();

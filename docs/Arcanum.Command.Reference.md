@@ -426,6 +426,8 @@ Explicit context options follow the shared precedence over active local context,
 
 `--session`, `--continue`, and `--resume` all fill the same slot, so supplying more than one exits `2` rather than resolving a precedence. `--new` keeps its documented behavior of winning over an explicit selector instead of adding a second conflict. `--continue` with no previous Session exits `2` naming how to start one; `--resume` with no value opens the Session picker, and cancelling that picker exits `0` having done nothing.
 
+Coding turns can revise a tool action from fresh workspace evidence. If an unchanged path remains stuck, the run reports `Hub.NoProgressDetected` and the information or authority needed to proceed. When the tool's effect needs reconciliation, inspect the reported Session invocation disposition when an ID is available and continue the same Session after checking the current state.
+
 **Syntax:** `arcanum run [<prompt>...]`
 
 | Option | Meaning |

@@ -1,6 +1,7 @@
 using System.Globalization;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Api.Intelligence;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
@@ -11,6 +12,27 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// </summary>
 public sealed class ToolLoopProgressDetectorTests
 {
+    [Fact]
+    public void Owner_facts_can_change_progress_when_only_a_new_output_locator_cannot()
+    {
+        ToolLoopProgressDetector detector = new();
+        TurnFailureEvidence fact = new(TurnFailurePhase.ToolExecution, TurnEffectState.Completed, TurnRecoveryAction.ReadToolOutput);
+        string first = Guid.NewGuid().ToString("N");
+        string second = Guid.NewGuid().ToString("N");
+
+        ToolLoopProgressEntry Observe(string handle, TurnEffectState effect) =>
+            detector.CreateEntry(
+                "workspace_check",
+                """{"profile":"build"}""",
+                "{\"status\":\"failed\",\"output\":{\"handle\":\"" + handle + "\"}}",
+                protect: false,
+                fact with { Effect = effect, Output = new("read_tool_output", handle, ["diagnostics"]) });
+
+        Assert.False(detector.ObserveCompletedRound([Observe(first, TurnEffectState.Completed)]));
+        Assert.True(detector.ObserveCompletedRound([Observe(second, TurnEffectState.Completed)]));
+        Assert.False(detector.ObserveCompletedRound([Observe(second, TurnEffectState.NotDispatched)]));
+    }
+
     [Fact]
     public void ObserveCompletedRound_flags_an_immediately_repeated_round()
     {

@@ -2490,6 +2490,8 @@ public sealed partial class WizardIntelligenceProvider(
             ToolLoopProgressDetector toolLoopProgressDetector = new(
                 operationalNotices.FirstOrDefault(static notice => notice.Code == InferenceNoticeCode.ToolEvidenceTrimmed)?.ToolEvidenceEviction);
 
+            ToolStrategyRecovery strategyRecovery = new();
+
             PingRequest streamContextRequest = request with
             {
                 ScryingFoci = request.ScryingFoci is null
@@ -4237,6 +4239,8 @@ public sealed partial class WizardIntelligenceProvider(
                     List<ToolLoopProgressEntry> toolLoopProgressEntries = new(
                         toolCalls.Count);
 
+                    List<TurnFailureEvidence>? roundFailures = null;
+
                     streamToolRoundCount++;
 
                     streamTurnAmbients.SetProviderRound(streamToolRoundCount);
@@ -4455,12 +4459,19 @@ public sealed partial class WizardIntelligenceProvider(
                                     memoryDelegation?.RecordDerived(toolSensitivity);
                                 }
 
+                                TurnFailureEvidence? toolFailure = processed.FailureEvidence is { } evidence
+                                    ? evidence with { ToolName = processed.ToolName, ToolRound = streamToolRoundCount - 1, ToolIndex = toolCallIndex }
+                                    : TurnFailureEvidence.FromToolOutcome(processed.ToolOutcome, processed.ToolName, streamToolRoundCount - 1, toolCallIndex);
+
+                                if (toolFailure is not null) (roundFailures ??= []).Add(toolFailure);
+
                                 toolLoopProgressEntries.Add(
                                     toolLoopProgressDetector.CreateEntry(
                                         processed.ToolName,
                                         processed.ArgsSnapshot,
                                         processed.ResultText,
-                                        covenantScope?.Protection is not null));
+                                        covenantScope?.Protection is not null,
+                                        toolFailure));
 
                                 (observedToolCalls ??= []).Add(new PromptToolCall(processed.CallId, processed.ToolName, processed.ArgsSnapshot));
 
@@ -4534,9 +4545,7 @@ public sealed partial class WizardIntelligenceProvider(
                                     ToolDenied: processed.Denied)
                                 {
                                     ToolOutcome = processed.ToolOutcome,
-                                    FailureEvidence = processed.FailureEvidence is { } evidence
-                                        ? evidence with { ToolRound = streamToolRoundCount - 1, ToolIndex = toolCallIndex }
-                                        : TurnFailureEvidence.FromToolOutcome(processed.ToolOutcome, processed.ToolName, streamToolRoundCount - 1, toolCallIndex),
+                                    FailureEvidence = toolFailure,
                                 };
 
                                 if (processed.AttachmentRefresh is { } refreshDetail)
@@ -4646,11 +4655,42 @@ public sealed partial class WizardIntelligenceProvider(
                         streamTurnAmbients.SessionId = null;
                     }
 
-                    if (toolLoopProgressDetector.ObserveCompletedRound(
-                            toolLoopProgressEntries,
-                            chatMessages.GetRange(firstToolExchangeMessage, chatMessages.Count - firstToolExchangeMessage)))
+                    bool repeatedRound = toolLoopProgressDetector.ObserveCompletedRound(
+                        toolLoopProgressEntries,
+                        chatMessages.GetRange(firstToolExchangeMessage, chatMessages.Count - firstToolExchangeMessage));
+
+                    if (ToolStrategyRecovery.ReconciliationDependency(roundFailures) is { } dependency)
                     {
-                        const string nextStep = "Narrow or change the request, or inspect the tool output before retrying.";
+                        inferenceTypedError = dependency;
+
+                        inferenceError = dependency.Message;
+
+                        streamAccountingStatus = InferenceRunStatus.Failed;
+
+                        break;
+                    }
+
+                    bool offeredGuidance = strategyRecovery.Offer(
+                        chatMessages,
+                        streamChatOptions,
+                        toolLoopProgressDetector,
+                        toolLoopProgressEntries,
+                        roundFailures,
+                        repeatedRound,
+                        covenantScope?.Protection is not null || covenantScope?.DerivedSensitivity?.Level is ContentSensitivity.CovenantDerived);
+
+                    if (repeatedRound && !offeredGuidance)
+                    {
+                        TurnFailureEvidence? blocking = roundFailures?.FirstOrDefault(static fact =>
+                            fact.NextAction is TurnRecoveryAction.UseAuthorizedScope or TurnRecoveryAction.InspectSession);
+
+                        string nextStep = blocking?.NextAction switch
+                        {
+                            TurnRecoveryAction.UseAuthorizedScope => "Continuing requires an authorized scope for the next observation.",
+                            TurnRecoveryAction.InspectSession => "Inspect the current Session and its tool evidence before continuing.",
+                            _ when strategyRecovery.OfferedAlternative => "Continuing requires fresh workspace evidence or updated guidance in this Session.",
+                            _ => "Narrow or change the request, or inspect the tool output before retrying.",
+                        };
                         string explanation = "Tool execution stopped because the latest call/result round repeated a recent round and produced no new evidence.";
                         Error noProgressError;
 
@@ -4658,7 +4698,8 @@ public sealed partial class WizardIntelligenceProvider(
                         {
                             string toolNames = DescribeRepeatedTools(toolLoopProgressEntries, streamChatOptions);
                             noProgressError = new(ErrorCodes.Hub.NoProgressDetected,
-                                $"{explanation} Tools: {toolNames}; calls: {toolLoopProgressEntries.Count}. {nextStep}");
+                                $"{explanation} Tools: {toolNames}; calls: {toolLoopProgressEntries.Count}. {nextStep}")
+                            { FailureEvidence = blocking ?? roundFailures?.FirstOrDefault() };
                             logger.LogWarning(
                                 "Tool loop stopped for no progress; tools {ToolNames}; calls {ToolCallCount}; session {SessionId}; recurring round signature {ProgressSignature}. Narrow the request or inspect the tool output before retrying.",
                                 toolNames, toolLoopProgressEntries.Count, grimoireTurn.SessionId ?? request.SessionId,
