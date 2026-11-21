@@ -433,7 +433,7 @@ public sealed partial class GuildLocalHostPolicyTests
 
             await command.ExecuteNonQueryAsync();
 
-            command.CommandText = "SELECT name FROM seed.sqlite_schema WHERE type='table' AND name LIKE 'guild_%' AND name<>'guild_operator_sequences' ORDER BY CASE name WHEN 'guild_quests' THEN 0 WHEN 'guild_budget_accounts' THEN 1 WHEN 'guild_cohorts' THEN 2 ELSE 3 END,name";
+            command.CommandText = "SELECT name FROM main.sqlite_schema WHERE type='table' AND name LIKE 'guild_%' AND name<>'guild_operator_sequences' ORDER BY CASE name WHEN 'guild_quests' THEN 0 WHEN 'guild_budget_accounts' THEN 1 WHEN 'guild_cohorts' THEN 2 ELSE 3 END,name";
 
             List<string> tables = [];
 
@@ -495,6 +495,8 @@ public sealed partial class GuildLocalHostPolicyTests
             var upgraded = await GrimoireSchemaTestInstaller.InstallAsync(legacy, 768, default);
 
             Assert.True(upgraded.GuildCanonical.IsHealthy, upgraded.GuildCanonical.ToString());
+
+            Assert.Equal(GrimoireSchemaVersionChains.GuildCanonicalSchemaVersion, upgraded.GuildCanonical.SchemaVersion);
         }
 
         GuildCallerContext restartedOperator = await historical.OperatorAsync();
