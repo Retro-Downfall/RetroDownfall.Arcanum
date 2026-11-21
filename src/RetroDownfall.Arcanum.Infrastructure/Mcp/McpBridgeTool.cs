@@ -226,12 +226,10 @@ internal sealed class McpBridgeTool : AIFunction
 
             if (McpToolFailure.ReadNative(result.StructuredContent) is { } knownFailure)
             {
+                // The model observes the finished lookup. The ledger uses the host's proof that
+                // this missing read never reached file content.
                 return trustStructuredResult && _name == "read_file" && knownFailure.Outcome.Code == ToolOutcomeCode.NotFound
-                    ? knownFailure with
-                    {
-                        FailureEvidence = new(TurnFailurePhase.ToolPrecondition, TurnEffectState.NotDispatched,
-                            TurnRecoveryAction.InspectWorkspace),
-                    }
+                    ? knownFailure with { OwnerProvedNoDispatch = true }
                     : knownFailure;
             }
 

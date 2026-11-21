@@ -11,7 +11,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </summary>
 internal sealed record McpToolFailure(ToolOutcome Outcome, string? ReportedText = null)
 {
-    internal TurnFailureEvidence? FailureEvidence { get; init; }
+    internal bool OwnerProvedNoDispatch { get; init; }
 
     internal string ResultText => ReportedText ?? Outcome.Message;
 

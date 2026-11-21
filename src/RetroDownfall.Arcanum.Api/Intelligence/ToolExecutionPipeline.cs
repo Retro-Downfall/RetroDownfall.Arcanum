@@ -159,6 +159,8 @@ public sealed class ToolExecutionPipeline(
         public ToolOutcome? ToolOutcome { get; init; }
 
         public TurnFailureEvidence? FailureEvidence { get; init; }
+
+        internal bool OwnerProvedNoDispatch { get; init; }
     }
 
     public sealed record ProcessedToolCall(
@@ -593,9 +595,11 @@ public sealed class ToolExecutionPipeline(
             }
         }
 
-        if (recovery is { AdmittedForDispatch: true } && applyPatchContext?.ReceiptHandled != true
-            && wardedExecution.FailureEvidence?.Effect == TurnEffectState.NotDispatched
-            && (isApplyPatch || toolName is ToolRiskClassifier.WorkspaceCheckToolName or "read_file"))
+        bool ownerProvedNoDispatch = wardedExecution.OwnerProvedNoDispatch
+            || ((isApplyPatch || toolName == ToolRiskClassifier.WorkspaceCheckToolName)
+                && wardedExecution.FailureEvidence?.Effect == TurnEffectState.NotDispatched);
+
+        if (recovery is { AdmittedForDispatch: true } && applyPatchContext?.ReceiptHandled != true && ownerProvedNoDispatch)
         {
             await recovery.ReleaseUndispatchedAsync(CancellationToken.None).ConfigureAwait(false);
         }
@@ -1976,7 +1980,7 @@ public sealed class ToolExecutionPipeline(
             return new(failure.ResultText, wardEvents, Denied: failure.Outcome.Denied, Failed: true)
             {
                 ToolOutcome = failure.Outcome,
-                FailureEvidence = failure.FailureEvidence,
+                OwnerProvedNoDispatch = failure.OwnerProvedNoDispatch,
             };
         }
 
