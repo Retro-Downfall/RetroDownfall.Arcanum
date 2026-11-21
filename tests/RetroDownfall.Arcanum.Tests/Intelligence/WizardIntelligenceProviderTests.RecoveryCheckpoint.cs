@@ -501,7 +501,7 @@ public sealed partial class WizardIntelligenceProviderTests
         new("Start a repair and ask only the question needed before writing.", Model: ModelName,
             SessionId: sessionId, SkipSpellRouting: true, MaxOutputTokens: 64);
 
-    private static async Task<Guid> CreateRecoverySessionAsync(HttpClient client)
+    internal static async Task<Guid> CreateRecoverySessionAsync(HttpClient client)
     {
         using HttpResponseMessage created = await client.PostAsync("/api/sessions",
             JsonContent.Create(new CreateSessionRequest(null, "Retained repair question"), ArcanumJsonContext.Default.CreateSessionRequest));
@@ -513,14 +513,14 @@ public sealed partial class WizardIntelligenceProviderTests
         return Assert.IsType<SessionDetailDto>(session?.Data).Id;
     }
 
-    private static async Task<HttpResponseMessage> SendRecoveryPingAsync(HttpClient client, PingRequest ping, string? key = null)
+    internal static async Task<HttpResponseMessage> SendRecoveryPingAsync(HttpClient client, PingRequest ping, string? key = null)
     {
         using HttpRequestMessage request = RecoveryRequest("/api/intelligence/ping", ping, key);
 
         return await client.SendAsync(request);
     }
 
-    private static HttpRequestMessage RecoveryRequest(string path, PingRequest ping, string? key = null, bool keyed = true)
+    internal static HttpRequestMessage RecoveryRequest(string path, PingRequest ping, string? key = null, bool keyed = true)
     {
         HttpRequestMessage request = new(HttpMethod.Post, path)
         {
@@ -552,7 +552,7 @@ public sealed partial class WizardIntelligenceProviderTests
         return await command.ExecuteScalarAsync(ct) as string;
     }
 
-    private static async Task<SessionRecoveryCheckpoint?> ReadRecoveryCheckpointAsync(HttpClient client, Guid sessionId)
+    internal static async Task<SessionRecoveryCheckpoint?> ReadRecoveryCheckpointAsync(HttpClient client, Guid sessionId)
     {
         using HttpResponseMessage response = await client.GetAsync($"/api/sessions/{sessionId:D}");
 
